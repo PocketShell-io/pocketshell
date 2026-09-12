@@ -40,9 +40,11 @@ data class ComposerDraft(
  *
  * A draft that only lives in the composable dies on a session switch, and the
  * one thing the send path promises when a send does not land is "your text is
- * still here". Keying by `"<hostId>/<sessionName>"` means switching A → B → A
- * finds A's draft again rather than an empty box, and writing it to disk means
- * the promise survives the process being killed in the background.
+ * still here". Keying by `"<hostId>/<sessionHandle>"` — the session's stable
+ * host id (issue #2572), falling back to its name for a host that reported
+ * none — means switching A → B → A finds A's draft again rather than an empty
+ * box, and writing it to disk means the promise survives the process being
+ * killed in the background.
  *
  * ## Why SharedPreferences and not Room
  *
@@ -124,6 +126,33 @@ class ComposerDraftStore @Inject constructor(
         }
     }
 
+    /**
+     * Copies a legacy draft to [newKey], leaving the legacy key in place —
+     * a migration that turns out to be wrong must leave residue, never a
+     * hole. Returns false (and copies nothing) when [newKey] already holds
+     * content this process or an earlier write put there, or when this
+     * legacy key has already been copied once. The marker is the one-shot
+     * part: the copy must not rerun "whenever the id slot is empty", or a
+     * draft the user already SENT — clearing the id key — would be
+     * resurrected as a fresh draft by the next process's first bind.
+     */
+    suspend fun copyLegacy(legacyKey: String, newKey: String): Boolean {
+        if (mirror.containsKey(newKey)) return false
+        return withContext(dispatcher) {
+            val store = open()
+            if (store.getBoolean(migratedKey(legacyKey), false)) return@withContext false
+            if (store.contains(newKey)) return@withContext false
+            val text = store.getString(legacyKey, null) ?: return@withContext false
+            val attachments = store.getString(attachmentKey(legacyKey), null)
+            store.edit().apply {
+                putString(newKey, text)
+                attachments?.let { putString(attachmentKey(newKey), it) }
+                putBoolean(migratedKey(legacyKey), true)
+            }.apply()
+            true
+        }
+    }
+
     private fun open(): SharedPreferences =
         prefs ?: synchronized(this) {
             prefs ?: context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).also {
@@ -141,6 +170,13 @@ class ComposerDraftStore @Inject constructor(
  * collide with the text slot keyed by the bare session key.
  */
 internal fun attachmentKey(sessionKey: String): String = "@att/$sessionKey"
+
+/**
+ * The one-shot marker for a completed legacy→id draft copy, in its own
+ * `@migrated/` namespace. Written beside the copy it governs; checked before
+ * any copy so a completed upgrade never runs a second time.
+ */
+internal fun migratedKey(legacyKey: String): String = "@migrated/$legacyKey"
 
 /**
  * Attachments as newline-separated `path\tname\tmime` rows.

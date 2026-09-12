@@ -252,6 +252,40 @@ class UsageGlanceViewModelTest {
 
     // --- helpers -----------------------------------------------------------
 
+    /**
+     * Issue #2572: with an id on the route the row is matched by the stable id
+     * alone, so a session that renamed itself on the host keeps the pill
+     * focused even though the route's name is stale.
+     */
+    @Test
+    fun `a renamed session keeps the pill focused via its stable id`() = vmTest { stack ->
+        val hostId = stack.seedHost("claude-box")
+        stack.scriptUsage(CLAUDE_AND_GROK_NDJSON)
+        stack.scriptSessions(sessionsListing(RENAME_SURVIVOR_ROW))
+        stack.connect(hostId)
+        val viewModel = viewModel(stack)
+
+        viewModel.refresh(hostId = hostId, sessionName = "stale-name", sessionId = "id-abc")
+        runCurrent()
+
+        assertEquals("Claude 38%", viewModel.state.value?.label)
+    }
+
+    /** And id-only means id-only: the impostor wearing the old name gets nothing. */
+    @Test
+    fun `a session that took the old name never takes the pill focus`() = vmTest { stack ->
+        val hostId = stack.seedHost("claude-box")
+        stack.scriptUsage(CLAUDE_AND_GROK_NDJSON)
+        stack.scriptSessions(sessionsListing(IMPOSTOR_ROW))
+        stack.connect(hostId)
+        val viewModel = viewModel(stack)
+
+        viewModel.refresh(hostId = hostId, sessionName = "stale-name", sessionId = "id-abc")
+        runCurrent()
+
+        assertEquals("Grok 7d 83%", viewModel.state.value?.label)
+    }
+
     private fun viewModel(stack: TestUsageStack) = UsageGlanceViewModel(
         fetcher = stack.fetcher,
         connections = stack.registry,
@@ -313,6 +347,16 @@ class UsageGlanceViewModelTest {
         const val APLEXER_OLD_CLI_ROW =
             "{\"name\": \"$SESSION\", \"attached\": true, " +
                 "\"engine\": \"shell\"}"
+
+        /** The id's session, renamed on the host since the route was built. */
+        const val RENAME_SURVIVOR_ROW =
+            "{\"name\": \"renamed-tag\", \"id\": \"id-abc\", \"attached\": true, " +
+                "\"engine\": \"shell\", \"agent\": \"claude\"}"
+
+        /** Only an impostor: another session wearing the route's stale name. */
+        const val IMPOSTOR_ROW =
+            "{\"name\": \"stale-name\", \"id\": \"id-other\", \"attached\": true, " +
+                "\"engine\": \"shell\", \"agent\": \"claude\"}"
 
     }
 }

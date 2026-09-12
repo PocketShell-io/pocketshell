@@ -222,6 +222,15 @@ class SessionViewModel @Inject constructor(
 
     private var hostId: Long? = null
 
+    /**
+     * The session's stable host id (issue #2572), when the route carried one.
+     * This — not the name — is what attach resolves against, so a rename on
+     * the host cannot strand this screen or silently retarget it to whichever
+     * session took the old name. Null degrades to the pre-#2572 name-keyed
+     * behavior for a host that listed no id.
+     */
+    private var sessionId: String? = null
+
     /** The session's own name, kept so an end-of-session message can say which. */
     private var sessionLabel: String? = null
 
@@ -273,15 +282,22 @@ class SessionViewModel @Inject constructor(
     /**
      * Attaches to [sessionName] on [hostId].
      *
+     * [sessionId] (issue #2572) is the identity when present: `sessions
+     * attach` resolves a display name OR an id prefix, and the id survives a
+     * rename, so the attach goes out with the id and the screen can never be
+     * silently retargeted to a different session that took the old name. A
+     * session that is gone fails LOUDLY instead.
+     *
      * Idempotent by design: the screen calls it from a `LaunchedEffect`, which
      * re-runs on configuration change and on returning to a recomposed route,
      * and a second attach would open a second PTY on the same session.
      * A repeat call after a failure is also ignored — [retryNow] is the retry.
      */
-    fun open(hostId: Long, sessionName: String) {
+    fun open(hostId: Long, sessionName: String, sessionId: String? = null) {
         if (attachJob != null) return
         this.hostId = hostId
         this.sessionLabel = sessionName
+        this.sessionId = sessionId?.takeIf { it.isNotBlank() }
         // Built before the dial so every later state — including a reconnect
         // that starts before the first attach ever landed — has a terminal to
         // show, and so `terminal` is never null once the screen is open.
@@ -368,9 +384,9 @@ class SessionViewModel @Inject constructor(
      */
     fun stopSession() {
         if (stopJob?.isActive == true) return
-        val name = sessionLabel ?: return
+        if (sessionLabel == null) return
         _stopFailure.value = null
-        stopJob = viewModelScope.launch { runStop(name) }
+        stopJob = viewModelScope.launch { runStop() }
     }
 
     /** Clears the one-shot leave signal. Called by the route BEFORE it pops. */
@@ -508,7 +524,10 @@ class SessionViewModel @Inject constructor(
             is ConnectResult.Failed -> return AttachOutcome.Unreachable(result.message)
         }
 
-        val command = runCatching { clients.create(connection).attachCommand(sessionName) }
+        // Issue #2572: the id is the identity when present — attach resolves a
+        // name OR an id prefix, and only the id survives a rename.
+        val attachHandle = sessionId ?: sessionName
+        val command = runCatching { clients.create(connection).attachCommand(attachHandle) }
             .getOrElse { failure ->
                 return AttachOutcome.Refused(
                     "Could not build the attach command: " + describe(failure),
@@ -767,8 +786,19 @@ class SessionViewModel @Inject constructor(
         _uiState.value = SessionUiState.Failed(message)
     }
 
-    private suspend fun runStop(name: String) {
+    /**
+     * Stops this screen's session.
+     *
+     * Kill is name-addressed on the host CLI, so when an id is held
+     * (issue #2572) the CURRENT name is resolved from a fresh listing first:
+     * killing the stale label would either fail after a rename or — the
+     * silent-collision case this issue exists to kill — stop whichever NEW
+     * session took the old name. A session the listing no longer knows is a
+     * loud "no longer running", never a guess.
+     */
+    private suspend fun runStop() {
         val host = hostId ?: return
+        val label = sessionLabel ?: return
         val connection = when (val result = registry.getOrConnect(host)) {
             is ConnectResult.Connected -> result.connection
             is ConnectResult.NeedsTrust -> {
@@ -782,7 +812,28 @@ class SessionViewModel @Inject constructor(
                 return
             }
         }
-        clients.create(connection).killSession(name).fold(
+        val client = clients.create(connection)
+        val name: String = if (sessionId == null) {
+            label
+        } else {
+            val listing = client.listSessions().fold(
+                onSuccess = { it },
+                onFailure = { error ->
+                    _stopFailure.value = when (error) {
+                        is HostCliError -> error.userMessage
+                        else -> "Could not stop the session on the host: " + describe(error)
+                    }
+                    return
+                },
+            )
+            val row = listing.sessions.firstOrNull { it.id == sessionId }
+            if (row == null) {
+                _stopFailure.value = "Session \"$label\" is no longer running on the host."
+                return
+            }
+            row.name
+        }
+        client.killSession(name).fold(
             onSuccess = {
                 _stopFailure.value = null
                 _leaveAfterStop.value = true

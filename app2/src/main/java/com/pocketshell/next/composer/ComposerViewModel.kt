@@ -118,6 +118,15 @@ class ComposerViewModel @Inject constructor(
     /**
      * Points the composer at one session and its send path.
      *
+     * [sessionId] (issue #2572) is the storage identity when present: drafts
+     * and history live under `hostId/<id>`, so a rename re-keys nothing and a
+     * session that takes a freed name never inherits a predecessor's draft.
+     * [sessionName] remains for the legacy-key upgrade copy — a draft written
+     * by the pre-#2572 app under `hostId/<name>` is carried to the id key on
+     * this session's first post-upgrade bind — and for a host that reported
+     * no id, in which case the key is the pre-#2572 `hostId/<name>` and the
+     * behavior is exactly the old one.
+     *
      * Idempotent for the same session so the screen can call it from a
      * `LaunchedEffect` — the sink is refreshed every time (a recomposition
      * builds a new one over the same ViewModel) but the draft is loaded and the
@@ -127,18 +136,18 @@ class ComposerViewModel @Inject constructor(
      * A bind with a DIFFERENT session key hands the old session off first
      * ([handOff]), so nothing of it can be seen or written under the new one.
      * Today the navigation graph makes that path unreachable — the screen
-     * resolves this ViewModel with `hiltViewModel()` inside the
-     * `session/{hostId}/{sessionName}` destination, so its store owner is that
-     * route's `NavBackStackEntry` and every session opens a fresh instance. The
-     * hand-off is what keeps that an implementation detail of the navigation
-     * graph rather than a load-bearing assumption of the composer: a
-     * quick-switch sheet that reuses one entry across sessions would otherwise
-     * flash session A's unsent draft in session B's composer.
+     * resolves this ViewModel with `hiltViewModel()` inside the session
+     * destination, so its store owner is that route's `NavBackStackEntry` and
+     * every session opens a fresh instance. The hand-off is what keeps that an
+     * implementation detail of the navigation graph rather than a load-bearing
+     * assumption of the composer: a quick-switch sheet that reuses one entry
+     * across sessions would otherwise flash session A's unsent draft in
+     * session B's composer.
      */
-    fun bind(hostId: Long, sessionName: String, sink: SessionSink) {
+    fun bind(hostId: Long, sessionId: String?, sessionName: String, sink: SessionSink) {
         this.sink = sink
         _state.update { it.copy(micAvailable = dictation.isAvailable()) }
-        val key = ComposerText.sessionKey(hostId, sessionName)
+        val key = ComposerText.sessionKey(hostId, sessionId?.takeIf { it.isNotBlank() } ?: sessionName)
         if (sessionKey == key) {
             observeFailures(sink)
             return
@@ -152,6 +161,22 @@ class ComposerViewModel @Inject constructor(
         // (or the user types), so nothing may be written under its key yet.
         draftKnown = false
         loadJob = viewModelScope.launch {
+            // Upgrade path (issue #2572): a draft written by the pre-#2572
+            // app sits under the legacy NAME key, and this session's first
+            // post-upgrade bind is the only moment both keys are in hand.
+            // The copy must land before the id key is read, or the draft
+            // would read as empty and the first keystroke would persist over
+            // it. Local stores only — no listing, no dial; copyLegacy's and
+            // rekeySession's guards make a rerun (or a second session that
+            // has since taken the name) a no-op, and a host that reported no
+            // id keeps the name key, where this is skipped.
+            if (!sessionId.isNullOrBlank()) {
+                val legacyKey = ComposerText.sessionKey(hostId, sessionName)
+                if (legacyKey != key) {
+                    drafts.copyLegacy(legacyKey, key)
+                    history.rekeySession(legacyKey, key)
+                }
+            }
             val stored = drafts.load(key)
             // Only adopt the stored draft if nothing has been typed in the
             // meantime: the load is asynchronous and the user can beat it.

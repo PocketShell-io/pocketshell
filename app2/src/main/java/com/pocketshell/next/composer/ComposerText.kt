@@ -64,10 +64,16 @@ internal object ComposerText {
     fun insertBytes(body: String): ByteArray = body.toByteArray(Charsets.UTF_8)
 
     /**
-     * The composer's storage key for one session, shared by the draft store and
-     * the sent-message log so both answer "which session is this" identically.
+     * The composer's storage key for one session, shared by the draft store
+     * and the sent-message log so both answer "which session is this"
+     * identically.
+     *
+     * [sessionHandle] is the session's STABLE host id (issue #2572) — a
+     * rename changes display names, never this key. A session name arrives
+     * only for a host that reported no id, degrading to the pre-#2572
+     * name-keyed behavior.
      */
-    fun sessionKey(hostId: Long, sessionName: String): String = "$hostId/$sessionName"
+    fun sessionKey(hostId: Long, sessionHandle: String): String = "$hostId/$sessionHandle"
 
     /**
      * Joins a draft and a dictated transcript (task P-2).

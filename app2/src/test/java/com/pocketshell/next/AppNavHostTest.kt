@@ -277,7 +277,7 @@ class AppNavHostTest {
                 // dials a host. The stand-in echoes both route arguments, which
                 // is what this suite is pinning — that a session name with a
                 // space and a `:` survives the encode/decode round trip.
-                sessionScreen = { hostId, sessionName, _, _, _, _, onOpenSession, _ ->
+                sessionScreen = { hostId, sessionName, _, _, _, _, _, onOpenSession, _ ->
                     switchSession = onOpenSession
                     Text("Session(hostId=$hostId, name=$sessionName)")
                 },

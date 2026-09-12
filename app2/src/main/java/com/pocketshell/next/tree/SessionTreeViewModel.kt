@@ -137,6 +137,12 @@ data class CreateSessionState(
     val notice: String? = null,
     /** The session name the screen should open next, once. */
     val openRequest: String? = null,
+    /**
+     * The created session's host id, travelling with [openRequest] (issue
+     * #2572): the route it opens must be id-keyed from its first navigation,
+     * so a later rename cannot strand the screen it created.
+     */
+    val openRequestId: String? = null,
     /** Host `engines list --json`, unfiltered; the sheet hides disabled/unavailable. */
     val engines: List<EngineInfo> = emptyList(),
     /** Host `profiles list --json`; the sheet filters these to the selected engine. */
@@ -477,6 +483,7 @@ class SessionTreeViewModel @Inject constructor(
                             // explicit New session action. An idempotent
                             // existing result must remain an explicit row tap.
                             openRequest = created.name.takeIf { created.created },
+                            openRequestId = created.id.takeIf { created.created },
                         )
                     }
                     // Same reason as the kill path: the new session must not
