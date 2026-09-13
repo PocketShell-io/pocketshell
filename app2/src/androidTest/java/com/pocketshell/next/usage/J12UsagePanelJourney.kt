@@ -335,22 +335,23 @@ class J12UsagePanelJourney {
      * that has to move.
      */
     private fun assertHostReportsTheDetectedAgent(sessionName: String) {
-        // 1. The CLI CONTRACT, on the unshimmed host CLI — the thing #2581
-        //    changes. This is the assertion that fails today: `a` cannot yet
-        //    report what is running inside a session, so the row has no
-        //    `agent` at all.
+        // 1. The CLI CONTRACT, on the unshimmed host CLI. Since #2580/#2581
+        //    (aplexer's process-tree detection, passed through by the CLI and
+        //    pinned into the fixture at aplexer 0.1.4 by #2588), `a` reports
+        //    the agent running inside a session; this assertion pins that
+        //    contract against pin rollbacks.
         val realRow = requireNotNull(
             aplexerRow(realCliListing(), sessionName),
         ) { "the real host CLI did not list its own live aplexer session $sessionName" }
         assertEquals(
             "the host CLI must report the agent detected inside this session. " +
                 "The row carries `engine` but no usable `agent`, which means " +
-                "the fixture's `a` predates aplexer's process-tree detection " +
-                "(#2580), or the CLI does not pass it through (#2581 — whose " +
-                "`aplexer==` pin in tests/docker/fixture-pins.txt is " +
-                "the same pin Dockerfile.agents derives the fixture's binary " +
-                "download from, so that bump is what re-points this fixture " +
-                "at a detecting `a`). Until then the pill falls back to the " +
+                "the fixture's `a` regressed below aplexer's process-tree " +
+                "detection (#2580) or the CLI stopped passing it through " +
+                "(#2581 — the `aplexer==` pin in tests/docker/fixture-pins.txt " +
+                "is the same pin Dockerfile.agents derives the fixture's " +
+                "binary download from, and #2588 bumped it to a detecting " +
+                "`a`). Until the pin is restored, the pill falls back to the " +
                 "cross-provider answer and this journey proves nothing." +
                 "\nRow:\n$realRow",
             "claude",
