@@ -340,6 +340,21 @@ class RealHostConnectionFactory(
          * negotiates with OpenSSH (notably X25519/EC); replace it with the
          * bundled full BouncyCastle before sshj builds its algorithm list.
          * No-op on a plain JVM where the full provider is already installed.
+         *
+         * The insertion is deliberately process-wide (provider position 1),
+         * carried over from the old app's `RealSshPortForward` (#2497).
+         * In short: sshj resolves JCA
+         * algorithms by provider *preference*, so the full provider must be
+         * preferred, not merely present; and because the full provider is a
+         * superset of the stripped one it displaces, the only global effect
+         * is preference order — every lookup that resolved before still
+         * resolves. Narrowing this to a per-connection provider list would
+         * change resolution behaviour for the exact negotiation this exists
+         * to fix, and is rejected here on that ground.
+         *
+         * Idempotent (kept when the installed "BC" is already the full one)
+         * and serialized under the `Security` class lock so concurrent
+         * `newClient` calls cannot interleave the remove/insert pair.
          */
         private fun ensureBouncyCastleProvider() {
             synchronized(Security::class.java) {

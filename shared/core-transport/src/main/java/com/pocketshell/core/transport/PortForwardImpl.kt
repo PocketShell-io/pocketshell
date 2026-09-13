@@ -65,9 +65,16 @@ internal class PortForwardImpl(
     override val remotePort: Int,
     override val localPort: Int,
     private val ioDispatcher: CoroutineDispatcher,
+    /**
+     * Builds the listening socket, which the class then binds and owns. The
+     * default constructs the real thing; the host-JVM tests inject a socket
+     * whose `accept()` fails transiently so the survive-the-failure path can
+     * be driven without exhausting real file descriptors.
+     */
+    private val serverSocketFactory: () -> ServerSocket = { ServerSocket() },
 ) : PortForward {
 
-    private val serverSocket: ServerSocket = ServerSocket().also { socket ->
+    private val serverSocket: ServerSocket = serverSocketFactory().also { socket ->
         // A process death or a quick reconnect can leave a just-served local
         // listener in TIME_WAIT. Reuse lets the durable manual mapping reclaim
         // that port immediately; an active listener still makes bind fail.
@@ -82,6 +89,9 @@ internal class PortForwardImpl(
     private val forwardedBytes = AtomicLong(0)
     private val receivedBytes = AtomicLong(0)
     private val activeConnectionSlots = AtomicInteger(0)
+
+    /** Consecutive accept() failures; reset to zero on every successful accept. */
+    private val acceptFailureStreak = AtomicInteger(0)
 
     /**
      * Serialises pair ownership and copy-thread registration against [close].
@@ -122,18 +132,53 @@ internal class PortForwardImpl(
     private fun acceptLoop() {
         while (running.get()) {
             val client: Socket = try {
-                serverSocket.accept()
+                serverSocket.accept().also { acceptFailureStreak.set(0) }
             } catch (e: SocketException) {
                 // serverSocket.close() unblocks accept() with a SocketException;
-                // that is our cue to exit cleanly.
-                if (!running.get()) return
-                throw e
+                // that is our cue to exit cleanly. The trailing `continue` keeps
+                // the catch branch's type Nothing, so the try-expression stays a
+                // Socket instead of degenerating to Any (Unit from the backoff).
+                if (!running.get() || serverSocket.isClosed) return
+                backOffAfterAcceptFailure(e) ?: return
+                continue
             } catch (e: IOException) {
-                if (!running.get()) return
-                throw e
+                // A transient accept() failure while the listener is healthy
+                // (fd exhaustion, a dropped backlog entry) must NOT escape:
+                // this is a bare daemon thread, so an exception that leaves
+                // acceptLoop reaches the process uncaught-exception handler
+                // and kills the whole app (#2497). Back off and keep serving;
+                // exit is owned by close()/a closed listener, as above.
+                if (!running.get() || serverSocket.isClosed) return
+                backOffAfterAcceptFailure(e) ?: return
+                continue
             }
             startChannel(client)
         }
+    }
+
+    /**
+     * Backs off after a transient accept() failure, doubling with each
+     * consecutive failure so a persistent condition (e.g. the process is out
+     * of file descriptors) retries slowly instead of hot-spinning. Returns
+     * null only when the sleep was interrupted, in which case the interrupt
+     * is re-flagged and the loop exits; any other outcome continues the loop.
+     *
+     * This module has no logging seam, so the failure itself is not reported
+     * beyond this containment — the forward simply stays up and clients keep
+     * connecting once the condition clears.
+     */
+    private fun backOffAfterAcceptFailure(cause: IOException): Unit? {
+        val streak = acceptFailureStreak.incrementAndGet()
+        val backoffMs =
+            (INITIAL_ACCEPT_BACKOFF_MS shl (streak - 1).coerceAtMost(BACKOFF_DOUBLING_STEPS))
+                .coerceAtMost(MAX_ACCEPT_BACKOFF_MS)
+        try {
+            Thread.sleep(backoffMs)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        }
+        return Unit
     }
 
     private fun startChannel(local: Socket) {
@@ -404,6 +449,11 @@ internal class PortForwardImpl(
         private const val CLOSE_JOIN_TIMEOUT_MS = 1_000L
         private const val POST_INTERRUPT_JOIN_TIMEOUT_MS = 100L
         private const val NANOS_PER_MILLI = 1_000_000L
+
+        /** Backoff after a transient accept() failure: 50 ms doubling, capped at 500 ms. */
+        private const val INITIAL_ACCEPT_BACKOFF_MS = 50L
+        private const val BACKOFF_DOUBLING_STEPS = 4
+        private const val MAX_ACCEPT_BACKOFF_MS = 500L
 
         /** Production opener: one sshj `direct-tcpip` channel per accepted client. */
         fun sshjOpener(client: SSHClient): ForwardedChannelOpener =
