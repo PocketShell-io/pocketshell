@@ -2,7 +2,7 @@
 The PocketShell UI structure and requirements come from the user's app, recording, repositories and feedback. The design kit is a proposed revision; it is not an official release of either app.
 
 ## Icons
-The icon vocabulary and several basic path constructions follow PocketShell Desktop's `AppIcon.vue` (https://github.com/alexeygrigorev/pocketshell-desktop/blob/main/src/renderer/components/AppIcon.vue), which attributes its geometry to Feather 4.29. Ordinary geometric marks identify agents locally and do not claim to be vendor logos. Retain applicable repository notices when integrating.
+The icon vocabulary and several basic path constructions follow PocketShell Desktop's `AppIcon.vue` (https://github.com/PocketShell-io/pocketshell-desktop/blob/main/src/renderer/components/AppIcon.vue), which attributes its geometry to Feather 4.29. Ordinary geometric marks identify agents locally and do not claim to be vendor logos. Retain applicable repository notices when integrating.
 
 Feather icons — MIT license. Copyright (c) 2013–2023 Cole Bemis.
 

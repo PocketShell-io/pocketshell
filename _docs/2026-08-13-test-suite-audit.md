@@ -4,7 +4,7 @@ Audited at `origin/main` = `39cd0d8b`, in a pinned worktree. Read-only: no produ
 code changed, nothing committed, no issues filed.
 
 CI timings come from run
-[31672533158](https://github.com/alexeygrigorev/pocketshell/actions/runs/31672533158)
+[31672533158](https://github.com/PocketShell-io/pocketshell/actions/runs/31672533158)
 plus two neighbours (31668646453, 31614203271) for flake recurrence. Unit-test
 per-class times come from that run's own `unit-test-reports-Release` artifact, not
 from a local run.

@@ -14,7 +14,7 @@ the app reconnects when you bring it back to the foreground.
 
 **Active development, used daily.** This is the maintainer's primary way of
 working on a dev box from a phone, not a planning exercise. Latest tagged
-release is **[v0.4.44](https://github.com/alexeygrigorev/pocketshell/releases/latest)**
+release is **[v0.4.44](https://github.com/PocketShell-io/pocketshell/releases/latest)**
 (debug APK + matching PyPI helper).
 
 It is Android-only and single-user. Releases take hard cuts on breaking changes
@@ -89,7 +89,7 @@ Conversation is the production conversation pane with sample agent events.
 
 ### 1. Install the Android app
 
-1. Open the [GitHub Releases page](https://github.com/alexeygrigorev/pocketshell/releases)
+1. Open the [GitHub Releases page](https://github.com/PocketShell-io/pocketshell/releases)
    and download the latest debug APK (`pocketshell-<version>-debug.apk`).
 2. Allow installs from your browser/file manager if your phone prompts, then open
    the APK to install it.

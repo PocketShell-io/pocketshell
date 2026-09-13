@@ -16,7 +16,7 @@ lifecycle findings remain relevant.
 
 After the initial audits, `main` gained the #2272 alt-screen proof hardening in
 commit `d9565a56`. Its retry of Tests run
-[32636289346](https://github.com/alexeygrigorev/pocketshell/actions/runs/32636289346)
+[32636289346](https://github.com/PocketShell-io/pocketshell/actions/runs/32636289346)
 was cancelled as an aggregate when a newer maintainer merge advanced `main`, but
 all six shard classifiers had already written durable verdicts: shard 0 was
 `CLEAN`, while shards 1-5 were `RED`. The five RED tokens therefore remain the
@@ -356,4 +356,4 @@ already listed above.
   legitimately remove `TerminalView`.
 - Do not reinterpret host `already-delivered` as success to hide token collisions.
 
-[32621460195]: https://github.com/alexeygrigorev/pocketshell/actions/runs/32621460195
+[32621460195]: https://github.com/PocketShell-io/pocketshell/actions/runs/32621460195

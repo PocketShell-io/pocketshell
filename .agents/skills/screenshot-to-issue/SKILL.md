@@ -46,7 +46,7 @@ Give it a stable, descriptive name (the issue + a slug), not the raw inbox hash:
 ASSET="issue-<N>-<slug>.png"
 cp "<image-path>" "/tmp/$ASSET"
 gh release upload feedback-assets "/tmp/$ASSET" --clobber
-URL="https://github.com/alexeygrigorev/pocketshell/releases/download/feedback-assets/$ASSET"
+URL="https://github.com/PocketShell-io/pocketshell/releases/download/feedback-assets/$ASSET"
 ```
 
 ## 4. Embed in the issue

@@ -15,7 +15,7 @@ You're dispatched after one or more `git push origin main` commits. The orchestr
 
 ## Repository
 
-- `alexeygrigorev/pocketshell` (this repo)
+- `PocketShell-io/pocketshell` (this repo)
 - The orchestrator runs ON the Hetzner box, so `gh` is authenticated already.
 
 ## Workflows in play
@@ -29,7 +29,7 @@ You're dispatched after one or more `git push origin main` commits. The orchestr
 ### 1. Survey the CI state
 
 ```bash
-gh run list --repo alexeygrigorev/pocketshell --limit 20
+gh run list --repo PocketShell-io/pocketshell --limit 20
 ```
 
 Identify all `failure` runs since the last known-green commit. Group consecutive failures — if 10 pushes in a row all fail at the same step, that's ONE infra problem, not 10 commit defects.
@@ -52,7 +52,7 @@ systemd-run --user --unit="$unit" --wait \
   -p StandardError=journal \
   "$PWD/scripts/watch-ci.py" \
   --run-id <RUN_ID> \
-  --repo alexeygrigorev/pocketshell \
+  --repo PocketShell-io/pocketshell \
   --log-file "$watch_log"
 ```
 
@@ -78,7 +78,7 @@ It deliberately fails fast when a required check fails. Always confirm
 artifacts as final:
 
 ```bash
-gh run view <RUN_ID> --repo alexeygrigorev/pocketshell \
+gh run view <RUN_ID> --repo PocketShell-io/pocketshell \
   --json status,conclusion,url
 ```
 
@@ -125,7 +125,7 @@ raises an unsafe short value to its job-cap-safe default.
 ### 2. Inspect the most-recent failed run
 
 ```bash
-gh run view <RUN_ID> --repo alexeygrigorev/pocketshell --log-failed
+gh run view <RUN_ID> --repo PocketShell-io/pocketshell --log-failed
 ```
 
 Look for the actual failure signal, not the framework chrome. Common patterns:
@@ -264,9 +264,9 @@ The failed run's `head_sha` (from `gh run view <RUN_ID> --json headSha`) points 
 ### 5. Reopen + comment + decide fix path
 
 ```bash
-gh issue reopen <N> --repo alexeygrigorev/pocketshell
+gh issue reopen <N> --repo PocketShell-io/pocketshell
 
-gh issue comment <N> --repo alexeygrigorev/pocketshell --body "$(cat <<'COMMENT'
+gh issue comment <N> --repo PocketShell-io/pocketshell --body "$(cat <<'COMMENT'
 ## CI failure after merge
 
 Run: <run URL>
@@ -320,13 +320,13 @@ If the failure isn't small-fix material:
 
 ```bash
 # Resolve the latest run, then use the transient-unit watcher recipe in §1.1.
-gh run list --repo alexeygrigorev/pocketshell --limit 3
+gh run list --repo PocketShell-io/pocketshell --limit 3
 ```
 
 If new run passes:
 ```bash
-gh issue comment <N> --repo alexeygrigorev/pocketshell --body "CI fix landed; pipeline green again on run <URL>. Closing."
-gh issue close <N> --repo alexeygrigorev/pocketshell
+gh issue comment <N> --repo PocketShell-io/pocketshell --body "CI fix landed; pipeline green again on run <URL>. Closing."
+gh issue close <N> --repo PocketShell-io/pocketshell
 ```
 
 If new run still fails:

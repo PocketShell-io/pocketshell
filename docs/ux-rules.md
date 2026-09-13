@@ -1,6 +1,6 @@
 # UX Rules: Transitions + Element Placement
 
-Codified from the journey-level UX audit in [#163](https://github.com/alexeygrigorev/pocketshell/issues/163). This doc is the source of truth for **where** UI elements live across screens and **how** they animate when the user moves between screens or surfaces. It complements [design-language.md](design-language.md) (which locks colour, type, and spacing) and does not redefine those.
+Codified from the journey-level UX audit in [#163](https://github.com/PocketShell-io/pocketshell/issues/163). This doc is the source of truth for **where** UI elements live across screens and **how** they animate when the user moves between screens or surfaces. It complements [design-language.md](design-language.md) (which locks colour, type, and spacing) and does not redefine those.
 
 Material 3 is the base. Deviations are explicit and justified — never implicit.
 
@@ -10,7 +10,7 @@ screen inventory. Current session surfaces are `SessionTreeScreen` and
 in the audit section are retained as historical evidence only; they are not
 supported product routes.
 
-The goal of this doc is not to constrain creativity. It is to keep the headline user journeys (`docs/`-tracked in [#163](https://github.com/alexeygrigorev/pocketshell/issues/163) under "Headline user journeys") visually consistent so that one screen's "back" gesture, "primary action", or "sheet open" feels identical to every other.
+The goal of this doc is not to constrain creativity. It is to keep the headline user journeys (`docs/`-tracked in [#163](https://github.com/PocketShell-io/pocketshell/issues/163) under "Headline user journeys") visually consistent so that one screen's "back" gesture, "primary action", or "sheet open" feels identical to every other.
 
 ---
 
@@ -33,11 +33,11 @@ These describe **where** persistent UI elements live within a screen, so that mo
 7. **Main content (terminal / conversation / form) — fills remaining vertical space, no fixed minimum.**
    Rationale: the terminal viewport is the user's reason for being here; chrome shrinks before content does. Applies to: `SessionScreen` terminal pane and conversation list.
 8. **Bottom input controls — always above the keyboard when IME is visible, above the system navigation bar otherwise.**
-   Rationale: input affordances must move with the IME so the user never has to hunt for them; `imePadding` is mandatory. Applies to: `PromptComposerSheet` action row, `SessionScreen` key bar, future conversation-reply input ([#160](https://github.com/alexeygrigorev/pocketshell/issues/160)).
+   Rationale: input affordances must move with the IME so the user never has to hunt for them; `imePadding` is mandatory. Applies to: `PromptComposerSheet` action row, `SessionScreen` key bar, future conversation-reply input ([#160](https://github.com/PocketShell-io/pocketshell/issues/160)).
 9. **Modal sheets — always slide from bottom (Material 3 `ModalBottomSheet`).**
    Rationale: bottom is the input edge; sheets that come from any other edge break the "input lives at the bottom" mental model. Applies to: `PromptComposerSheet`, `CreateSessionSheet`, and `BootstrapSheet`.
 10. **Conversation pane — inherits all placement rules of the terminal pane.**
-    Rationale: Terminal and Conversation are sibling tabs on one screen; the user must not have to re-orient when switching tabs. Applies to: `SessionScreen` conversation view (which when [#160](https://github.com/alexeygrigorev/pocketshell/issues/160) lands gets bottom input controls per rule 8).
+    Rationale: Terminal and Conversation are sibling tabs on one screen; the user must not have to re-orient when switching tabs. Applies to: `SessionScreen` conversation view (which when [#160](https://github.com/PocketShell-io/pocketshell/issues/160) lands gets bottom input controls per rule 8).
 
 ---
 
@@ -83,20 +83,20 @@ The following entries document the old implementation that informed the audit.
 They are retained for traceability and do not describe current routes or
 session-runtime behavior.
 
-Five concrete journey breakages identified in the [#163](https://github.com/alexeygrigorev/pocketshell/issues/163) audit. Treat this as a checklist for future UX work — when you change the cited file, cite the corresponding rule and either fix the breakage or note why it is still out of scope.
+Five concrete journey breakages identified in the [#163](https://github.com/PocketShell-io/pocketshell/issues/163) audit. Treat this as a checklist for future UX work — when you change the cited file, cite the corresponding rule and either fix the breakage or note why it is still out of scope.
 
 - [x] **Breakage 1 — Session-switch crash on re-attach.**
   `app/src/main/java/com/pocketshell/app/tmux/TmuxSessionScreen.kt:674` (`onReplaceTmuxSession(selectedSessionName)` did not properly dispose the prior `TmuxSessionViewModel`).
-  Tracking issue: [#151](https://github.com/alexeygrigorev/pocketshell/issues/151) (closed). Violates rule 1 (transitions) — user expected a smooth fade-to-refresh on the new session, got a crash. Re-open if the regression returns.
+  Tracking issue: [#151](https://github.com/PocketShell-io/pocketshell/issues/151) (closed). Violates rule 1 (transitions) — user expected a smooth fade-to-refresh on the new session, got a crash. Re-open if the regression returns.
 - [ ] **Breakage 2 — Drawer label ambiguity ("+ New session" in the session list).**
   `app/src/main/java/com/pocketshell/app/sessions/HostTmuxSessionPickerSheet.kt:113` (TextButton "+ New session" sits inside the "Tmux sessions" list, visually indistinguishable from session names).
-  Tracking issue: [#158](https://github.com/alexeygrigorev/pocketshell/issues/158). Violates placement rule 5 (tab/list grouping) and rule 8 (input affordances grouped at bottom). Fix: move the create-session affordance outside the list, relabel to "Create new tmux session", keep "Attach" buttons single-purpose.
+  Tracking issue: [#158](https://github.com/PocketShell-io/pocketshell/issues/158). Violates placement rule 5 (tab/list grouping) and rule 8 (input affordances grouped at bottom). Fix: move the create-session affordance outside the list, relabel to "Create new tmux session", keep "Attach" buttons single-purpose.
 - [ ] **Breakage 3 — Single-window `WindowStrip` still renders.**
   `app/src/main/java/com/pocketshell/app/tmux/TmuxSessionScreen.kt:400` (`if (windows.isNotEmpty())` should be `if (windows.size > 1)`).
-  Tracking issue: [#158](https://github.com/alexeygrigorev/pocketshell/issues/158). Violates placement rule 6 directly. Fix: gate on `> 1`, and when the strip appears / disappears use the transition rule 5 timing (100ms fade + slide).
+  Tracking issue: [#158](https://github.com/PocketShell-io/pocketshell/issues/158). Violates placement rule 6 directly. Fix: gate on `> 1`, and when the strip appears / disappears use the transition rule 5 timing (100ms fade + slide).
 - [ ] **Breakage 4 — Composer sheet hides terminal context.**
   `app/src/main/java/com/pocketshell/app/composer/PromptComposerSheet.kt:114` (`rememberModalBottomSheetState(skipPartiallyExpanded = true)` forces full-screen sheet; user cannot see the terminal while composing).
-  Tracking issue: [#160](https://github.com/alexeygrigorev/pocketshell/issues/160) (conversation pane rework — reply-in-place is the preferred resolution). Violates rule 9 implicitly (sheets shouldn't displace primary content fully when the primary content is the reason the user opened the sheet). Fix: either drop `skipPartiallyExpanded`, or move the reply input into the conversation pane itself per rule 10.
+  Tracking issue: [#160](https://github.com/PocketShell-io/pocketshell/issues/160) (conversation pane rework — reply-in-place is the preferred resolution). Violates rule 9 implicitly (sheets shouldn't displace primary content fully when the primary content is the reason the user opened the sheet). Fix: either drop `skipPartiallyExpanded`, or move the reply input into the conversation pane itself per rule 10.
 - [ ] **Breakage 5 — No animated feedback during SSH handshake (2–5s pause feels hung).**
   `app/src/main/java/com/pocketshell/app/tmux/TmuxSessionScreen.kt:356` (`(status as? ConnectionStatus.Connecting)?.let { StatusLine(…) }` is a static text line — no spinner, no elapsed-time counter, no cancel affordance).
   Tracking issue: none yet — file one when this is picked up. Violates transition rule 5 (status changes should have a fade/slide-in) and the broader "user must see liveness" intent of rule 7 (breadcrumb pulsing dot). Fix: add a `CircularProgressIndicator` next to the status text, animate the line in per rule 5, and show "Cancel" after 10s.
@@ -120,8 +120,8 @@ For reviewers: a UX issue without a rule citation is underspecified — push bac
 
 ## References
 
-- Audit source: [#163](https://github.com/alexeygrigorev/pocketshell/issues/163) (the journey-level audit and breakage list this doc codifies).
-- Per-surface UX audits: [#152](https://github.com/alexeygrigorev/pocketshell/issues/152), [#153](https://github.com/alexeygrigorev/pocketshell/issues/153), [#154](https://github.com/alexeygrigorev/pocketshell/issues/154), [#155](https://github.com/alexeygrigorev/pocketshell/issues/155), [#156](https://github.com/alexeygrigorev/pocketshell/issues/156), [#157](https://github.com/alexeygrigorev/pocketshell/issues/157).
+- Audit source: [#163](https://github.com/PocketShell-io/pocketshell/issues/163) (the journey-level audit and breakage list this doc codifies).
+- Per-surface UX audits: [#152](https://github.com/PocketShell-io/pocketshell/issues/152), [#153](https://github.com/PocketShell-io/pocketshell/issues/153), [#154](https://github.com/PocketShell-io/pocketshell/issues/154), [#155](https://github.com/PocketShell-io/pocketshell/issues/155), [#156](https://github.com/PocketShell-io/pocketshell/issues/156), [#157](https://github.com/PocketShell-io/pocketshell/issues/157).
 - Design language (colour / type / spacing — separate concern): [design-language.md](design-language.md).
 - Material 3 motion spec: [m3.material.io/styles/motion/overview](https://m3.material.io/styles/motion/overview).
 - Material 3 component patterns: [m3.material.io/components](https://m3.material.io/components).

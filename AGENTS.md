@@ -22,7 +22,7 @@ PocketShell is in active development and daily use as the maintainer's primary w
 - [docs/lessons-learned.md](docs/lessons-learned.md) - durable operational lessons
 - [docs/release.md](docs/release.md) - release cut/stabilize/tag/merge-back procedure
 
-Issues: <https://github.com/alexeygrigorev/pocketshell/issues>. Milestones: <https://github.com/alexeygrigorev/pocketshell/milestones>.
+Issues: <https://github.com/PocketShell-io/pocketshell/issues>. Milestones: <https://github.com/PocketShell-io/pocketshell/milestones>.
 
 # Agent Roles
 
