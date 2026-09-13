@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -159,6 +161,13 @@ fun AddTunnelScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // MainActivity is edge-to-edge with SOFT_INPUT_ADJUST_NOTHING
+                // (#887/#2533), so the window never resizes for the keyboard:
+                // without opting this scroll column into the IME inset the
+                // keyboard overlays the form's bottom and the submit can never
+                // scroll clear of it (issue #2551, pinned by J19).
+                .navigationBarsPadding()
+                .imePadding()
                 .verticalScroll(rememberScrollState())
                 .testTag(ADD_TUNNEL_FORM_SCROLL_TAG)
                 .padding(PocketShellSpacing.lg),
