@@ -247,6 +247,20 @@ jobs:
           scripts/check-product-tmux-absent.sh --self-test
           scripts/check-product-tmux-absent.sh
 
+      # Issue #2670: ERRORS_FILE ($HOME/.pocketshell-fixture-session-errors.json)
+      # is fixture-side state shared by every journey in the unfiltered emulator
+      # container (#2474). A journey that writes it without clearing it poisons
+      # every later journey while everything stays green — the failure shape
+      # #2586/#2596 guarded against. Static guard: every writeFile(ERRORS_FILE)
+      # journey must also rm -f it in the same file; handles identifier and
+      # literal/template path shapes (#2596's lesson), ignores prose-only
+      # mentions (#2586's lesson), and pins the measured real-tree selection.
+      - name: Fixture errors-file write/clear guard (issue #2670)
+        run: |
+          chmod +x scripts/check-fixture-errors-file-guard.sh
+          scripts/check-fixture-errors-file-guard.sh --self-test
+          scripts/check-fixture-errors-file-guard.sh
+
       # The #2094 Docker-integration forced-execution guard was DELETED with the
       # four-task graph it pinned (the old app, core-ssh, core-portfwd and
       # core-tmux integrationTest tasks — every one of those modules was removed

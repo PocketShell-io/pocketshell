@@ -162,6 +162,24 @@ Internal state is useful diagnostics but does not satisfy the acceptance bar.
 No journey is skipped to accommodate a missing session runtime; a fixture
 capability failure is an infrastructure failure.
 
+### Fixture errors-file guard
+
+`ERRORS_FILE` (`$HOME/.pocketshell-fixture-session-errors.json`) is shared
+fixture-side state across the unfiltered emulator container (#2474): a journey
+that writes it without clearing it poisons every later journey while CI stays
+green — the failure shape #2586/#2596 guarded against (#2670). The blocking
+static guard pairs every `writeFile(ERRORS_FILE, ...)` with an `rm -f` in the
+same journey file, counting identifier aliases and literal/template paths
+alike (#2596's lesson) while ignoring prose-only mentions (#2586's lesson):
+
+```bash
+scripts/check-fixture-errors-file-guard.sh --self-test
+scripts/check-fixture-errors-file-guard.sh
+```
+
+The self-test pins the measured real-tree selection (J02/J04/J14 in scope;
+J02 the only writer), so a new reference forces a conscious baseline update.
+
 ## Storage migration coverage
 
 Schema 21 removes `HostEntity.tmuxInstalled`. Migration 20→21 rebuilds the
