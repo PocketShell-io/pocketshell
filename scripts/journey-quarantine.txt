@@ -25,4 +25,3 @@
 # fixed or removed) or by RE-TRIAGING it (a fresh `added`/`expires` in both
 # places, and a reason that says why it is still broken) — never let a row sit
 # expired.
-com.pocketshell.next.tree.J14StopSessionJourney#stoppingTheAttachedSessionReturnsToTheWorkspace	#2648	2026-09-13	2026-09-27	60s waitUntil timeout after confirming Stop of the attached session (nightly 34745407491 on 1a460a273, #2648 CI attempts 1-2); the other 15 #2648 journey failures were fixed on main by 79cfcbce7 + cb06f1fc7, this one needs the #2648 navigation forward-fix round

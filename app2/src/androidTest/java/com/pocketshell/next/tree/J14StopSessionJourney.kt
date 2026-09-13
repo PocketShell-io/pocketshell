@@ -1,5 +1,6 @@
 package com.pocketshell.next.tree
 
+import android.os.SystemClock
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -25,7 +26,6 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import org.json.JSONObject
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -175,7 +175,6 @@ class J14StopSessionJourney {
     }
 
     @Test
-    @Ignore("quarantined: #2648, expires 2026-09-27 — 60s waitUntil timeout after confirming Stop of the attached session (nightly 34745407491, #2648 CI attempts 1-2); needs the #2648 navigation forward-fix round, not a selector patch")
     fun stoppingTheAttachedSessionReturnsToTheWorkspace() {
         openWorkspace()
         awaitTag(sessionRowTag(SESSION_ATTACHED))
@@ -230,15 +229,28 @@ class J14StopSessionJourney {
         compose.onNodeWithTag(SESSION_CONTEXT_BAR_TAG).assertIsDisplayed()
     }
 
-    private fun awaitTag(tag: String) {
-        compose.waitUntil(timeoutMillis = TIMEOUT_MS) {
-            compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
-        }
-    }
+    // #2648: the CI failure was a bare ComposeTimeoutException that never said
+    // WHICH await expired after Stop, so every timeout now names its tag and
+    // leaves a screenshot before rethrowing.
+    private fun awaitTag(tag: String) = awaitTagState(tag, wantPresent = true)
 
-    private fun awaitGone(tag: String) {
-        compose.waitUntil(timeoutMillis = TIMEOUT_MS) {
-            compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty()
+    private fun awaitGone(tag: String) = awaitTagState(tag, wantPresent = false)
+
+    private fun awaitTagState(tag: String, wantPresent: Boolean) {
+        val startedAt = SystemClock.elapsedRealtime()
+        try {
+            compose.waitUntil(timeoutMillis = TIMEOUT_MS) {
+                val present = compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+                if (wantPresent) present else !present
+            }
+        } catch (timeout: Throwable) {
+            println(
+                "J14_AWAIT_TIMEOUT tag=$tag want=${if (wantPresent) "present" else "gone"} " +
+                    "waitedMs=${SystemClock.elapsedRealtime() - startedAt}",
+            )
+            runCatching { JourneyScreenshots.capture("await-timeout", JOURNEY) }
+                .onSuccess { shot -> println("J14_TIMEOUT_SCREENSHOT ${shot.absolutePath}") }
+            throw timeout
         }
     }
 
