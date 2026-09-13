@@ -280,6 +280,117 @@ class PortForwardImplTest {
         }
     }
 
+    /**
+     * #2497: a transient accept() failure (e.g. EMFILE under fd pressure) used
+     * to be rethrown out of [PortForwardImpl.acceptLoop] — a bare daemon thread —
+     * so it reached the process uncaught-exception handler and killed the whole
+     * app. The fix backs off, retries, and keeps serving.
+     */
+    @Test
+    fun `a transient accept failure backs off and the loop keeps serving instead of dying`() =
+        runBlocking {
+            val remainingFailures = AtomicInteger(2)
+            val uncaught = ConcurrentLinkedQueue<Throwable>()
+            val channels = ConcurrentLinkedQueue<PipedTestChannel>()
+            val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
+            // The failure surface under test IS the process uncaught-exception
+            // handler, so capture it for the duration and assert nothing lands.
+            Thread.setDefaultUncaughtExceptionHandler { _, e -> uncaught.add(e) }
+            val forward = newForward(
+                opener = { _, _ -> PipedTestChannel().also(channels::add) },
+                serverSocketFactory = {
+                    object : ServerSocket() {
+                        override fun accept(): Socket {
+                            if (remainingFailures.getAndDecrement() > 0) {
+                                throw IOException(
+                                    "injected transient accept() failure (EMFILE stand-in)",
+                                )
+                            }
+                            return super.accept()
+                        }
+                    }
+                },
+            )
+            try {
+                // The first two accept() attempts fail; the loop must back off,
+                // retry, and still serve this already-connected client.
+                Socket().use { first ->
+                    first.connect(java.net.InetSocketAddress("127.0.0.1", forward.localPort), 2_000)
+                    first.getOutputStream().write("ping".toByteArray())
+                    first.getOutputStream().flush()
+                    assertTrue(
+                        "accept loop must survive 2 injected accept() failures and serve the client",
+                        waitUntil { channels.firstOrNull()?.receivedText() == "ping" },
+                    )
+                }
+                // A second client proves the loop recovered, not merely survived.
+                Socket().use { second ->
+                    second.connect(java.net.InetSocketAddress("127.0.0.1", forward.localPort), 2_000)
+                    second.getOutputStream().write("again".toByteArray())
+                    second.getOutputStream().flush()
+                    assertTrue(
+                        "accept loop must keep serving after recovering",
+                        waitUntil { channels.any { it.receivedText() == "again" } },
+                    )
+                }
+                assertTrue(forward.isActive)
+                assertTrue(
+                    "no accept() failure may reach the process uncaught-exception handler " +
+                        "(#2497), got $uncaught",
+                    uncaught.isEmpty(),
+                )
+            } finally {
+                forward.close()
+                Thread.setDefaultUncaughtExceptionHandler(originalHandler)
+            }
+        }
+
+    @Test
+    fun `a persistent accept failure stays contained without hot-spinning and close still works`() =
+        runBlocking {
+            val acceptAttempts = AtomicInteger(0)
+            val uncaught = ConcurrentLinkedQueue<Throwable>()
+            val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
+            Thread.setDefaultUncaughtExceptionHandler { _, e -> uncaught.add(e) }
+            val forward = newForward(
+                opener = { _, _ -> error("no channel may open while accept keeps failing") },
+                serverSocketFactory = {
+                    object : ServerSocket() {
+                        override fun accept(): Socket {
+                            acceptAttempts.incrementAndGet()
+                            throw IOException(
+                                "injected persistent accept() failure (fd exhaustion stand-in)",
+                            )
+                        }
+                    }
+                },
+            )
+            try {
+                Socket().use { client ->
+                    client.connect(java.net.InetSocketAddress("127.0.0.1", forward.localPort), 2_000)
+                }
+                assertTrue(
+                    "the accept loop must keep retrying a persistent failure",
+                    waitUntil { acceptAttempts.get() >= 3 },
+                )
+                val before = acceptAttempts.get()
+                Thread.sleep(600) // longer than the 500 ms backoff cap
+                assertTrue(
+                    "backoff must bound the retry rate, went $before -> ${acceptAttempts.get()} in 600 ms",
+                    acceptAttempts.get() - before <= 3,
+                )
+                assertTrue(
+                    "no failure may reach the process uncaught-exception handler, got $uncaught",
+                    uncaught.isEmpty(),
+                )
+            } finally {
+                forward.close()
+                Thread.setDefaultUncaughtExceptionHandler(originalHandler)
+            }
+            assertFalse(forward.isActive)
+            assertTrue("close must stay clean too, got $uncaught", uncaught.isEmpty())
+        }
+
     @Test
     fun `binding a local port already in use fails the open instead of half-starting`() {
         ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).use { squatter ->
@@ -301,12 +412,16 @@ class PortForwardImplTest {
 
     // ------------------------------------------------------------------ helpers
 
-    private fun newForward(opener: ForwardedChannelOpener): PortForwardImpl = PortForwardImpl(
+    private fun newForward(
+        opener: ForwardedChannelOpener,
+        serverSocketFactory: () -> ServerSocket = { ServerSocket() },
+    ): PortForwardImpl = PortForwardImpl(
         channels = opener,
         remoteHost = "remote.invalid",
         remotePort = 5432,
         localPort = freeLocalPort(),
         ioDispatcher = Dispatchers.IO,
+        serverSocketFactory = serverSocketFactory,
     )
 
     private fun freeLocalPort(): Int {
