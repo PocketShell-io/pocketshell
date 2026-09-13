@@ -4,6 +4,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -150,6 +151,59 @@ class TerminalSessionTest {
         assertTrue(
             "the part that fits is kept: " + tail.text().takeLast(6),
             tail.text().endsWith("ABC"),
+        )
+    }
+
+    /**
+     * Issue #2578: the sink hand-off becomes a property of the session, not
+     * just an ordering discipline in the caller. A stale clear — one naming a
+     * sink that was already succeeded — removes nothing and says so; the
+     * owner's own clear still works, after which writes are held again. The
+     * room query mirrors exactly what [write] holds.
+     */
+    @Test
+    fun `clearInputSink removes only its own sink, and pendingInputRoom tracks the held bytes`() {
+        val session = session()
+        assertEquals(
+            "an empty session can hold a full batch",
+            TerminalSession.PENDING_INPUT_CAPACITY_BYTES,
+            session.pendingInputRoom(),
+        )
+
+        session.write("typed at the banner")
+        assertEquals(
+            "the room query matches what write actually held",
+            TerminalSession.PENDING_INPUT_CAPACITY_BYTES - "typed at the banner".length,
+            session.pendingInputRoom(),
+        )
+
+        val superseded = RecordingSink()
+        val successor = RecordingSink()
+        session.setInputSink(superseded)
+        assertEquals(
+            "installing a sink flushes the held bytes to it",
+            "typed at the banner",
+            superseded.text(),
+        )
+        session.setInputSink(successor)
+
+        assertFalse(
+            "a stale clear must report that it removed nothing",
+            session.clearInputSink(superseded),
+        )
+        session.write("still arriving")
+        assertEquals(
+            "the successor's sink must survive a stale clear",
+            "still arriving",
+            successor.text(),
+        )
+
+        assertTrue("the owner's own clear still works", session.clearInputSink(successor))
+        session.write("typed at the next banner")
+        assertEquals(
+            "with the sink gone the bytes are held again, not dropped",
+            "still arriving",
+            successor.text(),
         )
     }
 

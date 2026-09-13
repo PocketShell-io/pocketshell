@@ -105,7 +105,9 @@ const val SESSION_CONTEXT_BAR_TAG: String = "session-context-bar"
  *
  * Hotkeys-panel bytes go STRAIGHT to [SessionViewModel.sendBytes] — they are
  * not composed messages and have no business in the composer's
- * draft/history/attachment machinery.
+ * draft/history/attachment machinery. They are ordinary session input, though:
+ * when the link is down they take the same held-input path as keystrokes
+ * (#2578), so a hotkey tapped at the "Reconnecting" banner is not lost.
  */
 @Composable
 fun SessionRoute(

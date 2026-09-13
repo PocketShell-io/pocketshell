@@ -320,12 +320,36 @@ class SessionViewModel @Inject constructor(
      *
      * Used by the screen for anything that is not a keystroke the vendored
      * terminal view already handles itself (that input path goes straight into
-     * the session's own queue and out through the bridge). While reconnecting
-     * there is no channel and the call is dropped; whether a caller's draft
-     * survives is the caller's business.
+     * the session's own queue and out through the bridge), and by the composer
+     * and hotkey panel for everything they send.
+     *
+     * One rule for every input (issue #2578): at the
+     * [SessionUiState.Reconnecting] banner there is no channel, and these bytes
+     * take the same held-input path a keystroke there takes —
+     * [TerminalSession.write] parks them in the emulator's pending buffer and
+     * the next attach's sink flushes them, in order, to the new PTY. A held
+     * send is NOT a failed send: no [sendFailures] fires, so the composer keeps
+     * its cleared draft instead of restoring a duplicate the user could send
+     * twice. The one report from this path is a batch with no room to hold
+     * WHOLE — reported undelivered rather than truncated to the part that fits.
+     *
+     * Every other channel-less moment ([SessionUiState.Failed], or the Live
+     * race below) still reports [sendFailures]: there is no queued attach to
+     * run them.
      */
     fun sendBytes(bytes: ByteArray) {
         if (bytes.isEmpty()) return
+        val reconnecting = _uiState.value as? SessionUiState.Reconnecting
+        if (reconnecting != null) {
+            // TerminalSession.write truncates to the room left, which would
+            // silently deliver the prefix of a prompt; whole batch or nothing.
+            if (reconnecting.terminal.pendingInputRoom() < bytes.size) {
+                _sendFailures.tryEmit(Unit)
+                return
+            }
+            reconnecting.terminal.write(bytes, 0, bytes.size)
+            return
+        }
         val target = channel ?: run {
             // A caller may observe Live just before the channel is retired by
             // the reconnect watcher. Report that race to the composer instead

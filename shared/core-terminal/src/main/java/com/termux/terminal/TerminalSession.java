@@ -192,6 +192,31 @@ public final class TerminalSession extends TerminalOutput {
         }
     }
 
+    /**
+     * Removes the input sink, but only if it is still {@code expected} — the
+     * one this caller installed — and reports whether it was removed.
+     *
+     * <p>The stop-then-start ownership rule (see {@link #setInputSink}) is
+     * normally enforced by sequencing: the spent bridge is stopped before the
+     * next one starts. A compare-and-clear turns that discipline into a
+     * property of the session itself, so a late {@code stop} from a bridge
+     * that has already been succeeded cannot strip its successor's sink and
+     * black-hole everything typed afterwards (issue #2578). A stale clear
+     * returns false and leaves the newer sink alone.
+     *
+     * @return true if this call removed the sink; false if a different sink
+     *     (a successor's) owns the session, untouched.
+     */
+    public boolean clearInputSink(InputSink expected) {
+        synchronized (mInputLock) {
+            if (mInputSink != expected) {
+                return false;
+            }
+            mInputSink = null;
+            return true;
+        }
+    }
+
     /** Reflows the emulator to a new size. There is no local pty to inform. */
     public void updateSize(int columns, int rows, int cellWidthPixels, int cellHeightPixels) {
         mEmulator.resize(columns, rows, cellWidthPixels, cellHeightPixels);
@@ -259,6 +284,22 @@ public final class TerminalSession extends TerminalOutput {
             int held = Math.min(room, count);
             System.arraycopy(data, offset, mPendingInput, mPendingInputSize, held);
             mPendingInputSize += held;
+        }
+    }
+
+    /**
+     * How many more bytes {@link #write} would hold right now with no sink
+     * installed; the full capacity once a sink is installed (the pending
+     * buffer is empty).
+     *
+     * <p>A caller handing over a WHOLE message (the composer's send path,
+     * issue #2578) asks first, so a batch larger than the room can be reported
+     * undelivered instead of being silently truncated to the part that fits —
+     * the same bound keystrokes live under, checked rather than discovered.
+     */
+    public int pendingInputRoom() {
+        synchronized (mInputLock) {
+            return PENDING_INPUT_CAPACITY_BYTES - mPendingInputSize;
         }
     }
 

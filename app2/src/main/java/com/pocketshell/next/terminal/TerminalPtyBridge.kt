@@ -57,8 +57,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * A session outlives the channel it is attached through (that is what keeps the
  * last frame on screen across a reconnect), so several bridges drive one
  * session over its life — but never at the same time. [stop] clears the sink,
- * the next bridge's [start] installs its own.
+ * the next bridge's [start] installs its own, and
  * [SessionViewModel.releaseChannel] is the single place that sequences the two.
+ * Since issue #2578 the sequencing is also a property of the session itself:
+ * [stop] clears by identity ([TerminalSession.clearInputSink]), so a stop that
+ * loses the race removes nothing.
  *
  * Between those two points nobody is listening, and that gap spans a whole SSH
  * dial: the session itself holds what is typed there (up to
@@ -111,6 +114,14 @@ class TerminalPtyBridge(
      */
     private val input = Channel<ByteArray>(Channel.UNLIMITED)
 
+    /**
+     * The sink [start] installed on the emulator, kept so [stop] can clear it
+     * by identity rather than blindly — a stop that lands after a successor
+     * bridge has already started must not strip the successor's sink (issue
+     * #2578).
+     */
+    private var installedSink: TerminalSession.InputSink? = null
+
     private var outputJob: Job? = null
     private var inputJob: Job? = null
 
@@ -118,9 +129,11 @@ class TerminalPtyBridge(
     fun start() {
         if (stopped.get()) return
         if (!started.compareAndSet(false, true)) return
-        emulator.setInputSink { data, offset, count ->
+        val sink = TerminalSession.InputSink { data, offset, count ->
             input.trySend(data.copyOfRange(offset, offset + count))
         }
+        installedSink = sink
+        emulator.setInputSink(sink)
         outputJob = scope.launch { pumpRemoteOutput() }
         inputJob = scope.launch { pumpUserInput() }
     }
@@ -147,7 +160,8 @@ class TerminalPtyBridge(
     }
 
     /**
-     * Retires both pumps and releases the session's input sink.
+     * Retires both pumps and releases the session's input sink — by identity:
+     * only if it is still the one this bridge installed (issue #2578).
      *
      * Every way an attach can end goes through here: a drop, a clean remote
      * exit, a requested close and the screen being left. What it deliberately
@@ -164,7 +178,15 @@ class TerminalPtyBridge(
      */
     fun stop() {
         if (!stopped.compareAndSet(false, true)) return
-        emulator.setInputSink(null)
+        // Compare-and-clear, not a blind null: the sequencing that keeps this
+        // stop ahead of the next bridge's start lives in one place
+        // ([SessionViewModel.releaseChannel]), and a stop that loses that race
+        // — a reordered shutdown, a late cancellation — used to black out all
+        // input until a THIRD bridge arrived. Clearing by identity makes the
+        // hand-off a property of the session, not of the callers' ordering
+        // (issue #2578).
+        installedSink?.let { emulator.clearInputSink(it) }
+        installedSink = null
         input.close()
         outputJob?.cancel()
         inputJob?.cancel()

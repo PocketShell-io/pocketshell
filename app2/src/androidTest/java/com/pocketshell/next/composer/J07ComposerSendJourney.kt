@@ -27,6 +27,7 @@ import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
 import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.settings.AppSettings
+import com.pocketshell.next.terminal.SESSION_RECONNECT_BANNER_TAG
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
 import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
 import com.termux.view.TerminalView
@@ -68,10 +69,15 @@ import org.junit.runner.RunWith
  *
  * ## The non-happy host is a REAL dropped link
  *
- * The uncertain-delivery case cuts the SSH link during the two writes that make
- * up Send. The remote session remains alive, while the app must keep the draft
- * and require inspection before a resend. A process that actually exits has a
- * separate Session ended page with no active composer.
+ * The held-send case (issue #2578) cuts the SSH link during the two writes that
+ * make up Send. The remote session remains alive, and the submit half takes the
+ * same held-input path a keystroke at the Reconnecting banner takes: parked in
+ * the session's pending buffer, flushed in order when the link returns, with no
+ * delivery-review page and no undelivered chip — a held send is not a failed
+ * send. (Before #2578 the submit half was dropped and the draft kept for
+ * delivery review; that expectation is what this journey used to pin.) A
+ * process that actually exits has a separate Session ended page with no active
+ * composer.
  *
  * Bring the fixture up before running:
  * `docker compose -f tests/docker/docker-compose.yml up -d --build agents network-fault-proxy`
@@ -207,55 +213,123 @@ class J07ComposerSendJourney {
     }
 
     /**
-     * The other half of the contract: when the link drops between the body and
-     * Enter writes, keep the text and require an explicit inspection before a
-     * resend.
+     * The held-send contract (issue #2578): the link dies INSIDE the two writes
+     * that make up Send, and the send is HELD, not uncertain.
      *
-     * The proxy is disabled only after Send is enabled and tapped, so the
-     * result is an ambiguous PTY write rather than the ordinary ended-session
-     * page.
+     * The composer sends both halves unconditionally — body, delay, Enter; the
+     * mid-delivery gate is gone. The body crosses while the link is still up
+     * and is confirmed on the host BEFORE the cut, so everything after it is
+     * the submit half's journey alone. When the Enter half fires, the screen is
+     * at the Reconnecting banner, so the bytes take the held-input path a
+     * keystroke takes: parked in the session's pending buffer, no
+     * `sendFailures`, no delivery-review page, no undelivered chip — and the
+     * sheet closes, because a held send is not a failed send. When the wire
+     * returns, the ladder reattaches, the held bytes flush in order, and the
+     * message RAN on the host — while the composer's draft stays cleared, so
+     * the user is never offered a duplicate of a message the host executed.
+     *
+     * (Before #2578 this journey pinned the old expectation — submit half
+     * dropped, draft kept for delivery review.)
      */
     @Test
-    fun aDroppedLinkKeepsTheDraftForDeliveryReview() {
+    fun aDroppedLinkHoldsTheMessageUntilTheLinkReturns() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
 
         openComposer()
-        compose.onNodeWithTag(COMPOSER_DRAFT_TAG).performTextInput(UNDELIVERED_TEXT)
-        compose.awaitIdle("after composing the undelivered draft")
+        compose.onNodeWithTag(COMPOSER_DRAFT_TAG).performTextInput(HELD_TEXT)
+        compose.awaitIdle("after composing the held draft")
         // Prove the editor took the text and Send is live BEFORE asserting on
-        // what Send does with it: a timeout on the chip alone cannot tell
+        // what Send does with it: a timeout on a later state alone cannot tell
         // "the send did the wrong thing" from "the tap never reached a send".
         compose.onNodeWithTag(COMPOSER_DRAFT_TAG)
-            .assertTextContains(UNDELIVERED_TEXT, substring = true)
+            .assertTextContains(HELD_TEXT, substring = true)
         compose.onNodeWithTag(COMPOSER_SEND_TAG).assertIsEnabled()
-        // Keep the body/Enter gap open long enough for the proxy cut to land
-        // deterministically. The production default remains 150 ms.
-        appGraph().settingsRepository().setAgentSubmitEnterDelayMs(1_000)
+        // Keep the body/Enter gap open long enough for the cut to land INSIDE
+        // it with room to spare: the body is confirmed on the host (below)
+        // seconds before Enter is due, and the wire comes back while the
+        // reconnect ladder still has rungs left (18 s end to end). The
+        // production default remains 150 ms.
+        appGraph().settingsRepository().setAgentSubmitEnterDelayMs(HELD_SEND_DELAY_MS)
+        val sentAtMs = SystemClock.elapsedRealtime()
         compose.onNodeWithTag(COMPOSER_SEND_TAG).performClick()
+
+        // The body half crosses the LIVE link: the PTY echoes it into the
+        // screen buffer, and the host's own capture agrees. Both, not either —
+        // from here on the journey is the submit half's alone.
+        val beforeCut = awaitTranscript("the echoed body line") { it.contains(HELD_MARKER) }
+        assertTrue(
+            "the submit half must not have fired before the cut — the delay is too " +
+                "short for this fixture's echo round trip, got:\n$beforeCut",
+            squashed(beforeCut).split(HELD_MARKER).size < 3,
+        )
+        val paneBeforeCut = capturePane()
+        assertTrue(
+            "the host's pane must show the body before the cut, got:\n$paneBeforeCut",
+            squashed(paneBeforeCut).contains(HELD_MARKER),
+        )
+
+        // Cut INSIDE the gap, and read the state back — an HTTP 200 is not an
+        // outage. Then wait for the banner, so the submit half provably fires
+        // against Reconnecting, not against a live link or a spent ladder.
+        proxy.disable()
+        assertTrue("the proxy must actually be disabled", !proxy.state().enabled)
+        awaitTag(SESSION_RECONNECT_BANNER_TAG)
+        JourneyScreenshots.capture("03-held-under-banner", JOURNEY)
         try {
-            proxy.disable()
-
-            awaitTag(COMPOSER_REVIEW_TAG, "the delivery review page")
-            JourneyScreenshots.capture("03-undelivered", JOURNEY)
-
-            // The review page is on screen, and the original text is still in
-            // the editable draft — both, not either.
-            compose.onNodeWithTag(COMPOSER_REVIEW_DRAFT_TAG)
-                .assertTextContains(UNDELIVERED_TEXT, substring = true)
-
-            // An uncertain send is kept separate from a confirmed delivery.
-            // The history row records the initial PTY write as delivered
-            // because the app cannot prove whether those bytes reached the
-            // terminal.
-            val logged = runBlocking {
-                appGraph().sentMessageDao().recentOnce("$hostId/$sessionHandle", limit = 10)
+            // Hold past the submit half's due time while the wire is still
+            // down, so the Enter write fires into the banner and is HELD — it
+            // cannot have raced the link back up, the proxy is still disabled.
+            val enterDueMs = sentAtMs + HELD_SEND_DELAY_MS + ENTER_SLACK_MS
+            while (SystemClock.elapsedRealtime() < enterDueMs) {
+                compose.awaitIdle("holding past the submit half's due time")
+                SystemClock.sleep(POLL_MS)
             }
-            assertEquals(listOf(UNDELIVERED_TEXT), logged.map { it.body })
-            assertEquals(true, logged.single().delivered)
         } finally {
+            // Unconditional: a failed assertion must not leave the shared
+            // fixture disabled for the next test or the next run.
             proxy.enable()
         }
+        assertTrue("the proxy must be enabled again", proxy.state().enabled)
+
+        // Nothing is tapped: the ladder is what recovers (J05), and the held
+        // bytes flush IN ORDER into the reattached PTY.
+        awaitNoTag(SESSION_RECONNECT_BANNER_TAG)
+        // The held Enter made the message RUN: the marker appears as the
+        // pre-cut echo of the whole line AND as the command's own output. A
+        // single occurrence would be a screen that merely painted the text
+        // locally (same discipline as the headline test).
+        val delivered = awaitTranscript("the held command's output") {
+            squashed(it).split(HELD_MARKER).size >= 3
+        }
+        assertTrue(
+            "the recovered viewport must show the held command's output, got:\n$delivered",
+            squashed(delivered).contains(HELD_MARKER),
+        )
+        JourneyScreenshots.capture("06-held-delivered", JOURNEY)
+        // ...and the host agrees the held bytes crossed the NEW connection.
+        val pane = capturePane()
+        assertTrue(
+            "the host's pane must show the held command executed, got:\n$pane",
+            squashed(pane).contains(HELD_MARKER),
+        )
+
+        // A held send is not an uncertain one: no delivery-review page, no
+        // undelivered chip, and the sheet closed on a delivered result.
+        // Re-opened, the composer holds NO restored duplicate of what the host
+        // just ran.
+        compose.onNodeWithTag(COMPOSER_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(COMPOSER_REVIEW_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(COMPOSER_UNDELIVERED_TAG).assertDoesNotExist()
+        openComposer()
+        compose.onNodeWithTag(COMPOSER_DRAFT_TAG).assertTextContains("")
+
+        // The send was recorded exactly once, as what it provably was.
+        val logged = runBlocking {
+            appGraph().sentMessageDao().recentOnce("$hostId/$sessionHandle", limit = 10)
+        }
+        assertEquals(listOf(HELD_TEXT), logged.map { it.body })
+        assertEquals(true, logged.single().delivered)
     }
 
     /** "Don't make me retype what I already sent": the log, and the tap that restores it. */
@@ -441,6 +515,21 @@ class J07ComposerSendJourney {
         )
     }
 
+    /** The inverse of [awaitTag]: poll until [tag] is gone, same discipline. */
+    private fun awaitNoTag(tag: String, timeoutMs: Long = TIMEOUT_MS) {
+        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        while (SystemClock.elapsedRealtime() < deadline) {
+            compose.awaitIdle("clearing poll: $tag")
+            if (compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty()) return
+            SystemClock.sleep(POLL_MS)
+        }
+        throw AssertionError(
+            "$tag never cleared within ${timeoutMs}ms.\n" +
+                "Rendered viewport was:\n" + renderedTranscript() + "\n" +
+                "The host's own aplexer capture says:\n" + capturePane(),
+        )
+    }
+
     private companion object {
         const val TIMEOUT_MS = 60_000L
         const val POLL_MS = 250L
@@ -456,12 +545,32 @@ class J07ComposerSendJourney {
 
         /** No spaces: it is asserted against the wrap-squashed transcript. */
         const val HISTORY_TEXT = "echo pocketshell-p1-history"
-        const val UNDELIVERED_TEXT = "this-draft-must-survive"
+
+        /**
+         * The mid-send cut's message: a real command, so the held Enter's
+         * arrival is proven by the command's own output on the host, not by an
+         * echo alone.
+         */
+        const val HELD_TEXT = "echo held-mid-send-lands"
+        const val HELD_MARKER = "held-mid-send-lands"
         const val ATTACHMENT_BODY = "pocketshell-p1-attachment-bytes"
+
+        /**
+         * The body/Enter gap the journey cuts inside. Long enough that the
+         * body's echo is confirmed on the host (a ~1 s round trip) and the
+         * Reconnecting banner is up well before Enter is due, while the wire
+         * comes back with ladder rungs to spare (the ladder spends itself in
+         * 0 + 1 + 2 + 5 + 10 s and then gives up). The production default
+         * remains 150 ms.
+         */
+        const val HELD_SEND_DELAY_MS = 8_000
+
+        /** Scheduling slack on top of [HELD_SEND_DELAY_MS] for the hold-out. */
+        const val ENTER_SLACK_MS = 2_000L
 
         val HOST_IDS: Map<String, Long> = mapOf(
             "composingAndSendingReachesTheRealSessionAndClearsTheDraft" to 9_701L,
-            "aDroppedLinkKeepsTheDraftForDeliveryReview" to 9_702L,
+            "aDroppedLinkHoldsTheMessageUntilTheLinkReturns" to 9_702L,
             "aSentMessageComesBackFromTheHistory" to 9_703L,
             "anAttachmentUploadsOverSftpAndItsRemotePathGoesIntoTheMessage" to 9_704L,
         )

@@ -279,6 +279,30 @@ class ComposerViewModelTest {
         assertEquals("second", viewModel.state.value.draft)
     }
 
+    /**
+     * Issue #2578: the link dying between the body and Enter no longer means
+     * "undelivered" — the session holds both halves like keystrokes and runs
+     * them, in order, on the next attach. The draft stays gone and no chip
+     * asks for a resend: the one outcome this screen must never produce here
+     * is a restored draft the user sends again while the first copy is still
+     * queued in the terminal.
+     */
+    @Test
+    fun `a link lost between the body and Enter leaves the submit half held, not uncertain`() =
+        runTest(dispatcher) {
+            val viewModel = bound()
+            viewModel.onDraftChange("run once")
+            advanceUntilIdle()
+
+            viewModel.send()
+            sink.isLive = false
+            advanceUntilIdle()
+
+            assertEquals(listOf("run once", "\r"), sink.sentText())
+            assertEquals("the send is queued in the session, not lost", "", viewModel.state.value.draft)
+            assertNull(viewModel.state.value.notice)
+        }
+
     @Test
     fun `an empty draft sends nothing`() = runTest(dispatcher) {
         val viewModel = bound()

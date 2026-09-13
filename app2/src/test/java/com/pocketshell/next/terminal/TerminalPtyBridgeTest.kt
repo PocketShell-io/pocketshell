@@ -250,6 +250,37 @@ class TerminalPtyBridgeTest {
             )
         }
 
+    /**
+     * Issue #2578, the reviewer's second finding: [TerminalPtyBridge.stop]
+     * must clear only the sink its own bridge installed. The concurrent start
+     * below is an ordering bug (releaseChannel stops the spent bridge before
+     * the next one starts), and the point is that the bug can no longer black
+     * out all input when it happens — the successor's sink survives a late
+     * stop from its predecessor, and a stale clear reports that it removed
+     * nothing.
+     */
+    @Test
+    fun `a superseded bridge's late stop does not strip its successor's sink`() = runTest(dispatcher) {
+        val session = session()
+        val first = openPty()
+        val second = openPty()
+        val firstBridge = bridge(first, session)
+        val secondBridge = bridge(second, session)
+
+        firstBridge.start()
+        secondBridge.start()
+        firstBridge.stop()
+
+        // With a blind setInputSink(null) in stop, this byte would land in the
+        // session's pending buffer and wait for a THIRD bridge that is never
+        // coming; with the compare-and-clear it leaves through the successor.
+        session.write("still attached\r")
+        advanceUntilIdle()
+
+        assertEquals("still attached\r", second.writtenText)
+        assertEquals("", first.writtenText)
+    }
+
     @Test
     fun `resize applies to the emulator and the remote, and stops doing either once stopped`() =
         runTest(dispatcher) {

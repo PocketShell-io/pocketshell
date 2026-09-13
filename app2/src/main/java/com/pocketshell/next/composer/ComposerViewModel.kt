@@ -38,6 +38,12 @@ import kotlinx.coroutines.launch
  *    treat as a newline (#2526);
  *  - anything else → KEEP the draft and show a "not delivered" chip.
  *
+ * A link lost MID-delivery (between the body write and Enter) is not "anything
+ * else": the draft is already gone, and since #2578 the session holds each
+ * half the way it holds a keystroke, so the pending half runs on the next
+ * attach and [onDeliveryUncertain] fires only for a write the session could
+ * not take at all.
+ *
  * That is the whole delivery story. There is no queue, no retry loop, no
  * offline delivery, no acknowledgement tracking and no send-in-flight state
  * machine — the class this replaces had all of them across 3,585 lines and 288
@@ -567,16 +573,14 @@ class ComposerViewModel @Inject constructor(
         val delayMs = settings.settings.value.agentSubmitEnterDelayMs.toLong()
         viewModelScope.launch {
             delay(delayMs)
-            // The body and Enter are intentionally separate writes. If the
-            // link disappears in that gap, sendBytes() has no channel to write
-            // to and therefore cannot emit its asynchronous failure signal;
-            // surface the same delivery-uncertain state here instead of
-            // silently losing the submit half after clearing the draft.
-            if (target.isLive) {
-                target.sendBytes(ComposerText.enterBytes())
-            } else {
-                onDeliveryUncertain()
-            }
+            // The body and Enter are intentionally separate writes. Both go
+            // out unconditionally (issue #2578): if the link dies in the gap,
+            // the session holds each half exactly as it holds a keystroke and
+            // runs it on the next attach — and reports sendFailures only when
+            // there is genuinely nothing to hold, which is the one path back
+            // to [onDeliveryUncertain]. An isLive check here would drop the
+            // submit half the session was willing to hold.
+            target.sendBytes(ComposerText.enterBytes())
         }
     }
 

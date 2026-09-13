@@ -16,9 +16,11 @@ import com.pocketshell.next.hostcli.asRemoteExec
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -812,6 +814,116 @@ class SessionViewModelTest {
             settle()
 
             assertEquals(SessionUiState.Failed("no route to host"), viewModel.uiState.value)
+        }
+
+    /**
+     * Issue #2578: one rule for every input. Hotkey-panel and composer bytes
+     * sent at the "Reconnecting" banner take the same held-input buffer as
+     * keystrokes and leave through whichever channel attaches next, in the
+     * order they were entered — with NO failure reported, because nothing was
+     * dropped: the composer must not be told a held send died.
+     */
+    @Test
+    fun `sendBytes at the reconnect banner are held and reach the next pty, in order`() =
+        runTest(dispatcher) {
+            val hostId = stack.seedHost()
+            livePty()
+            val viewModel = viewModel()
+            viewModel.open(hostId, SESSION)
+            settle()
+
+            // Park the ladder where a real user reads it: the banner, with the
+            // app backgrounded so no rung fires while the bytes are entered.
+            foreground.background()
+            dropLink()
+            settle()
+            assertTrue(
+                "expected Reconnecting, got ${viewModel.uiState.value}",
+                viewModel.uiState.value is SessionUiState.Reconnecting,
+            )
+
+            var failureCount = 0
+            val failuresJob = launch {
+                viewModel.sendFailures.collect { failureCount++ }
+            }
+            // SharedFlow drops an emission no collector has subscribed for
+            // yet; settle the subscription before the sends it is watching.
+            advanceUntilIdle()
+
+            // A keystroke typed at the banner, then a hotkey-panel byte: the
+            // exact pair of paths this issue found diverging.
+            val keystroke = "echo held\r".toByteArray()
+            terminalOf(viewModel).write(keystroke, 0, keystroke.size)
+            viewModel.sendBytes(byteArrayOf(0x03))
+            advanceUntilIdle()
+
+            assertEquals("a held send is not a failed send", 0, failureCount)
+
+            foreground.foreground()
+            settleFor(2_000)
+
+            assertTrue(
+                "expected Live after the ladder, got ${viewModel.uiState.value}",
+                viewModel.uiState.value is SessionUiState.Live,
+            )
+            assertEquals(
+                "held bytes leave through the NEW channel in the order they were entered",
+                "echo held\r\u0003",
+                latestPty().writtenText,
+            )
+            failuresJob.cancel()
+            clear()
+        }
+
+    /**
+     * The #2566 bound does not bend for sends: a batch the held-input buffer
+     * cannot take WHOLE is reported undelivered (the composer restores the
+     * draft) instead of being truncated to the part that fits — half a prompt
+     * reaching an agent is worse than no prompt.
+     */
+    @Test
+    fun `a send larger than the held-input buffer is reported undelivered, not truncated`() =
+        runTest(dispatcher) {
+            val hostId = stack.seedHost()
+            livePty()
+            val viewModel = viewModel()
+            viewModel.open(hostId, SESSION)
+            settle()
+
+            foreground.background()
+            dropLink()
+            settle()
+            assertTrue(
+                "expected Reconnecting, got ${viewModel.uiState.value}",
+                viewModel.uiState.value is SessionUiState.Reconnecting,
+            )
+
+            var failureCount = 0
+            val failuresJob = launch {
+                viewModel.sendFailures.collect { failureCount++ }
+            }
+            advanceUntilIdle()
+
+            val tooBig = ByteArray(TerminalSession.PENDING_INPUT_CAPACITY_BYTES + 1) { 'x'.code.toByte() }
+            viewModel.sendBytes(tooBig)
+            advanceUntilIdle()
+
+            assertEquals("the oversized batch is reported, not dropped", 1, failureCount)
+
+            foreground.foreground()
+            settleFor(2_000)
+
+            assertTrue(
+                "expected Live after the ladder, got ${viewModel.uiState.value}",
+                viewModel.uiState.value is SessionUiState.Live,
+            )
+            assertEquals(
+                "no part of a batch too large to hold whole may reach the remote",
+                "",
+                latestPty().writtenText,
+            )
+            failuresJob.cancel()
+            clear()
         }
 
     /**
