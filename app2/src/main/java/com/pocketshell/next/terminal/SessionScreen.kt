@@ -111,7 +111,6 @@ const val SESSION_CONTEXT_BAR_TAG: String = "session-context-bar"
 fun SessionRoute(
     hostId: Long,
     sessionName: String,
-    sessionId: String? = null,
     onBack: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenFiles: () -> Unit = {},
@@ -132,11 +131,7 @@ fun SessionRoute(
     val leaveAfterStop by viewModel.leaveAfterStop.collectAsState()
     val stopFailure by viewModel.stopFailure.collectAsState()
 
-    // Issue #2572: the id is the attach identity when the route carries one;
-    // the name is presentation. A rename re-keys nothing on this screen.
-    LaunchedEffect(hostId, sessionName, sessionId) {
-        viewModel.open(hostId, sessionName, sessionId)
-    }
+    LaunchedEffect(hostId, sessionName) { viewModel.open(hostId, sessionName) }
     LaunchedEffect(appSettings.reconnectWhenReturn) {
         viewModel.setAutomaticReconnectEnabled(appSettings.reconnectWhenReturn)
     }
@@ -144,7 +139,7 @@ fun SessionRoute(
     // the refresh names the session. The tree's Usage affordance keeps calling
     // the no-argument overload and keeps the cross-provider meaning.
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
-        usageGlanceViewModel.refresh(hostId = hostId, sessionName = sessionName, sessionId = sessionId)
+        usageGlanceViewModel.refresh(hostId = hostId, sessionName = sessionName)
         sessionSwitcherViewModel.refresh()
     }
 
@@ -161,8 +156,8 @@ fun SessionRoute(
             override val sendFailures = viewModel.sendFailures
         }
     }
-    LaunchedEffect(hostId, sessionName, sessionId, sink) {
-        composerViewModel.bind(hostId, sessionId, sessionName, sink)
+    LaunchedEffect(hostId, sessionName, sink) {
+        composerViewModel.bind(hostId, sessionName, sink)
     }
 
     LifecycleEventEffect(Lifecycle.Event.ON_START) { composerViewModel.onForegroundResume() }
@@ -175,7 +170,6 @@ fun SessionRoute(
         state = state,
         composerState = composerState,
         sessionName = sessionName,
-        sessionId = sessionId,
         onBack = onBack,
         usagePillState = usagePillState,
         onOpenUsage = onOpenUsage,
@@ -233,7 +227,6 @@ fun SessionScreen(
     state: SessionUiState,
     composerState: ComposerUiState,
     sessionName: String,
-    sessionId: String? = null,
     onBack: () -> Unit,
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
@@ -296,19 +289,14 @@ fun SessionScreen(
         }
         onBack()
     }
-    // Issue #2572: this screen's row is resolved by the stable id when the
-    // route carries one — ID-ONLY, no name fallback, because a listing that
-    // lacks the id means the session is gone, and a NEW session that took the
-    // old name is not this one. The name path is only for routes without an
-    // id, the pre-#2572 shape.
-    val currentSession = when {
-        sessionId != null -> sessionSwitcherState.sessions.firstOrNull { it.id == sessionId }
-        else -> sessionSwitcherState.sessions.firstOrNull { it.name == sessionName }
-    }
-    val selectedSessionAgent = currentSession?.agent
+    val selectedSessionAgent = sessionSwitcherState.sessions
+        .firstOrNull { it.name == sessionName }
+        ?.agent
     val availableSlashCommands = remember(selectedSessionAgent) {
         SlashCommandAutocomplete.commandsFor(selectedSessionAgent)
     }
+    val currentSession = sessionSwitcherState.sessions
+        .firstOrNull { it.name == sessionName }
     val visibleWorkspacePath = workspacePath ?: currentSession?.workspace
     val terminalTitle = workspaceLabelForTerminal(visibleWorkspacePath).ifBlank { sessionLabel }
     val terminalSubtitle = terminalHeaderSubtitle(
@@ -634,7 +622,6 @@ fun SessionScreen(
     if (sessionSwitcherOpen) {
         SessionSwitcherSheet(
             currentSessionName = sessionName,
-            currentSessionId = sessionId,
             state = sessionSwitcherState,
             onNewSession = {
                 sessionSwitcherOpen = false
@@ -664,7 +651,7 @@ fun SessionScreen(
             title = STOP_SESSION_TITLE,
             message = stopSessionMessage(
                 name = sessionLabel,
-                workspace = currentSession?.workspace,
+                workspace = sessionSwitcherState.sessions.firstOrNull { it.name == sessionName }?.workspace,
                 host = "this host",
             ),
             confirmLabel = STOP_SESSION_CONFIRM_LABEL,

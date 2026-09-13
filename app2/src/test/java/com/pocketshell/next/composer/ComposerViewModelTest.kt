@@ -6,7 +6,6 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
-import com.pocketshell.core.storage.entity.SentMessageEntity
 import com.pocketshell.next.settings.AppSettings
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -314,7 +313,7 @@ class ComposerViewModelTest {
         advanceUntilIdle()
 
         val second = stack.viewModel()
-        second.bind(hostId, null, SESSION, sink)
+        second.bind(hostId, SESSION, sink)
         advanceUntilIdle()
 
         assertEquals("half-written thought", second.state.value.draft)
@@ -328,7 +327,7 @@ class ComposerViewModelTest {
             val secondSink = FailureRecordingSessionSink()
             val viewModel = stack.viewModel()
 
-            viewModel.bind(hostId, null, SESSION, firstSink)
+            viewModel.bind(hostId, SESSION, firstSink)
             advanceUntilIdle()
 
             viewModel.onDraftChange("first session message")
@@ -342,7 +341,7 @@ class ComposerViewModelTest {
             assertEquals("first session message", viewModel.state.value.draft)
             assertEquals(ComposerNotice.DeliveryUncertain, viewModel.state.value.notice)
 
-            viewModel.bind(hostId, null, OTHER_SESSION, secondSink)
+            viewModel.bind(hostId, OTHER_SESSION, secondSink)
             advanceUntilIdle()
             assertEquals("", viewModel.state.value.draft)
             assertNull(viewModel.state.value.notice)
@@ -387,7 +386,7 @@ class ComposerViewModelTest {
             viewModel.onDraftChange("the thing I typed in session A")
             advanceUntilIdle()
 
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
 
             // Synchronously, in the same frame as the bind: the load for the
             // new session is asynchronous, and a draft that is merely "about to
@@ -416,7 +415,7 @@ class ComposerViewModelTest {
             assertEquals(1, viewModel.state.value.attachments.size)
             assertEquals(1, viewModel.state.value.history.size)
 
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
 
             assertTrue(viewModel.state.value.attachments.isEmpty())
             assertNull(viewModel.state.value.notice)
@@ -443,7 +442,7 @@ class ComposerViewModelTest {
             // its debounce, which is the window a session switch lands in.
             runCurrent()
 
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
             advanceUntilIdle()
 
             assertEquals("half a thought", stack.drafts.load(SESSION_KEY).text)
@@ -461,11 +460,11 @@ class ComposerViewModelTest {
             val viewModel = bound()
             viewModel.onDraftChange("half a thought")
             runCurrent()
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
             advanceUntilIdle()
 
             val reopened = stack.viewModel()
-            reopened.bind(hostId, null, SESSION, sink)
+            reopened.bind(hostId, SESSION, sink)
             advanceUntilIdle()
 
             assertEquals("half a thought", reopened.state.value.draft)
@@ -483,9 +482,9 @@ class ComposerViewModelTest {
             stack.drafts.save(SESSION_KEY, ComposerDraft("stored for session A"))
             val viewModel = stack.viewModel()
 
-            viewModel.bind(hostId, null, SESSION, sink)
+            viewModel.bind(hostId, SESSION, sink)
             // No advance: session A's load is queued and has not resolved.
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
             advanceUntilIdle()
 
             assertEquals("", viewModel.state.value.draft)
@@ -507,10 +506,10 @@ class ComposerViewModelTest {
         stack.drafts.save(SESSION_KEY, ComposerDraft("important unsent text"))
         val viewModel = stack.viewModel()
 
-        viewModel.bind(hostId, null, SESSION, sink)
+        viewModel.bind(hostId, SESSION, sink)
         // No advance: session A's load is queued and has NOT resolved, so the
         // empty composer says nothing about what A has stored.
-        viewModel.bind(hostId, null, OTHER_SESSION, sink)
+        viewModel.bind(hostId, OTHER_SESSION, sink)
         advanceUntilIdle()
 
         assertEquals(
@@ -528,12 +527,12 @@ class ComposerViewModelTest {
             stack.drafts.save(SESSION_KEY, ComposerDraft("important unsent text"))
             val viewModel = stack.viewModel()
 
-            viewModel.bind(hostId, null, SESSION, sink)
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
             advanceUntilIdle()
             assertEquals("session B starts empty", "", viewModel.state.value.draft)
 
-            viewModel.bind(hostId, null, SESSION, sink)
+            viewModel.bind(hostId, SESSION, sink)
             advanceUntilIdle()
 
             assertEquals("important unsent text", viewModel.state.value.draft)
@@ -572,7 +571,7 @@ class ComposerViewModelTest {
             settings = stack.settings,
         )
 
-        viewModel.bind(hostId, null, SESSION, sink)
+        viewModel.bind(hostId, SESSION, sink)
         viewModel.attach(listOf(Uri.fromFile(File(temporaryFolder.root, "not-there.txt"))))
         advanceUntilIdle()
         assertTrue(
@@ -606,7 +605,7 @@ class ComposerViewModelTest {
             advanceUntilIdle()
             assertEquals(RecordingState.Recording, viewModel.state.value.recording)
 
-            viewModel.bind(hostId, null, OTHER_SESSION, sink)
+            viewModel.bind(hostId, OTHER_SESSION, sink)
             // A recognizer callback can land after the switch; the service call
             // is asynchronous and nothing on the device stops mid-sentence.
             stack.speech.partial("words meant for session A, continued")
@@ -705,7 +704,7 @@ class ComposerViewModelTest {
         advanceUntilIdle()
 
         val other = stack.viewModel()
-        other.bind(hostId, null, "other-session", sink)
+        other.bind(hostId, "other-session", sink)
         advanceUntilIdle()
 
         assertTrue(other.state.value.history.isEmpty())
@@ -770,7 +769,7 @@ class ComposerViewModelTest {
         val staged = viewModel.state.value.attachments.single()
 
         val second = stack.viewModel()
-        second.bind(hostId, null, SESSION, sink)
+        second.bind(hostId, SESSION, sink)
         advanceUntilIdle()
 
         assertEquals(listOf(staged), second.state.value.attachments)
@@ -1051,7 +1050,7 @@ class ComposerViewModelTest {
             "the sheet being dismissed" to { vm: ComposerViewModel -> vm.cancelRecording() },
             "insert" to { vm: ComposerViewModel -> vm.insert() },
             "send" to { vm: ComposerViewModel -> vm.send() },
-            "a session hand-off" to { vm: ComposerViewModel -> vm.bind(hostId, null, OTHER_SESSION, sink) },
+            "a session hand-off" to { vm: ComposerViewModel -> vm.bind(hostId, OTHER_SESSION, sink) },
         )
 
         for ((what, exit) in exits) {
@@ -1146,120 +1145,6 @@ class ComposerViewModelTest {
         advanceUntilIdle()
     }
 
-    // -------------------------------------------------- identity by id (#2572)
-
-    /**
-     * THE load-bearing acceptance of issue #2572: a rename must not orphan the
-     * draft. The draft lives under the stable id key, so the same session —
-     * rebound under its new name by a fresh screen and ViewModel, the shape a
-     * rename actually produces — reads back exactly what was written. Asserted
-     * from the composer's state, not from a store call: the point is that the
-     * user sees their text.
-     */
-    @Test
-    fun `a draft written before a rename is present in the composer after the rename`() =
-        runTest(dispatcher) {
-            val id = "0b9e6c1e-aaaa"
-            val before = stack.viewModel()
-            before.bind(hostId, id, SESSION, sink)
-            advanceUntilIdle()
-            before.onDraftChange("carry me across the rename")
-            advanceUntilIdle()
-
-            // Rename = same id, new name, a fresh screen.
-            val after = stack.viewModel()
-            after.bind(hostId, id, "renamed", sink)
-            advanceUntilIdle()
-
-            assertEquals("carry me across the rename", after.state.value.draft)
-        }
-
-    /**
-     * The silent failure mode from #2572's severity addendum: after a rename
-     * frees a name, a NEW session takes it. The name is no longer a key, so
-     * the newcomer starts empty instead of silently inheriting the
-     * predecessor's draft — and its first keystroke cannot land in the old
-     * session's slot.
-     */
-    @Test
-    fun `a new session taking a freed name does not inherit the old session's draft`() =
-        runTest(dispatcher) {
-            val predecessor = stack.viewModel()
-            predecessor.bind(hostId, "id-a", SESSION, sink)
-            advanceUntilIdle()
-            predecessor.onDraftChange("belongs to A alone")
-            advanceUntilIdle()
-
-            val newcomer = stack.viewModel()
-            newcomer.bind(hostId, "id-b", SESSION, sink) // same NAME, different session
-            advanceUntilIdle()
-
-            assertTrue(newcomer.state.value.draft.isEmpty())
-        }
-
-    /**
-     * Upgrade path: a draft the pre-#2572 app wrote under the NAME key is
-     * carried to the id key on this session's first post-upgrade bind — the
-     * only moment both keys are in hand without a network round trip. The
-     * sent-message history moves with it.
-     */
-    @Test
-    fun `the first bind after the upgrade carries the name-keyed draft and history to the id key`() =
-        runTest(dispatcher) {
-            val legacyKey = "$hostId/legacy-name"
-            stack.drafts.save(legacyKey, ComposerDraft("written before the upgrade"))
-            stack.db.sentMessageDao().insert(
-                SentMessageEntity(sessionKey = legacyKey, body = "earlier message", sentAtMs = 1L, delivered = true),
-            )
-
-            val viewModel = stack.viewModel()
-            viewModel.bind(hostId, "id-a", "legacy-name", sink)
-            advanceUntilIdle()
-
-            assertEquals("written before the upgrade", viewModel.state.value.draft)
-            assertEquals(listOf("earlier message"), viewModel.state.value.history.map { it.body })
-        }
-
-    /** Newer id-keyed content wins: the upgrade copy never overwrites it. */
-    @Test
-    fun `the upgrade copy does not clobber content already under the id key`() =
-        runTest(dispatcher) {
-            stack.drafts.save("$hostId/legacy-name", ComposerDraft("old world"))
-            stack.drafts.save("$hostId/id-a", ComposerDraft("new world"))
-
-            val viewModel = stack.viewModel()
-            viewModel.bind(hostId, "id-a", "legacy-name", sink)
-            advanceUntilIdle()
-
-            assertEquals("new world", viewModel.state.value.draft)
-        }
-
-    /**
-     * The upgrade copy is one-shot, not "whenever the id slot is empty": after
-     * a send clears the id key, a later bind — a fresh ViewModel over the same
-     * prefs, the next process's shape — must not resurrect the SENT text as a
-     * fresh draft.
-     */
-    @Test
-    fun `a sent legacy draft is not resurrected by a later bind`() =
-        runTest(dispatcher) {
-            stack.drafts.save("$hostId/legacy-name", ComposerDraft("written before the upgrade"))
-
-            val first = stack.viewModel()
-            first.bind(hostId, "id-a", "legacy-name", sink)
-            advanceUntilIdle()
-            assertEquals("written before the upgrade", first.state.value.draft)
-            first.send()
-            advanceUntilIdle()
-            assertTrue(first.state.value.draft.isEmpty())
-
-            val second = stack.viewModel()
-            second.bind(hostId, "id-a", "legacy-name", sink)
-            advanceUntilIdle()
-
-            assertTrue(second.state.value.draft.isEmpty())
-        }
-
     // --------------------------------------------------------------- helpers
 
     private var hostId: Long = 0
@@ -1268,7 +1153,7 @@ class ComposerViewModelTest {
     private fun bound(): ComposerViewModel {
         hostId = stack.seedHost()
         val viewModel = stack.viewModel()
-        viewModel.bind(hostId, null, SESSION, sink)
+        viewModel.bind(hostId, SESSION, sink)
         return viewModel
     }
 

@@ -84,7 +84,7 @@ const val WORKSPACE_REMOVE_CONFIRM_TAG: String = "workspace-remove-confirm"
 /** Route-level binding for a canonical workspace path restored from NavState. */
 @Composable
 fun WorkspaceRoute(
-    onOpenSession: (String, String?) -> Unit,
+    onOpenSession: (String) -> Unit,
     onOpenFiles: () -> Unit,
     onOpenPorts: () -> Unit,
     onBack: () -> Unit,
@@ -101,9 +101,8 @@ fun WorkspaceRoute(
     }
     LaunchedEffect(state.create.openRequest) {
         val name = state.create.openRequest ?: return@LaunchedEffect
-        val id = state.create.openRequestId
         viewModel.consumeOpenRequest()
-        onOpenSession(name, id)
+        onOpenSession(name)
     }
     WorkspaceScreen(
         state = state,
@@ -136,7 +135,7 @@ fun WorkspaceRoute(
 fun WorkspaceScreen(
     state: SessionTreeUiState,
     onRefresh: () -> Unit,
-    onOpenSession: (String, String?) -> Unit,
+    onOpenSession: (String) -> Unit,
     onOpenFiles: () -> Unit = {},
     onOpenPorts: () -> Unit = {},
     onBack: () -> Unit = {},
@@ -277,7 +276,7 @@ fun WorkspaceScreen(
                         WorkspaceSessionRow(
                             session = session,
                             displayName = displayNames[session.name] ?: session.name,
-                            onClick = { onOpenSession(session.name, session.id) },
+                            onClick = { onOpenSession(session.name) },
                         )
                     }
                     item(key = "workspace-new-session") {

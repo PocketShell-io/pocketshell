@@ -371,7 +371,7 @@ class QuietWorkspaceScreenTest {
                         .copy(agent = "claude", agentState = AgentState.WORKING),
                 ),
             ),
-            onOpenSession = { name, _ -> opened += name },
+            onOpenSession = { opened += it },
         )
 
         composeRule.onNodeWithTag(sessionRowTag("claude-main")).assertIsDisplayed().performClick()
@@ -482,7 +482,7 @@ class QuietWorkspaceScreenTest {
 
     private fun setWorkspaceContent(
         state: SessionTreeUiState,
-        onOpenSession: (String, String?) -> Unit = { _, _ -> },
+        onOpenSession: (String) -> Unit = {},
         onOpenCreateFolder: () -> Unit = {},
         onOpenFiles: () -> Unit = {},
         onOpenPorts: () -> Unit = {},

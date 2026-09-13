@@ -49,16 +49,4 @@ interface SentMessageDao {
 
     @Query("DELETE FROM sent_messages WHERE sessionKey = :sessionKey")
     suspend fun deleteBySessionKey(sessionKey: String)
-
-    /**
-     * Moves a session's whole history block to [newKey] — the one-shot
-     * name→id identity migration (issue #2572). Guarded: if [newKey] already
-     * has rows, nothing moves, so a migration that arrives after the session
-     * has already written id-keyed history can never interleave or duplicate.
-     */
-    @Query(
-        "UPDATE sent_messages SET sessionKey = :newKey WHERE sessionKey = :oldKey " +
-            "AND NOT EXISTS (SELECT 1 FROM sent_messages WHERE sessionKey = :newKey)",
-    )
-    suspend fun rekeySession(oldKey: String, newKey: String)
 }

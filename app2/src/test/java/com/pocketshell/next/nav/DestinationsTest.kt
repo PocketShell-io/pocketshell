@@ -70,7 +70,6 @@ class DestinationsTest {
                 hostId = 7,
                 sessionName = "git-pocketshell",
                 workspacePath = "/home/alexey/git/pocketshell",
-                sessionId = "0b9e6c1e-1",
             ),
         )
         assertMatchesPattern(
@@ -192,31 +191,6 @@ class DestinationsTest {
         // leak into the route structure.
         assertEquals("session/1/my%20project%3Areview", route)
         assertEquals(3, route.split("/").size)
-    }
-
-    @Test
-    fun `session route carries the stable id as a query argument`() {
-        // Issue #2572: the id, not the name, is the identity a back-stack
-        // entry resolves against. It rides in the query so the name segment
-        // stays presentational, and it is omitted entirely when absent so a
-        // route without one is byte-identical to the pre-#2572 shape.
-        assertEquals(
-            "session/7/aplexer%3Ayolo?sessionId=0b9e6c1e-1",
-            Destination.Session.route(hostId = 7, sessionName = "aplexer:yolo", sessionId = "0b9e6c1e-1"),
-        )
-        assertEquals(
-            "session/7/w?workspacePath=%2Fhome%2Ftestuser%2Fgit&sessionId=0b9e6c1e-1",
-            Destination.Session.route(
-                hostId = 7,
-                sessionName = "w",
-                workspacePath = "/home/testuser/git",
-                sessionId = "0b9e6c1e-1",
-            ),
-        )
-        assertEquals(
-            "session/7/w?workspacePath=%2Fhome%2Ftestuser%2Fgit",
-            Destination.Session.route(hostId = 7, sessionName = "w", workspacePath = "/home/testuser/git"),
-        )
     }
 
     @Test
