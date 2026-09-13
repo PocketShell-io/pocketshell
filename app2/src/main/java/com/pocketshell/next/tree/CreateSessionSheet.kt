@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -199,15 +200,50 @@ fun defaultSessionName(folder: String): String {
     return segment
 }
 
-/** Returns the derived name plus a stable numeric suffix when it is occupied. */
+/**
+ * The session tag rule the host enforces (aplexer `validate_tag`): 1..64 bytes
+ * of ASCII letters, digits, `.`, `_` and `-`. A name outside this set is a
+ * guaranteed create failure no matter what the user intended, so the sheet
+ * derives inside it and refuses to submit outside it.
+ */
+const val MAX_SESSION_TAG_BYTES = 64
+
+private val SESSION_TAG_CHARSET: Set<Char> =
+    ('a'..'z').toSet() + ('A'..'Z').toSet() + ('0'..'9').toSet() + setOf('.', '_', '-')
+
+/** True when [name] can be handed to the host as a session tag verbatim. */
+fun isValidSessionTag(name: String): Boolean =
+    name.isNotEmpty() &&
+        name.length <= MAX_SESSION_TAG_BYTES &&
+        name.all { it in SESSION_TAG_CHARSET }
+
+/**
+ * Maps characters outside the host tag charset to `_` so a name derived from
+ * a folder (spaces and `:` included) still creates, capped at
+ * [MAX_SESSION_TAG_BYTES].
+ */
+fun sanitizeSessionTag(name: String): String =
+    name.map { if (it in SESSION_TAG_CHARSET) it else '_' }
+        .joinToString("")
+        .take(MAX_SESSION_TAG_BYTES)
+
+/**
+ * Returns the derived name, sanitized to the host tag charset, plus a `-N`
+ * suffix when it is occupied. The separator is `-` rather than a space
+ * because a space is outside the charset — a `"name 2"` suggestion could
+ * never be created (#2663).
+ */
 fun collisionSafeSessionName(folder: String, existingNames: Collection<String>): String {
-    val base = defaultSessionName(folder)
+    val base = sanitizeSessionTag(defaultSessionName(folder))
     if (base.isBlank()) return base
     val occupied = existingNames.map { it.trim().lowercase() }.toSet()
     if (base.lowercase() !in occupied) return base
+    // Reserve room for the suffix so even a max-length base plus "-N" stays
+    // within the host's byte bound.
+    val suffixedBase = base.take(MAX_SESSION_TAG_BYTES - 3)
     var suffix = 2
-    while ("$base $suffix".lowercase() in occupied) suffix += 1
-    return "$base $suffix"
+    while ("$suffixedBase-$suffix".lowercase() in occupied) suffix += 1
+    return "$suffixedBase-$suffix"
 }
 
 /**
@@ -294,8 +330,21 @@ class CreateSessionFormState(
         profileName = value
     }
 
-    /** The host requires a name, so a blank one can never be submitted. */
-    val canSubmit: Boolean get() = name.isNotBlank()
+    /**
+     * Why the name field cannot currently be submitted, or `null` when it can
+     * (or is merely blank, which the disabled Start already communicates). A
+     * name outside the host tag charset would be rejected server-side after
+     * the user had done everything right, so it is refused here instead
+     * (#2663).
+     */
+    val nameError: String? get() = when {
+        name.isBlank() -> null
+        !isValidSessionTag(name.trim()) -> "Only letters, digits, '.', '_' and '-'"
+        else -> null
+    }
+
+    /** The host requires a valid tag, so blank or charset-invalid never submits. */
+    val canSubmit: Boolean get() = name.isNotBlank() && nameError == null
 
     /**
      * Selects the design-kit default once host capabilities are known. This is
@@ -558,6 +607,10 @@ fun CreateSessionSheetContent(
                     singleLine = true,
                     enabled = !state.submitting,
                     label = { Text(CREATE_SESSION_NAME_LABEL) },
+                    isError = form.nameError != null,
+                    supportingText = form.nameError?.let { message ->
+                        { Text(message, color = MaterialTheme.colorScheme.error) }
+                    },
                     colors = fieldColors,
                     textStyle = PocketShellType.bodyMono,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),

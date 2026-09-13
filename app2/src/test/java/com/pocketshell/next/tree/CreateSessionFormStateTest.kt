@@ -203,7 +203,66 @@ class CreateSessionFormStateTest {
 
         val tags = existingSessionTags(listOf(row))
         assertEquals("pocketshell", tags.single())
-        assertEquals("pocketshell 2", collisionSafeSessionName("pocketshell", tags))
+        assertEquals("pocketshell-2", collisionSafeSessionName("pocketshell", tags))
+    }
+
+    /**
+     * The collision suffix must land inside the host tag charset: a space
+     * separator made every collision-avoided suggestion a guaranteed create
+     * failure (#2663).
+     */
+    @Test
+    fun `the collision suffix stays inside the host tag charset`() {
+        assertEquals("pocketshell-2", collisionSafeSessionName("pocketshell", listOf("pocketshell")))
+        assertEquals(
+            "pocketshell-3",
+            collisionSafeSessionName("pocketshell", listOf("pocketshell", "pocketshell-2")),
+        )
+    }
+
+    /** A folder segment outside the charset is sanitized, not handed over broken. */
+    @Test
+    fun `a derived name is sanitized to the host tag charset`() {
+        assertEquals("my_project", collisionSafeSessionName("/srv/my project", emptyList()))
+        assertEquals("work_review", collisionSafeSessionName("/srv/work:review", emptyList()))
+        assertEquals("my_project-2", collisionSafeSessionName("/srv/my project", listOf("my_project")))
+        assertEquals("a.b_c-d", sanitizeSessionTag("a.b_c-d"))
+        assertEquals(MAX_SESSION_TAG_BYTES, sanitizeSessionTag("x".repeat(70)).length)
+    }
+
+    /** Mirrors aplexer `validate_tag`: 1..64 bytes of letters, digits, `.`, `_`, `-`. */
+    @Test
+    fun `isValidSessionTag mirrors the host rule`() {
+        assertTrue(isValidSessionTag("pocketshell-2"))
+        assertTrue(isValidSessionTag("a.b_c-d"))
+        assertTrue(isValidSessionTag("x".repeat(MAX_SESSION_TAG_BYTES)))
+        assertFalse(isValidSessionTag(""))
+        assertFalse(isValidSessionTag("my project"))
+        assertFalse(isValidSessionTag("work:review"))
+        assertFalse(isValidSessionTag("x".repeat(MAX_SESSION_TAG_BYTES + 1)))
+    }
+
+    /** A hand-typed name the host would reject is refused before submit (#2663). */
+    @Test
+    fun `a name outside the host charset is refused with an inline error`() {
+        val form = CreateSessionFormState("/home/a/git/pocketshell")
+        assertTrue(form.canSubmit)
+        assertNull(form.nameError)
+
+        form.onNameChange("my project")
+        assertFalse("a name the host would reject cannot be submitted", form.canSubmit)
+        assertEquals("Only letters, digits, '.', '_' and '-'", form.nameError)
+
+        form.onNameChange("my-project")
+        assertTrue(form.canSubmit)
+        assertNull(form.nameError)
+    }
+
+    @Test
+    fun `a sanitized prefill submits where the raw folder segment would not`() {
+        val form = CreateSessionFormState("/srv/my project")
+        assertEquals("my_project", form.name)
+        assertTrue(form.canSubmit)
     }
 
     @Test

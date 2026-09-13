@@ -104,6 +104,31 @@ class CreateSessionSheetTest {
         assertEquals("a disabled Start must not reach the host", emptyList<Any>(), submitted)
     }
 
+    /**
+     * A name the host tag charset rejects (#2663) is caught in the sheet: the
+     * field flags the error with the rule spelled out and Start stays
+     * disabled, instead of the host answering with an unreadable failure.
+     */
+    @Test
+    fun `an invalid tag name shows an inline error and cannot be submitted`() {
+        val submitted = mutableListOf<CreateSessionRequest>()
+        val form = CreateSessionFormState("").apply { onNameChange("my project") }
+        setContent(
+            CreateSessionState(visible = true),
+            defaultFolder = "",
+            onSubmit = { submitted += it },
+            form = form,
+        )
+
+        composeRule.onNodeWithText("More options").performScrollTo().performClick()
+        composeRule.waitForIdle()
+        composeRule.onNodeWithText("Only letters, digits, '.', '_' and '-'").assertIsDisplayed()
+        composeRule.onNodeWithTag(CREATE_SESSION_SUBMIT_TAG).assertIsNotEnabled()
+        composeRule.onNodeWithTag(CREATE_SESSION_SUBMIT_TAG).performClick()
+
+        assertEquals("a charset-invalid name must not reach the host", emptyList<Any>(), submitted)
+    }
+
     @Test
     fun `Start carries the forms own name and folder`() {
         val submitted = mutableListOf<CreateSessionRequest>()
