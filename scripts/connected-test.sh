@@ -115,6 +115,12 @@ set -euo pipefail
 # POST_NOTIFICATIONS), so the flag is removed rather than repointed at a
 # stand-in target.
 #
+# Checkout guard (issue #2500): the wrapper ALWAYS builds and tests the
+# checkout the script itself lives in, never the caller's cwd. It refuses to
+# run when invoked from a different git checkout (e.g. the root checkout's
+# absolute path from inside an agent worktree) and prints the checkout it will
+# test on every run. See "Checkout guard" in --help.
+#
 # Everything after the recognised flags is forwarded verbatim to gradle's
 # connectedDebugAndroidTest task (e.g. instrumentation-runner-argument filters).
 # The task defaults to :app2:connectedDebugAndroidTest and is overridable per
@@ -133,6 +139,11 @@ set -euo pipefail
 # into a successful result.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Issue #2500: remember where the CALLER sits before we cd. ROOT_DIR is where
+# this script physically lives; the root guard below refuses to run when the
+# caller's cwd belongs to a DIFFERENT checkout — the classic accident being
+# the root checkout's absolute path invoked from inside an agent worktree.
+CALLER_PWD="$(pwd -P 2>/dev/null || printf '%s' "$PWD")"
 cd "$ROOT_DIR"
 
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
@@ -204,6 +215,19 @@ Examples:
   # shared:* module proof (task :shared:core-terminal:connectedDebugAndroidTest):
   scripts/connected-test.sh --module shared:core-terminal --suffix i798 \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.terminal.core.CodexOutputBurstImeMainThreadProofTest
+
+Checkout guard (issue #2500):
+  This wrapper builds and tests the checkout the SCRIPT ITSELF lives in,
+  never the caller's cwd. Invoking another checkout's copy of this script
+  from inside your worktree would silently test the WRONG tree and report
+  green for changes it does not contain, so the wrapper refuses when the
+  caller's cwd belongs to a different checkout. Always run the copy
+  inside the worktree you want tested:
+    cd /path/to/worktree && ./scripts/connected-test.sh --suffix i<issue> ...
+  Every run prints the checkout it will test ("testing checkout ...").
+  Deliberate override: POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT=1.
+  --cleanup-suffixes is exempt (device recovery does not depend on which
+  checkout runs it).
 
 Everything after the recognised flags is forwarded verbatim to gradle's
 connectedDebugAndroidTest task. The base package (no suffix) and release build
@@ -310,12 +334,63 @@ if [[ -n "$MODULE" ]]; then
   CONNECTED_TASK=":${module_path}:connectedDebugAndroidTest"
 fi
 
+# Issue #2500: refuse to silently test the wrong checkout.
+#
+# ROOT_DIR above is resolved from THIS SCRIPT's location, and everything this
+# wrapper builds, installs, and reports comes from that tree. When the caller's
+# cwd belongs to a different git checkout — the exact accident #2500 reports:
+# an agent inside a worktree invokes the root checkout's
+# scripts/connected-test.sh by absolute path — the run builds whatever THAT
+# tree contains (typically plain main) and reports a normal-looking green for
+# changes it does not contain. That is indistinguishable from real evidence
+# unless someone notices the report path, so the wrapper refuses instead.
+#
+# This is deliberately the FIRST gate after argument validation — ahead of the
+# disk preflight, the #2007 output-tree lock, and every shared resource —
+# because a mis-aimed lane must fail without touching ANY of them.
+#
+# Only a mismatch between two RESOLVED git toplevels fails. A caller outside
+# any git checkout keeps today's behaviour (the banner below still names the
+# tree that will be tested), and sandbox copies of this wrapper that are not
+# git repos at all (the test harnesses) are unaffected. --cleanup-suffixes is
+# exempt: it mutates no checkout and is part of how an operator recovers a
+# contended box — gating recovery on the caller's cwd is the classic
+# self-lockout, the same argument the disk preflight makes for itself.
+if [[ "$CLEANUP_ONLY" != "1" && "${POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT:-}" != "1" ]]; then
+  caller_git_root="$(git -C "$CALLER_PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+  script_git_root="$(git -C "$ROOT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$caller_git_root" && -n "$script_git_root" \
+        && "$caller_git_root" != "$script_git_root" ]]; then
+    {
+      printf 'FAIL: refusing to run connected-test.sh from a different checkout (issue #2500).\n'
+      printf '  Caller cwd belongs to:   %s\n' "$caller_git_root"
+      printf '  This script belongs to:  %s\n' "$script_git_root"
+      printf 'The wrapper builds and tests the checkout the SCRIPT lives in, so this run\n'
+      printf 'would test %s while you are sitting in %s —\n' \
+        "$script_git_root" "$caller_git_root"
+      printf 'a green result here says nothing about the changes in the tree you are in.\n'
+      printf 'Run the copy inside the tree you mean to test instead:\n'
+      printf '  cd %s && ./scripts/connected-test.sh ...\n' "$caller_git_root"
+      printf 'To override deliberately (you really do want to test %s), export\n' "$script_git_root"
+      printf '  POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT=1\n'
+    } >&2
+    exit 2
+  fi
+fi
+
+# Issue #2500: name the tree under test on EVERY mutating run, so a wrong-tree
+# accident is visible in the log instead of discoverable only from the report
+# path. Printed after the guard so a refused run has already said why.
+printf 'connected-test.sh (issue #2500): testing checkout %s (invoked from %s)\n' \
+  "$ROOT_DIR" "$CALLER_PWD" >&2
+
 # Issue #1989: free-disk preflight, run BEFORE anything expensive or shared.
 #
-# It is deliberately the FIRST thing after argument validation — before the
-# #2007 Gradle output-tree lock, before the toxiproxy serialization lock, before
-# an emulator serial is claimed, and before the agents fixture container is
-# brought up. A lane that cannot possibly succeed must not first sit on the
+# It is the first RESOURCE claim after argument validation (only the #2500
+# root-guard refusal above runs earlier, and it touches no resource) — before
+# the #2007 Gradle output-tree lock, before the toxiproxy serialization lock,
+# before an emulator serial is claimed, and before the agents fixture container
+# is brought up. A lane that cannot possibly succeed must not first sit on the
 # box's scarcest resource (often the ONE online emulator) while it discovers
 # that; the #2007 header makes the same argument for the output lock.
 #

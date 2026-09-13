@@ -37,6 +37,13 @@ Claude Code's Agent tool does this automatically with
 Before dispatch, make sure `main` is clean — stash or save unrelated WIP to
 `.pickup/` first. Never let an agent inherit unrelated dirty state.
 
+Run the connected lane from inside the worktree, using the worktree's own
+copy: `cd .worktrees/issue-<N> && scripts/connected-test.sh ...`. The wrapper
+always builds and tests the checkout the script itself lives in, so invoking
+another checkout's copy by absolute path would silently build and report green
+for a tree without your changes; it refuses such cross-checkout invocations
+and prints the checkout under test on every run (issue #2500).
+
 ## Merging an approved worktree back to `main`
 
 Only the orchestrator merges, and only after reviewer `APPROVED` + the

@@ -687,6 +687,7 @@ jobs:
                    tests/scripts/avd-lock-sharing-test.sh \
                    tests/scripts/avd-lock-test.sh \
                    tests/scripts/avd-pool-test.sh \
+                   tests/scripts/connected-test-root-guard-test.sh \
                    tests/scripts/disk-preflight-test.sh \
                    tests/scripts/gate-isolated-copy-version-test.sh \
                    tests/scripts/pre-release-emulator-readiness-test.sh \

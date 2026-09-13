@@ -82,6 +82,12 @@ docker compose -f tests/docker/docker-compose.yml up -d --build agents
 scripts/connected-test.sh --suffix i2561
 ```
 
+Always invoke the copy of `connected-test.sh` inside the checkout you want
+tested, from that checkout. The wrapper refuses to run when invoked from a
+different checkout — a wrong-tree run would silently report green for changes
+it does not contain — and prints `testing checkout ...` on every run so the
+tree under test is visible in the log (issue #2500).
+
 The connected lane is unfiltered. It runs every app2 journey in one process so
 session creation, attach, background grace, and cleanup are tested in the same
 state model. A lane that uses a non-default fixture port passes
