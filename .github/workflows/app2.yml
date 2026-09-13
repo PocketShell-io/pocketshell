@@ -140,6 +140,40 @@ jobs:
           scripts/ci-app2-changed-modules.sh \
             --base "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || (github.event_name == 'push' && github.event.before || '') }}"
 
+      # Issue #2600: the run's conclusion answers only "were the SELECTED lanes
+      # green" — a docs-only push reports success with every heavy lane
+      # skipped, and from the conclusion alone that is indistinguishable from a
+      # run that validated them. Publish the selection to the run summary (what
+      # an on-call reads first) and raise an annotation whenever the journey
+      # lane is skipped, so a skipped lane cannot masquerade as validation.
+      # workflow_dispatch and schedule fail open to ALL lanes, so the banner
+      # only ever fires where the skip is a real selection decision.
+      - name: Publish the lane plan to the run summary (#2600)
+        if: always()
+        run: |
+          {
+            echo "## Lane plan for this run"
+            echo
+            echo "Event: \`${{ github.event_name }}\`. A skipped lane means this run says NOTHING about it — the run's conclusion is not evidence for that lane."
+            echo
+            echo "| Lane | Selection |"
+            echo "|---|---|"
+            echo "| core-hostapi unit | ${{ steps.select.outputs.hostapi == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| core-transport unit | ${{ steps.select.outputs.transport == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| core-transport integration (Docker) | ${{ steps.select.outputs.transport == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| core-portfwd unit | ${{ steps.select.outputs.portfwd == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| core-portfwd integration (Docker) | ${{ steps.select.outputs.portfwd == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| app2 unit | ${{ steps.select.outputs.app2 == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| app2 journey (emulator) | ${{ steps.select.outputs.app2 == 'true' && 'RUNS' || 'skipped' }} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${{ steps.select.outputs.app2 }}" != "true" ]; then
+            {
+              echo
+              echo "> ⚠️ **The app2 journey lane is skipped on this run. This run is NOT validation of the journeys.**"
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::warning title=Journey lane skipped::The app2 journey lane is skipped on this run — its conclusion is not journey-lane validation (#2600)"
+          fi
+
   # ---------------------------------------------------------------------------
   # shared/core-hostapi — pure JVM (kotlin("jvm")), no Android SDK, no
   # Robolectric. `test` is the single Java-plugin test task; there is no

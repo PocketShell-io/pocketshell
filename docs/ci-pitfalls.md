@@ -387,6 +387,11 @@ What to do:
   group in `app2.yml:75-80` already makes this argument in a comment: a
   cadence that silently does not run "would look green (cancelled, not
   failed) while doing it."
+- The selection itself is now published to each `app2.yml` run's summary,
+  with a warning annotation whenever the journey lane is skipped (#2600) —
+  the run summary is the first thing an on-call reads, so a skip no longer
+  hides behind the conclusion. The summary is written by the run itself and
+  inherits its blind spots; it is where to look, not independent proof.
 - Do not push to `main` while a validation you care about is in flight,
   including docs-only commits. When several agents share a repo, say so
   explicitly and hold the window — the burst that caused this was two
