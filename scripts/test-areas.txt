@@ -159,6 +159,7 @@ area   ci-harness           changed  JVM-driven shell harness tests for the CI s
 # here is a deliberate cost, and every one is cheaper than a missed regression.
 # ---------------------------------------------------------------------------
 full   .github/*                     CI workflow definitions decide what runs at all
+full   .gitattributes                attributes alter the checked-out bytes of any matched path (verbatim fixtures, #2584) — full blast radius
 # scripts/* WAS one blanket row here (measured #2355: over 30 sampled commits
 # it alone caused 53 of 75 total force-full glob hits — by far the dominant
 # contributor, matching docs/testing.md's "scripts/* (18 commits)" finding).
