@@ -442,8 +442,9 @@ jobs:
       # versionCode. The self-test builds synthetic repos — including the
       # marker force-moved past the newest v* tag — so a regression to the
       # bare glob goes red here instead of shipping misnamed APKs. The final
-      # bare run pins the never-fail constraint on this job's shallow, tagged
-      # checkout. Rationale lives in the script header; don't restate it here.
+      # bare run pins the never-fail constraint on this job's shallow
+      # (tagless on branch runs) checkout. Rationale lives in the script
+      # header; don't restate it here.
       - name: "Version-derivation guard (issue #2646)"
         run: |
           chmod +x scripts/derive-version.sh
