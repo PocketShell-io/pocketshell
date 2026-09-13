@@ -434,6 +434,23 @@ jobs:
       - name: Release identity and evidence guards (issue #2064)
         run: bash scripts/run-release-evidence-guards.sh
 
+      # Issue #2646: the tag-derived versionName/versionCode (scripts/
+      # derive-version.sh — the single derivation app2's Gradle build execs)
+      # must key only on `v<digit>*` release tags. The nightly chain's
+      # force-moved `validated-rc` marker used to win the bare `v*` glob and
+      # mangled every non-tag build to `alidated-rc-*` with a collapsed
+      # versionCode. The self-test builds synthetic repos — including the
+      # marker force-moved past the newest v* tag — so a regression to the
+      # bare glob goes red here instead of shipping misnamed APKs. The final
+      # bare run pins the never-fail constraint on this job's shallow
+      # (tagless on branch runs) checkout. Rationale lives in the script
+      # header; don't restate it here.
+      - name: "Version-derivation guard (issue #2646)"
+        run: |
+          chmod +x scripts/derive-version.sh
+          scripts/derive-version.sh --self-test
+          scripts/derive-version.sh both >/dev/null
+
       # Issue #1761: the local forced full-JVM gate hit Kotlin compiler OOM when
       # Worker API sessions overlapped inside the 8 GiB scope. Keep its complete
       # `test --rerun-tasks` graph on the proven single-worker / split-heap
