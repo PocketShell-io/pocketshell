@@ -1,0 +1,3 @@
+# Verbatim binary fixtures (#2584): a whitespace-fixing rebase must never
+# touch these — they are byte-exact terminal scrollback captures.
+*.bin binary
