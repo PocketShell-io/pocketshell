@@ -93,6 +93,12 @@ class J08VoiceDictationJourney {
 
     private var hostId: Long = 0
 
+    /**
+     * The identity the app keys this journey's draft under — the fixture
+     * session's stable record id (issue #2572), resolved at seed time.
+     */
+    private var sessionHandle: String = SESSION
+
     private suspend fun seed(description: Description) {
         val graph = appGraph()
         graph.connectionsRegistry().closeAll()
@@ -101,6 +107,10 @@ class J08VoiceDictationJourney {
 
         val fingerprint = AgentsFixture.probeHostKeyFingerprint()
         seedAplexerSession()
+
+        // Issue #2572: drafts are keyed on the host's stable record id, so the
+        // cleanup below must clear the slot the app actually writes.
+        sessionHandle = AgentsFixture.stableSessionId(SESSION)
 
         val keyPath = AgentsFixture.installPrivateKey(fileName = "j08_fixture_key")
         val keyId = graph.sshKeyDao().insert(
@@ -119,7 +129,7 @@ class J08VoiceDictationJourney {
                 trustedHostKeySha256 = fingerprint,
             ),
         )
-        graph.composerDraftStore().clear("$hostId/$SESSION")
+        graph.composerDraftStore().clear("$hostId/$sessionHandle")
 
         // Fresh recognizer + queue state per test: J08's own scripted doubles
         // are process-wide Hilt singletons, so a previous test's script or a

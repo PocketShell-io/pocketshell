@@ -1031,6 +1031,93 @@ class SessionViewModelTest {
         clear()
     }
 
+    // --- identity by id (#2572) ----------------------------------------------
+
+    @Test
+    fun `attaching goes out with the stable id when the route carries one`() = runTest(dispatcher) {
+        val hostId = stack.seedHost()
+        livePty()
+        val viewModel = viewModel()
+
+        viewModel.open(hostId, SESSION, STABLE_ID)
+        settle()
+
+        assertEquals(
+            "exec pocketshell sessions attach -- '$STABLE_ID'",
+            connection().ptyRequests.single().command,
+        )
+
+        clear()
+    }
+
+    /**
+     * Kill is name-addressed on the host CLI, so with an id held the CURRENT
+     * name is resolved from a fresh listing first: the route's name predates a
+     * host-side rename, and killing it would fail — or, were the name freed,
+     * hit whichever new session took it.
+     */
+    @Test
+    fun `Stop resolves the session's current name from the listing when an id is held`() =
+        runTest(dispatcher) {
+            val hostId = stack.seedHost()
+            stack.factory.script = { connection ->
+                connection.enqueuePty(completeAfterFrames = false, exitCode = null)
+                connection.onExecPrefix(
+                    "pocketshell sessions list",
+                    ExecResult(0, renamedListing(), "", false),
+                )
+                connection.onExecPrefix("pocketshell sessions kill", ExecResult(0, "", "", false))
+            }
+            val viewModel = viewModel()
+
+            viewModel.open(hostId, SESSION, STABLE_ID)
+            settle()
+            viewModel.stopSession()
+            settle()
+
+            assertEquals(
+                "pocketshell sessions kill -- 'renamed-tag'",
+                connection().executedCommands.single { "kill" in it },
+            )
+            assertTrue(viewModel.leaveAfterStop.value)
+            assertNull(viewModel.stopFailure.value)
+
+            clear()
+        }
+
+    /**
+     * The silent-collision oracle: the listing has no row with this screen's
+     * id, only ANOTHER session wearing the old name. Stop must fail loudly and
+     * kill nothing — never let the name match decide who dies.
+     */
+    @Test
+    fun `Stop with an id held never kills whatever took the old name`() = runTest(dispatcher) {
+        val hostId = stack.seedHost()
+        stack.factory.script = { connection ->
+            connection.enqueuePty(completeAfterFrames = false, exitCode = null)
+            connection.onExecPrefix(
+                "pocketshell sessions list",
+                ExecResult(0, impostorListing(), "", false),
+            )
+            connection.onExecPrefix("pocketshell sessions kill", ExecResult(0, "", "", false))
+        }
+        val viewModel = viewModel()
+
+        viewModel.open(hostId, SESSION, STABLE_ID)
+        settle()
+        viewModel.stopSession()
+        settle()
+
+        assertTrue(
+            "the impostor must not be killed: ${connection().executedCommands}",
+            connection().executedCommands.none { "kill" in it },
+        )
+        val failure = requireNotNull(viewModel.stopFailure.value)
+        assertTrue(failure, failure.contains("no longer running"))
+
+        clear()
+    }
+
     // --- helpers -------------------------------------------------------------
 
     /**
@@ -1144,6 +1231,17 @@ class SessionViewModelTest {
 
     private companion object {
         const val SESSION = "git-pocketshell"
+
+        /** The stable host id carried by the #2572 identity tests' routes. */
+        const val STABLE_ID = "0b9e6c1e-aaaa"
+
+        /** The id's session, renamed on the host since the route was built. */
+        private fun renamedListing(): String =
+            """{"schema":3,"sessions":[{"name":"renamed-tag","id":"$STABLE_ID","attached":true}],"errors":[]}"""
+
+        /** Only an impostor: another session wearing the route's stale name. */
+        private fun impostorListing(): String =
+            """{"schema":3,"sessions":[{"name":"$SESSION","id":"id-other","attached":true}],"errors":[]}"""
 
         /**
          * Four rounds of 100 virtual ms. Several rounds rather than one long

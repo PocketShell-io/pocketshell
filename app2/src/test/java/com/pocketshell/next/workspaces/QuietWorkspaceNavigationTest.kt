@@ -102,7 +102,7 @@ class QuietWorkspaceNavigationTest {
                         Column {
                             Text("Workspace $workspacePath")
                             Button(
-                                onClick = { onOpenSession("session-one") },
+                                onClick = { onOpenSession("session-one", null) },
                                 modifier = Modifier.testTag("quiet-open-session"),
                             ) { Text("Open session") }
                             Button(
@@ -111,7 +111,7 @@ class QuietWorkspaceNavigationTest {
                             ) { Text("Back to workspaces") }
                         }
                     },
-                    sessionScreen = { _, _, _, onBack, _, _, _, _ ->
+                    sessionScreen = { _, _, _, _, onBack, _, _, _, _ ->
                         Column {
                             Button(
                                 onClick = onBack,

@@ -216,8 +216,9 @@ private fun NavHostController.openSession(
     hostId: Long,
     sessionName: String,
     workspacePath: String? = null,
+    sessionId: String? = null,
 ) {
-    val route = Destination.Session.route(hostId, sessionName, workspacePath)
+    val route = Destination.Session.route(hostId, sessionName, workspacePath, sessionId)
     val existing = runCatching { getBackStackEntry(route) }.getOrNull()
     if (existing == null) {
         navigate(route)
@@ -313,7 +314,7 @@ fun AppNavHost(
     workspaceScreen: @Composable (
         hostId: Long,
         workspacePath: String,
-        onOpenSession: (String) -> Unit,
+        onOpenSession: (String, String?) -> Unit,
         onOpenFiles: () -> Unit,
         onOpenPorts: () -> Unit,
         onBack: () -> Unit,
@@ -332,16 +333,18 @@ fun AppNavHost(
         hostId: Long,
         sessionName: String,
         workspacePath: String?,
+        sessionId: String?,
         onBack: () -> Unit,
         onOpenUsage: () -> Unit,
         onOpenFiles: () -> Unit,
         onOpenSession: (SessionRow) -> Unit,
         onOpenNewSession: () -> Unit,
-    ) -> Unit = { hostId, sessionName, workspacePath, onBack, onOpenUsage, onOpenFiles, onOpenSession, onOpenNewSession ->
+    ) -> Unit = { hostId, sessionName, workspacePath, sessionId, onBack, onOpenUsage, onOpenFiles, onOpenSession, onOpenNewSession ->
         SessionRoute(
             hostId = hostId,
             sessionName = sessionName,
             workspacePath = workspacePath,
+            sessionId = sessionId,
             onBack = onBack,
             onOpenUsage = onOpenUsage,
             onOpenFiles = onOpenFiles,
@@ -594,7 +597,7 @@ fun AppNavHost(
             // process death without the navigation layer re-supplying it.
             val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
             val onOpenSession: (SessionRow) -> Unit = { session ->
-                navController.openSession(hostId, session.name, session.workspace)
+                navController.openSession(hostId, session.name, session.workspace, session.id)
             }
             val onOpenFiles: () -> Unit = { navController.navigate(Destination.Files.route(hostId)) }
             val onOpenPorts: () -> Unit = { navController.navigate(Destination.Ports.route(hostId)) }
@@ -624,7 +627,7 @@ fun AppNavHost(
             val rootPath = entry.arguments?.getString(Destination.ARG_ROOT_PATH).orEmpty()
             val action = entry.arguments?.getString(Destination.ARG_ROOT_ACTION).orEmpty()
             val onOpenSession: (SessionRow) -> Unit = { session ->
-                navController.openSession(hostId, session.name, session.workspace)
+                navController.openSession(hostId, session.name, session.workspace, session.id)
             }
             workspacesScreen(
                 hostId,
@@ -650,8 +653,8 @@ fun AppNavHost(
             workspaceScreen(
                 hostId,
                 path,
-                { sessionName ->
-                    navController.openSession(hostId, sessionName, path)
+                { sessionName, sessionId ->
+                    navController.openSession(hostId, sessionName, path, sessionId)
                 },
                 { navController.navigate(Destination.Files.route(hostId, path)) },
                 { navController.navigate(Destination.Ports.route(hostId)) },
@@ -672,8 +675,8 @@ fun AppNavHost(
             val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
             val path = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH).orEmpty()
             WorkspaceRoute(
-                onOpenSession = { sessionName ->
-                    navController.openSession(hostId, sessionName, path)
+                onOpenSession = { sessionName, sessionId ->
+                    navController.openSession(hostId, sessionName, path, sessionId)
                 },
                 onOpenFiles = { navController.navigate(Destination.Files.route(hostId, path)) },
                 onOpenPorts = { navController.navigate(Destination.Ports.route(hostId)) },
@@ -699,6 +702,11 @@ fun AppNavHost(
                     nullable = true
                     defaultValue = null
                 },
+                navArgument(Destination.ARG_SESSION_ID) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
             ),
         ) { entry ->
             // Task U-4: the real terminal. The session name arrives already
@@ -709,16 +717,20 @@ fun AppNavHost(
             val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
             val name = entry.arguments?.getString(Destination.ARG_SESSION_NAME).orEmpty()
             val workspacePath = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH)
+            // Issue #2572: the id, not the name, is what a back-stack entry
+            // resolves against — a rename must not strand this screen.
+            val sessionId = entry.arguments?.getString(Destination.ARG_SESSION_ID)
             sessionScreen(
                 hostId,
                 name,
                 workspacePath,
+                sessionId,
                 { navController.popBackStack() },
                 // Task P-5: the top bar's usage glance pill navigates here.
                 { navController.navigate(Destination.HostUsage.route(hostId)) },
                 { navController.navigate(Destination.Files.route(hostId, workspacePath)) },
                 { session ->
-                    navController.openSession(hostId, session.name, session.workspace)
+                    navController.openSession(hostId, session.name, session.workspace, session.id)
                 },
                 {
                     if (workspacePath.isNullOrBlank()) {

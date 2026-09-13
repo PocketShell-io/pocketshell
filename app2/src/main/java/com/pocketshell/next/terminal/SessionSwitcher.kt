@@ -131,6 +131,7 @@ class SessionSwitcherViewModel @Inject constructor(
 fun SessionSwitcherSheet(
     currentSessionName: String,
     state: SessionSwitcherUiState,
+    currentSessionId: String? = null,
     onNewSession: () -> Unit,
     onOpenSession: (SessionRow) -> Unit,
     onDismiss: () -> Unit,
@@ -207,7 +208,17 @@ fun SessionSwitcherSheet(
                                 tint = PocketShellColors.TextSecondary,
                             )
                         },
-                        trailing = if (session.name == currentSessionName) {
+                        // Issue #2572: with an id the match is ID-ONLY — a new
+                        // session wearing the old name is not the one on
+                        // screen. The name decides only for routes without an
+                        // id, the pre-#2572 shape.
+                        trailing = if (
+                            if (currentSessionId != null) {
+                                session.id == currentSessionId
+                            } else {
+                                session.name == currentSessionName
+                            }
+                        ) {
                             {
                                 Text(
                                     text = "Current",

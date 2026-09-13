@@ -212,6 +212,27 @@ object AgentsFixture {
     }
 
     /**
+     * The stable record id the host listed for the session named [name]
+     * (issue #2572).
+     *
+     * The app keys per-session state — composer drafts, the sent-message
+     * log — on this id rather than the display name, so a journey asserting
+     * on those slots must resolve the same identity the app resolves. Reads
+     * the real schema-3 listing and fails loudly on a miss: a silent fallback
+     * to the name would let an assertion pass against a slot the app no
+     * longer writes.
+     */
+    fun stableSessionId(name: String): String {
+        val listing = com.pocketshell.core.hostapi.SessionsJson
+            .parseSessionsList(exec("pocketshell sessions list --json"))
+            .getOrThrow()
+        return listing.sessions.firstOrNull { it.name == name }?.id
+            ?.takeIf { it.isNotBlank() }
+            ?: error("session '$name' missing from the fixture listing (no stable id)")
+    }
+
+
+    /**
      * OpenSSH-style `SHA256:<base64-no-padding>` of a host key's wire encoding.
      *
      * Deliberately recomputed here rather than reused from

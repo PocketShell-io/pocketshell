@@ -148,21 +148,38 @@ sealed class Destination(val pattern: String) {
     }
 
     /**
-     * A live session on [ARG_HOST_ID], identified by its server-side
-     * [ARG_SESSION_NAME] (aplexer session name, or aplexer `workspace:tag`).
-     * The name is the identity the host CLI speaks — the client never
-     * carries sockets or UUIDs (plan §B.0).
+     * A live session on [ARG_HOST_ID].
+     *
+     * Identity is the host-provided [ARG_SESSION_ID] (issue #2572): the
+     * aplexer record UUID survives a rename, so a back-stack entry, its
+     * composer draft and its usage focus all keep pointing at the SAME session
+     * after its display name changes. [ARG_SESSION_NAME] remains a required
+     * path segment for presentation and legacy-key ownership, but it is no
+     * load-bearing: when the id is present the client resolves by id and fails
+     * loudly instead of silently attaching to whichever session now holds the
+     * old name. [ARG_SESSION_ID] is null only for a host CLI that somehow
+     * listed a session without an id (schema 3 always emits one); those
+     * sessions degrade to exactly the pre-#2572 name-keyed behavior.
      */
     data object Session : Destination(
-        "session/{$ARG_HOST_ID}/{$ARG_SESSION_NAME}?$ARG_WORKSPACE_PATH={$ARG_WORKSPACE_PATH}",
+        "session/{$ARG_HOST_ID}/{$ARG_SESSION_NAME}" +
+            "?$ARG_WORKSPACE_PATH={$ARG_WORKSPACE_PATH}&$ARG_SESSION_ID={$ARG_SESSION_ID}",
     ) {
-        fun route(hostId: Long, sessionName: String, workspacePath: String? = null): String =
-            buildString {
-                append("session/$hostId/${encodeSegment(sessionName)}")
-                workspacePath?.takeIf { it.isNotBlank() }?.let {
-                    append("?$ARG_WORKSPACE_PATH=${encodeSegment(it)}")
-                }
+        fun route(
+            hostId: Long,
+            sessionName: String,
+            workspacePath: String? = null,
+            sessionId: String? = null,
+        ): String = buildString {
+            append("session/$hostId/${encodeSegment(sessionName)}")
+            workspacePath?.takeIf { it.isNotBlank() }?.let {
+                append("?$ARG_WORKSPACE_PATH=${encodeSegment(it)}")
             }
+            sessionId?.takeIf { it.isNotBlank() }?.let {
+                append(if (contains('?')) '&' else '?')
+                append("$ARG_SESSION_ID=${encodeSegment(it)}")
+            }
+        }
     }
 
     /**
@@ -276,6 +293,13 @@ sealed class Destination(val pattern: String) {
          */
         const val NO_HOST_ID: Long = -1L
         const val ARG_SESSION_NAME: String = "sessionName"
+
+        /**
+         * The host's stable session id (aplexer record UUID) on [Session]
+         * (issue #2572). Optional query argument: absent means "identity
+         * falls back to [ARG_SESSION_NAME]", the pre-#2572 behavior.
+         */
+        const val ARG_SESSION_ID: String = "sessionId"
         const val ARG_PATH: String = "path"
         const val ARG_REMOTE_PORT: String = "remotePort"
         const val NO_REMOTE_PORT: Int = -1

@@ -67,7 +67,7 @@ class QuietWorkspaceRenders {
 
     @Test
     fun emptyWorkspaceDetail() = render("i2607-empty-workspace-detail") {
-        WorkspaceScreen(state = workspaceState("/home/alexey/git/empty"), onRefresh = {}, onOpenSession = {})
+        WorkspaceScreen(state = workspaceState("/home/alexey/git/empty"), onRefresh = {}, onOpenSession = { _, _ -> })
     }
 
     @Test
@@ -78,7 +78,7 @@ class QuietWorkspaceRenders {
                 names = listOf("shell", "agent-review"),
             ),
             onRefresh = {},
-            onOpenSession = {},
+            onOpenSession = { _, _ -> },
         )
     }
 
@@ -93,7 +93,7 @@ class QuietWorkspaceRenders {
                 names = listOf("shell", "agent-review"),
             ),
             onRefresh = {},
-            onOpenSession = {},
+            onOpenSession = { _, _ -> },
         )
     }
 
@@ -108,7 +108,7 @@ class QuietWorkspaceRenders {
                 names = listOf("shell", "agent-review"),
             ),
             onRefresh = {},
-            onOpenSession = {},
+            onOpenSession = { _, _ -> },
         )
     }
 

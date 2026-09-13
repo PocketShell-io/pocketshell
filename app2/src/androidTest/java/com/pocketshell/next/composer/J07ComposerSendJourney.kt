@@ -89,6 +89,14 @@ class J07ComposerSendJourney {
         .around(compose)
 
     private var hostId: Long = 0
+
+    /**
+     * The identity the app keys this journey's session state under — the
+     * fixture session's stable record id (issue #2572), resolved at seed time;
+     * the display name is only the fallback for a host that listed no id.
+     */
+    private var sessionHandle: String = SESSION
+
     private val proxy = ToxiproxyControl()
 
     private suspend fun seed(description: Description) {
@@ -105,6 +113,11 @@ class J07ComposerSendJourney {
         println("J07_FIXTURE ${AgentsFixture.host}:$proxyPort direct=${AgentsFixture.port} $fingerprint")
 
         seedAplexerSession()
+
+        // Issue #2572: the app keys per-session state on the host's stable
+        // record id, not the display name, so the log/draft slots this journey
+        // cleans and asserts on must be addressed by the same identity.
+        sessionHandle = AgentsFixture.stableSessionId(SESSION)
 
         val keyPath = AgentsFixture.installPrivateKey(fileName = "j07_fixture_key")
         val keyId = graph.sshKeyDao().insert(
@@ -126,12 +139,12 @@ class J07ComposerSendJourney {
         // The sent-message log is app-global and survives an uninstall-less
         // rerun; a stale row would make a history assertion pass for the wrong
         // reason.
-        graph.sentMessageDao().deleteBySessionKey("$hostId/$SESSION")
+        graph.sentMessageDao().deleteBySessionKey("$hostId/$sessionHandle")
         // Same for the persisted draft: an undelivered send KEEPS its draft on
         // disk by design, so a previous run of this very journey would
         // otherwise pre-fill the composer and let an assertion pass without the
         // app doing anything.
-        graph.composerDraftStore().clear("$hostId/$SESSION")
+        graph.composerDraftStore().clear("$hostId/$sessionHandle")
     }
 
     /** Create a real aplexer session and paint a known prompt and banner. */
@@ -236,7 +249,7 @@ class J07ComposerSendJourney {
             // because the app cannot prove whether those bytes reached the
             // terminal.
             val logged = runBlocking {
-                appGraph().sentMessageDao().recentOnce("$hostId/$SESSION", limit = 10)
+                appGraph().sentMessageDao().recentOnce("$hostId/$sessionHandle", limit = 10)
             }
             assertEquals(listOf(UNDELIVERED_TEXT), logged.map { it.body })
             assertEquals(true, logged.single().delivered)
