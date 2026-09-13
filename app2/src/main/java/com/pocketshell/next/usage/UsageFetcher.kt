@@ -105,6 +105,11 @@ class UsageFetcher @Inject constructor(
                     Instant.now(),
                 )
             }
+        // A wall-clock overrun is its own state (#2498): "the provider path is
+        // slow/unreachable" must be distinguishable from "the response format
+        // changed" (a parse failure), and the drained partial stdout must not
+        // masquerade as a successful read even when it happens to parse.
+        if (outcome.timedOut) return UsageSnapshot.TimedOut(hostId, hostName, Instant.now())
         // Exit 127 is the ONE unambiguous "binary not found" signal; a
         // non-zero exit with parseable stdout still counts as a read (the
         // host CLI resolved and answered, it just also reported an error

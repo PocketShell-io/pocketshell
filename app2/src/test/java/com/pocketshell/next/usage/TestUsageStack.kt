@@ -95,6 +95,21 @@ class TestUsageStack {
     }
 
     /**
+     * Scripts every future dial's `pocketshell usage --json` exec as a
+     * wall-clock overrun: `exec` returns the partial stdout with
+     * `timedOut = true` and no remote exit status (exitCode -1), the same
+     * shape [com.pocketshell.core.transport.RealHostConnection] reports.
+     */
+    fun scriptUsageTimedOut(stdout: String = "") {
+        execRules += { connection: FakeHostConnection ->
+            connection.onExec(
+                "pocketshell usage --json",
+                ExecResult(exitCode = -1, stdout = stdout, stderr = "", timedOut = true),
+            )
+        }
+    }
+
+    /**
      * Scripts every future dial's `pocketshell sessions list --json` reply —
      * the listing [UsageGlanceViewModel] reads to find the open session's
      * aplexer-detected agent (issue #2579).

@@ -7,6 +7,7 @@ import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
 import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.dao.PortRemappingDao
+import com.pocketshell.next.di.IoDispatcher
 import com.pocketshell.next.nav.Destination
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -14,7 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
@@ -80,6 +81,11 @@ class PortForwardViewModel @Inject constructor(
     private val remappingDao: PortRemappingDao,
     private val controller: ForwardingController,
     private val showAllPortsStore: ShowAllPortsStore,
+    // The HTTP-verify sweep hits real sockets (LocalServiceVerifier), so it
+    // must not ride Main. Injected per the rewrite plan's DI rule (#2498) —
+    // no default value: a default-arg `@Inject` constructor generates a
+    // second constructor at the bytecode level that Hilt refuses to bind.
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
 
     private val hostId: Long = requireNotNull(
@@ -191,7 +197,7 @@ class PortForwardViewModel @Inject constructor(
         verificationKey = key
         verificationJob?.cancel()
         _state.value = _state.value.copy(verifiedHttpServices = emptyMap())
-        verificationJob = viewModelScope.launch(Dispatchers.IO) {
+        verificationJob = viewModelScope.launch(ioDispatcher) {
             val verified = candidates.mapNotNull { tunnel ->
                 LocalServiceVerifier.verify(tunnel)?.let { tunnel.remotePort to it }
             }.toMap()

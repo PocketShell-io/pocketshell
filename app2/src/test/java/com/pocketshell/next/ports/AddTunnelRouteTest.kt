@@ -60,6 +60,10 @@ class AddTunnelRouteTest {
             remappingDao = stack.db.portRemappingDao(),
             controller = stack.controller,
             showAllPortsStore = stack.showAllPortsStore,
+            // #2498: dispatcher is injected; this route test's harness idiom
+            // is Unconfined (Main is set to it too), and the verify sweep is
+            // not under test here.
+            ioDispatcher = Dispatchers.Unconfined,
         )
     }
 

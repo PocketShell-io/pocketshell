@@ -8,6 +8,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.dao.SshKeyDao
+import com.pocketshell.next.di.IoDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -15,6 +16,7 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -44,15 +46,23 @@ class ForwardingResume @Inject constructor(
     @ApplicationContext private val applicationContext: Context,
     private val hostDao: HostDao,
     private val sshKeyDao: SshKeyDao,
+    // The sweep reads Room and is launched off the caller's thread. Injected
+    // per the rewrite plan's DI rule (#2498) instead of the previous
+    // `Dispatchers.IO` literal in the default scope — same reason Hilt gets
+    // no default value here: a default-arg `@Inject` constructor generates a
+    // second constructor at the bytecode level that Hilt refuses to bind.
+    @IoDispatcher ioDispatcher: CoroutineDispatcher,
 ) {
     /** Testable start-service seam. Production starts [ForwardService]. */
     internal var startService: (Context) -> Unit = { ForwardService.resume(it) }
 
     // Last-ditch handler (#2659): this scope fires on every app foreground, so a
-    // throw here must degrade to a log line, never an uncaught crash.
+    // throw here must degrade to a log line, never an uncaught crash. Built on
+    // the injected IO dispatcher (#2498) so a test constructs the class with a
+    // deterministic scheduler instead of relying on the real one.
     internal var scope: CoroutineScope = CoroutineScope(
         SupervisorJob() +
-            Dispatchers.IO +
+            ioDispatcher +
             CoroutineExceptionHandler { _, t -> Log.e(TAG, "forwarding resume task failed", t) },
     )
 

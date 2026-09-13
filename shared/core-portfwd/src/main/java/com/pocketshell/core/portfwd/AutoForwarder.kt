@@ -158,9 +158,10 @@ public class AutoForwarder(
     // deny-list. We evict entries older than [AutoForwardConfig.failedPortTtlMs]
     // on each scan tick so transient failures don't stick around forever.
     private val failedPorts = mutableMapOf<Int, Long>()
-    // Byte counters from the previous scan tick, keyed by remote port.
-    // Used to derive instantaneous throughput in TunnelInfo.speedBps.
-    private val priorTotalBytes = mutableMapOf<Int, Long>()
+    // Prior byte-count observation per remote port: the cumulative counter
+    // AND the [clock] instant it was read at. Used to derive instantaneous
+    // throughput in TunnelInfo.speedBps.
+    private val priorTotalBytes = mutableMapOf<Int, ByteObservation>()
     // Persisted remote -> local port remappings, captured at
     // construction from [initialRemappings]. Held as a private mutable
     // map so future extensions (e.g. runtime `remapPort()` after a
@@ -577,7 +578,9 @@ public class AutoForwarder(
         port !in localPortMap.values && localPortAvailability.isAvailable(port)
 
     private fun updateStateLocked() {
-        val intervalSec = config.scanIntervalSec.coerceAtLeast(1).toLong()
+        // One observation instant per call so every port in the snapshot
+        // divides its delta by the same window.
+        val nowMs = clock()
         val snapshot = mutableListOf<TunnelInfo>()
         // Surface failed ports too — a manually-toggled port that
         // couldn't be forwarded (e.g. range exhausted) still belongs in
@@ -596,9 +599,22 @@ public class AutoForwarder(
             val bytesIn = tunnel?.bytesForwarded ?: 0L
             val bytesOut = tunnel?.bytesReceived ?: 0L
             val total = bytesIn + bytesOut
-            val prior = priorTotalBytes[port] ?: total
-            val speedBps = ((total - prior).coerceAtLeast(0L)) / intervalSec
-            priorTotalBytes[port] = total
+            // Throughput divides the byte delta by the ACTUAL elapsed window
+            // between the two observations, not the nominal scan interval
+            // (issue #2498): updateStateLocked() also runs off the scan-tick
+            // boundary — a mid-tick toggle or forward open/close re-seeds the
+            // counter here — so the real window can be far shorter than one
+            // tick, and dividing by the fixed scanIntervalSec under-reported
+            // the rate for that tick. A first observation has no window and
+            // reports 0, same as before.
+            val prior = priorTotalBytes[port]
+            val speedBps = if (prior == null) {
+                0L
+            } else {
+                val elapsedMs = (nowMs - prior.atMs).coerceAtLeast(1L)
+                (total - prior.totalBytes).coerceAtLeast(0L) * 1000L / elapsedMs
+            }
+            priorTotalBytes[port] = ByteObservation(total, nowMs)
             snapshot.add(
                 TunnelInfo(
                     remotePort = port,
@@ -613,6 +629,9 @@ public class AutoForwarder(
         }
         tunnelsState.value = snapshot
     }
+
+    /** One prior byte-counter reading and the [clock] instant it was taken at. */
+    private data class ByteObservation(val totalBytes: Long, val atMs: Long)
 
     private companion object {
         // Per-forward teardown-close bound (see [teardownDispatcher]). Long

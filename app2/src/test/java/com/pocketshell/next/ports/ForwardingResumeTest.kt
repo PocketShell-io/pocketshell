@@ -227,7 +227,11 @@ class ForwardingResumeTest {
             applicationContext = context,
             hostDao = ThrowingHostDao(db.hostDao()),
             sshKeyDao = db.sshKeyDao(),
+            ioDispatcher = dispatcher,
         )
+        // This test keeps a custom scope ONLY to collect what would be
+        // uncaught: it asserts the sweep's failure is handled inside
+        // resumeIfNeeded and never reaches the scope's handler (#2659).
         resume.scope = CoroutineScope(
             SupervisorJob() + dispatcher +
                 CoroutineExceptionHandler { _, t -> uncaught.add(t) },
@@ -257,12 +261,15 @@ class ForwardingResumeTest {
     }
 
     private fun resume(onStart: () -> Unit): ForwardingResume {
+        // #2498: the default scope is built on the INJECTED dispatcher, so the
+        // test no longer overrides `scope` to get off the real IO pool — the
+        // constructor-level test dispatcher is the production wiring shape.
         val resume = ForwardingResume(
             applicationContext = context,
             hostDao = db.hostDao(),
             sshKeyDao = db.sshKeyDao(),
+            ioDispatcher = dispatcher,
         )
-        resume.scope = CoroutineScope(SupervisorJob() + dispatcher)
         resume.startService = { onStart() }
         return resume
     }

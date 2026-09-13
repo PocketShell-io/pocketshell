@@ -78,6 +78,43 @@ class PortForwardScreenTest {
     }
 
     @Test
+    fun `a forwarding row whose local port differs from remote says so`() {
+        // #2498: when local 3000 is busy, the bind walks up to 3003 — the row
+        // must surface that the binding differs from the remote port instead
+        // of silently showing 3003 next to remote 3000.
+        setContent(
+            state(
+                enabled = true,
+                connection = ConnectionState.Connected,
+                rows = listOf(
+                    forwarding(remotePort = 3_000, localPort = 3_003, process = "vite", bytes = 0),
+                ),
+            ),
+        )
+
+        composeRule.onNodeWithText("3003").assertIsDisplayed()
+        composeRule.onNodeWithText("differs from remote").assertIsDisplayed()
+    }
+
+    @Test
+    fun `a mirrored forwarding row does not claim a differing local port`() {
+        // #2498: the walked-up marker belongs ONLY where the bound local port
+        // is not the mirrored/remote one — a plain mirror must render no note.
+        setContent(
+            state(
+                enabled = true,
+                connection = ConnectionState.Connected,
+                rows = listOf(
+                    forwarding(remotePort = 3_000, localPort = 3_000, process = "vite", bytes = 0),
+                ),
+            ),
+        )
+
+        composeRule.onNodeWithText("3000").assertIsDisplayed()
+        composeRule.onNodeWithText("differs from remote").assertDoesNotExist()
+    }
+
+    @Test
     fun `tapping a row's action reports that row's remote port`() {
         val toggled = mutableListOf<Int>()
         setContent(

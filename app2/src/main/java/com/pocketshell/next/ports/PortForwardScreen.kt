@@ -232,6 +232,21 @@ internal fun formatBytes(bytes: Long): String = when {
     else -> "%.1f GB".format(bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
+/**
+ * Why the Local cell might show a number the user does not expect (issue
+ * #2498).
+ *
+ * The allocator mirrors the remote port onto the same local port when it can,
+ * but a phone-side collision walks the bind UP to the next free port (and a
+ * persisted remap or an out-of-window manual tunnel binds a different port
+ * too). The row always shows the real binding; this label is the explicit
+ * signal that it differs from the remote port, so `localhost:3000` quietly
+ * becoming `localhost:3003` is visible instead of silent. Null when the row
+ * is not forwarding or the ports match.
+ */
+internal fun localPortMismatchLabel(remotePort: Int, localPort: Int, forwarding: Boolean): String? =
+    if (forwarding && localPort != remotePort) "differs from remote" else null
+
 private val PORT_COLUMNS: List<PortColumn> = listOf(
     PortColumn("Remote", 0.18f),
     PortColumn("Local", 0.16f),
@@ -322,7 +337,36 @@ private fun PortForwardRow(tunnel: TunnelInfo, onToggle: () -> Unit) {
         modifier = Modifier.testTag(portRowTag(tunnel.remotePort)),
     ) {
         PortBodyCell("${tunnel.remotePort}", 0.18f, monospace = true)
-        PortBodyCell(if (forwarding) "${tunnel.localPort}" else "-", 0.16f, monospace = true)
+        // Local cell: the bound port, plus an explicit note when it differs
+        // from the remote port (#2498) — same stacked pattern as Traffic.
+        Column(modifier = Modifier.weight(0.16f)) {
+            if (forwarding) {
+                Text(
+                    text = "${tunnel.localPort}",
+                    color = PocketShellColors.TextSecondary,
+                    style = PocketShellType.bodyMono,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                localPortMismatchLabel(
+                    remotePort = tunnel.remotePort,
+                    localPort = tunnel.localPort,
+                    forwarding = forwarding,
+                )?.let { mismatch ->
+                    Text(
+                        text = mismatch,
+                        color = PocketShellColors.TextMuted,
+                        style = PocketShellType.metadata,
+                    )
+                }
+            } else {
+                Text(
+                    text = "-",
+                    color = PocketShellColors.TextSecondary,
+                    style = PocketShellType.bodyMono,
+                )
+            }
+        }
         PortBodyCell(tunnel.process.ifBlank { "-" }, 0.28f)
         PortBodyCell(tunnel.status.label, 0.18f, color = statusColor)
         // Discovered/available rows have no traffic yet, so "0 B / 0 B/s" on

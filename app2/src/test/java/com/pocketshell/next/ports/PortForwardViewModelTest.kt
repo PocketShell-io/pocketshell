@@ -244,6 +244,9 @@ class PortForwardViewModelTest {
         remappingDao = stack.db.portRemappingDao(),
         controller = stack.controller,
         showAllPortsStore = stack.showAllPortsStore,
+        // #2498: the verify sweep's dispatcher is injected, so the test pins
+        // it to this scheduler instead of the real IO pool.
+        ioDispatcher = StandardTestDispatcher(testScheduler),
     ).also { runCurrent() }
 
     /**

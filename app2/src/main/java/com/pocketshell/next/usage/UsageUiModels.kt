@@ -14,10 +14,11 @@ import java.time.Instant
  * tracking, and no lease fan-out any more. A snapshot is simply "what the host
  * said when [UsageFetcher] last asked", and [fetchedAt] is when that was.
  *
- * The three outcomes are deliberately distinguishable, for the same reason the
+ * The four outcomes are deliberately distinguishable, for the same reason the
  * session tree distinguishes its three empty states: "the host has no usage
- * tooling" and "the usage read failed" must not render identically, or the
- * panel says nothing useful about either.
+ * tooling", "the usage read failed" and "the usage read timed out" must not
+ * render identically, or the panel says nothing useful about any of them
+ * (#2498: a slow provider is not a changed response format).
  */
 sealed interface UsageSnapshot {
     val hostId: Long
@@ -34,6 +35,17 @@ sealed interface UsageSnapshot {
 
     /** `pocketshell` is not installed on the host (exit 127). */
     data class ToolMissing(
+        override val hostId: Long,
+        override val hostName: String,
+        override val fetchedAt: Instant,
+    ) : UsageSnapshot
+
+    /**
+     * The exec overran its wall-clock budget and was cut off (issue #2498) —
+     * the provider path was slow or unreachable, NOT malformed. Whatever
+     * stdout was drained is a truncated read, never a successful one.
+     */
+    data class TimedOut(
         override val hostId: Long,
         override val hostName: String,
         override val fetchedAt: Instant,
@@ -158,7 +170,7 @@ fun usageScreenState(
         .filterIsInstance<UsageSnapshot.ToolMissing>().map { snapshot ->
         UsageMissingToolHost(hostId = snapshot.hostId, hostName = snapshot.hostName)
     },
-    failedHosts = snapshots
+    failedHosts = (snapshots
         .filter { selectedHostId == null || it.hostId == selectedHostId }
         .filterIsInstance<UsageSnapshot.Failed>().map { snapshot ->
         UsageFailedHost(
@@ -166,7 +178,18 @@ fun usageScreenState(
             hostName = snapshot.hostName,
             reason = snapshot.reason,
         )
-    },
+    } + snapshots
+        .filter { selectedHostId == null || it.hostId == selectedHostId }
+        .filterIsInstance<UsageSnapshot.TimedOut>().map { snapshot ->
+        UsageFailedHost(
+            hostId = snapshot.hostId,
+            hostName = snapshot.hostName,
+            // Distinct from a parse failure's host-supplied reason (#2498):
+            // the panel must be able to say "slow/unreachable", not quote
+            // output the read never finished producing.
+            reason = "usage read timed out",
+        )
+    }),
     isRefreshing = isRefreshing,
     loaded = loaded,
     connectedHostCount = connectedHostCount,

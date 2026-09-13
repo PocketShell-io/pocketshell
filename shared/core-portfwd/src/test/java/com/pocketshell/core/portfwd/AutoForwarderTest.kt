@@ -692,7 +692,16 @@ class AutoForwarderTest {
         val connection = FakeConnection()
         connection.setListening("0.0.0.0:3000 users:((\"app\",pid=1,fd=4))")
 
-        val forwarder = AutoForwarder(connection, smallConfig())
+        val forwarder = AutoForwarder(
+            connection,
+            smallConfig(),
+            // speedBps divides the byte delta by the ACTUAL elapsed window
+            // between observations (issue #2498), so the test pins the wall
+            // clock to the scheduler's virtual time: the tick that reads the
+            // new counters then runs exactly 1000 ms after the one that
+            // seeded them, and the window IS the scan interval.
+            clock = { testScheduler.currentTime },
+        )
         val job = forwarder.start(this)
         runCurrent()
         // Simulate traffic on the forward between scans.
@@ -700,20 +709,76 @@ class AutoForwarderTest {
         forward.bytesForwardedAtomic.set(1_000)
         forward.bytesReceivedAtomic.set(500)
 
-        // Trigger exactly ONE more scan tick. scanIntervalSec=1, so we move
-        // virtual time just past the delay boundary; advancing further would
-        // fire a third iteration which would reset speedBps back to 0
-        // (no new bytes between iter 2 and iter 3).
-        advanceTimeBy(1_100L)
+        // Trigger exactly ONE more scan tick, exactly one 1 s interval later.
+        // Advancing past the boundary into a third iteration would reset
+        // speedBps back to 0 (no new bytes between iter 2 and iter 3).
+        advanceTimeBy(1_000L)
         runCurrent()
 
         val t = forwarder.flowOfTunnels().first().single()
         assertEquals(1_000L, t.bytesIn)
         assertEquals(500L, t.bytesOut)
         assertEquals(
-            // (1_000 + 500) / scanIntervalSec=1 == 1500 bps
+            // (1_000 + 500) bytes over a true 1000 ms window == 1500 bps
             1_500L,
             t.speedBps,
+        )
+
+        forwarder.stop()
+        job.cancel()
+        runCurrent()
+    }
+
+    @Test
+    fun `speedBps divides the byte delta by the actual elapsed window`() = runTest {
+        // Issue #2498: updateStateLocked() also runs OFF the scan-tick
+        // boundary — a mid-tick togglePort close/reopen re-seeds the prior
+        // counter at t=1600 — so the bytes the t=2000 tick observes were moved
+        // over a 400 ms window, not the full 1 s scanIntervalSec. Dividing by
+        // the fixed interval under-reports the rate for that tick.
+        // RED on base: fixed-interval division reports 450 bps.
+        val connection = FakeConnection()
+        connection.setListening("0.0.0.0:3000 users:((\"app\",pid=1,fd=4))")
+
+        val forwarder = AutoForwarder(
+            connection,
+            smallConfig(),
+            // Virtual-time clock: advances with advanceTimeBy, so observation
+            // timestamps line up with the scan loop's ticks.
+            clock = { testScheduler.currentTime },
+            localPortAvailability = allLocalPortsAvailable,
+        )
+        val job = forwarder.start(this)
+        runCurrent() // t=0: tunnel opens, first observation seeds the counter at 0 bytes
+
+        val original = connection.openForwards.values.single() as FakeForward
+        original.bytesForwardedAtomic.set(1_000)
+
+        advanceTimeBy(1_000L)
+        runCurrent() // tick at t=1000: 1000 bytes over a true 1000 ms window
+        assertEquals(
+            "sanity: a full-interval window must still report delta/interval",
+            1_000L,
+            forwarder.flowOfTunnels().first().single().speedBps,
+        )
+
+        // Mid-tick churn at t=1600 (the next tick is scheduled for t=2000):
+        // close and reopen the tunnel — the reopen re-seeds the prior counter
+        // at t=1600 — then move 450 bytes on the new forward.
+        advanceTimeBy(600L)
+        runCurrent()
+        forwarder.togglePort(3_000)
+        forwarder.togglePort(3_000)
+        val reopened = connection.openForwards.values.single() as FakeForward
+        reopened.bytesForwardedAtomic.set(450)
+
+        advanceTimeBy(400L)
+        runCurrent() // tick at t=2000: 450 bytes over a true 400 ms window
+
+        assertEquals(
+            "450 bytes over 400 ms is 1125 bps — the window is not one scan tick",
+            1_125L,
+            forwarder.flowOfTunnels().first().single().speedBps,
         )
 
         forwarder.stop()

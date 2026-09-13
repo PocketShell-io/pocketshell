@@ -1,6 +1,7 @@
 package com.pocketshell.next.usage
 
 import kotlinx.coroutines.runBlocking
+import java.time.Instant
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -72,6 +73,62 @@ class UsageFetcherTest {
 
         val snapshot = result.snapshots.getValue(hostId)
         assertTrue("expected Failed, got $snapshot", snapshot is UsageSnapshot.Failed)
+    }
+
+    @Test
+    fun `a timed-out usage read is not reported as a parse failure`() = runBlocking {
+        // #2498: a wall-clock overrun reaches the fetcher as
+        // ExecResult(timedOut=true) — "the provider path was slow or
+        // unreachable" — which must be distinguishable from "the response
+        // format changed" (a parse failure). RED on base: it collapsed into
+        // the same Failed state (reason "usage command exited -1").
+        val hostId = stack.seedHost()
+        stack.scriptUsageTimedOut()
+        stack.connect(hostId)
+
+        val result = stack.fetcher.fetchAll()
+
+        val snapshot = result.snapshots.getValue(hostId)
+        assertTrue(
+            "a timeout must be its own state, got $snapshot",
+            snapshot is UsageSnapshot.TimedOut,
+        )
+    }
+
+    @Test
+    fun `a timed-out read is never mistaken for records, even when the partial output parses`() =
+        runBlocking {
+            // #2498: the exec returned before the host finished, so whatever
+            // stdout was drained is a TRUNCATED read. Parsing it into records
+            // would paint a stale partial answer as a successful read.
+            // RED on base: the parseable partial output landed as Records.
+            val hostId = stack.seedHost()
+            stack.scriptUsageTimedOut(CLAUDE_NDJSON)
+            stack.connect(hostId)
+
+            val result = stack.fetcher.fetchAll()
+
+            val snapshot = result.snapshots.getValue(hostId)
+            assertTrue(
+                "a timed-out exec is a slow provider, not a successful read, got $snapshot",
+                snapshot is UsageSnapshot.TimedOut,
+            )
+        }
+
+    @Test
+    fun `a timed-out host folds into failedHosts with a distinct reason`() {
+        // #2498: the screen state must be able to say "slow/unreachable" —
+        // and a timed-out host must NOT silently vanish from every bucket,
+        // which would render the panel as "hosts answered, no providers".
+        val state = usageScreenState(
+            snapshots = listOf(
+                UsageSnapshot.TimedOut(1L, "box", Instant.EPOCH),
+            ),
+            connectedHostCount = 1,
+        )
+
+        assertEquals(listOf("usage read timed out"), state.failedHosts.map { it.reason })
+        assertEquals(emptyList<UsageMissingToolHost>(), state.missingToolHosts)
     }
 
     @Test
