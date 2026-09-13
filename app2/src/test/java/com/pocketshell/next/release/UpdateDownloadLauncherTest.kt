@@ -14,7 +14,7 @@ class UpdateDownloadLauncherTest {
 
     @Test
     fun viewIntent_isActionView_withNewTask_againstTheUrl() {
-        val apk = "https://github.com/alexeygrigorev/pocketshell/releases/download/v0.5.1/app.apk"
+        val apk = "https://github.com/PocketShell-io/pocketshell/releases/download/v0.5.1/app.apk"
         val intent = viewIntent(apk)
         assertEquals(Intent.ACTION_VIEW, intent.action)
         assertEquals(apk, intent.data.toString())
@@ -23,7 +23,7 @@ class UpdateDownloadLauncherTest {
 
     @Test
     fun notesIntent_isActionView_againstHtmlUrl() {
-        val html = "https://github.com/alexeygrigorev/pocketshell/releases/tag/v0.5.1"
+        val html = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1"
         val intent = viewIntent(html)
         assertEquals(Intent.ACTION_VIEW, intent.action)
         assertEquals(html, intent.data.toString())

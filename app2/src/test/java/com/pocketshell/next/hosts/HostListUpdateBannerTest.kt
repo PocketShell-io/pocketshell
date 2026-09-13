@@ -27,7 +27,7 @@ class HostListUpdateBannerTest {
     private val available = HostListUpdateNotice.Available(
         text = "v0.5.1 is available — you are on v0.5.0 · 5 Sep 2026",
         apkUrl = "https://example.com/pocketshell-0.5.1.apk",
-        htmlUrl = "https://github.com/alexeygrigorev/pocketshell/releases/tag/v0.5.1",
+        htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1",
     )
 
     @Test
@@ -84,7 +84,7 @@ class HostListUpdateBannerTest {
             notice.value = HostListUpdateNotice.Available(
                 text = "v0.5.2 is available — you are on v0.5.0 · 6 Sep 2026",
                 apkUrl = "https://example.com/pocketshell-0.5.2.apk",
-                htmlUrl = "https://github.com/alexeygrigorev/pocketshell/releases/tag/v0.5.2",
+                htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.2",
             )
         }
         composeRule.onNodeWithTag(HOST_LIST_UPDATE_BANNER_TAG).assertIsDisplayed()

@@ -141,14 +141,14 @@ run_matrix() {
   # --- the URL parser, on its own ------------------------------------------
   local parsed
   CHECKS=$((CHECKS + 1))
-  parsed="$(pocketshell_ci_evidence_repo_slug_from_url 'git@github.com:alexeygrigorev/pocketshell.git')" || parsed=""
-  [[ "$parsed" == "alexeygrigorev/pocketshell" ]] ||
+  parsed="$(pocketshell_ci_evidence_repo_slug_from_url 'git@github.com:PocketShell-io/pocketshell.git')" || parsed=""
+  [[ "$parsed" == "PocketShell-io/pocketshell" ]] ||
     { printf 'FAIL: ssh remote parsed as %s\n' "$parsed" >&2; return 1; }
   printf '  ok  %-52s (%s)\n' "slug from ssh remote" "$parsed"
 
   CHECKS=$((CHECKS + 1))
-  parsed="$(pocketshell_ci_evidence_repo_slug_from_url 'https://github.com/alexeygrigorev/pocketshell')" || parsed=""
-  [[ "$parsed" == "alexeygrigorev/pocketshell" ]] ||
+  parsed="$(pocketshell_ci_evidence_repo_slug_from_url 'https://github.com/PocketShell-io/pocketshell')" || parsed=""
+  [[ "$parsed" == "PocketShell-io/pocketshell" ]] ||
     { printf 'FAIL: https remote parsed as %s\n' "$parsed" >&2; return 1; }
   printf '  ok  %-52s (%s)\n' "slug from https remote" "$parsed"
 

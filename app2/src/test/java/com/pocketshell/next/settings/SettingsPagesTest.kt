@@ -146,7 +146,7 @@ class SettingsPagesTest {
     fun `update available exposes both real native handoff URLs`() {
         val info = ReleaseInfo(
             tagName = "v0.5.1",
-            htmlUrl = "https://github.com/alexeygrigorev/pocketshell/releases/tag/v0.5.1",
+            htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1",
             apkUrl = "https://example.com/pocketshell-0.5.1.apk",
             publishedDateLabel = "5 Sep 2026",
         )

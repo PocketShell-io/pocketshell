@@ -78,7 +78,7 @@ open class ReleaseChecker(
     private val preferReleaseApk: Boolean = false,
 ) {
     companion object {
-        private const val REPO = "alexeygrigorev/pocketshell"
+        private const val REPO = "PocketShell-io/pocketshell"
         internal const val API_URL = "https://api.github.com/repos/$REPO/releases/latest"
         private const val USER_AGENT = "pocketshell"
         private const val TIMEOUT_MS = 10_000

@@ -240,7 +240,7 @@ class ConversationLinkDetectionTest {
     @Test
     fun detectsLineWrappedHttpsUrlAsOneUrlLink() {
         val url =
-            "https://github.com/alexeygrigorev/pocketshell/issues/558" +
+            "https://github.com/PocketShell-io/pocketshell/issues/558" +
                 "#issuecomment-4638326371"
         val splitAt = url.indexOf("#issuecomment") + 4
         val line = "docs at ${url.take(splitAt)}\n  ${url.drop(splitAt)}"

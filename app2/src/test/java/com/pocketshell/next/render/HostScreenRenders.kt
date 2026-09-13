@@ -79,7 +79,7 @@ class HostScreenRenders {
             updateNotice = HostListUpdateNotice.Available(
                 text = "v0.5.1 is available — you are on v0.5.0 · 5 Sep 2026",
                 apkUrl = "https://example.com/pocketshell-0.5.1.apk",
-                htmlUrl = "https://github.com/alexeygrigorev/pocketshell/releases/tag/v0.5.1",
+                htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1",
             ),
         )
     }

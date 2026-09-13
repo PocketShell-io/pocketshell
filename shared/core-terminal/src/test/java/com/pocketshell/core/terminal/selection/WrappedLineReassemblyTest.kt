@@ -708,7 +708,7 @@ class WrappedLineReassemblyTest {
     @Test
     fun `wrapped github issue URL emits one full-target decoration region per visual row`() {
         val url =
-            "https://github.com/alexeygrigorev/pocketshell/issues/558" +
+            "https://github.com/PocketShell-io/pocketshell/issues/558" +
                 "#issuecomment-4638326371"
         val splitAt = url.indexOf("#issuecomment") + 4
         val rows = listOf(
@@ -733,7 +733,7 @@ class WrappedLineReassemblyTest {
 
     @Test
     fun `single-line URL still emits one full-target decoration region`() {
-        val url = "https://github.com/alexeygrigorev/pocketshell/issues/558"
+        val url = "https://github.com/PocketShell-io/pocketshell/issues/558"
         val rows = listOf(VisualRow(3, "see $url", wrapsToNext = false))
 
         val regions = terminalMatchRegionsForRows(rows, columns = 100, matcher = DefaultTerminalMatcher())

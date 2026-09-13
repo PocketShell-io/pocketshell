@@ -35,7 +35,7 @@ class UpdateCheckSchedulerTest {
 
     private fun release(tag: String, date: String = "5 Sep 2026") = ReleaseInfo(
         tagName = tag,
-        htmlUrl = "https://github.com/alexeygrigorev/pocketshell/releases/tag/$tag",
+        htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/$tag",
         apkUrl = "https://example.com/${tag}.apk",
         publishedDateLabel = date,
     )

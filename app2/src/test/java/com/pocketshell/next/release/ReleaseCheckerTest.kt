@@ -268,7 +268,7 @@ class ReleaseCheckerTest {
     ): String = """
         {
           "tag_name": "$tagName",
-          "html_url": "https://github.com/alexeygrigorev/pocketshell/releases/tag/$tagName",
+          "html_url": "https://github.com/PocketShell-io/pocketshell/releases/tag/$tagName",
           "published_at": "$publishedAt",
           "assets": [ $assets ]
         }

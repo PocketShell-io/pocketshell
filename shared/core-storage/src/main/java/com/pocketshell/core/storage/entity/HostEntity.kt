@@ -22,7 +22,7 @@ import java.util.UUID
  * Issue #117 (usage-panel Fix C) added the usage-tool cache columns +
  * the optional per-host command override. The same bootstrap probe that
  * The same probe reports whether the unified
- * [pocketshell](https://github.com/alexeygrigorev/pocketshell) CLI is
+ * [pocketshell](https://github.com/PocketShell-io/pocketshell) CLI is
  * present on the host. The detected result is cached in
  * [pocketshellInstalled] / [pocketshellLastDetectedAt] so the periodic
  * usage scheduler can skip hosts that don't have pocketshell without
