@@ -12,6 +12,11 @@ set -euo pipefail
 #   down [PORT...]   tear down the fixture lane(s) for each PORT (default: pool)
 #   status           show which candidate ports are claimed / fixture health
 #
+# up/down take the same machine-wide per-port flock a live --pool claim holds
+# (issue #2501) and REFUSE a port a lane is holding, instead of recreating or
+# `down -v`-ing the container underneath it. Sequential warm-up / teardown of
+# free ports is unchanged.
+#
 # Port scheme: candidate ports default to `2243 2244 2245` (override via
 # POCKETSHELL_AGENTS_POOL_PORTS). Each runs under its own container name +
 # compose project, so lanes are fully independent.
@@ -53,6 +58,10 @@ distinct host ports so parallel emulator lanes get independent session state.
   down [PORT...]   tear down the fixture lane(s) per PORT (default pool)
   status           list candidate ports, claim state, and fixture health
 
+up/down hold the per-port flock a live --pool claim holds and REFUSE a port
+that is currently claimed by a running lane, instead of recreating or tearing
+down its container mid-run (issue #2501).
+
 Env: POCKETSHELL_AGENTS_POOL_PORTS="2243 2244 2245"   (lane candidates)
 
 Do NOT put 2222 in that list (issue #1842): it is the legacy single-lane
@@ -77,11 +86,22 @@ cmd_up() {
   ports=$(resolve_ports "$@")
   local port failures=0
   for port in $ports; do
-    if ! pocketshell_agents_fixture_up "$ROOT_DIR" "$port" \
-      || ! pocketshell_agents_fixture_wait_healthy "$ROOT_DIR" "$port"; then
+    # Issue #2501: hold the same per-port flock a live claim holds, for the
+    # whole up + wait-healthy window, so a warm-up can never recreate a
+    # running lane's container. Refusing (not queueing) is deliberate: a
+    # maintenance command must not block silently behind a 9-minute lane.
+    if ! pocketshell_agents_acquire_port_lock "$ROOT_DIR" "$port"; then
+      printf 'FAIL: agents fixture port %s is held by a live pool claim (flock %s); refusing to bring it up over a running lane. Issue #2501.\n' \
+        "$port" "$(pocketshell_agents_lock_file_for_port "$ROOT_DIR" "$port")" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    if ! pocketshell_agents_fixture_up "$ROOT_DIR" "$port" 9>&- \
+      || ! pocketshell_agents_fixture_wait_healthy "$ROOT_DIR" "$port" 9>&-; then
       printf 'FAIL: agents fixture lane on port %s did not come up healthy.\n' "$port" >&2
       failures=$((failures + 1))
     fi
+    pocketshell_agents_release_port_lock
   done
   if (( failures > 0 )); then
     return 1
@@ -94,12 +114,27 @@ cmd_down() {
   local ports
   # shellcheck disable=SC2046
   ports=$(resolve_ports "$@")
-  local port
+  local port failures=0
   for port in $ports; do
-    pocketshell_agents_fixture_down "$ROOT_DIR" "$port"
+    # Issue #2501: `compose down -v` on a HELD port is the exact cross-lane
+    # collision (it kills + destroys the container a running lane is
+    # asserting against). Take the claim's own flock atomically and refuse
+    # the teardown while a lane holds the port.
+    if ! pocketshell_agents_acquire_port_lock "$ROOT_DIR" "$port"; then
+      printf 'FAIL: agents fixture port %s is held by a live pool claim (flock %s); refusing to tear it down under a running lane. Re-run after the lane exits. Issue #2501.\n' \
+        "$port" "$(pocketshell_agents_lock_file_for_port "$ROOT_DIR" "$port")" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    pocketshell_agents_fixture_down "$ROOT_DIR" "$port" 9>&-
+    pocketshell_agents_release_port_lock
   done
   # shellcheck disable=SC2086  # $ports is an intentionally space-separated list
   printf 'agents pool down: %s\n' "$(printf '%s ' $ports)" >&2
+  if (( failures > 0 )); then
+    return 1
+  fi
+  return 0
 }
 
 cmd_status() {

@@ -51,6 +51,23 @@ set -euo pipefail
 #         green. Checks 8-11 close that: a static scan of every caller, the
 #         runtime refusal, the empty stdout, and the matching release-side check.
 #
+# ...and the one issue #2501 re-derived, after RC1's fix was (correctly) ruled
+# out as the explanation for still-fresh cross-lane collisions:
+#
+#   RC5 — the per-port flock defended only the writers that took it. The claim
+#         path does; `agents-pool.sh up|down <port>` did NOT — it called the
+#         fixture lifecycle helpers with no lock at all, so a warm-up or
+#         teardown could recreate / `down -v` a HELD port's container mid-run.
+#         The #2487 docker-events capture is exactly that shape: `kill` +
+#         `destroy` of `pocketshell-test-agents-2243` issued from a sibling
+#         worktree while another lane held the port (a claim never issues
+#         `down`). The lock existed; this entry point never consulted it —
+#         check-then-act where half the actors skip the check. Checks 13-15
+#         pin the CLI as a lock-taking writer (atomic critical section, refusal
+#         on a held port), sequential/legacy usage unchanged, and — since
+#         #1842 could silently regress the same way — that two concurrent
+#         claims still resolve to DISTINCT ports.
+#
 # No docker daemon, no emulator, no Gradle: `docker` is stubbed on PATH and the
 # lock anchor is sandboxed via POCKETSHELL_AVD_LOCK_DIR. Racing the real fixture
 # pool would corrupt a sibling agent's run — the exact bug under test.
@@ -776,6 +793,153 @@ $(grep -n -F "$name" "$lib" | grep -v ':[[:space:]]*#' | sed 's/^/    /')"
 }
 
 # --------------------------------------------------------------------------
+# 13. RC5, THE BUG (red on base): `agents-pool.sh up|down` used to mutate a
+#     port's fixture with NO lock, so a warm-up/teardown racing a live lane
+#     recreated or `down -v`-ed the lane's container mid-run — the #2487
+#     docker-events collision (kill + destroy from a sibling worktree while
+#     another lane held the port; a claim never issues `down`). The CLI must
+#     take the claim's own per-port flock atomically and REFUSE a held port,
+#     issuing no compose command at all.
+#
+#     A positive control (the same command AFTER the lane releases) proves the
+#     CLI can still reach the fixture, so the refusal is not a vacuous pass.
+# --------------------------------------------------------------------------
+pool_cli_refuses_to_mutate_a_port_a_lane_is_holding() {
+  local tmp="$1"
+  export POCKETSHELL_AVD_LOCK_DIR="$tmp/shared-locks"
+  export AGENTS_POOL_TEST_STATE="$tmp/docker-state"
+  make_worktree "$tmp/wt-cli"
+
+  local pid
+  pid="$(start_claimer "$tmp/wt-cli" "$tmp/cli.ready" "$tmp/cli.release" "2249")"
+  if ! wait_for_file "$tmp/cli.ready" 15; then
+    kill_group "$pid"
+    fail "claimer never claimed port 2249; the CLI refusal check would prove nothing"
+    return 1
+  fi
+
+  # THE LOAD-BEARING ASSERTION, teardown half: a live lane holds 2249, so
+  # `down` must refuse AND must not issue `compose down` at all — that command
+  # is what killed + destroyed the #2487 lane's container.
+  : > "$AGENTS_POOL_TEST_STATE/docker.log"
+  if "$ROOT_DIR/scripts/agents-pool.sh" down 2249 >/dev/null 2>&1; then
+    touch "$tmp/cli.release"; kill_group "$pid"
+    fail "agents-pool.sh down succeeded against port 2249 while a live lane held its flock -- the CLI tears down a running lane's fixture without consulting the port lock (issue #2501 / the #2487 docker-events kill+destroy)"
+    return 1
+  fi
+  if grep -q "down -v" "$AGENTS_POOL_TEST_STATE/docker.log" 2>/dev/null; then
+    touch "$tmp/cli.release"; kill_group "$pid"
+    fail "the refused down still issued 'compose down -v' before refusing -- the check and the act must be one atomic critical section, not check-then-act (issue #2501)"
+    return 1
+  fi
+
+  # ... and the recreate half: `up` over a held port would recreate the
+  # container under the lane (the 'Recreated' shape the disturbance guard
+  # catches ~9s into a run).
+  : > "$AGENTS_POOL_TEST_STATE/docker.log"
+  if "$ROOT_DIR/scripts/agents-pool.sh" up 2249 >/dev/null 2>&1; then
+    touch "$tmp/cli.release"; kill_group "$pid"
+    fail "agents-pool.sh up succeeded against port 2249 while a live lane held its flock -- the CLI recreates a running lane's container (issue #2501)"
+    return 1
+  fi
+  if grep -q "up -d" "$AGENTS_POOL_TEST_STATE/docker.log" 2>/dev/null; then
+    touch "$tmp/cli.release"; kill_group "$pid"
+    fail "the refused up still issued 'compose up -d' before refusing (issue #2501)"
+    return 1
+  fi
+
+  # Positive control: once the lane releases, the SAME command must succeed
+  # AND reach compose -- proving the refusals above were the lock, not a
+  # broken CLI that cannot act at all.
+  touch "$tmp/cli.release"
+  kill_group "$pid"
+  : > "$AGENTS_POOL_TEST_STATE/docker.log"
+  if ! "$ROOT_DIR/scripts/agents-pool.sh" down 2249 >/dev/null 2>&1; then
+    fail "after the lane released 2249, agents-pool.sh down still refused -- sequential teardown must keep working (issue #2501 AC4)"
+    return 1
+  fi
+  if ! grep -q "down -v" "$AGENTS_POOL_TEST_STATE/docker.log"; then
+    fail "the post-release down wrote no compose command -- the refusal check above could pass vacuously on a CLI that never reaches docker"
+    return 1
+  fi
+  pass "agents-pool.sh refuses a HELD port (no compose issued) and works once it is free"
+}
+
+# --------------------------------------------------------------------------
+# 14. AC4: sequential pool usage and the legacy single-lane identity keep
+#     working. Warm-up -> lanes -> teardown runs with free locks at every
+#     step; `up/down 2222` (explicit legacy management, never a pool
+#     candidate, issue #1842) is untouched.
+# --------------------------------------------------------------------------
+pool_cli_still_manages_free_ports_and_the_legacy_identity() {
+  local tmp="$1"
+  export POCKETSHELL_AVD_LOCK_DIR="$tmp/shared-locks"
+  export AGENTS_POOL_TEST_STATE="$tmp/docker-state"
+  make_worktree "$tmp/wt-seq"
+
+  : > "$AGENTS_POOL_TEST_STATE/docker.log"
+  if ! "$ROOT_DIR/scripts/agents-pool.sh" up 2244 >/dev/null 2>&1; then
+    fail "agents-pool.sh up 2244 (free port) failed -- sequential warm-up must keep working (issue #2501 AC4)"
+    return 1
+  fi
+  if ! grep -q "up -d --build agents" "$AGENTS_POOL_TEST_STATE/docker.log"; then
+    fail "the sequential up wrote no 'compose up -d --build agents' -- the fixture was not brought up"
+    return 1
+  fi
+  : > "$AGENTS_POOL_TEST_STATE/docker.log"
+  if ! "$ROOT_DIR/scripts/agents-pool.sh" down 2244 >/dev/null 2>&1; then
+    fail "agents-pool.sh down 2244 (free port) failed -- sequential teardown must keep working (issue #2501 AC4)"
+    return 1
+  fi
+  if ! grep -q "down -v" "$AGENTS_POOL_TEST_STATE/docker.log"; then
+    fail "the sequential down wrote no compose command"
+    return 1
+  fi
+  # Legacy identity: 2222 is never a pool candidate and stays manageable.
+  if ! "$ROOT_DIR/scripts/agents-pool.sh" up 2222 >/dev/null 2>&1 \
+    || ! "$ROOT_DIR/scripts/agents-pool.sh" down 2222 >/dev/null 2>&1; then
+    fail "agents-pool.sh up/down 2222 failed -- the documented legacy single-lane management must be untouched (issue #1842 / issue #2501 AC4)"
+    return 1
+  fi
+  pass "sequential warm-up/teardown on free ports and the legacy 2222 identity keep working"
+}
+
+# --------------------------------------------------------------------------
+# 15. AC3, the property the whole issue exists for: two CONCURRENT claims must
+#     resolve to two DIFFERENT ports (or one waits) -- never both on one port.
+#     Check 1 pins it for a single candidate port; this pins the multi-port
+#     production default, so a regression of the #1842 anchor cannot hide by
+#     pushing the second lane onto a different-by-accident port.
+# --------------------------------------------------------------------------
+two_concurrent_claimers_resolve_to_distinct_ports() {
+  local tmp="$1"
+  export POCKETSHELL_AVD_LOCK_DIR="$tmp/shared-locks"
+  export AGENTS_POOL_TEST_STATE="$tmp/docker-state"
+  make_worktree "$tmp/wt-a15"
+  make_worktree "$tmp/wt-b15"
+
+  local a_pid b_pid
+  a_pid="$(start_claimer "$tmp/wt-a15" "$tmp/d15a.ready" "$tmp/d15a.release" "2243 2244 2245" 30)"
+  b_pid="$(start_claimer "$tmp/wt-b15" "$tmp/d15b.ready" "$tmp/d15b.release" "2243 2244 2245" 30)"
+  wait_for_file "$tmp/d15a.ready" 20 && wait_for_file "$tmp/d15b.ready" 20
+  touch "$tmp/d15a.release" "$tmp/d15b.release"
+  kill_group "$a_pid"; kill_group "$b_pid"
+
+  if [[ ! -e "$tmp/d15a.ready" || ! -e "$tmp/d15b.ready" ]]; then
+    fail "two concurrent claimers over the default candidate list did not both claim (a.ready=$([[ -e $tmp/d15a.ready ]] && echo yes || echo NO) b.ready=$([[ -e $tmp/d15b.ready ]] && echo yes || echo NO)) -- the pool lost a lane, which is a wedge, not isolation"
+    return 1
+  fi
+  local a_port b_port
+  a_port="$(cat "$tmp/d15a.ready")"
+  b_port="$(cat "$tmp/d15b.ready")"
+  if [[ "$a_port" == "$b_port" ]]; then
+    fail "two concurrent claimers BOTH won port $a_port over the default candidate list -- the per-port flock is not serialising concurrent claims (issue #2501 AC3 / a #1842 regression)"
+    return 1
+  fi
+  pass "two concurrent claimers resolved to distinct ports ($a_port and $b_port)"
+}
+
+# --------------------------------------------------------------------------
 
 main() {
   # Deliberately NOT `local`: the EXIT trap fires after main's frame is gone, so
@@ -803,6 +967,9 @@ main() {
   a_successful_claim_returns_nothing_on_stdout "$tmp" || true
   a_subshell_cannot_release_the_owning_shells_claim "$tmp" || true
   compose_identity_is_spelled_out_in_exactly_one_place || true
+  pool_cli_refuses_to_mutate_a_port_a_lane_is_holding "$tmp" || true
+  pool_cli_still_manages_free_ports_and_the_legacy_identity "$tmp" || true
+  two_concurrent_claimers_resolve_to_distinct_ports "$tmp" || true
 
   if (( FAILURES > 0 )); then
     printf '\nagents-pool isolation: %s FAILING check(s)\n' "$FAILURES" >&2

@@ -622,6 +622,56 @@ _pocketshell_agents_try_lock_port() {
   return 0
 }
 
+# Take the per-port agents lock in the CALLING process, non-blocking, for
+# one-shot fixture maintenance (agents-pool.sh up / down) — issue #2501.
+#
+# WHY THIS EXISTS. The claim path's mutual exclusion is only ever as strong as
+# every writer's willingness to take the same lock. `pocketshell_claim_agents_port`
+# takes it; `agents-pool.sh up|down <port>` did NOT — it called the fixture
+# lifecycle helpers directly, so a warm-up or teardown racing a live lane could
+# recreate or `down -v` the lane's container mid-run with nothing in the way.
+# That is the cross-lane collision of issue #2501 (the docker-events capture on
+# #2487: `kill` + `destroy` of `pocketshell-test-agents-2243` issued from a
+# sibling worktree while another lane held the port — a `compose down` shape,
+# which no claim path ever issues; only the lockless CLI path does). The lock
+# already existed; this entry point simply never consulted it: check-then-act
+# where half the actors skip the check. The fix is to funnel the CLI through
+# the SAME resolver + flock the claim uses, with the check and the act fused
+# into one atomic critical section.
+#
+# The lock is held on fd 9 of the calling shell until
+# `pocketshell_agents_release_port_lock`. Run each guarded mutation with `9>&-`
+# on its command so compose/docker children do not inherit the fd (an
+# inheriting child that outlives the release would keep the lock alive through
+# the shared open file description). Deliberately NON-blocking: maintenance
+# commands must refuse a held port loudly and immediately, not queue silently
+# behind a 9-minute lane.
+#
+# Returns 0 holding the lock; returns 1 (holding nothing) when a live claim or
+# a sibling maintenance command already holds the port.
+pocketshell_agents_acquire_port_lock() {
+  local root_dir="$1"
+  local port="$2"
+  local lock_file
+  lock_file="$(pocketshell_agents_lock_file_for_port "$root_dir" "$port")"
+  _pocketshell_agents_run_without_avd_lock_fd mkdir -p "$(dirname "$lock_file")"
+  if ! exec 9>"$lock_file"; then
+    return 1
+  fi
+  if ! flock -n 9; then
+    exec 9>&- 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+# Release the fd-9 lock taken by pocketshell_agents_acquire_port_lock.
+# Idempotent: closing an already-closed fd must not fail the caller (the CLI
+# runs under `set -euo pipefail`).
+pocketshell_agents_release_port_lock() {
+  exec 9>&- 2>/dev/null || true
+}
+
 # Claim the first free agents port from the candidate list, bring its fixture
 # up + healthy, and export POCKETSHELL_AGENTS_PORT for the caller. Installs an
 # EXIT trap to release the flock on the way out (the container is left running
