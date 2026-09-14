@@ -8,6 +8,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,6 +41,7 @@ class AgentKindBadgeTest {
     }
 
     @Test
+    @Ignore("quarantined: #2683, expires 2026-09-29 — AssertionError at MavenArtifactFetcher.java:129 in :shared:ui-kit JVM unit tests (run 34784297883 on 3a520678b), green on next tip c84edc71d; suspected Robolectric resource-fetch hiccup — confirm root cause before lifting")
     fun badgeIsCompact() {
         var density = 1f
         composeRule.setContent {
