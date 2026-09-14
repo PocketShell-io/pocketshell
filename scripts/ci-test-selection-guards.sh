@@ -58,7 +58,12 @@ chmod +x scripts/select-test-areas.sh \
          scripts/ci-record-test-execution-ledger.sh \
          scripts/dev-fast-gate-parity-selftest.sh \
          scripts/check-journey-quarantine-expiry.sh \
-         scripts/test-journey-quarantine-non-blocking.sh
+         scripts/test-journey-quarantine-non-blocking.sh \
+         scripts/ci-release-validation-noxml-rootcause.sh \
+         scripts/test-ci-release-validation-noxml-rootcause.sh \
+         scripts/ci-release-emulator-red-issue.sh \
+         scripts/test-ci-release-emulator-red-issue.sh \
+         scripts/check-release-red-notify-wiring.py
 
 TIMINGS="$(mktemp)"
 trap 'rm -f "$TIMINGS"' EXIT
@@ -123,6 +128,27 @@ run_guard "test-journey-quarantine-non-blocking" \
 # be charged twice per push on the Unit critical path (#2067 C9). ~19 s.
 run_guard "release-ledger-lane-coverage" \
   bash tests/scripts/release-ledger-lane-coverage-test.sh
+
+# Issue #2675: the release lane's no-JUnit-XML diagnosis names the boot-tier
+# root cause instead of a bare ledger mismatch, and a single red Release
+# Emulator Validation run pages via its own marker-tracked issue (the #2356
+# streak tracker stays two-in-a-row). Both are best-effort/loud gh filers
+# with no network in their self-tests. The third lane pins the workflow
+# `if:` SEMANTICS those two depend on: the REV single-red pager gates on the
+# REV run's real event value ('workflow_run' — a REV run is never
+# 'schedule', so the shipped 'schedule' gate was a notify that could never
+# fire) and the release validation step gates on plain `!cancelled()` (a
+# `steps.boot_check.outcome == 'success'` conjunct skipped the boot retry
+# exactly when attempt 1 died). Parsed out of the YAML text; the self-test
+# regresses both shipped defects and demands a RED.
+run_guard "ci-release-validation-noxml-rootcause-selftest" \
+  bash scripts/test-ci-release-validation-noxml-rootcause.sh
+run_guard "ci-release-emulator-red-issue-selftest" \
+  bash scripts/test-ci-release-emulator-red-issue.sh
+run_guard "check-release-red-notify-wiring-selftest" \
+  scripts/check-release-red-notify-wiring.py --self-test
+run_guard "check-release-red-notify-wiring" \
+  scripts/check-release-red-notify-wiring.py
 
 suite_end=$(date +%s)
 printf '%-46s %4ss\n' "TOTAL" "$((suite_end - suite_start))" >> "$TIMINGS"

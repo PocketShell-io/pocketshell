@@ -208,7 +208,64 @@ jobs:
           restore-keys: |
             test-execution-ledger-${{ runner.os }}-
 
+      # Issue #2675: one bounded boot probe BEFORE the validation step. The
+      # runner action owns the boot, so when it dies (run 34759080447: adb
+      # daemon unreachable, emulator process gone ~46s into a cold boot) the
+      # validation script never gets control and the failure used to surface
+      # only as the ledger step's bare "no JUnit XML". This preflight is boot
+      # attempt 1 at a step NAMED for booting. Its failure does NOT skip the
+      # step below: the validation step runs anyway (its gate is plain
+      # !cancelled()) as the bounded boot retry (attempt 2), and the ledger's
+      # root-cause diagnosis points here. The suite itself still runs at most
+      # once — a retry that re-ran tests could pass on a flake and mask it,
+      # which a release gate must never do. Same pinned action and AVD config
+      # as the real step so the preflight proves the same boot path; the
+      # action boots a fresh emulator per step.
+      - name: Boot-check hosted emulator (issue #2675 bounded boot retry)
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        id: boot_check
+        env:
+          ADB: ${{ env.ANDROID_SDK }}/platform-tools/adb
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          disable-animations: true
+          # Identical boot config to the validation step below (issue #449
+          # GL pin, issue #2675 -no-snapshot) so a preflight pass proves the
+          # exact boot path the real run will use.
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          script: |
+            set -euo pipefail
+            # The action has already awaited its own boot timeout before the
+            # script runs; this bound re-checks the device it handed us is
+            # genuinely responsive rather than wedged half-booted.
+            boot_completed=""
+            for _ in $(seq 1 30); do
+              boot_completed="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
+              [[ "$boot_completed" == "1" ]] && break
+              sleep 5
+            done
+            if [[ "$boot_completed" != "1" ]]; then
+              echo "::error::Emulator boot preflight FAILED: sys.boot_completed='$boot_completed' after the bounded wait — the hosted emulator never produced a working device (run 34759080447 failure shape)."
+              exit 1
+            fi
+            echo "Emulator boot preflight OK: $(adb devices | tail -n +2 | grep -v '^$' | head -1)"
+
       - name: Run emulator-only release validation
+        # Issue #2675: the gate is plain !cancelled() — a failed boot
+        # preflight flows INTO this step as the bounded boot retry (boot
+        # attempt 2); it does not skip it. The action boots a fresh emulator
+        # either way, so the suite runs at most once on both paths
+        # (preflight green: this is the only suite attempt; preflight red:
+        # boot attempt 2 plus the only suite attempt). The previous
+        # `steps.boot_check.outcome == 'success'` gate skipped exactly the
+        # run where attempt 1 died, so the in-run retry the boot-check
+        # comment promises could never happen.
+        id: validation_run
+        if: ${{ !cancelled() }}
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         env:
           RUN_ID: ${{ steps.validation.outputs.run_id }}
@@ -235,12 +292,21 @@ jobs:
           # still loses GL init ('Failed to initialize 101010-2 format' ->
           # "No compose hierarchies found"), the gate cold-reboots the emulator
           # in-script and retries the affected selector on a fresh EGL surface.
-          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
+          # Issue #2675: -no-snapshot (never load NOR save) replaces
+          # -no-snapshot-save — run 34759080447 died in the snapshot path
+          # ("Failed to load snapshot 'default_boot'" then a process death
+          # ~46s into a cold boot), and a lane that must validate a release
+          # from clean has no business consulting prior state at all.
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           emulator-boot-timeout: 900
           script: scripts/release-emulator-validation.sh
 
       - name: Record and verify execution ledger (#2082)
         if: always()
+        # Issue #2675: the root-cause diagnosis pulls this run's failed-step
+        # logs via gh; the job already holds `actions: read`.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # Issue #2435: this step must NOT decide "did the run produce XML?"
@@ -285,6 +351,17 @@ jobs:
           done < "$scan"
           echo "staged $staged JUnit XML file(s) under $stage (scan exit $scan_status)"
           if [[ "$staged" -eq 0 ]]; then
+            # Issue #2675: a bare "no JUnit XML" error names the symptom two
+            # steps downstream of the real one — on run 34759080447 the
+            # emulator died during boot and this annotation was the only
+            # user-visible failure. Surface the boot/run step's signatures
+            # (adb daemon, snapshot, GL, process exit) BEFORE the bare error.
+            # Best-effort by contract: the diagnosis explains the red run, it
+            # never changes its verdict, so a diagnosis crash must not skip
+            # the ledger's own error.
+            chmod +x scripts/ci-release-validation-noxml-rootcause.sh
+            scripts/ci-release-validation-noxml-rootcause.sh \
+              --run-id "${{ steps.validation.outputs.run_id }}" || true
             echo "::error title=Test-execution ledger (issue #2082)::no JUnit XML from the release run — refusing to record or verify"
             exit 1
           fi
@@ -390,7 +467,15 @@ jobs:
   notify-nightly-rc-red:
     name: File/update red nightly-RC tracking issue
     needs: emulator-release-validation
+    # Issue #2675: `!cancelled()` is load-bearing. Without a status-check
+    # function, GitHub skips this job whenever its `needs` chain fails —
+    # `needs.emulator-release-validation.result == 'failure'` reads true and
+    # the job still never ran (observed on runs 34759080447 and 34775134824,
+    # both `completed/skipped` with every condition satisfied). This job was
+    # dead since #2356; the #2675 single-red filer in full-suite-notify.yml
+    # is its complement.
     if: >-
+      !cancelled() &&
       needs.emulator-release-validation.result == 'failure' &&
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'schedule'

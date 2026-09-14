@@ -103,7 +103,15 @@ extract_ledger_step_body() {
   # its fixed 10-space workflow indentation. Reading the committed YAML is the
   # point: a copy of the script in this harness would stay green while the
   # workflow regressed.
-  awk -v marker="$LEDGER_STEP_NAME" '
+  #
+  # GitHub expressions are substituted with the sandbox's fixture values:
+  # bash cannot expand `${{ ... }}` and a "bad substitution" aborts the body
+  # mid-run exactly where Actions would have expanded it (observed with the
+  # issue #2675 diagnosis call's --run-id). Any expression with no mapping
+  # here fails closed, so a new workflow expression cannot silently bypass
+  # the sandbox.
+  local body
+  body="$(awk -v marker="$LEDGER_STEP_NAME" '
     index($0, marker) { in_step = 1; next }
     in_step && !in_run && $0 ~ /^[[:space:]]*run: \|[[:space:]]*$/ { in_run = 1; next }
     in_run {
@@ -116,7 +124,11 @@ extract_ledger_step_body() {
       sub(/^          /, "")
       print
     }
-  ' "$1"
+  ' "$1" | sed -e 's/\${{ steps\.validation\.outputs\.run_id }}/gha-1/g')"
+  if grep -qF '${{' <<<"$body"; then
+    fail "extracted ledger step body still contains an unexpanded \${{ }} GitHub expression; add its fixture substitution to extract_ledger_step_body"
+  fi
+  printf '%s\n' "$body"
 }
 
 write_junit_xml() {
@@ -212,6 +224,12 @@ make_ledger_step_sandbox() {
     fail "extracted ledger step body does not --verify; the extractor is reading the wrong block"
   make_ledger_stub "$repository/scripts/check-test-execution-ledger.sh" \
     "$sandbox/ledger-calls" "$sandbox/staged-testcases"
+  # Issue #2675: the workflow's empty-run branch now best-effort-runs the REAL
+  # no-JUnit-XML root-cause diagnosis before the refusal error. Plant it — the
+  # step body `chmod +x`s it, and a sandbox without it dies at that chmod
+  # BEFORE the "#2082 refusal" assertion below can ever see the error line.
+  cp "$ROOT_DIR/scripts/ci-release-validation-noxml-rootcause.sh" \
+    "$repository/scripts/ci-release-validation-noxml-rootcause.sh"
   printf '%s\n' "$repository"
 }
 
@@ -220,7 +238,14 @@ run_ledger_step() {
   local repository="$2"
   (
     cd "$repository" || exit 90
-    RUNNER_TEMP="$sandbox/runner-temp" bash "$sandbox/ledger-step.sh" 2>&1
+    # GITHUB_RUN_ID/GITHUB_REPOSITORY/GH_TOKEN are emptied so the #2675
+    # diagnosis's gh path stays hermetic (same seam its own self-test uses):
+    # on a hosted runner those variables are real, and the best-effort
+    # `gh run view --log-failed` would make this case's expected output
+    # environment-dependent.
+    RUNNER_TEMP="$sandbox/runner-temp" \
+      GITHUB_RUN_ID='' GITHUB_REPOSITORY='' GH_TOKEN='' \
+      bash "$sandbox/ledger-step.sh" 2>&1
   )
 }
 
@@ -263,6 +288,11 @@ ledger_step_still_refuses_a_run_with_no_junit_xml() {
     fail "ledger step did not fail closed on a run with no JUnit XML (rc=$rc): $output"
   [[ "$output" == *"no JUnit XML from the release run — refusing to record or verify"* ]] ||
     fail "empty-run refusal lost its explicit #2082 message: $output"
+  # Issue #2675: the diagnosis runs BEFORE the bare error, so the refusal
+  # must still carry the provisional root-cause section — a sandbox or step
+  # body that drops the diagnosis call reddens here too.
+  grep -q "Provisional root cause for the missing JUnit XML" <<<"$output" ||
+    fail "empty-run branch no longer runs the #2675 root-cause diagnosis before the refusal: $output"
   [[ ! -s "$sandbox/ledger-calls" ]] ||
     fail "ledger step recorded/verified over an empty result set: $(cat "$sandbox/ledger-calls")"
   pass_case "ledger step still fails loudly when the release run really produced no XML (#2435)"

@@ -19,16 +19,31 @@ name: Full-suite red-run notify
 # Only fires for a SCHEDULED Tests run that concluded failure — never for a
 # push/PR/workflow_dispatch run (those have no "last known green scheduled
 # run" concept to bisect against) and never for a green run.
+#
+# Issue #2675: this workflow ALSO watches the Release Emulator Validation
+# lane (the #2356 validated-RC tier, fired by a green scheduled Tests run).
+# A red validated-RC run used to notify nobody on its first occurrence — the
+# in-lane #2356 streak tracker deliberately requires TWO consecutive
+# failures, and the 2026-09-13 red (run 34759080447, hosted emulator never
+# booted) sat unnoticed for ~5 hours until manual triage. The
+# notify-release-emulator-red job below pages on the FIRST red, same
+# file-or-update-one-issue mechanism as the Tests notify; the two-streak
+# tracker keeps its escalation role. The Tests job therefore gates on the
+# triggering workflow's NAME so the two lanes can never cross-file with each
+# other's job signatures.
 
 on:
   workflow_run:
-    workflows: ["Tests"]
+    workflows: ["Tests", "Release Emulator Validation"]
     types: [completed]
 
 jobs:
   notify:
     name: File/update red scheduled-run tracking issue
-    if: github.event.workflow_run.event == 'schedule' && github.event.workflow_run.conclusion == 'failure'
+    if: >-
+      github.event.workflow_run.name == 'Tests' &&
+      github.event.workflow_run.event == 'schedule' &&
+      github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -61,3 +76,47 @@ jobs:
             --unit-gate "${{ steps.jobs.outputs.unit_gate }}" \
             --integration "${{ steps.jobs.outputs.integration }}" \
             --emulator-journey-verdict "${{ steps.jobs.outputs.emulator_journey_verdict }}"
+
+  # Issue #2675: single-red paging for the validated-RC tier. Same
+  # file-or-update-one-issue mechanism as the Tests notify above, via
+  # scripts/ci-release-emulator-red-issue.sh's own stable marker (so the two
+  # trackers never merge).
+  #
+  # The event gate is deliberately NOT the Tests branch's 'schedule', because
+  # the two branches read DIFFERENT runs. Here github.event.workflow_run IS
+  # the Release Emulator Validation run, and Release Emulator Validation has
+  # no schedule trigger of its own — its runs are fired by 'workflow_run'
+  # (the nightly scheduled Tests chain) or 'workflow_dispatch' (manual), so
+  # its .event is never 'schedule'. Gating on 'schedule' would make this a
+  # notify that can never fire — exactly the dead-notify shape issue #2675
+  # was filed to kill. 'workflow_run' is the scheduled-chain tier: the REV
+  # job only actually runs when its triggering Tests run was a GREEN
+  # SCHEDULED run (see the `if:` in release-emulator-validation.yml), so a
+  # failed REV run with .event == 'workflow_run' is precisely a nightly-chain
+  # red. A manual 'workflow_dispatch' red keeps a human watching and does not
+  # page. The Tests branch above keeps 'schedule' because THERE the
+  # workflow_run context IS a Tests run, and Tests genuinely does carry a
+  # schedule trigger.
+  notify-release-emulator-red:
+    name: File/update red release-validation tracking issue
+    if: >-
+      github.event.workflow_run.name == 'Release Emulator Validation' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: File or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/ci-release-emulator-red-issue.sh \
+            --repo "${{ github.repository }}" \
+            --run-url "${{ github.event.workflow_run.html_url }}" \
+            --sha "${{ github.event.workflow_run.head_sha }}"
