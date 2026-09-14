@@ -250,6 +250,26 @@ class UsageGlanceViewModelTest {
         assertEquals(0, stack.factory.dialCount)
     }
 
+    /**
+     * aplexer reports this agent as "opencode"; quse keys the same CLI's quota
+     * under provider "go". The focus boundary must alias between the two
+     * vocabularies or an OpenCode session never focuses — here it would fall
+     * back to the cross-provider pill "Claude 7d 90%".
+     */
+    @Test
+    fun `an opencode session focuses the producer's go record`() = vmTest { stack ->
+        val hostId = stack.seedHost("go-box")
+        stack.scriptUsage(OPENCODE_GO_NDJSON)
+        stack.scriptSessions(sessionsListing(APLEXER_OPENCODE_ROW))
+        stack.connect(hostId)
+        val viewModel = viewModel(stack)
+
+        viewModel.refresh(hostId = hostId, sessionName = SESSION)
+        runCurrent()
+
+        assertEquals("Go 26%", viewModel.state.value?.label)
+    }
+
     // --- helpers -----------------------------------------------------------
 
     /**
@@ -347,6 +367,25 @@ class UsageGlanceViewModelTest {
         const val APLEXER_OLD_CLI_ROW =
             "{\"name\": \"$SESSION\", \"attached\": true, " +
                 "\"engine\": \"shell\"}"
+
+        /**
+         * quse keys the OpenCode CLI's quota under provider "go"; the claude
+         * record's 7d window is deliberately the worst on the box (90% used)
+         * so the unfocused pill is "Claude 7d 90%" and the focused one "Go 26%".
+         */
+        const val OPENCODE_GO_NDJSON =
+            "{\"provider\":\"go\",\"status\":\"ok\",\"windows\":{" +
+                "\"5h\":{\"percent_remaining\":64.0,\"reset_at\":null}," +
+                "\"7d\":{\"percent_remaining\":74.0,\"reset_at\":null}}," +
+                "\"block_reason\":null,\"error\":null,\"details\":{}}\n" +
+                "{\"provider\":\"claude\",\"status\":\"ok\",\"windows\":{" +
+                "\"7d\":{\"percent_remaining\":10.0,\"reset_at\":null}}," +
+                "\"block_reason\":null,\"error\":null,\"details\":{}}"
+
+        /** The aplexer row for an OpenCode workload: `agent` is "opencode". */
+        const val APLEXER_OPENCODE_ROW =
+            "{\"name\": \"$SESSION\", \"attached\": true, " +
+                "\"engine\": \"shell\", \"agent\": \"opencode\"}"
 
         /** The id's session, renamed on the host since the route was built. */
         const val RENAME_SURVIVOR_ROW =

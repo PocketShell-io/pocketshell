@@ -102,6 +102,20 @@ internal fun glanceProviderLabel(provider: String): String = when (provider.lowe
 }
 
 /**
+ * The AGENT vocabulary aplexer reports (`sessions list --json` `agent`) mapped
+ * onto the PRODUCER vocabulary quse keys its records with, at the focus
+ * boundary. The two only disagree today for OpenCode: aplexer emits
+ * `agent: "opencode"` (AgentKind) while quse keys the same CLI's quota under
+ * provider "go" (docs/usage-panel.md) — without the alias an OpenCode session
+ * silently loses its focus and falls back to the cross-provider pill. Identity
+ * for every name the vocabularies already share; one-way, agent → producer.
+ */
+internal fun usageProviderKey(agent: String): String = when (agent.lowercase()) {
+    "opencode" -> "go"
+    else -> agent
+}
+
+/**
  * Compact window hint. Only a CLEAN short token ("5h", "7d", "weekly") is
  * surfaced; internal-looking keys ("short_term") and long names are dropped so
  * the pill stays legible. The provider label alone still answers "which
@@ -134,9 +148,11 @@ const val USAGE_GLANCE_PILL_TAG: String = "session:usage-pill"
  * user is asking — the maintainer's report was a Claude session whose pill
  * read "Grok 7d 83%".
  *
- * [provider] is the RAW host vocabulary ("claude"), matched case-insensitively
- * against [UsageProviderRecord.provider]. Deliberately not a display label: a
- * future edit to [glanceProviderLabel] must not be able to break the match.
+ * [provider] is the RAW host vocabulary — the aplexer-detected agent name
+ * ("claude") — matched case-insensitively against [UsageProviderRecord.provider]
+ * after the agent→producer alias in [usageProviderKey]. Deliberately not a
+ * display label: a future edit to [glanceProviderLabel] must not be able to
+ * break the match.
  */
 data class GlanceFocus(
     val hostId: Long,
@@ -256,7 +272,7 @@ private fun focusedCandidate(
 ): GlanceCandidate? {
     if (focus == null) return null
     val snapshot = snapshots[focus.hostId] as? UsageSnapshot.Records ?: return null
-    val wanted = focus.provider.trim()
+    val wanted = usageProviderKey(focus.provider.trim())
     if (wanted.isEmpty()) return null
     val record = snapshot.records.firstOrNull { it.provider.equals(wanted, ignoreCase = true) }
         ?: return null

@@ -109,6 +109,42 @@ class UsageGlancePillTest {
     }
 
     /**
+     * The two host vocabularies disagree for OpenCode: aplexer detects and
+     * reports `agent: "opencode"` while quse keys the same CLI's quota under
+     * provider "go" (docs/usage-panel.md). The focus must cross that gap —
+     * without the alias the session silently falls back to the cross-provider
+     * pill, the same class of miss #2587 fixed for Claude and Grok.
+     */
+    @Test
+    fun `an opencode agent focus matches the go record the producer keys it under`() {
+        val pill = pill(
+            snapshots = mapOf(
+                HOST to records(
+                    claude(40.0, 38.0),
+                    record(provider = "go", windows = listOf(window("5h", 36.0), window("7d", 26.0))),
+                ),
+            ),
+            focus = GlanceFocus(HOST, "opencode"),
+        )
+
+        assertEquals("Go 26%", pill?.label)
+        assertNull(pill?.window)
+    }
+
+    /** The alias is one-way agent→producer: the producer's own key matches as before. */
+    @Test
+    fun `a focus on the producer's own go key still matches`() {
+        val pill = pill(
+            snapshots = mapOf(
+                HOST to records(record(provider = "go", windows = listOf(window("7d", 26.0)))),
+            ),
+            focus = GlanceFocus(HOST, "go"),
+        )
+
+        assertEquals("Go 26%", pill?.label)
+    }
+
+    /**
      * The focus changes WHICH window is displayed, never whether the reading is
      * honest about its age: a stale focused pill still says so and still
      * carries the fetch clock.
