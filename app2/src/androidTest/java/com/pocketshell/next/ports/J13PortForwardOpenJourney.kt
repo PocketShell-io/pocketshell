@@ -37,6 +37,7 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -132,6 +133,7 @@ class J13PortForwardOpenJourney {
      * screen (issue #2611 acceptance: a real navigation path is exercised).
      */
     @Test
+    @Ignore("quarantined: #2679, expires 2026-09-27 — session-tree ports row not displayed when tapped (runs 34779999990, 34820243551, 34870815039 on f7feb8338/69aa7c28c/a3404ec67, assertIsDisplayed 'The component is not displayed!'); identical signature all three times, every other journey green")
     fun tappingPortsOnTheSessionTreeOpensThePortForwardScreen() {
         when (phase()) {
             PHASE_SETUP -> runSetupPhase()

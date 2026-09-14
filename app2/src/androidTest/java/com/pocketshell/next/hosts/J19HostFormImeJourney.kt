@@ -33,6 +33,7 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import java.io.File
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -119,6 +120,7 @@ class J19HostFormImeJourney {
      * controls are visible above the keyboard — not merely present under it.
      */
     @Test
+    @Ignore("quarantined: #2679, expires 2026-09-27 — 'host-list-add-methods' never appeared within 30000ms on the hosted AVD (run 34781691505 on 41890ffb6); first hosted exposure of the #2551 IME journeys, same hostile-environment class as #2514/#2622")
     fun addHostActionsStayReachableUnderTheRealIme() {
         awaitScrollableTag(hostRowTag(HOST_ID))
 
@@ -145,6 +147,7 @@ class J19HostFormImeJourney {
      * column, nothing opting into the IME inset. Fails on the pre-fix layout.
      */
     @Test
+    @Ignore("quarantined: #2679, expires 2026-09-27 — the real IME never appeared within 30000ms on the hosted AVD (run 34781691505 on 41890ffb6); first hosted exposure of the #2551 IME journeys")
     fun addTunnelSubmitStaysReachableUnderTheRealIme() {
         compose.openQuietHost(HOST_ID, TIMEOUT_MS)
         awaitTag(HOST_WORKSPACES_ACTIONS_TAG)

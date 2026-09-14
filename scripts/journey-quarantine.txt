@@ -16,12 +16,10 @@
 # graveyard entry.
 #
 # scripts/check-journey-quarantine-expiry.sh fails CI once `expires` has
-# passed. Resolve an entry by DELETING its row (the class is fixed or removed)
-# or by RE-TRIAGING it (replace the row with a fresh `added`/`expires` and a
-# reason that says why it is still flaking) — never let a row sit expired.
-#
-# scripts/check-journey-quarantine-expiry.sh fails CI once `expires` has
 # passed. Resolve an entry by DELETING its row AND its @Ignore (the method is
 # fixed or removed) or by RE-TRIAGING it (a fresh `added`/`expires` in both
 # places, and a reason that says why it is still broken) — never let a row sit
 # expired.
+com.pocketshell.next.hosts.J19HostFormImeJourney#addHostActionsStayReachableUnderTheRealIme	#2679	2026-09-14	2026-09-27	'host-list-add-methods' never appeared within 30000ms on the hosted AVD (run 34781691505 on 41890ffb6); first hosted exposure of the #2551 IME journeys, same hostile-environment class as #2514/#2622
+com.pocketshell.next.hosts.J19HostFormImeJourney#addTunnelSubmitStaysReachableUnderTheRealIme	#2679	2026-09-14	2026-09-27	the real IME never appeared within 30000ms on the hosted AVD (run 34781691505 on 41890ffb6); first hosted exposure of the #2551 IME journeys
+com.pocketshell.next.ports.J13PortForwardOpenJourney#tappingPortsOnTheSessionTreeOpensThePortForwardScreen	#2679	2026-09-14	2026-09-27	session-tree ports row not displayed when tapped (runs 34779999990, 34820243551, 34870815039 on f7feb8338/69aa7c28c/a3404ec67, assertIsDisplayed 'The component is not displayed!'); identical signature all three times, every other journey green
