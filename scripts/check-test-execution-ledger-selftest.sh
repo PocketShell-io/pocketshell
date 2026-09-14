@@ -47,6 +47,9 @@ mkdir -p \
   "$SANDBOX/results"
 
 cp "$SCRIPT_DIR/lib/test-areas.sh" "$SANDBOX/scripts/lib/test-areas.sh"
+# #2692: the guard now also reads the journey-quarantine registry through its
+# parse lib, so the sandbox copy needs it for the exemption cases below.
+cp "$SCRIPT_DIR/lib/journey-quarantine.sh" "$SANDBOX/scripts/lib/journey-quarantine.sh"
 cp "$GUARD" "$SANDBOX/scripts/check-test-execution-ledger.sh"
 
 cat > "$SANDBOX/app/src/test/java/com/pocketshell/app/alpha/AlphaTest.kt" <<'KT'
@@ -989,6 +992,158 @@ elif grep -q 'FAIL: 1 selected class(es) produced NO result' <<<"$out" &&
 else
   bad "35 wrapper missing-class mutation failed for the wrong reason:\n$out"
 fi
+
+# Cases 24-35 exported GIT_INDEX_FILE (the variant-probe index over the REAL
+# repo). The #2692 cases below are SANDBOX-rooted again: run_guard points
+# POCKETSHELL_TEST_AREAS_REPO_ROOT at $SANDBOX, and the class index reads
+# git ls-files — with the real-repo index still exported, the sandbox verify
+# would register 229 REAL classes against the 3-rule sandbox manifest and every
+# case here would drown in "belong to NO area". Drop to the sandbox repo's own
+# index; the variant plants are 24-35 state, and the EXIT trap still removes
+# them (cleanup re-points GIT_INDEX_FILE itself from VARIANT_INDEX).
+unset GIT_INDEX_FILE
+
+# ===========================================================================
+# CASES 36-43 — the #2692 journey-quarantine exemption on the cadence check.
+#
+# #2690 is the shape this kills: a quarantined journey is @Ignore'd, so it can
+# never produce an executed testcase, and the never-executed/7-day check reds
+# every scheduled release-validation run until the quarantine lifts. The
+# exemption must come from the REGISTRY (scripts/journey-quarantine.txt),
+# honour the row's expiry, and lift itself the day the row expires — so each
+# green below is paired with the same fixture re-dated into the past. All
+# dates are derived from the pinned NOW, so nothing here rots with the wall
+# clock. --now 1800000000 is 2027-01-15 UTC.
+# ===========================================================================
+Q_TODAY="$(date -u -d "@$NOW" +%Y-%m-%d)"
+Q_FUTURE="$(date -u -d "@$((NOW + 30 * DAY))" +%Y-%m-%d)"
+Q_PAST="$(date -u -d "@$((NOW - 30 * DAY))" +%Y-%m-%d)"
+
+write_quarantine() {  # $1 = file, $2 = expires
+  printf 'com.pocketshell.app.beta.BetaTest#flakyMethod\t#2692\t%s\t%s\tBetaTest cannot pass on the hosted AVD\n' \
+    "$Q_PAST" "$2" > "$1"
+}
+QREG_LIVE="$SANDBOX/quarantine-live.txt"
+QREG_DEAD="$SANDBOX/quarantine-expired.txt"
+QREG_TODAY="$SANDBOX/quarantine-expires-today.txt"
+QREG_BROKEN_DATE="$SANDBOX/quarantine-bad-date.txt"
+QREG_BROKEN_ROW="$SANDBOX/quarantine-bad-row.txt"
+write_quarantine "$QREG_LIVE" "$Q_FUTURE"
+write_quarantine "$QREG_DEAD" "$Q_PAST"
+write_quarantine "$QREG_TODAY" "$Q_TODAY"
+printf 'com.pocketshell.app.beta.BetaTest#flakyMethod\t#2692\t%s\tnot-a-date\tgarbage expiry exempts nothing\n' "$Q_PAST" > "$QREG_BROKEN_DATE"
+printf 'only-one-field\n' > "$QREG_BROKEN_ROW"
+
+# CASE 36 — never-executed class + LIVE row -> exempt, by name. A silent
+# exemption would be indistinguishable from the ledger simply lying.
+write_ledger "$FRESH_ALPHA"
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --quarantine-file "$QREG_LIVE" 2>&1)"; then
+  if grep -q 'exempt from the cadence check by a NON-EXPIRED journey-quarantine row' <<<"$out" &&
+     grep -q 'BetaTest (never executed; live journey-quarantine row' <<<"$out"; then
+    ok "36 a never-executed class with a live quarantine row passes, exempted BY NAME"
+  else
+    bad "36 verify passed but the exemption was not listed:\n$out"
+  fi
+else
+  bad "36 a live quarantine row must exempt a never-executed class:\n$out"
+fi
+
+# CASE 37 — the SAME ledger and row EXPIRED: the exemption auto-lifts and the
+# class is checked normally again (a still-ignored-but-expired class must FAIL).
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --quarantine-file "$QREG_DEAD" 2>&1)"; then
+  bad "37 an EXPIRED quarantine row still exempted the class:\n$out"
+elif grep -q 'NEVER executed' <<<"$out" && grep -q 'BetaTest' <<<"$out" &&
+     ! grep -q 'exempt from the cadence check' <<<"$out"; then
+  ok "37 the same class with an expired row FAILS again (exemption auto-lifts)"
+else
+  bad "37 guard failed for the wrong reason:\n$out"
+fi
+
+# CASE 38 — the boundary itself: a row expiring TODAY (today == expires) is
+# still live, the same day check-journey-quarantine-expiry.sh starts failing
+# it. Exempting a day earlier would open a gap; a day later would double-red
+# with the expiry guard for one day.
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --quarantine-file "$QREG_TODAY" 2>&1)"; then
+  if grep -q 'BetaTest (never executed; live journey-quarantine row' <<<"$out"; then
+    ok "38 a row expiring TODAY still exempts (today <= expires, matching the expiry guard)"
+  else
+    bad "38 a row expiring today should still exempt:\n$out"
+  fi
+else
+  bad "38 a row expiring exactly today must not redden the ledger:\n$out"
+fi
+
+# CASE 39 — the CADENCE side of the exemption (#2690's second half): a
+# quarantined class's last pre-quarantine execution ages out of the 7-day
+# window within days, so the stale check must exempt it too, not only `never`.
+write_ledger "$FRESH_ALPHA" "com.pocketshell.app.beta.BetaTest	$((NOW - 8 * DAY))	unit"
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --max-age-days 7 --quarantine-file "$QREG_LIVE" 2>&1)"; then
+  if grep -q 'BetaTest (last executed 8d ago; live journey-quarantine row' <<<"$out"; then
+    ok "39 an 8-day-stale quarantined class is exempt on the cadence side too"
+  else
+    bad "39 verify passed but the stale-side exemption was not listed:\n$out"
+  fi
+else
+  bad "39 a live quarantine row must exempt a stale class:\n$out"
+fi
+
+# CASE 40 — mutation of 39: expired row, same stale ledger -> RED again.
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --max-age-days 7 --quarantine-file "$QREG_DEAD" 2>&1)"; then
+  bad "40 an expired row exempted a stale class:\n$out"
+elif grep -q 'have not executed within 7 day' <<<"$out" && grep -q 'BetaTest' <<<"$out"; then
+  ok "40 a stale class with an expired row fails the cadence check again"
+else
+  bad "40 guard failed for the wrong reason:\n$out"
+fi
+
+# CASE 41 — the exemption is read off the REGISTRY, never a class list: a
+# never-executed class with NO row stays red even while its sibling holds a
+# live row. (This is also what makes the fixture classes interchangeable —
+# nothing here knows any real journey by name.)
+write_ledger "$FRESH_BETA"
+if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --quarantine-file "$QREG_LIVE" 2>&1)"; then
+  bad "41 a live row for BetaTest exempted unregistered AlphaTest:\n$out"
+elif grep -q 'NEVER executed' <<<"$out" && grep -q 'AlphaTest' <<<"$out" &&
+     ! grep -q 'AlphaTest (never executed; live journey-quarantine row' <<<"$out"; then
+  ok "41 the exemption covers only classes the registry actually names"
+else
+  bad "41 guard failed for the wrong reason:\n$out"
+fi
+
+# CASE 42 — the registry path is ALSO taken from the environment (the shape
+# the workflow-level harness uses, since the release step body cannot grow a
+# flag): POCKETSHELL_JOURNEY_QUARANTINE_FILE alone must drive the exemption.
+write_ledger "$FRESH_ALPHA"
+if out="$(POCKETSHELL_JOURNEY_QUARANTINE_FILE="$QREG_LIVE" \
+          POCKETSHELL_TEST_AREAS_REPO_ROOT="$SANDBOX" \
+          POCKETSHELL_TEST_AREAS_MANIFEST="$MANIFEST" \
+          POCKETSHELL_TEST_AREAS_JOURNEY_SUITE="$SANDBOX/scripts/ci-journey-suite.sh" \
+          bash "$SANDBOX/scripts/check-test-execution-ledger.sh" \
+          --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" 2>&1)"; then
+  if grep -q 'BetaTest (never executed; live journey-quarantine row' <<<"$out"; then
+    ok "42 POCKETSHELL_JOURNEY_QUARANTINE_FILE drives the exemption without the flag"
+  else
+    bad "42 env-var registry passed but the exemption was not listed:\n$out"
+  fi
+else
+  bad "42 the env-var registry path must exempt exactly like the flag:\n$out"
+fi
+
+# CASE 43 — degenerate registries exempt NOTHING (the exemption fails closed):
+# a row whose expiry is not a real date, and a registry that does not parse.
+# Registry hygiene stays the expiry guard's red; here the row is simply worth-
+# less as an exemption, and the class is checked normally.
+write_ledger "$FRESH_ALPHA"
+for reg in "$QREG_BROKEN_DATE" "$QREG_BROKEN_ROW"; do
+  if out="$(run_guard --verify --ledger "$SANDBOX/ledger.tsv" --now "$NOW" --quarantine-file "$reg" 2>&1)"; then
+    bad "43 a degenerate registry ($reg) still exempted the class:\n$out"
+  elif grep -q 'NEVER executed' <<<"$out" && grep -q 'BetaTest' <<<"$out" &&
+       ! grep -q 'exempt from the cadence check' <<<"$out"; then
+    ok "43 $(basename "$reg") exempts nothing — the class fails normally"
+  else
+    bad "43 guard failed for the wrong reason ($reg):\n$out"
+  fi
+done
 
 echo
 echo "check-test-execution-ledger selftest: $PASS passed, $FAIL failed"

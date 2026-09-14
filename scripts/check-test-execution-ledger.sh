@@ -36,7 +36,14 @@
 #
 #   check-test-execution-ledger.sh --verify [--max-age-days N]
 #       Fail when any registered test class (a) belongs to no area, or (b) has
-#       not executed within N days (default 7).
+#       not executed within N days (default 7). A class holding a NON-EXPIRED
+#       row in scripts/journey-quarantine.txt is exempt from (b) (#2692): a
+#       quarantined journey is @Ignore'd, so it cannot produce executed
+#       testcases for the whole quarantine window, and demanding ledger
+#       evidence would red every scheduled run (the #2690 release red). The
+#       exemption lifts itself when the row's `expires` passes — a
+#       still-ignored-but-expired class fails here again. The no-area check
+#       (a) never exempts.
 #
 #   check-test-execution-ledger.sh --attendance --results-root DIR
 #       Current-run selected / executed-unskipped / asserted ledger (#2082,
@@ -56,6 +63,11 @@
 #                     (unit | unit-debug | unit-release | androidTest | all).
 #                     unit-debug = test+testDebug (the Debug job's artifact);
 #                     unit-release = test+testRelease. Default all.
+#   --quarantine-file F
+#                     verify: journey-quarantine registry read for the #2692
+#                     cadence exemption (default $POCKETSHELL_JOURNEY_QUARANTINE_FILE
+#                     or scripts/journey-quarantine.txt). A missing file
+#                     exempts nothing.
 #   --newer-than F    --record/--attendance: ignore XML not newer than F
 #                     (the #1646 UP-TO-DATE / FROM-CACHE marker).
 #   --selected-file F attendance: selected FQCNs, one per line
@@ -103,6 +115,16 @@ JOURNEY_SUITE="${POCKETSHELL_TEST_AREAS_JOURNEY_SUITE:-$SCRIPT_DIR/ci-app2-journ
 source "$SCRIPT_DIR/lib/test-areas.sh"
 POCKETSHELL_TA_REPO_ROOT="$REPO_ROOT"
 
+# The journey-quarantine registry (issue #2692). --verify exempts a class from
+# the never-executed/7-day checks while a NON-EXPIRED row names it. This guard
+# consumes the registry file through its parse lib — the format is the ONLY
+# thing shared with scripts/check-journey-quarantine-expiry.sh, which is never
+# invoked from here (the two guards stay independent: a broken row reddens the
+# expiry guard on its own and buys no exemption here).
+# shellcheck source=lib/journey-quarantine.sh
+source "$SCRIPT_DIR/lib/journey-quarantine.sh"
+QUARANTINE_FILE="${POCKETSHELL_JOURNEY_QUARANTINE_FILE:-$(pocketshell_journey_quarantine_default_file)}"
+
 MODE=""
 RESULTS_ROOT=""
 TIER="unspecified"
@@ -130,6 +152,7 @@ while [[ $# -gt 0 ]]; do
     --results-root) RESULTS_ROOT="$2"; shift 2 ;;
     --tier) TIER="$2"; shift 2 ;;
     --ledger) LEDGER="$2"; shift 2 ;;
+    --quarantine-file) QUARANTINE_FILE="$2"; shift 2 ;;
     --max-age-days) MAX_AGE_DAYS="$2"; shift 2 ;;
     --now) NOW="$2"; shift 2 ;;
     --report) REPORT_ONLY=1; shift ;;
@@ -142,7 +165,7 @@ while [[ $# -gt 0 ]]; do
     --identity) IDENTITY_PAIRS+=("$2"); shift 2 ;;
     --out) ATTENDANCE_OUT="$2"; shift 2 ;;
     --print-selected) MODE="print-selected"; shift ;;
-    -h|--help) sed -n '2,80p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,95p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -501,6 +524,15 @@ is_ledger_usable() {
   [[ -s "$LEDGER" ]]
 }
 
+# A quarantine row may only exempt a class while its `expires` field is a REAL
+# calendar date — a garbage expiry must never stretch an exemption. Anchored on
+# the same strict YYYY-MM-DD regex the expiry guard uses, so a date one guard
+# accepts the other cannot misread (independence with shared semantics, #2692).
+ledger_is_iso_date() {
+  [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || return 1
+  date -u -d "$1" >/dev/null 2>&1
+}
+
 do_verify() {
   local failures=0
   echo "== test-execution ledger =="
@@ -540,6 +572,34 @@ do_verify() {
   # than a wrong answer, but a hang is still a guard nobody will keep enabled.
   pocketshell_test_areas_build_index
 
+  # ---------------------------------------------------------------------------
+  # THE #2692 EXEMPTION MAP. Registry rows name FQCN#method; the cadence check
+  # is per class, so a class is exempt while ANY of its rows is live. "Live"
+  # means today (UTC, derived from --now so tests can pin it) <= expires — the
+  # exact boundary at which check-journey-quarantine-expiry.sh starts failing
+  # the row. Fail-closed on every degenerate input: a registry that is absent
+  # (the lib's normal steady state) or failed to parse, a row with a
+  # non-date expiry, all exempt NOTHING. The exemption must be earned by a
+  # well-formed, unexpired row, or the class is checked normally.
+  # ---------------------------------------------------------------------------
+  local -A quarantine_exempt=()
+  local -a exempted=()
+  local q_today q_i q_cls q_exp
+  q_today="$(date -u -d "@$NOW" +%Y-%m-%d)"
+  if pocketshell_journey_quarantine_load "$QUARANTINE_FILE"; then
+    for q_i in "${!POCKETSHELL_JQ_FQCN[@]}"; do
+      q_cls="$(pocketshell_journey_quarantine_class "${POCKETSHELL_JQ_FQCN[$q_i]}")"
+      q_exp="${POCKETSHELL_JQ_EXPIRES[$q_i]}"
+      # ISO dates compare correctly as strings; "today <= expires" is spelled
+      # as its negation because [[ ]] has no <= string operator.
+      if [[ -n "$q_cls" ]] && ledger_is_iso_date "$q_exp" && [[ ! "$q_today" > "$q_exp" ]]; then
+        quarantine_exempt["$q_cls"]=1
+      fi
+    done
+  else
+    echo "WARN: journey-quarantine registry $QUARANTINE_FILE failed to parse — NO cadence exemption granted (a broken row exempts nothing; check-journey-quarantine-expiry.sh owns that red)"
+  fi
+
   local cutoff=$(( NOW - MAX_AGE_DAYS * 86400 ))
   local -a no_area=() never=() stale=()
   local -A seen_registered=()
@@ -570,9 +630,17 @@ do_verify() {
 
     at="${last[$cls]:-}"
     if [[ -z "$at" ]]; then
-      never+=("$cls")
+      if [[ -n "${quarantine_exempt[$cls]:-}" ]]; then
+        exempted+=("$cls (never executed; live journey-quarantine row — #2692)")
+      else
+        never+=("$cls")
+      fi
     elif [[ "$at" -lt "$cutoff" ]]; then
-      stale+=("$cls (last executed $(( (NOW - at) / 86400 ))d ago)")
+      if [[ -n "${quarantine_exempt[$cls]:-}" ]]; then
+        exempted+=("$cls (last executed $(( (NOW - at) / 86400 ))d ago; live journey-quarantine row — #2692)")
+      else
+        stale+=("$cls (last executed $(( (NOW - at) / 86400 ))d ago)")
+      fi
     fi
   done < <(registered_classes)
 
@@ -600,8 +668,21 @@ do_verify() {
       printf '  %s\n' "${stale[@]}"
       failures=$((failures + 1))
     fi
+    if [[ "${#exempted[@]}" -gt 0 ]]; then
+      # The exemption is printed, never silent: an invisible exemption is how
+      # a quarantine turns back into a graveyard. The rows themselves stay
+      # policed by check-journey-quarantine-expiry.sh; this lists only what
+      # they are currently buying.
+      echo
+      echo "OK: ${#exempted[@]} registered class(es) are exempt from the cadence check by a NON-EXPIRED journey-quarantine row (auto-lifts when the row expires):"
+      printf '  %s\n' "${exempted[@]}"
+    fi
     if [[ "${#never[@]}" -eq 0 && "${#stale[@]}" -eq 0 ]]; then
-      echo "OK: every registered class executed within the ${MAX_AGE_DAYS}-day window"
+      if [[ "${#exempted[@]}" -eq 0 ]]; then
+        echo "OK: every registered class executed within the ${MAX_AGE_DAYS}-day window"
+      else
+        echo "OK: every registered class executed within the ${MAX_AGE_DAYS}-day window or holds a live journey-quarantine exemption"
+      fi
     fi
   fi
 

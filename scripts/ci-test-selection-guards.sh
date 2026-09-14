@@ -45,7 +45,10 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 # a future workflow-level `env:` would silently point a guard at a sandbox.
 for _v in $(compgen -e || true); do
   case "$_v" in
-    POCKETSHELL_TEST_AREAS_*|POCKETSHELL_TA_*|POCKETSHELL_TEST_LEDGER) unset "$_v" ;;
+    # POCKETSHELL_JOURNEY_QUARANTINE_* joined with #2692: the ledger's cadence
+    # exemption now reads the registry through the same knob the #2355 expiry
+    # guard uses, so both guards must see the COMMITTED list.
+    POCKETSHELL_TEST_AREAS_*|POCKETSHELL_TA_*|POCKETSHELL_TEST_LEDGER|POCKETSHELL_JOURNEY_QUARANTINE_*) unset "$_v" ;;
   esac
 done
 unset _v
