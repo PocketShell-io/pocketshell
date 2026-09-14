@@ -246,8 +246,11 @@ internal fun ComposerRecordingControlsRowRender() {
             }
         }
         // Bottom row: a single right-aligned balanced action row —
-        // [Discard · Insert · Send]. No editing tools compete for this row while
-        // recording, so Discard sits next to Insert and Send (#1245).
+        // [Discard · Insert · Send · Stop]. Send is the #2602 demoted outline:
+        // the trailing Stop disc is the row's one accent, so a mis-tap on the
+        // costly control (Send submits) is less likely than on the cheap one
+        // (Stop keeps the text). No editing tools compete for this row while
+        // recording (#1245).
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -288,23 +291,36 @@ internal fun ComposerRecordingControlsRowRender() {
                     fontWeight = FontWeight.SemiBold,
                 )
             }
-            // Send — accent primary pill (48dp).
+            // Send — #2602 demoted Secondary outline: SurfaceElev fill,
+            // AccentDim border, accent label. The accent belongs to Stop.
             Row(
                 modifier = Modifier
                     .height(48.dp)
                     .clip(RoundedCornerShape(22.dp))
-                    .background(PocketShellColors.Accent, RoundedCornerShape(22.dp))
+                    .background(PocketShellColors.SurfaceElev, RoundedCornerShape(22.dp))
+                    .border(1.dp, PocketShellColors.AccentDim, RoundedCornerShape(22.dp))
                     .padding(horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     text = "Send",
-                    color = PocketShellColors.OnAccent,
+                    color = PocketShellColors.Accent,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(text = "➤", color = PocketShellColors.OnAccent, fontSize = 13.sp)
+                Text(text = "➤", color = PocketShellColors.Accent, fontSize = 13.sp)
+            }
+            // Stop — the row's ONE accent: filled accent disc in the mic's own
+            // trailing slot (#2598), ends the dictation and keeps the text.
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(PocketShellColors.Accent, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(text = "■", color = PocketShellColors.OnAccent, fontSize = 15.sp)
             }
         }
     }

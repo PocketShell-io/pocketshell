@@ -105,6 +105,24 @@ class ComposerRenders {
         )
     }
 
+    /**
+     * #2602: the dictation rows share one Send treatment — the demoted
+     * outline, so the filled accent belongs to the Stop disc alone while a
+     * dictation is live. Transcribing has no Stop disc, and Send staying
+     * muted there keeps the "draft is not committed yet" grammar unbroken
+     * from recording through transcription.
+     */
+    @Test
+    fun composerTranscribing() = render("p1-composer-transcribing") {
+        ComposerBar(
+            state = ComposerUiState(
+                draft = "run the tests and",
+                recording = RecordingState.Transcribing,
+                micAvailable = true,
+            ),
+        )
+    }
+
     @Test
     fun composerPreview() = render("p1-composer-preview") {
         ComposerBar(

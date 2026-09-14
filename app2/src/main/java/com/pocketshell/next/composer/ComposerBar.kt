@@ -727,6 +727,15 @@ private fun ToolGlyphButton(
     }
 }
 
+/**
+ * Send commits the draft and submits it.
+ *
+ * Idle, it is the row's primary: filled accent. On the recording/transcribing
+ * rows it demotes to the shared Secondary outline (#2602): the trailing Stop
+ * disc is the row's one accent, because a mis-tap on Stop costs nothing while
+ * a mis-tap on Send submits a half-dictated sentence to a live session — the
+ * two must not carry equal visual weight.
+ */
 @Composable
 private fun SendButton(
     onClick: () -> Unit,
@@ -735,13 +744,26 @@ private fun SendButton(
     recording: Boolean = false,
 ) {
     val height = if (recording) ComposerRecordingPillHeight else ComposerIdlePillHeight
-    val containerColor = if (enabled) PocketShellColors.Accent else PocketShellColors.SurfaceElev
-    val contentColor = if (enabled) PocketShellColors.OnAccent else PocketShellColors.TextMuted
+    val containerColor =
+        if (!recording && enabled) PocketShellColors.Accent else PocketShellColors.SurfaceElev
+    val contentColor = when {
+        !enabled -> PocketShellColors.TextMuted
+        recording -> PocketShellColors.Accent
+        else -> PocketShellColors.OnAccent
+    }
+    // Outline only on the dictation rows: idle Send keeps its borderless fill
+    // (the one Primary there), recording Send reads as the ui-kit Secondary.
+    val border = when {
+        !recording -> Modifier
+        enabled -> Modifier.border(1.dp, PocketShellColors.AccentDim, ComposerActionPillShape)
+        else -> Modifier.border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
+    }
     Row(
         modifier = modifier
             .height(height)
             .clip(ComposerActionPillShape)
             .background(color = containerColor, shape = ComposerActionPillShape)
+            .then(border)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = if (recording) 16.dp else 18.dp),
         verticalAlignment = Alignment.CenterVertically,
