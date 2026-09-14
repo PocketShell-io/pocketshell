@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -46,6 +47,12 @@ private val TrackRadius = 4.dp
  * [progress] is clamped to `[0f, 1f]` before rendering — callers don't
  * have to round-trip through a coercion before passing arbitrary float
  * usage ratios in.
+ *
+ * The bar is **determinate only**, and the clamped value is published as
+ * progress semantics (#2568): TalkBack reads the fraction, and compose tests
+ * can assert the rendered ratio instead of merely that a bar is present.
+ * An indeterminate wait must not use this component — a spinner, not a
+ * bar with a ratio painted on it.
  */
 @Composable
 fun ProgressBar(
@@ -63,6 +70,7 @@ fun ProgressBar(
 
     Box(
         modifier = modifier
+            .progressSemantics(clamped)
             .fillMaxWidth()
             .height(6.dp)
             .background(

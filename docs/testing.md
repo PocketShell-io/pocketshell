@@ -158,6 +158,7 @@ The load-bearing app2 journeys use real aplexer records:
 | J04 create session | Submits the create sheet and verifies the new aplexer row, workspace, and cleanup |
 | J14 stop session | Stops the selected record and verifies the row disappears from a fresh aplexer listing |
 | J15 terminal scroll | Attaches the alternate-screen fixture and proves a drag does not become a cursor key |
+| J20 composer upload progress | Stages three real files through the app's own attach path over a bandwidth-throttled SFTP link and proves the determinate bar is on screen mid-flight with the keyboard up, then gone with no residual track once the host holds all three payloads in full |
 
 J05/J06 exercise reconnect and bounded background grace against the same PTY
 path. J07/J08 exercise composer and voice input, and J12 verifies that the

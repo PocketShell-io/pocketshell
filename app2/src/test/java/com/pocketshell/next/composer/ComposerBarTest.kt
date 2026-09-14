@@ -9,8 +9,13 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.uikit.theme.PocketShellTheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -141,6 +146,143 @@ class ComposerBarTest {
         composeRule.onNodeWithText("Uploading 2 of 3 · shot.png").assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsNotEnabled()
         composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).assertIsNotEnabled()
+    }
+
+    /**
+     * #2568: the staging row is not just a label — a determinate bar rides
+     * under it, and the asserted thing is the VALUE (index/count), not merely
+     * that some bar-shaped node exists.
+     */
+    @Test
+    fun `the staging bar is determinate at the index over count fraction`() {
+        setContent(
+            ComposerUiState(draft = "text", staging = StagingProgress(2, 3, "shot.png")),
+        )
+
+        val bar = composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG)
+        bar.assertIsDisplayed()
+        val fraction = bar.fetchSemanticsNode()
+            .config[SemanticsProperties.ProgressBarRangeInfo].current
+        assertEquals(2f / 3f, fraction, 1e-4f)
+
+        // The bar hangs directly under the "Uploading 2 of 3" label — the
+        // staging row is one block, not a bar floating over other chrome.
+        val label = composeRule.onNodeWithTag(COMPOSER_STAGING_TAG)
+            .fetchSemanticsNode().boundsInRoot
+        val barBounds = bar.fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the bar (top=${barBounds.top}) must sit below the staging label " +
+                "(bottom=${label.bottom})",
+            barBounds.top >= label.bottom,
+        )
+    }
+
+    @Test
+    fun `no staging bar renders when nothing is uploading`() {
+        setContent(ComposerUiState(draft = "text", attachments = listOf(attachment())))
+
+        composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_STAGING_TAG).assertDoesNotExist()
+    }
+
+    /**
+     * Completion clears `staging` on the ViewModel; failure does the same and
+     * leaves a problem notice. Both ways, the bar must be gone — no residual
+     * track lingering under the composer (#2568).
+     */
+    @Test
+    fun `the staging bar leaves when staging completes`() {
+        val state = mutableStateOf(
+            ComposerUiState(draft = "text", staging = StagingProgress(1, 2, "a.png")),
+        )
+        composeRule.setContent { dynamicComposer(state.value) }
+
+        composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG).assertIsDisplayed()
+
+        state.value = ComposerUiState(draft = "text", notice = ComposerNotice.Info("Attached 1 file"))
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the staging bar leaves when staging fails`() {
+        val state = mutableStateOf(
+            ComposerUiState(draft = "text", staging = StagingProgress(1, 2, "a.png")),
+        )
+        composeRule.setContent { dynamicComposer(state.value) }
+
+        composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG).assertIsDisplayed()
+
+        state.value = ComposerUiState(
+            draft = "text",
+            notice = ComposerNotice.Problem("Attachment upload failed"),
+        )
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_NOTICE_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * The bar appears and disappears as part of the staging row, and the
+     * composer must return to EXACTLY its pre-upload geometry — the same row
+     * positions before, during, and after, and a symmetric height delta, so a
+     * finished upload never leaves a gap or a jump behind it (#2568).
+     */
+    @Test
+    fun `the staging bar does not shift the composer when it appears and disappears`() {
+        val state = mutableStateOf(ComposerUiState(draft = "text", micAvailable = true))
+        composeRule.setContent { dynamicComposer(state.value) }
+        composeRule.waitForIdle()
+
+        fun snapshot(): Pair<Float, Float> = Pair(
+            composeRule.onNodeWithTag(COMPOSER_TAG).fetchSemanticsNode().boundsInRoot.height,
+            composeRule.onNodeWithTag(COMPOSER_CONTROLS_ROW_TAG)
+                .fetchSemanticsNode().boundsInRoot.top,
+        )
+
+        val (idleHeight, idleControlsTop) = snapshot()
+
+        state.value = ComposerUiState(
+            draft = "text",
+            micAvailable = true,
+            staging = StagingProgress(1, 2, "a.png"),
+        )
+        composeRule.waitForIdle()
+        val (stagingHeight, _) = snapshot()
+        assertTrue(
+            "staging must GROW the composer (bar is new space, not an overlay): " +
+                "$stagingHeight vs $idleHeight",
+            stagingHeight > idleHeight,
+        )
+
+        state.value = ComposerUiState(draft = "text", micAvailable = true)
+        composeRule.waitForIdle()
+        val (settledHeight, settledControlsTop) = snapshot()
+        assertEquals(idleHeight, settledHeight, 0.5f)
+        assertEquals(idleControlsTop, settledControlsTop, 0.5f)
+    }
+
+    /** A live-recomposition composer for tests that drive `state` over time. */
+    @Composable
+    private fun dynamicComposer(state: ComposerUiState) {
+        PocketShellTheme {
+            ComposerBar(
+                state = state,
+                onDraftChange = {},
+                onSend = {},
+                onInsert = {},
+                onAttach = {},
+                onMicTap = {},
+                onCancelRecording = {},
+                onToggleHistory = {},
+                onTogglePreview = {},
+                onRemoveAttachment = {},
+                onDismissNotice = {},
+                onDiscard = {},
+            )
+        }
     }
 
     @Test

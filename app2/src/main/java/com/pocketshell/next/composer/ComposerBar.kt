@@ -56,6 +56,7 @@ import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.MicButton
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
+import com.pocketshell.uikit.components.ProgressBar
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.MicButtonState
@@ -81,6 +82,9 @@ const val COMPOSER_DELIVERY_UNCERTAIN_TAG: String = "composer-delivery-uncertain
 const val COMPOSER_SESSION_ENDED_TAG: String = "composer-session-ended"
 const val COMPOSER_NOTICE_TAG: String = "composer-notice"
 const val COMPOSER_STAGING_TAG: String = "composer-staging"
+
+/** The determinate upload bar under the staging label (#2568). */
+const val COMPOSER_STAGING_PROGRESS_TAG: String = "composer-staging-progress"
 const val COMPOSER_SLASH_TAG: String = "composer-slash-sheet"
 const val COMPOSER_SLASH_TRIGGER_TAG: String = "composer-slash-trigger"
 const val COMPOSER_TIMER_TAG: String = "composer-timer"
@@ -211,6 +215,20 @@ fun ComposerBar(
                 color = PocketShellColors.TextSecondary,
                 maxLines = 1,
                 modifier = Modifier.testTag(COMPOSER_STAGING_TAG),
+            )
+            // #2568: a static label that changes only when a whole file lands
+            // reads as a stall, so the file-level ratio gets a bar. The
+            // transport ([ComposerAttachmentStager]) has no byte-level callback
+            // — `SftpChannel.write` takes the whole payload — so the bar
+            // advances per file, not per byte: a single large upload sits at
+            // its index/count ratio the whole time. Adding byte ticks is a
+            // core-transport change, tracked as #2686; until then this is
+            // the honest picture the label already gave, with motion on top.
+            ProgressBar(
+                progress = progress.index.toFloat() / progress.count,
+                modifier = Modifier
+                    .padding(top = PocketShellSpacing.xs)
+                    .testTag(COMPOSER_STAGING_PROGRESS_TAG),
             )
         }
 
