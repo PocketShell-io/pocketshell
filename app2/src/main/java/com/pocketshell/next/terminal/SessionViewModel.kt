@@ -2,7 +2,6 @@ package com.pocketshell.next.terminal
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.pocketshell.core.hostapi.HostCliError
 import com.pocketshell.core.transport.CloseReason
 import com.pocketshell.core.transport.ConnectResult
 import com.pocketshell.core.transport.HostConnection
@@ -37,56 +36,18 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * What the session screen can be showing.
- *
- * [Reconnecting] is a first-class state rather than a flavour of [Failed]
- * because the two look nothing alike to a user: one keeps the last frame on
- * screen under a countdown and comes back by itself, the other is over.
- */
-sealed interface SessionUiState {
-
-    /** Dialling, resolving the attach command, or opening the PTY. */
-    data object Connecting : SessionUiState
-
-    /**
-     * Attached. [terminal] is the live vendored emulator front end the screen
-     * renders; it is carried on the state rather than exposed as a second
-     * ViewModel property so that "there is a terminal to draw" and "we are
-     * attached" cannot disagree.
-     */
-    data class Live(val terminal: TerminalSession) : SessionUiState
-
-    /**
-     * The link went away and a fresh attach is on the ladder (task U-7).
-     *
-     * [attempt] is 0-based, exactly as [ReconnectController] counts.
-     * [retryInMs] is what is LEFT of the current wait and ticks down once a
-     * second, so the screen can render a live countdown while staying a pure
-     * function of this state. (The plan sketched an absolute `nextRetryAtMs`;
-     * rendering that needs a clock AND a ticking timer inside a composable, and
-     * an unbounded composable timer is the classic never-idle hang under both
-     * Robolectric and instrumented Compose tests. The remaining-time form moves
-     * the tick to the one place already driven by a virtual clock in tests.)
-     *
-     * [terminal] is the SAME emulator instance the session was [Live] on: the
-     * host repaints on reattach, so there is deliberately no client-side snapshot or
-     * reseed — the last frame simply stays on screen, under the banner, until
-     * new bytes arrive. Carrying it here rather than letting the screen remember
-     * the last live one keeps the screen stateless.
-     */
-    data class Reconnecting(
-        val attempt: Int,
-        val retryInMs: Long,
-        val terminal: TerminalSession,
-    ) : SessionUiState
-
-    /** Never attached, the session ended, or the ladder ran out. [message] is user-facing. */
-    data class Failed(val message: String) : SessionUiState
-}
-
-/**
  * One attached session (rewrite tasks U-4 and U-7, journeys J03 and J05) — the
  * point of the app.
+ *
+ * ## Line budget (plan §C.3)
+ *
+ * The plan caps this file at 600 lines. Issue #2495 extracted the UI state
+ * ([SessionUiState]), the end-of-session wording ([SessionEndMessages]) and
+ * the stop flow ([SessionStopper]); what is still over budget is the
+ * attach/reconnect lifecycle core (first-wins settle/release sequencing, the
+ * reconnect ladder, the resize settle loop), whose further split is deferred
+ * with rationale on #2495. Report, don't grow: do not add here without
+ * revisiting that deferral.
  *
  * ## The whole lifecycle, in one place
  *
@@ -189,6 +150,9 @@ class SessionViewModel @Inject constructor(
      * Both belong on [dispatcher] (an IO pool). Cancelled in [onCleared].
      */
     private val pumpScope: CoroutineScope = CoroutineScope(SupervisorJob() + dispatcher)
+
+    /** The stop (kill) flow, extracted verbatim under issue #2495. */
+    private val stopper = SessionStopper(registry, clients)
 
     private var attachJob: Job? = null
     private var reconnectJob: Job? = null
@@ -554,7 +518,8 @@ class SessionViewModel @Inject constructor(
         val command = runCatching { clients.create(connection).attachCommand(attachHandle) }
             .getOrElse { failure ->
                 return AttachOutcome.Refused(
-                    "Could not build the attach command: " + describe(failure),
+                    "Could not build the attach command: " +
+                        SessionEndMessages.describe(failure),
                 )
             }
 
@@ -566,7 +531,7 @@ class SessionViewModel @Inject constructor(
         } catch (failure: Throwable) {
             if (failure is kotlinx.coroutines.CancellationException) throw failure
             return AttachOutcome.Unreachable(
-                "Could not attach to \"$sessionName\": " + describe(failure),
+                "Could not attach to \"$sessionName\": " + SessionEndMessages.describe(failure),
             )
         }
 
@@ -703,7 +668,10 @@ class SessionViewModel @Inject constructor(
         // waiting on it would park forever.
         releaseChannel()
         if (status != null || finalClose) {
-            fail(if (finalClose) closedMessage() else endedMessage(status))
+            fail(
+                if (finalClose) SessionEndMessages.closed(sessionLabel)
+                else SessionEndMessages.ended(sessionLabel, status),
+            )
             return
         }
         beginReconnect()
@@ -717,7 +685,7 @@ class SessionViewModel @Inject constructor(
      * [settleEnd], this ladder's only caller.
      */
     private fun beginReconnect() {
-        val emulator = terminal ?: return fail(endedMessage(null))
+        val emulator = terminal ?: return fail(SessionEndMessages.ended(sessionLabel, null))
         // Said immediately, before the first rung, so a user coming back to the
         // screen never sees a stale "attached" over a dead session.
         _uiState.value = SessionUiState.Reconnecting(attempt = 0, retryInMs = 0, terminal = emulator)
@@ -811,97 +779,21 @@ class SessionViewModel @Inject constructor(
     }
 
     /**
-     * Stops this screen's session.
-     *
-     * Kill is name-addressed on the host CLI, so when an id is held
-     * (issue #2572) the CURRENT name is resolved from a fresh listing first:
-     * killing the stale label would either fail after a rename or — the
-     * silent-collision case this issue exists to kill — stop whichever NEW
-     * session took the old name. A session the listing no longer knows is a
-     * loud "no longer running", never a guess.
+     * Stops this screen's session, through [SessionStopper] (issue #2495
+     * extraction): the resolver-and-kill mechanics live there; this maps the
+     * outcome onto this screen's banner and one-shot leave signal.
      */
     private suspend fun runStop() {
         val host = hostId ?: return
         val label = sessionLabel ?: return
-        val connection = when (val result = registry.getOrConnect(host)) {
-            is ConnectResult.Connected -> result.connection
-            is ConnectResult.NeedsTrust -> {
-                _stopFailure.value =
-                    "This host's key still needs to be confirmed. Open it from the host " +
-                        "list to review the key."
-                return
-            }
-            is ConnectResult.Failed -> {
-                _stopFailure.value = result.message
-                return
-            }
-        }
-        val client = clients.create(connection)
-        val name: String = if (sessionId == null) {
-            label
-        } else {
-            val listing = client.listSessions().fold(
-                onSuccess = { it },
-                onFailure = { error ->
-                    _stopFailure.value = when (error) {
-                        is HostCliError -> error.userMessage
-                        else -> "Could not stop the session on the host: " + describe(error)
-                    }
-                    return
-                },
-            )
-            val row = listing.sessions.firstOrNull { it.id == sessionId }
-            if (row == null) {
-                _stopFailure.value = "Session \"$label\" is no longer running on the host."
-                return
-            }
-            row.name
-        }
-        client.killSession(name).fold(
-            onSuccess = {
+        when (val outcome = stopper.stop(host, sessionId, label)) {
+            StopOutcome.Stopped -> {
                 _stopFailure.value = null
                 _leaveAfterStop.value = true
-            },
-            onFailure = { error ->
-                _stopFailure.value = when (error) {
-                    is HostCliError -> error.userMessage
-                    else -> "Could not stop the session on the host: " + describe(error)
-                }
-            },
-        )
-    }
-
-    /**
-     * What the user reads when a session goes away.
-     *
-     * An exit status is included when the host reported one, because it is the
-     * difference between "you typed `exit`" (0) and "the attach command could
-     * not find that session" (3) — the same distinction `pocketshell sessions
-     * attach` documents in its exit codes.
-     */
-    private fun endedMessage(exitCode: Int?): String {
-        val name = sessionLabel
-        val subject = if (name == null) "The session" else "Session \"$name\""
-        return if (exitCode == null) {
-            "$subject ended."
-        } else {
-            "$subject ended (exit $exitCode)."
+            }
+            is StopOutcome.Failed -> _stopFailure.value = outcome.message
         }
     }
-
-    /**
-     * What the user reads when THIS screen's connection was closed because
-     * someone asked for it to end, rather than lost or handed back by the grace
-     * window (issues #2477/#2487, [isFinalClose]).
-     */
-    private fun closedMessage(): String {
-        val name = sessionLabel
-        val subject = if (name == null) "The session" else "Session \"$name\""
-        return "$subject ended: the connection was closed."
-    }
-
-    private fun describe(failure: Throwable): String =
-        failure.message ?: failure::class.simpleName ?: "unknown error"
 
     private companion object {
         /**
