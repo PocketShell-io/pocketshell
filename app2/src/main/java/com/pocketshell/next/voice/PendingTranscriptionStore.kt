@@ -3,8 +3,9 @@ package com.pocketshell.next.voice
 import android.content.Context
 import com.pocketshell.core.storage.dao.PendingTranscriptionDao
 import com.pocketshell.core.storage.entity.PendingTranscriptionEntity
+import com.pocketshell.next.di.IoDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -43,15 +44,20 @@ import javax.inject.Singleton
  *    file rows (from a manual file deletion). Without this, the
  *    `voice-pending/` directory and the table would drift forever.
  *
- * Threading: all suspend methods hop to [Dispatchers.IO] internally so
- * the call site (the composer ViewModel) does not have to do its own
- * dispatcher dance. The store is `@Singleton` because the DAO and the
- * filesystem reference must agree across recompositions.
+ * Threading: all suspend methods hop to the injected IO dispatcher
+ * internally (rewrite plan's DI rule, #2681) so the call site (the composer
+ * ViewModel) does not have to do its own dispatcher dance. The store is
+ * `@Singleton` because the DAO and the filesystem reference must agree across
+ * recompositions.
  */
 @Singleton
 class PendingTranscriptionStore @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val dao: PendingTranscriptionDao,
+    // Every suspend method hops here for the file/DAO work. Required, no
+    // default, per the DI rule — Hilt binds it and a test substitutes a
+    // deterministic dispatcher.
+    private val ioDispatcher: CoroutineDispatcher,
 ) {
     /**
      * Test seam: production wires the system clock; tests substitute a
@@ -100,7 +106,7 @@ class PendingTranscriptionStore @Inject constructor(
         destinationContext: String,
         recordingTimestampMs: Long = clock(),
         initialError: String? = null,
-    ): PendingTranscriptionItem? = withContext(Dispatchers.IO) {
+    ): PendingTranscriptionItem? = withContext(ioDispatcher) {
         if (audio.isEmpty()) return@withContext null
         if (audio.size.toLong() > MAX_AUDIO_BYTES) return@withContext null
 
@@ -141,7 +147,7 @@ class PendingTranscriptionStore @Inject constructor(
      * file is missing (orphaned row), the row is missing, or any IO
      * error occurs.
      */
-    suspend fun loadAudio(id: String): ByteArray? = withContext(Dispatchers.IO) {
+    suspend fun loadAudio(id: String): ByteArray? = withContext(ioDispatcher) {
         val row = dao.getById(id) ?: return@withContext null
         val file = File(row.audioPath)
         if (!file.exists()) return@withContext null
@@ -149,7 +155,7 @@ class PendingTranscriptionStore @Inject constructor(
     }
 
     /** Snapshot fetch, used by retry-on-foreground orchestration. */
-    suspend fun snapshot(): List<PendingTranscriptionItem> = withContext(Dispatchers.IO) {
+    suspend fun snapshot(): List<PendingTranscriptionItem> = withContext(ioDispatcher) {
         dao.getAllOnce().map { it.toUiItem() }
     }
 
@@ -157,7 +163,7 @@ class PendingTranscriptionStore @Inject constructor(
      * Delete the row + audio file for [id]. Idempotent: a missing row /
      * file is treated as success.
      */
-    suspend fun markSucceeded(id: String) = withContext(Dispatchers.IO) {
+    suspend fun markSucceeded(id: String) = withContext(ioDispatcher) {
         val row = dao.getById(id)
         if (row != null) {
             runCatching { File(row.audioPath).delete() }
@@ -174,7 +180,7 @@ class PendingTranscriptionStore @Inject constructor(
     suspend fun markFailure(
         id: String,
         errorMessage: String,
-    ): PendingTranscriptionItem? = withContext(Dispatchers.IO) {
+    ): PendingTranscriptionItem? = withContext(ioDispatcher) {
         val current = dao.getById(id) ?: return@withContext null
         val updated = current.copy(
             retryCount = current.retryCount + 1,
@@ -198,7 +204,7 @@ class PendingTranscriptionStore @Inject constructor(
      * entry is then deleted — saving is the "give up" path after the
      * 3-retry cap.
      */
-    suspend fun saveAsAudioFile(id: String): String? = withContext(Dispatchers.IO) {
+    suspend fun saveAsAudioFile(id: String): String? = withContext(ioDispatcher) {
         val row = dao.getById(id) ?: return@withContext null
         val src = File(row.audioPath)
         if (!src.exists()) {
@@ -230,7 +236,7 @@ class PendingTranscriptionStore @Inject constructor(
      * Cheap enough to call on every ViewModel startup; the queue is
      * expected to hold a handful of entries at most.
      */
-    suspend fun reconcile() = withContext(Dispatchers.IO) {
+    suspend fun reconcile() = withContext(ioDispatcher) {
         val dir = ensureDir()
         val rows = dao.getAllOnce()
         val rowsById = rows.associateBy { it.id }
@@ -253,7 +259,7 @@ class PendingTranscriptionStore @Inject constructor(
      * Wipe every queued row + audio file. Called when the user toggles
      * the feature off in Settings → Voice. Idempotent.
      */
-    suspend fun clearAll() = withContext(Dispatchers.IO) {
+    suspend fun clearAll() = withContext(ioDispatcher) {
         val dir = ensureDir()
         dir.listFiles()?.forEach { f -> runCatching { f.delete() } }
         dao.deleteAll()

@@ -228,6 +228,7 @@ class ForwardingResumeTest {
             hostDao = ThrowingHostDao(db.hostDao()),
             sshKeyDao = db.sshKeyDao(),
             ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher,
         )
         // This test keeps a custom scope ONLY to collect what would be
         // uncaught: it asserts the sweep's failure is handled inside
@@ -261,14 +262,17 @@ class ForwardingResumeTest {
     }
 
     private fun resume(onStart: () -> Unit): ForwardingResume {
-        // #2498: the default scope is built on the INJECTED dispatcher, so the
+        // #2498: the default scope is built on the INJECTED dispatchers, so the
         // test no longer overrides `scope` to get off the real IO pool — the
-        // constructor-level test dispatcher is the production wiring shape.
+        // constructor-level test dispatchers are the production wiring shape.
+        // #2681: the main hops (lifecycle attach, start service) take the same
+        // test dispatcher that `Dispatchers.setMain` installs.
         val resume = ForwardingResume(
             applicationContext = context,
             hostDao = db.hostDao(),
             sshKeyDao = db.sshKeyDao(),
             ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher,
         )
         resume.startService = { onStart() }
         return resume

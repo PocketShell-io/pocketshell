@@ -7,6 +7,7 @@ import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.core.storage.entity.PendingTranscriptionEntity
 import com.pocketshell.core.voice.WhisperClient
 import com.pocketshell.core.voice.WhisperException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -43,7 +44,7 @@ class PendingTranscriptionDeliveryTest {
             .setTransactionExecutor(Runnable::run)
             .allowMainThreadQueries()
             .build()
-        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao())
+        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao(), Dispatchers.Unconfined)
         File(context.filesDir, PendingTranscriptionStore.VOICE_PENDING_DIR).deleteRecursively()
     }
 
