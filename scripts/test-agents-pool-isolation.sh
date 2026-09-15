@@ -451,6 +451,133 @@ a_disturbed_fixture_voids_the_run_in_both_directions() {
 }
 
 # --------------------------------------------------------------------------
+# 6c. ISSUE #2574, the SEMANTICS the arming point relies on. The wrapper
+#     records the claim-time fingerprint inside pocketshell_claim_agents_port,
+#     then does its own fixture work (the per-lane network-fault bring-up)
+#     before instrumentation. The window that must be guarded is arming -> end,
+#     so the wrapper RE-ARMS there (see the #2574 block in
+#     scripts/connected-test.sh). This pins, on the stubbed docker, the
+#     sequence the arming produces:
+#
+#       record(claim) -> [wrapper churn] -> record(arm) -> [mid-run churn] -> end-check
+#
+#     Churn BEFORE the re-arm must be quiet: it is the wrapper's own doing and
+#     happened before instrumentation, so printing the #1842 banner for it is
+#     exactly the self-inflicted rc 90 issue #2574 exists to kill. Churn AFTER
+#     it must still void the run in both directions, exactly as check 6
+#     requires. The static half — that connected-test.sh really calls the
+#     re-arm after its last fixture action — is pinned by
+#     wrapper_arms_the_fingerprint_after_its_last_fixture_action below. Neither
+#     check is sufficient alone: this one stays green if the wrapper's call
+#     site moves, that one stays green if the semantics drift.
+# --------------------------------------------------------------------------
+rearm_makes_pre_instrumentation_churn_quiet_and_post_arming_churn_fatal() {
+  local tmp="$1"
+  export AGENTS_POOL_TEST_STATE="$tmp/docker-state-2574"
+  mkdir -p "$AGENTS_POOL_TEST_STATE"
+  # shellcheck source=scripts/lib/agents-pool.sh
+  source "$ROOT_DIR/scripts/lib/agents-pool.sh"
+
+  printf 'sha256:CLAIM 2026-07-29T00:00:00Z\n' > "$AGENTS_POOL_TEST_STATE/identity"
+  pocketshell_agents_record_fixture_identity 2243
+
+  # Wrapper-inflicted churn between claim and instrumentation (the #2561
+  # class), then the #2574 arming point.
+  printf 'sha256:CHURN 2026-07-29T00:00:10Z\n' > "$AGENTS_POOL_TEST_STATE/identity"
+  pocketshell_agents_record_fixture_identity 2243
+  export POCKETSHELL_AGENTS_PORT=2243
+
+  # The pre-instrumentation churn must NOT print the banner or void the verdict.
+  local got
+  if ! got="$(pocketshell_agents_final_rc 0 2>"$tmp/note-2574")"; then
+    fail "the re-armed guard rejected an UNDISTURBED instrumentation window (issue #2574)"
+    return 1
+  fi
+  [[ "$got" == "0" ]] || { fail "churn before the arming point rewrote a green verdict to rc=$got (issue #2574)"; return 1; }
+  if grep -q "AGENTS FIXTURE DISTURBED" "$tmp/note-2574"; then
+    fail "the #1842 banner fired for churn that happened BEFORE instrumentation — the self-inflicted rc 90 issue #2574 exists to kill"
+    return 1
+  fi
+
+  # Churn after the arming point is a REAL mid-run disturbance: still fatal in
+  # both directions.
+  printf 'sha256:RECREATED 2026-07-29T00:01:00Z\n' > "$AGENTS_POOL_TEST_STATE/identity"
+  got="$(pocketshell_agents_final_rc 0 2>/dev/null)"
+  [[ "$got" == "90" ]] || { fail "churn after the arming point did not void a green run (got rc=$got, want 90) (issue #2574)"; return 1; }
+  got="$(pocketshell_agents_final_rc 1 2>/dev/null)"
+  [[ "$got" == "90" ]] || { fail "churn after the arming point did not void a red run (got rc=$got, want 90) (issue #2574)"; return 1; }
+
+  unset POCKETSHELL_AGENTS_PORT
+  pass "churn before the #2574 arming point is quiet; churn after it still voids the run (rc 90 both directions)"
+}
+
+# --------------------------------------------------------------------------
+# 6d. ISSUE #2574, the STATIC half of the ordering: in
+#     scripts/connected-test.sh the arming call
+#     (pocketshell_agents_record_fixture_identity) must sit AFTER the last
+#     wrapper action that can touch the claimed container (the per-lane
+#     network-fault bring-up; the claim itself is earlier still) and BEFORE
+#     instrumentation starts. No harness drives the real wrapper against a
+#     real fixture, so only this source-level pin catches the ordering moving
+#     back — the exact regression that re-opens the self-inflicted rc 90.
+# --------------------------------------------------------------------------
+wrapper_arms_the_fingerprint_after_its_last_fixture_action() {
+  local connected="$ROOT_DIR/scripts/connected-test.sh"
+  [[ -f "$connected" ]] || { fail "scripts/connected-test.sh is missing; cannot pin the #2574 arming order"; return 1; }
+
+  # Reuse the module-level CLAIM_FN (assembled from two literals) so this file
+  # never contains the contiguous claim-function token outside a comment — the
+  # check-8 scan reads this file's source too, and a grep pattern or fail
+  # message carrying the bare token reads as a banned call shape to it.
+  local claim_line fault_line arm_line gradle_line
+  claim_line="$(grep -n "${CLAIM_FN} \"\$ROOT_DIR\"" "$connected" | head -n1 | cut -d: -f1)"
+  fault_line="$(grep -n 'pocketshell_network_fault_fixture_up "\$ROOT_DIR"' "$connected" | head -n1 | cut -d: -f1)"
+  arm_line="$(grep -n 'pocketshell_agents_record_fixture_identity "\$POCKETSHELL_AGENTS_PORT"' "$connected" | head -n1 | cut -d: -f1)"
+  gradle_line="$(grep -n 'pocketshell_run_guarded_mutation pocketshell_scope_run' "$connected" | head -n1 | cut -d: -f1)"
+
+  # Non-vacuous guards first: every anchor must resolve, and the arming call
+  # must be the ONLY record call in the wrapper (the claim-side record lives in
+  # scripts/lib/agents-pool.sh, so a second call site here means two arming
+  # points fighting over one fingerprint).
+  if [[ -z "$claim_line" ]]; then
+    fail "connected-test.sh no longer calls ${CLAIM_FN}; the anchors this ordering check needs are gone (issue #2574)"
+    return 1
+  fi
+  if [[ -z "$fault_line" ]]; then
+    fail "connected-test.sh no longer calls pocketshell_network_fault_fixture_up; the anchor this ordering check needs is gone (issue #2574)"
+    return 1
+  fi
+  if [[ -z "$arm_line" ]]; then
+    fail "connected-test.sh lost its #2574 arming call — the #1842 fingerprint is claim-time only again, so any wrapper fixture work between claim and instrumentation can self-inflict the DISTURBED banner (issue #2574)"
+    return 1
+  fi
+  if [[ -z "$gradle_line" ]]; then
+    fail "could not find the gradle anchor (pocketshell_run_guarded_mutation pocketshell_scope_run) in connected-test.sh; the arming-before-instrumentation half is unverifiable (issue #2574)"
+    return 1
+  fi
+  local records
+  records="$(grep -c 'pocketshell_agents_record_fixture_identity "\$POCKETSHELL_AGENTS_PORT"' "$connected" || true)"
+  if (( records != 1 )); then
+    fail "expected exactly ONE arming call in connected-test.sh, found $records — multiple arming points fight over the fingerprint (issue #2574)"
+    return 1
+  fi
+
+  if (( arm_line <= claim_line )); then
+    fail "connected-test.sh arms the #1842 fingerprint (line $arm_line) at or before the claim (line $claim_line) — impossible ordering (issue #2574)"
+    return 1
+  fi
+  if (( arm_line <= fault_line )); then
+    fail "connected-test.sh arms the #1842 fingerprint (line $arm_line) at or before the fault bring-up (line $fault_line) — the bring-up is back inside the guarded window and self-inflicts the DISTURBED banner (issue #2574)"
+    return 1
+  fi
+  if (( arm_line >= gradle_line )); then
+    fail "connected-test.sh arms the #1842 fingerprint (line $arm_line) at or after the gradle invocation (line $gradle_line) — the guard no longer spans the instrumentation window (issue #2574)"
+    return 1
+  fi
+  pass "connected-test.sh arms the #1842 fingerprint after the fault bring-up (line $arm_line > $fault_line) and before instrumentation (line $gradle_line)"
+}
+
+# --------------------------------------------------------------------------
 # 6b. NON-GOAL GUARD: a single-lane / CI run (no --pool, so no claim and no
 #     fingerprint) must pass its verdict through completely untouched. The issue
 #     explicitly rules out changing --no-pool behaviour, and a guard that
@@ -960,6 +1087,8 @@ main() {
   default_pool_candidates_exclude_unlocked_fixture_ports || true
   ( a_disturbed_fixture_fails_with_an_unmistakable_signature "$tmp" ) || FAILURES=$((FAILURES + 1))
   ( a_disturbed_fixture_voids_the_run_in_both_directions "$tmp" ) || FAILURES=$((FAILURES + 1))
+  ( rearm_makes_pre_instrumentation_churn_quiet_and_post_arming_churn_fatal "$tmp" ) || FAILURES=$((FAILURES + 1))
+  wrapper_arms_the_fingerprint_after_its_last_fixture_action || true
   ( a_single_lane_run_is_completely_unaffected "$tmp" ) || FAILURES=$((FAILURES + 1))
   emulator_serial_claim_is_machine_anchored_too "$tmp" || true
   no_production_caller_captures_the_claim_in_a_subshell || true

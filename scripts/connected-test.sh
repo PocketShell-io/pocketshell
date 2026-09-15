@@ -639,6 +639,60 @@ if [[ "$CLEANUP_ONLY" != "1" && "$NETWORK_FAULT_RUN" == "1" \
     "$POCKETSHELL_AGENTS_PORT" >&2
 fi
 
+# Issue #2574: arm the #1842 fixture fingerprint AFTER the last wrapper action
+# that can touch the claimed container, not at claim time.
+#
+# The claim records the fingerprint inside pocketshell_claim_agents_port, which
+# is BEFORE the per-lane fault-fixture bring-up below ran: an unfiltered --pool
+# run (the shape every reviewer evidence run uses) recreated its own container
+# in that window and the end-of-run check read the wrapper's own bring-up as a
+# mid-run disturbance — the "AGENTS FIXTURE DISTURBED" banner on a run in which
+# nothing was actually disturbed. #2561 already made the bring-up itself
+# non-recreating for the claimed container (it builds only the proxy services
+# and brings them up with --no-build --no-recreate); this arming point closes
+# the ORDERING, so a future regression of #2561 — or any new fixture work added
+# between the claim and instrumentation — can never again be self-inflicted as
+# a false rc 90: the guard measures exactly the instrumentation window, which
+# is the window whose evidence the banner voids.
+#
+# WHY CI NEVER SHOWED THIS. The banner lives entirely in this wrapper's
+# fingerprint/compare path. CI's app2 journey lane (app2.yml ->
+# ci-app2-journey-suite.sh) invokes gradle DIRECTLY against fixtures the
+# workflow starts beforehand; it never runs connected-test.sh, so the guard is
+# never armed there and no build between fingerprint and check can exist. A
+# clean CI run is therefore not evidence about this defect at all — it is the
+# detector being absent, not the symptom. The same holds for a --pool run that
+# falls back to the legacy 2222 port: the fault bring-up above is gated away on
+# 2222, so the only wrapper step that could churn the fixture post-claim does
+# not run.
+#
+# A movement between claim and this arming point is wrapper-inflicted, happened
+# before instrumentation, and does not void the run's evidence — but it is
+# still a #2561-class bug, so it is surfaced as a loud NOTE rather than
+# silently absorbed. If the re-fingerprint itself cannot read the container
+# ("unknown"), the claim-time fingerprint is KEPT: an armed-but-stale guard
+# still spans the whole run, whereas re-arming to "unknown" would silently
+# disarm it (pocketshell_agents_assert_fixture_undisturbed returns 0 when the
+# expected identity is "unknown").
+if [[ "$CLEANUP_ONLY" != "1" && "$USE_POOL" == "1" \
+      && -n "${POCKETSHELL_AGENTS_PORT:-}" \
+      && "${POCKETSHELL_AGENTS_PORT}" != "2222" ]]; then
+  agents_identity_at_arming="$(pocketshell_agents_fixture_identity "$POCKETSHELL_AGENTS_PORT")"
+  if [[ "$agents_identity_at_arming" == "unknown" ]]; then
+    printf 'NOTE (issue #2574): could not re-fingerprint the agents fixture on port %s before instrumentation; keeping the claim-time fingerprint so the #1842 guard stays armed instead of going blind.\n' \
+      "$POCKETSHELL_AGENTS_PORT" >&2
+  else
+    if [[ -n "${POCKETSHELL_AGENTS_FIXTURE_IDENTITY:-}" \
+          && "${POCKETSHELL_AGENTS_FIXTURE_IDENTITY}" != "unknown" \
+          && "${POCKETSHELL_AGENTS_FIXTURE_IDENTITY}" != "$agents_identity_at_arming" ]]; then
+      printf 'NOTE (issue #2574): the claimed agents fixture on port %s moved between claim and pre-instrumentation arming — wrapper-inflicted (a #2561-class bring-up regression), not a mid-run disturbance; re-arming the guard. at-claim: %s / now: %s\n' \
+        "$POCKETSHELL_AGENTS_PORT" \
+        "${POCKETSHELL_AGENTS_FIXTURE_IDENTITY}" "$agents_identity_at_arming" >&2
+    fi
+    pocketshell_agents_record_fixture_identity "$POCKETSHELL_AGENTS_PORT"
+  fi
+fi
+
 # Optional same-run fixture evidence. The capture happens while this wrapper still
 # owns BOTH the emulator and agents-port locks, so the container fingerprint,
 # readiness probe, Docker logs, and instrumentation outputs describe one coherent
@@ -657,6 +711,10 @@ if [[ -n "$CONNECTED_EVIDENCE_DIR" ]]; then
     printf 'android_serial=%s\n' "${ANDROID_SERIAL:-unknown}"
     printf 'agents_port=%s\n' "${POCKETSHELL_AGENTS_PORT:-2222}"
     printf 'container=%s\n' "$evidence_container"
+    # Issue #2574: this is the guard's ARMED fingerprint (recorded after the
+    # last fixture bring-up, immediately before instrumentation), which any
+    # wrapper-internal churn between the literal claim and this point cannot
+    # differ from. The end manifest's final_fingerprint is compared to it.
     printf 'claim_fingerprint=%s\n' "${POCKETSHELL_AGENTS_FIXTURE_IDENTITY:-unknown}"
   } > "$CONNECTED_EVIDENCE_DIR/run-manifest-start.txt"
   pocketshell_run_without_avd_lock_fd docker inspect "$evidence_container" \

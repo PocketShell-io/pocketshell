@@ -460,6 +460,53 @@ docs_state_the_fault_pool_behaviour() {
 }
 
 # --------------------------------------------------------------------------
+# 13. ISSUES #2561/#2574: the per-lane fault bring-up must not be able to
+#     recreate the claimed agents fixture, and the wrapper must ARM the #1842
+#     agents fingerprint only AFTER that bring-up. BuildKit emits a fresh
+#     attestation manifest per build, so any `compose up` that reconciles the
+#     agents service moves its identity on every run — the wrapper then reads
+#     its own bring-up as a mid-run disturbance and voids exactly the reviewer
+#     evidence the banner exists to protect. #2561 pinned the bring-up's shape
+#     (build the proxies, then `up --no-build --no-recreate` naming only the
+#     proxies); #2574 pinned the arming order in connected-test.sh. Static on
+#     purpose: no harness drives the real wrapper against a real fixture, so
+#     only a source-level pin survives.
+# --------------------------------------------------------------------------
+fault_bringup_cannot_recreate_or_predate_the_agents_guard() {
+  local body
+  body="$(sed -n '/^pocketshell_network_fault_fixture_up() {/,/^}/p' "$AGENTS_LIB")"
+  if [[ -z "$body" ]]; then
+    fail "could not extract pocketshell_network_fault_fixture_up from $AGENTS_LIB, so this check would pass vacuously (issues #2561/#2574)"
+    return 1
+  fi
+  if ! grep -q -- '--no-build --no-recreate' <<< "$body"; then
+    fail "pocketshell_network_fault_fixture_up no longer brings the proxies up with --no-build --no-recreate — compose would reconcile the dependent agents service, and a fresh BuildKit attestation manifest per build moves its identity on every run (issues #2561/#2574)"
+    return 1
+  fi
+  if grep 'docker compose' <<< "$body" | grep ' up ' | grep -vq -- '--no-recreate'; then
+    fail "pocketshell_network_fault_fixture_up contains a compose 'up' without --no-recreate — reconciling the agents service self-inflicts the #1842 DISTURBED banner on the wrapper's own bring-up (issues #2561/#2574)"
+    return 1
+  fi
+
+  local fault_line arm_line
+  fault_line="$(grep -n 'pocketshell_network_fault_fixture_up "\$ROOT_DIR"' "$CONNECTED" | head -n1 | cut -d: -f1)"
+  arm_line="$(grep -n 'pocketshell_agents_record_fixture_identity "\$POCKETSHELL_AGENTS_PORT"' "$CONNECTED" | head -n1 | cut -d: -f1)"
+  if [[ -z "$fault_line" ]]; then
+    fail "connected-test.sh no longer calls pocketshell_network_fault_fixture_up, so the ordering this check pins has no anchor (issue #2128 / #2574)"
+    return 1
+  fi
+  if [[ -z "$arm_line" ]]; then
+    fail "connected-test.sh lost its #2574 arming call (pocketshell_agents_record_fixture_identity \"\$POCKETSHELL_AGENTS_PORT\") — the #1842 fingerprint is claim-time only again, so the fault bring-up sits inside the guarded window (issues #2561/#2574)"
+    return 1
+  fi
+  if (( arm_line <= fault_line )); then
+    fail "connected-test.sh arms the #1842 agents fingerprint (line $arm_line) at or before the fault bring-up (line $fault_line) — the bring-up is inside the guarded window, so any agents-service reconciliation self-inflicts the DISTURBED banner (issues #2561/#2574)"
+    return 1
+  fi
+  pass "fault bring-up is proxies-only --no-build --no-recreate, and the #1842 agents fingerprint is armed after it (connected-test.sh line $arm_line > $fault_line)"
+}
+
+# --------------------------------------------------------------------------
 
 main() {
   printf 'network-fault pool isolation harness (issue #2128)\n'
@@ -472,6 +519,7 @@ main() {
   compose_fault_proxy_is_parameterised || true
   connected_test_isolates_pool_fault_classes || true
   a_disturbed_fault_fixture_is_not_an_empty_session_list || true
+  fault_bringup_cannot_recreate_or_predate_the_agents_guard || true
   kotlin_and_bash_formulas_agree || true
   the_app2_journey_lane_is_detected_by_connected_test || true
   docs_state_the_fault_pool_behaviour || true
