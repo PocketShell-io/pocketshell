@@ -2,6 +2,7 @@ package com.pocketshell.next.diagnostics
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -46,7 +47,7 @@ class DiagnosticRecorderTest {
         // defaults ON" concern doesn't apply — there is no off state to
         // default away from), so the very first event on a fresh install is
         // captured with no opt-in step.
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("connection", "connect_start", mapOf("host" to "dev"))
 
@@ -56,7 +57,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `recorder exports ndjson events`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("connection", "connect_start", mapOf("host" to "dev"))
         val exported = recorder.exportSnapshot()
@@ -84,7 +85,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `readEvents returns recorded events in sequence order`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("app", "created")
         recorder.record("app", "foreground")
@@ -97,7 +98,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `clear resets exported sequence window`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("app", "created")
         recorder.clear()
@@ -111,7 +112,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `clearAndRecord resets exported sequence window and appends marker`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("app", "created")
         recorder.clearAndRecord("diagnostics", "capture_started")
@@ -125,7 +126,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `readEvents can return recent matching events`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record("app", "created")
         recorder.record("connection", "connect_start")
@@ -170,7 +171,7 @@ class DiagnosticRecorderTest {
 
     @Test
     fun `recorder redacts sensitive metadata before export`() = runTest {
-        val recorder = DiagnosticRecorder(context)
+        val recorder = DiagnosticRecorder(context, Dispatchers.Unconfined)
 
         recorder.record(
             "action",

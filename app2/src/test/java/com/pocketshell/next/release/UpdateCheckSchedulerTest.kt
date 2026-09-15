@@ -42,7 +42,11 @@ class UpdateCheckSchedulerTest {
 
     private class ScriptedReleaseChecker(
         private val results: MutableList<ReleaseCheckResult>,
-    ) : ReleaseChecker() {
+    ) : ReleaseChecker(
+        // checkForUpdate is fully overridden, so the injected dispatcher is
+        // never used; it is still required by the constructor (#2681).
+        ioDispatcher = Dispatchers.Unconfined,
+    ) {
         var calls = 0
             private set
 
@@ -61,6 +65,12 @@ class UpdateCheckSchedulerTest {
             applicationContext = context,
             releaseChecker = checker,
             store = UpdateCheckStore(context),
+            // Same test dispatcher for both: the default scope and the
+            // lifecycle attach's main hop are then fully driven by
+            // advanceUntilIdle (#2681). The test still overrides `scope`
+            // below, exactly as before the conversion.
+            ioDispatcher = dispatcher,
+            mainDispatcher = dispatcher,
         )
         s.scope = CoroutineScope(SupervisorJob() + dispatcher)
         s.nowMillis = now

@@ -2,8 +2,10 @@ package com.pocketshell.next.files
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.TransportState
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -17,6 +19,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * [ViewerViewModel] over the real connect stack and `core-transport`'s
@@ -341,13 +346,85 @@ class ViewerViewModelTest {
         assertTrue(viewModel.state.value.editable)
     }
 
+    @Test
+    fun `download routes the sink write through the injected IO dispatcher`() =
+        runTest(dispatcher) {
+            val hostId = stack.seedHost()
+            stack.seedSftp = { it.seedFile(TEXT_PATH, "hello\nworld\n") }
+            // A named single-thread dispatcher: if download still used the
+            // Dispatchers.IO literal (#2681), the sink thread name could never
+            // match this one.
+            val ioExecutor =
+                Executors.newSingleThreadExecutor { r -> Thread(r, "viewer-download-io") }
+            val ioDispatcher = ioExecutor.asCoroutineDispatcher()
+            try {
+                val viewModel = viewer(hostId, TEXT_PATH, ioDispatcher = ioDispatcher)
+                viewModel.load()
+                advanceUntilIdle()
+
+                // The sink runs on a REAL executor thread, so the virtual
+                // scheduler alone cannot observe it: the latch re-syncs the
+                // test before the assertions below. Bounded one-shot waits
+                // only — no wall-clock deadline pump (TIMING1 hard-fails on
+                // one in this root); the settle is deterministic instead:
+                // withContext's resume dispatch back to the test scheduler
+                // runs on the executor thread as part of the sink block's
+                // unwinding, so once the executor worker has fully exited
+                // (awaitTermination) the resumed continuation is ALREADY
+                // queued, and a single drain lands the final state.
+                val sinkRan = CountDownLatch(1)
+                var sinkThread: String? = null
+                var sinkContent: String? = null
+                viewModel.download { bytes ->
+                    // Strip the coroutine decorator (same trap DiagnosticRecorder
+                    // documents) so the recorded value is the PHYSICAL thread name.
+                    sinkThread = Thread.currentThread().name.substringBefore(" @coroutine")
+                    sinkContent = String(bytes)
+                    sinkRan.countDown()
+                }
+                advanceUntilIdle()
+                assertTrue(
+                    "sink never ran on the injected dispatcher",
+                    sinkRan.await(5, TimeUnit.SECONDS),
+                )
+                ioExecutor.shutdown()
+                assertTrue(
+                    "the executor never finished the sink hop",
+                    ioExecutor.awaitTermination(5, TimeUnit.SECONDS),
+                )
+                // The resume is now guaranteed to be queued on the driven
+                // scheduler: one drain finishes the download.
+                advanceUntilIdle()
+
+                assertTrue(
+                    "expected a saved confirmation, got: ${viewModel.state.value.savedMessage}",
+                    viewModel.state.value.savedMessage?.startsWith("Saved") == true,
+                )
+                assertEquals("hello\nworld\n", sinkContent)
+                assertEquals(
+                    "the content-resolver sink must run on the injected IO dispatcher",
+                    "viewer-download-io",
+                    sinkThread,
+                )
+            } finally {
+                ioExecutor.shutdownNow()
+            }
+        }
+
     // --- helpers ----------------------------------------------------------
 
-    private fun viewer(hostId: Long, path: String) =
+    private fun viewer(
+        hostId: Long,
+        path: String,
+        ioDispatcher: CoroutineDispatcher = dispatcher,
+    ) =
         ViewerViewModel(
             savedStateHandle = stack.savedState(hostId, path),
             registry = stack.registry,
             hostDao = stack.db.hostDao(),
+            // Same dispatcher the test installs as Main, so the download
+            // sink's IO hop lands on the driven virtual scheduler (#2681).
+            ioDispatcher = ioDispatcher,
         )
 
     private companion object {

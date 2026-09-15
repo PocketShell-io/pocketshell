@@ -1,6 +1,7 @@
 package com.pocketshell.next.release
 
 import java.net.SocketException
+import kotlinx.coroutines.Dispatchers
 import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
@@ -22,7 +23,12 @@ import org.robolectric.annotation.Config
 @Config(manifest = Config.NONE, sdk = [33])
 class ReleaseCheckerTest {
 
-    private val utcChecker = ReleaseChecker(zoneId = ZoneOffset.UTC)
+    // Injected dispatcher for every construction (#2681). Unconfined: the
+    // fake [ReleaseHttpClient] is thread-agnostic, and keeping the check
+    // on the calling thread removes the real-IO hop the tests used to eat.
+    private val testDispatcher = Dispatchers.Unconfined
+
+    private val utcChecker = ReleaseChecker(zoneId = ZoneOffset.UTC, ioDispatcher = testDispatcher)
 
     @Test
     fun isNewer_returnsTrue_forPatchBump() {
@@ -67,6 +73,7 @@ class ReleaseCheckerTest {
     @Test
     fun newerTagWithApk_isUpdateAvailable_andDateHasNoTime() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.1")) },
             zoneId = ZoneOffset.UTC,
         )
@@ -86,6 +93,7 @@ class ReleaseCheckerTest {
     @Test
     fun sameVersion_isUpToDate_notFailed() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.0")) },
             zoneId = ZoneOffset.UTC,
         )
@@ -97,6 +105,7 @@ class ReleaseCheckerTest {
     @Test
     fun olderTag_isUpToDate() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.4.0")) },
             zoneId = ZoneOffset.UTC,
         )
@@ -106,6 +115,7 @@ class ReleaseCheckerTest {
     @Test
     fun non200_isFailed_notUpToDate() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { ReleaseHttpResponse(500, """{"message":"oops"}""") },
         )
         val result = checker.checkForUpdate("0.5.0")
@@ -118,6 +128,7 @@ class ReleaseCheckerTest {
     fun github403_isFailed_andNotRetried() = runBlocking {
         val calls = AtomicInteger(0)
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             retryBackoffMs = 0,
             http = {
                 calls.incrementAndGet()
@@ -133,6 +144,7 @@ class ReleaseCheckerTest {
     @Test
     fun missingApk_isFailed() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = {
                 ReleaseHttpResponse(
                     200,
@@ -153,6 +165,7 @@ class ReleaseCheckerTest {
     @Test
     fun driftedApkFilename_isStillAnOffer() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = {
                 ReleaseHttpResponse(
                     200,
@@ -181,6 +194,7 @@ class ReleaseCheckerTest {
     @Test
     fun releaseInstall_prefersReleaseAsset_whenBothVariantsExist() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             preferReleaseApk = true,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.1", assets = bothVariantAssets)) },
         )
@@ -195,6 +209,7 @@ class ReleaseCheckerTest {
     @Test
     fun releaseInstall_fallsBackToSingleDebugAsset() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             preferReleaseApk = true,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.1")) },
         )
@@ -209,6 +224,7 @@ class ReleaseCheckerTest {
     @Test
     fun debugInstall_prefersDebugAsset_whenBothVariantsExist() = runBlocking {
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.1", assets = bothVariantAssets)) },
         )
         val result = checker.checkForUpdate("0.5.0")
@@ -223,6 +239,7 @@ class ReleaseCheckerTest {
     fun transientFailure_retriesOnce_andSucceeds() = runBlocking {
         val calls = AtomicInteger(0)
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             retryBackoffMs = 0,
             http = {
                 if (calls.getAndIncrement() == 0) throw SocketException("connection reset")
@@ -237,6 +254,7 @@ class ReleaseCheckerTest {
     fun unknownHost_isFailed_notRetried() = runBlocking {
         val calls = AtomicInteger(0)
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             retryBackoffMs = 0,
             http = {
                 calls.incrementAndGet()
@@ -252,6 +270,7 @@ class ReleaseCheckerTest {
     fun checkHitsTheGithubLatestEndpoint() = runBlocking {
         var seenUrl: String? = null
         val checker = ReleaseChecker(
+            ioDispatcher = testDispatcher,
             http = { url ->
                 seenUrl = url
                 ReleaseHttpResponse(200, releaseJson(tagName = "v0.5.0"))

@@ -7,13 +7,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.pocketshell.next.di.IoDispatcher
+import com.pocketshell.next.di.MainDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,12 +40,25 @@ class UpdateCheckScheduler @Inject constructor(
     @ApplicationContext private val applicationContext: Context,
     private val releaseChecker: ReleaseChecker,
     private val store: UpdateCheckStore,
+    // Injected per the rewrite plan's DI rule (#2681), no defaults — Hilt
+    // binds both and a test substitutes deterministic schedulers. The default
+    // scope runs the check (Room store writes + the HTTP round-trip) on IO;
+    // the lifecycle attach hops to main exactly like ForwardingResume's.
+    @IoDispatcher ioDispatcher: CoroutineDispatcher,
+    @MainDispatcher mainDispatcher: CoroutineDispatcher,
 ) {
 
     internal var throttleWindowMillis: Long = DEFAULT_THROTTLE_WINDOW_MILLIS
     internal var nowMillis: () -> Long = { System.currentTimeMillis() }
     internal var currentVersionProvider: () -> String? = ::readInstalledVersionName
-    internal var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // Built on the injected IO dispatcher (#2681) so a test constructs the
+    // class with a deterministic scheduler instead of relying on the real
+    // pool; the scope stays a test seam exactly as before.
+    internal var scope: CoroutineScope = CoroutineScope(SupervisorJob() + ioDispatcher)
+
+    /** Main hop for the lifecycle attach (#2681; injected, see ctor). */
+    private val mainDispatcher: CoroutineDispatcher = mainDispatcher
 
     private val mutex = Mutex()
 
@@ -105,7 +120,7 @@ class UpdateCheckScheduler @Inject constructor(
         }
         scope.launch {
             rehydrateFoundRelease()
-            val alreadyStarted = withContext(Dispatchers.Main) {
+            val alreadyStarted = withContext(mainDispatcher) {
                 owner.lifecycle.addObserver(processLifecycleObserver)
                 _lifecycleObserverAttached.set(true)
                 owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)

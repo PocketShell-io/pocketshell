@@ -24,9 +24,11 @@ import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
 import com.pocketshell.next.connect.openQuietSession
+import com.pocketshell.next.di.IoDispatcher
 import com.pocketshell.next.di.VoiceModule
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
 import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
+import kotlinx.coroutines.CoroutineDispatcher
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pocketshell.next.voice.ConnectivityProbe
 import com.pocketshell.next.voice.PendingTranscriptionItem
@@ -406,7 +408,8 @@ object TestVoiceModule {
     fun providePendingTranscriptionStore(
         @ApplicationContext context: Context,
         dao: PendingTranscriptionDao,
-    ): PendingTranscriptionStore = PendingTranscriptionStore(context, dao)
+        @IoDispatcher ioDispatcher: CoroutineDispatcher,
+    ): PendingTranscriptionStore = PendingTranscriptionStore(context, dao, ioDispatcher)
 
     /** Always online: J08 seeds the "recorded offline" state directly in the store. */
     @Provides

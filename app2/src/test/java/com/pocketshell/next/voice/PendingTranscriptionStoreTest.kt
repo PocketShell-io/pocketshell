@@ -5,6 +5,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.core.storage.entity.PendingTranscriptionEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -46,7 +47,7 @@ class PendingTranscriptionStoreTest {
             .setTransactionExecutor(Runnable::run)
             .allowMainThreadQueries()
             .build()
-        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao())
+        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao(), Dispatchers.Unconfined)
         // Wipe the voice-pending directory across tests so a previous
         // run's files don't leak into reconcile().
         File(context.filesDir, PendingTranscriptionStore.VOICE_PENDING_DIR).deleteRecursively()
