@@ -249,6 +249,7 @@ noop   *.md                          prose; no test reads a markdown file at run
 noop   docs/*                        planning docs and mockups
 noop   .claude/*                     agent role prompts
 noop   .gitignore                    ignore rules
+noop   LICENSE                       all-rights-reserved notice; prose, no test reads it (#2641)
 # ui-mock/* (issue #2636) is a standalone loopback browser tool over the
 # Roborazzi render fixtures: Python + static web, run manually; no Gradle test
 # or journey reads it. render.init.gradle still force-fulls via `full
