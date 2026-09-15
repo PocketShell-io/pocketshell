@@ -80,9 +80,10 @@ import org.junit.runner.RunWith
  *
  * ## Fixture
  *
- * Needs the Docker SSH fixture reachable at `10.0.2.2:2222` — see
- * [AgentsFixture] for the bring-up command; the probe in [seed] doubles as the
- * fixture-readiness gate.
+ * Needs the Docker SSH fixture. The journey dials [AgentsFixture.host] and
+ * [AgentsFixture.port] — pool-assigned per lane locally, `10.0.2.2:2222` on
+ * CI; see [AgentsFixture] for the bring-up command; the probe in [seed]
+ * doubles as the fixture-readiness gate.
  */
 @HiltAndroidTest
 @RunWith(AndroidJUnit4::class)
@@ -207,6 +208,22 @@ class J21HostAddConnectJourney {
         }
         compose.onNodeWithTag(TRUST_SHEET_PREVIOUS_FINGERPRINT_TAG).assertDoesNotExist()
 
+        // Last interaction with the sheet: the connect layer can re-evaluate
+        // while it is up (trust evaluate decision=Unknown -> needs-trust) and
+        // rebuild it after a server round trip, so poll displayed right
+        // before the click — both bring-up reds fired into that gap. The
+        // condition must stay null until displayed: pollUntil stops at the
+        // first NON-null return, so a Boolean false would end the poll on its
+        // first evaluation (the i2698 run-1 red proved exactly that).
+        pollUntil("displayed trust button") {
+            compose.onAllNodesWithTag(TRUST_SHEET_TRUST_TAG).fetchSemanticsNodes()
+                .singleOrNull()
+                ?.takeIf {
+                    runCatching {
+                        compose.onNodeWithTag(TRUST_SHEET_TRUST_TAG).assertIsDisplayed()
+                    }.isSuccess
+                }
+        }
         compose.onNodeWithTag(TRUST_SHEET_TRUST_TAG).performClick()
 
         // Trust → record → re-dial → authenticated → workspaces render.
