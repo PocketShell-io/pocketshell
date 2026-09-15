@@ -81,6 +81,47 @@ class SessionViewModelTest {
         store.clear()
         Dispatchers.resetMain()
         stack.close()
+        attributeLeaksToThisTest()
+    }
+
+    /**
+     * Issue #2647: an uncaught exception from a coroutine that outlived its own
+     * test must fail a test of the class that leaked it — never whichever test
+     * happens to run next.
+     *
+     * The mechanism of the bug: kotlinx-coroutines-test loads a process-global
+     * exception collector as the fallback `CoroutineExceptionHandler`. An
+     * exception from a coroutine OUTSIDE the running test's scope tree (a
+     * fire-and-forget job on a scope with no handler — `SessionAttacher`'s
+     * `pumpScope` shape, or any scope on a non-test dispatcher) is attributed
+     * to the running test while one is active, but if it surfaces when NO test
+     * scope is active — between tests, or under a test that never opened one —
+     * it is STORED. The next `runTest` anywhere in the suite replays the stored
+     * exceptions at startup and fails with `UncaughtExceptionsBeforeTest:
+     * There were uncaught exceptions before the test started`: the leak's own
+     * class is green, an unrelated class is red, and the blame moves around the
+     * suite as ordering and composition change.
+     *
+     * This guard closes that window for this class. Opening one more
+     * [TestScope] here — after this test's own `runTest` has returned — makes
+     * THIS test the newest active scope, so the collector replays anything
+     * stored since the last boundary into it, and JUnit fails THIS test
+     * (an exception out of `@After` marks this test red). A leak can therefore
+     * never travel past a guarded test boundary: it is pinned at the first
+     * test of the leaking class — or of the first guarded class after it —
+     * instead of surfacing in whichever unrelated test runs next.
+     *
+     * Verified against kotlinx-coroutines-test 1.10.2: a deliberate real-thread
+     * leak that surfaced with no active scope failed the next `runTest` with
+     * `UncaughtExceptionsBeforeTest` when unguarded, and failed the test whose
+     * `@After` opened this scope once the guard was in place — with the victim
+     * test green. Leaks that surface while a test's own `runTest` is still
+     * draining its scheduler need no guard here: `runTest` attributes those to
+     * the running test itself (also verified), and #2482's `sessionTest`
+     * `finally { clear() }` is what keeps that drain finite.
+     */
+    private fun attributeLeaksToThisTest() {
+        runTest { /* the sponge: replays stored uncaught exceptions into THIS test */ }
     }
 
     @Test
