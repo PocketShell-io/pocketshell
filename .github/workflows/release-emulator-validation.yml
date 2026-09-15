@@ -237,22 +237,30 @@ jobs:
           # exact boot path the real run will use.
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           emulator-boot-timeout: 900
+          # Issue #2690: this inline script is executed by the action as
+          # `/usr/bin/sh -c` — dash on hosted runners, NOT bash. The previous
+          # version opened with `set -euo pipefail` and used `[[ ]]`, so on run
+          # 34924674083 it died on line 1 ("set: Illegal option -o pipefail",
+          # exit 2) AFTER the emulator had already booted healthily in 28s —
+          # the preflight has never executed a single line of its real logic.
+          # Keep it POSIX-sh: no pipefail (the poll guards its own pipeline
+          # with || true; no load-bearing pipeline status here), [ ] not [[ ]].
           script: |
-            set -euo pipefail
+            set -eu
             # The action has already awaited its own boot timeout before the
             # script runs; this bound re-checks the device it handed us is
             # genuinely responsive rather than wedged half-booted.
             boot_completed=""
             for _ in $(seq 1 30); do
               boot_completed="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-              [[ "$boot_completed" == "1" ]] && break
+              [ "$boot_completed" = "1" ] && break
               sleep 5
             done
-            if [[ "$boot_completed" != "1" ]]; then
+            if [ "$boot_completed" != "1" ]; then
               echo "::error::Emulator boot preflight FAILED: sys.boot_completed='$boot_completed' after the bounded wait — the hosted emulator never produced a working device (run 34759080447 failure shape)."
               exit 1
             fi
-            echo "Emulator boot preflight OK: $(adb devices | tail -n +2 | grep -v '^$' | head -1)"
+            echo "Emulator boot preflight OK: $("$ADB" devices | tail -n +2 | grep -v '^$' | head -1)"
 
       - name: Run emulator-only release validation
         # Issue #2675: the gate is plain !cancelled() — a failed boot
