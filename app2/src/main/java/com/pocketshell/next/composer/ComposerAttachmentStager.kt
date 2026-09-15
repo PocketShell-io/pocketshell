@@ -53,12 +53,15 @@ data class AttachmentStageResult(
  * [readCapped]): the read REFUSES past the cap rather than truncating, so a
  * half-written file never appears on the host under its real name.
  *
- * **No byte-level progress.** [SftpChannel.write] has no progress callback, so
- * the ported `AttachmentTransferAggregator` (which coalesced per-chunk byte
- * ticks into a 4 Hz UI snapshot) would have had nothing to aggregate. Progress
- * is reported per FILE instead, through [onProgress] — "2 of 3 · photo.png" —
- * which is the granularity the channel can actually justify. Adding a byte
- * callback to the transport is a core-transport change, not a composer one.
+ * **Byte-level progress, coalesced.** #2686 gave [SftpChannel.write] an
+ * `onProgress` callback, so the ported `AttachmentTransferAggregator`'s proven
+ * shape is back: per-chunk byte ticks coalesced into a ~4 Hz UI snapshot. The
+ * throttle limits only how often [onProgress] repaints — the bytes themselves
+ * are the transport's own count. [onProgress] carries the current file's
+ * `fileBytesWritten`/`fileBytesTotal` on top of the file-level index/count
+ * #2568 shipped; a channel that reports no bytes leaves those zero and the
+ * composer falls back to the file-level bar, so a byte-silent transport is
+ * exactly the pre-#2686 behaviour.
  */
 class ComposerAttachmentStager(
     private val resolver: ContentResolver,
@@ -72,15 +75,17 @@ class ComposerAttachmentStager(
      *
      * [scopeKey] is the composer session key, so one session's attachments do
      * not sit in another's directory and the retention sweep can prune per
-     * session. [onProgress] is called on the caller's dispatcher before each
-     * file starts, with a 1-based index.
+     * session. [onProgress] receives one [StagingProgress] per file start
+     * (1-based index, on the caller's dispatcher) and — while that file is on
+     * the wire — byte ticks from the transport's write thread, coalesced to
+     * ~4 Hz with the first and final tick always delivered.
      */
     suspend fun stage(
         sftp: SftpChannel,
         homeDir: String,
         scopeKey: String,
         picks: List<Uri>,
-        onProgress: (index: Int, count: Int, name: String) -> Unit = { _, _, _ -> },
+        onProgress: (progress: StagingProgress) -> Unit = {},
     ): AttachmentStageResult {
         if (picks.isEmpty()) return AttachmentStageResult(emptyList())
 
@@ -109,14 +114,30 @@ class ComposerAttachmentStager(
         picks.forEachIndexed { index, uri ->
             val described = describeUri(uri)
             val fileName = composeName(timestamp, index, described.displayName ?: uri.lastPathSegment)
-            onProgress(index + 1, picks.size, fileName)
+            onProgress(StagingProgress(index + 1, picks.size, fileName))
             try {
                 val bytes = withContext(dispatcher) {
                     val stream = resolver.openInputStream(uri)
                         ?: throw IOException("could not read the selected file")
                     stream.use { readCapped(it, TransferLimits.MAX_UPLOAD_BYTES, fileName) }
                 }
-                sftp.write(RemotePath.join(remoteDir, fileName), bytes)
+                val total = bytes.size.toLong()
+                // The byte phase opens with the payload in memory: until then
+                // the bar holds the file-level slot, the moment the wire write
+                // begins it moves by bytes. An empty file never opens one.
+                if (total > 0L) {
+                    onProgress(StagingProgress(index + 1, picks.size, fileName, 0L, total))
+                }
+                var lastReportMs = Long.MIN_VALUE
+                sftp.write(RemotePath.join(remoteDir, fileName), bytes) { written ->
+                    val finalFlush = written >= total
+                    val due = lastReportMs == Long.MIN_VALUE ||
+                        now() - lastReportMs >= BYTE_TICK_MIN_INTERVAL_MS
+                    if (finalFlush || due) {
+                        lastReportMs = now()
+                        onProgress(StagingProgress(index + 1, picks.size, fileName, written, total))
+                    }
+                }
                 uploaded += StagedAttachment(
                     remotePath = "$displayDir/$fileName",
                     displayName = fileName,
@@ -253,6 +274,14 @@ class ComposerAttachmentStager(
         private const val TIMESTAMP_PATTERN = "yyyyMMdd-HHmmss"
         private const val DEFAULT_FILE_NAME = "attachment"
         private const val MAX_FILE_NAME_LENGTH = 200
+
+        /**
+         * Byte ticks faster than this collapse into one repaint — the ported
+         * `AttachmentTransferAggregator`'s 4 Hz UI snapshot. The transport's
+         * chunk sizes make this reachable on fast links; the first and final
+         * tick of a file always pass regardless.
+         */
+        private const val BYTE_TICK_MIN_INTERVAL_MS = 250L
 
         private fun describe(failure: Throwable?): String =
             failure?.message?.lineSequence()?.firstOrNull()?.trim()?.takeIf { it.isNotBlank() }

@@ -21,6 +21,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Random
 import kotlin.math.abs
+import kotlin.math.ceil
 
 /**
  * D34-class headless real-transport proof for [SftpChannelImpl] (rewrite task
@@ -40,6 +41,8 @@ import kotlin.math.abs
  *   stat().size" implementation gets wrong)
  * - [SftpChannel.stat] fields on a real file and a real directory, null for a
  *   missing path
+ * - the [SftpChannel.write] progress callback (#2686): cumulative per-chunk
+ *   ticks ending at the payload size, and silence when the write is refused
  * - `sftp()` is cached per connection, and refuses to hand out a channel once
  *   the connection is spent
  *
@@ -221,6 +224,45 @@ class SftpChannelIntegrationTest {
         sftp.delete(renamed)
         assertNull("the file is gone after delete", sftp.stat(renamed))
         assertEquals(emptyList<SftpEntry>(), sftp.list(scratch))
+    }
+
+    @Test(timeout = 180_000)
+    fun writeReportsCumulativeProgressEndingAtTheTotalByteCount() = withSftp { sftp, scratch ->
+        // #2686: the transport reports its own byte count, one tick per
+        // 32-KiB chunk (SftpChannelImpl.TRANSFER_CHUNK_BYTES), cumulative and
+        // strictly increasing, with the final flush exactly at the payload
+        // size. 100 KiB spans 4 chunks.
+        val payload = ByteArray(100 * 1024).also { Random(42).nextBytes(it) }
+        val path = "$scratch/payload.bin"
+        val ticks = mutableListOf<Long>()
+
+        sftp.write(path, payload) { ticks += it }
+
+        assertTrue("a 100-KiB write must tick at all, got $ticks", ticks.isNotEmpty())
+        assertEquals(
+            "one tick per 32-KiB chunk, got $ticks",
+            ceil(payload.size / 32_768.0).toInt(),
+            ticks.size,
+        )
+        assertTrue(
+            "ticks must be strictly increasing, got $ticks",
+            ticks.zipWithNext().all { (a, b) -> a < b },
+        )
+        assertEquals("the final flush is the payload size", payload.size.toLong(), ticks.last())
+        assertArrayEquals("the bytes on the host are the payload", payload, sftp.read(path, maxBytes = 1024 * 1024))
+    }
+
+    @Test(timeout = 180_000)
+    fun writeProgressCallbackIsSilentWhenTheWriteIsRefused() = withSftp { sftp, scratch ->
+        // [scratch] is a directory: the open is refused before any chunk, so
+        // the callback must never have fired.
+        val ticks = mutableListOf<Long>()
+
+        assertThrows(IOException::class.java) {
+            runBlocking { sftp.write(scratch, byteArrayOf(1, 2, 3)) { ticks += it } }
+        }
+
+        assertTrue("a refused write must not tick, got $ticks", ticks.isEmpty())
     }
 
     @Test(timeout = 180_000)

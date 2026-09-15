@@ -407,8 +407,8 @@ class ComposerViewModel @Inject constructor(
             val connection = connection() ?: return@launch
             val home = home(connection) ?: return@launch
             val result = runCatching {
-                stager.stage(connection.sftp(), home, key, picks) { index, count, name ->
-                    _state.update { it.copy(staging = StagingProgress(index, count, name)) }
+                stager.stage(connection.sftp(), home, key, picks) { progress ->
+                    _state.update { it.copy(staging = progress) }
                 }
             }.getOrElse { failure ->
                 AttachmentStageResult(emptyList(), "Attachment upload failed: ${describe(failure)}")

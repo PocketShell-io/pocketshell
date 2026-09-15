@@ -331,6 +331,98 @@ class FakeHostConnectionTest {
         assertThrows(IOException::class.java) { runBlockingMissingRead(sftp) }
     }
 
+    // -------------------------------------------------- sftp write progress (#2686)
+
+    @Test
+    fun `sftp write reports cumulative chunk ticks ending at the total`() = runTest {
+        val host = FakeHostConnection()
+        val sftp = host.sftpFixture()
+        sftp.writeProgressChunkBytes = 4
+        val ticks = mutableListOf<Long>()
+
+        sftp.write("/tmp/payload.bin", ByteArray(10) { it.toByte() }) { ticks += it }
+
+        // One tick per chunk, cumulative, and the last one IS bytes.size —
+        // the final-byte flush the composer's bar rides to 100%.
+        assertEquals(listOf(4L, 8L, 10L), ticks)
+        assertEquals(10, requireNotNull(sftp.bytesAt("/tmp/payload.bin")).size)
+    }
+
+    @Test
+    fun `a payload within one chunk reports a single tick at its full size`() = runTest {
+        val host = FakeHostConnection()
+        val sftp = host.sftpFixture()
+        val ticks = mutableListOf<Long>()
+
+        sftp.write("/tmp/small.bin", "written".toByteArray()) { ticks += it }
+
+        assertEquals(listOf(7L), ticks)
+    }
+
+    @Test
+    fun `a payload exactly one chunk reports the boundary once`() = runTest {
+        val host = FakeHostConnection()
+        val sftp = host.sftpFixture()
+        sftp.writeProgressChunkBytes = 8
+        val ticks = mutableListOf<Long>()
+
+        sftp.write("/tmp/exact.bin", ByteArray(8)) { ticks += it }
+
+        // The boundary is the final flush: exactly one tick at 8, never a
+        // trailing zero-byte tick past the end of the payload.
+        assertEquals(listOf(8L), ticks)
+    }
+
+    @Test
+    fun `an empty payload invokes the progress callback never`() = runTest {
+        val host = FakeHostConnection()
+        val sftp = host.sftpFixture()
+        var ticks = 0
+
+        sftp.write("/tmp/empty.bin", ByteArray(0)) { ticks += 1 }
+
+        assertEquals(0, ticks)
+        assertEquals(0, requireNotNull(sftp.bytesAt("/tmp/empty.bin")).size)
+    }
+
+    @Test
+    fun `a scripted mid-write failure goes silent from the failure onwards`() = runTest {
+        val host = FakeHostConnection()
+        val sftp = host.sftpFixture()
+        sftp.writeProgressChunkBytes = 4
+        sftp.writeFailsAfterBytes = 4
+        val ticks = mutableListOf<Long>()
+
+        val failure = assertThrows(IOException::class.java) {
+            runBlockingFailingWrite(sftp) { ticks += it }
+        }
+
+        // Chunk one ticked (4), chunk two died before ticking: nothing is
+        // reported after the failure, and nothing was stored.
+        assertEquals(listOf(4L), ticks)
+        assertTrue(failure.message!!.contains("scripted failure after 4"))
+        assertNull(sftp.bytesAt("/tmp/doomed.bin"))
+    }
+
+    /**
+     * The only door to the write callback is a live channel: once the
+     * connection is spent, `sftp()` refuses, so no tick can ever fire after a
+     * close — the same dead-transport shape a real connection shows.
+     */
+    @Test
+    fun `a spent connection never reaches the write callback`() = runTest {
+        val host = FakeHostConnection()
+        host.close()
+        var ticks = 0
+
+        val failure = assertThrows(IOException::class.java) {
+            runBlockingSftp(host)
+        }
+
+        assertTrue(failure.message!!.contains("connection closed"))
+        assertEquals(0, ticks)
+    }
+
     // --------------------------------------------------------- port forwarding
 
     @Test
@@ -414,4 +506,7 @@ class FakeHostConnectionTest {
 
     private fun runBlockingMissingRead(sftp: SftpChannel) =
         kotlinx.coroutines.runBlocking { sftp.read("/var/log/missing.log", maxBytes = 4_096) }
+
+    private fun runBlockingFailingWrite(sftp: SftpChannel, onProgress: (Long) -> Unit) =
+        kotlinx.coroutines.runBlocking { sftp.write("/tmp/doomed.bin", ByteArray(10), onProgress) }
 }

@@ -21,8 +21,22 @@ interface SftpChannel {
      */
     suspend fun read(path: String, maxBytes: Long): ByteArray
 
-    /** Writes [bytes] to [path], creating or replacing it. */
-    suspend fun write(path: String, bytes: ByteArray)
+    /**
+     * Writes [bytes] to [path], creating or replacing it.
+     *
+     * [onProgress] reports bytes sent for this one file: cumulative, strictly
+     * increasing, invoked after each payload chunk is handed to the wire, and
+     * always ending at `bytes.size` for a non-empty payload — the final-byte
+     * flush. An empty payload invokes it never. A write that fails or a
+     * connection that dies reports nothing further: the callback is silent
+     * from the failure onwards. The bytes are the transport's own count, not
+     * an estimate (#2686).
+     */
+    suspend fun write(
+        path: String,
+        bytes: ByteArray,
+        onProgress: (bytesWritten: Long) -> Unit = {},
+    )
 
     suspend fun mkdir(path: String)
 

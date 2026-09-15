@@ -107,7 +107,11 @@ class RealHostConnectionChannelBudgetTest {
         override suspend fun list(path: String) = emptyList<SftpEntry>()
         override suspend fun stat(path: String): SftpEntry? = null
         override suspend fun read(path: String, maxBytes: Long): ByteArray = ByteArray(0)
-        override suspend fun write(path: String, bytes: ByteArray) = Unit
+        override suspend fun write(
+            path: String,
+            bytes: ByteArray,
+            onProgress: (bytesWritten: Long) -> Unit,
+        ) = Unit
         override suspend fun mkdir(path: String) = Unit
         override suspend fun rename(from: String, to: String) = Unit
         override suspend fun delete(path: String) = Unit

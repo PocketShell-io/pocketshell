@@ -53,8 +53,38 @@ sealed interface ComposerNotice {
     data class Info(val message: String) : ComposerNotice
 }
 
-/** File-level attachment upload progress: "2 of 3 · screenshot.png". */
-data class StagingProgress(val index: Int, val count: Int, val name: String)
+/**
+ * Attachment upload progress for the staging row: "2 of 3 · screenshot.png".
+ *
+ * [fileBytesWritten]/[fileBytesTotal] are the current file's byte progress,
+ * reported by the transport itself (#2686) — never a timer. Both zero means
+ * the current file has no byte information (not writing yet, or a channel
+ * that reports no bytes), and the bar then falls back to the file-level
+ * ratio #2568 shipped, so a byte-silent channel behaves exactly as before.
+ */
+data class StagingProgress(
+    val index: Int,
+    val count: Int,
+    val name: String,
+    val fileBytesWritten: Long = 0,
+    val fileBytesTotal: Long = 0,
+) {
+    /**
+     * The fraction the staging bar renders: finished files plus the current
+     * file's byte share, so a single large upload moves continuously instead
+     * of sitting pinned at `index/count` (#2686). Always clamped to `[0, 1]`.
+     */
+    val barFraction: Float
+        get() {
+            if (count <= 0) return 0f
+            val fileShare = if (fileBytesTotal > 0) {
+                (fileBytesWritten.toFloat() / fileBytesTotal).coerceIn(0f, 1f)
+            } else {
+                1f
+            }
+            return ((index - 1 + fileShare) / count).coerceIn(0f, 1f)
+        }
+}
 
 /** One entry of the per-session sent-message log. */
 data class SentMessage(

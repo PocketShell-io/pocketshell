@@ -216,16 +216,15 @@ fun ComposerBar(
                 maxLines = 1,
                 modifier = Modifier.testTag(COMPOSER_STAGING_TAG),
             )
-            // #2568: a static label that changes only when a whole file lands
-            // reads as a stall, so the file-level ratio gets a bar. The
-            // transport ([ComposerAttachmentStager]) has no byte-level callback
-            // — `SftpChannel.write` takes the whole payload — so the bar
-            // advances per file, not per byte: a single large upload sits at
-            // its index/count ratio the whole time. Adding byte ticks is a
-            // core-transport change, tracked as #2686; until then this is
-            // the honest picture the label already gave, with motion on top.
+            // #2568 gave the staging row a determinate bar; #2686 made it
+            // byte-honest inside a file. [StagingProgress.barFraction] folds
+            // the transport's own per-chunk byte ticks into the ratio, so a
+            // single large upload moves continuously — and when the channel
+            // reports no bytes (both zero) the fraction degenerates to the
+            // exact file-level index/count bar #2568 shipped. Never a fake
+            // timer: no bytes, no within-file motion.
             ProgressBar(
-                progress = progress.index.toFloat() / progress.count,
+                progress = progress.barFraction,
                 modifier = Modifier
                     .padding(top = PocketShellSpacing.xs)
                     .testTag(COMPOSER_STAGING_PROGRESS_TAG),

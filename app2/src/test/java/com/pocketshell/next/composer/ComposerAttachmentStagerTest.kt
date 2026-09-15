@@ -127,15 +127,124 @@ class ComposerAttachmentStagerTest {
     }
 
     @Test
-    fun `progress is reported once per file, one-based`() = runTest {
-        val seen = mutableListOf<String>()
+    fun `progress is announced once per file, one-based, before any bytes`() = runTest {
+        val announced = mutableListOf<String>()
 
         stager.stage(sftp, HOME, SESSION_KEY, listOf(pick("a.txt", "a"), pick("b.txt", "b"))) {
-            index, count, name ->
-            seen += "$index/$count:${name.substringAfterLast('-')}"
+            progress ->
+            // The announce is the one event with no byte info; byte-phase
+            // events carry a total and are covered by the tests below.
+            if (progress.fileBytesTotal == 0L) {
+                announced += "${progress.index}/${progress.count}:" +
+                    progress.name.substringAfterLast('-')
+            }
         }
 
-        assertEquals(listOf("1/2:a.txt", "2/2:b.txt"), seen)
+        assertEquals(listOf("1/2:a.txt", "2/2:b.txt"), announced)
+    }
+
+    /**
+     * #2686: the stager announces each file (no byte info yet) and then opens
+     * a byte phase for the write — written/total straight from the transport,
+     * never a timer. The test's clock is frozen, so the coalescing keeps the
+     * first tick of the file and the final flush.
+     */
+    @Test
+    fun `each file announces then reports the byte phase`() = runTest {
+        val seen = mutableListOf<String>()
+
+        stager.stage(sftp, HOME, SESSION_KEY, listOf(pick("a.txt", "aaaa"), pick("b.txt", "b"))) {
+            progress ->
+            seen += "${progress.index}/${progress.count}:${progress.name.substringAfterLast('-')} " +
+                "${progress.fileBytesWritten}/${progress.fileBytesTotal}"
+        }
+
+        // "a.txt" is 4 bytes, "b.txt" is 1: both land in a single chunk, so
+        // each file's byte phase is open(0/total) then the final flush.
+        assertEquals(
+            listOf(
+                "1/2:a.txt 0/0",
+                "1/2:a.txt 0/4",
+                "1/2:a.txt 4/4",
+                "2/2:b.txt 0/0",
+                "2/2:b.txt 0/1",
+                "2/2:b.txt 1/1",
+            ),
+            seen,
+        )
+    }
+
+    /**
+     * The old `AttachmentTransferAggregator`'s 4 Hz shape: with the clock
+     * frozen, mid-file chunk ticks collapse — only the file's first tick and
+     * the final flush reach [onProgress].
+     */
+    @Test
+    fun `byte ticks within the interval coalesce keeping first and final`() = runTest {
+        sftp.writeProgressChunkBytes = 4
+        val seen = mutableListOf<String>()
+
+        stager.stage(sftp, HOME, SESSION_KEY, listOf(pick("big.bin", "0123456789"))) { progress ->
+            seen += "${progress.fileBytesWritten}/${progress.fileBytesTotal}"
+        }
+
+        // Channel ticks 4, 8, 10: the first passes, 8 lands inside the frozen
+        // 250 ms window and is suppressed, 10 is the final flush and passes.
+        assertEquals(listOf("0/0", "0/10", "4/10", "10/10"), seen)
+    }
+
+    /** Ticks spaced past the interval all pass — real bytes, throttled paint. */
+    @Test
+    fun `byte ticks spaced past the interval are all reported`() = runTest {
+        sftp.writeProgressChunkBytes = 4
+        var calls = 0
+        val spaced = ComposerAttachmentStager(
+            resolver = resolver,
+            dispatcher = Dispatchers.Unconfined,
+            now = { (calls++).toLong() * 300L },
+        )
+        val seen = mutableListOf<String>()
+
+        spaced.stage(sftp, HOME, SESSION_KEY, listOf(pick("big.bin", "0123456789"))) { progress ->
+            seen += "${progress.fileBytesWritten}/${progress.fileBytesTotal}"
+        }
+
+        assertEquals(listOf("0/0", "0/10", "4/10", "8/10", "10/10"), seen)
+    }
+
+    /** A zero-byte pick still uploads, it just never opens a byte phase. */
+    @Test
+    fun `an empty file announces without a byte phase`() = runTest {
+        val seen = mutableListOf<String>()
+
+        val result = stager.stage(sftp, HOME, SESSION_KEY, listOf(pick("empty.txt", ""))) {
+            progress ->
+            seen += "${progress.fileBytesWritten}/${progress.fileBytesTotal}"
+        }
+
+        assertTrue(result.uploaded.isNotEmpty())
+        assertEquals(listOf("0/0"), seen)
+    }
+
+    /**
+     * A write that dies mid-file stops the byte story exactly where the
+     * transport stopped: the last tick before the failure is the last event
+     * for that file, and the batch still reports the failure normally.
+     */
+    @Test
+    fun `a mid-write failure ends the byte phase at the last tick`() = runTest {
+        sftp.writeProgressChunkBytes = 4
+        sftp.writeFailsAfterBytes = 4
+        val seen = mutableListOf<String>()
+
+        val result = stager.stage(sftp, HOME, SESSION_KEY, listOf(pick("doomed.bin", "0123456789"))) {
+            progress ->
+            seen += "${progress.fileBytesWritten}/${progress.fileBytesTotal}"
+        }
+
+        assertEquals(listOf("0/0", "0/10", "4/10"), seen)
+        assertNotNull(result.failure)
+        assertTrue(result.uploaded.isEmpty())
     }
 
     /**

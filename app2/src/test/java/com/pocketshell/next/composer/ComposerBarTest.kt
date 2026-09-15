@@ -151,7 +151,9 @@ class ComposerBarTest {
     /**
      * #2568: the staging row is not just a label — a determinate bar rides
      * under it, and the asserted thing is the VALUE (index/count), not merely
-     * that some bar-shaped node exists.
+     * that some bar-shaped node exists. Progress with no byte info (both byte
+     * fields zero) renders the file-level ratio — the exact pre-#2686
+     * fallback a byte-silent channel still gets.
      */
     @Test
     fun `the staging bar is determinate at the index over count fraction`() {
@@ -175,6 +177,68 @@ class ComposerBarTest {
                 "(bottom=${label.bottom})",
             barBounds.top >= label.bottom,
         )
+    }
+
+    /**
+     * #2686: byte ticks from the transport fold into the ratio — one 300-of-
+     * 900-byte file inside a 3-file batch sits a third of the way into its
+     * own slot, i.e. 1/9 overall, not at the whole-file 1/3.
+     */
+    @Test
+    fun `the staging bar interpolates within the current file's bytes`() {
+        setContent(
+            ComposerUiState(
+                draft = "text",
+                staging = StagingProgress(
+                    index = 1,
+                    count = 3,
+                    name = "big.bin",
+                    fileBytesWritten = 300,
+                    fileBytesTotal = 900,
+                ),
+            ),
+        )
+
+        val fraction = composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG)
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.ProgressBarRangeInfo].current
+        assertEquals(1f / 9f, fraction, 1e-4f)
+    }
+
+    /**
+     * The single-large-file case the issue was filed for: count == 1 and the
+     * bar moves with the transport's byte ticks instead of sitting pinned at
+     * 1 of 1 until the whole file lands.
+     */
+    @Test
+    fun `a single file's bar ticks with its byte progress`() {
+        val state = mutableStateOf(
+            ComposerUiState(
+                draft = "text",
+                staging = StagingProgress(1, 1, "big.bin", fileBytesWritten = 0, fileBytesTotal = 100),
+            ),
+        )
+        composeRule.setContent { dynamicComposer(state.value) }
+
+        fun fraction() = composeRule.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG)
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.ProgressBarRangeInfo].current
+
+        assertEquals(0f, fraction(), 1e-4f)
+
+        state.value = ComposerUiState(
+            draft = "text",
+            staging = StagingProgress(1, 1, "big.bin", fileBytesWritten = 50, fileBytesTotal = 100),
+        )
+        composeRule.waitForIdle()
+        assertEquals(0.5f, fraction(), 1e-4f)
+
+        state.value = ComposerUiState(
+            draft = "text",
+            staging = StagingProgress(1, 1, "big.bin", fileBytesWritten = 100, fileBytesTotal = 100),
+        )
+        composeRule.waitForIdle()
+        assertEquals(1f, fraction(), 1e-4f)
     }
 
     @Test

@@ -76,7 +76,11 @@ internal class SftpChannelImpl(
         }
     }
 
-    override suspend fun write(path: String, bytes: ByteArray) = withSftp("write $path") { sftp ->
+    override suspend fun write(
+        path: String,
+        bytes: ByteArray,
+        onProgress: (bytesWritten: Long) -> Unit,
+    ) = withSftp("write $path") { sftp ->
         // CREAT|TRUNC: create or replace, per the SftpChannel contract.
         sftp.open(path, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { file ->
             var offset = 0L
@@ -86,6 +90,10 @@ internal class SftpChannelImpl(
                 val chunk = minOf(TRANSFER_CHUNK_BYTES.toLong(), bytes.size - offset).toInt()
                 file.write(offset, bytes, offset.toInt(), chunk)
                 offset += chunk
+                // Cumulative bytes on the wire; the last chunk lands the call
+                // exactly at bytes.size (#2686). Runs on the write thread —
+                // callers must not block it for long.
+                onProgress(offset)
             }
         }
     }

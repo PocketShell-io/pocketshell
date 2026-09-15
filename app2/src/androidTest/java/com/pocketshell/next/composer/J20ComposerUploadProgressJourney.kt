@@ -329,8 +329,10 @@ class J20ComposerUploadProgressJourney {
     /**
      * The bar's rendered fraction, into the log the reviewer keeps: a device
      * screenshot proves pixels; this line pins WHAT the bar rendered at
-     * capture time (determinate 1/3) in a form that survives anywhere logcat
-     * does.
+     * capture time in a form that survives anywhere logcat does. Since #2686
+     * the fraction moves within the current file, so mid-flight it is a
+     * determinate value inside (fileIndex-1)/3..fileIndex/3 rather than the
+     * whole-file 1/3 #2568 logged.
      */
     private fun logBarSemantics(phase: String) {
         val range = compose.onNodeWithTag(COMPOSER_STAGING_PROGRESS_TAG)

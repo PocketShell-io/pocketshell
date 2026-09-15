@@ -474,6 +474,22 @@ class FakeSftpChannel internal constructor(
     private val directories = linkedSetOf("/")
     private val modified = mutableMapOf<String, Long>()
 
+    /**
+     * Bytes per [write] progress chunk. The default reports one tick, at
+     * completion (the same shape a payload within one real chunk gets); tests
+     * set it smaller to script multi-chunk byte ticks (#2686) without
+     * shipping 32-KiB payloads.
+     */
+    var writeProgressChunkBytes: Int = Int.MAX_VALUE
+
+    /**
+     * When a [write] has reported this many cumulative bytes, the next chunk
+     * fails with [IOException] — a scripted mid-write death, for asserting
+     * that the progress callback goes silent from the failure onwards. The
+     * default never fails.
+     */
+    var writeFailsAfterBytes: Long = Long.MAX_VALUE
+
     /** Pre-populates a file (and its parent directories). */
     fun seedFile(path: String, bytes: ByteArray): FakeSftpChannel {
         val normalized = normalize(path)
@@ -528,9 +544,26 @@ class FakeSftpChannel internal constructor(
         return bytes.copyOf()
     }
 
-    override suspend fun write(path: String, bytes: ByteArray) {
+    override suspend fun write(
+        path: String,
+        bytes: ByteArray,
+        onProgress: (bytesWritten: Long) -> Unit,
+    ) {
         val normalized = normalize(path)
         if (normalized in directories) throw IOException("$normalized is a directory")
+        // Ticks fire during the walk, the store stays all-or-nothing at the
+        // end: a scripted mid-write failure leaves the previous content, the
+        // same "never a half-written file under its real name" rule the
+        // consumers' tests already rely on.
+        var offset = 0L
+        while (offset < bytes.size) {
+            if (offset >= writeFailsAfterBytes) {
+                throw IOException("scripted failure after $offset of ${bytes.size} bytes: $normalized")
+            }
+            val chunk = minOf(writeProgressChunkBytes.toLong(), bytes.size - offset).toInt()
+            offset += chunk
+            onProgress(offset)
+        }
         files[normalized] = bytes.copyOf()
         modified[normalized] = nowMs()
     }
