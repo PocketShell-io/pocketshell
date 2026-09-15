@@ -1,0 +1,28 @@
+PocketShell — proprietary notice
+================================
+
+Copyright (c) 2026 Alexey Grigorev. All rights reserved.
+
+The PocketShell Android application, the shared Gradle libraries in this
+repository (app2/, shared/), the CI and tooling, and the design assets are
+proprietary software. You may not reproduce, distribute, publish, or create
+derivative works from them without the copyright holder's prior written
+permission. No open-source license is granted for them, now or by silence.
+
+Deliberate open-source carve-outs, which carry their own license terms:
+
+- The host CLI (PocketShell-io/pocketshell-cli, PyPI package `pocketshell`)
+  is MIT, and the bundled `aplexer` is Apache-2.0; both carry their own
+  license files in their own repositories and are distributed separately
+  from the app.
+- Vendored Termux `terminal-emulator` / `terminal-view` code
+  (shared/core-terminal): Apache-2.0, see
+  shared/core-terminal/LICENSE.txt.
+- JetBrainsMono-Regular.ttf: SIL Open Font License 1.1, see
+  shared/core-terminal/src/main/assets/fonts/OFL.txt.
+- All other third-party dependencies keep their upstream licenses; the
+  notices shipped with the binary are collected in
+  app2/src/main/res/raw/third_party_licenses.txt.
+
+Charging for PocketShell changes none of this: the app is paid and closed,
+the CLI and aux tooling stay free and open.
