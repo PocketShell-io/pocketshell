@@ -237,30 +237,23 @@ jobs:
           # exact boot path the real run will use.
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
           emulator-boot-timeout: 900
-          # Issue #2690: this inline script is executed by the action as
-          # `/usr/bin/sh -c` — dash on hosted runners, NOT bash. The previous
-          # version opened with `set -euo pipefail` and used `[[ ]]`, so on run
-          # 34924674083 it died on line 1 ("set: Illegal option -o pipefail",
-          # exit 2) AFTER the emulator had already booted healthily in 28s —
-          # the preflight has never executed a single line of its real logic.
-          # Keep it POSIX-sh: no pipefail (the poll guards its own pipeline
-          # with || true; no load-bearing pipeline status here), [ ] not [[ ]].
-          script: |
-            set -eu
-            # The action has already awaited its own boot timeout before the
-            # script runs; this bound re-checks the device it handed us is
-            # genuinely responsive rather than wedged half-booted.
-            boot_completed=""
-            for _ in $(seq 1 30); do
-              boot_completed="$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)"
-              [ "$boot_completed" = "1" ] && break
-              sleep 5
-            done
-            if [ "$boot_completed" != "1" ]; then
-              echo "::error::Emulator boot preflight FAILED: sys.boot_completed='$boot_completed' after the bounded wait — the hosted emulator never produced a working device (run 34759080447 failure shape)."
-              exit 1
-            fi
-            echo "Emulator boot preflight OK: $("$ADB" devices | tail -n +2 | grep -v '^$' | head -1)"
+          # Issue #2690: the action executes an inline `script:` input LINE BY
+          # LINE through separate `/usr/bin/sh -c` invocations (one fresh dash
+          # process per line), so no multi-line inline script can ever run
+          # here: run 34924674083 died on line 1 ("set: Illegal option -o
+          # pipefail" — dash is /usr/bin/sh on hosted runners, not bash), and
+          # after 3bf85778e POSIX-sh-ified the script, run 34946115391 STILL
+          # died exit 2 with `Syntax error: end of file unexpected (expecting
+          # "done")` because the `for` line arrived alone at a fresh sh
+          # (options/variables would not persist across the per-line processes
+          # anyway). The preflight therefore lives in
+          # scripts/emulator-boot-preflight.sh and is invoked by path — a
+          # single `sh -c <path>` invocation, the same delivery shape as the
+          # validation step below (scripts/release-emulator-validation.sh,
+          # proven on this pinned action). The script itself stays POSIX-sh
+          # (`set -eu`, `[ ]`, no pipefail — its poll guards its own pipeline
+          # with `|| true`; no load-bearing pipeline status).
+          script: scripts/emulator-boot-preflight.sh
 
       - name: Run emulator-only release validation
         # Issue #2675: the gate is plain !cancelled() — a failed boot
