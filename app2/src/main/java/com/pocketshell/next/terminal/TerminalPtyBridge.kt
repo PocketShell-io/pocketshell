@@ -57,8 +57,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * A session outlives the channel it is attached through (that is what keeps the
  * last frame on screen across a reconnect), so several bridges drive one
  * session over its life — but never at the same time. [stop] clears the sink,
- * the next bridge's [start] installs its own, and
- * [SessionViewModel.releaseChannel] is the single place that sequences the two.
+ * the next bridge's [start] installs its own, and [SessionAttacher]'s
+ * channel retirement (`releaseChannel`) is the single place that sequences
+ * the two.
  * Since issue #2578 the sequencing is also a property of the session itself:
  * [stop] clears by identity ([TerminalSession.clearInputSink]), so a stop that
  * loses the race removes nothing.
@@ -180,7 +181,7 @@ class TerminalPtyBridge(
         if (!stopped.compareAndSet(false, true)) return
         // Compare-and-clear, not a blind null: the sequencing that keeps this
         // stop ahead of the next bridge's start lives in one place
-        // ([SessionViewModel.releaseChannel]), and a stop that loses that race
+        // ([SessionAttacher]'s releaseChannel), and a stop that loses that race
         // — a reordered shutdown, a late cancellation — used to black out all
         // input until a THIRD bridge arrived. Clearing by identity makes the
         // hand-off a property of the session, not of the callers' ordering

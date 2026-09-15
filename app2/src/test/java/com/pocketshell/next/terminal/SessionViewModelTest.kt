@@ -14,11 +14,13 @@ import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
 import com.termux.terminal.TerminalSession
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -1060,6 +1062,62 @@ class SessionViewModelTest {
 
         clear()
     }
+
+    /**
+     * The other half of the sizing contract (TerminalGeometry.kt's U-5 doc):
+     * on a real device the FIRST layout reports its geometry WHILE the first
+     * dial is still in flight — the screen sits in `Connecting` during the
+     * dial — and the PTY must open at that mid-dial report. Nothing re-pushes
+     * it afterwards: the report updated the remembered size, so the post-attach
+     * one is deduped away, which makes the open-time read the only chance to
+     * get it right.
+     *
+     * Why the rest of this suite cannot see a violation: it runs
+     * `viewModelScope` on a [StandardTestDispatcher], so `open()` only QUEUES
+     * the attach and any geometry read happens after `onResized` no matter
+     * when it was taken. This test swaps Main for an [UnconfinedTestDispatcher]
+     * — the same run-into-the-first-suspension semantics as the device's
+     * `Dispatchers.Main.immediate` — and parks the dial itself on the
+     * factory's [com.pocketshell.next.connect.FakeHostConnectionFactory.gate],
+     * so `onResized` genuinely lands mid-dial, between dial entry and PTY
+     * open. With the geometry snapshotted at dial entry (the regression this
+     * pins), the PTY opens at the 80x24 default and the assertion goes red.
+     */
+    @Test
+    fun `a resize reported during the dial opens the PTY at the reported size`() =
+        runTest(dispatcher) {
+            Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+            try {
+                val hostId = stack.seedHost()
+                livePty()
+                stack.factory.gate = CompletableDeferred()
+                val viewModel = viewModel()
+
+                // Runs synchronously into the dial and parks on the gate —
+                // exactly where a device sits while its first layout happens.
+                viewModel.open(hostId, SESSION)
+                viewModel.onResized(100, 50)
+
+                stack.factory.gate?.complete(Unit)
+                settle()
+
+                assertTrue(
+                    "expected Live, got ${viewModel.uiState.value}",
+                    viewModel.uiState.value is SessionUiState.Live,
+                )
+                val request = connection().ptyRequests.single()
+                assertEquals(
+                    "the mid-dial report must be the size the remote starts at",
+                    100,
+                    request.cols,
+                )
+                assertEquals(50, request.rows)
+
+                clear()
+            } finally {
+                Dispatchers.setMain(dispatcher)
+            }
+        }
 
     /** A second `open()` (recomposition, rotation) must not open a second PTY. */
     @Test

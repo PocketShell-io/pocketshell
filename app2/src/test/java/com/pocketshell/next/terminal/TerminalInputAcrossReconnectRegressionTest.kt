@@ -41,8 +41,8 @@ import org.robolectric.Shadows
  * #2566's first design replaced that buffer with a `TerminalSession.InputSink`
  * the bridge installs in `start()` and clears in `stop()`, and dropped anything
  * written while no sink was installed. Between
- * `SessionViewModel.releaseChannel()` (stop) and the ladder's next successful
- * `attachOnce()` (start) there is a window — seconds, since it spans a full SSH
+ * `SessionAttacher.releaseChannel()` (stop) and the ladder's next successful
+ * `SessionViewModel.attachOnce()` (start) there is a window — seconds, since it spans a full SSH
  * dial — in which every keystroke was therefore lost. Not hypothetical: with
  * that design
  * `J06BackgroundGraceReturnJourney.returningAfterTheGraceWindowExpiresReattachesInsteadOfReportingTheSessionEnded`
