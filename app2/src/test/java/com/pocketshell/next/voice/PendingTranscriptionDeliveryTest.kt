@@ -7,6 +7,7 @@ import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.core.storage.entity.PendingTranscriptionEntity
 import com.pocketshell.core.voice.WhisperClient
 import com.pocketshell.core.voice.WhisperException
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.After
@@ -14,6 +15,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -28,6 +31,15 @@ import java.io.File
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class PendingTranscriptionDeliveryTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var context: Context
     private lateinit var db: AppDatabase

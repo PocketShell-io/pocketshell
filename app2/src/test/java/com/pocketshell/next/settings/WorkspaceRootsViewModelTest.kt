@@ -14,6 +14,7 @@ import com.pocketshell.next.connect.RoomTrustStore
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
 import com.pocketshell.next.nav.Destination
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -26,6 +27,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -35,6 +38,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class WorkspaceRootsViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var db: AppDatabase
     private lateinit var registry: ConnectionsRegistry

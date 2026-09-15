@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.core.storage.entity.HostEntity
 import com.pocketshell.core.storage.entity.SshKeyEntity
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -19,6 +20,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -38,6 +41,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class HostListViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var db: AppDatabase
     private var keyId: Long = 0

@@ -10,6 +10,7 @@ import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.entity.HostEntity
 import com.pocketshell.core.storage.entity.SshKeyEntity
+import com.pocketshell.testsupport.LeakGuard
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -28,6 +29,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -37,6 +40,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class ForwardingResumeTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var context: Context
     private lateinit var db: AppDatabase

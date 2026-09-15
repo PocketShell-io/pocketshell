@@ -2,6 +2,7 @@ package com.pocketshell.next.files
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.TransportState
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -17,6 +18,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.CountDownLatch
@@ -34,6 +37,9 @@ import java.util.concurrent.TimeUnit
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class ViewerViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private val dispatcher = StandardTestDispatcher()
     private lateinit var stack: TestFilesStack
@@ -428,6 +434,10 @@ class ViewerViewModelTest {
         )
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val DIR = "/home/testuser/git/pocketshell"
         const val TEXT_PATH = "$DIR/notes.txt"
         const val MARKDOWN_PATH = "$DIR/README.md"

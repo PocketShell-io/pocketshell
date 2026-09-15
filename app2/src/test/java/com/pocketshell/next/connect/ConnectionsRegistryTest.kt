@@ -10,6 +10,7 @@ import com.pocketshell.core.transport.AuthMaterial
 import com.pocketshell.core.transport.ConnectResult
 import com.pocketshell.core.transport.TransportState
 import com.pocketshell.core.transport.TrustDecision
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.async
@@ -25,6 +26,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -39,6 +42,15 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class ConnectionsRegistryTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var db: AppDatabase
     private var hostId: Long = 0

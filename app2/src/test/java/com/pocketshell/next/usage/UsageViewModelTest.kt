@@ -2,6 +2,7 @@ package com.pocketshell.next.usage
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.next.settings.AppSettings
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -14,6 +15,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -26,6 +29,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class UsageViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private var stack: TestUsageStack? = null
 
@@ -136,6 +142,10 @@ class UsageViewModelTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val CLAUDE_NDJSON =
             "{\"provider\":\"claude\",\"status\":\"ok\"," +
                 "\"windows\":{\"5h\":{\"percent_remaining\":80.0,\"reset_at\":null}}," +

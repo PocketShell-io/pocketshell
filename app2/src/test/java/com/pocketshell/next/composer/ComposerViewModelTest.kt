@@ -2,6 +2,7 @@ package com.pocketshell.next.composer
 
 import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.pocketshell.testsupport.LeakGuard
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -22,6 +23,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -44,6 +46,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class ComposerViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -1320,6 +1325,10 @@ class ComposerViewModelTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val SESSION = "devbox"
 
         /** A second session on the same host, for the rebind tests. */

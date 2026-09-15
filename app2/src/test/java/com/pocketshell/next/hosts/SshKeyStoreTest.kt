@@ -3,6 +3,7 @@ package com.pocketshell.next.hosts
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.AppDatabase
+import com.pocketshell.testsupport.LeakGuard
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -16,6 +17,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -35,6 +37,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class SshKeyStoreTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -245,6 +250,10 @@ class SshKeyStoreTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         /** A complete generated OpenSSH key used by the import tests. */
         val UNENCRYPTED_PEM: String by lazy {
             SshKeyMaterial.generatePrivateKeyPem()

@@ -12,6 +12,7 @@ import com.pocketshell.core.transport.FakeHostConnection
 import com.pocketshell.next.connect.ConnectionsRegistry
 import com.pocketshell.next.connect.FakeHostConnectionFactory
 import com.pocketshell.next.connect.RoomTrustStore
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -23,6 +24,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -47,6 +50,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class GraceCoordinatorTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private lateinit var db: AppDatabase
     private var hostId: Long = 0
@@ -564,6 +570,10 @@ class GraceCoordinatorTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val GRACE_MS = GraceCoordinator.DEFAULT_GRACE_MS
     }
 }

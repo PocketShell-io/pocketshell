@@ -500,6 +500,13 @@ dependencies {
     testImplementation(testFixtures(project(":shared:core-transport")))
     testImplementation(libs.kotlinx.coroutines.test)
 
+    // Issue #2707: LeakGuard — the suite-wide leak-attribution boundary (#2647
+    // sponge as a JUnit rule plus an end-of-class grace) lives in
+    // :shared:test-support so JVM unit tests and instrumented tests adopt the
+    // identical rule. junit/kotlinx-coroutines-test it compiles against are
+    // already on both test classpaths.
+    testImplementation(project(":shared:test-support"))
+
     // Task U-2: app2's first INSTRUMENTED tests (journey J01). The androidTest
     // component already sees the main variant's `implementation` dependencies
     // (Room, core-transport/sshj, Hilt, Compose), so only the test-only
@@ -521,6 +528,8 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.uiautomator)
     androidTestImplementation(libs.kotlinx.coroutines.test)
+    // Issue #2707: LeakGuard, shared with the JVM unit-test source set.
+    androidTestImplementation(project(":shared:test-support"))
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)
     // Issue #2549: the journey harness bounds `waitForIdle()` with Espresso's

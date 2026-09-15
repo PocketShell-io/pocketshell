@@ -13,6 +13,7 @@ import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
 import com.pocketshell.next.nav.Destination
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -27,6 +28,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -48,6 +51,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class SessionTreeViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private val dispatcher = StandardTestDispatcher()
     private lateinit var stack: TestConnectStack
@@ -1049,6 +1055,10 @@ class SessionTreeViewModelTest {
     private fun connection(): FakeHostConnection = stack.factory.connections.single()
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         /**
          * Two named workspaces plus a workspace-less session, one aplexer row
          * with an engine/tag, and a reported agent state — the shape the Docker

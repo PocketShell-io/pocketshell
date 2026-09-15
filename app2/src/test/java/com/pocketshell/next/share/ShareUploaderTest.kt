@@ -2,6 +2,7 @@ package com.pocketshell.next.share
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.ExecResult
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -10,6 +11,8 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -29,6 +32,9 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ShareUploaderTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private lateinit var stack: TestShareStack
 
@@ -239,6 +245,10 @@ class ShareUploaderTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         val PNG_BYTES: ByteArray = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A)
     }
 }

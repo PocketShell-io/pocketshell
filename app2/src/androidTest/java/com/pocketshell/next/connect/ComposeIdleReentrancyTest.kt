@@ -7,8 +7,10 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.pocketshell.testsupport.LeakGuard
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -63,6 +65,9 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ComposeIdleReentrancyTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @get:Rule
     val compose = createComposeRule()
@@ -145,6 +150,9 @@ class ComposeIdleReentrancyTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
 
         const val ON_SCREEN = "reentrancy fixture"
 

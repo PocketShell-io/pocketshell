@@ -2,6 +2,7 @@ package com.pocketshell.next.usage
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.next.settings.AppSettings
+import com.pocketshell.testsupport.LeakGuard
 import com.pocketshell.uikit.model.PillKind
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -14,6 +15,8 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -33,6 +36,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class UsageGlanceViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private var stack: TestUsageStack? = null
 
@@ -326,6 +332,10 @@ class UsageGlanceViewModelTest {
         """{"schema": 3, "sessions": [$row], "errors": []}"""
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         // percent_remaining 9 -> 91% used, above WARN_PERCENT(85) and below
         // CRITICAL_PERCENT(95) -> Approaching -> the pill's Warn kind.
         const val CODEX_NEAR_LIMIT_NDJSON =

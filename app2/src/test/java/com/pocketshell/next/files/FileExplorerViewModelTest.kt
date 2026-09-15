@@ -3,6 +3,7 @@ package com.pocketshell.next.files
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.SftpEntry
 import com.pocketshell.core.transport.TransportState
+import com.pocketshell.testsupport.LeakGuard
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -38,6 +41,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class FileExplorerViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private val dispatcher = StandardTestDispatcher()
     private lateinit var stack: TestFilesStack
@@ -503,6 +509,10 @@ class FileExplorerViewModelTest {
     )
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val HOME = "/home/testuser"
         const val WORKSPACE = "/home/testuser/git/pocketshell"
     }

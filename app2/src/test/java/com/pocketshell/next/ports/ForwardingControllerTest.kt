@@ -6,6 +6,7 @@ import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.next.connect.ConnectionsRegistry
 import com.pocketshell.next.connect.RoomTrustStore
 import com.pocketshell.core.transport.ConnectResult
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -20,6 +21,8 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -39,6 +42,9 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class ForwardingControllerTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private var stack: TestForwardingStack? = null
 
@@ -587,6 +593,10 @@ class ForwardingControllerTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         /** The key the fixture host presents but has never had confirmed. */
         const val ROTATED_KEY = "SHA256:rotated-key-nobody-confirmed"
     }

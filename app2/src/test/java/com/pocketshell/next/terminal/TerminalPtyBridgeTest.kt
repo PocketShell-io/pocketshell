@@ -3,6 +3,7 @@ package com.pocketshell.next.terminal
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.FakeHostConnection
 import com.pocketshell.core.transport.FakePtyChannel
+import com.pocketshell.testsupport.LeakGuard
 import com.termux.terminal.TerminalSession
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -14,6 +15,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -41,6 +44,15 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class TerminalPtyBridgeTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private val dispatcher = StandardTestDispatcher()
 

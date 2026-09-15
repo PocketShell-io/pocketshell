@@ -26,6 +26,13 @@ plugins {
 // those libraries on its own test classpath. This keeps the genuinely different
 // drains (issue #1110 must-NOT-idle vs issue #803 must-idle vs the non-`runTest`
 // bridge test) honest while sharing the bounded-deadline core.
+//
+// Issue #2707 added a fourth tenant: `LeakGuard.kt`, the suite-wide
+// leak-attribution boundary (the #2647 sponge as a JUnit rule plus an
+// end-of-class grace). Unlike the pump, it cannot be dependency-injected — the
+// whole point is to own the `runTest` boundary — so junit and
+// kotlinx-coroutines-test are `compileOnly` here and every consumer source set
+// keeps supplying them at runtime from its own test classpath.
 android {
     namespace = "com.pocketshell.testsupport"
     compileSdk = 36
@@ -42,4 +49,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    compileOnly(libs.junit)
+    compileOnly(libs.kotlinx.coroutines.test)
 }

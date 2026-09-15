@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.transport.FakeHostConnection
+import com.pocketshell.testsupport.LeakGuard
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
@@ -12,6 +13,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -27,6 +29,9 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class ComposerAttachmentStagerTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -287,6 +292,10 @@ class ComposerAttachmentStagerTest {
         attachment.remotePath.replaceFirst("~", HOME)
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val HOME = "/home/testuser"
         const val SESSION_KEY = "7/devbox"
         const val SCOPE = "7-devbox"

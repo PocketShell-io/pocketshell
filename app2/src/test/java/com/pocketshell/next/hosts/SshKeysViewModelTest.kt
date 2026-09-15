@@ -7,6 +7,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.AppDatabase
 import com.pocketshell.next.connect.SshKeyUnlocker
+import com.pocketshell.testsupport.LeakGuard
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -21,6 +22,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -39,6 +41,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class SshKeysViewModelTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @get:Rule
     val temporaryFolder = TemporaryFolder()
@@ -226,6 +231,10 @@ class SshKeysViewModelTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         val UNENCRYPTED_PEM: String by lazy {
             SshKeyMaterial.generatePrivateKeyPem()
         }
