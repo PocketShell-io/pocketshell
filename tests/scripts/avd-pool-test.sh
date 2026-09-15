@@ -80,6 +80,20 @@ make_sandbox() {
   # that ever resolved a real checkout could queue behind a real build.
   export POCKETSHELL_GRADLE_OUTPUT_LOCK_DIR="$sandbox/gradle-output-locks"
 
+  # Issue #2712: the #2556 fixture-vintage gate in the copied REAL
+  # connected-test.sh runs whenever ANY docker is on PATH (ubuntu-latest
+  # runners ship one) and reads the pins contract from the CHECKOUT UNDER
+  # TEST -- here the sandbox root, which had no pins file, so every lane died
+  # fail-closed ("no PIN lines ...") before the pool claim/release this
+  # harness exists to exercise. Copy the real file so every lane runs the
+  # gate's full comparison -- the gate is never skipped, weakened, or stubbed
+  # out. The container side of the contract is served by the docker stub
+  # below (issue #2712).
+  mkdir -p "$sandbox/root/tests/docker"
+  cp "$ROOT_DIR/tests/docker/fixture-pins.txt" \
+    "$sandbox/root/tests/docker/fixture-pins.txt"
+  export AVDPOOL_HARNESS_FIXTURE_PINS="$ROOT_DIR/tests/docker/fixture-pins.txt"
+
   # Fake adb: only the `devices` subcommand matters for pool claim. Report each
   # pool serial as a `device`-state emulator. Everything else is a harmless no-op.
   cat > "$sandbox/bin/adb" <<ADB
@@ -97,6 +111,36 @@ esac
 exit 0
 ADB
   chmod +x "$sandbox/bin/adb"
+
+  # Issue #2712: with ANY docker on PATH -- a stub counts -- the wrapper runs
+  # the #2556 fixture-vintage gate, which execs the port-2222 fixture
+  # container and reads its build-time-baked pins. The stub emulates exactly
+  # that one interaction: a pocketshell-test-agents container (the static
+  # 2222 name, scripts/lib/agents-pool.sh) whose
+  # /opt/pocketshell-fixture/pins.txt was baked from the REAL checkout's
+  # tests/docker/fixture-pins.txt -- what a real `docker compose up -d
+  # --build` from this checkout produces. Not a gate bypass: the gate still
+  # greps the SANDBOX checkout's own pins file and diffs it against this
+  # answer, so a sandbox whose copied pins drifted (or lost the file) still
+  # fails closed before instrumentation -- proven by
+  # fixture_vintage_gate_stays_fail_closed_in_pool_lanes below. An unset
+  # AVDPOOL_HARNESS_FIXTURE_PINS makes the stub die loudly, which the gate
+  # reports as a mismatch: this provision can only ever fail CLOSED. Every
+  # other subcommand is a harmless no-op, like the fake adb above -- in
+  # particular `docker inspect` answers empty, which the #1842/#2574
+  # fingerprint guards read as "unknown" (disarmed), never as a failure, and
+  # which also keeps these sandbox lanes from ever touching the REAL docker
+  # daemon or its 2222 fixture.
+  cat > "$sandbox/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "exec" && "${3:-}" == "cat" \
+      && "${4:-}" == "/opt/pocketshell-fixture/pins.txt" ]]; then
+  cat "${AVDPOOL_HARNESS_FIXTURE_PINS:?AVDPOOL_HARNESS_FIXTURE_PINS must name the checkout tests/docker/fixture-pins.txt}"
+  exit 0
+fi
+exit 0
+DOCKER
+  chmod +x "$sandbox/bin/docker"
 
   # Copy the real scripts into the sandbox root so connected-test.sh runs the
   # ACTUAL production logic against sandboxed lock state.
@@ -267,6 +311,16 @@ case "${1:-}" in
     else printf '[{"Id":"fixture-id","State":{"StartedAt":"2026-08-02T00:00:00Z"}}]\n'
     fi
     ;;
+  # Issue #2712: the #2556 fixture-vintage gate execs the port-2222 container
+  # for its baked pins; serve the REAL checkout pins (same provision as
+  # make_sandbox's stub -- the gate still greps the sandbox's own copy, so
+  # this cannot mask a drift).
+  exec)
+    if [[ "${3:-}" == "cat" && "${4:-}" == "/opt/pocketshell-fixture/pins.txt" ]]; then
+      cat "${AVDPOOL_HARNESS_FIXTURE_PINS:?AVDPOOL_HARNESS_FIXTURE_PINS must name the checkout tests/docker/fixture-pins.txt}"
+      exit 0
+    fi
+    ;;
   ps) printf 'fixture-id pocketshell-test-agents\n' ;;
   logs) printf '2026-08-02T00:00:01Z fixture same-run log\n' ;;
 esac
@@ -357,6 +411,54 @@ non_pool_suffix_run_acquires_and_releases_serial_lock() {
     || fail "non-pool run regressed to the split global lock domain"
 }
 
+# Issue #2712: the fixture-vintage gate (#2556) must stay LIVE and fail-closed
+# in this harness's pool lanes. make_sandbox provisions the gate honestly (a
+# real pins file in the sandbox + a docker stub serving the REAL checkout's
+# pins), and this check proves the provision cannot double as a bypass: a
+# sandbox whose copied pins DRIFTED from what the stub serves must die at the
+# gate BEFORE any gradle invocation, and the stale banner must show the
+# stub-served real pin so the refusal is for the right reason (not a dead stub
+# answering empty, which would let this guard pass vacuously on <none>).
+fixture_vintage_gate_stays_fail_closed_in_pool_lanes() {
+  local sandbox="$1"
+  local pool_serials="emulator-5574"
+  make_sandbox "$sandbox" "$pool_serials"
+  local sroot="$sandbox/root"
+
+  # Only the SANDBOX copy drifts; AVDPOOL_HARNESS_FIXTURE_PINS (what the stub
+  # serves) stays the real checkout file -- precisely the stale-fixture
+  # shape #2556 refuses.
+  sed -i 's/^APLEXER_PIN=.*/APLEXER_PIN=9.9.9-avdpool-drift/' \
+    "$sroot/tests/docker/fixture-pins.txt"
+
+  local marker="$sandbox/marker.txt"
+  local rc=0
+  PATH="$sandbox/bin:$PATH" \
+    ADB="$sandbox/bin/adb" \
+    ANDROID_SDK="$sandbox" \
+    POCKETSHELL_POOL_WAIT_SECONDS=5 \
+    POCKETSHELL_POOL_SERIALS="$pool_serials" \
+    POCKETSHELL_AGENTS_PORT=2222 \
+    STUB_GRADLEW_ARGS_FILE="$sandbox/args.txt" \
+    STUB_GRADLEW_MARKER="$marker" \
+    STUB_GRADLEW_RC=0 \
+    bash "$sroot/scripts/connected-test.sh" --pool \
+    > "$sandbox/run.out" 2> "$sandbox/run.err" || rc=$?
+
+  (( rc != 0 )) \
+    || fail "pool lane exited 0 although its fixture vintage cannot match the checkout; the #2556 gate is being masked inside this harness (issue #2712)"
+  if [[ -e "$marker" ]]; then
+    fail "the lane invoked gradle although the fixture-vintage gate must refuse it BEFORE any instrumentation (issue #2712)"
+  fi
+  grep -qF 'AGENTS FIXTURE STALE' "$sandbox/run.err" \
+    || fail "expected the #2556 stale-fixture banner for a drifted pins file, got: $(tail -n 5 "$sandbox/run.err")"
+  local real_pin
+  real_pin="$(grep -E '^APLEXER_PIN=' "$ROOT_DIR/tests/docker/fixture-pins.txt")"
+  [[ -n "$real_pin" ]] || fail "checkout pins file has no APLEXER_PIN line; the guard cannot verify what the stub served"
+  grep -qF "$real_pin" "$sandbox/run.err" \
+    || fail "the stale banner shows no baked $real_pin, so the stub did not serve the checkout pins and the refusal is for the wrong reason"
+}
+
 CASE_COUNT=0
 
 run_case() {
@@ -373,9 +475,10 @@ run_case reclaim_after_full_pool_run
 run_case failed_run_still_releases_and_propagates_rc
 run_case same_run_evidence_is_captured_under_lock_for_success_and_failure
 run_case non_pool_suffix_run_acquires_and_releases_serial_lock
+run_case fixture_vintage_gate_stays_fail_closed_in_pool_lanes
 
 # Issue #2113: a harness that exits 0 having run nothing is the vacuous green
 # process.md catalogues. The count line is what makes the JVM assertion about
 # behaviour rather than about bash's exit status.
-(( CASE_COUNT == 4 )) || fail "expected 4 cases to run, saw $CASE_COUNT"
+(( CASE_COUNT == 5 )) || fail "expected 5 cases to run, saw $CASE_COUNT"
 printf 'PASS: avd-pool claim/release (%s cases)\n' "$CASE_COUNT"

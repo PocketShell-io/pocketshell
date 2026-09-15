@@ -314,6 +314,47 @@ exit 0
 ADB
   chmod +x "$sandbox/bin/adb"
 
+  # Issue #2712: the #2556 fixture-vintage gate in the copied REAL
+  # connected-test.sh runs whenever ANY docker is on PATH (ubuntu-latest
+  # runners ship one) and reads the pins contract from the CHECKOUT UNDER
+  # TEST -- here the sandbox root, which had no pins file, so every lane that
+  # must reach gradle died fail-closed ("no PIN lines ...") before the disk
+  # preflight behaviour this harness exists to exercise could be observed past
+  # the preflight itself. Copy the real file so every lane runs the gate's
+  # full comparison -- the gate is never skipped, weakened, or stubbed out.
+  # The container side of the contract is served by the docker stub below
+  # (issue #2712).
+  mkdir -p "$sandbox/root/tests/docker"
+  cp "$ROOT_DIR/tests/docker/fixture-pins.txt" \
+    "$sandbox/root/tests/docker/fixture-pins.txt"
+  export DISK_PREFLIGHT_HARNESS_FIXTURE_PINS="$ROOT_DIR/tests/docker/fixture-pins.txt"
+
+  # Issue #2712: with ANY docker on PATH -- a stub counts -- the wrapper runs
+  # the #2556 fixture-vintage gate, which execs the port-2222 fixture
+  # container and reads its build-time-baked pins. The stub emulates exactly
+  # that one interaction: a pocketshell-test-agents container (the static
+  # 2222 name, scripts/lib/agents-pool.sh) whose
+  # /opt/pocketshell-fixture/pins.txt was baked from the REAL checkout's
+  # tests/docker/fixture-pins.txt. Not a gate bypass: the gate still greps
+  # the SANDBOX checkout's own pins file and diffs it against this answer, so
+  # a sandbox whose copied pins drifted (or lost the file) still fails closed
+  # before gradle -- pinned by fixture_vintage_gate_stays_fail_closed below.
+  # An unset DISK_PREFLIGHT_HARNESS_FIXTURE_PINS makes the stub die loudly,
+  # which the gate reports as a mismatch: this provision can only ever fail
+  # CLOSED. Every other subcommand is a harmless no-op, like the fake adb
+  # above, and keeps these sandbox lanes off the REAL docker daemon and its
+  # 2222 fixture.
+  cat > "$sandbox/bin/docker" <<'DOCKER'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "exec" && "${3:-}" == "cat" \
+      && "${4:-}" == "/opt/pocketshell-fixture/pins.txt" ]]; then
+  cat "${DISK_PREFLIGHT_HARNESS_FIXTURE_PINS:?DISK_PREFLIGHT_HARNESS_FIXTURE_PINS must name the checkout tests/docker/fixture-pins.txt}"
+  exit 0
+fi
+exit 0
+DOCKER
+  chmod +x "$sandbox/bin/docker"
+
   cp "$ROOT_DIR/scripts/connected-test.sh" "$sandbox/root/scripts/connected-test.sh"
   cp "$ROOT_DIR"/scripts/lib/*.sh "$sandbox/root/scripts/lib/"
   chmod +x "$sandbox/root/scripts/connected-test.sh"
@@ -487,6 +528,51 @@ SYSTEMDRUN
   [[ ! -e "$marker" ]] \
     || fail "gradle ran despite scope-run failing closed"
   pass_case "connected-test.sh still runs on a host with no reachable user systemd (the hosted-runner shape)"
+}
+
+# Issue #2712: the fixture-vintage gate (#2556) must stay LIVE and fail-closed
+# in this harness's wrapper lanes. make_connected_sandbox provisions the gate
+# honestly (a real pins file in the sandbox + a docker stub serving the REAL
+# checkout's pins), and this check proves the provision cannot double as a
+# bypass: a sandbox whose copied pins DRIFTED from what the stub serves must
+# die at the gate BEFORE any gradle invocation, and the stale banner must show
+# the stub-served real pin so the refusal is for the right reason (not a dead
+# stub answering empty, which would let this guard pass vacuously on <none>).
+fixture_vintage_gate_stays_fail_closed() {
+  local sandbox="$WORK_DIR/connected-vintage-drift"
+  make_connected_sandbox "$sandbox"
+  local sroot="$sandbox/root"
+
+  # Only the SANDBOX copy drifts; DISK_PREFLIGHT_HARNESS_FIXTURE_PINS (what
+  # the stub serves) stays the real checkout file -- precisely the
+  # stale-fixture shape #2556 refuses.
+  sed -i 's/^APLEXER_PIN=.*/APLEXER_PIN=9.9.9-disk-preflight-drift/' \
+    "$sroot/tests/docker/fixture-pins.txt"
+
+  local marker="$sandbox/gradlew-ran"
+  local rc=0 output
+  output="$(
+    PATH="$sandbox/bin:$PATH" \
+    ADB="$sandbox/bin/adb" \
+    STUB_GRADLEW_MARKER="$marker" \
+    POCKETSHELL_DISK_MIN_FREE_MB=0 \
+    POCKETSHELL_DISK_WARN_FREE_MB=0 \
+    "$sroot/scripts/connected-test.sh" --suffix i2712 2>&1
+  )" || rc=$?
+
+  (( rc != 0 )) \
+    || fail "the lane exited 0 although its fixture vintage cannot match the checkout; the #2556 gate is being masked inside this harness (issue #2712): $output"
+  [[ ! -e "$marker" ]] \
+    || fail "gradle ran although the fixture-vintage gate must refuse the lane BEFORE any instrumentation (issue #2712)"
+  [[ "$output" == *"AGENTS FIXTURE STALE"* ]] \
+    || fail "expected the #2556 stale-fixture banner for a drifted pins file: $output"
+  local real_pin
+  real_pin="$(grep -E '^APLEXER_PIN=' "$ROOT_DIR/tests/docker/fixture-pins.txt")"
+  [[ -n "$real_pin" ]] \
+    || fail "checkout pins file has no APLEXER_PIN line; the guard cannot verify what the stub served"
+  [[ "$output" == *"$real_pin"* ]] \
+    || fail "the stale banner shows no baked $real_pin, so the stub did not serve the checkout pins and the refusal is for the wrong reason"
+  pass_case "the fixture-vintage gate refuses a drifted sandbox pins file before gradle (issue #2712)"
 }
 
 # ---------------------------------------------------------------------------
@@ -762,6 +848,7 @@ connected_test_refuses_below_the_floor_before_any_lock
 connected_test_proceeds_above_the_floor
 connected_test_cleanup_mode_is_exempt
 connected_test_survives_a_host_without_user_systemd
+fixture_vintage_gate_stays_fail_closed
 full_jvm_gate_probe_refuses_and_allows
 halves_agree_on_thresholds_and_rc
 documented_floor_matches_the_floor_in_force
@@ -776,7 +863,7 @@ worktrees_need_the_explicit_opt_in
 docker_prune_must_preserve_pocketshell_test_images
 cleanup_is_serialized
 
-if (( CASES != 17 )); then
-  fail "expected 17 cases to run, saw $CASES (a case was skipped or silently removed)"
+if (( CASES != 18 )); then
+  fail "expected 18 cases to run, saw $CASES (a case was skipped or silently removed)"
 fi
 printf 'PASS: disk preflight + safe-list cleanup harness (%s cases)\n' "$CASES"
