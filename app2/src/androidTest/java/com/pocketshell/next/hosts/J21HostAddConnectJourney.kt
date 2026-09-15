@@ -202,7 +202,7 @@ class J21HostAddConnectJourney {
         compose.onNodeWithTag(hostRowTag(row.id)).performClick()
         awaitTag(TRUST_SHEET_FINGERPRINT_TAG)
         capture("06-first-contact-trust-prompt")
-        pollUntil("displayed fingerprint text") {
+        pollUntilTrue("displayed fingerprint text") {
             compose.onAllNodesWithText(presentedFingerprint).fetchSemanticsNodes().isNotEmpty() &&
                 runCatching { compose.onNodeWithText(presentedFingerprint).assertIsDisplayed() }.isSuccess
         }
@@ -229,7 +229,7 @@ class J21HostAddConnectJourney {
         // Trust → record → re-dial → authenticated → workspaces render.
         awaitWorkspacesSettled()
         capture("07-workspaces-after-first-connect")
-        pollUntil("displayed workspaces tag") {
+        pollUntilTrue("displayed workspaces tag") {
             compose.onAllNodesWithTag(HOST_WORKSPACES_TAG).fetchSemanticsNodes().isNotEmpty() &&
                 runCatching { compose.onNodeWithTag(HOST_WORKSPACES_TAG).assertIsDisplayed() }.isSuccess
         }
@@ -289,7 +289,7 @@ class J21HostAddConnectJourney {
      * existence poll (the J21 run-1 failure: trust sheet mid-animation).
      */
     private fun awaitTag(tag: String) {
-        pollUntil("displayed tag '$tag'") {
+        pollUntilTrue("displayed tag '$tag'") {
             compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty() &&
                 runCatching { compose.onNodeWithTag(tag).assertIsDisplayed() }.isSuccess
         }
@@ -297,11 +297,34 @@ class J21HostAddConnectJourney {
 
     /** For copy that renders multiple times (one "Required" per empty field). */
     private fun awaitAnyText(text: String) {
-        pollUntil("text '$text'") {
+        pollUntilTrue("text '$text'") {
             compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
         }
     }
 
+    /**
+     * Boolean-shaped poll: keeps polling until [condition] returns `true` or
+     * the deadline passes. This is the ONLY sanctioned way to poll a plain
+     * Boolean condition — [pollUntil] stops at the first NON-null return, and
+     * a Boolean's `false` is non-null, so a Boolean lambda passed there ends
+     * the poll on its first evaluation: a single-shot check that still
+     * compiles and passes when the node happens to already be there
+     * (issue #2704, proven in #2698 run-1).
+     */
+    private fun pollUntilTrue(what: String, condition: () -> Boolean) {
+        pollUntil(what) { if (condition()) Unit else null }
+    }
+
+    /**
+     * Polls [condition] until it returns non-null or [TIMEOUT_MS] elapses,
+     * returning that first non-null value.
+     *
+     * WARNING — the condition must stay NULL until the awaited thing is
+     * actually satisfied: the FIRST non-null return ends the poll. A lambda
+     * written to return a plain Boolean does NOT poll here — `false` is
+     * non-null, so the very first evaluation returns. For Boolean-shaped
+     * conditions use [pollUntilTrue].
+     */
     private fun <T> pollUntil(what: String, condition: () -> T?): T {
         val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
         while (SystemClock.elapsedRealtime() < deadline) {
