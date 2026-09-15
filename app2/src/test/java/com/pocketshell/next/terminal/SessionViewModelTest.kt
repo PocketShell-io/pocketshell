@@ -85,7 +85,7 @@ class SessionViewModelTest {
 
     @Test
     fun `attaching runs the host CLI attach command on a PTY and goes Live`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -94,12 +94,14 @@ class SessionViewModelTest {
             settle()
 
             val state = viewModel.uiState.value
+            val request = connection().ptyRequests.single()
+            clear()
+
             assertTrue("expected Live, got $state", state is SessionUiState.Live)
 
             // The command is the host CLI's own, verbatim — `exec` so the
             // wrapping shell is replaced, `--` so a session named like a flag
             // still resolves, and single-quoted because the name is user data.
-            val request = connection().ptyRequests.single()
             assertEquals(
                 "exec pocketshell sessions attach -- '$SESSION'",
                 request.command,
@@ -110,8 +112,6 @@ class SessionViewModelTest {
             assertEquals(TerminalPtyBridge.DEFAULT_COLS, request.cols)
             assertEquals(TerminalPtyBridge.DEFAULT_ROWS, request.rows)
             assertEquals("xterm-256color", request.term)
-
-            clear()
         }
 
     /**
@@ -120,7 +120,7 @@ class SessionViewModelTest {
      * ViewModel wires the bridge to a session that actually parses.
      */
     @Test
-    fun `remote output lands in the terminal screen buffer`() = runTest(dispatcher) {
+    fun `remote output lands in the terminal screen buffer`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -132,12 +132,12 @@ class SessionViewModelTest {
         settle()
 
         val transcript = transcriptOf(viewModel)
+        clear()
+
         assertTrue(
             "the emulator screen should carry the remote bytes, got: $transcript",
             transcript.contains("testuser@fixture:~\$ echo ready") && transcript.contains("ready"),
         )
-
-        clear()
     }
 
     /**
@@ -146,7 +146,7 @@ class SessionViewModelTest {
      * main-thread turn each, so the slice accounting has to cover the tail.
      */
     @Test
-    fun `a multi-slice frame is parsed in full`() = runTest(dispatcher) {
+    fun `a multi-slice frame is parsed in full`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -159,18 +159,19 @@ class SessionViewModelTest {
         pty().emitText(filler + "\r\nTAIL-MARKER\r\n")
         settle()
 
+        val transcript = transcriptOf(viewModel)
+        clear()
+
         assertTrue(
             "the last bytes of a multi-slice frame must reach the screen",
-            transcriptOf(viewModel).contains("TAIL-MARKER"),
+            transcript.contains("TAIL-MARKER"),
         )
-
-        clear()
     }
 
     /** Typed bytes leave through the PTY channel. */
     @Test
     fun `bytes written to the terminal session reach the remote channel`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -182,13 +183,14 @@ class SessionViewModelTest {
             (viewModel.uiState.value as SessionUiState.Live).terminal.write("echo hi\r")
             settle()
 
-            assertEquals("echo hi\r", pty().writtenText)
-
+            val written = pty().writtenText
             clear()
+
+            assertEquals("echo hi\r", written)
         }
 
     @Test
-    fun `sendBytes forwards raw bytes to the remote channel`() = runTest(dispatcher) {
+    fun `sendBytes forwards raw bytes to the remote channel`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -199,14 +201,15 @@ class SessionViewModelTest {
         viewModel.sendBytes(byteArrayOf(0x03))
         settle()
 
-        assertEquals(listOf(listOf<Byte>(0x03)), pty().writes.map { it.toList() })
-
+        val writes = pty().writes.map { it.toList() }
         clear()
+
+        assertEquals(listOf(listOf<Byte>(0x03)), writes)
     }
 
     @Test
     fun `a host that needs its key confirmed fails with a message pointing at the host list`() =
-        runTest(dispatcher) {
+        sessionTest {
             // A fingerprint the seeded host row does not carry, so the dial comes
             // back NeedsTrust — the state this screen must NOT try to answer.
             stack.close()
@@ -218,6 +221,9 @@ class SessionViewModelTest {
             settle()
 
             val state = viewModel.uiState.value
+            val stored = stack.storedFingerprint(hostId)
+            clear()
+
             assertTrue("expected Failed, got $state", state is SessionUiState.Failed)
             assertTrue(
                 "the message must send the user to the host list, got: " +
@@ -225,11 +231,11 @@ class SessionViewModelTest {
                 state.message.contains("host list"),
             )
             // And no second code path wrote the trust store behind the user.
-            assertNull(stack.storedFingerprint(hostId))
+            assertNull(stored)
         }
 
     @Test
-    fun `a failed dial surfaces the transport's own message`() = runTest(dispatcher) {
+    fun `a failed dial surfaces the transport's own message`() = sessionTest {
         val hostId = stack.seedHost()
         stack.factory.failWith = "connect timed out after 30000ms"
         val viewModel = viewModel()
@@ -237,9 +243,12 @@ class SessionViewModelTest {
         viewModel.open(hostId, SESSION)
         settle()
 
+        val state = viewModel.uiState.value
+        clear()
+
         assertEquals(
             SessionUiState.Failed("connect timed out after 30000ms"),
-            viewModel.uiState.value,
+            state,
         )
     }
 
@@ -251,7 +260,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `the session ending flips the screen to Failed with its exit status`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -265,6 +274,9 @@ class SessionViewModelTest {
             settleFor(3_000)
 
             val state = viewModel.uiState.value
+            val ptyCount = connection().ptyRequests.size
+            clear()
+
             assertTrue("expected Failed, got $state", state is SessionUiState.Failed)
             val message = (state as SessionUiState.Failed).message
             assertTrue(
@@ -272,7 +284,7 @@ class SessionViewModelTest {
                 message.contains(SESSION) && message.contains("3"),
             )
             // And nothing tried to reattach behind that message.
-            assertEquals(1, connection().ptyRequests.size)
+            assertEquals(1, ptyCount)
         }
 
     // --- reconnect (task U-7) -------------------------------------------------
@@ -284,7 +296,7 @@ class SessionViewModelTest {
      * which is the cheap common case (a killed channel, not a dead socket).
      */
     @Test
-    fun `a channel ending without an exit status reattaches`() = runTest(dispatcher) {
+    fun `a channel ending without an exit status reattaches`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -297,11 +309,13 @@ class SessionViewModelTest {
         settleFor(3_000)
 
         val state = viewModel.uiState.value
-        assertTrue("expected Live again, got $state", state is SessionUiState.Live)
-        assertEquals("a second PTY must have been opened", 2, connection().ptyRequests.size)
-        assertSame("the reattach must reuse the same terminal", attached, terminalOf(viewModel))
-
+        val reattached = terminalOf(viewModel)
+        val ptyCount = connection().ptyRequests.size
         clear()
+
+        assertTrue("expected Live again, got $state", state is SessionUiState.Live)
+        assertEquals("a second PTY must have been opened", 2, ptyCount)
+        assertSame("the reattach must reuse the same terminal", attached, reattached)
     }
 
     /**
@@ -315,7 +329,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a lost transport shows Reconnecting over the terminal it was showing`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -333,6 +347,9 @@ class SessionViewModelTest {
             settleFor(400)
 
             val state = viewModel.uiState.value
+            val transcript = transcriptOf(viewModel)
+            clear()
+
             assertTrue("expected Reconnecting, got $state", state is SessionUiState.Reconnecting)
             state as SessionUiState.Reconnecting
             assertSame("the emulator must survive the drop", attached, state.terminal)
@@ -341,9 +358,8 @@ class SessionViewModelTest {
             // reattach, so there is deliberately no clear, no snapshot and no
             // reseed. A cleared pane here is the symptom this task exists for.
             assertTrue(
-                "the last frame must still be in the screen buffer, got: " +
-                    transcriptOf(viewModel),
-                transcriptOf(viewModel).contains("last-frame-before-the-drop"),
+                "the last frame must still be in the screen buffer, got: $transcript",
+                transcript.contains("last-frame-before-the-drop"),
             )
             // Rung 0 fired at once and failed, so the screen is now counting
             // down rung 1 — the ladder is running, not stuck at zero.
@@ -361,7 +377,7 @@ class SessionViewModelTest {
      * never self-heals, so a reattach that reused it would attach to nothing.
      */
     @Test
-    fun `reconnecting dials a fresh connection and comes back Live`() = runTest(dispatcher) {
+    fun `reconnecting dials a fresh connection and comes back Live`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -383,9 +399,10 @@ class SessionViewModelTest {
         // after the reconnect leave through the NEW channel.
         terminalOf(viewModel).write("echo j05-back\r")
         settle()
-        assertEquals("echo j05-back\r", latestPty().writtenText)
-
+        val written = latestPty().writtenText
         clear()
+
+        assertEquals("echo j05-back\r", written)
     }
 
     /**
@@ -426,7 +443,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a connection closed on purpose ends the session instead of redialling`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -449,6 +466,9 @@ class SessionViewModelTest {
             settleFor(2_000)
 
             val state = viewModel.uiState.value
+            val orphans = stack.registry.current(hostId)
+            clear()
+
             assertEquals(
                 "this scenario's close must be a REQUESTED one — if it ever became a " +
                     "grace-expiry close the assertions below would be testing the " +
@@ -468,15 +488,8 @@ class SessionViewModelTest {
             )
             assertNull(
                 "the registry must be left with no orphaned connection for this host",
-                stack.registry.current(hostId),
+                orphans,
             )
-
-            // Present for the same reason every other `livePty()` test above
-            // calls it — the ViewModel owns a live pump scope until the store
-            // clears it — and load-bearing here specifically because THIS test
-            // is the one that used to leave a connection nothing was watching
-            // (issue #2477).
-            clear()
         }
 
     /**
@@ -502,7 +515,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a grace-expiry close reattaches on return instead of ending the session`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -559,13 +572,14 @@ class SessionViewModelTest {
             // And it is genuinely usable, not merely green.
             terminalOf(viewModel).write("echo back-from-grace\r")
             settle()
+            val written = latestPty().writtenText
+            clear()
+
             assertEquals(
                 "keystrokes must reach the reattached channel",
                 "echo back-from-grace\r",
-                latestPty().writtenText,
+                written,
             )
-
-            clear()
         }
 
     /**
@@ -592,7 +606,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `retrying an ended session comes back to a terminal that still carries IO`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -636,18 +650,19 @@ class SessionViewModelTest {
             // ...and remote output back in.
             latestPty().emitText("retry-output-marker\r\n")
             settle()
+            val transcript = transcriptOf(viewModel)
+            clear()
+
             assertTrue(
                 "remote output after Retry must reach the emulator's screen buffer, got: " +
-                    transcriptOf(viewModel),
-                transcriptOf(viewModel).contains("retry-output-marker"),
+                    transcript,
+                transcript.contains("retry-output-marker"),
             )
-
-            clear()
         }
 
     /** The ladder is finite, and what it leaves behind names the way out. */
     @Test
-    fun `exhausting the ladder fails with a message offering Retry`() = runTest(dispatcher) {
+    fun `exhausting the ladder fails with a message offering Retry`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -661,6 +676,9 @@ class SessionViewModelTest {
         settleFor(20_000)
 
         val state = viewModel.uiState.value
+        val dialCount = stack.factory.dialCount
+        clear()
+
         assertTrue("expected Failed, got $state", state is SessionUiState.Failed)
         assertTrue(
             "the give-up message must point at the manual retry, got: " +
@@ -668,7 +686,7 @@ class SessionViewModelTest {
             state.message.contains("Retry"),
         )
         // Five rungs means five attempts — no sixth, and no storm.
-        assertEquals("one initial dial plus five ladder rungs", 6, stack.factory.dialCount)
+        assertEquals("one initial dial plus five ladder rungs", 6, dialCount)
     }
 
     /**
@@ -677,7 +695,7 @@ class SessionViewModelTest {
      * immediately instead of at the 10-second rung.
      */
     @Test
-    fun `retryNow restarts the ladder at its first rung`() = runTest(dispatcher) {
+    fun `retryNow restarts the ladder at its first rung`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -699,13 +717,15 @@ class SessionViewModelTest {
         // screen is back to counting down rung 1. Without the reset it would
         // have been rung 4.
         val state = viewModel.uiState.value
+        clear()
+
         assertTrue("expected Reconnecting, got $state", state is SessionUiState.Reconnecting)
         assertEquals(1, (state as SessionUiState.Reconnecting).attempt)
     }
 
     /** And Retry is still there after the ladder gave up. */
     @Test
-    fun `retryNow recovers a session the ladder gave up on`() = runTest(dispatcher) {
+    fun `retryNow recovers a session the ladder gave up on`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -723,10 +743,12 @@ class SessionViewModelTest {
         viewModel.retryNow()
         settleFor(1_000)
 
-        assertTrue("expected Live, got " + viewModel.uiState.value, viewModel.uiState.value is SessionUiState.Live)
-        assertSame(attached, terminalOf(viewModel))
-
+        val state = viewModel.uiState.value
+        val reattached = terminalOf(viewModel)
         clear()
+
+        assertTrue("expected Live, got " + state, state is SessionUiState.Live)
+        assertSame(attached, reattached)
     }
 
     /**
@@ -736,7 +758,7 @@ class SessionViewModelTest {
      * assertion missing.
      */
     @Test
-    fun `no reconnect attempt fires while the app is backgrounded`() = runTest(dispatcher) {
+    fun `no reconnect attempt fires while the app is backgrounded`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -766,18 +788,21 @@ class SessionViewModelTest {
         foreground.foreground()
         settleFor(1_000)
 
-        assertTrue(
-            "expected Live after returning, got " + viewModel.uiState.value,
-            viewModel.uiState.value is SessionUiState.Live,
-        )
-        assertEquals(2, stack.factory.dialCount)
-        assertSame(attached, terminalOf(viewModel))
-
+        val returned = viewModel.uiState.value
+        val reattached = terminalOf(viewModel)
+        val dialCount = stack.factory.dialCount
         clear()
+
+        assertTrue(
+            "expected Live after returning, got " + returned,
+            returned is SessionUiState.Live,
+        )
+        assertEquals(2, dialCount)
+        assertSame(attached, reattached)
     }
 
     @Test
-    fun `disabled automatic reconnect stays parked when the app returns`() = runTest(dispatcher) {
+    fun `disabled automatic reconnect stays parked when the app returns`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -795,15 +820,17 @@ class SessionViewModelTest {
         foreground.foreground()
         settleFor(1_000)
 
-        assertTrue(viewModel.uiState.value is SessionUiState.Reconnecting)
-        assertEquals("disabled reconnect must not dial on foreground return", 1, stack.factory.dialCount)
-
+        val state = viewModel.uiState.value
+        val dialCount = stack.factory.dialCount
         clear()
+
+        assertTrue(state is SessionUiState.Reconnecting)
+        assertEquals("disabled reconnect must not dial on foreground return", 1, dialCount)
     }
 
     @Test
     fun `sendBytes after a failure does not throw and does not resurrect the screen`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             stack.factory.failWith = "no route to host"
             val viewModel = viewModel()
@@ -815,7 +842,10 @@ class SessionViewModelTest {
             viewModel.onResized(120, 40)
             settle()
 
-            assertEquals(SessionUiState.Failed("no route to host"), viewModel.uiState.value)
+            val state = viewModel.uiState.value
+            clear()
+
+            assertEquals(SessionUiState.Failed("no route to host"), state)
         }
 
     /**
@@ -827,7 +857,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `sendBytes at the reconnect banner are held and reach the next pty, in order`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -864,17 +894,20 @@ class SessionViewModelTest {
             foreground.foreground()
             settleFor(2_000)
 
+            val state = viewModel.uiState.value
+            val written = latestPty().writtenText
+            failuresJob.cancel()
+            clear()
+
             assertTrue(
-                "expected Live after the ladder, got ${viewModel.uiState.value}",
-                viewModel.uiState.value is SessionUiState.Live,
+                "expected Live after the ladder, got $state",
+                state is SessionUiState.Live,
             )
             assertEquals(
                 "held bytes leave through the NEW channel in the order they were entered",
                 "echo held\r\u0003",
-                latestPty().writtenText,
+                written,
             )
-            failuresJob.cancel()
-            clear()
         }
 
     /**
@@ -885,7 +918,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a send larger than the held-input buffer is reported undelivered, not truncated`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -915,17 +948,20 @@ class SessionViewModelTest {
             foreground.foreground()
             settleFor(2_000)
 
+            val state = viewModel.uiState.value
+            val written = latestPty().writtenText
+            failuresJob.cancel()
+            clear()
+
             assertTrue(
-                "expected Live after the ladder, got ${viewModel.uiState.value}",
-                viewModel.uiState.value is SessionUiState.Live,
+                "expected Live after the ladder, got $state",
+                state is SessionUiState.Live,
             )
             assertEquals(
                 "no part of a batch too large to hold whole may reach the remote",
                 "",
-                latestPty().writtenText,
+                written,
             )
-            failuresJob.cancel()
-            clear()
         }
 
     /**
@@ -933,7 +969,7 @@ class SessionViewModelTest {
      * path (task U-5 polishes WHEN it fires; this pins THAT it fires, once).
      */
     @Test
-    fun `onResized resizes the remote PTY and the emulator once`() = runTest(dispatcher) {
+    fun `onResized resizes the remote PTY and the emulator once`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -947,12 +983,15 @@ class SessionViewModelTest {
         viewModel.onResized(103, 47)
         settle()
 
-        assertEquals(listOf(103 to 47), pty().resizes)
+        val resizes = pty().resizes.toList()
         val terminal = (viewModel.uiState.value as SessionUiState.Live).terminal
-        assertEquals(103, terminal.emulator.mColumns)
-        assertEquals(47, terminal.emulator.mRows)
-
+        val cols = terminal.emulator.mColumns
+        val rows = terminal.emulator.mRows
         clear()
+
+        assertEquals(listOf(103 to 47), resizes)
+        assertEquals(103, cols)
+        assertEquals(47, rows)
     }
 
     /**
@@ -972,7 +1011,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `an animation's worth of resizes is one window-change at the settled size`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -1026,7 +1065,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a size reported after the settled resize still reaches the remote`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             livePty()
             val viewModel = viewModel()
@@ -1047,7 +1086,7 @@ class SessionViewModelTest {
 
     /** A resize that arrives before the attach lands still opens at that size. */
     @Test
-    fun `a resize before the attach opens the PTY at the reported size`() = runTest(dispatcher) {
+    fun `a resize before the attach opens the PTY at the reported size`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -1057,10 +1096,10 @@ class SessionViewModelTest {
         settle()
 
         val request = connection().ptyRequests.single()
+        clear()
+
         assertEquals(91, request.cols)
         assertEquals(41, request.rows)
-
-        clear()
     }
 
     /**
@@ -1085,7 +1124,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `a resize reported during the dial opens the PTY at the reported size`() =
-        runTest(dispatcher) {
+        sessionTest {
             Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
             try {
                 val hostId = stack.seedHost()
@@ -1101,19 +1140,20 @@ class SessionViewModelTest {
                 stack.factory.gate?.complete(Unit)
                 settle()
 
-                assertTrue(
-                    "expected Live, got ${viewModel.uiState.value}",
-                    viewModel.uiState.value is SessionUiState.Live,
-                )
+                val state = viewModel.uiState.value
                 val request = connection().ptyRequests.single()
+                clear()
+
+                assertTrue(
+                    "expected Live, got $state",
+                    state is SessionUiState.Live,
+                )
                 assertEquals(
                     "the mid-dial report must be the size the remote starts at",
                     100,
                     request.cols,
                 )
                 assertEquals(50, request.rows)
-
-                clear()
             } finally {
                 Dispatchers.setMain(dispatcher)
             }
@@ -1121,7 +1161,7 @@ class SessionViewModelTest {
 
     /** A second `open()` (recomposition, rotation) must not open a second PTY. */
     @Test
-    fun `open is idempotent`() = runTest(dispatcher) {
+    fun `open is idempotent`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -1132,14 +1172,15 @@ class SessionViewModelTest {
         viewModel.open(hostId, SESSION)
         settle()
 
-        assertEquals(1, connection().ptyRequests.size)
-
+        val ptyCount = connection().ptyRequests.size
         clear()
+
+        assertEquals(1, ptyCount)
     }
 
     /** Leaving the screen closes the channel but leaves the connection alive. */
     @Test
-    fun `onCleared closes the PTY and leaves the host connection open`() = runTest(dispatcher) {
+    fun `onCleared closes the PTY and leaves the host connection open`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -1158,7 +1199,7 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun `stopSession kills the exact name and asks the route to leave`() = runTest(dispatcher) {
+    fun `stopSession kills the exact name and asks the route to leave`() = sessionTest {
         val hostId = stack.seedHost()
         livePtyWithKill(ExecResult(exitCode = 0, stdout = "", stderr = "", timedOut = false))
         val viewModel = viewModel()
@@ -1170,18 +1211,21 @@ class SessionViewModelTest {
         viewModel.stopSession()
         settle()
 
+        val killCommand = connection().executedCommands.single { "kill" in it }
+        val left = viewModel.leaveAfterStop.value
+        val stopFailure = viewModel.stopFailure.value
+        clear()
+
         assertEquals(
             "pocketshell sessions kill -- '$SESSION'",
-            connection().executedCommands.single { "kill" in it },
+            killCommand,
         )
-        assertTrue(viewModel.leaveAfterStop.value)
-        assertNull(viewModel.stopFailure.value)
-
-        clear()
+        assertTrue(left)
+        assertNull(stopFailure)
     }
 
     @Test
-    fun `a refused Stop stays on the session and shows the hosts words`() = runTest(dispatcher) {
+    fun `a refused Stop stays on the session and shows the hosts words`() = sessionTest {
         val hostId = stack.seedHost()
         livePtyWithKill(
             ExecResult(exitCode = 3, stdout = "", stderr = "no session named '$SESSION'\n", timedOut = false),
@@ -1193,18 +1237,20 @@ class SessionViewModelTest {
         viewModel.stopSession()
         settle()
 
-        assertFalse(viewModel.leaveAfterStop.value)
+        val left = viewModel.leaveAfterStop.value
         val failure = requireNotNull(viewModel.stopFailure.value)
-        assertTrue(failure, failure.contains("no session named '$SESSION'"))
-        assertTrue(viewModel.uiState.value is SessionUiState.Live)
-
+        val state = viewModel.uiState.value
         clear()
+
+        assertFalse(left)
+        assertTrue(failure, failure.contains("no session named '$SESSION'"))
+        assertTrue(state is SessionUiState.Live)
     }
 
     // --- identity by id (#2572) ----------------------------------------------
 
     @Test
-    fun `attaching goes out with the stable id when the route carries one`() = runTest(dispatcher) {
+    fun `attaching goes out with the stable id when the route carries one`() = sessionTest {
         val hostId = stack.seedHost()
         livePty()
         val viewModel = viewModel()
@@ -1212,12 +1258,13 @@ class SessionViewModelTest {
         viewModel.open(hostId, SESSION, STABLE_ID)
         settle()
 
+        val command = connection().ptyRequests.single().command
+        clear()
+
         assertEquals(
             "exec pocketshell sessions attach -- '$STABLE_ID'",
-            connection().ptyRequests.single().command,
+            command,
         )
-
-        clear()
     }
 
     /**
@@ -1228,7 +1275,7 @@ class SessionViewModelTest {
      */
     @Test
     fun `Stop resolves the session's current name from the listing when an id is held`() =
-        runTest(dispatcher) {
+        sessionTest {
             val hostId = stack.seedHost()
             stack.factory.script = { connection ->
                 connection.enqueuePty(completeAfterFrames = false, exitCode = null)
@@ -1245,14 +1292,17 @@ class SessionViewModelTest {
             viewModel.stopSession()
             settle()
 
+            val killCommand = connection().executedCommands.single { "kill" in it }
+            val left = viewModel.leaveAfterStop.value
+            val stopFailure = viewModel.stopFailure.value
+            clear()
+
             assertEquals(
                 "pocketshell sessions kill -- 'renamed-tag'",
-                connection().executedCommands.single { "kill" in it },
+                killCommand,
             )
-            assertTrue(viewModel.leaveAfterStop.value)
-            assertNull(viewModel.stopFailure.value)
-
-            clear()
+            assertTrue(left)
+            assertNull(stopFailure)
         }
 
     /**
@@ -1261,7 +1311,7 @@ class SessionViewModelTest {
      * kill nothing — never let the name match decide who dies.
      */
     @Test
-    fun `Stop with an id held never kills whatever took the old name`() = runTest(dispatcher) {
+    fun `Stop with an id held never kills whatever took the old name`() = sessionTest {
         val hostId = stack.seedHost()
         stack.factory.script = { connection ->
             connection.enqueuePty(completeAfterFrames = false, exitCode = null)
@@ -1278,14 +1328,15 @@ class SessionViewModelTest {
         viewModel.stopSession()
         settle()
 
-        assertTrue(
-            "the impostor must not be killed: ${connection().executedCommands}",
-            connection().executedCommands.none { "kill" in it },
-        )
+        val commands = connection().executedCommands
         val failure = requireNotNull(viewModel.stopFailure.value)
-        assertTrue(failure, failure.contains("no longer running"))
-
         clear()
+
+        assertTrue(
+            "the impostor must not be killed: $commands",
+            commands.none { "kill" in it },
+        )
+        assertTrue(failure, failure.contains("no longer running"))
     }
 
     // --- helpers -------------------------------------------------------------
@@ -1327,6 +1378,23 @@ class SessionViewModelTest {
 
     /** Ends the ViewModel exactly as leaving the screen does. */
     private fun clear() = store.clear()
+
+    /**
+     * Every test body runs through this instead of a bare [runTest]: the
+     * `finally` tears the ViewModel down BEFORE `runTest` drains at completion,
+     * so a failed assertion can no longer leave `applyResizes` parked on its
+     * channel receive and spin that drain into a silent hang (issue #2482).
+     * Tests still capture what they assert on, call [clear], then assert —
+     * so the failure output describes the world as it was on screen.
+     */
+    private fun sessionTest(body: suspend TestScope.() -> Unit) =
+        runTest(dispatcher) {
+            try {
+                body()
+            } finally {
+                clear()
+            }
+        }
 
     /** Scripts the next dial to hand out a PTY that stays open. */
     private fun livePty() {
