@@ -105,6 +105,16 @@ class ForwardService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        // The last `notify` the collector issued (usually the empty-snapshot
+        // "stopping" one, posted right before its own stopSelf) races the
+        // system's removal of the FGS notification at destroy: when
+        // NotificationManagerService is slow, that notify is applied after the
+        // removal and the ongoing notification outlives the service as an
+        // unswipeable ghost (#2701, caught by the J22 journey). Destroy runs on
+        // the main thread after `scope.cancel()` has stopped every future
+        // collector emission, so this cancel is the LAST transaction ever sent
+        // for id 4201 and cannot be outrun from inside the process.
+        getSystemService(NotificationManager::class.java)?.cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
 
