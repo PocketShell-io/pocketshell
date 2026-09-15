@@ -71,6 +71,11 @@ sealed class Destination(val pattern: String) {
         fun route(): String = pattern
     }
 
+    /** Optional Google-login settings sync (issue #2633). */
+    data object AccountSync : Destination("settings/account") {
+        fun route(): String = pattern
+    }
+
     /** Local diagnostics index. */
     data object Diagnostics : Destination("diagnostics") {
         fun route(): String = pattern
@@ -333,7 +338,7 @@ sealed class Destination(val pattern: String) {
             get() = listOf(
                 Hosts, Workspaces, Workspace, Session, Files, FileViewer, Ports, Settings,
                 TerminalSettings, VoiceSettings, VoiceLanguage, ConnectionSettings,
-                GraceSettings, AdvancedSettings, Diagnostics, DiagnosticReport,
+                GraceSettings, AdvancedSettings, AccountSync, Diagnostics, DiagnosticReport,
                 About, Update, Usage, HostUsage, TunnelDetail, AddTunnel,
                 HostForm, SshKeys, WorkspaceRoots, AddWorkspaceRoot,
                 WorkspaceStart, ReorderWorkspaces, WorkspaceRootAction,

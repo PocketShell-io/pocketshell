@@ -287,6 +287,9 @@ src    app2/src/main/java/com/pocketshell/next/ports/*        portfwd           
 src    app2/src/main/java/com/pocketshell/next/files/*        files                full
 src    app2/src/main/java/com/pocketshell/next/hosts/*        hosts-settings       full
 src    app2/src/main/java/com/pocketshell/next/settings/*     hosts-settings       full
+# Optional Google sign-in settings sync (#2633): reads/writes the hosts table
+# and hangs off the Settings index, so it shares the hosts-settings area.
+src    app2/src/main/java/com/pocketshell/next/sync/*         hosts-settings       full
 src    app2/src/main/java/com/pocketshell/next/release/*      hosts-settings       full
 src    app2/src/main/java/com/pocketshell/next/share/*        share                full
 src    app2/src/main/java/com/pocketshell/next/usage/*        usage-costs          full
@@ -340,6 +343,8 @@ test   app2/src/*/java/com/pocketshell/next/ports/*        portfwd              
 test   app2/src/*/java/com/pocketshell/next/files/*        files                full
 test   app2/src/*/java/com/pocketshell/next/hosts/*        hosts-settings       full
 test   app2/src/*/java/com/pocketshell/next/settings/*     hosts-settings       full
+# Mirrors the src row above: the #2633 sync tests share hosts-settings.
+test   app2/src/*/java/com/pocketshell/next/sync/*         hosts-settings       full
 test   app2/src/*/java/com/pocketshell/next/release/*      hosts-settings       full
 test   app2/src/*/java/com/pocketshell/next/share/*        share                full
 test   app2/src/*/java/com/pocketshell/next/usage/*        usage-costs          full
