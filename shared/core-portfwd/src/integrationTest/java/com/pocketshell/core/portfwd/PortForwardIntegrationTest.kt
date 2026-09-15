@@ -26,6 +26,7 @@ import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -61,6 +62,14 @@ class PortForwardIntegrationTest {
          * application port, and unremarkable enough not to collide with sshd.
          */
         private const val REMOTE_SERVICE_PORT = 8_099
+
+        /**
+         * Port for the negative probe ([theRemoteServiceDoesNotAnswerBeforeTheRequestIsSent]).
+         * Deliberately NOT [REMOTE_SERVICE_PORT]: both services run against the
+         * same per-class container, and a second `nc -l -p` on a bound port
+         * would fail to bind and could steal or starve the main test's listener.
+         */
+        private const val NEGATIVE_PROBE_SERVICE_PORT = 8_101
         private const val SERVICE_BODY = "pocketshell-forward-ok"
 
         /**
@@ -258,14 +267,7 @@ class PortForwardIntegrationTest {
     fun aRealServiceOnTheHostIsDiscovered_forwarded_andAnswersThroughTheTunnel() = runBlocking {
         val connection = connect()
         try {
-            // busybox nc serves one canned HTTP response per accepted connection;
-            // the loop re-listens so the port stays up for the scan AND the fetch.
-            // Backgrounded + detached from stdio so it survives the exec channel.
-            val start = connection.exec(
-                "nohup sh -c 'while true; do printf \"$HTTP_RESPONSE\" | " +
-                    "nc -l -p $REMOTE_SERVICE_PORT >/dev/null 2>&1; done' >/dev/null 2>&1 & echo started",
-            )
-            assertEquals("failed to start the remote service: ${start.stderr}", 0, start.exitCode)
+            startRemoteService(connection, REMOTE_SERVICE_PORT)
             assertTrue(
                 "the remote service never started listening on $REMOTE_SERVICE_PORT",
                 waitUntilTrue(ciScaled(10_000)) {
@@ -452,7 +454,95 @@ class PortForwardIntegrationTest {
         }
     }
 
+    /**
+     * The end-to-end negative half of the #2628 fix: the canned service must
+     * NOT answer until the client's request line has arrived.
+     *
+     * This is the fixture property that makes the byte-counter asserts in
+     * [aRealServiceOnTheHostIsDiscovered_forwarded_andAnswersThroughTheTunnel]
+     * deterministic. If the service ever regresses to answering on accept (the
+     * old `printf | nc -l` shape), the remote→local copier can deliver the whole
+     * response, observe EOF, and tear the forward's connection pair down before
+     * the local→remote copier is ever scheduled to read the buffered request —
+     * the forward then honestly reports `bytesForwarded == 0` after a perfectly
+     * successful fetch, which is exactly how
+     * `aRealServiceOnTheHostIsDiscovered_forwarded_andAnswersThroughTheTunnel`
+     * failed on CI (app2.yml run 34402741674: "the request bytes must have been
+     * forwarded out, got 0", while the body assertion right before it passed).
+     */
+    @Test(timeout = 60_000)
+    fun theRemoteServiceDoesNotAnswerBeforeTheRequestIsSent() = runBlocking {
+        val connection = connect()
+        try {
+            startRemoteService(connection, NEGATIVE_PROBE_SERVICE_PORT)
+            // Prove the service is actually listening before probing for
+            // silence — otherwise "no answer" would be indistinguishable from
+            // "nothing to answer with" and this test could pass vacuously.
+            assertTrue(
+                "the negative-probe service never started listening on $NEGATIVE_PROBE_SERVICE_PORT",
+                waitUntilTrue(ciScaled(10_000)) {
+                    val scan = runBlocking { PortScanner.scan(connection) }
+                    scan is PortScanResult.Ports &&
+                        scan.ports.any { it.port == NEGATIVE_PROBE_SERVICE_PORT }
+                },
+            )
+            val localPort = pickFreeLocalPort()
+            val forward = connection.openPortForward("127.0.0.1", NEGATIVE_PROBE_SERVICE_PORT, localPort)
+            try {
+                val firstByte = Socket().use { client ->
+                    client.connect(InetSocketAddress("127.0.0.1", localPort), 5_000)
+                    client.soTimeout = 2_000
+                    try {
+                        client.getInputStream().read()
+                    } catch (_: SocketTimeoutException) {
+                        -2 // no answer within 2s — the expected, gated shape
+                    }
+                }
+                assertTrue(
+                    "the nc fixture answered without receiving a request " +
+                        "(firstByte=$firstByte, bytesForwarded=${forward.bytesForwarded}): " +
+                        "the response is no longer gated on the request, which is what makes " +
+                        "aRealServiceOnTheHostIsDiscovered_forwarded_andAnswersThroughTheTunnel's " +
+                        "counter asserts racy (issue #2628)",
+                    firstByte == -2,
+                )
+            } finally {
+                forward.close()
+            }
+        } finally {
+            connection.close()
+        }
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Starts the canned HTTP service inside the container on [port].
+     *
+     * The service is deliberately REQUEST-GATED: `nc -e` wires the accepted
+     * socket to `sh`'s stdin/stdout, and the canned response is emitted only
+     * after `read` has returned the client's request line (`-lk` keeps the one
+     * nc process relistening, with no restart gap between connections). A
+     * delivered response therefore proves the request bytes were already read
+     * out of the local client socket by the forward's local→remote copier —
+     * `bytesForwarded` is incremented the instant those bytes are read, strictly
+     * before the response can exist — so the counter asserts after the fetch in
+     * [aRealServiceOnTheHostIsDiscovered_forwarded_andAnswersThroughTheTunnel]
+     * hold deterministically. The old `printf | nc -l` fixture answered on
+     * ACCEPT, so under unlucky scheduling the remote→local copier delivered the
+     * whole response, observed EOF, and tore the pair down before the
+     * local→remote copier was ever scheduled — leaving `bytesForwarded == 0`
+     * after a successful fetch (issue #2628; see
+     * [theRemoteServiceDoesNotAnswerBeforeTheRequestIsSent], which guards this
+     * property directly).
+     */
+    private suspend fun startRemoteService(connection: HostConnection, port: Int) {
+        val start = connection.exec(
+            "nohup nc -lk -p $port " +
+                "-e sh -c 'read -r request_line && printf \"$HTTP_RESPONSE\"' >/dev/null 2>&1 & echo started",
+        )
+        assertEquals("failed to start the remote service: ${start.stderr}", 0, start.exitCode)
+    }
 
     /** Find live threads named after this forward (l2r/r2l copy threads). */
     private fun currentForwardThreads(localPort: Int): List<Thread> {
