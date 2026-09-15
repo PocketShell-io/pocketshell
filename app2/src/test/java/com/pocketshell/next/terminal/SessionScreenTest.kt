@@ -7,10 +7,12 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
@@ -18,6 +20,7 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.width
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -42,7 +45,7 @@ import com.pocketshell.next.usage.UsageGlancePillState
 import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
 import com.pocketshell.uikit.model.PillKind
 import com.pocketshell.uikit.components.SESSION_HOTKEYS_LAUNCHER_TAG
-import com.pocketshell.uikit.components.SESSION_LAUNCHER_BAR_TAG
+import com.pocketshell.uikit.components.SESSION_LAUNCHER_OVERLAY_TAG
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -89,7 +92,7 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(SESSION_ENDED_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("Session ended").assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_ERROR_BANNER_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(SESSION_LAUNCHER_OVERLAY_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SESSION_CONNECTING_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SESSION_TERMINAL_TAG).assertDoesNotExist()
     }
@@ -462,7 +465,7 @@ class SessionScreenTest {
     fun `closed chrome is the compact launcher, not the composer or key bar`() {
         setContent(SessionUiState.Live(createRemoteTerminalSession()))
 
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_LAUNCHER_OVERLAY_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_HOTKEYS_LAUNCHER_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("Ctrl").assertDoesNotExist()
@@ -474,11 +477,43 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertDoesNotExist()
     }
 
+    /**
+     * #2631: the launcher floats over the terminal instead of docking below
+     * it. The old docked `SessionLauncherBar` permanently subtracted a strip
+     * of the session column from the cell grid; the replacement must leave
+     * the terminal reaching the screen bottom, with the launcher painted
+     * INSIDE the terminal's bounds as a corner control — not a full-width
+     * strip and not a sibling row below the surface.
+     */
+    @Test
+    fun `the launcher floats over the terminal instead of docking below it`() {
+        setContent(SessionUiState.Live(createRemoteTerminalSession()))
+
+        val root = composeRule.onRoot().getUnclippedBoundsInRoot()
+        val terminal = composeRule.onNodeWithTag(SESSION_TERMINAL_TAG)
+            .getUnclippedBoundsInRoot()
+        val launcher = composeRule.onNodeWithTag(SESSION_LAUNCHER_OVERLAY_TAG)
+            .getUnclippedBoundsInRoot()
+
+        assertTrue(
+            "the terminal must reach the screen bottom, got ${terminal.bottom} of ${root.bottom}",
+            terminal.bottom >= root.bottom - 1.dp,
+        )
+        assertTrue(
+            "the launcher must overlay the terminal, got $launcher in $terminal",
+            launcher.top >= terminal.top && launcher.bottom <= terminal.bottom,
+        )
+        assertTrue(
+            "the launcher must not be a full-width strip: ${launcher.width} of ${terminal.width}",
+            launcher.width < terminal.width / 2,
+        )
+    }
+
     @Test
     fun `the compact launcher is present while connecting`() {
         setContent(SessionUiState.Connecting)
 
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_LAUNCHER_OVERLAY_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_TAG).assertDoesNotExist()
     }
 
@@ -503,7 +538,7 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_LAUNCHER_OVERLAY_TAG).assertIsDisplayed()
     }
 
     @Test
