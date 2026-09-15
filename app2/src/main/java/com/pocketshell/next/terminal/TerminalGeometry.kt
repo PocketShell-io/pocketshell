@@ -31,10 +31,12 @@ import kotlin.math.ceil
  *
  * ## One owner, still
  *
- * The estimate is used ONLY while the screen is not live. The moment the
- * terminal view exists it is the single source of the size, exactly as U-4
- * designed — this never competes with it, it just stops the remote from
- * starting at the wrong size.
+ * The estimate is used ONLY while no terminal view is on screen — the
+ * viewless `Connecting` state (and the inert `Failed` ones). `Live` owns its
+ * own number, and so does `Reconnecting` (#2496): it keeps that same view up,
+ * so the estimate must not re-enter there — a banner or keyboard layout
+ * change mid-reconnect would publish a stale local guess that the view's next
+ * report would have to correct.
  *
  * ## Mirroring obligation
  *

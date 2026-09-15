@@ -1,5 +1,9 @@
 package com.pocketshell.next.terminal
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
@@ -12,7 +16,12 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.pocketshell.next.composer.COMPOSER_INSERT_TAG
 import com.pocketshell.next.composer.COMPOSER_DRAFT_TAG
 import com.pocketshell.next.composer.COMPOSER_REVIEW_ACTION_TAG
@@ -36,6 +45,7 @@ import com.pocketshell.uikit.components.SESSION_HOTKEYS_LAUNCHER_TAG
 import com.pocketshell.uikit.components.SESSION_LAUNCHER_BAR_TAG
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -254,6 +264,126 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(SESSION_RETRY_TAG).performClick()
 
         assertEquals(1, retries)
+    }
+
+    /**
+     * #2496: the local size estimate must not compete with the terminal view
+     * during Reconnecting.
+     *
+     * Reconnecting keeps the same hosted view on screen — that is the point of
+     * the state — so from the moment it appears the view owns the size number
+     * exactly as it does when Live. The screen-level estimate, built for the
+     * viewless Connecting state, must stay out of its way: a layout change
+     * mid-reconnect (the reconnect banner appearing, the keyboard, a rotation)
+     * would otherwise publish a stale local guess, the reattached PTY would
+     * open a few rows tall, and the first Live frame would have to correct it.
+     *
+     * The estimate is made exactly observable with fake cell metrics
+     * (10 px wide, 20 tall): whatever it publishes for a slot W px wide is
+     * `W / 10` columns, and the parent box's own `onSizeChanged` records the W
+     * the terminal slot actually got (same width — the screen is a full-bleed
+     * column). A width change stands in for the keyboard's height change; both
+     * reach this box as a plain layout-size change, which is the whole
+     * mechanism under test.
+     *
+     * Robolectric cannot host the vendored renderer's canvas, so whether the
+     * view itself manages to report here is environment luck. The load-bearing
+     * assertion is that the ESTIMATE never publishes from the Reconnecting
+     * window onward — leaving the view's own report as the only writer, which
+     * is exactly the Live ownership model this issue must not change. When the
+     * view does report, the number the PTY finally receives is asserted to be
+     * the emulator's own geometry; the canvas half is J03's, on a device.
+     */
+    @Test
+    fun `a layout change while reconnecting does not publish the size estimate`() {
+        val resizes = mutableListOf<Pair<Int, Int>>()
+        var screenState by mutableStateOf<SessionUiState>(SessionUiState.Connecting)
+        var slotWidth by mutableStateOf(400.dp)
+        var slotPx by mutableStateOf(IntSize.Zero)
+
+        composeRule.setContent {
+            Box(
+                modifier = Modifier
+                    .size(width = slotWidth, height = 500.dp)
+                    .onSizeChanged { slotPx = it },
+            ) {
+                SessionScreen(
+                    state = screenState,
+                    composerState = ComposerUiState(),
+                    sessionName = SESSION,
+                    onBack = {},
+                    onResized = { cols, rows -> resizes += cols to rows },
+                    onRetry = {},
+                    onStopSession = {},
+                    onHotkeySend = {},
+                    onDraftChange = {},
+                    onSend = { true },
+                    onInsert = {},
+                    onAttach = {},
+                    onMicTap = {},
+                    onCancelRecording = {},
+                    onToggleHistory = {},
+                    onTogglePreview = {},
+                    onRemoveAttachment = {},
+                    onDismissNotice = {},
+                    onDiscardDraft = {},
+                    onUseHistoryEntry = {},
+                    cellMetrics = FAKE_METRICS,
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // Connecting, no view yet: the estimate owns the number, and it
+        // publishes the fake-metric arithmetic for the width the slot got.
+        assertTrue(
+            "the pre-view estimate stopped publishing while connecting — " +
+                "without it the remote paints once at 80x24 on every attach",
+            resizes.isNotEmpty(),
+        )
+        assertEquals(slotPx.width / 10, resizes.last().first)
+
+        // Reconnecting keeps the same view on screen; the banner appearing is
+        // itself a layout change, and it must not re-open the estimate path.
+        resizes.clear()
+        val reconnectCols = slotPx.width / 10
+        composeRule.runOnIdle {
+            screenState = SessionUiState.Reconnecting(
+                attempt = 0,
+                retryInMs = 0,
+                terminal = createRemoteTerminalSession(),
+            )
+        }
+        composeRule.waitForIdle()
+        // … and neither does a rotation-sized width change mid-reconnect.
+        composeRule.runOnIdle { slotWidth = 200.dp }
+        composeRule.waitForIdle()
+
+        val toggledCols = slotPx.width / 10
+        assertTrue(
+            "the estimate published during Reconnecting (window entries: $resizes)",
+            resizes.none { it.first == reconnectCols || it.first == toggledCols },
+        )
+
+        // Entering Live: the view's own number is what the PTY receives, and
+        // no Reconnecting-era guess ever went out needing a correction pass.
+        val liveWindowStart = resizes.size
+        val liveSession = createRemoteTerminalSession()
+        composeRule.runOnIdle { screenState = SessionUiState.Live(liveSession) }
+        composeRule.waitForIdle()
+
+        assertTrue(
+            "a Reconnecting-era estimate survived into Live: $resizes",
+            resizes.none { it.first == reconnectCols || it.first == toggledCols },
+        )
+        val liveWindow = resizes.drop(liveWindowStart)
+        if (liveWindow.isNotEmpty()) {
+            // The vendored view DID report under Robolectric: it must be the
+            // emulator's own geometry — the number the bridge resizes the PTY
+            // with — not anything this screen guessed.
+            assertEquals(liveSession.emulator.mColumns, liveWindow.last().first)
+            assertEquals(liveSession.emulator.mRows, liveWindow.last().second)
+        }
     }
 
     @Test
@@ -532,5 +662,20 @@ class SessionScreenTest {
 
     private companion object {
         const val SESSION = "git-pocketshell"
+
+        /**
+         * Deliberately un-real cell metrics (10 px wide, 20 tall) so the
+         * screen's size estimate is exactly recognizable in a recorded
+         * `onResized`: whatever it publishes for a slot W px wide is `W / 10`
+         * columns — a value the vendored view, whose renderer metrics
+         * Robolectric reports as ~1 px glyphs, can never coincide with.
+         * Substitutable because [SessionScreen] takes `cellMetrics` as a
+         * defaulted parameter (the same seam `TerminalGeometry.kt` documents).
+         */
+        val FAKE_METRICS = TerminalCellMetrics(
+            cellWidthPx = 10f,
+            lineHeightPx = 20,
+            lineSpacingAndAscentPx = 2,
+        )
     }
 }

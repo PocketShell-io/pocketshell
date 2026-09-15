@@ -405,7 +405,16 @@ fun SessionScreen(
                 .fillMaxWidth()
                 .background(PocketShellColors.Background)
                 .onSizeChanged { size ->
-                    if (state !is SessionUiState.Live) {
+                    // Only while no terminal view exists to own the number.
+                    // From the first view frame on, the view owns it — it has
+                    // the renderer, so it has the authoritative metrics — and
+                    // a second reporter would fight it on every layout pass.
+                    // Reconnecting hosts that same view (#2496), so the
+                    // estimate stays off there too: a banner or keyboard
+                    // layout change mid-reconnect would otherwise publish a
+                    // stale local guess, and the reattached PTY would open a
+                    // few rows off until the first Live frame corrected it.
+                    if (state !is SessionUiState.Live && state !is SessionUiState.Reconnecting) {
                         terminalCells(size.width, size.height, cellMetrics)?.let { cells ->
                             onResized(cells.cols, cells.rows)
                         }
