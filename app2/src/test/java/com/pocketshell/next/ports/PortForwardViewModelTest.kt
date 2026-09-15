@@ -66,6 +66,30 @@ class PortForwardViewModelTest {
     }
 
     @Test
+    fun `a manual tunnel added with discovery off surfaces reactively`() = vmTest { stack ->
+        // #2708: Add-tunnel enables the host in Room through the controller while
+        // the screen is open. The state must observe the row, not keep the init
+        // snapshot, or the new tunnel stays behind the discovery-off branch until
+        // the user toggles discovery or re-enters the screen.
+        stack.listenOn(8_071 to "web")
+        val hostId = stack.seedHost(enabled = false)
+        val viewModel = viewModel(stack, hostId)
+        runCurrent()
+        assertFalse("fixture: discovery starts off", viewModel.state.value.enabled)
+
+        viewModel.addManualTunnel(remotePort = 8_071, localPort = 7_433, name = "Fixture web")
+        runCurrent()
+
+        assertTrue("the controller recorded the durable intent", stack.isEnabled(hostId))
+        assertTrue("the screen must react to the Room write", viewModel.state.value.enabled)
+        assertTrue(
+            "the tunnel row must be reachable without external input",
+            viewModel.state.value.discoveredRows.any { it.remotePort == 8_071 },
+        )
+        assertEquals(setOf(8_071), viewModel.state.value.manualRemotePorts)
+    }
+
+    @Test
     fun `turning the toggle on records the intent and opens forwards`() = vmTest { stack ->
         stack.listenOn(7_431 to "vite")
         val hostId = stack.seedHost()

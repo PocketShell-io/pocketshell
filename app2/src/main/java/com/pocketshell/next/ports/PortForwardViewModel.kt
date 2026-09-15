@@ -106,15 +106,24 @@ class PortForwardViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            val host = hostDao.getById(hostId)
+            // Observe the host row rather than reading it once (#2708): Add-tunnel
+            // flips `hosts.enabled` in Room through the controller while this
+            // screen is open, and only a live observer turns that write into the
+            // toggle-on state — a stale init snapshot left the new tunnel behind
+            // the discovery-off branch until the user toggled or re-entered.
+            // The checkbox read stays ahead of the collect so `loading` still
+            // covers both reads, and later emissions never re-write it (the
+            // user's own checkbox change must survive host-row updates).
             val showAll = showAllPortsStore.isShowAll()
-            _state.value = _state.value.copy(
-                hostName = host?.name ?: "Port forwarding",
-                hostSubtitle = host?.let { "${it.username}@${it.hostname}:${it.port}" }.orEmpty(),
-                enabled = host?.enabled == true,
-                showAllPorts = showAll,
-                loading = false,
-            ).reFiltered()
+            _state.value = _state.value.copy(showAllPorts = showAll)
+            hostDao.observeById(hostId).collect { host ->
+                _state.value = _state.value.copy(
+                    hostName = host?.name ?: "Port forwarding",
+                    hostSubtitle = host?.let { "${it.username}@${it.hostname}:${it.port}" }.orEmpty(),
+                    enabled = host?.enabled == true,
+                    loading = false,
+                ).reFiltered()
+            }
         }
         viewModelScope.launch {
             remappingDao.getByHostId(hostId).collect { mappings ->

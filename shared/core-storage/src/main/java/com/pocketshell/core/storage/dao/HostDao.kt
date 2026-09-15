@@ -17,6 +17,10 @@ interface HostDao {
     @Query("SELECT * FROM hosts WHERE id = :id")
     suspend fun getById(id: Long): HostEntity?
 
+    /** Live twin of [getById]: re-emits on every write to this host's row. */
+    @Query("SELECT * FROM hosts WHERE id = :id")
+    fun observeById(id: Long): Flow<HostEntity?>
+
     @Query("SELECT * FROM hosts WHERE enabled = 1")
     fun getEnabled(): Flow<List<HostEntity>>
 
