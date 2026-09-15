@@ -433,13 +433,15 @@ require_clean_pushed_main
 write_summary_header
 
 # Issue #851 (epic #848): FAIL the release when the latest nightly fault /
-# bootstrap run is red, cancelled, stale, or missing. The toxiproxy
-# network-fault proofs + the bootstrap setup-scenario matrix run ONLY in the
-# nightly "Nightly Extensive Tests" workflow, whose extensive job is
-# `continue-on-error: true` — so a RED fault run masks as a `success` workflow
-# conclusion. This guard inspects the EXTENSIVE-job conclusion (not the masked
-# workflow conclusion) AND that the run covers the release HEAD, so a stale /
-# cancelled / red fault run blocks the tag instead of silently passing.
+# bootstrap run is red, cancelled, stale, or missing. Since the rewrite deleted
+# nightly-extensive.yml, the toxiproxy network-fault proofs + the bootstrap
+# setup-scenario matrix live in the scheduled `app2` workflow's
+# `app2 journey suite` job, and the job's own conclusion IS the verdict (no
+# phases to combine; see scripts/check-nightly-fault-run.sh's header). This
+# guard reads THAT job's conclusion AND that the run covers the release HEAD,
+# so a stale / cancelled / red fault run blocks the tag instead of silently
+# passing. A run-level cancellation is a verdict GAP, not a red (#2706): the
+# guard's output names the gap and the re-run that restores a verdict.
 #
 # D37 (#2379): this guard is unconditional. There is no environment variable and
 # no workflow input that skips it — waiving it was routine and is how the #1610
@@ -471,7 +473,7 @@ check_nightly_fault_run() {
 
   if [[ "$rc" -ne 0 ]]; then
     sed -i 's/^Automated status: RUNNING$/Automated status: FAIL/' "$SUMMARY_PATH"
-    fail "nightly fault/bootstrap run guard BLOCKED the release (see $log_file). Re-run 'Nightly Extensive Tests' (workflow_dispatch, force_run=true) on the release commit and wait for the fault-verdict job to go green, then re-run this gate. There is no override (D37): fix the failing test/journey, or quarantine that class through the D36(4) flake mechanism (auto-filed issue, non-blocking lane, 2-week expiry)."
+    fail "nightly fault/bootstrap run guard BLOCKED the release (see $log_file). Re-run the 'app2' workflow (workflow_dispatch) on the release commit and wait for the 'app2 journey suite' job to go green, then re-run this gate. There is no override (D37): fix the failing test/journey, or quarantine that class through the D36(4) flake mechanism (auto-filed issue, non-blocking lane, 2-week expiry)."
   fi
 }
 

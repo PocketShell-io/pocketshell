@@ -118,6 +118,21 @@ above: capture the XML before re-running a failed test task, since a
 passing re-run skips the task (stale XML persists) while a failing one
 always re-executes (destroying the evidence).
 
+#2628 is the worked example of what a console-derived signature costs. The
+D36 auto-filer read the console and got it wrong TWICE. The line: the body
+blamed the scan/service-startup window (`PortForwardIntegrationTest.kt:258`),
+but the recorded XML showed the scan passing its first poll and the real
+failure at a later assertion — a fire-and-forget `printf|nc -l` fixture that
+answered on connection-accept without reading the request. The mechanism:
+the body said the Docker-lane failure cancelled the app2 journey job through
+its job dependency, but the journey job has no `needs:` edge to any Docker
+lane, and the run's own job timeline shows it dying ~8.5 minutes later in a
+run-level cancellation of the whole `workflow_dispatch` run (#2706). Each
+wrong attribution sends implementers at a seam that isn't broken. For both
+the failing line AND the cancellation mechanism, the authoritative sources
+are the test-results XML and the run's job started/completed times — never
+the console stack, and never job-order correlation.
+
 ## Test determinism (the `runTest` virtual-clock class)
 
 The recurring "passes locally, flakes on CI" JVM failure is one class: a

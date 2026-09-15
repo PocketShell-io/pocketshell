@@ -77,6 +77,27 @@ set -euo pipefail
 # scripts/check-release-gate-bypass-absent.sh (C4) asserts exactly this, per
 # push, by driving the guard with a hostile environment.
 #
+# ISSUE #2706 — RUN-LEVEL CANCELLATIONS LEAVE A VERDICT GAP, NOT A RED.
+# A run-level cancellation (a manual or API cancel of the whole run) kills
+# every job in it, and NO workflow-level configuration can shield a job from
+# one: job-level `if: !cancelled()` guards only job-dependency cancels, and
+# app2.yml's concurrency group already exempts schedule/dispatch/push from
+# cancel-in-progress (D40/#2600). What killed the journey job of run
+# 34402741674 (workflow_dispatch on release/v0.5.4 during the v0.5.4 window,
+# ~8.5 min after an unrelated portfwd Docker-lane failure in the same run) was
+# exactly this out-of-band shape. The producer cannot prevent it, so the
+# CONSUMER refuses to let a verdict-less run erase a real one: a run whose
+# journey job produced NO verdict proves nothing either way — job absent,
+# `skipped` (a PR run, or a push whose lane selection skipped app2), or
+# `cancelled` (a run-level kill) — and every one of them is a VERDICT GAP the
+# run-resolution walk now steps past, to the newest run that produced a real
+# terminal verdict. D37 is not weakened: only `success` on a run covering the
+# release HEAD ever passes; a red (or timed_out — the producer RAN and hit its
+# budget, a real signal) verdict still stops the walk and blocks; if nothing in
+# the window carries a verdict, the guard blocks and says so. Every stepped-
+# past run prints a NOTE line, so the release state shows the gap
+# explicitly instead of silently reading an older run.
+#
 # Two layers, kept separate so the decision logic is unit-testable WITHOUT any
 # network/`gh` dependency:
 #
@@ -95,7 +116,9 @@ set -euo pipefail
 # decision function across the red / cancelled / stale / missing / pass matrix
 # with NO network, PLUS a fixture-driven end-to-end dry run proving the guard
 # GREENs on a fault-verdict-green run and REDs on a fault-verdict-red run — this
-# is the dry-run rejection proof the issue asks for.
+# is the dry-run rejection proof the issue asks for — and (#2706) array-fixture
+# dry runs proving the cancellation-gap walk-back reaches an older covering
+# verdict, still blocks on red/stale/all-cancelled, and prints the gap NOTE.
 #
 # Usage:
 #   check-nightly-fault-run.sh [--release-head <sha>]     # the release path
@@ -154,8 +177,10 @@ evaluate_nightly_fault_run() {
   local head_is_ancestor="$5"
 
   # No run at all → the fault suite has never reported for this line. Block.
+  # Also the landing spot for "every recent run was guard-skipped or its
+  # journey job was cancelled" (the walk-back fall-through, #2706).
   if [[ -z "$run_head_sha" ]]; then
-    echo "BLOCK: no scheduled journey run found for workflow '$WORKFLOW' — the safety suite has produced no signal to release on. Trigger the 'app2' workflow (workflow_dispatch) on the release commit."
+    echo "BLOCK: no scheduled journey run with a fault verdict found for workflow '$WORKFLOW' — the safety suite has produced no signal to release on (never ran, guard-skipped, or every recent run's journey job was cancelled by a run-level cancellation — a verdict gap). Trigger the 'app2' workflow (workflow_dispatch) on the release commit and let the journey job finish."
     return 1
   fi
 
@@ -183,7 +208,11 @@ evaluate_nightly_fault_run() {
       return 0
       ;;
     cancelled)
-      echo "BLOCK: latest journey job was CANCELLED (conclusion=cancelled) — the fault/bootstrap suite did not complete, so it proves nothing. Re-run the 'app2' workflow on the release commit."
+      # The run-resolution walk steps PAST cancelled journey jobs (#2706), so a
+      # live release run only reaches this branch through the decision function
+      # directly (self-test matrix) or if the walk/consumer contract drifts.
+      # Kept fail-closed on purpose: a cancelled job is a GAP, never a green.
+      echo "BLOCK: journey job was CANCELLED (conclusion=cancelled) — a run-level cancellation killed the fault-verdict producer mid-run. This is a verdict GAP, not a red: the suite neither passed nor failed, so it proves nothing. Re-run the 'app2' workflow (workflow_dispatch) on the release commit and let the journey job finish."
       return 1
       ;;
     "")
@@ -295,6 +324,73 @@ self_test() {
   # middle field shifted headSha into job_conclusion and databaseId into
   # run_head_sha, so this blocked as STALE with headSha=424242.
   fixture_dry_run "journey-job-missing"               1 ""        "did not run the journey job"
+  # A CANCELLED journey job through the single-run fixture path blocks as a GAP
+  # (run-level cancellation — #2706), never as a green.
+  fixture_dry_run "journey-cancelled-single-run"      1 cancelled "verdict GAP"
+
+  echo
+  # -------------------------------------------------------------------------
+  # Issue #2706 — the cancellation-gap WALK, driven through array fixtures
+  # (runs listed newest-first, exactly what the live `gh run list` walk sees).
+  # A cancelled journey job is a verdict GAP the walk steps past to the newest
+  # run with a real terminal verdict; the gap NOTE must be visible in the
+  # output, because the release state has to show the gap explicitly.
+  # -------------------------------------------------------------------------
+  fixture_walk_dry_run() {
+    local label="$1" expect_rc="$2" runs_json="$3" reason_needle="$4" want_gap_note="$5"
+    local tmp; tmp="$(mktemp)"
+    printf '%s\n' "$runs_json" > "$tmp"
+    set +e
+    out="$(bash "$self_path" --fixture "$tmp" --release-head "cccccccccccccccccccccccccccccccccccccccc" 2>&1)"
+    rc=$?
+    set -e
+    rm -f "$tmp"
+    if [[ "$rc" != "$expect_rc" ]]; then
+      printf 'FAIL [%s]: expected guard rc=%s got rc=%s\n%s\n' "$label" "$expect_rc" "$rc" "$out"
+      failures=$((failures + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "$reason_needle"; then
+      printf 'FAIL [%s]: rc=%s was right but the reason was not "%s"\n%s\n' \
+        "$label" "$rc" "$reason_needle" "$out"
+      failures=$((failures + 1))
+    elif [[ "$want_gap_note" == "yes" ]] && ! printf '%s' "$out" | grep -qF -- "NOTE (#2706)"; then
+      printf 'FAIL [%s]: the cancellation-gap NOTE (#2706) was missing from the release-state output\n%s\n' "$label" "$out"
+      failures=$((failures + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "[FIXTURE DRY RUN]"; then
+      printf 'FAIL [%s]: fixture output was not marked as a dry run\n%s\n' "$label" "$out"
+      failures=$((failures + 1))
+    else
+      printf 'ok   [%s] guard rc=%s :: %s\n' "$label" "$rc" "$(printf '%s' "$out" | tail -1)"
+    fi
+  }
+
+  echo "--- cancellation-gap walk-back dry run (issue #2706) ---"
+  # The exact shape that killed the v0.5.4 window (run 34402741674: journey job
+  # cancelled by a run-level cancellation ~8.5 min after an unrelated portfwd
+  # Docker-lane failure): the cancel must NOT erase the older covering green.
+  fixture_walk_dry_run "gap-walk-reaches-older-green" 0 \
+    '[{"status":"completed","jobConclusion":"cancelled","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9001},{"status":"completed","jobConclusion":"success","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9002}]' \
+    "safety verdict is green" yes
+  # A cancelled newest run must not mask a RED verdict behind it either.
+  fixture_walk_dry_run "gap-walk-stops-at-red" 1 \
+    '[{"status":"completed","jobConclusion":"cancelled","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9001},{"status":"completed","jobConclusion":"failure","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9002}]' \
+    "safety verdict is RED" yes
+  # Walking back to a green that does NOT cover the release HEAD still blocks STALE.
+  fixture_walk_dry_run "gap-walk-to-stale-green" 1 \
+    '[{"status":"completed","jobConclusion":"cancelled","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9001},{"status":"completed","jobConclusion":"success","headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","databaseId":9002}]' \
+    "STALE" yes
+  # Everything in the window cancelled/skipped → block as no-signal, gap explicit.
+  fixture_walk_dry_run "gap-all-cancelled-blocks" 1 \
+    '[{"status":"completed","jobConclusion":"cancelled","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9001},{"status":"completed","jobConclusion":"","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9002}]' \
+    "no scheduled journey run with a fault verdict" yes
+  # A PR/lane-skip run (journey job conclusion=skipped) is the same gap: the
+  # walk steps past it instead of halting on it and mis-reporting the skip as RED.
+  fixture_walk_dry_run "gap-walk-past-pr-skip" 0 \
+    '[{"status":"completed","jobConclusion":"skipped","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9003},{"status":"completed","jobConclusion":"success","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9004}]' \
+    "safety verdict is green" yes
+  # Skip-only window → still no signal, still blocks.
+  fixture_walk_dry_run "gap-skip-only-blocks" 1 \
+    '[{"status":"completed","jobConclusion":"skipped","headSha":"cccccccccccccccccccccccccccccccccccccccc","databaseId":9003}]' \
+    "no scheduled journey run with a fault verdict" yes
 
   echo
   if [[ "$failures" -eq 0 ]]; then
@@ -308,6 +404,48 @@ self_test() {
 # ---------------------------------------------------------------------------
 # Layer 2: fetch + resolve, then call the pure function.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# #2706 — the walk's stop rule, shared by the live and array-fixture paths.
+#
+# Only a REAL terminal verdict stops the walk: success, failure, timed_out
+# (the producer RAN and hit its budget — a real signal about the lane). Every
+# no-verdict state is a VERDICT GAP the walk steps past, reaching the newest
+# run that actually produced one:
+#   * ""            the job did not run in that run at all (pre-existing);
+#   * "cancelled"   a run-level cancellation killed it mid-flight — no
+#                   workflow-level configuration can prevent one (#2706);
+#   * "skipped"     the job existed but its `if:` gate did not fire (a PR run,
+#                   or a push whose lane selection skipped app2 — the state the
+#                   "pick the first run that RAN the job" intent always meant,
+#                   which the old any-non-empty stop rule missed: it halted on
+#                   the first PR run and mis-reported a skip as "RED").
+# ---------------------------------------------------------------------------
+fault_verdict_stops_walk() {
+  local conclusion="$1"
+  case "$conclusion" in
+    success | failure | timed_out) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Gap notes go to STDERR: stdout of resolve_latest_fault_run is a single
+# machine-parsed TSV line, and the release gate captures stdout+stderr into the
+# same summary log — so the gap shows in the release state without corrupting
+# the parse.
+note_cancelled_gap() {
+  local id="${1:-?}"
+  echo "NOTE (#2706): run ${id}'s journey job concluded 'cancelled' — a run-level cancellation killed the fault-verdict producer mid-run (a verdict GAP, not a red); stepping past it to older runs." >&2
+}
+
+note_no_verdict_run() {
+  local id="${1:-?}" conclusion="${2:-?}"
+  echo "NOTE (#2706): run ${id}'s journey job produced no verdict (conclusion='${conclusion}' — lane skipped or gate did not fire); stepping past it." >&2
+}
+
+note_no_verdict_in_window() {
+  echo "NOTE (#2706): no run in the recent window carries a real fault verdict (every journey job was guard-skipped or cancelled). There is no signal to release on." >&2
+}
 
 # Pin `gh` to THIS checkout's repository (issue #2379 round 2). An unpinned
 # `gh run list` honours the inherited GH_REPO environment variable, which is the
@@ -339,6 +477,34 @@ resolve_latest_fault_run() {
   if [[ -n "$FIXTURE" ]]; then
     [[ -f "$FIXTURE" ]] ||
       { echo "fixture not found: $FIXTURE" >&2; return 2; }
+    # A fixture is ONE run object — read verbatim as "the run the consumer
+    # resolved", feeding the pure decision function directly (this is the shape
+    # the C2/C3/C4 behavioural checks and the branch matrix pin) — or an ARRAY
+    # of run objects newest-first, which exercises the live walk INCLUDING the
+    # #2706 cancellation-gap stop rule.
+    if jq -e 'type == "array"' "$FIXTURE" >/dev/null; then
+      local n i row status conclusion sha db_id
+      n="$(jq 'length' "$FIXTURE")"
+      for ((i = 0; i < n; i++)); do
+        row="$(jq -c ".[$i]" "$FIXTURE")"
+        status="$(jq -r '.status // ""' <<<"$row")"
+        conclusion="$(jq -r '.jobConclusion // ""' <<<"$row")"
+        sha="$(jq -r '.headSha // ""' <<<"$row")"
+        db_id="$(jq -r '(.databaseId // "") | tostring' <<<"$row")"
+        if fault_verdict_stops_walk "$conclusion"; then
+          printf '%s\t%s\t%s\t%s\n' "$status" "$conclusion" "$sha" "$db_id"
+          return 0
+        fi
+        if [[ "$conclusion" == "cancelled" ]]; then
+          note_cancelled_gap "$db_id"
+        else
+          note_no_verdict_run "$db_id" "$conclusion"
+        fi
+      done
+      note_no_verdict_in_window
+      printf '%s\t%s\t%s\t%s\n' "completed" "" "" ""
+      return 0
+    fi
     jq -r '[(.status // ""), (.jobConclusion // ""), (.headSha // ""), ((.databaseId // "") | tostring)] | @tsv' \
       "$FIXTURE"
     return 0
@@ -354,8 +520,10 @@ resolve_latest_fault_run() {
   }
 
   # Pull recent runs. Walk newest→oldest and pick the FIRST whose fault-verdict
-  # job exists (i.e. it was not guard-skipped). Guard-skipped runs only have the
-  # cheap "Guard" job, so the fault suite never ran — those are not a signal.
+  # job produced a real terminal verdict (fault_verdict_stops_walk): a
+  # guard-skipped run never ran the suite, and a cancelled journey job is a
+  # verdict GAP (#2706) — neither is a signal, so the walk steps past them to
+  # the newest run that actually produced one.
   local runs
   runs="$(env -u GH_REPO -u GH_HOST gh run list --repo "$repo" --workflow="$WORKFLOW" --limit 15 \
     --json databaseId,headSha,status,conclusion,createdAt 2>/dev/null)" || {
@@ -378,14 +546,20 @@ resolve_latest_fault_run() {
       'first(.jobs[] | select(.name | test($needle)) | .conclusion) // ""' \
       <<<"$jobs")"
 
-    if [[ -n "$job_conclusion" ]]; then
+    if fault_verdict_stops_walk "$job_conclusion"; then
       printf '%s\t%s\t%s\t%s\n' "$status" "$job_conclusion" "$sha" "$id"
       return 0
     fi
-    # else: fault-verdict job did not run in this run (guard-skipped) → keep looking.
+    if [[ "$job_conclusion" == "cancelled" ]]; then
+      note_cancelled_gap "$id"
+    else
+      note_no_verdict_run "$id" "$job_conclusion"
+    fi
   done
 
-  # No run in the window actually ran the fault-verdict job.
+  # No run in the window actually ran the fault-verdict job, or every one that
+  # did was cancelled (gap notes above) — no verdict signal anywhere.
+  note_no_verdict_in_window
   printf '%s\t%s\t%s\t%s\n' "completed" "" "" ""
   return 0
 }

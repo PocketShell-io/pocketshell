@@ -92,6 +92,18 @@ concurrency:
   # only a PR's final head can merge, so cancelling its own earlier heads
   # leaves nothing unvalidated. Dispatch joins the push/ref group and no
   # longer cancels or gets cancelled either (the 2026-09-06 pitfall shape).
+  #
+  # RESIDUAL EXPOSURE, audited in #2706: none of the above stops an OUT-OF-BAND
+  # run-level cancellation — a manual or API cancel of the whole run kills
+  # every job in it, and GitHub has no workflow-level opt-out (job-level
+  # `if: !cancelled()` guards only job-dependency cancels). That is what killed
+  # this lane's fault-verdict job on release/v0.5.4 (run 34402741674: cancelled
+  # ~8.5 min after an unrelated portfwd Docker-lane failure in the same run).
+  # The consumer side carries the isolation instead:
+  # scripts/check-nightly-fault-run.sh treats a cancelled journey job as a
+  # verdict GAP — it walks back to the newest run with a real terminal verdict
+  # (so a verdict-less cancel cannot erase a covering green) and prints a NOTE
+  # per skipped run; only `success` on a run covering the release HEAD passes.
   group: ${{ github.event_name == 'schedule' && format('{0}-sched', github.workflow) || format('{0}-{1}', github.workflow, github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref)) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

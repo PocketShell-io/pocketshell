@@ -72,12 +72,21 @@ schema 21.
 
 `scripts/release-emulator-validation.sh` runs
 `scripts/check-nightly-fault-run.sh` as its first required step. That guard
-reads the `Fault-injection safety verdict` job of the latest
-`Nightly Extensive Tests` run — the toxiproxy network-fault proofs plus the
-bootstrap setup-scenario matrix, with the flaky journey suite and the #822
-expected-fail lane excluded. It BLOCKS when that verdict is red, cancelled,
-stale (the run tested a line that does not contain the release HEAD), or
-missing.
+reads the `app2 journey suite` job of the latest `app2` workflow run — the
+lane the rewrite moved the toxiproxy network-fault proofs plus the bootstrap
+coverage into, where the job's own conclusion IS the fault verdict (#2474:
+one unfiltered instrumentation pass, no phases to combine). It BLOCKS when
+that verdict is red, cancelled, stale (the run tested a line that does not
+contain the release HEAD), or missing.
+
+A `cancelled` verdict is a **gap, not a red** (#2706): a run-level
+cancellation (a manual or API cancel of the whole run — no workflow
+configuration can shield a job from one) kills the journey job mid-flight,
+so the suite neither passed nor failed. The guard steps past such runs to
+the newest run that produced a real verdict — so a cancel cannot erase an
+older covering green — and prints a `NOTE (#2706)` line for every gap so the
+release state shows it explicitly. It never reads a gap as a pass: if no run
+in the window carries a verdict, the gate blocks and says so.
 
 **Nothing you can put in the environment changes that verdict.** No
 environment variable, no `workflow_dispatch` input, no "deliberately waived
@@ -106,18 +115,20 @@ yourself wanting to, that is the signal to read the two options below instead.
 When the guard blocks, there are exactly two ways forward:
 
 1. **Fix the failing test or journey**, re-run
-   `Nightly Extensive Tests` (`workflow_dispatch`, `force_run=true`) on the
-   release commit, and re-run the release gate once the fault-verdict job is
-   green.
+   the `app2` workflow (`workflow_dispatch`) on the release commit —
+   workflow_dispatch fail-opens every lane, so the dispatched run always
+   carries the journey job — and re-run the release gate once
+   `app2 journey suite` is green.
 2. **Quarantine the offending test/journey class** through the existing
    D36(4) flake mechanism — auto-filed issue, moved into the non-blocking
    lane, 2-week expiry — so the verdict covers a genuinely smaller but still
    real suite. Quarantine is a recorded, expiring narrowing of *what* the
    gate checks; it is never a skip of the whole verdict.
 
-"Nightly Extensive is broken by infra" is not a third option: a missing
-verdict means there is no safety signal to release on, so re-run the nightly
-until there is one. If a release is blocked for longer than that is
+"The app2 journey lane is broken by infra" is not a third option: a missing
+verdict (including one erased by a run-level cancellation, #2706) means
+there is no safety signal to release on, so re-run the workflow until there
+is one. If a release is blocked for longer than that is
 tolerable, the fix belongs in #1671 (make the fault gate reliably green),
 not in a new escape hatch.
 
