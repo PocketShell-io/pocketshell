@@ -244,7 +244,7 @@ class J03AttachAndTypeJourney {
         // a tap to the contiguous non-empty row, so selecting an `echo marker`
         // command would also include the shell's `echo ` prefix.
         typeLine("printf '\\n%s\\n' '$COPY_MARKER'")
-        awaitTranscript("the copy-selection marker") { it.contains(COPY_MARKER) }
+        awaitRenderedMarkerRow("the copy-selection marker", COPY_MARKER)
         copyNativeSelection(COPY_MARKER)
         capture("03-copy-selection")
     }
@@ -568,6 +568,77 @@ class J03AttachAndTypeJourney {
                 "The host's own aplexer capture says:\n" + capturePane() + "\n" +
                 "Screenshot: ${shot.absolutePath}" + compose.idleWedgeNote(),
         )
+    }
+
+    /**
+     * Waits until [marker] stands on the screen the way [copyNativeSelection]
+     * needs it: a rendered row trimming to exactly [marker] with the row ABOVE
+     * it blank — i.e. the command's OUTPUT, never its echo (#2695).
+     *
+     * The wait this replaced (`awaitTranscript { it.contains(marker) }`) was
+     * satisfiable by the shell's echo of the typed command line itself: the
+     * echoed `printf '\n<marker>\n'` squashes to a string CONTAINING the
+     * marker, so on hosted latency the wait returned before the command's
+     * output row had rendered, and [copyNativeSelection]'s then-unretried row
+     * scan threw `copy marker is absent from the rendered rows` (twice on run
+     * 34914078744). This predicate cannot be satisfied by echoed input, at any
+     * viewport width:
+     *
+     *  - the echo is a single line of text with no blank line inside it (the
+     *    `\n`s in the typed command are two-character escapes, not newlines),
+     *    and a wrap only splits it into full-width fragments, each still
+     *    preceded by non-blank text — so no echoed row has a blank row above it;
+     *  - the output IS `\n` then the marker — a blank row, then the marker on
+     *    a row of its own — so only the command's real output can match.
+     *
+     * And because the predicate reads the same rows [copyNativeSelection]
+     * scans (the visible screen, on the main thread), the single wait provides
+     * the scan's guarantee and the scan cannot race: when this returns, the
+     * row it looks for is already rendered, and nothing is typed or run before
+     * the scan — the only bytes still in flight are the marker's trailing
+     * newline and the next prompt, which scroll rows up one, not off the
+     * screen.
+     */
+    private fun awaitRenderedMarkerRow(what: String, marker: String) {
+        val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
+        var rows = emptyList<String>()
+        while (SystemClock.elapsedRealtime() < deadline) {
+            compose.awaitIdle("marker output-row poll: $what")
+            rows = renderedRows()
+            if (rows.withIndex().any { (index, row) ->
+                    index > 0 && row.trim() == marker && rows[index - 1].trim().isEmpty()
+                }
+            ) {
+                return
+            }
+            SystemClock.sleep(POLL_MS)
+        }
+        val shot = capture("failure-${what.replace(' ', '-')}")
+        throw AssertionError(
+            "the terminal never rendered $what as its own output row (blank row above) " +
+                "within ${TIMEOUT_MS}ms.\n" +
+                "Rendered rows were:\n" + rows.joinToString("\n") { "|$it|" } + "\n" +
+                "Screen state: ${safeScreenDiagnosis()}\n" +
+                "Screenshot: ${shot.absolutePath}" + compose.idleWedgeNote(),
+        )
+    }
+
+    /**
+     * The visible screen's rows, read exactly the way [copyNativeSelection]
+     * reads them: on the main thread, straight off the live emulator, one row
+     * at a time. Empty while the view has not created its emulator yet.
+     */
+    private fun renderedRows(): List<String> {
+        var rows = emptyList<String>()
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val emulator = terminalView()?.mEmulator
+            if (emulator != null) {
+                rows = (0 until emulator.mRows).map { row ->
+                    emulator.screen.getSelectedText(0, row, emulator.mColumns, row).orEmpty()
+                }
+            }
+        }
+        return rows
     }
 
     /**
