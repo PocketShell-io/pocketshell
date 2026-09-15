@@ -96,6 +96,10 @@ import org.junit.runner.RunWith
  *
  * The oracle is the host: the three files must exist under the attachment
  * directory with their full byte counts, over an INDEPENDENT SSH connection.
+ * The payload stem is run-unique (#2694), so the oracle counts only THIS
+ * run's uploads — a previous run's leftovers cannot inflate the count — and
+ * the journey removes its own payloads in `finally`, so back-to-back local
+ * runs both pass on a shared fixture.
  *
  * Bring the fixture up before running:
  * `docker compose -f tests/docker/docker-compose.yml up -d --build agents network-fault-proxy`
@@ -113,6 +117,15 @@ class J20ComposerUploadProgressJourney {
         .around(compose)
 
     private var hostId: Long = 0
+
+    /**
+     * Run-unique payload stem (#2694). The host-side oracle's glob and the
+     * teardown cleanup both key on this, so a previous run's payloads left on
+     * the fixture are never counted (or deleted) by this run — back-to-back
+     * local runs both pass. Base-36 milliseconds survive the stager's
+     * file-name sanitiser (letters and digits only) unchanged.
+     */
+    private val runPayloadStem = "$PAYLOAD_STEM-${System.currentTimeMillis().toString(36)}"
 
     private val proxy = ToxiproxyControl()
 
@@ -213,7 +226,7 @@ class J20ComposerUploadProgressJourney {
             // The host really has the bytes: three files, full sizes, independent
             // SSH connection (not through the throttled proxy).
             val onHost = AgentsFixture.exec(
-                "cat \$(find ~/.pocketshell/attachments -name '*$PAYLOAD_STEM*' 2>/dev/null) | wc -c",
+                "cat \$(find ~/.pocketshell/attachments -name '*${runPayloadStem}*' 2>/dev/null) | wc -c",
             ).trim()
             assertEquals(
                 "the host must hold all three uploaded payloads in full",
@@ -222,6 +235,7 @@ class J20ComposerUploadProgressJourney {
             )
         } finally {
             deletePicks(picks)
+            deleteRunPayloads()
         }
     }
 
@@ -248,7 +262,7 @@ class J20ComposerUploadProgressJourney {
         val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
         return List(FILE_COUNT) { n ->
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, "$PAYLOAD_STEM-$n.bin")
+                put(MediaStore.Downloads.DISPLAY_NAME, "$runPayloadStem-$n.bin")
                 put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
                 put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             }
@@ -265,6 +279,18 @@ class J20ComposerUploadProgressJourney {
     private fun deletePicks(picks: List<Uri>) {
         val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
         picks.forEach { uri -> runCatching { resolver.delete(uri, null, null) } }
+    }
+
+    /**
+     * The uploads live on the fixture host; give them back when the test is
+     * done so the next run starts clean (#2694). Best effort: the run-unique
+     * stem already keeps a leftover from poisoning the next run's oracle, and
+     * a cleanup failure must not mask the journey's own result.
+     */
+    private fun deleteRunPayloads() {
+        runCatching {
+            AgentsFixture.exec("find ~/.pocketshell/attachments -name '*${runPayloadStem}*' -delete")
+        }.onFailure { println("J20_PAYLOAD_CLEANUP_FAILED $runPayloadStem: $it") }
     }
 
     /** The intent shape `OpenMultipleDocuments.parseResult` turns into URIs. */
@@ -439,6 +465,7 @@ class J20ComposerUploadProgressJourney {
 
         const val FILE_COUNT = 3
         const val PAYLOAD_BYTES = 4 * 1024 * 1024
+        /** Base of the per-run [runPayloadStem]; the journey's payload mark. */
         const val PAYLOAD_STEM = "j20-payload"
 
         /** Mirrors [ToxiproxyControl.PROXY_NAME] (private there). */
