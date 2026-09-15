@@ -3,9 +3,9 @@ package com.pocketshell.next.diagnostics
 import android.content.Context
 import androidx.annotation.VisibleForTesting
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
@@ -33,24 +33,19 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * ## Off-main store build + sequence seed (ported from old app issue #1124)
  *
- * The store build + `lastSequence()` seed runs on the injected IO dispatcher
- * via an eager [async], not on the constructing thread — constructing this
- * class during `App.onCreate` Hilt injection must never block Main on an
- * unbounded JSONL read. The [sequence] counter is seeded when that warm-up
- * completes, and every command is processed only after the seed lands, so no
- * event can be numbered before it.
+ * The store build + `lastSequence()` seed runs on [Dispatchers.IO] via an eager
+ * [async], not on the constructing thread — constructing this class during
+ * `App.onCreate` Hilt injection must never block Main on an unbounded JSONL
+ * read. The [sequence] counter is seeded when that warm-up completes, and
+ * every command is processed only after the seed lands, so no event can be
+ * numbered before it.
  */
 class DiagnosticRecorder(
     private val context: Context,
-    // Every launch and every export/read hop runs on this. Required, no
-    // default, per the rewrite plan's DI rule (#2681): a test substitutes a
-    // deterministic dispatcher, or the real Dispatchers.IO when the assertion
-    // is about physical thread identity (OffMainTest).
-    private val ioDispatcher: CoroutineDispatcher,
 ) : DiagnosticEventSink {
     private val clock: Clock = Clock.systemUTC()
     private val sequence = AtomicLong(0L)
-    private val scope = CoroutineScope(SupervisorJob() + ioDispatcher)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val commands = Channel<RecorderCommand>(capacity = RECORDER_BUFFER_CAPACITY)
 
     @Volatile
@@ -125,14 +120,14 @@ class DiagnosticRecorder(
 
     suspend fun exportSnapshot(filter: DiagnosticEventFilter = DiagnosticEventFilter.All): File? {
         flush()
-        return withContext(ioDispatcher) {
+        return withContext(Dispatchers.IO) {
             storeDeferred.await().exportSnapshot(deviceLabel(), appVersionLabel(), filter)
         }
     }
 
     suspend fun readEvents(filter: DiagnosticEventFilter = DiagnosticEventFilter.All): List<DiagnosticsEvent> {
         flush()
-        return withContext(ioDispatcher) {
+        return withContext(Dispatchers.IO) {
             storeDeferred.await().readEvents(filter)
         }
     }

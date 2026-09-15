@@ -70,7 +70,7 @@ class WhisperSpeechRecognitionProviderTest {
             .setTransactionExecutor(Runnable::run)
             .allowMainThreadQueries()
             .build()
-        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao(), Dispatchers.Unconfined)
+        store = PendingTranscriptionStore(context, db.pendingTranscriptionDao())
         File(context.filesDir, PendingTranscriptionStore.VOICE_PENDING_DIR).deleteRecursively()
     }
 

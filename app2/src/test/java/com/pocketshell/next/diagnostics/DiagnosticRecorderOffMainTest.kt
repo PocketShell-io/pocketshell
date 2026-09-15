@@ -2,7 +2,6 @@ package com.pocketshell.next.diagnostics
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -29,10 +28,8 @@ import java.time.Instant
  * `lastSequence()` read runs on a thread OTHER than the constructing (Main)
  * thread. On a naive `<init>`-seeded implementation the read happens on the
  * constructing thread (RED); with the off-main eager-`async` build it runs on
- * the recorder's injected IO dispatcher (GREEN, and the behaviour this app2
- * port ships). These tests deliberately inject the REAL `Dispatchers.IO`
- * (#2681): the assertion here is about physical thread identity, which a
- * deterministic test dispatcher would collapse onto the constructing thread.
+ * the recorder's `Dispatchers.IO` scope (GREEN, and the behaviour this app2
+ * port ships).
  *
  * Class coverage (G2): the off-main move must NOT regress the recorder's
  * monotonic-sequence contract — events recorded after a process restart (a
@@ -62,7 +59,7 @@ class DiagnosticRecorderOffMainTest {
     fun `lastSequence read does not run on the constructing thread`() {
         val constructingThread = Thread.currentThread().name
 
-        val recorder = DiagnosticRecorder(context, Dispatchers.IO)
+        val recorder = DiagnosticRecorder(context)
         val readThread = recorder.awaitLastSequenceReadThreadNameForTest()
 
         assertNotEquals(
@@ -99,7 +96,7 @@ class DiagnosticRecorderOffMainTest {
         )
 
         // A fresh instance simulates a cold relaunch over the existing file.
-        val recorder = DiagnosticRecorder(context, Dispatchers.IO)
+        val recorder = DiagnosticRecorder(context)
         recorder.record("app", "after_restart")
 
         val events = recorder.readEvents()
@@ -118,7 +115,7 @@ class DiagnosticRecorderOffMainTest {
      */
     @Test
     fun `sequence starts at one on a fresh install after off-main seed`() = runTest {
-        val recorder = DiagnosticRecorder(context, Dispatchers.IO)
+        val recorder = DiagnosticRecorder(context)
         recorder.record("app", "created")
         recorder.record("app", "foreground")
 

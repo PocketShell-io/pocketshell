@@ -7,12 +7,11 @@ import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.transport.ConnectResult
 import com.pocketshell.core.transport.SftpChannel
 import com.pocketshell.next.connect.ConnectionsRegistry
-import com.pocketshell.next.di.IoDispatcher
 import com.pocketshell.next.nav.Destination
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.IOException
 import javax.inject.Inject
-import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -156,10 +155,6 @@ class ViewerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val registry: ConnectionsRegistry,
     private val hostDao: HostDao,
-    // The download sink (content-resolver write) hops off the main thread;
-    // injected per the rewrite plan's DI rule (#2681), no default — Hilt
-    // binds it and a test substitutes a deterministic dispatcher.
-    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel() {
 
     private val hostId: Long = requireNotNull(
@@ -432,7 +427,7 @@ class ViewerViewModel @Inject constructor(
         actionJob = viewModelScope.launch {
             val outcome = runCatching {
                 val bytes = sftp().read(path, TransferLimits.MAX_DOWNLOAD_BYTES)
-                withContext(ioDispatcher) { sink(bytes) }
+                withContext(Dispatchers.IO) { sink(bytes) }
                 bytes.size.toLong()
             }
             outcome.fold(

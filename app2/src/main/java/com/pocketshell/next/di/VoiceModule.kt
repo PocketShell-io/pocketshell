@@ -12,8 +12,6 @@ import com.pocketshell.core.voice.OkHttpWhisperClient
 import com.pocketshell.core.voice.PriceCatalogue
 import com.pocketshell.core.voice.WhisperClient
 import com.pocketshell.next.composer.SpeechRecognitionProvider
-import com.pocketshell.next.di.IoDispatcher
-import com.pocketshell.next.di.MainDispatcher
 import com.pocketshell.next.voice.AndroidSpeechRecognitionProvider
 import com.pocketshell.next.voice.ConnectivityObserver
 import com.pocketshell.next.voice.ConnectivityProbe
@@ -30,8 +28,8 @@ import dagger.hilt.components.SingletonComponent
 import java.util.Arrays
 import javax.inject.Qualifier
 import javax.inject.Singleton
-import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 /**
@@ -73,8 +71,7 @@ object VoiceModule {
     fun providePendingTranscriptionStore(
         @ApplicationContext context: Context,
         dao: PendingTranscriptionDao,
-        @IoDispatcher ioDispatcher: CoroutineDispatcher,
-    ): PendingTranscriptionStore = PendingTranscriptionStore(context, dao, ioDispatcher)
+    ): PendingTranscriptionStore = PendingTranscriptionStore(context, dao)
 
     @Provides
     @Singleton
@@ -121,17 +118,16 @@ object VoiceModule {
      * A process-lifetime scope, not a ViewModel's: a Whisper round trip that
      * outlives the screen still has somewhere to land (the queue), and
      * cancelling it mid-upload would leave a row the user has to retry for no
-     * reason. The injected `@MainDispatcher` (`Dispatchers.Main.immediate`,
-     * #2681) because [com.pocketshell.next.composer.SpeechRecognitionListener]
-     * promises main-thread callbacks; the HTTP call itself moves off it
-     * inside [OkHttpWhisperClient].
+     * reason. `Dispatchers.Main.immediate` because
+     * [com.pocketshell.next.composer.SpeechRecognitionListener] promises
+     * main-thread callbacks; the HTTP call itself moves off it inside
+     * [OkHttpWhisperClient].
      */
     @Provides
     @Singleton
     @VoiceScope
-    fun provideVoiceScope(
-        @MainDispatcher mainDispatcher: CoroutineDispatcher,
-    ): CoroutineScope = CoroutineScope(SupervisorJob() + mainDispatcher)
+    fun provideVoiceScope(): CoroutineScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /**
      * Composer mic is Android `SpeechRecognizer` only (#2529). A stored

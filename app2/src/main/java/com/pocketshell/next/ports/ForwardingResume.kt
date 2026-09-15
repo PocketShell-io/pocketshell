@@ -9,7 +9,6 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.dao.SshKeyDao
 import com.pocketshell.next.di.IoDispatcher
-import com.pocketshell.next.di.MainDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -19,6 +18,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -52,11 +52,6 @@ class ForwardingResume @Inject constructor(
     // no default value here: a default-arg `@Inject` constructor generates a
     // second constructor at the bytecode level that Hilt refuses to bind.
     @IoDispatcher ioDispatcher: CoroutineDispatcher,
-    // The lifecycle attach and the start-service hop must run on main; injected
-    // for the same reason (#2681). The scope is off-main, so `immediate` (the
-    // `@MainDispatcher` binding) dispatches identically to the previous
-    // `Dispatchers.Main` literal here.
-    @MainDispatcher private val mainDispatcher: CoroutineDispatcher,
 ) {
     /** Testable start-service seam. Production starts [ForwardService]. */
     internal var startService: (Context) -> Unit = { ForwardService.resume(it) }
@@ -105,7 +100,7 @@ class ForwardingResume @Inject constructor(
             }
         }
         scope.launch {
-            withContext(mainDispatcher) {
+            withContext(Dispatchers.Main) {
                 if (attachObserver) {
                     owner.lifecycle.addObserver(processLifecycleObserver)
                 }
@@ -133,7 +128,7 @@ class ForwardingResume @Inject constructor(
             if (enabled.isEmpty()) return
             val usable = enabled.any { host -> hostHasUsableKey(host.id, host.keyId) }
             if (!usable) return
-            withContext(mainDispatcher) {
+            withContext(Dispatchers.Main) {
                 startService(applicationContext)
             }
         } catch (ce: CancellationException) {

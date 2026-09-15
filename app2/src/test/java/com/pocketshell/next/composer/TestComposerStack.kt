@@ -65,7 +65,7 @@ class TestComposerStack(homeDirectory: String = "/home/testuser") {
     val speech = FakeSpeechRecognitionProvider()
 
     /** Real store over the same in-memory Room DB — same reasoning as [db]. */
-    val pendingTranscriptions = PendingTranscriptionStore(context, db.pendingTranscriptionDao(), Dispatchers.Unconfined)
+    val pendingTranscriptions = PendingTranscriptionStore(context, db.pendingTranscriptionDao())
 
     /** Task P-2: the two seams [PendingTranscriptionDelivery] needs, test-owned. */
     val whisperClientFactory = FakeWhisperClientFactory()

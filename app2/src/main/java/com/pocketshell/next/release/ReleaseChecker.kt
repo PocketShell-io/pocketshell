@@ -1,7 +1,7 @@
 package com.pocketshell.next.release
 
 import android.util.Log
-import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONException
@@ -59,8 +59,7 @@ data class ReleaseHttpResponse(val code: Int, val body: String)
  * installed [android.content.pm.PackageInfo.versionName].
  *
  * `HttpURLConnection` + `org.json` — no OkHttp for this one-shot call. The
- * [http] client is injectable so JVM tests never touch live GitHub; so is the
- * dispatcher the check runs on (rewrite plan's DI rule, #2681).
+ * [http] client is injectable so JVM tests never touch live GitHub.
  *
  * One auto-retry on a transient TLS/network blip; a GitHub 403 (rate-limit)
  * is a returned [ReleaseCheckResult.Failed] and is NOT retried (#1456).
@@ -74,15 +73,9 @@ open class ReleaseChecker(
      * True when the installed APK is the release variant (#2657): the banner
      * must then offer the `-release.apk` asset, since the debug APK is a
      * different applicationId signed with a different key and cannot update
-     * it in place. Default false = debug install = historical behavior.
+     * in place. Default false = debug install = historical behavior.
      */
     private val preferReleaseApk: Boolean = false,
-    // The whole check (fetch + classify + retry backoff) runs inside this
-    // dispatcher. Required with NO default — unlike the test seams above, a
-    // dispatcher is not a seam a caller may reasonably leave out: defaulting
-    // it would leave exactly the hardcoded-Dispatchers literal this issue
-    // (#2681) removes, just relocated.
-    private val ioDispatcher: CoroutineDispatcher,
 ) {
     companion object {
         private const val REPO = "PocketShell-io/pocketshell"
@@ -94,7 +87,7 @@ open class ReleaseChecker(
     }
 
     open suspend fun checkForUpdate(currentVersion: String): ReleaseCheckResult =
-        withContext(ioDispatcher) {
+        withContext(Dispatchers.IO) {
             try {
                 fetchRelease(currentVersion)
             } catch (e: Exception) {

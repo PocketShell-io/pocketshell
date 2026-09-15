@@ -333,25 +333,22 @@ object AppModule {
     /**
      * A `@Singleton` provided here (like [provideGraceCoordinator]) rather than
      * `@Inject`-constructor-annotated, so [DiagnosticRecorder] keeps a plain
-     * `(Context, CoroutineDispatcher)` constructor a test can build directly
-     * without a Hilt graph — see `DiagnosticRecorderOffMainTest`/
-     * `DiagnosticRecorderTest`. A second instance would mean a second
-     * off-main JSONL store build and a second, independently-seeded sequence
-     * counter, so sharing this one instance is load-bearing.
+     * `(Context)` constructor a test can build directly without a Hilt graph —
+     * see `DiagnosticRecorderOffMainTest`/`DiagnosticRecorderTest`. A second
+     * instance would mean a second off-main JSONL store build and a second,
+     * independently-seeded sequence counter, so sharing this one instance is
+     * load-bearing.
      */
     @Provides
     @Singleton
-    fun provideDiagnosticRecorder(
-        @ApplicationContext context: Context,
-        @IoDispatcher ioDispatcher: CoroutineDispatcher,
-    ): DiagnosticRecorder = DiagnosticRecorder(context, ioDispatcher)
+    fun provideDiagnosticRecorder(@ApplicationContext context: Context): DiagnosticRecorder =
+        DiagnosticRecorder(context)
 
     // -------------------------------------------------------------------------
     // GitHub Releases update check (issue #2531). Provided rather than
     // `@Inject`-constructor-annotated because [ReleaseChecker] takes defaulted
     // test seams (URL, backoff, HTTP client, zone) that Hilt would try to
-    // bind as missing types. The dispatcher is NOT one of those seams: it is
-    // a required constructor parameter (#2681) and is wired from the graph.
+    // bind as missing types.
 
     /**
      * A release-variant install must be offered the release APK (#2657):
@@ -360,15 +357,9 @@ object AppModule {
      */
     @Provides
     @Singleton
-    fun provideReleaseChecker(
-        @ApplicationContext context: Context,
-        @IoDispatcher ioDispatcher: CoroutineDispatcher,
-    ): ReleaseChecker {
+    fun provideReleaseChecker(@ApplicationContext context: Context): ReleaseChecker {
         val debuggableInstall =
             context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        return ReleaseChecker(
-            preferReleaseApk = !debuggableInstall,
-            ioDispatcher = ioDispatcher,
-        )
+        return ReleaseChecker(preferReleaseApk = !debuggableInstall)
     }
 }
