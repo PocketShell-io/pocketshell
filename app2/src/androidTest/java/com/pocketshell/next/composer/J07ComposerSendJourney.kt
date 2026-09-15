@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -232,6 +233,7 @@ class J07ComposerSendJourney {
      * dropped, draft kept for delivery review.)
      */
     @Test
+    @Ignore("quarantined: #2696, expires 2026-09-29 — toxiproxy link-drop journey FAILED once on the hosted runner (run 34917946411 attempt 1, the only failure, on 31ad3d81e whose tree is byte-identical to green c9148cd7c); the run's rerun was differently-signed — it failed on J03 (the #2695 flake, fixed in 1b7ed288c) while this test PASSED — differently-signed retry is G5 infra per process.md")
     fun aDroppedLinkHoldsTheMessageUntilTheLinkReturns() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
