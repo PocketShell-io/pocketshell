@@ -368,6 +368,90 @@ pocketshell_agents_fixture_wait_healthy() {
   return 1
 }
 
+# --- fixture vintage (issue #2556) -----------------------------------------
+#
+# A lane that talks to a fixture image built BEFORE the checkout under test is
+# the vacuous-green shape: the lane runs honestly, reports green, and proves
+# nothing about host-side behaviour that changed since the image was built —
+# exactly how the #2554 review found the emulator lane structurally unable to
+# observe a host-side liveness fix (the running image predated the change).
+#
+# Since #2643 the fixture's host CLI + aplexer VINTAGE is pinned in
+# tests/docker/fixture-pins.txt, and every fixture Dockerfile COPYs that file
+# to /opt/pocketshell-fixture/pins.txt at BUILD time. So the pins baked into
+# the running container are a precise fingerprint of the checkout the image
+# was built from, and comparing them against THIS checkout's pins is a direct
+# answer to "is the fixture at least as new as the commit under test?".
+# Version strings are never consulted (the 143-commit version trap,
+# AGENTS.md); the pins file is the contract.
+#
+# `docker compose up -d --build` recreates a container whose image changed, so
+# lanes brought up through pocketshell_agents_fixture_up cannot go stale this
+# way — the check exists for every OTHER path a lane can arrive from: a
+# manually started container, a compose invocation without --build, a
+# long-lived shared fixture on 2222 (the exact #2554 specimen), or a pin bump
+# that a running container predates.
+
+# Print the PIN= lines baked into the fixture image backing $port, or nothing
+# when the image predates the pins file (#2643) or docker cannot answer.
+pocketshell_agents_fixture_baked_pins() {
+  local port="${1:-2222}"
+  local container
+  container="$(pocketshell_agents_container_for_port "$port")"
+  _pocketshell_agents_run_without_avd_lock_fd \
+    docker exec "$container" cat /opt/pocketshell-fixture/pins.txt 2>/dev/null \
+    | grep -E '^(POCKETSHELL|APLEXER)_PIN=' | sort || true
+}
+
+# Verify the agents fixture on $port was built from THIS checkout's pins.
+# Returns 0 when they match; returns 1 AND prints a loud, named banner when
+# they do not (or when the container is missing entirely) — a run against a
+# stale fixture must fail before instrumentation, never pass silently.
+pocketshell_agents_assert_fixture_fresh() {
+  local root_dir="$1"
+  local port="${2:-2222}"
+  local pins_file container expected actual
+  pins_file="$root_dir/tests/docker/fixture-pins.txt"
+  container="$(pocketshell_agents_container_for_port "$port")"
+  expected="$(grep -E '^(POCKETSHELL|APLEXER)_PIN=' "$pins_file" 2>/dev/null | sort)"
+  if [[ -z "$expected" ]]; then
+    printf 'FAIL: no PIN lines in %s; the fixture vintage contract is broken.\n' \
+      "$pins_file" >&2
+    return 1
+  fi
+  actual="$(pocketshell_agents_fixture_baked_pins "$port")"
+  if [[ "$actual" == "$expected" ]]; then
+    printf 'agents fixture vintage ok (container %s matches %s)\n' \
+      "$container" "${pins_file#"$root_dir"/}" >&2
+    return 0
+  fi
+  cat >&2 <<BANNER
+=====================================================================
+FAIL: AGENTS FIXTURE STALE — image predates this checkout (issue #2556)
+
+  port        : $port
+  container   : $container
+  checkout pins ($pins_file):
+$expected
+  baked pins  (container /opt/pocketshell-fixture/pins.txt):
+${actual:-  <none — the image predates the #2643 pins file>}
+
+The agents fixture this run would talk to was built from a DIFFERENT
+(notably: older) pins file than the checkout under test, so every
+host-side behaviour changed since that build is INVISIBLE to the run —
+the lane would report green while proving nothing about them (the
+vacuous-green shape of docs/ci-pitfalls.md; found in the #2554 review).
+
+Rebuild the fixture from this checkout, then re-run:
+
+  docker compose -f tests/docker/docker-compose.yml up -d --build agents
+
+(or let a --pool lane claim + rebuild its own fixture).
+=====================================================================
+BANNER
+  return 1
+}
+
 # --- claim enforcement (issue #1842) --------------------------------------
 #
 # The lock makes the claim EXCLUSIVE among lock-taking lanes. It cannot make the

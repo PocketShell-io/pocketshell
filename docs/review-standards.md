@@ -34,6 +34,30 @@ having fired rather than the symptom-defining signal on the real transport.
 The emulator journey remains the batched backstop for anything user-visible
 (rendered viewport, wrong/blank/stale session, IME/layout).
 
+### A fixture-driven journey is not emulator evidence for a host-behaviour change
+
+For any change to behaviour the HOST derives (session liveness/reap/create
+from `a list --json`, listing filters, kill/attach semantics), a journey whose
+host responses are canned cannot validate it — it runs honestly, reports
+green, and proves nothing about the change (the vacuous-green shape in
+`ci-pitfalls.md`; found in the #2554 review, fixed in #2556). Emulator
+evidence for a host-behaviour change must:
+
+- drive the real host CLI + real aplexer (the Docker `agents` fixture ships
+  the pinned PyPI wheel and pinned `a`/`aplexer` release binaries — no
+  session stubs since #2563/#2643), and
+- read its oracle over an INDEPENDENT connection, asserting the host state
+  itself (raw `a --json list`, file/process state), not just the app's
+  re-render of it, and
+- discriminate: the load-bearing assertion must fail when the host change is
+  neutralized and pass when it is restored, demonstrated this run. A journey
+  whose oracle survives the revert has the same defect as no journey.
+
+`scripts/connected-test.sh` refuses to instrument against an agents fixture
+whose baked `fixture-pins.txt` predates the checkout (the #2554 review's
+stale-image specimen), so a lane cannot silently validate against a fixture
+older than the commit under test.
+
 ## Visual / composer / keyboard / layout regressions
 
 Several "fixed + approved + closed" UI issues shipped still broken because

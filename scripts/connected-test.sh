@@ -1197,6 +1197,24 @@ else
   printf 'Running %s as com.pocketshell.app (no suffix)\n' "$CONNECTED_TASK" >&2
 fi
 
+# Issue #2556: refuse to instrument against an agents fixture whose baked
+# pins predate THIS checkout — the vacuous-green shape from the #2554 review
+# (a lane running honestly against a stale image proves nothing about
+# host-side behaviour changed since that build). Pool lanes rebuilt the
+# fixture on claim, so this is normally a cheap exec + diff; it exists for
+# every other path a stale fixture arrives from (manual compose up, the
+# shared 2222 fixture, a pin bump the running container predates). Only
+# checked when docker is available — without docker there is no container
+# fixture to be stale, and the run fails on its own at the SSH probe.
+AGENTS_PORT_FOR_RUN="${POCKETSHELL_AGENTS_PORT:-2222}"
+if command -v docker >/dev/null 2>&1; then
+  if ! pocketshell_agents_assert_fixture_fresh "$ROOT_DIR" "$AGENTS_PORT_FOR_RUN"; then
+    printf 'FAIL: agents fixture on port %s is stale for this checkout; refusing to instrument (issue #2556).\n' \
+      "$AGENTS_PORT_FOR_RUN" >&2
+    exit 1
+  fi
+fi
+
 # Issue #724: thread the claimed (or caller-preset) agents fixture port into the
 # androidTest suite so this run targets THIS lane's own SSH/tmux fixture. The
 # AgentsFixtureTarget helper reads `agentsPort` and defaults to 2222, so a run
