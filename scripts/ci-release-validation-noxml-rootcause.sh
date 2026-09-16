@@ -25,6 +25,20 @@
 # step-summary excerpts, with an explicit pointer at the step whose log holds
 # the authoritative evidence.
 #
+# ISSUE #2716 — THE D37 GUARD TIER. The nightly fault/bootstrap run guard
+# (scripts/release-emulator-validation.sh's check_nightly_fault_run) BLOCKs the
+# chain BEFORE any Gradle work when the app2 journey fault verdict is red /
+# stale / cancelled / missing on the release line — zero tests, no XML, the
+# exact shape this script diagnoses. Its transcript is written to
+# nightly-fault-guard/result.txt (not *.log, so the generic *.log find never
+# collected it), and the signature list below was boot-only, so all three
+# 2026-09-16 guard blocks (runs 35051420588, 35092088955, 35096339243) were
+# mislabelled "No known failure signature found" with the BLOCK line sitting in
+# the very summary.md the pass had collected. The pass now collects the guard
+# transcript and names a guard-tier verdict (which takes precedence over the
+# boot tier: when the guard blocks, the emulator tier is irrelevant — the chain
+# never reached it). A guard block is the gate working as designed, not infra.
+#
 # USAGE
 #   ci-release-validation-noxml-rootcause.sh [--run-id ID] [--failed-log FILE]
 #                                            [--gh PATH]
@@ -60,6 +74,13 @@ done
 # #449 comment in release-emulator-validation.yml documents and the generic
 # process-death line the runner action emits.
 readonly SIGNATURES='Unable to connect to adb daemon|Failed to load snapshot|does not have the requested snapshot|Failed to initialize [0-9]+-[0-9]+ format|No compose hierarchies found|emulator: ERROR|failed with exit code'
+
+# Guard-tier signatures (issue #2716): the D37 verdict lines the nightly
+# fault/bootstrap guard writes into nightly-fault-guard/result.txt and quotes
+# verbatim into summary.md. Each branch of check-nightly-fault-run.sh's
+# evaluate_nightly_fault_run emits a "BLOCK: ..." line; the release wrapper's
+# fail() line and the RED/STALE reasons are the two shapes seen in the wild.
+readonly GUARD_SIGNATURES='nightly fault/bootstrap run guard BLOCKED|safety verdict is RED|is STALE for this release|BLOCK: '
 
 evidence_files=()
 temp_files=()
@@ -112,6 +133,16 @@ collect_disk_evidence() {
     newest="$(find "$root" -name summary.md -type f 2>/dev/null | sort | tail -1)"
   fi
   [[ -n "$newest" ]] && evidence_files+=("$newest")
+  # Issue #2716: the D37 guard's transcript is result.txt, not *.log — the
+  # generic find below never picked it up. Prefer the named run-id dir, else
+  # the newest one on disk.
+  local guard=""
+  if [[ -n "$RUN_ID_ARG" && -f "$root/$RUN_ID_ARG/nightly-fault-guard/result.txt" ]]; then
+    guard="$root/$RUN_ID_ARG/nightly-fault-guard/result.txt"
+  else
+    guard="$(find "$root" -path '*/nightly-fault-guard/result.txt' -type f 2>/dev/null | sort | tail -1)"
+  fi
+  [[ -n "$guard" ]] && evidence_files+=("$guard")
   while IFS= read -r log; do
     evidence_files+=("$log")
   done < <(find "$root" -name '*.log' -type f 2>/dev/null | head -20)
@@ -123,6 +154,11 @@ extract_excerpts() {
   # `echo "::error` lines are the workflow's OWN annotations quoted inside
   # the log — never evidence.
   grep -aE "$SIGNATURES" "$file" 2>/dev/null | grep -av 'echo ::error' | head -12 || true
+}
+
+extract_guard_excerpts() {
+  local file="$1"
+  grep -aE "$GUARD_SIGNATURES" "$file" 2>/dev/null | grep -av 'echo ::error' | head -12 || true
 }
 
 main() {
@@ -141,18 +177,32 @@ main() {
       chain_status_src="$f"
     fi
   done
-  local excerpts=""
+  local guard_excerpts=""
+  local boot_excerpts=""
+  local f
   for f in "${evidence_files[@]:-}"; do
     [[ -n "$f" ]] || continue
     local got
+    got="$(extract_guard_excerpts "$f")"
+    if [[ -n "$got" ]]; then
+      guard_excerpts+="$(printf 'From %s:\n' "$f")$got"$'\n'
+    fi
     got="$(extract_excerpts "$f")"
     if [[ -n "$got" ]]; then
-      excerpts+="$(printf 'From %s:\n' "$f")$got"$'\n'
+      boot_excerpts+="$(printf 'From %s:\n' "$f")$got"$'\n'
     fi
   done
+  # The excerpts actually shown: guard evidence wins (issue #2716) — when the
+  # D37 guard blocked, the chain never reached the emulator/Gradle tiers, so
+  # any boot-tier matches (e.g. a post-mortem `gh --log-failed` fetch that
+  # includes an unrelated failed step) are not why the XML is missing.
+  local excerpts="$guard_excerpts"
+  [[ -n "$excerpts" ]] || excerpts="$boot_excerpts"
 
   local verdict
-  if [[ -n "$excerpts" ]]; then
+  if [[ -n "$guard_excerpts" ]]; then
+    verdict="Release-gate guard BLOCKED (D37) — the nightly fault/bootstrap run guard refused this release because the app2 journey fault-injection verdict is red, stale or missing on the release line. This is the gate working as designed, not an emulator/boot failure: the chain stopped BEFORE any Gradle or journey work, which is exactly why no JUnit XML exists (observed identically on runs 35051420588, 35092088955 and 35096339243, 2026-09-16). The authoritative evidence is nightly-fault-guard/result.txt under this run's build/release-emulator-validation/<run-id>/ directory and the latest 'app2 journey suite' run; the sanctioned ways forward (D37, no override) are fixing or quarantining the failing journey class, or getting a green app2 journey run on the release commit."
+  elif [[ -n "$boot_excerpts" ]]; then
     verdict="Boot-tier failure suspected: the excerpts match the hosted-emulator boot signatures (adb daemon unreachable, snapshot load failure, GL init loss, or the emulator process exiting) recorded on run 34759080447. No JUnit XML exists because no journey ever executed."
   else
     verdict="No known failure signature found in the available evidence. The authoritative source is the failed step's own log — in order: 'Boot-check hosted emulator', 'Run emulator-only release validation', then the Gradle stage logs under build/release-emulator-validation/."
@@ -188,7 +238,9 @@ main() {
   fi
 
   # One bounded, single-line annotation pointing at the full section.
-  if [[ -n "$excerpts" ]]; then
+  if [[ -n "$guard_excerpts" ]]; then
+    echo "::error title=Release validation produced no JUnit XML (issue #2675)::Provisional root cause: the D37 nightly fault/bootstrap guard BLOCKED the release (app2 journey fault verdict red/stale on this line) — zero tests ran by design. See 'Root cause (provisional)' in the run summary and nightly-fault-guard/result.txt."
+  elif [[ -n "$boot_excerpts" ]]; then
     echo "::error title=Release validation produced no JUnit XML (issue #2675)::Provisional root cause: hosted-emulator boot-tier failure. See 'Root cause (provisional)' in the run summary and the failed boot/run step logs for the authoritative error."
   else
     echo "::error title=Release validation produced no JUnit XML (issue #2675)::No known signature found in available evidence; inspect the failed boot/run step logs directly."

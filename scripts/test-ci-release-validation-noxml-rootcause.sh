@@ -70,6 +70,8 @@ echo "$out" | grep -q "Failed to load snapshot" \
   || fail "boot log case must surface the snapshot excerpt: $out"
 echo "$out" | grep -q "Boot-tier failure suspected" \
   || fail "boot log case must name the boot-tier verdict: $out"
+echo "$out" | grep -q "Release-gate guard BLOCKED (D37)" \
+  && fail "boot log case must NOT claim the guard verdict (boot signatures are not guard evidence): $out"
 echo "$out" | grep -q "34759080447" \
   || fail "boot log case must cite the observed run: $out"
 [[ "$(echo "$out" | grep -c "^::error title=Release validation produced no JUnit XML")" -eq 1 ]] \
@@ -127,6 +129,65 @@ echo "$out" | grep -q "gh could not fetch failed-step logs" \
 echo "$out" | grep -q "No known failure signature found" \
   || fail "after a gh failure with no disk evidence, no cause may be claimed: $out"
 pass "failing gh is best-effort: exit 0, collection note, no invented cause"
+
+# -----------------------------------------------------------------------
+# 4b/4c. Issue #2716: the D37 nightly fault/bootstrap guard BLOCKs BEFORE any
+# Gradle work — zero tests, no XML — and its transcript lives in
+# nightly-fault-guard/result.txt (NOT *.log, so the generic find misses it).
+# The diagnosis pass must name the guard verdict as the root cause from local
+# disk evidence alone (the in-run `gh run view --log-failed` fetch of the
+# current run can never succeed — the run is not finalized while its own
+# ledger step executes, which is why runs 35051420588/35092088955/35096339243
+# all said "No known failure signature found" with the BLOCK line sitting in
+# summary.md). Both observed shapes: STALE and RED.
+GUARD_DISK="$SANDBOX/disk-guard/build/release-emulator-validation"
+mkdir -p "$GUARD_DISK/gha-x/nightly-fault-guard"
+cat > "$GUARD_DISK/gha-x/nightly-fault-guard/result.txt" <<'LOG'
+Nightly fault run: workflow=app2.yml id=35047836550 status=completed fault-verdict-job-conclusion=failure headSha=abe00b2b0638d6586c926449f386ad6cd8e71b85
+Release HEAD=43115fb2c09b8b8ede3b8e91bbee3dfed4273086 head_is_ancestor=no
+BLOCK: latest journey run tested headSha=abe00b2b0638d6586c926449f386ad6cd8e71b85 which does NOT contain the release HEAD (43115fb2c09b8b8ede3b8e91bbee3dfed4273086) — the run is STALE for this release. Re-run the 'app2' workflow on the release commit.
+LOG
+printf '# PocketShell Release Emulator Validation\n\nAutomated status: FAIL\n' > "$GUARD_DISK/gha-x/summary.md"
+SUM="$SANDBOX/summary-5b.md"
+out="$(env -u GITHUB_RUN_ID -u GITHUB_REPOSITORY \
+  RELEASE_NOXML_DISK_ROOT="$GUARD_DISK" GITHUB_STEP_SUMMARY="$SUM" \
+  bash "$TARGET" --run-id gha-x --failed-log "$SANDBOX/empty.log" 2>&1)"
+echo "$out" | grep -q "Release-gate guard BLOCKED (D37)" \
+  || fail "guard STALE case must name the D37 guard verdict: $out"
+echo "$out" | grep -q "is STALE for this release" \
+  || fail "guard STALE case must surface the guard's BLOCK excerpt: $out"
+echo "$out" | grep -q "nightly-fault-guard/result.txt" \
+  || fail "guard case must cite the guard transcript path: $out"
+echo "$out" | grep -q "Boot-tier failure suspected" \
+  && fail "guard case must NOT claim a boot-tier cause: $out"
+echo "$out" | grep -q "No known failure signature found" \
+  && fail "guard case must NOT fall through to the unknown-signature verdict: $out"
+[[ "$(echo "$out" | grep -c "^::error title=Release validation produced no JUnit XML")" -eq 1 ]] \
+  || fail "guard case must keep exactly one ::error annotation, got: $out"
+grep -q "Release-gate guard BLOCKED (D37)" "$SUM" \
+  || fail "guard case must carry the verdict into the step summary"
+pass "guard STALE transcript is diagnosed as the D37 guard verdict from disk alone"
+
+# RED verdict shape (run 35096339243, 2026-09-16): same disk layout.
+GUARD_DISK2="$SANDBOX/disk-guard2/build/release-emulator-validation"
+mkdir -p "$GUARD_DISK2/gha-y/nightly-fault-guard"
+cat > "$GUARD_DISK2/gha-y/nightly-fault-guard/result.txt" <<'LOG'
+Nightly fault run: workflow=app2.yml id=35091852693 status=completed fault-verdict-job-conclusion=failure headSha=0b5c0df1db2a971e8ab9ccdb510607be73dff4bc
+Release HEAD=0b5c0df1db2a971e8ab9ccdb510607be73dff4bc head_is_ancestor=yes
+BLOCK: latest nightly fault-injection safety verdict is RED (fault-verdict job conclusion='failure'). The safety suite (toxiproxy network-fault + bootstrap matrix) failed on the release line — fix the failure or re-run before releasing.
+LOG
+printf '# PocketShell Release Emulator Validation\n\nAutomated status: FAIL\n' > "$GUARD_DISK2/gha-y/summary.md"
+SUM="$SANDBOX/summary-5c.md"
+out="$(env -u GITHUB_RUN_ID -u GITHUB_REPOSITORY \
+  RELEASE_NOXML_DISK_ROOT="$GUARD_DISK2" GITHUB_STEP_SUMMARY="$SUM" \
+  bash "$TARGET" --run-id gha-y --failed-log "$SANDBOX/empty.log" 2>&1)"
+echo "$out" | grep -q "Release-gate guard BLOCKED (D37)" \
+  || fail "guard RED case must name the D37 guard verdict: $out"
+echo "$out" | grep -q "safety verdict is RED" \
+  || fail "guard RED case must surface the RED excerpt: $out"
+echo "$out" | grep -q "Boot-tier failure suspected" \
+  && fail "guard RED case must NOT claim a boot-tier cause: $out"
+pass "guard RED transcript is diagnosed as the D37 guard verdict"
 
 # -----------------------------------------------------------------------
 # 5. The validation chain's own summary.md is quoted when present.

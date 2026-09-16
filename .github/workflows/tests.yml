@@ -665,6 +665,18 @@ jobs:
           bash scripts/test-release-validation-provenance.sh --self-test
           bash scripts/test-release-validation-provenance.sh
 
+      # Issues #2675/#2716: the release ledger's no-XML diagnosis pass must
+      # recognise the D37 nightly fault/bootstrap guard BLOCK (red/stale
+      # journey verdict — zero tests run by design) from the guard's own
+      # nightly-fault-guard/result.txt. The in-run `gh run view --log-failed`
+      # fetch of the current run can never succeed (the run is not finalized
+      # while its own ledger step executes), so this local transcript is the
+      # only reliable evidence source — runs 35051420588/35092088955/35096339243
+      # (2026-09-16) all mislabelled a guard block as "No known failure
+      # signature". Also pins boot-tier + anti-vacuous behaviour. (< 2 s)
+      - name: "Release-validation no-XML root-cause guard (issues #2675, #2716)"
+        run: scripts/test-ci-release-validation-noxml-rootcause.sh
+
       # The #2237 stale-dismiss mutation guard was DELETED with its subject
       # (D22). It pinned a unique four-line anchor inside
       # app/src/main/java/com/pocketshell/app/MainActivity.kt's
