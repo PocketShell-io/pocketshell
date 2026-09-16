@@ -25,9 +25,9 @@ def real_destinations():
 class DestinationParsingTests(unittest.TestCase):
     def test_real_graph_count_and_graph_order(self):
         destinations = real_destinations()
-        self.assertEqual(len(destinations), 30)
+        self.assertEqual(len(destinations), 29)
         self.assertEqual([d.name for d in destinations[:5]],
-                         ["Hosts", "Workspaces", "Workspace", "Session", "Files"])
+                         ["Hosts", "Workspaces", "Session", "Files", "FileViewer"])
         self.assertEqual(destinations[-1].name, "WorkspaceRootAction")
 
     def test_every_destination_resolves_its_route_pattern(self):
@@ -65,7 +65,7 @@ class AttributeTests(unittest.TestCase):
                  case("UsageScreenRenders", "usageScreenCollapsed", "usage-screen-collapsed")]
         claimed, unclaimed, inherited = attribute(destinations, cases)
         self.assertEqual([c.method for c in claimed["Ports"]], ["servicesActive"])
-        self.assertEqual([c.method for c in claimed["Workspace"]],
+        self.assertEqual([c.method for c in claimed["Workspaces"]],
                          ["sessionTreeHeaderBackAndUsage"])
         # SessionTree is the workspace detail; it must not cover Session.
         self.assertEqual(claimed["Session"], [])
@@ -125,9 +125,9 @@ class InventoryTests(unittest.TestCase):
     def test_every_real_destination_appears_exactly_once(self):
         self.assertEqual(self.error, "")
         names = [d["name"] for d in self.data["destinations"]]
-        self.assertEqual(len(names), 30)
+        self.assertEqual(len(names), 29)
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(names[:5], ["Hosts", "Workspaces", "Workspace", "Session", "Files"])
+        self.assertEqual(names[:5], ["Hosts", "Workspaces", "Session", "Files", "FileViewer"])
         gaps = [d["name"] for d in self.data["destinations"] if d["gap"]]
         self.assertEqual(self.data["total"] - len(gaps), self.data["covered"])
         self.assertIn("Files", gaps)

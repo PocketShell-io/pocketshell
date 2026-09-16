@@ -25,11 +25,12 @@ NAME = re.compile(r"[A-Z]\w*")
 # name; each entry is proven by the nav wiring in MainActivity, not guessed:
 # - `composable(Destination.Ports.pattern)` renders servicesScreen;
 # - "session tree" is the legacy vocabulary for the workspace detail (the
-#   old tree screen was removed in #2726), so Destination.Tree aliases
-#   Workspace to those words.
+#   old tree screen was removed in #2726); since #2721 removed the separate
+#   Workspace destination, Destination.Tree resolves to Workspaces, so
+#   Workspaces inherits those words.
 ALIASES: dict[str, tuple[str, ...]] = {
     "Ports": ("services",),
-    "Workspace": ("session", "tree"),
+    "Workspaces": ("session", "tree"),
 }
 
 # Destinations rendered by the exact same composable as another destination,
