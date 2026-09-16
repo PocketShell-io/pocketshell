@@ -4,7 +4,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import com.github.takahirom.roborazzi.captureRoboImage
+import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.next.share.ShareHostRow
 import com.pocketshell.next.share.SharePickerScreen
 import com.pocketshell.next.share.ShareUiState
@@ -44,6 +44,12 @@ class ShareScreenRenders {
     // grace catches post-test stragglers), not whichever runTest class is next.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
 
     companion object {
         @JvmStatic
@@ -130,7 +136,7 @@ class ShareScreenRenders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),

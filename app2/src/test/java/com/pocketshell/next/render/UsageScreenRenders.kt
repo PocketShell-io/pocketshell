@@ -7,7 +7,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
-import com.github.takahirom.roborazzi.captureRoboImage
+import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.core.usage.UsageProviderRecord
 import com.pocketshell.core.usage.UsageResetCredit
 import com.pocketshell.core.usage.UsageResetCredits
@@ -56,6 +56,12 @@ class UsageScreenRenders {
     @get:Rule
     val leakGuard = LeakGuard()
 
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
+
     @Test
     fun usageScreenCollapsed() = render("usage-screen-collapsed") {
         screen()
@@ -78,7 +84,7 @@ class UsageScreenRenders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
@@ -194,6 +200,12 @@ class UsageScreen360Renders {
     @get:Rule
     val leakGuard = LeakGuard()
 
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
+
     companion object {
         @JvmStatic
         @get:ClassRule
@@ -211,7 +223,7 @@ class UsageScreen360Renders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(Modifier.fillMaxSize(), color = PocketShellColors.Background) {
                     content()
@@ -232,6 +244,12 @@ class UsageScreen600Renders {
     @get:Rule
     val leakGuard = LeakGuard()
 
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
+
     companion object {
         @JvmStatic
         @get:ClassRule
@@ -250,7 +268,7 @@ class UsageScreen600Renders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(Modifier.fillMaxSize(), color = PocketShellColors.Background) {
                     content()
@@ -270,6 +288,12 @@ class UsageScreenLargeTextRenders {
     // grace catches post-test stragglers), not whichever runTest class is next.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
 
     companion object {
         @JvmStatic
@@ -291,7 +315,7 @@ class UsageScreenLargeTextRenders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(Modifier.fillMaxSize(), color = PocketShellColors.Background) {
                     content()

@@ -7,7 +7,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
-import com.github.takahirom.roborazzi.captureRoboImage
+import androidx.compose.ui.test.junit4.ComposeContentTestRule
+import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.next.hosts.AddEditHostScreen
 import com.pocketshell.next.hosts.HostFormErrors
@@ -37,6 +38,16 @@ class HostScreenRenders360 {
     // grace catches post-test stragglers), not whichever runTest class is next.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
+
+    private fun render(name: String, fontScale: Float = 1f, content: @Composable () -> Unit) {
+        composeRule.render(name, fontScale, content)
+    }
 
     companion object {
         @JvmStatic
@@ -116,6 +127,16 @@ class HostScreenRenders600 {
     // grace catches post-test stragglers), not whichever runTest class is next.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    // Issue #2733: frozen frame clock for record captures — see
+    // [captureFrozenRender]. Without it animated states never let the
+    // Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
+
+    private fun render(name: String, fontScale: Float = 1f, content: @Composable () -> Unit) {
+        composeRule.render(name, fontScale, content)
+    }
 
     companion object {
         @JvmStatic
@@ -204,12 +225,16 @@ private fun hosts(rows: List<HostRow>) {
 private fun key(id: Long, name: String) =
     SshKeyEntity(id = id, name = name, privateKeyPath = "/data/data/ssh-keys/$name")
 
-private fun render(
+// File-level helper shared by the two width classes below; each forwards its
+// own [ComposeTestRule] so the frozen-clock capture (#2733) runs under that
+// class's qualifiers. An extension, so the per-class member forwards resolve
+// here and there is no shadowing recursion.
+private fun ComposeContentTestRule.render(
     name: String,
     fontScale: Float = 1f,
     content: @Composable () -> Unit,
 ) {
-    captureRoboImage("build/renders/$name.png") {
+    captureFrozenRender("build/renders/$name.png") {
         PocketShellTheme {
             val density = LocalDensity.current
             CompositionLocalProvider(
