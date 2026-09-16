@@ -139,8 +139,7 @@ fun HostWorkspacesRoute(
     viewModel: HostWorkspacesViewModel = hiltViewModel(),
     /**
      * Optional so a Robolectric composition with no Hilt graph can still host
-     * the route — the same seam [com.pocketshell.next.tree.SessionTreeRoute]
-     * uses. Production always passes one.
+     * the route. Production always passes one.
      */
     usageGlanceViewModel: UsageGlanceViewModel? = null,
 ) {

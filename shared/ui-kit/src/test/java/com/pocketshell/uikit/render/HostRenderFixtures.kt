@@ -390,9 +390,9 @@ private fun ResumeLastSessionRowFacsimile(sessionName: String) {
 
 /**
  * Issue #2532: session-tree header with a visible Back (top-left) and Usage
- * next to Files/Ports. The real [com.pocketshell.next.tree.SessionTreeScreen]
- * is app-only, so this mirrors its [ScreenHeader] slots with the same
- * ui-kit primitives.
+ * next to Files/Ports. This mirrors the [ScreenHeader] slot layout with the
+ * shared ui-kit primitives (the app2 tree screen itself was removed in
+ * #2726).
  */
 @Composable
 internal fun SessionTreeHeaderBackAndUsageRender() {

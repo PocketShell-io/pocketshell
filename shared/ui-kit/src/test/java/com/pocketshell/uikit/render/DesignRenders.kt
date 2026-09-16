@@ -108,8 +108,8 @@ class DesignRenders {
     /**
      * Issue #2530: desktop-style session tree — `~/git` / `other` roots, folder
      * rows even at 1:1, session leaves with a status dot and no agent badge.
-     * `SessionTreeScreen` is app-module private, so this mirrors the primitives
-     * it composes; the emulator journey is the acceptance.
+     * This renders the shared primitives directly (the app2 tree screen was
+     * removed in #2726); the emulator journey is the acceptance.
      */
     @Test
     fun sessionTree() = render("session-tree") {
@@ -713,8 +713,8 @@ class DesignRenders {
 
     /**
      * Issue #2532: session-tree header with Back top-left and Usage in the
-     * trailing slot next to Files/Ports. The real tree is app-only; this is
-     * the fast JVM check that both words are visible.
+     * trailing slot next to Files/Ports. This is the fast JVM check that both
+     * words are visible.
      */
     @Test
     fun sessionTreeHeaderBackAndUsage() = render("session-tree-header-back-and-usage") {

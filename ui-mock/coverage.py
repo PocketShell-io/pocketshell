@@ -24,8 +24,9 @@ NAME = re.compile(r"[A-Z]\w*")
 # Word aliases for render sources whose screen does not spell the destination
 # name; each entry is proven by the nav wiring in MainActivity, not guessed:
 # - `composable(Destination.Ports.pattern)` renders servicesScreen;
-# - SessionTreeScreen is the workspace detail — "session tree" is the legacy
-#   vocabulary that Destination.Tree was deprecated from.
+# - "session tree" is the legacy vocabulary for the workspace detail (the
+#   old tree screen was removed in #2726), so Destination.Tree aliases
+#   Workspace to those words.
 ALIASES: dict[str, tuple[str, ...]] = {
     "Ports": ("services",),
     "Workspace": ("session", "tree"),

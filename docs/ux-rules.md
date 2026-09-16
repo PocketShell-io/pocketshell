@@ -5,10 +5,11 @@ Codified from the journey-level UX audit in [#163](https://github.com/PocketShel
 Material 3 is the base. Deviations are explicit and justified — never implicit.
 
 The placement and transition rules were first written against the pre-app2
-screen inventory. Current session surfaces are `SessionTreeScreen` and
-`SessionScreen`, backed by host-managed aplexer sessions. The old class names
-in the audit section are retained as historical evidence only; they are not
-supported product routes.
+screen inventory. Current session surfaces are the host workspaces screens
+(`HostWorkspacesScreen` / `WorkspaceScreen`) and `SessionScreen`, backed by
+host-managed aplexer sessions (the old `SessionTreeScreen` was deleted in
+#2726). The old class names in the audit section are retained as historical
+evidence only; they are not supported product routes.
 
 The goal of this doc is not to constrain creativity. It is to keep the headline user journeys (`docs/`-tracked in [#163](https://github.com/PocketShell-io/pocketshell/issues/163) under "Headline user journeys") visually consistent so that one screen's "back" gesture, "primary action", or "sheet open" feels identical to every other.
 

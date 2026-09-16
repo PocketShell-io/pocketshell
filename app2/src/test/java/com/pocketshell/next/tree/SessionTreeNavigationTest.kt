@@ -1,6 +1,10 @@
 package com.pocketshell.next.tree
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -27,9 +31,15 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Issue #2532: the tree and Services seams actually pop / open Usage. Screen
- * tests prove the buttons fire callbacks; this suite proves [AppNavHost]
- * wired those callbacks to `popBackStack` / the host-scoped Usage destination.
+ * Issue #2532: the Workspaces (`Destination.Tree` — the legacy session-tree
+ * name) and Services seams actually pop / open Usage. Screen tests prove the
+ * live quiet screens fire the callbacks ([QuietWorkspaceScreenTest] for the
+ * real ones); this suite proves [AppNavHost] wired those callbacks to
+ * `popBackStack` / the host-scoped Usage destination. The composed screens
+ * are deliberate stand-ins — the unreachable tree screen that used to sit
+ * here was deleted (#2726) — because the wiring under test lives in
+ * [AppNavHost], not in any screen. QuietWorkspaceScreenTest covers the real
+ * screens' callbacks.
  */
 @RunWith(AndroidJUnit4::class)
 class SessionTreeNavigationTest {
@@ -50,8 +60,8 @@ class SessionTreeNavigationTest {
         composeRule.runOnUiThread { nav.navigate(Destination.Tree.route(hostId = 7)) }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag(SESSION_TREE_BACK_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_TREE_BACK_TAG).performClick()
+        composeRule.onNodeWithTag(STAND_IN_BACK_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(STAND_IN_BACK_TAG).performClick()
         composeRule.waitForIdle()
 
         assertEquals(Destination.Hosts.pattern, nav.currentBackStackEntry?.destination?.route)
@@ -60,11 +70,11 @@ class SessionTreeNavigationTest {
 
     @Test
     fun `tree Usage opens the usage panel`() {
-        val nav = setContentWithNav(directHostTools = true)
+        val nav = setContentWithNav()
         composeRule.runOnUiThread { nav.navigate(Destination.Tree.route(hostId = 7)) }
         composeRule.waitForIdle()
 
-        composeRule.onNodeWithTag(SESSION_TREE_USAGE_TAG).performClick()
+        composeRule.onNodeWithTag(STAND_IN_USAGE_TAG).performClick()
         composeRule.waitForIdle()
 
         assertEquals(Destination.HostUsage.pattern, nav.currentBackStackEntry?.destination?.route)
@@ -84,10 +94,16 @@ class SessionTreeNavigationTest {
         composeRule.waitForIdle()
 
         assertEquals(Destination.Tree.pattern, nav.currentBackStackEntry?.destination?.route)
-        composeRule.onNodeWithTag(SESSION_TREE_TAG).assertIsDisplayed()
+        composeRule.onNodeWithText(STAND_IN_WORKSPACES_TEXT).assertIsDisplayed()
     }
 
-    private fun setContentWithNav(directHostTools: Boolean = false): NavHostController {
+    private companion object {
+        const val STAND_IN_WORKSPACES_TEXT = "Workspaces stand-in"
+        const val STAND_IN_BACK_TAG = "nav-test-workspaces-back"
+        const val STAND_IN_USAGE_TAG = "nav-test-workspaces-usage"
+    }
+
+    private fun setContentWithNav(): NavHostController {
         lateinit var controller: NavHostController
         composeRule.setContent {
             controller = rememberNavController()
@@ -96,24 +112,17 @@ class SessionTreeNavigationTest {
                     navController = controller,
                     hostsScreen = { Text("Hosts") },
                     connectViewModel = { stack.viewModel },
-                    workspacesScreen = { _, _, _, _, _, onOpenPorts, onBack, onOpenUsage, _ ->
-                        if (directHostTools) {
-                            SessionTreeHostToolsContent(
-                                onOpenFiles = {},
-                                onOpenPorts = onOpenPorts,
-                                onOpenUsage = onOpenUsage,
-                                onDismiss = {},
-                            )
-                        } else {
-                            SessionTreeScreen(
-                                state = SessionTreeUiState(hostId = 7, loaded = true),
-                                onRefresh = {},
-                                onOpenSession = {},
-                                onOpenFiles = {},
-                                onOpenPorts = onOpenPorts,
-                                onBack = onBack,
-                                onOpenUsage = onOpenUsage,
-                            )
+                    workspacesScreen = { _, _, _, _, _, _, onBack, onOpenUsage, _ ->
+                        Column {
+                            Text(STAND_IN_WORKSPACES_TEXT)
+                            Button(
+                                onClick = onBack,
+                                modifier = Modifier.testTag(STAND_IN_BACK_TAG),
+                            ) { Text("Back") }
+                            Button(
+                                onClick = onOpenUsage,
+                                modifier = Modifier.testTag(STAND_IN_USAGE_TAG),
+                            ) { Text("Usage") }
                         }
                     },
                     servicesScreen = { onBack, _, _ ->

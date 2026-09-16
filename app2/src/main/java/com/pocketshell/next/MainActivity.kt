@@ -70,7 +70,6 @@ import com.pocketshell.next.settings.WorkspaceRootsRoute
 import com.pocketshell.next.terminal.GraceCoordinator
 import com.pocketshell.next.terminal.LastSessionStore
 import com.pocketshell.next.terminal.SessionRoute
-import com.pocketshell.next.tree.SessionTreeRoute
 import com.pocketshell.next.usage.UsageRoute
 import com.pocketshell.next.workspaces.HostWorkspacesRoute
 import com.pocketshell.next.workspaces.ReorderWorkspacesRoute
@@ -1037,3 +1036,4 @@ fun AppNavHost(
         }
     }
 }
+

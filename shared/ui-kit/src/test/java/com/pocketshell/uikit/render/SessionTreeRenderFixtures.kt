@@ -13,10 +13,11 @@ import com.pocketshell.uikit.theme.PocketShellDensity
 
 /**
  * Issue #2530: the phone session tree as `root → folder → session`, no
- * engine/agent chrome. `SessionTreeScreen` is app-module private, so this
- * mirrors it with the shared ui-kit primitives the screen composes
- * ([ScreenHeader], [SectionHeader], [ListRow], [StatusDot]). Fast first
- * visual check; the emulator journey is the acceptance.
+ * engine/agent chrome. The app2 session-tree screen was removed (#2726) and
+ * its vocabulary lives on in the workspaces screens, so this renders the
+ * shared ui-kit primitives ([ScreenHeader], [SectionHeader], [ListRow],
+ * [StatusDot]) directly. Fast first visual check; the emulator journey is
+ * the acceptance.
  */
 @Composable
 internal fun SessionTreeDesktopStyleRender() {

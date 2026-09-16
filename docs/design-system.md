@@ -6,9 +6,10 @@ of #461 implementation work.
 
 The screen inventory below began before the app2 rewrite. Rows and examples that
 name the retired session route are historical audit input; current product
-session UI is `SessionTreeScreen` plus `SessionScreen`, backed by aplexer. New
-design work must use those current surfaces and the current paths in `app2/` and
-`shared/`.
+session UI is the host workspaces screens (`HostWorkspacesScreen` /
+`WorkspaceScreen`) plus `SessionScreen`, backed by aplexer (the old
+`SessionTreeScreen` was deleted in #2726). New design work must use those
+current surfaces and the current paths in `app2/` and `shared/`.
 
 PocketShell is a Material 3 Compose app with a dark, compact dev-tool dialect.
 The foundation combines Material 3 structure with terminal/productivity cues
@@ -500,7 +501,7 @@ and the `when` dispatch in [`MainActivity.kt`](../app/src/main/java/com/pocketsh
 | File viewer [`FileViewerScreen.kt`](../app/src/main/java/com/pocketshell/app/fileviewer/FileViewerScreen.kt) | `ScreenHeader`, text/image/binary viewer states, share/copy actions. | File chrome is local; action placement can diverge from file explorer. | Shared file header/action row, mono text body, empty/error file state. |
 | File explorer [`FileExplorerScreen.kt`](../app/src/main/java/com/pocketshell/app/fileexplorer/FileExplorerScreen.kt) | `ListRow`, alert dialog, folder/file listing. | Header mirrors file viewer but does not use `ScreenHeader`; file rows need one shared file grammar. | Shared file browser scaffold, `ListRow` file/folder row, path breadcrumb. |
 | Recurring jobs [`RecurringJobsScreen.kt`](../app/src/main/java/com/pocketshell/app/jobs/RecurringJobsScreen.kt) | `Breadcrumb`, `ListRow`, `StatusDot`, `Kebab`, add/edit dialog. | Dialog form and breadcrumb/header pattern differ from other non-terminal screens. | Shared job row, shared form dialog, header decision: `ScreenHeader` or terminal breadcrumb. |
-| Session tree [`SessionTreeScreen.kt`](../app2/src/main/java/com/pocketshell/next/tree/SessionTreeScreen.kt) | Host workspaces, live session rows, agent/shell badges, create-session sheet. | Tree rows and create/error states must keep host truth visible. | Shared tree row, status/agent badge, session-create sheet, and explicit error state. |
+| Session tree (host workspaces) [`HostWorkspacesScreen.kt`](../app2/src/main/java/com/pocketshell/next/workspaces/HostWorkspacesScreen.kt) / [`WorkspaceScreen.kt`](../app2/src/main/java/com/pocketshell/next/workspaces/WorkspaceScreen.kt) | Host workspaces, live session rows, agent/shell badges, create-session sheet. | Tree rows and create/error states must keep host truth visible. | Shared tree row, status/agent badge, session-create sheet, and explicit error state. |
 | Session [`SessionScreen.kt`](../app2/src/main/java/com/pocketshell/next/terminal/SessionScreen.kt) | Terminal viewport, tabs, `KeyBar`, usage badge, status, conversation feed, lifecycle controls. | Terminal chrome and reconnect states must remain consistent with the tree's host session identity. | Terminal shell pattern: breadcrumb, tabs, keybar, composer, overflow menu, and connection status. |
 
 ### Hosted Sheets, Dialogs, And Secondary Surfaces
