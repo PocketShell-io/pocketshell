@@ -52,6 +52,7 @@ import com.termux.view.TerminalView
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.first
 import org.junit.After
@@ -341,7 +342,6 @@ class J03AttachAndTypeJourney {
      * size it settled at. A keyboard arriving mid-measurement must not change
      * the size at all (#887/#2533).
      */
-    @Ignore("quarantined: #2742, expires 2026-09-30 — landscape leg deterministic: 'the phone and the host never agreed on a terminal size within 60000ms (last host pane=133x13)' on the restored tree (batch + i2727e x2, /tmp/i2727-revert-connected-e.log) AND at pre-chain base fef6a0acd (133x12, /tmp/i2727-j03-base-fef6a0acd.log) — pre-existing, test-expectation suspect, not a #2727-revert regression")
     @Test
     fun theRemoteTerminalSizeTracksTheKeyboardAndRotation() {
         openSession()
@@ -557,9 +557,9 @@ class J03AttachAndTypeJourney {
      *
      * Line boundaries matter to anything reading `stty size`, which prints
      * `rows cols` on a line of its own: squashing them would turn `64 90`
-     * followed by the next prompt into one run of digits and letters. The U-5
-     * resize measurements read the same raw text through [sizeLines], on their
-     * own retry loop ([remoteSize]).
+     * followed by the next prompt into one run of digits and letters. The
+     * resize measurements read the same raw text through [freshSizeReply], on
+     * their own retry loop ([remoteSize]).
      */
     private fun awaitRenderedTranscript(what: String, predicate: (String) -> Boolean): String {
         val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
@@ -906,14 +906,27 @@ class J03AttachAndTypeJourney {
             host = current
             pendingMove()
             pendingMove = {}
-            // Counted BEFORE typing so the assertion needs a FRESH reply: two
-            // consecutive measurements can legitimately expect the same
-            // numbers (closing the keyboard restores the size it opened on),
-            // and matching the previous measurement's line would be a green
-            // assertion for a command that never ran.
-            val repliesBefore = sizeLines(renderedTranscript()).size
-            typeLine("stty size")
-            if (awaitSizeReply(current, repliesBefore)) {
+            // The probe carries a RUN-UNIQUE SENTINEL, so the assertion needs
+            // a FRESH reply — a bare `rows cols` line rendered below THIS
+            // attempt's own marker — no matter where the scroll has carried
+            // the previous measurement's line: two consecutive measurements
+            // can legitimately expect the same numbers (closing the keyboard
+            // restores the size it opened on), and matching the previous
+            // measurement's line would be a green assertion for a command
+            // that never ran. The number must be unique across the whole RUN
+            // (hence the monotonic companion counter, not a per-call one):
+            // otherwise every measurement's first attempt would reuse the
+            // same string, and a poll landing before this attempt's echo has
+            // rendered would anchor on the previous measurement's
+            // identically-numbered line — passing a same-size leg on that
+            // leg's stale reply. (#2742: counting the bare size lines that
+            // happen to be on screen starved on a short landscape alt-screen
+            // viewport, where the interleaved host probes scrolled the
+            // previous reply out from under the count exactly as the new one
+            // landed.)
+            val sentinel = "$SIZE_SENTINEL${SIZE_SENTINEL_COUNTER.incrementAndGet()}"
+            typeLine("printf '\\n%s\\n' '$sentinel'; stty size")
+            if (awaitSizeReply(current, sentinel)) {
                 // Printed so a run's own log carries the evidence: a green
                 // assertion that both ends agree says nothing about whether the
                 // number CHANGED.
@@ -933,22 +946,22 @@ class J03AttachAndTypeJourney {
     }
 
     /**
-     * Waits for a FRESH `stty size` reply — one beyond the [repliesBefore]
-     * already on screen — to say [host], giving up as soon as the host's own
-     * pane size stops being [host].
+     * Waits for a FRESH `stty size` reply — a bare `rows cols` line rendered
+     * BELOW [sentinel], the marker this attempt's own probe printed — to say
+     * [host], giving up as soon as the host's own pane size stops being
+     * [host].
      *
      * The early give-up is the point: once the pane has moved, no reply to the
      * command just typed can ever match, so waiting out the clock only turns a
      * recoverable situation into a timeout.
      */
-    private fun awaitSizeReply(host: RemoteSize, repliesBefore: Int): Boolean {
+    private fun awaitSizeReply(host: RemoteSize, sentinel: String): Boolean {
         val expected = "${host.rows} ${host.cols}"
         val deadline = SystemClock.elapsedRealtime() + SIZE_REPLY_TIMEOUT_MS
         var nextHostCheck = SystemClock.elapsedRealtime() + SIZE_SETTLE_MS
         while (SystemClock.elapsedRealtime() < deadline) {
             compose.awaitIdle("stty reply poll")
-            val replies = sizeLines(renderedTranscript())
-            if (replies.size > repliesBefore && replies.last() == expected) return true
+            if (freshSizeReply(sentinel) == expected) return true
             if (SystemClock.elapsedRealtime() >= nextHostCheck) {
                 if (hostPaneSize() != host) return false
                 nextHostCheck = SystemClock.elapsedRealtime() + SIZE_SETTLE_MS
@@ -1010,14 +1023,31 @@ class J03AttachAndTypeJourney {
     }
 
     /**
-     * The `rows cols` lines `stty size` prints, in transcript order.
+     * The last bare `rows cols` line rendered STRICTLY BELOW [sentinel]'s own
+     * output line, or null while the sentinel itself has not rendered yet.
+     *
+     * The sentinel anchors the freshness gate to THIS attempt's typing
+     * (#2742): sentinels are unique across the whole run, so a poll landing
+     * before this attempt's echo has rendered finds no anchor and keeps
+     * polling — it can never anchor on an earlier attempt's line and accept
+     * that attempt's reply. The session lives in the aplexer alt screen,
+     * whose short landscape viewport scrolls the previous reply off the
+     * visible rows, so counting the size lines that happen to be on screen
+     * measures the scroll, not the freshness. Everything below the sentinel
+     * was printed after the probe ran, and only the probe's `stty size` can
+     * print a bare pair there — the interleaved host probes prefix theirs
+     * with `J03HOSTSIZE`.
      *
      * Matched on the RAW transcript: the shell prints the pair on a line of its
      * own, and the whitespace-squashing the other assertions use would run it
      * into the next prompt.
      */
-    private fun sizeLines(text: String): List<String> =
-        text.lines().map { it.trim() }.filter { STTY_SIZE_LINE.matches(it) }
+    private fun freshSizeReply(sentinel: String): String? {
+        val lines = renderedTranscript().lines().map { it.trim() }
+        val anchor = lines.indexOfLast { it.contains(sentinel) }
+        if (anchor < 0) return null
+        return lines.drop(anchor + 1).lastOrNull { STTY_SIZE_LINE.matches(it) }
+    }
 
     /** Raises the soft keyboard on the terminal and waits for the inset to appear. */
     private fun showKeyboard() {
@@ -1266,6 +1296,25 @@ class J03AttachAndTypeJourney {
 
         /** `stty size`'s output: `rows cols`, on a line of its own. */
         val STTY_SIZE_LINE = Regex("""\d{1,4} \d{1,4}""")
+
+        /**
+         * Prefix of the run-unique sentinel the size probes type
+         * (`printf '\n%s\n' 'J03SIZEQ<n>'; stty size`): the freshness gate
+         * accepts only a bare `rows cols` line rendered below the attempt's
+         * own sentinel, so a short alt-screen viewport scrolling the previous
+         * reply away cannot starve it (#2742).
+         *
+         * The number comes from [SIZE_SENTINEL_COUNTER], monotonic across the
+         * WHOLE instrumentation run — a per-measurement counter would reuse
+         * its first number on every measurement's first attempt, and a poll
+         * landing before that echo rendered could anchor on the previous
+         * measurement's identically-numbered line, accepting that line's
+         * stale reply on a same-size measurement.
+         */
+        const val SIZE_SENTINEL = "J03SIZEQ"
+
+        /** Monotonic source of [SIZE_SENTINEL]'s unique suffixes. */
+        private val SIZE_SENTINEL_COUNTER = AtomicInteger()
 
         /**
          * The interrupted command's duration, chosen to be unique in the
