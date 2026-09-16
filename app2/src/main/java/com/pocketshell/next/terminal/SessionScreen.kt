@@ -23,7 +23,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
@@ -65,7 +64,7 @@ import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
-import com.pocketshell.uikit.components.SessionLauncherOverlay
+import com.pocketshell.uikit.components.SessionLauncherBar
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.theme.PocketShellColors
@@ -516,27 +515,23 @@ fun SessionScreen(
                     }
                 }
             }
+        }
 
-            // #2631: the launcher floats INSIDE the terminal slot, so the
-            // terminal keeps the full height of this Box instead of losing a
-            // docked strip to a permanent chip row.
-            if (!sessionEnded) {
-                SessionLauncherOverlay(
-                    onOpenComposer = {
-                        hotkeysOpen = false
-                        composerOpen = true
-                    },
-                    onOpenHotkeys = if (!showCommonKeys || state is SessionUiState.Failed) {
-                        null
-                    } else {
-                        {
-                            composerOpen = false
-                            hotkeysOpen = true
-                        }
-                    },
-                    modifier = Modifier.align(Alignment.BottomEnd),
-                )
-            }
+        if (!sessionEnded) {
+            SessionLauncherBar(
+                onOpenComposer = {
+                    hotkeysOpen = false
+                    composerOpen = true
+                },
+                onOpenHotkeys = if (!showCommonKeys || state is SessionUiState.Failed) {
+                    null
+                } else {
+                    {
+                        composerOpen = false
+                        hotkeysOpen = true
+                    }
+                },
+            )
         }
         }
     }
