@@ -81,8 +81,9 @@ set -euo pipefail
 # A run-level cancellation (a manual or API cancel of the whole run) kills
 # every job in it, and NO workflow-level configuration can shield a job from
 # one: job-level `if: !cancelled()` guards only job-dependency cancels, and
-# app2.yml's concurrency group already exempts schedule/dispatch/push from
-# cancel-in-progress (D40/#2600). What killed the journey job of run
+# app2.yml's concurrency groups are never-cancelled for every event anyway
+# (own schedule group + queue: max, #2736/D40/#2600). What killed the journey
+# job of run
 # 34402741674 (workflow_dispatch on release/v0.5.4 during the v0.5.4 window,
 # ~8.5 min after an unrelated portfwd Docker-lane failure in the same run) was
 # exactly this out-of-band shape. The producer cannot prevent it, so the

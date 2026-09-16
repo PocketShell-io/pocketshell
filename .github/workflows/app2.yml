@@ -73,25 +73,43 @@ on:
 
 concurrency:
   # A scheduled run gets its OWN group and is never cancelled. Without this it
-  # would share `ref-refs/heads/main` with pushes and `cancel-in-progress: true`
-  # would let any push kill the nightly mid-flight — a cadence that silently
-  # does not run is exactly the D37 bypass this cron exists to close, and it
-  # would look green (cancelled, not failed) while doing it. Same split
-  # tests.yml already uses for its own schedule.
+  # would share `ref-refs/heads/main` with pushes, and the nightly would queue
+  # behind (historically, pre-#2736: be cancelled by) ordinary pushes — a
+  # cadence that silently does not run is exactly the D37 bypass this cron
+  # exists to close, and it would look green (cancelled, not failed) while
+  # doing it. Same split tests.yml already uses for its own schedule.
   #
-  # Issue #2593 (decision D40): pushes never cancel and are never cancelled.
+  # Issue #2593 (decision D40), corrected by issue #2736: NOTHING in these
+  # groups is ever cancelled — neither a running run nor a queued one.
   # Cancelling a superseded push run does not just drop redundant work — it
   # drops that commit's ONLY validation: the next push's lane selector diffs
-  # against `github.event.before`, whose TREE already contains the cancelled
-  # commit's changes, so those changes are never selected by any later run
+  # against `github.event.before`, whose TREE already contains the dropped
+  # commit's changes, so those changes are selected by no run ever after
   # (2adafd86d's app2 changes reached main with zero journey execution, read
-  # green, and were covered only by an unrelated later fail-open). With
-  # `cancel-in-progress` false for pushes, every push's run completes and
-  # validates exactly its own diff; back-to-back merges queue heavy runs
-  # serially, which is the accepted cost. PR groups still cancel in-progress:
-  # only a PR's final head can merge, so cancelling its own earlier heads
-  # leaves nothing unvalidated. Dispatch joins the push/ref group and no
-  # longer cancels or gets cancelled either (the 2026-09-06 pitfall shape).
+  # green, and were covered only by an unrelated later fail-open).
+  #
+  # D40's original shape — `cancel-in-progress` false for pushes — protected
+  # only RUNNING runs. GitHub's default concurrency ALSO cancels a group's
+  # PENDING (queued, never-started) run the moment a newer run joins the
+  # group, regardless of `cancel-in-progress`: on 2026-09-16 five never-started
+  # main runs were collapsed within 0-8s of the next run's creation, each with
+  # `"jobs":[]` (#2736) — during a busy merge window EVERY queued run was
+  # collapsed before it started, so merges read green with zero journey
+  # execution: the exact hazard D40 exists to prevent. `queue: max` (GitHub,
+  # 2026-05-07) is the opt-out: up to 100 runs may wait PENDING in the group
+  # and are dispatched first-in-first-out as each finishes, so a queued run is
+  # a delayed validation, never a lost one. Dispatch joins the push/ref group
+  # and queues with it (the 2026-09-06 pitfall shape).
+  #
+  # `cancel-in-progress` is therefore GONE, not merely false: GitHub rejects
+  # `queue: max` + `cancel-in-progress: true` as a workflow validation error,
+  # so the PR-only conditional cannot stay. Consequence (accepted, and the
+  # same trade D40 already made for main): PR heads now QUEUE serially in
+  # their per-PR group instead of superseding each other — the final head's
+  # result arrives later; nothing is validated less.
+  # scripts/check-nightly-workflow.sh pins this shape (queue: max present,
+  # cancel-in-progress unset or literal false) and reddens on a revert to
+  # either the pre-D40 or the D40 form.
   #
   # RESIDUAL EXPOSURE, audited in #2706: none of the above stops an OUT-OF-BAND
   # run-level cancellation — a manual or API cancel of the whole run kills
@@ -105,7 +123,7 @@ concurrency:
   # (so a verdict-less cancel cannot erase a covering green) and prints a NOTE
   # per skipped run; only `success` on a run covering the release HEAD passes.
   group: ${{ github.event_name == 'schedule' && format('{0}-sched', github.workflow) || format('{0}-{1}', github.workflow, github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref)) }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  queue: max
 
 permissions:
   contents: read

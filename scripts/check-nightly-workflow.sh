@@ -28,13 +28,18 @@
 #      workflow_dispatch input can turn the gate off;
 #   6. a SCHEDULED run actually reaches the job — its `if:` excludes only
 #      pull_request, never schedule or workflow_dispatch;
-#   7. a scheduled run is not cancellable — `schedule` gets its own concurrency
-#      group, and cancel-in-progress is PR-only (D40, #2593), an expression
-#      that evaluates false for schedule, push and dispatch. Without this a
-#      push could kill the nightly mid-flight and the cadence would read as
-#      `cancelled`, not `failure`: a bypass by accident, which is precisely
-#      the D37 shape. The pre-D40 `!= 'schedule'` form is pinned out too: it
-#      made push runs cancel each other, dropping a push's only validation.
+#   7. nothing in these groups is ever cancelled. `schedule` gets its own
+#      concurrency group (a push can never join it and kill the nightly
+#      mid-flight; a cancelled cadence would read as `cancelled`, not
+#      `failure`: a bypass by accident, precisely the D37 shape), `queue: max`
+#      keeps queued runs waiting FIFO instead of letting GitHub's default
+#      pending-run collapse drop them (#2736: five never-started main runs
+#      were collapsed within 0-8s of the next run's creation on 2026-09-16),
+#      and `cancel-in-progress` stays unset or literal false — GitHub rejects
+#      `queue: max` + `cancel-in-progress: true` as a workflow validation
+#      error, and the pre-#2736 PR-only form is exactly what let the collapse
+#      happen. The pre-D40 `!= 'schedule'` form is pinned out too: it made
+#      push runs cancel each other, dropping a push's only validation.
 #   8. on.push / on.pull_request do NOT carry paths: / paths-ignore. GitHub's
 #      workflow-level path filter is the #2354 required-check footgun AND has
 #      been observed to suppress this workflow's schedule: cadence entirely
@@ -151,16 +156,24 @@ if journey_if.include?("workflow_dispatch")
   abort "FAIL: #{job_key}'s if: mentions workflow_dispatch (#{journey_if}) — an on-demand cadence run must not be able to skip its own job"
 end
 
-# 7. a scheduled run must not be cancellable by an unrelated push.
+# 7. nothing in these groups is ever cancelled: the scheduled cadence cannot
+#    be killed by an unrelated push (served by the schedule-specific group
+#    below), and a queued run must not be collapsed by the next one (#2736:
+#    GitHub's default concurrency cancels a group's PENDING run when a newer
+#    run joins it, regardless of cancel-in-progress).
 concurrency = document["concurrency"]
 abort "FAIL: #{path} has no concurrency mapping" unless concurrency.is_a?(Hash)
 group = concurrency["group"].to_s
-cancel = concurrency["cancel-in-progress"].to_s
+queue = concurrency["queue"].to_s
+cancel = concurrency["cancel-in-progress"]
 unless group.include?("schedule")
   abort "FAIL: the concurrency group does not special-case schedule (#{group}) — a scheduled run sharing a push's group can be cancelled mid-flight, and a cancelled cadence reads as 'not failed' while proving nothing"
 end
-unless cancel.include?("== 'pull_request'")
-  abort "FAIL: cancel-in-progress is not PR-only (#{cancel}) — D40 pins the PR-only form, which evaluates false for schedule, push and dispatch, so the cadence can never be cancelled mid-flight (see the group check above)"
+unless queue == "max"
+  abort "FAIL: concurrency.queue must be max (got #{queue.inspect}) — GitHub's default concurrency cancels a group's PENDING (never-started) run the moment a newer run joins it, regardless of cancel-in-progress (issue #2736: five queued app2 runs on main were collapsed within seconds of the next run's creation on 2026-09-16, each with zero jobs). queue: max keeps up to 100 runs waiting FIFO so a queued run stays a delayed validation, never a lost one (D40)"
+end
+if cancel && cancel.to_s.strip != "false"
+  abort "FAIL: cancel-in-progress must be unset (or the literal false) alongside queue: max (got #{cancel.to_s}) — GitHub rejects queue: max + cancel-in-progress: true as a workflow validation error, and any conditional form either breaks runs outright or re-arms the #2736 pending-run collapse. Nothing in these groups may be cancelled: the schedule keeps its own group (above) and PR heads queue FIFO instead"
 end
 
 # 9. a schedule/dispatch run fail-opens every lane.
@@ -210,7 +223,7 @@ if events.key?("workflow_call") && !binding_if.include?("github.event_name == 'w
   abort "FAIL: binding-mutations must also run on workflow_call when that trigger exists (got #{binding_if})"
 end
 
-puts "PASS: #{path} is valid YAML, carries the #{cron} cadence, has no workflow-level paths filter, fail-opens every lane on schedule/dispatch, and its #{job_key} job is fail-closed, bypass-free, schedule-reachable and cancellation-safe"
+puts "PASS: #{path} is valid YAML, carries the #{cron} cadence, has no workflow-level paths filter, fail-opens every lane on schedule/dispatch, and its #{job_key} job is fail-closed, bypass-free, schedule-reachable and never-cancelled (own schedule group, queue: max)"
 RUBY
 }
 
@@ -293,14 +306,22 @@ self_test() {
   expect_red "a workflow-input bypass is rejected" "$m" "D37 forbids an off switch"
 
   m="$temp_dir/cancellable.yml"; cp "$valid" "$m"
-  sed -i "s|^  cancel-in-progress: .*$|  cancel-in-progress: true|" "$m"
-  expect_red "a schedule-cancellable lane is rejected" "$m" "cancel-in-progress is not PR-only"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: true" "$m"
+  expect_red "a schedule-cancellable lane is rejected" "$m" "cancel-in-progress must be unset"
 
-  # The exact regression that hit main on 2026-09-12: reverting to the pre-D40
-  # form re-arms push-vs-push cancellation and must keep failing this guard.
+  # The pre-D40 push-cancelling form, and the D40-era PR-only conditional:
+  # both are cancel-in-progress expressions, and any conditional re-arms
+  # either the #2736 pending-run collapse or a workflow validation error.
   m="$temp_dir/pushcancel.yml"; cp "$valid" "$m"
-  sed -i "s|^  cancel-in-progress: .*$|  cancel-in-progress: \${{ github.event_name != 'schedule' }}|" "$m"
-  expect_red "the pre-D40 push-cancelling form is rejected" "$m" "cancel-in-progress is not PR-only"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: \${{ github.event_name != 'schedule' }}" "$m"
+  expect_red "a cancel-in-progress expression is rejected" "$m" "cancel-in-progress must be unset"
+
+  # The exact regression that hit main on 2026-09-16 (#2736): a group without
+  # queue: max lets GitHub's default pending-run collapse drop every queued
+  # run the next one replaces — five never-started main runs died that way.
+  m="$temp_dir/noqueue.yml"; cp "$valid" "$m"
+  sed -i "/^  queue: max$/d" "$m"
+  expect_red "a queue-less group that collapses pending runs is rejected" "$m" "concurrency.queue must be max"
 
   m="$temp_dir/sharedgroup.yml"; cp "$valid" "$m"
   sed -i "s|^  group: .*$|  group: \${{ github.workflow }}-\${{ github.ref }}|" "$m"

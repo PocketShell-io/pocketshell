@@ -456,6 +456,17 @@ What to do:
   mitigations above ("hold the window", "let that run finish") are what a
   solo maintainer does while the mechanism is still cancellable — they are
   habits, not guarantees, and two agents sharing the repo break them.
+- Sequel (2026-09-16, #2736): `cancel-in-progress: false` never protected
+  QUEUED runs. GitHub's default collapses a concurrency group's pending
+  (never-started) run when a newer run joins the group — event-independent,
+  even with cancelling off. Five `app2` push/dispatch runs on `main` died
+  `cancelled` with `"jobs":[]` in one morning this way. Where the D40
+  promise matters, pin `queue: max` (FIFO, up to 100 pending runs, nothing
+  cancelled; PR heads then queue serially — accepted trade). Note that
+  `queue` and `cancel-in-progress: true` are mutually exclusive — GitHub
+  rejects the workflow. `scripts/check-nightly-workflow.sh` check 7 guards
+  the pin for `app2.yml`; `tests.yml` still carries the latent shape
+  (#2739).
 - When reading history, never reconstruct "was change X validated?" from run
   conclusions alone. Find the newest run where X's lane JOB executed
   (`gh run view --json jobs`), and check its head SHA is at or before X...
