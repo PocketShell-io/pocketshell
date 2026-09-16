@@ -4,6 +4,8 @@ import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -41,20 +43,20 @@ import com.pocketshell.next.workspaces.HOST_WORKSPACES_LIST_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_PARTIAL_BANNER_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ROOT_START_SESSION_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ACTIONS_TAG
+import com.pocketshell.next.workspaces.HOST_WORKSPACES_REORDER_TAG
+import com.pocketshell.next.workspaces.HOST_WORKSPACES_SEARCH_TAG
+import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
 import com.pocketshell.next.workspaces.REORDER_WORKSPACES_BACK_TAG
 import com.pocketshell.next.workspaces.REORDER_WORKSPACES_SCREEN_TAG
 import com.pocketshell.next.workspaces.REORDER_WORKSPACES_LIST_TAG
-import com.pocketshell.next.workspaces.HOST_WORKSPACES_SEARCH_TAG
-import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
-import com.pocketshell.next.workspaces.WORKSPACE_ACTIONS_TAG
-import com.pocketshell.next.workspaces.WORKSPACE_REORDER_TAG
-import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.workspaceRootAddTag
 import com.pocketshell.next.workspaces.workspaceRootActionsTag
 import com.pocketshell.next.workspaces.workspaceRootTag
 import com.pocketshell.next.workspaces.workspaceRowTag
 import com.pocketshell.next.workspaces.workspaceSessionRowTag
 import com.pocketshell.next.workspaces.readableSessionName
+import com.pocketshell.uikit.components.SESSION_TAB_STRIP_TAG
+import com.pocketshell.uikit.components.sessionTabTag
 import com.termux.view.TerminalView
 import com.pocketshell.next.tree.CREATE_SESSION_SHEET_TAG
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -363,14 +365,17 @@ class J02SessionTreeListJourney {
         JourneyScreenshots.capture("07-root-create-session", JOURNEY)
     }
 
+    /**
+     * Issue #2721: Reorder lives on the host kebab (and the workspace row's
+     * long-press). With the workspace page gone, the kebab is the door this
+     * journey drives — and the persisted order is re-checked through the same
+     * production navigation.
+     */
     @Test
     fun reorderPageShowsPersistentRootAndWorkspaceControls() {
         openWorkspaces()
 
-        compose.onNodeWithTag(workspaceRowTag(WORKSPACE_MAIN)).performClick()
-        awaitTag(WORKSPACE_SCREEN_TAG)
-        compose.onNodeWithTag(WORKSPACE_ACTIONS_TAG).performClick()
-        compose.onNodeWithTag(WORKSPACE_REORDER_TAG).performClick()
+        openReorderFromHostKebab()
         awaitTag(REORDER_WORKSPACES_SCREEN_TAG)
         awaitTag(REORDER_WORKSPACES_LIST_TAG)
         JourneyScreenshots.capture("08-reorder-workspaces", JOURNEY)
@@ -398,9 +403,9 @@ class J02SessionTreeListJourney {
         JourneyScreenshots.capture("08-reorder-workspaces-after-move", JOURNEY)
 
         compose.onNodeWithTag(REORDER_WORKSPACES_BACK_TAG).performClick()
-        awaitTag(WORKSPACE_SCREEN_TAG)
-        compose.onNodeWithTag(WORKSPACE_ACTIONS_TAG).performClick()
-        compose.onNodeWithTag(WORKSPACE_REORDER_TAG).performClick()
+        awaitTag(HOST_WORKSPACES_TAG)
+        awaitTag(HOST_WORKSPACES_LIST_TAG)
+        openReorderFromHostKebab()
         awaitTag(REORDER_WORKSPACES_SCREEN_TAG)
         awaitTag(REORDER_WORKSPACES_LIST_TAG)
         compose.onNodeWithTag(REORDER_WORKSPACES_LIST_TAG)
@@ -413,6 +418,11 @@ class J02SessionTreeListJourney {
         JourneyScreenshots.capture("08-reorder-workspaces-after-reopen", JOURNEY)
     }
 
+    /**
+     * Issue #2721: a workspace tap lands in its entry TERMINAL, and the tab
+     * strip below the header carries the workspace's siblings — so switching
+     * is one tap, and crossing workspaces is Back then another row.
+     */
     @Test
     fun switchingBetweenLiveSessionsLeavesTheCorrectTerminalVisible() {
         openQuietSessionAndAssert(
@@ -422,23 +432,21 @@ class J02SessionTreeListJourney {
         )
         JourneyScreenshots.capture("09-switch-A", JOURNEY)
 
-        backToWorkspace()
-        openSessionFromCurrentWorkspace(SESSION_OTHER, "J02_VISIBLE_OPENCODE_B")
-        JourneyScreenshots.capture("10-switch-B", JOURNEY)
-
-        backToWorkspace()
-        backToHost()
+        backToHostWorkspaces()
         openWorkspaceAndSession(WORKSPACE_MAIN, SESSION_QUIET, "J02_VISIBLE_CODEX_C")
-        JourneyScreenshots.capture("11-switch-C", JOURNEY)
+        JourneyScreenshots.capture("10-switch-C", JOURNEY)
 
-        backToWorkspace()
-        backToHost()
+        backToHostWorkspaces()
         openWorkspaceAndSession(
             WORKSPACE_APLEXER,
             SESSION_APLEXER,
             "J02_VISIBLE_APLEXER_A_AGAIN",
         )
-        JourneyScreenshots.capture("12-switch-A-again", JOURNEY)
+        JourneyScreenshots.capture("11-switch-A-again", JOURNEY)
+
+        backToHostWorkspaces()
+        openWorkspaceAndSession(WORKSPACE_MAIN, SESSION_ATTACHED, "J02_VISIBLE_CLAUDE_D")
+        JourneyScreenshots.capture("12-switch-D", JOURNEY)
     }
 
     // --- helpers ----------------------------------------------------------
@@ -457,6 +465,13 @@ class J02SessionTreeListJourney {
         }
     }
 
+    /** Host kebab → Reorder workspaces (issue #2721 moved it here). */
+    private fun openReorderFromHostKebab() {
+        compose.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        awaitTag(HOST_WORKSPACES_REORDER_TAG)
+        compose.onNodeWithTag(HOST_WORKSPACES_REORDER_TAG).performClick()
+    }
+
     /** The Quiet list is intentionally roomy; bring lower workspace rows into the viewport. */
     private fun scrollToWorkspace(path: String) {
         compose.onNodeWithTag(HOST_WORKSPACES_LIST_TAG)
@@ -472,34 +487,37 @@ class J02SessionTreeListJourney {
         typeMarker(marker)
     }
 
-    private fun backToWorkspace() {
+    private fun backToHostWorkspaces() {
         compose.onNodeWithTag(SESSION_BACK_TAG).performClick()
-        awaitTag(WORKSPACE_SCREEN_TAG)
-    }
-
-    private fun backToHost() {
-        compose.onNodeWithTag(com.pocketshell.next.workspaces.WORKSPACE_BACK_TAG).performClick()
         awaitTag(HOST_WORKSPACES_TAG)
         awaitTag(HOST_WORKSPACES_LIST_TAG)
     }
 
-    private fun openSessionFromCurrentWorkspace(session: String, marker: String) {
-        awaitTag(com.pocketshell.next.workspaces.WORKSPACE_LIST_TAG)
-        compose.onNodeWithTag(com.pocketshell.next.workspaces.WORKSPACE_LIST_TAG)
-            .performScrollToNode(hasTestTag(sessionRowTag(session)))
-        awaitTag(sessionRowTag(session))
-        compose.onNodeWithTag(sessionRowTag(session)).performClick()
+    /**
+     * Taps a workspace row — which lands in the workspace's ENTRY session —
+     * then selects [session]'s tab on the strip, types a marker, and proves
+     * THAT terminal is the one visible.
+     */
+    private fun openWorkspaceAndSession(workspace: String, session: String, marker: String) {
+        scrollToWorkspace(workspace)
+        compose.onNodeWithTag(workspaceRowTag(workspace)).performClick()
         awaitTag(SESSION_SCREEN_TAG)
+        awaitTag(SESSION_TAB_STRIP_TAG)
+        selectTab(session)
         awaitText(readableSessionName(session))
         awaitRenderedTerminal(session)
         typeMarker(marker)
     }
 
-    private fun openWorkspaceAndSession(workspace: String, session: String, marker: String) {
-        scrollToWorkspace(workspace)
-        compose.onNodeWithTag(workspaceRowTag(workspace)).performClick()
-        awaitTag(WORKSPACE_SCREEN_TAG)
-        openSessionFromCurrentWorkspace(session, marker)
+    /** Selects [session]'s tab unless it is already the selected one. */
+    private fun selectTab(session: String) {
+        val tag = sessionTabTag(session)
+        awaitTag(tag)
+        val isSelected = compose.onNodeWithTag(tag).fetchSemanticsNode()
+            .config.getOrNull(SemanticsProperties.Selected) == true
+        if (!isSelected) {
+            compose.onNodeWithTag(tag).performClick()
+        }
     }
 
     private fun assertWorkspaceOrder(first: String, second: String) {

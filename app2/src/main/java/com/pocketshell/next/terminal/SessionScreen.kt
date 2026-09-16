@@ -124,6 +124,7 @@ fun SessionRoute(
     onBack: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenFiles: () -> Unit = {},
+    onOpenPorts: () -> Unit = {},
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
     workspacePath: String? = null,
@@ -189,6 +190,7 @@ fun SessionRoute(
         usagePillState = usagePillState,
         onOpenUsage = onOpenUsage,
         onOpenFiles = onOpenFiles,
+        onOpenPorts = onOpenPorts,
         onOpenSession = onOpenSession,
         onOpenNewSession = onOpenNewSession,
         sessionSwitcherState = sessionSwitcherState,
@@ -251,6 +253,7 @@ fun SessionScreen(
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
     onOpenFiles: () -> Unit = {},
+    onOpenPorts: () -> Unit = {},
     onResized: (cols: Int, rows: Int) -> Unit,
     usagePillState: UsageGlancePillState? = null,
     onOpenUsage: () -> Unit = {},
@@ -677,6 +680,10 @@ fun SessionScreen(
             onBrowseFiles = {
                 terminalActionsOpen = false
                 onOpenFiles()
+            },
+            onPorts = {
+                terminalActionsOpen = false
+                onOpenPorts()
             },
             onOpenUsage = {
                 terminalActionsOpen = false

@@ -99,6 +99,15 @@ const val HOST_WORKSPACES_CONNECTION_DETAILS_TAG: String = "host-workspaces-conn
 const val HOST_WORKSPACES_REFRESH_TAG: String = "host-workspaces-refresh"
 const val HOST_WORKSPACES_DISCONNECT_TAG: String = "host-workspaces-disconnect"
 
+// Issue #2721: the workspace-row long-press sheet — the management actions
+// that used to live on the (deleted) workspace screen's kebab.
+const val HOST_WORKSPACES_WS_ACTIONS_TAG: String = "host-workspaces-ws-actions"
+const val HOST_WORKSPACES_WS_NEW_SESSION_TAG: String = "host-workspaces-ws-new-session"
+const val HOST_WORKSPACES_WS_BROWSE_TAG: String = "host-workspaces-ws-browse"
+const val HOST_WORKSPACES_WS_COPY_PATH_TAG: String = "host-workspaces-ws-copy-path"
+const val HOST_WORKSPACES_WS_REMOVE_TAG: String = "host-workspaces-ws-remove"
+const val HOST_WORKSPACES_WS_REMOVE_CONFIRM_TAG: String = "host-workspaces-ws-remove-confirm"
+
 fun workspaceRowTag(path: String): String = "workspace-row-$path"
 
 fun workspaceSessionRowTag(name: String): String = "workspace-session-row-$name"
@@ -114,8 +123,12 @@ fun workspaceRootBrowseTag(path: String): String = "workspace-root-browse-$path"
 /** Route-level binding for the real host workspace projection. */
 @Composable
 fun HostWorkspacesRoute(
-    onOpenWorkspace: (String) -> Unit,
-    onStartSessionAtPath: (String) -> Unit = onOpenWorkspace,
+    /**
+     * Opens the workspace's create-sheet screen ([Destination.WorkspaceStart]).
+     * Issue #2721: this is the zero-sessions fallback only — a workspace with
+     * a live session goes straight to its terminal below.
+     */
+    onStartSessionAtPath: (String) -> Unit,
     onOpenReorder: () -> Unit = {},
     onOpenSession: (SessionRow) -> Unit,
     onOpenFiles: () -> Unit,
@@ -161,19 +174,20 @@ fun HostWorkspacesRoute(
     }
     LaunchedEffect(state.openWorkspacePath) {
         val path = viewModel.consumeOpenWorkspace() ?: return@LaunchedEffect
-        // A just-added workspace has no sessions yet, so this deliberately
-        // goes to the workspace screen rather than through the direct entry.
-        onOpenWorkspace(path)
+        // A just-added workspace has no sessions yet, so the tap lands on the
+        // create-sheet screen rather than through the direct entry.
+        onStartSessionAtPath(path)
     }
 
     // Issue #2632 (maintainer follow-up 2026-09-10): "I don't want to have
     // another screen — I want to jump to the last session I opened". A
     // workspace tap therefore resolves to that workspace's own session and
-    // opens the terminal directly; the workspace screen is what a workspace
-    // with NOTHING running still needs, and only that.
+    // opens the terminal directly; issue #2721 finished the job by deleting
+    // the workspace screen: a workspace with NOTHING running opens the
+    // create-sheet screen, never a blank intermediate page.
     val openWorkspaceDirectly: (String) -> Unit = { path ->
         val entry = viewModel.entrySessionFor(path)
-        if (entry != null) onOpenSession(entry) else onOpenWorkspace(path)
+        if (entry != null) onOpenSession(entry) else onStartSessionAtPath(path)
     }
 
     HostWorkspacesScreen(
@@ -198,6 +212,7 @@ fun HostWorkspacesRoute(
         onOpenProjectRoots = onOpenProjectRoots,
         onOpenConnectionDetails = onOpenConnectionDetails,
         onDisconnect = onDisconnect,
+        onRemoveWorkspaceFromList = viewModel::removeWorkspaceFromList,
         onOpenAddWorkspace = viewModel::openAddWorkspace,
         onSearchQueryChange = viewModel::setSearchQuery,
         onAddWorkspacePathChange = viewModel::setAddWorkspacePath,
@@ -258,6 +273,12 @@ fun HostWorkspacesScreen(
     onOpenProjectRoots: () -> Unit = {},
     onOpenConnectionDetails: () -> Unit = {},
     onDisconnect: () -> Unit = {},
+    /**
+     * Issue #2721: removes a workspace from the host's durable list from the
+     * row's long-press sheet. The path is the canonical workspace path; the
+     * second argument fires after the host confirmed the removal.
+     */
+    onRemoveWorkspaceFromList: (String, () -> Unit) -> Unit = { _, onRemoved -> onRemoved() },
     onOpenAddWorkspace: (String) -> Unit = {},
     onSearchQueryChange: (String) -> Unit = {},
     onAddWorkspacePathChange: (String) -> Unit = {},
@@ -277,6 +298,9 @@ fun HostWorkspacesScreen(
     val clipboard = LocalClipboardManager.current
     var activeRootActions by remember { mutableStateOf<WorkspaceRootProjection?>(null) }
     var rootPendingRemoval by remember { mutableStateOf<WorkspaceRootProjection?>(null) }
+    // Issue #2721: the workspace row's long-press target and its confirm pair.
+    var workspaceActionsTarget by remember { mutableStateOf<WorkspaceProjection?>(null) }
+    var workspacePendingRemoval by remember { mutableStateOf<WorkspaceProjection?>(null) }
     var hostToolsVisible by remember { mutableStateOf(false) }
     var connectionDetailsVisible by remember { mutableStateOf(false) }
 
@@ -483,6 +507,9 @@ fun HostWorkspacesScreen(
                             onOpenSession = onOpenSession,
                             onOpenAddWorkspace = onOpenAddWorkspace,
                             onOpenRootActions = { activeRootActions = root },
+                            onLongPressWorkspace = { workspace ->
+                                workspaceActionsTarget = workspace
+                            },
                         )
                     }
                 }
@@ -602,6 +629,57 @@ fun HostWorkspacesScreen(
                 activeRootActions = null
             },
             onDismiss = { activeRootActions = null },
+        )
+    }
+
+    workspaceActionsTarget?.let { workspace ->
+        ModalBottomSheet(
+            onDismissRequest = { workspaceActionsTarget = null },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            shape = PocketShellShapes.large,
+            containerColor = PocketShellColors.Surface,
+            modifier = Modifier.testTag(HOST_WORKSPACES_WS_ACTIONS_TAG),
+        ) {
+            WorkspaceActionsSheetContent(
+                workspace = workspace,
+                onNewSession = {
+                    workspaceActionsTarget = null
+                    onStartSessionAtPath(workspace.path)
+                },
+                onBrowseFiles = {
+                    workspaceActionsTarget = null
+                    onOpenFilesAtPath(workspace.path)
+                },
+                onCopyPath = {
+                    workspaceActionsTarget = null
+                    clipboard.setText(AnnotatedString(workspace.path))
+                },
+                onReorder = {
+                    workspaceActionsTarget = null
+                    onOpenReorder()
+                },
+                onRemove = {
+                    workspaceActionsTarget = null
+                    workspacePendingRemoval = workspace
+                },
+                onDismiss = { workspaceActionsTarget = null },
+            )
+        }
+    }
+
+    workspacePendingRemoval?.let { workspace ->
+        ConfirmDialog(
+            title = "Remove from list?",
+            message = "The folder and its running sessions stay on the host. " +
+                "You can add this workspace again later.",
+            confirmLabel = "Remove from list",
+            destructive = true,
+            onConfirm = {
+                workspacePendingRemoval = null
+                onRemoveWorkspaceFromList(workspace.path) { onRefresh() }
+            },
+            onDismiss = { workspacePendingRemoval = null },
+            confirmTestTag = HOST_WORKSPACES_WS_REMOVE_CONFIRM_TAG,
         )
     }
 
@@ -1000,6 +1078,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemContent(
     onOpenSession: (SessionRow) -> Unit,
     onOpenAddWorkspace: (String) -> Unit,
     onOpenRootActions: () -> Unit,
+    onLongPressWorkspace: (WorkspaceProjection) -> Unit = {},
 ) {
     item(key = "root-header:${root.key}") {
         SectionHeader(
@@ -1064,6 +1143,11 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemContent(
                     )
                 },
                 onClick = { onOpenWorkspace(workspace.path) },
+                // Issue #2721 (design language: long-press = always available
+                // alternate action): the tap opens the workspace's entry
+                // terminal; the long-press opens its management actions, which
+                // no longer have a workspace screen to live on.
+                onLongClick = { onLongPressWorkspace(workspace) },
                 testTag = workspaceRowTag(workspace.path),
             )
         }
@@ -1223,6 +1307,68 @@ internal fun RootActionsSheetContent(
     }
 }
 
+/**
+ * The workspace management actions (issue #2721), separate from the modal
+ * container for deterministic UI tests. These are the actions the deleted
+ * workspace screen used to host on its kebab — they moved to the workspace
+ * row's long-press when that screen went away.
+ */
+@Composable
+internal fun WorkspaceActionsSheetContent(
+    workspace: WorkspaceProjection,
+    onNewSession: () -> Unit,
+    onBrowseFiles: () -> Unit,
+    onCopyPath: () -> Unit,
+    onReorder: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: (() -> Unit)? = null,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 560.dp)
+            .verticalScroll(rememberScrollState())
+            .padding(bottom = PocketShellSpacing.lg),
+    ) {
+        SheetHeader(
+            title = workspace.label,
+            subtitle = "Workspace actions",
+            onClose = onDismiss,
+            modifier = Modifier.padding(horizontal = PocketShellSpacing.lg),
+        )
+        ListRow(
+            title = "New session",
+            subtitle = "Start another terminal here",
+            onClick = onNewSession,
+            modifier = Modifier.testTag(HOST_WORKSPACES_WS_NEW_SESSION_TAG),
+        )
+        ListRow(
+            title = "Browse files",
+            subtitle = "Open this folder in Files",
+            onClick = onBrowseFiles,
+            modifier = Modifier.testTag(HOST_WORKSPACES_WS_BROWSE_TAG),
+        )
+        ListRow(
+            title = "Copy folder path",
+            subtitle = "Copy the canonical remote path",
+            onClick = onCopyPath,
+            modifier = Modifier.testTag(HOST_WORKSPACES_WS_COPY_PATH_TAG),
+        )
+        ListRow(
+            title = "Reorder workspaces",
+            subtitle = "Change the list order",
+            onClick = onReorder,
+            modifier = Modifier.testTag(HOST_WORKSPACES_REORDER_TAG),
+        )
+        ListRow(
+            title = "Remove from list",
+            subtitle = "Keeps the folder and running sessions",
+            onClick = onRemove,
+            modifier = Modifier.testTag(HOST_WORKSPACES_WS_REMOVE_TAG),
+        )
+    }
+}
+
 @Composable
 private fun RootActionRow(
     title: String,
@@ -1275,6 +1421,9 @@ private fun HostToolsSheet(
             item { HostToolRow("Browse host files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
             item { HostToolRow("Services & tunnels", PocketShellIcons.Ports, onOpenPorts, SESSION_TREE_PORTS_TAG) }
             item { HostToolRow("Usage", PocketShellIcons.Chart, onOpenUsage, SESSION_TREE_USAGE_TAG) }
+            // Issue #2721: Reorder is ALSO on the host kebab — with the
+            // workspace screen gone, the long-press sheet is not the only door.
+            item { HostToolRow("Reorder workspaces", PocketShellIcons.Sliders, onReorder, HOST_WORKSPACES_REORDER_TAG) }
             item { HostToolRow("Project roots", PocketShellIcons.Folder, onOpenProjectRoots, HOST_WORKSPACES_PROJECT_ROOTS_TAG) }
             item { HostToolRow("Refresh workspaces", PocketShellIcons.Refresh, onRefresh, HOST_WORKSPACES_REFRESH_TAG) }
             item { HostToolRow("Connection details", PocketShellIcons.Info, onOpenConnectionDetails, HOST_WORKSPACES_CONNECTION_DETAILS_TAG) }

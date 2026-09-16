@@ -104,12 +104,13 @@ class HostWorkspacesDirectEntryTest {
     }
 
     /**
-     * The one case that still needs the workspace screen: nothing is running
-     * there, so there is no terminal to jump to and the user needs the
-     * empty-state / start-a-session surface.
+     * The one case that still needs a workspace-level screen: nothing is
+     * running there, so there is no terminal to jump to. Issue #2721 deleted
+     * the workspace page — the tap lands on the create-sheet screen instead,
+     * never on a blank intermediate page.
      */
     @Test
-    fun `a workspace with no sessions still opens the workspace screen`() {
+    fun `a workspace with no sessions opens the create-sheet screen`() {
         val hostId = seedHost(sessions = EMPTY_SESSIONS)
 
         tapWorkspace(hostId)
@@ -135,8 +136,11 @@ class HostWorkspacesDirectEntryTest {
         composeRule.setContent {
             PocketShellTheme {
                 HostWorkspacesRoute(
-                    onOpenWorkspace = { openedWorkspaces += it },
                     onOpenSession = { openedSessions += it },
+                    // Issue #2721: this is the zero-sessions fallback (the
+                    // WorkspaceStart route); a workspace with a live session
+                    // fires onOpenSession instead.
+                    onStartSessionAtPath = { openedWorkspaces += it },
                     onOpenFiles = {},
                     onOpenPorts = {},
                     onBack = {},

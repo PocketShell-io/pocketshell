@@ -44,18 +44,17 @@ class DestinationsTest {
         // The aggregate includes both Quiet workspace routes and the
         // categorized Settings/support plus Services routes. Deprecated aliases
         // (Tree and CrashReports) intentionally do not add duplicate patterns.
-        assertEquals(30, patterns.size)
+        // Issue #2721 removed Workspace — WorkspaceStart is the only
+        // workspace-level route left.
+        assertEquals(29, patterns.size)
         assertEquals(patterns.size, patterns.toSet().size)
         assertTrue(patterns.none { it.isBlank() })
+        assertTrue(patterns.none { it.startsWith("workspace/") })
     }
 
     @Test
     fun `built routes match their patterns`() {
         assertMatchesPattern(Destination.Workspaces.pattern, Destination.Workspaces.route(hostId = 7))
-        assertMatchesPattern(
-            Destination.Workspace.pattern,
-            Destination.Workspace.route(hostId = 7, path = "/home/alexey/git/pocketshell"),
-        )
         assertMatchesPattern(
             Destination.WorkspaceStart.pattern,
             Destination.WorkspaceStart.route(hostId = 7, path = "/home/alexey/git/pocketshell"),
@@ -162,14 +161,16 @@ class DestinationsTest {
     }
 
     @Test
-    fun `workspace route keeps the canonical path in one encoded query argument`() {
-        val route = Destination.Workspace.route(
+    fun `workspace start route keeps the canonical path in one encoded query argument`() {
+        // Issue #2721 removed Workspace; WorkspaceStart is the one
+        // workspace-level route and carries the same canonical path argument.
+        val route = Destination.WorkspaceStart.route(
             hostId = 42,
             path = "/home/alexey/git/pocket shell",
         )
 
         assertEquals(
-            "workspace/42?workspacePath=%2Fhome%2Falexey%2Fgit%2Fpocket%20shell",
+            "workspace-start/42?workspacePath=%2Fhome%2Falexey%2Fgit%2Fpocket%20shell",
             route,
         )
         assertEquals(2, route.substringBefore('?').split("/").size)

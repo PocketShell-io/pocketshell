@@ -10,7 +10,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.Text
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.runtime.Composable
@@ -53,6 +55,11 @@ import com.pocketshell.uikit.theme.PocketShellType
  * - **[trailing]** (optional) — badge ([Badge]) / count / kebab ([Kebab]). One
  *   overflow affordance per row (design language: avoid multiple inline action
  *   buttons).
+ * - **[onLongClick]** (optional, issue #2721) — the long-press alternate
+ *   action (`design-language.md:64` "Long-press = always available alternate
+ *   action"). The tap keeps its own meaning; the long-press opens the row's
+ *   secondary surface (a workspace row taps into its terminal and long-presses
+ *   into its management actions).
  *
  * ### Density and touch floor
  *
@@ -62,6 +69,7 @@ import com.pocketshell.uikit.theme.PocketShellType
  * Colours stay on the always-dark raw tokens (#477 single dark scheme) so the
  * row never flips with the system light setting.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ListRow(
     title: String,
@@ -70,6 +78,7 @@ fun ListRow(
     leading: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null,
     titleMaxLines: Int = 1,
     subtitleMaxLines: Int = 1,
     titleStyle: TextStyle = PocketShellType.body,
@@ -89,13 +98,19 @@ fun ListRow(
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = minHeight)
                 .then(
-                    if (onClick != null) {
-                        Modifier.clickable(role = Role.Button, onClick = onClick)
-                    } else {
-                        Modifier
+                    when {
+                        // combinedClickable covers the tap+long-press pair; plain
+                        // clickable keeps the ripple/semantics of a tap-only row.
+                        onClick != null && onLongClick != null -> Modifier.combinedClickable(
+                            role = Role.Button,
+                            onClick = onClick,
+                            onLongClick = onLongClick,
+                        )
+                        onClick != null -> Modifier.clickable(role = Role.Button, onClick = onClick)
+                        else -> Modifier
                     },
                 )
-                .then(if (onClick != null) modifier else Modifier)
+                .then(if (onClick != null || onLongClick != null) modifier else Modifier)
                 .padding(
                     horizontal = PocketShellDensity.rowPadH,
                     vertical = PocketShellDensity.rowPadV,

@@ -10,14 +10,12 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.performTouchInput
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.hostapi.AgentState
 import com.pocketshell.core.hostapi.SessionRow
+import com.pocketshell.next.tree.CreateSessionState
 import com.pocketshell.next.tree.SessionTreeUiState
-import com.pocketshell.next.tree.SESSION_TREE_FILES_TAG
-import com.pocketshell.next.tree.SESSION_TREE_PORTS_TAG
-import com.pocketshell.next.tree.sessionRowTag
-import com.pocketshell.next.tree.sessionRowMenuTag
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -359,72 +357,58 @@ class QuietWorkspaceScreenTest {
     }
 
     @Test
-    fun `workspace screen opens a real session`() {
-        val opened = mutableListOf<String>()
-        setWorkspaceContent(
-            state = SessionTreeUiState(
-                hostId = 7,
-                workspacePath = "/home/alexey/git/pocketshell",
-                loaded = true,
-                workspaceSessions = listOf(
-                    session("claude-main", "/home/alexey/git/pocketshell")
-                        .copy(agent = "claude", agentState = AgentState.WORKING),
-                ),
-            ),
-            onOpenSession = { name, _ -> opened += name },
-        )
-
-        composeRule.onNodeWithTag(sessionRowTag("claude-main")).assertIsDisplayed().performClick()
-        composeRule.onNodeWithText("Claude Code · Working").assertIsDisplayed()
-        composeRule.onAllNodesWithTag(sessionRowMenuTag("claude-main")).assertCountEquals(0)
-        assertEquals(listOf("claude-main"), opened)
-    }
-
-    @Test
-    fun `populated workspace puts new session after the rows`() {
-        setWorkspaceContent(
-            state = SessionTreeUiState(
-                hostId = 7,
-                workspacePath = "/home/alexey/git/pocketshell",
-                loaded = true,
-                workspaceSessions = listOf(
-                    session("claude-main", "/home/alexey/git/pocketshell"),
-                ),
-            ),
-        )
-
-        composeRule.onNodeWithTag(sessionRowTag("claude-main")).assertIsDisplayed()
-        composeRule.onAllNodesWithTag(WORKSPACE_NEW_SESSION_TAG).assertCountEquals(1)
-    }
-
-    @Test
-    fun `empty workspace offers new session`() {
-        setWorkspaceContent(
+    fun `workspace start screen offers the create entry and nothing else`() {
+        setStartContent(
             state = SessionTreeUiState(
                 hostId = 7,
                 workspacePath = "/home/alexey/git/empty",
                 loaded = true,
             ),
         )
-        composeRule.onNodeWithText("No sessions").assertIsDisplayed()
+        composeRule.onNodeWithText("No sessions here yet").assertIsDisplayed()
         composeRule.onAllNodesWithTag(WORKSPACE_NEW_SESSION_TAG).assertCountEquals(1)
-        composeRule.onNodeWithText("Workspace").assertIsDisplayed()
-        composeRule.onNodeWithText("Browse files").assertIsDisplayed()
+        // The utility rows moved to the host kebab / the terminal's action
+        // sheet (issue #2721) — the start screen is ONLY the create surface.
+        composeRule.onNodeWithText("Browse files").assertDoesNotExist()
         composeRule.onNodeWithText("Services & tunnels").assertDoesNotExist()
+        composeRule.onNodeWithText("Usage").assertDoesNotExist()
     }
 
     @Test
-    fun `workspace actions keep only the catalog actions`() {
+    fun `workspace start screen surfaces the idempotent create notice`() {
+        setStartContent(
+            state = SessionTreeUiState(
+                hostId = 7,
+                workspacePath = "/home/alexey/git/pocketshell",
+                loaded = true,
+                create = CreateSessionState(
+                    visible = false,
+                    notice = "Session \"pocketshell:main\" already existed — nothing new was created; opened it.",
+                ),
+            ),
+        )
+        composeRule.onNodeWithTag(WORKSPACE_CREATE_NOTICE_TAG).assertIsDisplayed()
+        composeRule.onNodeWithText(
+            "Session \"pocketshell:main\" already existed — nothing new was created; opened it.",
+        ).assertIsDisplayed()
+    }
+
+    @Test
+    fun `workspace long-press keeps only the catalog actions`() {
         composeRule.setContent {
             PocketShellTheme {
-                WorkspaceActionsContent(
+                WorkspaceActionsSheetContent(
+                    workspace = WorkspaceProjection(
+                        path = "/home/alexey/git/pocketshell",
+                        label = "pocketshell",
+                        displayPath = "~/git/pocketshell",
+                        sessions = emptyList(),
+                        durable = true,
+                    ),
                     onNewSession = {},
                     onBrowseFiles = {},
-                    onOpenPorts = {},
-                    onOpenUsage = {},
                     onCopyPath = {},
                     onReorder = {},
-                    onCreateFolder = {},
                     onRemove = {},
                     onDismiss = {},
                 )
@@ -442,30 +426,59 @@ class QuietWorkspaceScreenTest {
     }
 
     @Test
-    fun `workspace utility rows keep their real navigation callbacks`() {
-        var files = 0
-        var ports = 0
-        setWorkspaceContent(
-            state = SessionTreeUiState(
+    fun `workspace row long-press opens the actions with real callbacks`() {
+        val path = "/home/alexey/git/pocketshell"
+        var startedSessions = 0
+        var browsed = 0
+        setHostContent(
+            state = HostWorkspacesUiState(
                 hostId = 7,
-                workspacePath = "/home/alexey/git/pocketshell",
+                hostLabel = "hetzner",
                 loaded = true,
-                workspaceSessions = listOf(session("shell", "/home/alexey/git/pocketshell")),
+                roots = listOf(
+                    WorkspaceRootProjection(
+                        key = "/home/alexey/git",
+                        label = "Git",
+                        displayPath = "~/git",
+                        path = "/home/alexey/git",
+                        workspaces = listOf(
+                            WorkspaceProjection(
+                                path = path,
+                                label = "pocketshell",
+                                displayPath = "~/git/pocketshell",
+                                sessions = emptyList(),
+                                durable = true,
+                            ),
+                        ),
+                        rootSessions = emptyList(),
+                    ),
+                ),
             ),
-            onOpenFiles = { files += 1 },
-            onOpenPorts = { ports += 1 },
+            onStartSessionAtPath = { startedSessions += 1 },
+            onOpenFilesAtPath = { browsed += 1 },
         )
 
-        composeRule.onNodeWithTag(SESSION_TREE_FILES_TAG).performClick()
-        composeRule.onNodeWithTag(SESSION_TREE_PORTS_TAG).performClick()
-        assertEquals(1, files)
-        assertEquals(1, ports)
+        composeRule.onNodeWithTag(workspaceRowTag(path))
+            .performTouchInput { longClick() }
+        composeRule.onNodeWithTag(HOST_WORKSPACES_WS_ACTIONS_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_WS_BROWSE_TAG).performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag(workspaceRowTag(path))
+            .performTouchInput { longClick() }
+        composeRule.onNodeWithTag(HOST_WORKSPACES_WS_NEW_SESSION_TAG).performClick()
+        composeRule.waitForIdle()
+
+        assertEquals(1, browsed)
+        assertEquals(1, startedSessions)
     }
 
     private fun setHostContent(
         state: HostWorkspacesUiState,
         onOpenWorkspace: (String) -> Unit = {},
+        onStartSessionAtPath: (String) -> Unit = {},
         onOpenSession: (SessionRow) -> Unit = {},
+        onOpenFilesAtPath: (String) -> Unit = {},
     ) {
         composeRule.setContent {
             PocketShellTheme {
@@ -473,29 +486,24 @@ class QuietWorkspaceScreenTest {
                     state = state,
                     onRefresh = {},
                     onOpenWorkspace = onOpenWorkspace,
+                    onStartSessionAtPath = onStartSessionAtPath,
                     onOpenSession = onOpenSession,
+                    onOpenFilesAtPath = onOpenFilesAtPath,
                 )
             }
         }
         composeRule.waitForIdle()
     }
 
-    private fun setWorkspaceContent(
+    private fun setStartContent(
         state: SessionTreeUiState,
         onOpenSession: (String, String?) -> Unit = { _, _ -> },
-        onOpenCreateFolder: () -> Unit = {},
-        onOpenFiles: () -> Unit = {},
-        onOpenPorts: () -> Unit = {},
     ) {
         composeRule.setContent {
             PocketShellTheme {
-                WorkspaceScreen(
+                WorkspaceStartScreen(
                     state = state,
-                    onRefresh = {},
                     onOpenSession = onOpenSession,
-                    onOpenFiles = onOpenFiles,
-                    onOpenPorts = onOpenPorts,
-                    onOpenCreateFolder = onOpenCreateFolder,
                 )
             }
         }

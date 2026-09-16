@@ -37,8 +37,6 @@ import com.pocketshell.next.composer.COMPOSER_SEND_TAG
 import com.pocketshell.next.composer.COMPOSER_TAG
 import com.pocketshell.next.workspaces.workspaceRowTag
 import com.pocketshell.next.workspaces.workspaceSessionRowTag
-import com.pocketshell.next.tree.sessionRowTag
-import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
 import com.pocketshell.uikit.components.SESSION_BAR_ARROW_DOWN_TAG
 import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
@@ -283,12 +281,12 @@ class J03AttachAndTypeJourney {
                 .assert(hasClickAction())
                 .performClick()
         } else {
-            compose.onNodeWithTag(workspaceTag).performClick()
-            awaitTag(WORKSPACE_SCREEN_TAG)
-            val nestedSessionTag = sessionRowTag(SESSION)
-            awaitTag(nestedSessionTag)
+            // Issue #2721: the workspace row opens the workspace's ENTRY
+            // session directly. The host screen's rows are a snapshot, so the
+            // row survives the out-of-band kill — and the tap still carries
+            // the dead session to the route, whose attach fails with exit 3.
             AgentsFixture.exec("pocketshell sessions kill -- '$SESSION' >/dev/null 2>&1 || true")
-            compose.onNodeWithTag(nestedSessionTag)
+            compose.onNodeWithTag(workspaceTag)
                 .assertIsDisplayed()
                 .assert(hasClickAction())
                 .performClick()
@@ -308,11 +306,12 @@ class J03AttachAndTypeJourney {
         compose.onNodeWithTag(SESSION_TERMINAL_TAG).assertDoesNotExist()
         compose.onNodeWithTag(SESSION_ERROR_BANNER_TAG).assertDoesNotExist()
 
-        // Back is the way out, and it works.
+        // Back is the way out, and it works — Back lands on the HOST
+        // workspaces screen, the only level between the host list and a
+        // terminal now that the workspace page is gone (#2721).
         compose.onNodeWithTag(SESSION_BACK_TAG).performClick()
         compose.waitUntil(timeoutMillis = TIMEOUT_MS) {
-            compose.onAllNodesWithTag(HOST_WORKSPACES_TAG).fetchSemanticsNodes().isNotEmpty() ||
-                compose.onAllNodesWithTag(WORKSPACE_SCREEN_TAG).fetchSemanticsNodes().isNotEmpty()
+            compose.onAllNodesWithTag(HOST_WORKSPACES_TAG).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag(SESSION_SCREEN_TAG).assertDoesNotExist()
     }

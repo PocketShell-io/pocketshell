@@ -73,7 +73,7 @@ import com.pocketshell.next.terminal.SessionRoute
 import com.pocketshell.next.usage.UsageRoute
 import com.pocketshell.next.workspaces.HostWorkspacesRoute
 import com.pocketshell.next.workspaces.ReorderWorkspacesRoute
-import com.pocketshell.next.workspaces.WorkspaceRoute
+import com.pocketshell.next.workspaces.WorkspaceStartRoute
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.uikit.theme.PocketShellTheme
@@ -278,17 +278,36 @@ private fun NavHostController.openSession(
  * still exercise the real navigation edge — the production defaults are the
  * real ones.
  */
-data class WorkspaceScreenLaunch(
+data class WorkspacesScreenLaunch(
     val initialRootPath: String? = null,
     val initialRootAction: String? = null,
     /**
      * Issue #2632: this visit was started by opening the HOST, so the host's
      * last session should reopen once the live listing confirms it is still
      * there. False for every other way of reaching the screen (a Back from a
-     * session, a "new session" hop, a workspace-root action) — otherwise
-     * leaving a terminal would immediately throw the user back into it.
+     * session, a workspace-root action) — otherwise leaving a terminal would
+     * immediately throw the user back into it.
      */
     val resumeLastSession: Boolean = false,
+)
+
+/**
+ * Every non-dial action a terminal can start, grouped into one type. The
+ * session screen's navigation seam carries SIX of them (#2721 added "Services
+ * & tunnels"); passing them as six positional lambdas through [AppNavHost]
+ * blew past the Compose compiler's transformed-parameter limit AND made every
+ * test stand-in unreadable — the same two reasons [HostListActions] exists.
+ */
+data class SessionScreenActions(
+    val onBack: () -> Unit,
+    /** Task P-5: the top bar's usage glance pill navigates here. */
+    val onOpenUsage: () -> Unit,
+    val onOpenFiles: () -> Unit,
+    /** Issue #2721 (N1): Services & tunnels, reachable from the terminal. */
+    val onOpenPorts: () -> Unit,
+    /** A lateral switch between sibling terminals (see [openSession]). */
+    val onOpenSession: (SessionRow) -> Unit,
+    val onOpenNewSession: () -> Unit,
 )
 
 @Composable
@@ -323,18 +342,16 @@ fun AppNavHost(
     connectViewModel: @Composable () -> ConnectViewModel = { hiltViewModel() },
     workspacesScreen: @Composable (
         hostId: Long,
-        onOpenWorkspace: (String) -> Unit,
         onOpenSession: (SessionRow) -> Unit,
         onOpenFiles: () -> Unit,
         onOpenFilesAtPath: (String) -> Unit,
         onOpenPorts: () -> Unit,
         onBack: () -> Unit,
         onOpenUsage: () -> Unit,
-        launch: WorkspaceScreenLaunch,
-    ) -> Unit = { hostId, onOpenWorkspace, onOpenSession, onOpenFiles, onOpenFilesAtPath, onOpenPorts, onBack, onOpenUsage, launch ->
+        launch: WorkspacesScreenLaunch,
+    ) -> Unit = { hostId, onOpenSession, onOpenFiles, onOpenFilesAtPath, onOpenPorts, onBack, onOpenUsage, launch ->
         val scope = rememberCoroutineScope()
         HostWorkspacesRoute(
-            onOpenWorkspace = onOpenWorkspace,
             onOpenSession = onOpenSession,
             onOpenFiles = onOpenFiles,
             onOpenFilesAtPath = onOpenFilesAtPath,
@@ -350,6 +367,9 @@ fun AppNavHost(
                     navController.popBackStack()
                 }
             },
+            // Issue #2721: the zero-sessions fallback only — a workspace with
+            // a live session never comes through here (the row opens its
+            // terminal directly).
             onStartSessionAtPath = { path ->
                 navController.navigate(Destination.WorkspaceStart.route(hostId, path))
             },
@@ -359,22 +379,15 @@ fun AppNavHost(
             usageGlanceViewModel = hiltViewModel(),
         )
     },
-    workspaceScreen: @Composable (
+    workspaceStartScreen: @Composable (
         hostId: Long,
         workspacePath: String,
         onOpenSession: (String, String?) -> Unit,
-        onOpenFiles: () -> Unit,
-        onOpenPorts: () -> Unit,
         onBack: () -> Unit,
-        onOpenUsage: () -> Unit,
-    ) -> Unit = { hostId, _, onOpenSession, onOpenFiles, onOpenPorts, onBack, onOpenUsage ->
-        WorkspaceRoute(
+    ) -> Unit = { hostId, _, onOpenSession, onBack ->
+        WorkspaceStartRoute(
             onOpenSession = onOpenSession,
-            onOpenFiles = onOpenFiles,
-            onOpenPorts = onOpenPorts,
             onBack = onBack,
-            onOpenUsage = onOpenUsage,
-            onOpenReorder = { navController.navigate(Destination.ReorderWorkspaces.route(hostId)) },
         )
     },
     sessionScreen: @Composable (
@@ -382,22 +395,19 @@ fun AppNavHost(
         sessionName: String,
         workspacePath: String?,
         sessionId: String?,
-        onBack: () -> Unit,
-        onOpenUsage: () -> Unit,
-        onOpenFiles: () -> Unit,
-        onOpenSession: (SessionRow) -> Unit,
-        onOpenNewSession: () -> Unit,
-    ) -> Unit = { hostId, sessionName, workspacePath, sessionId, onBack, onOpenUsage, onOpenFiles, onOpenSession, onOpenNewSession ->
+        actions: SessionScreenActions,
+    ) -> Unit = { hostId, sessionName, workspacePath, sessionId, actions ->
         SessionRoute(
             hostId = hostId,
             sessionName = sessionName,
             workspacePath = workspacePath,
             sessionId = sessionId,
-            onBack = onBack,
-            onOpenUsage = onOpenUsage,
-            onOpenFiles = onOpenFiles,
-            onOpenSession = onOpenSession,
-            onOpenNewSession = onOpenNewSession,
+            onBack = actions.onBack,
+            onOpenUsage = actions.onOpenUsage,
+            onOpenFiles = actions.onOpenFiles,
+            onOpenPorts = actions.onOpenPorts,
+            onOpenSession = actions.onOpenSession,
+            onOpenNewSession = actions.onOpenNewSession,
         )
     },
     portsScreen: @Composable (onBack: () -> Unit) -> Unit = { onBack ->
@@ -618,6 +628,12 @@ fun AppNavHost(
             val raw = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: Destination.NO_HOST_ID
             ConnectGate(
                 onConnected = { connectedHostId ->
+                    // Issue #2721 (N3): the connect gate arms the resume the
+                    // same way a host-row tap does, so "Save → connected →
+                    // terminal" is one flow — a host saved or edited in the
+                    // form reopens where the user left off, exactly as if the
+                    // host row had been tapped.
+                    hostOpenedForResume.value = connectedHostId
                     navController.navigate(Destination.Workspaces.route(connectedHostId)) {
                         // A successful form test is the access boundary. Keep
                         // Hosts below the new tree, but do not leave a stale
@@ -676,14 +692,13 @@ fun AppNavHost(
             }
             workspacesScreen(
                 hostId,
-                { path -> navController.navigate(Destination.Workspace.route(hostId, path)) },
                 onOpenSession,
                 onOpenFiles,
                 { path -> navController.navigate(Destination.Files.route(hostId, path)) },
                 onOpenPorts,
                 onBack,
                 onOpenUsage,
-                WorkspaceScreenLaunch(resumeLastSession = resumeLastSession),
+                WorkspacesScreenLaunch(resumeLastSession = resumeLastSession),
             )
         }
         composable(
@@ -702,38 +717,13 @@ fun AppNavHost(
             }
             workspacesScreen(
                 hostId,
-                { path -> navController.navigate(Destination.Workspace.route(hostId, path)) },
                 onOpenSession,
                 { navController.navigate(Destination.Files.route(hostId)) },
                 { path -> navController.navigate(Destination.Files.route(hostId, path)) },
                 { navController.navigate(Destination.Ports.route(hostId)) },
                 { navController.popBackStack() },
                 { navController.navigate(Destination.HostUsage.route(hostId)) },
-                WorkspaceScreenLaunch(rootPath, action),
-            )
-        }
-        composable(
-            route = Destination.Workspace.pattern,
-            arguments = listOf(
-                navArgument(Destination.ARG_HOST_ID) { type = NavType.LongType },
-                navArgument(Destination.ARG_WORKSPACE_PATH) { type = NavType.StringType },
-            ),
-        ) { entry ->
-            val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
-            val path = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH).orEmpty()
-            workspaceScreen(
-                hostId,
-                path,
-                { sessionName, sessionId ->
-                    navController.openSession(hostId, sessionName, path, sessionId)
-                },
-                { navController.navigate(Destination.Files.route(hostId, path)) },
-                { navController.navigate(Destination.Ports.route(hostId)) },
-                { navController.popBackStack() },
-                // Issue #2532: Usage is a host-scoped panel, same as Files/Ports,
-                // so the tree header is an entry point — not only the session
-                // glance pill.
-                { navController.navigate(Destination.HostUsage.route(hostId)) },
+                WorkspacesScreenLaunch(rootPath, action),
             )
         }
         composable(
@@ -743,18 +733,19 @@ fun AppNavHost(
                 navArgument(Destination.ARG_WORKSPACE_PATH) { type = NavType.StringType },
             ),
         ) { entry ->
+            // Issue #2721: the ONLY workspace-level screen left. It hosts the
+            // create sheet for a workspace whose tap found nothing running —
+            // there is never a blank intermediate page between the workspace
+            // row and a terminal.
             val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
             val path = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH).orEmpty()
-            WorkspaceRoute(
-                onOpenSession = { sessionName, sessionId ->
+            workspaceStartScreen(
+                hostId,
+                path,
+                { sessionName, sessionId ->
                     navController.openSession(hostId, sessionName, path, sessionId)
                 },
-                onOpenFiles = { navController.navigate(Destination.Files.route(hostId, path)) },
-                onOpenPorts = { navController.navigate(Destination.Ports.route(hostId)) },
-                onBack = { navController.popBackStack() },
-                onOpenUsage = { navController.navigate(Destination.HostUsage.route(hostId)) },
-                onOpenReorder = { navController.navigate(Destination.ReorderWorkspaces.route(hostId)) },
-                startSessionOnEntry = true,
+                { navController.popBackStack() },
             )
         }
         composable(
@@ -802,31 +793,39 @@ fun AppNavHost(
                 name,
                 workspacePath,
                 sessionId,
-                { navController.popBackStack() },
-                // Task P-5: the top bar's usage glance pill navigates here.
-                { navController.navigate(Destination.HostUsage.route(hostId)) },
-                { navController.navigate(Destination.Files.route(hostId, workspacePath)) },
-                { session ->
-                    // Issue #2632's switcher/tab-strip edge; issue #2648's
-                    // replaceFrom: this is a LATERAL switch between sibling
-                    // terminals, so it replaces the current terminal entry
-                    // instead of stacking on it — Back keeps pointing at
-                    // whatever the user drilled in from.
-                    navController.openSession(
-                        hostId,
-                        session.name,
-                        session.workspace,
-                        session.id,
-                        replaceFrom = Destination.Session.route(hostId, name, workspacePath, sessionId),
-                    )
-                },
-                {
-                    if (workspacePath.isNullOrBlank()) {
-                        navController.navigate(Destination.Workspaces.route(hostId))
-                    } else {
-                        navController.navigate(Destination.WorkspaceStart.route(hostId, workspacePath))
-                    }
-                },
+                SessionScreenActions(
+                    onBack = { navController.popBackStack() },
+                    // Task P-5: the top bar's usage glance pill navigates here.
+                    onOpenUsage = { navController.navigate(Destination.HostUsage.route(hostId)) },
+                    onOpenFiles = {
+                        navController.navigate(Destination.Files.route(hostId, workspacePath))
+                    },
+                    // Issue #2721 (N1): "Services & tunnels" is reachable from
+                    // the terminal's own actions sheet — the workspace screen
+                    // that used to link it is gone.
+                    onOpenPorts = { navController.navigate(Destination.Ports.route(hostId)) },
+                    onOpenSession = { session ->
+                        // Issue #2632's switcher/tab-strip edge; issue #2648's
+                        // replaceFrom: this is a LATERAL switch between sibling
+                        // terminals, so it replaces the current terminal entry
+                        // instead of stacking on it — Back keeps pointing at
+                        // whatever the user drilled in from.
+                        navController.openSession(
+                            hostId,
+                            session.name,
+                            session.workspace,
+                            session.id,
+                            replaceFrom = Destination.Session.route(hostId, name, workspacePath, sessionId),
+                        )
+                    },
+                    onOpenNewSession = {
+                        if (workspacePath.isNullOrBlank()) {
+                            navController.navigate(Destination.Workspaces.route(hostId))
+                        } else {
+                            navController.navigate(Destination.WorkspaceStart.route(hostId, workspacePath))
+                        }
+                    },
+                ),
             )
         }
         composable(

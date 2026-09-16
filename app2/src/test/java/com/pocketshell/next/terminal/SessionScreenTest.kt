@@ -107,6 +107,23 @@ class SessionScreenTest {
         assertEquals(1, backs)
     }
 
+    /**
+     * Issue #2721 (N1): "Services & tunnels" is reachable FROM a terminal —
+     * the workspace screen that used to link it is gone, so the terminal's
+     * own actions sheet is its home now.
+     */
+    @Test
+    fun `terminal actions sheet reaches services and tunnels`() {
+        var ports = 0
+        setContent(SessionUiState.Connecting, onOpenPorts = { ports += 1 })
+
+        composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_PORTS_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_PORTS_TAG).performClick()
+
+        assertEquals(1, ports)
+    }
+
     @Test
     fun `usage fallback stays promoted out of the terminal actions sheet`() {
         setContent(SessionUiState.Connecting)
@@ -663,6 +680,7 @@ class SessionScreenTest {
         onHotkeySend: (ByteArray) -> Unit = {},
         usagePillState: UsageGlancePillState? = null,
         onOpenUsage: () -> Unit = {},
+        onOpenPorts: () -> Unit = {},
         onDraftChange: (String) -> Unit = {},
         onDismissNotice: () -> Unit = {},
         onSend: () -> Boolean = { true },
@@ -680,6 +698,7 @@ class SessionScreenTest {
                     onBack = onBack,
                     usagePillState = usagePillState,
                     onOpenUsage = onOpenUsage,
+                    onOpenPorts = onOpenPorts,
                     onResized = onResized,
                     onRetry = onRetry,
                     onStopSession = onStopSession,

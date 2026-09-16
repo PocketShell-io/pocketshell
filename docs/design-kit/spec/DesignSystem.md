@@ -4,7 +4,9 @@ Version 1.0.0 · Terminal-first Android UI
 ## Product structure
 A **host** is the machine. A **root** is a host-specific folder used to organize work. A **workspace** is a particular remote folder, not a session, chat, repository-only object or profile. A **session** is one running terminal in that workspace. A workspace can contain zero, one or several sessions. Git is not required.
 
-The high-frequency route is `Host workspaces → Workspace sessions → Terminal`. Existing folders do not require a naming/configuration wizard. A folder can be added to the visible workspace list without creating a new session. Creating a folder and starting a session are separate, explicit operations.
+> **Spec change (issue #2721, 2026-09-16, maintainer-directed via the session-lane plan):** the route below was locked as `Host workspaces → Workspace sessions → Terminal`. A workspace row now opens its entry session's terminal DIRECTLY and the intermediate workspace-sessions page is deleted; the D11 partial-sheet scope is unchanged. This note is the explicit, non-silent record of that edit.
+
+The high-frequency route is `Host workspaces → Terminal`. A workspace with zero sessions opens the create-session sheet, never a blank intermediate page. Existing folders do not require a naming/configuration wizard. A folder can be added to the visible workspace list without creating a new session. Creating a folder and starting a session are separate, explicit operations.
 
 A session directly in a root is supported by **Start session here**. Show these sessions in an **In this root** row rather than hiding them or fabricating a child workspace. Paths outside registered roots belong to **Other folders**; unknown paths must stay unknown, never silently assigned to a convenient root.
 
@@ -63,7 +65,7 @@ Back, title, optional meaningful context, at most one secondary action. The host
 Root path on the left; contextual **+ Add** on the right. The entire root label has a 48dp action target opening root actions. Add can find a folder, create one, or explicitly start a session in the root. Full Add workspace remains the accessibility description.
 
 ### Workspace row
-Name in the **title** rung semibold, followed by a muted **metadata**-rung session-kind summary. One row is one hit target. Agent marks are non-interactive metadata and have no independent tap or long-press action. This avoids tiny nested targets and ambiguous same-agent jumps. Open the workspace to choose a particular terminal.
+Name in the **title** rung semibold, followed by a muted **metadata**-rung session-kind summary. One row is one hit target. Agent marks are non-interactive metadata and have no independent tap or long-press action. This avoids tiny nested targets and ambiguous same-agent jumps. A tap opens the workspace's entry terminal — the device's remembered session for that workspace when the host still lists it, else the most recently active session by `activityEpoch`, else the host's first row; a zero-session workspace opens the create-session sheet. This is remembered-first on purpose: it is issue #2632's locked "resume last session" behaviour, and memory wins over activity whenever the host still lists the remembered session. The workspace's management actions (New session, Browse files, Copy path, Reorder, Remove from list) live on the row's long-press, with Reorder also on the host kebab (issue #2721 replaced the choose-a-terminal page).
 
 Collapse duplicate kinds into a count (Terminal ×2); show up to three kinds then +N more kinds. Announce readable labels, not glyph names. No sessions and Status unavailable are different states. Stable manual order, otherwise creation/first-discovery order; live refresh never reorders rows beneath a tap.
 

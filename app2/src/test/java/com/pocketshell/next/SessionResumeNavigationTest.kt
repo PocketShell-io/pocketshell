@@ -1,6 +1,9 @@
 package com.pocketshell.next
 
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithTag
@@ -103,6 +106,25 @@ class SessionResumeNavigationTest {
         assertFalse(resumeFlags.last())
     }
 
+    /**
+     * Issue #2721 (N3): the host FORM's connect gate arms the resume the same
+     * way a host-row tap does — "Save → connected → terminal" is one flow, not
+     * "Save → connected → workspace list".
+     */
+    @Test
+    fun `the host form connect gate arms the resume like a host tap`() {
+        stack = TestConnectStack()
+        val hostId = stack.seedHost(name = "form-fixture")
+        val nav = setContent()
+
+        composeRule.runOnUiThread { nav.navigate(Destination.HostForm.route(hostId)) }
+        composeRule.waitForIdle()
+        composeRule.onNodeWithTag("form-connect").performClick()
+        awaitText("Workspaces(host=$hostId)")
+
+        assertEquals(listOf(true), resumeFlags)
+    }
+
     @Test
     fun `reaching a session route records it as the host's resume target`() {
         stack = TestConnectStack()
@@ -151,11 +173,19 @@ class SessionResumeNavigationTest {
                     )
                 },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { hostId, _, _, _, _, _, _, _, launch ->
+                hostFormScreen = { formHostId, _, _, onTestConnection ->
+                    Button(
+                        onClick = { onTestConnection(requireNotNull(formHostId)) },
+                        modifier = Modifier.testTag("form-connect"),
+                    ) {
+                        Text("Test connection")
+                    }
+                },
+                workspacesScreen = { hostId, _, _, _, _, _, _, launch ->
                     resumeFlags += launch.resumeLastSession
                     Text("Workspaces(host=$hostId)")
                 },
-                sessionScreen = { hostId, name, _, _, _, _, _, _, _ ->
+                sessionScreen = { hostId, name, _, _, _ ->
                     Text("Session($hostId/$name)")
                 },
             )

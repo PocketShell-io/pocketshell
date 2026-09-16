@@ -68,7 +68,7 @@ class AppNavHostTest {
                 startupHostExists = { false },
                 hostsScreen = { Text("Hosts") },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _, _, _, _, _, _ -> Text("Tree") },
             )
         }
         composeRule.waitForIdle()
@@ -93,7 +93,7 @@ class AppNavHostTest {
                     }
                 },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _, _, _, _, _, _ -> Text("Tree") },
             )
         }
 
@@ -307,7 +307,7 @@ class AppNavHostTest {
                 // resolves its ViewModel through `hiltViewModel()`. The
                 // stand-in echoes the argument the route actually delivered, so
                 // this suite still pins the Tree pattern's Long argument.
-                workspacesScreen = { hostId, _, onOpenSession, _, _, _, _, _, _ ->
+                workspacesScreen = { hostId, onOpenSession, _, _, _, _, _, _ ->
                     openSession = onOpenSession
                     Text("Tree(hostId=$hostId)")
                 },
@@ -316,8 +316,8 @@ class AppNavHostTest {
                 // dials a host. The stand-in echoes both route arguments, which
                 // is what this suite is pinning — that a session name with a
                 // space and a `:` survives the encode/decode round trip.
-                sessionScreen = { hostId, sessionName, _, _, _, _, _, onOpenSession, _ ->
-                    switchSession = onOpenSession
+                sessionScreen = { hostId, sessionName, _, _, actions ->
+                    switchSession = actions.onOpenSession
                     Text("Session(hostId=$hostId, name=$sessionName)")
                 },
                 // Same rationale again: the P-4 port-forward route resolves its

@@ -10,13 +10,15 @@ import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.hostapi.WorkspaceMembership
+import com.pocketshell.next.tree.CreateSessionState
 import com.pocketshell.next.tree.SessionTreeUiState
 import com.pocketshell.next.workspaces.HostWorkspacesScreen
 import com.pocketshell.next.workspaces.HostWorkspacesUiState
 import com.pocketshell.next.workspaces.RegisteredWorkspaceRoot
+import com.pocketshell.next.workspaces.WorkspaceActionsSheetContent
 import com.pocketshell.next.workspaces.WorkspaceProjection
 import com.pocketshell.next.workspaces.WorkspaceRootProjection
-import com.pocketshell.next.workspaces.WorkspaceScreen
+import com.pocketshell.next.workspaces.WorkspaceStartScreen
 import com.pocketshell.next.workspaces.projectWorkspaceRoots
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
@@ -81,49 +83,55 @@ class QuietWorkspaceRenders {
     }
 
     @Test
-    fun emptyWorkspaceDetail() = render("i2607-empty-workspace-detail") {
-        WorkspaceScreen(state = workspaceState("/home/alexey/git/empty"), onRefresh = {}, onOpenSession = { _, _ -> })
-    }
-
-    @Test
-    fun populatedWorkspaceDetail() = render("i2607-populated-workspace-detail") {
-        WorkspaceScreen(
-            state = workspaceState(
-                path = "/home/alexey/git/pocketshell",
-                names = listOf("shell", "agent-review"),
-            ),
-            onRefresh = {},
+    fun workspaceStartEmpty() = render("i2721-workspace-start-empty") {
+        WorkspaceStartScreen(
+            state = workspaceState("/home/alexey/git/empty"),
             onOpenSession = { _, _ -> },
         )
     }
 
     @Test
-    fun populatedWorkspaceDetailFontScale13() = render(
-        name = "i2607-populated-workspace-detail-font-scale-13",
-        fontScale = 1.3f,
-    ) {
-        WorkspaceScreen(
-            state = workspaceState(
-                path = "/home/alexey/git/pocketshell/feature-with-a-long-name",
-                names = listOf("shell", "agent-review"),
+    fun workspaceStartNotice() = render("i2721-workspace-start-notice") {
+        // The idempotent-create notice: the found session was opened, nothing
+        // was made — issue #2721's behaviour note made visible.
+        WorkspaceStartScreen(
+            state = workspaceState("/home/alexey/git/pocketshell").copy(
+                create = CreateSessionState(
+                    notice = "Session \"pocketshell:main\" already existed — " +
+                        "nothing new was created; opened it.",
+                ),
             ),
-            onRefresh = {},
             onOpenSession = { _, _ -> },
         )
     }
 
     @Test
-    fun populatedWorkspaceDetailFontScale20() = render(
-        name = "i2607-populated-workspace-detail-font-scale-20",
+    fun workspaceStartFontScale20() = render(
+        name = "i2721-workspace-start-font-scale-20",
         fontScale = 2.0f,
     ) {
-        WorkspaceScreen(
-            state = workspaceState(
-                path = "/home/alexey/git/pocketshell/feature-with-a-long-name",
-                names = listOf("shell", "agent-review"),
-            ),
-            onRefresh = {},
+        WorkspaceStartScreen(
+            state = workspaceState("/home/alexey/git/pocketshell/feature-with-a-long-name"),
             onOpenSession = { _, _ -> },
+        )
+    }
+
+    @Test
+    fun workspaceLongPressActions() = render("i2721-workspace-long-press-actions") {
+        WorkspaceActionsSheetContent(
+            workspace = WorkspaceProjection(
+                path = "/home/alexey/git/pocketshell",
+                label = "pocketshell",
+                displayPath = "~/git/pocketshell",
+                sessions = emptyList(),
+                durable = true,
+            ),
+            onNewSession = {},
+            onBrowseFiles = {},
+            onCopyPath = {},
+            onReorder = {},
+            onRemove = {},
+            onDismiss = {},
         )
     }
 

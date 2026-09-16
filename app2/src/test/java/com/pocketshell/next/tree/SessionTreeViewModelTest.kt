@@ -415,12 +415,14 @@ class SessionTreeViewModelTest {
 
     /**
      * The idempotency contract (`CreatedSession.created == false`): the session
-     * already existed, which is a SUCCESS. The tree keeps it visible with a
-     * notice rather than silently resuming it — treating "already there" as a
-     * failure is exactly the bug the host CLI's idempotent create exists to prevent.
+     * already existed, which is a SUCCESS. Issue #2721: with the workspace
+     * page gone there is no list left to pick the existing row from, so the
+     * found session is OPENED — while a notice still says plainly that nothing
+     * was newly created. Treating "already there" as a failure is exactly the
+     * bug the host CLI's idempotent create exists to prevent.
      */
     @Test
-    fun `creating a name that already exists stays on the tree`() = runTest(dispatcher) {
+    fun `creating a name that already exists opens it and says so`() = runTest(dispatcher) {
         val hostId = stack.seedHost()
         answerListAndCreate(HEALTHY_LISTING, createdJson("claude-main", created = false))
         val viewModel = viewModel(hostId)
@@ -431,11 +433,12 @@ class SessionTreeViewModelTest {
 
         val create = viewModel.state.value.create
         assertNull("an existing session must NOT read as a failure", create.failure)
-        assertNull(create.openRequest)
+        assertEquals("the found session is opened — there is no list to pick it from", "claude-main", create.openRequest)
         assertFalse(create.visible)
         val notice = requireNotNull(create.notice) { "the user should be told it already existed" }
-        assertTrue(notice, notice.contains("already exists"))
+        assertTrue(notice, notice.contains("already existed"))
         assertTrue(notice, notice.contains("claude-main"))
+        assertTrue(notice, notice.contains("nothing new was created"))
         // And the tree itself is not in an error state over it.
         assertNull(viewModel.state.value.failure)
     }

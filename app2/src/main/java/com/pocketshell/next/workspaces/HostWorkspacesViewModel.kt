@@ -645,6 +645,46 @@ class HostWorkspacesViewModel @Inject constructor(
         }
     }
 
+    private var removeWorkspaceInFlight: Job? = null
+
+    /**
+     * Removes a workspace from the host's durable list (issue #2721), from the
+     * row's long-press sheet — the same host call the old workspace screen's
+     * "Remove from list" made. The remote folder and any running sessions
+     * stay; [onRemoved] fires only after the host confirmed, so the caller can
+     * refresh the projection onto the new membership.
+     */
+    fun removeWorkspaceFromList(path: String, onRemoved: () -> Unit) {
+        if (path.isBlank() || removeWorkspaceInFlight?.isActive == true) return
+        removeWorkspaceInFlight = viewModelScope.launch {
+            val host = hostDao.getById(hostId)
+            if (host == null) {
+                fail("This host is no longer saved on this device.")
+                return@launch
+            }
+            val connection = when (val outcome = registry.getOrConnect(hostId)) {
+                is ConnectResult.Connected -> outcome.connection
+                is ConnectResult.NeedsTrust -> {
+                    fail("Confirm this host's key from the host list first.")
+                    return@launch
+                }
+                is ConnectResult.Failed -> {
+                    fail(outcome.message)
+                    return@launch
+                }
+            }
+            clients.create(connection).removeWorkspace(host.treeIdentity, path).fold(
+                onSuccess = {
+                    refresh()
+                    onRemoved()
+                },
+                onFailure = { error ->
+                    fail(userMessage(error, "Could not remove the workspace from the list: "))
+                },
+            )
+        }
+    }
+
     private suspend fun load() {
         val host = hostDao.getById(hostId)
         if (host == null) {
