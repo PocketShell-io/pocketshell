@@ -19,6 +19,7 @@ async function api(path, body) {
   return response;
 }
 function report(error) { $('error').textContent=String(error.message || error); $('error').hidden=false; }
+function pickCase(id) { return async()=>{try{await api('/api/select',{case_id:id});localStorage.setItem('pocketshell-ui-mock-case',id);}catch(e){report(e);}}; }
 function drawCatalog() {
   const query=$('search').value.toLowerCase();
   const filtered=catalog.filter(c => `${c.class_name} ${c.method} ${c.label}`.toLowerCase().includes(query));
@@ -28,15 +29,33 @@ function drawCatalog() {
     if(name!==group) { const title=document.createElement('div');title.className='group';title.textContent=human(name.replace(/Renders$/, ''));$('cases').append(title);group=name; }
     const button=document.createElement('button');button.textContent=human(c.method);
     button.setAttribute('aria-current', String(c.id===selected));
-    const info=document.createElement('small');info.textContent=c.kind==='ui-kit-example' ? 'UI-kit: пример, может повторять экран' : c.label;button.append(info);
-    button.onclick=async()=>{try{await api('/api/select',{case_id:c.id});localStorage.setItem('pocketshell-ui-mock-case',c.id);}catch(e){report(e);}};
+    const info=document.createElement('small');info.textContent=(c.kind==='ui-kit-example' ? 'UI-kit: пример, может повторять экран' : c.label)+(c.font_scale ? ' · fontScale '+c.font_scale : '');button.append(info);
+    button.onclick=pickCase(c.id);
     $('cases').append(button);
   }
   $('count').textContent=`${filtered.length} из ${catalog.length} поддерживаемых render-сценариев`;
 }
+function renderCoverage(data, error) {
+  if(error!==undefined && error!==null && error!==''){$('coverage-summary').textContent='';$('coverage').replaceChildren();$('coverage-error').textContent=error;$('coverage-error').hidden=false;return;}
+  $('coverage-error').hidden=true;
+  if(!data){$('coverage-summary').textContent='';$('coverage').replaceChildren();return;}
+  $('coverage-summary').textContent=`${data.covered} из ${data.total} экранов навигации имеют render-фикстуры`+(data.kit_examples ? ` · UI-kit примеров вне учёта: ${data.kit_examples}` : '');
+  const list=document.createElement('ul');list.className='coverage-list';
+  for(const d of data.destinations){
+    const row=document.createElement('li');if(d.gap)row.className='gap';
+    const name=document.createElement('span');name.className='cov-name';name.textContent=d.name;row.append(name);
+    if(d.gap){const gap=document.createElement('em');gap.className='cov-gap';gap.textContent='GAP — фикстур нет';row.append(gap);}
+    for(const c of d.cases){const b=document.createElement('button');b.className='cov-case';b.textContent=c.name;b.title='Показать этот сценарий';b.onclick=pickCase(c.id);row.append(b);}
+    list.append(row);
+  }
+  const box=$('coverage');box.replaceChildren();box.append(list);
+  if(data.unclaimed.length){const p=document.createElement('p');p.className='muted';p.textContent='Вне навигации: '+data.unclaimed.map(c=>c.name).join(', ');box.append(p);}
+  if(data.inherited.length){const p=document.createElement('p');p.className='muted';p.textContent='Наследованное покрытие: '+data.inherited.map(n=>n+' (через одноимённый экран)').join(', ');box.append(p);}
+}
 async function refreshCatalog() {
   const data=await (await api('/api/catalog')).json(); catalog=data.cases;catalogRevision=data.revision;
   $('warnings').textContent=data.warnings.join('\n');drawCatalog();
+  renderCoverage(data.coverage, data.coverage_error);
   if(!initialSelectionDone){initialSelectionDone=true;const saved=localStorage.getItem('pocketshell-ui-mock-case');if(saved&&catalog.some(c=>c.id===saved))await api('/api/select',{case_id:saved});}
 }
 function clearImages() { $('gallery').replaceChildren();for(const url of objectURLs)URL.revokeObjectURL(url);objectURLs=[]; }

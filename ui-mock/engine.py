@@ -9,6 +9,7 @@ import time
 
 from builder import Builder
 from catalog import discover
+from coverage import build_inventory
 
 
 class RepositoryLock:
@@ -73,6 +74,7 @@ class Engine:
         self.cv = threading.Condition()
         self.stop = threading.Event()
         self.cases, self.warnings = discover(root, include_kit)
+        self.coverage, self.coverage_error = build_inventory(root, self.cases)
         self.by_id = {c.id: c for c in self.cases}
         self.selected = self.cases[0].id if self.cases else None
         self.ticket, self.completed = 0, 0
@@ -132,7 +134,8 @@ class Engine:
     def catalog(self):
         with self.cv:
             return {"cases": [c.public() for c in self.cases], "warnings": self.warnings,
-                    "revision": self.catalog_revision}
+                    "revision": self.catalog_revision,
+                    "coverage": self.coverage, "coverage_error": self.coverage_error}
 
     def image(self, index: int, revision: int):
         with self.cv:
@@ -179,8 +182,10 @@ class Engine:
                 elif dirty_at is not None and time.monotonic() - dirty_at >= 0.6:
                     dirty_at = None
                     cases, warnings = discover(self.root, self.include_kit)
+                    coverage, coverage_error = build_inventory(self.root, cases)
                     with self.cv:
                         self.cases, self.warnings = cases, warnings
+                        self.coverage, self.coverage_error = coverage, coverage_error
                         self.by_id = {c.id: c for c in cases}
                         self.catalog_revision += 1
                         if self.selected not in self.by_id:

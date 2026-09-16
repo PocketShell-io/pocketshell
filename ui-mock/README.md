@@ -8,9 +8,10 @@ What it does:
 
 - Discovers literal `@Test fun name() = render("label") { ... }` cases under `app2/src/test/java/com/pocketshell/next/render/`.
 - Starts a Python-standard-library HTTP server on **127.0.0.1 only**.
+- Pairs every navigation destination from app2's `Destination.all` graph with its render cases, in a browser coverage panel and in `--list` output; destinations without fixtures are listed as explicit GAP rows, never silently counted as complete (acceptance 2). UI-kit examples are counted but never attributed to a destination.
 - Runs **one selected render test**, keeps Gradle's daemon and build cache, and never requests APK assembly/install, Docker or an emulator.
 - Watches `app2/`, `shared/`, build configuration and resources, excluding generated `build/` trees. Edits are debounced; builds are serialized and superseded results are not published as current.
-- Shows fresh images, test-source location, measured duration and bounded Gradle logs. Build failures keep the last image visibly stale; an image for a different selected fixture is hidden.
+- Shows fresh images, test-source location, measured duration and bounded Gradle logs. Build failures keep the last image visibly stale; an image for a different selected fixture is hidden. The sidebar's "Покрытие экранов навигации" panel lists each destination with clickable fixture names or a GAP marker.
 - Requires both a newly produced successful JUnit report for the selected test and fresh PNG output. A green/no-op Gradle invocation is not accepted as a fresh render.
 
 What it **does not** do:
@@ -33,6 +34,8 @@ From the repository root on the DevBox:
 python3 ui-mock/serve.py --list
 python3 ui-mock/serve.py --port 4173
 ```
+
+`--list` prints every supported case followed by the destination render-coverage report (`destination render coverage: N/M destinations covered`, one line per destination, `GAP` where no fixture exists). It reads source text only — no Gradle runs. The same inventory is served under the `coverage` key of `GET /api/catalog`; if `Destinations.kt` cannot be read or parsed, the panel shows the explicit reason instead of an empty list.
 
 On the maintainer's usual Linux box, the existing resource scope can wrap the **whole session** rather than replacing the per-render incremental build profile:
 
@@ -123,6 +126,6 @@ python3 -m unittest discover -s ui-mock/tests -v
 node --check ui-mock/web/app.js
 ```
 
-The tests cover catalog discovery, unsupported cases, serialized/superseded builds, stale output rejection, successful selected-test report requirements, error recovery, bounded image validation, render locks, path/command allowlists, session-token checks, Origin checks and DNS-rebinding-style Host rejection.
+The tests cover catalog discovery, unsupported cases, the destination coverage inventory (real-graph parsing, explicit gaps, degraded mode), serialized/superseded builds, stale output rejection, successful selected-test report requirements, error recovery, bounded image validation, render locks, path/command allowlists, session-token checks, Origin checks and DNS-rebinding-style Host rejection.
 
 **Still required on the DevBox before calling the loop verified:** execute a real fixture; edit a composable and observe a fresh PNG; introduce a compile error and observe explicit failure/staleness; restore the source and observe recovery; open the browser through a Windows SSH tunnel. Python tests use fake Gradle output and do not prove Android rendering or native Windows process behavior.

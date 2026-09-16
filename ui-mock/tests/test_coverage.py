@@ -7,7 +7,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from catalog import Case
-from coverage import Destination, attribute, parse_destinations, report, words
+from coverage import Destination, attribute, build_inventory, parse_destinations, report, words
 
 REPO = Path(__file__).resolve().parents[2]
 DESTINATIONS_KT = REPO / "app2/src/main/java/com/pocketshell/next/nav/Destinations.kt"
@@ -111,6 +111,74 @@ class ReportTests(unittest.TestCase):
         self.assertIn("render cases with no navigation destination (1): "
                       "ComposerRenders.composerEmpty", text)
         self.assertIn("same-screen coverage (inherited): HostUsage = Usage", text)
+
+
+class InventoryTests(unittest.TestCase):
+    """The served-catalog payload: every destination present, gaps explicit."""
+
+    def setUp(self):
+        self.cases = [case("ServicesScreenRenders", "servicesActive", "services-active"),
+                      case("UsageScreenRenders", "usageScreenCollapsed", "usage-screen-collapsed"),
+                      case("ComposerRenders", "composerEmpty", "p1-composer-empty")]
+        self.data, self.error = build_inventory(REPO, self.cases)
+
+    def test_every_real_destination_appears_exactly_once(self):
+        self.assertEqual(self.error, "")
+        names = [d["name"] for d in self.data["destinations"]]
+        self.assertEqual(len(names), 30)
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names[:5], ["Hosts", "Workspaces", "Workspace", "Session", "Files"])
+        gaps = [d["name"] for d in self.data["destinations"] if d["gap"]]
+        self.assertEqual(self.data["total"] - len(gaps), self.data["covered"])
+        self.assertIn("Files", gaps)
+
+    def test_covered_rows_carry_case_references_and_routes(self):
+        by_name = {d["name"]: d for d in self.data["destinations"]}
+        self.assertFalse(by_name["Ports"]["gap"])
+        self.assertEqual(by_name["Ports"]["cases"],
+                         [{"id": self.cases[0].id, "name": "ServicesScreenRenders.servicesActive"}])
+        self.assertEqual(by_name["Files"],
+                         {"name": "Files", "route": "files/{$ARG_HOST_ID}?$ARG_PATH={$ARG_PATH}",
+                          "gap": True, "cases": []})
+        self.assertTrue(all(d["route"] for d in self.data["destinations"]))
+
+    def test_unclaimed_and_inherited_reported(self):
+        self.assertEqual([u["name"] for u in self.data["unclaimed"]],
+                         ["ComposerRenders.composerEmpty"])
+        self.assertEqual(self.data["unclaimed"][0]["id"], self.cases[2].id)
+        self.assertEqual(self.data["inherited"], ["HostUsage"])
+        self.assertEqual(self.data["kit_examples"], 0)
+
+    def test_ui_kit_examples_counted_but_never_attribute(self):
+        kit = Case(id="kit1", module="shared:ui-kit",
+                   class_name="com.pocketshell.uikit.render.DesignRenders",
+                   method="buttonPrimary", label="hosts-button-primary",
+                   source="DesignRenders.kt", kind="ui-kit-example")
+        data, error = build_inventory(REPO, [kit])
+        self.assertEqual(error, "")
+        self.assertEqual(data["kit_examples"], 1)
+        self.assertEqual(data["covered"], 0)
+        self.assertTrue(all(d["gap"] for d in data["destinations"]))
+        self.assertEqual(data["unclaimed"], [])
+
+    def test_missing_destinations_file_degrades_explicitly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            data, error = build_inventory(Path(tmp), self.cases)
+        self.assertIsNone(data)
+        self.assertIn("coverage unavailable", error)
+        self.assertIn("Destinations.kt", error)
+
+    def test_unparseable_graph_degrades_explicitly(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "app2/src/main/java/com/pocketshell/next/nav"
+            target.mkdir(parents=True)
+            (target / "Destinations.kt").write_text(
+                "package com.pocketshell.next.nav\nsealed class Destination")
+            data, error = build_inventory(Path(tmp), self.cases)
+        self.assertIsNone(data)
+        self.assertIn("coverage unavailable", error)
 
 
 if __name__ == "__main__":

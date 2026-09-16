@@ -11,6 +11,7 @@ import sys
 from urllib.parse import parse_qs, urlsplit
 
 from catalog import discover
+from coverage import analyze, report
 from engine import Engine, RepositoryLock
 
 WEB = Path(__file__).with_name("web")
@@ -152,6 +153,15 @@ def main(argv=None):
             print(f"{c.id}  {c.class_name.rsplit('.', 1)[-1]}.{c.method}  [{c.kind}]")
         for warning in warnings:
             print("WARNING: " + warning, file=sys.stderr)
+        try:
+            destinations, claimed, unclaimed, inherited, kit = analyze(root, cases)
+        except (OSError, ValueError) as exc:
+            print(f"WARNING: destination coverage unavailable: {exc}", file=sys.stderr)
+        else:
+            print()
+            print(report(destinations, claimed, unclaimed, inherited))
+            if kit:
+                print(f"ui-kit examples excluded from destination attribution: {kit}")
         return 0 if cases else 1
     lock, engine, server = None, None, None
     try:

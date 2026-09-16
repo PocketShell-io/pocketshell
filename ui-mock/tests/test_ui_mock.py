@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import http.client
 import io
 import json
@@ -21,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from builder import Builder, Image, command, png_image, verify_test_report
 from catalog import Case, code_mask, discover, parse_file
 from engine import Engine, RepositoryLock, source_stamp
-from serve import ThreadingHTTPServer, allowed_host, make_handler
+from serve import ThreadingHTTPServer, allowed_host, main as serve_main, make_handler
 
 FIXTURE = '''package com.pocketshell.next.render
 class SampleRenders {
@@ -298,6 +299,63 @@ class EngineTests(Base):
         lock2=RepositoryLock(self.root);lock2.close()
 
 
+DESTINATIONS_FIXTURE = '''package com.pocketshell.next.nav
+sealed class Destination(val pattern: String) {
+    data object Sample : Destination("sample")
+    data object Other : Destination("other/{id}")
+    companion object {
+        val all: List<Destination> get() = listOf(Sample, Other)
+    }
+}
+'''
+
+
+class CoverageWiringTests(Base):
+    """Engine/serve must expose the destination inventory or an explicit error."""
+
+    def test_catalog_reports_missing_destinations_explicitly(self):
+        engine=Engine(self.root,watch=False,builder=FakeBuilder());self.addCleanup(engine.close)
+        payload=engine.catalog()
+        self.assertIsNone(payload['coverage'])
+        self.assertIn('coverage unavailable',payload['coverage_error'])
+
+    def test_catalog_computes_coverage_from_destinations_graph(self):
+        path=self.root/'app2/src/main/java/com/pocketshell/next/nav/Destinations.kt'
+        path.parent.mkdir(parents=True);path.write_text(DESTINATIONS_FIXTURE)
+        engine=Engine(self.root,watch=False,builder=FakeBuilder());self.addCleanup(engine.close)
+        payload=engine.catalog()
+        data=payload['coverage']
+        self.assertEqual(payload['coverage_error'],'')
+        self.assertEqual(data['covered'],1);self.assertEqual(data['total'],2)
+        self.assertEqual([(d['name'],d['gap']) for d in data['destinations']],
+                         [('Sample',False),('Other',True)])
+        self.assertEqual(data['destinations'][0]['cases'][0]['id'],self.case.id)
+
+
+class ListTests(Base):
+    def run_list(self):
+        out,err=io.StringIO(),io.StringIO()
+        with contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            code=serve_main(['--list','--repo',str(self.root)])
+        return code,out.getvalue(),err.getvalue()
+
+    def test_list_prints_destination_gaps(self):
+        path=self.root/'app2/src/main/java/com/pocketshell/next/nav/Destinations.kt'
+        path.parent.mkdir(parents=True);path.write_text(DESTINATIONS_FIXTURE)
+        code,out,err=self.run_list()
+        self.assertEqual(code,0);self.assertEqual(err,'')
+        self.assertIn('destination render coverage: 1/2 destinations covered',out)
+        self.assertRegex(out,r'Sample\s+SampleRenders\.empty')
+        self.assertRegex(out,r'Other\s+GAP')
+        self.assertIn('uncovered destinations (1): Other',out)
+
+    def test_list_warns_when_destinations_unavailable(self):
+        code,out,err=self.run_list()
+        self.assertEqual(code,0)
+        self.assertIn('destination coverage unavailable',err)
+        self.assertNotIn('destinations covered',out)
+
+
 class HttpTests(Base):
     def setUp(self):
         super().setUp();self.engine=Engine(self.root,watch=False,builder=FakeBuilder())
@@ -318,6 +376,13 @@ class HttpTests(Base):
         status,body,headers=self.request('/');self.assertEqual(status,200);self.assertIn(b'UI MOCK',body)
         self.assertIn('Content-Security-Policy',headers)
         status,body,_=self.request('/api/catalog');self.assertEqual(len(json.loads(body)['cases']),2)
+
+    def test_catalog_carries_coverage_over_http(self):
+        status,body,_=self.request('/api/catalog');self.assertEqual(status,200)
+        data=json.loads(body)
+        self.assertIsNone(data['coverage'])
+        self.assertIn('coverage unavailable',data['coverage_error'])
+        self.assertEqual(sorted(data),['cases','coverage','coverage_error','revision','warnings'])
 
     def test_bad_or_missing_token_rejected(self):
         self.assertEqual(self.request('/api/state',headers={'X-UI-Mock-Token':''})[0],401)

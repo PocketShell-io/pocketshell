@@ -13,6 +13,7 @@
     <h1>Сценарии интерфейса</h1><p class="muted">Настоящий Compose-код · данные из render-фикстур</p>
     <label for="search">Поиск экрана или состояния</label><input id="search" type="search" placeholder="Composer, hosts, error…" autocomplete="off">
     <p id="count" class="muted"></p><nav id="cases" aria-label="Сценарии"></nav>
+    <details id="coverage-box"><summary>Покрытие экранов навигации</summary><p class="muted">Каждый экран навигации приложения и его render-фикстуры. GAP — фикстуры нет; пробел в покрытии виден явно, а не скрыт.</p><p id="coverage-summary" class="muted"></p><div id="coverage"></div><p id="coverage-error" class="muted" hidden></p></details>
     <details><summary>Ограничения каталога</summary><p>Это визуальный просмотр PNG, не интерактивное Android-приложение. Клавиатуру, жесты и терминальную сетку проверяйте на устройстве.</p><p>Наличие render-фикстуры не означает покрытие всех состояний экрана. Каталог не является полным перечнем интерфейса.</p><pre id="warnings"></pre></details>
   </aside>
   <section id="workspace" aria-label="Предпросмотр">

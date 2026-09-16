@@ -135,6 +135,51 @@ def qualified(case: Case) -> str:
     return f"{case.class_name.rsplit('.', 1)[-1]}.{case.method}"
 
 
+def analyze(
+    root: Path, cases: list[Case]
+) -> tuple[list[Destination], dict[str, list[Case]], list[Case], list[str], int]:
+    """Parse destinations and attribute `cases`; kit examples are counted, never attributed.
+
+    UI-kit examples mirror screens instead of calling them (README), so their
+    labels must not claim destinations. Raises OSError/ValueError, never swallows.
+    """
+    source = (root / DESTINATIONS_KT).read_text(encoding="utf-8")
+    destinations = parse_destinations(source)
+    screen = [case for case in cases if case.kind == "screen-fixture"]
+    claimed, unclaimed, inherited = attribute(destinations, screen)
+    return destinations, claimed, unclaimed, inherited, len(cases) - len(screen)
+
+
+def build_inventory(root: Path, cases: list[Case]) -> tuple[dict | None, str]:
+    """JSON-ready destination coverage for the served catalog, or (None, explicit reason).
+
+    Every parsed destination appears exactly once; destinations without render
+    cases carry an explicit gap rather than being silently omitted (issue #2636,
+    acceptance 2).
+    """
+    try:
+        destinations, claimed, unclaimed, inherited, kit = analyze(root, cases)
+    except OSError as exc:
+        return None, f"destination coverage unavailable: cannot read {DESTINATIONS_KT}: {exc}"
+    except ValueError as exc:
+        return None, f"destination coverage unavailable: {exc}"
+    entries = []
+    for destination in destinations:
+        rows = claimed[destination.name]
+        entries.append({
+            "name": destination.name, "route": destination.route, "gap": not rows,
+            "cases": [{"id": case.id, "name": qualified(case)} for case in rows],
+        })
+    return {
+        "covered": sum(1 for entry in entries if not entry["gap"]),
+        "total": len(entries),
+        "destinations": entries,
+        "unclaimed": [{"id": case.id, "name": qualified(case)} for case in unclaimed],
+        "inherited": inherited,
+        "kit_examples": kit,
+    }, ""
+
+
 def report(
     destinations: list[Destination],
     claimed: dict[str, list[Case]],
