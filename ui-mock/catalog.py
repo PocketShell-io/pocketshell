@@ -16,6 +16,7 @@ class Case:
     label: str
     source: str
     kind: str
+    font_scale: str | None = None
 
     @property
     def test_filter(self) -> str:
@@ -84,29 +85,87 @@ TEST = re.compile(
     r"(?:(?:public|internal)\s+)?fun\s+([A-Za-z_]\w*)\s*\(\s*\)"
 )
 LABEL = re.compile(r'\s*"([a-z0-9][a-z0-9_-]*)"\s*[,)]')
+NAME_ARG = re.compile(r"\bname\s*=")
+FONT_SCALE = re.compile(r"\bfontScale\s*=\s*([0-9]+(?:\.[0-9]+)?f?)\b")
+CLASS = re.compile(r"(?m)^class\s+([A-Za-z_]\w*)")
+
+
+def balanced_span(mask: str, open_pos: int) -> int | None:
+    """Index of the bracket matching mask[open_pos] ('{' or '('), or None."""
+    closer = {"{": "}", "(": ")"}.get(mask[open_pos]) if 0 <= open_pos < len(mask) else None
+    if closer is None:
+        return None
+    opener = mask[open_pos]
+    depth = 1
+    for i in range(open_pos + 1, len(mask)):
+        if mask[i] == opener:
+            depth += 1
+        elif mask[i] == closer:
+            depth -= 1
+            if not depth:
+                return i
+    return None
+
+
+def render_args(source: str, mask: str, offset: int) -> tuple[str, str | None] | None:
+    """Label and fontScale literal from a render call whose '(' sits at offset-1.
+
+    Structure is located in the masked text; literal contents are read from the
+    original source at that code offset. Positional (`render("x")`) and named
+    (`render(name = "x", fontScale = 1.3f)`) forms are both accepted.
+    """
+    end = balanced_span(mask, offset - 1)
+    if end is None:
+        return None
+    args = mask[offset:end]
+    label = LABEL.match(source, offset)
+    if not label:
+        named = NAME_ARG.search(args)
+        label = LABEL.match(source, offset + named.end()) if named else None
+    if not label:
+        return None
+    scale = FONT_SCALE.search(args)
+    return label.group(1), scale.group(1) if scale else None
+
+
+def top_level_classes(mask: str) -> list[tuple[str, int, int]]:
+    """(name, start, end) spans of every top-level class body in the masked text."""
+    spans = []
+    for cls in CLASS.finditer(mask):
+        body = mask.find("{", cls.end())
+        if body < 0:
+            continue
+        end = balanced_span(mask, body)
+        spans.append((cls.group(1), cls.start(), len(mask) if end is None else end + 1))
+    return spans
 
 
 def parse_file(root: Path, path: Path, module: str, kind: str) -> tuple[list[Case], list[str]]:
     source = path.read_text(encoding="utf-8")
     mask = code_mask(source)
     package = re.search(r"(?m)^\s*package\s+([\w.]+)", mask)
-    name = path.stem
     relative = path.relative_to(root).as_posix()
-    if not package or not re.search(r"\bclass\s+" + re.escape(name) + r"\b", mask):
-        return [], [f"{relative}: no matching top-level render class; not exposed"]
+    classes = top_level_classes(mask)
+    if not package or not classes:
+        return [], [f"{relative}: no top-level render class; not exposed"]
     cases, warnings = [], []
     for test in TEST.finditer(mask):
         method = test.group(1)
-        invocation = re.match(r"\s*=\s*render\s*\(", mask[test.end():])
-        label = LABEL.match(source, test.end() + invocation.end()) if invocation else None
-        if not label:
+        owner = next((n for n, start, end in classes if start < test.start() < end), None)
+        if owner is None:
+            warnings.append(f"{relative}:{method}: test outside a top-level render class; not exposed")
+            continue
+        call = re.match(r"\s*=\s*render\s*\(", mask[test.end():])
+        parsed = render_args(source, mask, test.end() + call.end()) if call else None
+        if parsed is None:
             warnings.append(f"{relative}:{method}: unsupported/non-literal render; not exposed")
             continue
-        key = f"{module}:{package.group(1)}.{name}.{method}"
+        label, font_scale = parsed
+        key = f"{module}:{package.group(1)}.{owner}.{method}"
         cases.append(Case(
             id=hashlib.sha256(key.encode()).hexdigest()[:20], module=module,
-            class_name=f"{package.group(1)}.{name}", method=method,
-            label=label.group(1), source=relative, kind=kind,
+            class_name=f"{package.group(1)}.{owner}", method=method,
+            label=label, source=relative, kind=kind, font_scale=font_scale,
         ))
     if not cases and not warnings:
         warnings.append(f"{relative}: no render cases found; not exposed")

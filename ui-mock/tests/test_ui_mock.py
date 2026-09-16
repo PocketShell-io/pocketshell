@@ -110,6 +110,49 @@ class CatalogTests(Base):
     def test_removing_fixture_updates_catalog(self):
         self.source.unlink();self.assertEqual(discover(self.root)[0],[])
 
+    def test_every_top_level_class_parsed_not_just_the_file_stem(self):
+        self.source.write_text('''package com.pocketshell.next.render
+class AlphaRenders {
+    @Test
+    fun alphaNarrow() = render("alpha-narrow") { S() }
+}
+
+class AlphaRenders600 {
+    @Test
+    fun alphaWide() = render("alpha-wide") { S() }
+}
+''')
+        cases, warnings = discover(self.root)
+        self.assertFalse(warnings)
+        self.assertEqual([(c.class_name, c.method, c.label) for c in cases], [
+            ("com.pocketshell.next.render.AlphaRenders", "alphaNarrow", "alpha-narrow"),
+            ("com.pocketshell.next.render.AlphaRenders600", "alphaWide", "alpha-wide"),
+        ])
+        self.assertEqual(cases[1].test_filter, "com.pocketshell.next.render.AlphaRenders600.alphaWide")
+
+    def test_named_argument_render_with_font_scale_is_exposed(self):
+        self.source.write_text('''package com.pocketshell.next.render
+class SampleRenders {
+    @Test
+    fun largeText() = render(
+      name = "large-text",
+      fontScale = 1.3f,
+    ) { HostScreen() }
+}
+''')
+        cases, warnings = discover(self.root)
+        self.assertFalse(warnings)
+        self.assertEqual(cases[0].label, "large-text")
+        self.assertEqual(cases[0].font_scale, "1.3f")
+        self.assertEqual(cases[0].test_filter, "com.pocketshell.next.render.SampleRenders.largeText")
+
+    def test_positional_label_with_named_font_scale(self):
+        self.source.write_text(FIXTURE.replace('render("empty")', 'render("empty", fontScale = 2.0f)'))
+        cases, warnings = discover(self.root)
+        self.assertFalse(warnings)
+        self.assertEqual((cases[0].label, cases[0].font_scale), ("empty", "2.0f"))
+        self.assertIsNone(cases[1].font_scale)
+
 
 class BuilderTests(Base):
     def test_gradle_command_is_targeted_and_incremental(self):
