@@ -53,6 +53,18 @@ check and only the new check.
   `.worktrees/issue-*` holding unmerged work. A full disk mid-session
   shows up as Gradle "Could not receive a message from the daemon" — check
   `df -h /` first.
+- When `/data` (the worktrees volume) hits 100%, the fastest safe lever is
+  the git-ignored per-worktree build output: a stale agent worktree
+  accumulates several GB of `build/` + `.gradle/` across modules, and
+  ~100 accumulated worktrees held ~72 GB of it (2026-09-17: `/data` went
+  0 → 71G free in one pass while five agent lanes were live). Sweep with
+  `find /data/agents/pocketshell/worktrees -maxdepth 4 -type d
+  \( -name build -o -name .gradle \)` minus the active worktrees, then
+  `xargs rm -rf --`. This only deletes rebuildable artifacts — sources,
+  uncommitted diffs, and test results are untouched. Removing whole
+  worktrees mid-session is riskier (a lane may hold the path); leave that
+  to the quiet hours. Don't touch `/data/shared-gradle` (it backs
+  `~/.gradle` by symlink).
 - AVD contention is real: parallel APK installs from sibling worktrees
   SIGKILL each other. Always go through
   `scripts/connected-test.sh --suffix i<issue> <gradle args>` — it holds the
