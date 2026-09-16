@@ -152,6 +152,45 @@ class AppNavHostTest {
         assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
     }
 
+    /**
+     * Issue #2648's defect E, the regression test for #2632's [replaceFrom]:
+     * the FIRST lateral switch to a sibling the back stack has never held must
+     * REPLACE the current terminal entry, not push on top of it. A plain
+     * navigate here stacked a second terminal, so Back from it landed on the
+     * PREVIOUS TAB instead of the workspace list, and N tab taps cost N+1
+     * Backs. The existing switcher test above only revisits sessions the
+     * stack already holds, which is why it stayed green through the bug.
+     */
+    @Test
+    fun `a first-time tab switch keeps back pointing at the workspace list`() {
+        val nav = setContentWithNav()
+
+        composeRule.runOnUiThread {
+            nav.navigate(Destination.Workspaces.route(hostId = 7))
+        }
+        composeRule.waitForIdle()
+
+        composeRule.runOnUiThread {
+            requireNotNull(openSession)(session("alpha", "/home/alexey/git/alpha"))
+        }
+        composeRule.waitForIdle()
+
+        // "beta" has never been on this back stack — exactly the frame the
+        // plain-navigate path mishandled.
+        composeRule.runOnUiThread {
+            requireNotNull(switchSession)(session("beta", "/home/alexey/git/beta"))
+        }
+        composeRule.waitForIdle()
+        assertEquals(
+            "beta",
+            nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_SESSION_NAME),
+        )
+
+        nav.popBackStack()
+        composeRule.waitForIdle()
+        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
+    }
+
     @Test
     fun `every destination resolves with its arguments`() {
         val nav = setContentWithNav()

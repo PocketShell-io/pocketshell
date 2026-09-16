@@ -24,6 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.pocketshell.next.release.UpdateCheckViewModel
+import com.pocketshell.next.usage.UsageGlancePill
 import com.pocketshell.next.release.launchUpdateUrl
 import com.pocketshell.next.release.updateAvailableBannerText
 import com.pocketshell.uikit.components.Banner
@@ -84,6 +85,7 @@ fun HostListRoute(
     onEditHost: (Long) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSshKeys: () -> Unit = {},
+    onOpenUsage: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: HostListViewModel = hiltViewModel(),
     updateCheckViewModel: UpdateCheckViewModel? = null,
@@ -113,6 +115,7 @@ fun HostListRoute(
         onEditHost = onEditHost,
         onOpenSettings = onOpenSettings,
         onOpenSshKeys = onOpenSshKeys,
+        onOpenUsage = onOpenUsage,
         onDeleteHost = viewModel::delete,
         modifier = modifier,
         updateNotice = notice,
@@ -166,6 +169,7 @@ fun HostListScreen(
     onOpenSettings: () -> Unit,
     onDeleteHost: (Long) -> Unit,
     onOpenSshKeys: () -> Unit = {},
+    onOpenUsage: () -> Unit = {},
     modifier: Modifier = Modifier,
     updateNotice: HostListUpdateNotice? = null,
     onDownloadUpdate: (apkUrl: String) -> Unit = {},
@@ -178,7 +182,18 @@ fun HostListScreen(
     var showAddHostMethods by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        ScreenHeader(title = "Hosts")
+        // Issue #2632: the usage/cost number is on the LANDING screen, before
+        // any tap. It is the cached last reading (the list is a pre-connection
+        // screen and usage never dials — D21), so it labels itself stale once
+        // it ages out instead of pretending to be live. The header actions
+        // stay where the current tree has them (footer/tools section); only
+        // the pill is added here.
+        ScreenHeader(
+            title = "Hosts",
+            trailing = state.usagePill?.let { pill ->
+                { UsageGlancePill(state = pill, onClick = onOpenUsage) }
+            },
+        )
 
         when (val notice = updateNotice) {
             is HostListUpdateNotice.Available -> UpdateAvailableBanner(

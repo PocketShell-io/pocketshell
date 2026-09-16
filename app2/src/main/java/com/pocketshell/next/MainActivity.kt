@@ -68,6 +68,7 @@ import com.pocketshell.next.settings.VoiceSettingsRoute
 import com.pocketshell.next.settings.AddWorkspaceRootRoute
 import com.pocketshell.next.settings.WorkspaceRootsRoute
 import com.pocketshell.next.terminal.GraceCoordinator
+import com.pocketshell.next.terminal.LastSessionStore
 import com.pocketshell.next.terminal.SessionRoute
 import com.pocketshell.next.tree.SessionTreeRoute
 import com.pocketshell.next.usage.UsageRoute
@@ -122,6 +123,15 @@ class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var hostDao: HostDao
+
+    /**
+     * Issue #2632. Injected HERE rather than into [SessionViewModel] so the
+     * recording edge is the NAVIGATION edge: "the user opened this session" is
+     * exactly the moment the route composes, and nothing about the transport
+     * (attach, reconnect, stop) should be able to change what we resume into.
+     */
+    @Inject
+    lateinit var lastSessions: LastSessionStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -180,6 +190,9 @@ class MainActivity : FragmentActivity() {
                                 startupHostId = appSettings.defaultHostId,
                                 startupHostExists = { hostDao.getById(it) != null },
                                 onHostOpened = settingsViewModel::setDefaultHostId,
+                                onSessionOpened = { hostId, sessionName, workspacePath ->
+                                    lastSessions.record(hostId, sessionName, workspacePath)
+                                },
                             )
                     }
                 }
@@ -205,6 +218,8 @@ data class HostListActions(
     val onEditHost: (Long) -> Unit,
     val onOpenSettings: () -> Unit,
     val onOpenSshKeys: () -> Unit,
+    /** Issue #2632: the landing usage pill's destination. */
+    val onOpenUsage: () -> Unit = {},
 )
 
 /**
@@ -212,17 +227,32 @@ data class HostListActions(
  * already on the back stack. That keeps one terminal/ViewModel per
  * host-session-workspace identity and makes switching back return to the
  * existing terminal instead of stacking another copy of it.
+ *
+ * [replaceFrom] is issue #2648's forward fix for the first #2632 landing: a
+ * LATERAL switch (tab strip / switcher sheet, from inside a terminal) to a
+ * sibling the back stack has never held must REPLACE the current terminal
+ * entry rather than push on top of it, or Back from the terminal returns to
+ * the previous TAB instead of the list the user came from, and N tab taps cost
+ * N+1 Backs. Callers that drill DOWN into a session (a workspace-row tap)
+ * pass nothing and still push.
  */
 private fun NavHostController.openSession(
     hostId: Long,
     sessionName: String,
     workspacePath: String? = null,
     sessionId: String? = null,
+    replaceFrom: String? = null,
 ) {
     val route = Destination.Session.route(hostId, sessionName, workspacePath, sessionId)
     val existing = runCatching { getBackStackEntry(route) }.getOrNull()
     if (existing == null) {
-        navigate(route)
+        if (replaceFrom == null) {
+            navigate(route)
+        } else {
+            navigate(route) {
+                popUpTo(replaceFrom) { inclusive = true }
+            }
+        }
         return
     }
     while (currentBackStackEntry !== existing) {
@@ -252,6 +282,14 @@ private fun NavHostController.openSession(
 data class WorkspaceScreenLaunch(
     val initialRootPath: String? = null,
     val initialRootAction: String? = null,
+    /**
+     * Issue #2632: this visit was started by opening the HOST, so the host's
+     * last session should reopen once the live listing confirms it is still
+     * there. False for every other way of reaching the screen (a Back from a
+     * session, a "new session" hop, a workspace-root action) — otherwise
+     * leaving a terminal would immediately throw the user back into it.
+     */
+    val resumeLastSession: Boolean = false,
 )
 
 @Composable
@@ -265,6 +303,13 @@ fun AppNavHost(
     startupHostExists: suspend (Long) -> Boolean = { true },
     /** Persists the host selection without making the host list own settings. */
     onHostOpened: (Long) -> Unit = {},
+    /**
+     * Issue #2632: records the session a route just opened, so the next time
+     * this host is opened it resumes there instead of the workspace list.
+     * Defaulted to a no-op so a Robolectric nav test needs no store.
+     */
+    onSessionOpened: (hostId: Long, sessionName: String, workspacePath: String?) -> Unit =
+        { _, _, _ -> },
     hostsScreen: @Composable (HostListActions) -> Unit = { actions ->
         HostListRoute(
             onOpenHost = actions.onOpenHost,
@@ -272,6 +317,7 @@ fun AppNavHost(
             onEditHost = actions.onEditHost,
             onOpenSettings = actions.onOpenSettings,
             onOpenSshKeys = actions.onOpenSshKeys,
+            onOpenUsage = actions.onOpenUsage,
             updateCheckViewModel = hiltViewModel(),
         )
     },
@@ -310,6 +356,8 @@ fun AppNavHost(
             },
             initialRootPath = launch.initialRootPath,
             initialRootAction = launch.initialRootAction,
+            resumeLastSession = launch.resumeLastSession,
+            usageGlanceViewModel = hiltViewModel(),
         )
     },
     workspaceScreen: @Composable (
@@ -495,6 +543,13 @@ fun AppNavHost(
     val initialStartupHostId = remember { startupHostId }
     val startupHostToConnect = remember { mutableStateOf<Long?>(null) }
 
+    // Issue #2632: which host, if any, the CURRENT navigation was started for
+    // by opening that host — a cold-launch resume or a host-row tap. The
+    // workspace destination consumes it exactly once, which is what keeps
+    // "resume my last session" from turning into "you can never leave that
+    // session": pressing Back returns to a workspace entry whose arm is spent.
+    val hostOpenedForResume = remember { mutableStateOf<Long?>(null) }
+
     NavHost(
         navController = navController,
         startDestination = Destination.start.pattern,
@@ -524,8 +579,13 @@ fun AppNavHost(
                     HostListActions(
                         onOpenHost = { hostId ->
                             onHostOpened(hostId)
+                            // Issue #2632: a host tap is a "take me back to
+                            // what I was doing" gesture, so it arms the resume
+                            // for the workspace destination the gate opens.
+                            hostOpenedForResume.value = hostId
                             onOpenHost(hostId)
                         },
+                        onOpenUsage = { navController.navigate(Destination.Usage.route()) },
                         // Task P-6: the management routes are plain
                         // navigations, deliberately NOT gated by the connect
                         // gate — editing a host must work while the host is
@@ -607,6 +667,14 @@ fun AppNavHost(
             val onOpenPorts: () -> Unit = { navController.navigate(Destination.Ports.route(hostId)) }
             val onBack: () -> Unit = { navController.popBackStack() }
             val onOpenUsage: () -> Unit = { navController.navigate(Destination.HostUsage.route(hostId)) }
+            // Issue #2632: consumed once, in the composition of THIS entry. A
+            // Back from the resumed session recomposes this entry with the arm
+            // already spent, so the user lands on the workspace list.
+            val resumeLastSession = remember {
+                (hostOpenedForResume.value == hostId).also {
+                    if (it) hostOpenedForResume.value = null
+                }
+            }
             workspacesScreen(
                 hostId,
                 { path -> navController.navigate(Destination.Workspace.route(hostId, path)) },
@@ -616,7 +684,7 @@ fun AppNavHost(
                 onOpenPorts,
                 onBack,
                 onOpenUsage,
-                WorkspaceScreenLaunch(),
+                WorkspaceScreenLaunch(resumeLastSession = resumeLastSession),
             )
         }
         composable(
@@ -724,6 +792,12 @@ fun AppNavHost(
             // Issue #2572: the id, not the name, is what a back-stack entry
             // resolves against — a rename must not strand this screen.
             val sessionId = entry.arguments?.getString(Destination.ARG_SESSION_ID)
+            // Issue #2632: reaching this route IS "the user opened this
+            // session", including via the switcher, the tab strip, a deep
+            // link, and a process-death restoration of the back stack.
+            LaunchedEffect(hostId, name, workspacePath) {
+                onSessionOpened(hostId, name, workspacePath)
+            }
             sessionScreen(
                 hostId,
                 name,
@@ -734,7 +808,18 @@ fun AppNavHost(
                 { navController.navigate(Destination.HostUsage.route(hostId)) },
                 { navController.navigate(Destination.Files.route(hostId, workspacePath)) },
                 { session ->
-                    navController.openSession(hostId, session.name, session.workspace, session.id)
+                    // Issue #2632's switcher/tab-strip edge; issue #2648's
+                    // replaceFrom: this is a LATERAL switch between sibling
+                    // terminals, so it replaces the current terminal entry
+                    // instead of stacking on it — Back keeps pointing at
+                    // whatever the user drilled in from.
+                    navController.openSession(
+                        hostId,
+                        session.name,
+                        session.workspace,
+                        session.id,
+                        replaceFrom = Destination.Session.route(hostId, name, workspacePath, sessionId),
+                    )
                 },
                 {
                     if (workspacePath.isNullOrBlank()) {
@@ -944,6 +1029,10 @@ fun AppNavHost(
             }
             // ConnectGate owns the dial, trust prompt, retry, and success
             // navigation. This handoff supplies only the validated id.
+            // Issue #2632: a cold launch that already resumes the host should
+            // land on the terminal the user actually left, not one level above
+            // it — so the workspace destination this dial opens is armed.
+            hostOpenedForResume.value = hostId
             startupHostToConnect.value = hostId
         }
     }
