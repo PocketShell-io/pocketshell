@@ -70,4 +70,6 @@ dependencies {
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.test.ext.junit)
+    // Issue #2714: LeakGuard, shared with the app2 suite via :shared:test-support.
+    testImplementation(project(":shared:test-support"))
 }

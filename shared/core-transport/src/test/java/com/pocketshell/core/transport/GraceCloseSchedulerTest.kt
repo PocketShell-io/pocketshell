@@ -1,5 +1,6 @@
 package com.pocketshell.core.transport
 
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -12,6 +13,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 
 /**
@@ -33,6 +36,15 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class GraceCloseSchedulerTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     /** Records every close the scheduler drives, with the virtual time it happened at. */
     private class CloseRecorder(private val clock: () -> Long) {

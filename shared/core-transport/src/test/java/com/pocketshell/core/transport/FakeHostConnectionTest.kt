@@ -1,5 +1,6 @@
 package com.pocketshell.core.transport
 
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
@@ -10,6 +11,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import java.io.IOException
 
@@ -20,6 +23,15 @@ import java.io.IOException
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class FakeHostConnectionTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     // ------------------------------------------------------------ exec scripting
 

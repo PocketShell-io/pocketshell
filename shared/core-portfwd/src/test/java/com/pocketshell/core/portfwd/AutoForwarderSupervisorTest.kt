@@ -5,6 +5,7 @@ import com.pocketshell.core.transport.FakeHostConnection
 import com.pocketshell.core.transport.HostConnection
 import com.pocketshell.core.transport.PortForward
 import com.pocketshell.core.transport.TransportState
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -47,6 +50,15 @@ import kotlin.coroutines.CoroutineContext
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AutoForwarderSupervisorTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun `initial connect mounts a forwarder and emits Connected`() = runTest {

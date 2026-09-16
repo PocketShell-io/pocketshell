@@ -59,6 +59,8 @@ dependencies {
     // round-trip on the host JVM without an emulator.
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Issue #2714: LeakGuard, shared with the app2 suite via :shared:test-support.
+    testImplementation(project(":shared:test-support"))
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)

@@ -1,5 +1,6 @@
 package com.pocketshell.core.voice
 
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -12,6 +13,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import java.util.Arrays
 import java.util.concurrent.TimeUnit
@@ -27,6 +30,15 @@ import java.util.concurrent.TimeUnit
  *  - Malformed success body produces [WhisperException.Parse]
  */
 class OkHttpWhisperClientTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var server: MockWebServer
     private lateinit var client: OkHttpWhisperClient

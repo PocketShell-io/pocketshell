@@ -3,12 +3,15 @@ package com.pocketshell.core.storage
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.entity.SentMessageEntity
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -26,6 +29,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class SentMessageDaoTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private lateinit var db: AppDatabase
 
@@ -128,6 +134,10 @@ class SentMessageDaoTest {
     }
 
     private companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val KEY = "7/devbox"
         const val OTHER = "7/other"
     }

@@ -3,9 +3,12 @@ package com.pocketshell.core.portfwd
 import com.pocketshell.core.transport.ExecResult
 import com.pocketshell.core.transport.FakeHostConnection
 import com.pocketshell.core.transport.HostConnection
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 
 /**
@@ -16,6 +19,15 @@ import org.junit.Test
  * scripted to answer each strategy's command with a canned [ExecResult].
  */
 class PortScannerTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun `parseSsOutput extracts port and process name`() {

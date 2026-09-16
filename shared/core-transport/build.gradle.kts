@@ -115,6 +115,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Issue #2714: LeakGuard, shared with the app2 suite via :shared:test-support.
+    testImplementation(project(":shared:test-support"))
     // T-2: the Docker-sshd integration suite (RealHostConnectionIntegrationTest)
     // drives a real sshd via Testcontainers. Attached to `testImplementation`
     // because the integration source dir is part of the `test` source set.

@@ -102,6 +102,8 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.testcontainers)
+    // Issue #2714: LeakGuard, shared with the app2 suite via :shared:test-support.
+    testImplementation(project(":shared:test-support"))
     // The engine's unit tests drive it against core-transport's scripted
     // FakeHostConnection — no sshj, no sockets, no Docker.
     testImplementation(testFixtures(project(":shared:core-transport")))

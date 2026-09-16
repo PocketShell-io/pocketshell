@@ -4,6 +4,7 @@ import com.pocketshell.core.transport.ExecResult
 import com.pocketshell.core.transport.FakeHostConnection
 import com.pocketshell.core.transport.HostConnection
 import com.pocketshell.core.transport.PortForward
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,6 +19,8 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import java.net.InetAddress
 import java.net.InetSocketAddress
@@ -48,6 +51,16 @@ import kotlin.coroutines.CoroutineContext
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class AutoForwarderTest {
+
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
+
     private val allLocalPortsAvailable = LocalPortAvailability { true }
 
     @Test
