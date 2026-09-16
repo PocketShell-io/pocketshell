@@ -68,7 +68,7 @@ class AppNavHostTest {
                 startupHostExists = { false },
                 hostsScreen = { Text("Hosts") },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
             )
         }
         composeRule.waitForIdle()
@@ -93,7 +93,7 @@ class AppNavHostTest {
                     }
                 },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
             )
         }
 
@@ -147,45 +147,6 @@ class AppNavHostTest {
             "/home/alexey/git/alpha",
             nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_WORKSPACE_PATH),
         )
-        nav.popBackStack()
-        composeRule.waitForIdle()
-        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
-    }
-
-    /**
-     * Issue #2648's defect E, the regression test for #2632's [replaceFrom]:
-     * the FIRST lateral switch to a sibling the back stack has never held must
-     * REPLACE the current terminal entry, not push on top of it. A plain
-     * navigate here stacked a second terminal, so Back from it landed on the
-     * PREVIOUS TAB instead of the workspace list, and N tab taps cost N+1
-     * Backs. The existing switcher test above only revisits sessions the
-     * stack already holds, which is why it stayed green through the bug.
-     */
-    @Test
-    fun `a first-time tab switch keeps back pointing at the workspace list`() {
-        val nav = setContentWithNav()
-
-        composeRule.runOnUiThread {
-            nav.navigate(Destination.Workspaces.route(hostId = 7))
-        }
-        composeRule.waitForIdle()
-
-        composeRule.runOnUiThread {
-            requireNotNull(openSession)(session("alpha", "/home/alexey/git/alpha"))
-        }
-        composeRule.waitForIdle()
-
-        // "beta" has never been on this back stack — exactly the frame the
-        // plain-navigate path mishandled.
-        composeRule.runOnUiThread {
-            requireNotNull(switchSession)(session("beta", "/home/alexey/git/beta"))
-        }
-        composeRule.waitForIdle()
-        assertEquals(
-            "beta",
-            nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_SESSION_NAME),
-        )
-
         nav.popBackStack()
         composeRule.waitForIdle()
         assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
@@ -307,7 +268,7 @@ class AppNavHostTest {
                 // resolves its ViewModel through `hiltViewModel()`. The
                 // stand-in echoes the argument the route actually delivered, so
                 // this suite still pins the Tree pattern's Long argument.
-                workspacesScreen = { hostId, onOpenSession, _, _, _, _, _, _ ->
+                workspacesScreen = { hostId, _, onOpenSession, _, _, _, _, _, _ ->
                     openSession = onOpenSession
                     Text("Tree(hostId=$hostId)")
                 },
@@ -316,8 +277,8 @@ class AppNavHostTest {
                 // dials a host. The stand-in echoes both route arguments, which
                 // is what this suite is pinning — that a session name with a
                 // space and a `:` survives the encode/decode round trip.
-                sessionScreen = { hostId, sessionName, _, _, actions ->
-                    switchSession = actions.onOpenSession
+                sessionScreen = { hostId, sessionName, _, _, _, _, _, onOpenSession, _ ->
+                    switchSession = onOpenSession
                     Text("Session(hostId=$hostId, name=$sessionName)")
                 },
                 // Same rationale again: the P-4 port-forward route resolves its

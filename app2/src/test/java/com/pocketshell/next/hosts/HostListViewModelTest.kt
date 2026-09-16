@@ -9,8 +9,6 @@ import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -19,7 +17,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -29,7 +26,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import com.pocketshell.next.usage.usageGlanceCache
 
 /**
  * [HostListViewModel] against a real in-memory Room database (plan §U-1
@@ -149,57 +145,8 @@ class HostListViewModelTest {
         assertEquals(listOf("hetzner", "zeta"), names)
     }
 
-    /**
-     * Issue #2632: the landing screen shows the last usage reading, so the
-     * state has to carry it. Nothing is connected here — this is the whole
-     * point: the number comes from the cache, not from a fetch.
-     */
-    @Test
-    fun `the landing state carries the last usage reading, or none`() = runTest {
-        insertHost(name = "hetzner", hostname = "135.181.114.209", username = "alexey")
-        val cache = usageGlanceCache()
-
-        assertNull(
-            HostListViewModel(db.hostDao(), flowOf(emptySet()), cache, UnconfinedTestDispatcher())
-                .state.first { it.loaded }.usagePill,
-        )
-
-        cache.put(
-            com.pocketshell.next.usage.UsageGlancePillState(
-                percent = 63,
-                provider = "Claude",
-                window = null,
-                kind = com.pocketshell.uikit.model.PillKind.Ok,
-                stale = false,
-                fetchedClock = "11:40",
-            ),
-            java.time.Instant.now(),
-        )
-
-        val pill = HostListViewModel(db.hostDao(), flowOf(emptySet()), cache, UnconfinedTestDispatcher())
-            .state.first { it.loaded }.usagePill
-        assertEquals(63, pill?.percent)
-        assertEquals("Claude", pill?.provider)
-    }
-
-    /**
-     * Issue #2635 2a: the live-id feed rides the state unchanged, so the row
-     * dot's colour and label come from one set. The ViewModel never dials —
-     * the flow here is whatever production hands it (@LiveHostIds).
-     */
-    @Test
-    fun `live host ids ride the state for the status dots`() = runTest {
-        val hostId = insertHost(name = "hetzner", hostname = "135.181.114.209", username = "alexey")
-        val live = MutableStateFlow(setOf(hostId))
-
-        val state = HostListViewModel(db.hostDao(), live, usageGlanceCache(), UnconfinedTestDispatcher())
-            .state.first { it.loaded }
-
-        assertEquals(setOf(hostId), state.liveIds)
-    }
-
     private fun viewModel(): HostListViewModel =
-        HostListViewModel(db.hostDao(), flowOf(emptySet()), usageGlanceCache(), UnconfinedTestDispatcher())
+        HostListViewModel(db.hostDao(), UnconfinedTestDispatcher())
 
     private suspend fun insertHost(
         name: String,

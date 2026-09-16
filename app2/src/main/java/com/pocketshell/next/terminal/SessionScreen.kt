@@ -38,7 +38,6 @@ import com.pocketshell.next.composer.PromptComposerSheet
 import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.SessionSink
 import com.pocketshell.next.composer.SlashCommandAutocomplete
-import com.pocketshell.core.hostapi.AgentState
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.next.tree.STOP_SESSION_CANCEL_TAG
 import com.pocketshell.next.tree.STOP_SESSION_CONFIRM_LABEL
@@ -54,21 +53,17 @@ import com.pocketshell.next.usage.UsageGlancePill
 import com.pocketshell.next.usage.UsageGlanceViewModel
 import com.pocketshell.next.settings.LocalAppSettings
 import com.pocketshell.next.workspaces.readableSessionName
-import com.pocketshell.next.workspaces.sessionDisplayNames
+import com.pocketshell.next.workspaces.sessionStatusLabel
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.ConfirmDialog
 import com.pocketshell.uikit.components.EmptyState
-import com.pocketshell.uikit.components.HeaderIconAction
 import com.pocketshell.uikit.components.KebabTrigger
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
-import com.pocketshell.uikit.components.SessionTab
-import com.pocketshell.uikit.components.SessionTabState
-import com.pocketshell.uikit.components.SessionTabStrip
 import com.pocketshell.uikit.components.SessionNavKey
 import com.pocketshell.uikit.components.SessionTerminalBar
 import com.pocketshell.uikit.components.TerminalHotkeysPaletteOverlay
@@ -94,13 +89,7 @@ const val SESSION_HEADER_KEBAB_TAG: String = "session-header-kebab"
 const val SESSION_STOP_FAILURE_TAG: String = "session-stop-failure"
 const val SESSION_ACTIONS_ITEM_TAG: String = "session-actions-item"
 const val SESSION_ENDED_TAG: String = "session-ended"
-
-/** D3: header status dot — colour from [ConnectionStatus], label from the status description. */
-const val SESSION_STATUS_DOT_TAG: String = "session-status-dot"
-/** D3: the strip "+" label, reused by the header "+" when the strip is hidden. */
-const val SESSION_TAB_NEW_DESCRIPTION: String = "New session"
-/** D3: test tag for the header "+" shown while the tab strip is hidden. */
-const val SESSION_HEADER_NEW_TAG: String = "session-header-new"
+const val SESSION_CONTEXT_BAR_TAG: String = "session-context-bar"
 
 /**
  * Route-level entry point for `session/{hostId}/{sessionName}` (rewrite tasks
@@ -132,7 +121,6 @@ fun SessionRoute(
     onBack: () -> Unit,
     onOpenUsage: () -> Unit,
     onOpenFiles: () -> Unit = {},
-    onOpenPorts: () -> Unit = {},
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
     workspacePath: String? = null,
@@ -198,7 +186,6 @@ fun SessionRoute(
         usagePillState = usagePillState,
         onOpenUsage = onOpenUsage,
         onOpenFiles = onOpenFiles,
-        onOpenPorts = onOpenPorts,
         onOpenSession = onOpenSession,
         onOpenNewSession = onOpenNewSession,
         sessionSwitcherState = sessionSwitcherState,
@@ -261,7 +248,6 @@ fun SessionScreen(
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
     onOpenFiles: () -> Unit = {},
-    onOpenPorts: () -> Unit = {},
     onResized: (cols: Int, rows: Int) -> Unit,
     usagePillState: UsageGlancePillState? = null,
     onOpenUsage: () -> Unit = {},
@@ -341,15 +327,6 @@ fun SessionScreen(
     // sentence ("devbox · Connected") through the dot's contentDescription.
     val transport = terminalHeaderTransport(state)
     val transportSentence = headerSentence(sessionSwitcherState.hostLabel, transport.words ?: "Connected")
-    // Issue #2635 D3 / `ux-rules.md` rule 6: a strip with one item is vertical
-    // chrome without a choice. With exactly one live session the strip is not
-    // rendered and its "+" moves into the header, so the affordance stays one
-    // tap away and the terminal gets the row back. The non-live states keep
-    // the strip: "attach or start something else" is the whole point of the
-    // screen when there is nothing to watch.
-    val showTabStrip = !sessionEnded &&
-        !deliveryReviewVisible &&
-        (sessionSwitcherState.sessions.size > 1 || state !is SessionUiState.Live)
 
     Column(
         modifier = modifier
@@ -378,42 +355,19 @@ fun SessionScreen(
                     headerSentence(sessionSwitcherState.hostLabel, words)
                 }
             },
-            // Issue #2635 D3: one line, ellipsised. The two-line allowance
-            // bought a wrapped header on long workspace names and cost every
-            // session a row of terminal; the full name stays in the switcher
-            // sheet.
-            titleMaxLines = 1,
+            titleMaxLines = 2,
             subtitleMaxLines = 2,
             titleTestTag = SESSION_TITLE_TAG,
-            // Issue #2635 D3: the dot carries a stable test tag for the chrome
-            // tests; colour and words come from the #2717 T2 transport above.
-            statusTestTag = SESSION_STATUS_DOT_TAG,
             onBack = handleBack,
             backTestTag = SESSION_BACK_TAG,
             trailing = if (deliveryReviewVisible) {
                 null
             } else {
                 {
-                    // Issue #2635 D3: with exactly one live session the strip
-                    // is not rendered, so its "+" moves here — the create
-                    // affordance never disappears, it just stops costing a
-                    // whole row. Same label as the strip's "+".
-                    if (!showTabStrip && !sessionEnded) {
-                        HeaderIconAction(
-                            icon = PocketShellIcons.Plus,
-                            contentDescription = SESSION_TAB_NEW_DESCRIPTION,
-                            onClick = onOpenNewSession,
-                            testTag = SESSION_HEADER_NEW_TAG,
-                        )
-                    }
                     if (usagePillState != null) {
-                        // Issue #2635: the glance pill answers to the same tag
-                        // as the fallback "Usage" button below — one control,
-                        // one tag, whichever skin is up.
                         UsageGlancePill(
                             state = usagePillState,
                             onClick = onOpenUsage,
-                            testTag = SESSION_USAGE_TAG,
                         )
                     } else {
                         PocketShellButton(
@@ -433,27 +387,12 @@ fun SessionScreen(
             },
         )
 
-        if (showTabStrip) {
-            // Issue #2632: the sibling sessions in this workspace are ON
-            // screen as tabs, so switching is one tap. The sheet is still
-            // reachable through the overflow for the things a tab cannot
-            // carry (status text, stop).
-            SessionTabStrip(
-                tabs = sessionTabs(
-                    sessions = sessionSwitcherState.sessions,
-                    currentSessionName = sessionName,
-                    currentSessionLabel = sessionLabel,
-                ),
-                selectedId = sessionName,
-                onSelect = { id ->
-                    if (id != sessionName) {
-                        sessionSwitcherState.sessions
-                            .firstOrNull { it.name == id }
-                            ?.let(onOpenSession)
-                    }
-                },
-                onNewTab = onOpenNewSession,
-                onOverflow = { sessionSwitcherOpen = true },
+        if (!sessionEnded && !deliveryReviewVisible) {
+            SessionContextBar(
+                sessionLabel = sessionLabel,
+                session = currentSession,
+                sessionCount = sessionSwitcherState.sessions.size.coerceAtLeast(1),
+                onClick = { sessionSwitcherOpen = true },
             )
         }
 
@@ -675,6 +614,10 @@ fun SessionScreen(
                 onPermissionDenied = onPermissionDenied,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
+                onOpenHotkeys = {
+                    composerOpen = false
+                    hotkeysOpen = true
+                },
                 availableSlashCommands = availableSlashCommands,
             )
         } else {
@@ -698,6 +641,10 @@ fun SessionScreen(
                 onDiscard = onDiscardDraft,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
+                onOpenHotkeys = {
+                    composerOpen = false
+                    hotkeysOpen = true
+                },
                 availableSlashCommands = availableSlashCommands,
             )
         }
@@ -712,10 +659,6 @@ fun SessionScreen(
             onBrowseFiles = {
                 terminalActionsOpen = false
                 onOpenFiles()
-            },
-            onPorts = {
-                terminalActionsOpen = false
-                onOpenPorts()
             },
             onOpenUsage = {
                 terminalActionsOpen = false
@@ -951,52 +894,50 @@ private fun headerSentence(hostLabel: String, words: String): String =
         words,
     ).joinToString(" · ").ifBlank { words }
 
-
-/**
- * The tabs for the session strip (issue #2632).
- *
- * The open session is ALWAYS a tab, even while the listing is still loading or
- * has failed: a strip that appears a second after the terminal, or vanishes
- * when `sessions list` errors, is worse chrome than no strip at all. When the
- * listing has not (yet) produced the open session, it is synthesised from the
- * route's own name so the tab bar is stable from the first frame.
- *
- * Labels come from [sessionDisplayNames] — the same de-duplicating projection
- * the switcher sheet and the workspace rows use — so a tab and its sheet row
- * cannot end up calling the same session two different things.
- */
-internal fun sessionTabs(
-    sessions: List<SessionRow>,
-    currentSessionName: String,
-    currentSessionLabel: String,
-): List<SessionTab> {
-    val displayNames = sessionDisplayNames(sessions)
-    val listed = sessions.map { session ->
-        SessionTab(
-            id = session.name,
-            label = displayNames[session.name] ?: readableSessionName(session.name),
-            state = sessionTabState(session),
-        )
-    }
-    if (listed.any { it.id == currentSessionName }) return listed
-    return listOf(
-        SessionTab(id = currentSessionName, label = currentSessionLabel),
-    ) + listed
+@Composable
+private fun SessionContextBar(
+    sessionLabel: String,
+    session: SessionRow?,
+    sessionCount: Int,
+    onClick: () -> Unit,
+) {
+    ListRow(
+        title = sessionLabel,
+        subtitle = session?.let { sessionProgramLabel(it) + " · " + sessionStatusLabel(it) }
+            ?: "Terminal",
+        leading = {
+            Icon(
+                imageVector = PocketShellIcons.Terminal,
+                contentDescription = null,
+                tint = PocketShellColors.TextSecondary,
+            )
+        },
+        trailing = {
+            Text(
+                text = sessionCount.toString(),
+                color = PocketShellColors.TextSecondary,
+                style = PocketShellType.metadata,
+            )
+            Icon(
+                imageVector = PocketShellIcons.Down,
+                contentDescription = "Switch sessions",
+                tint = PocketShellColors.TextMuted,
+            )
+        },
+        onClick = onClick,
+        modifier = Modifier.testTag(SESSION_CONTEXT_BAR_TAG),
+    )
 }
 
-/**
- * The tab's dot, straight off the host-reported agent state.
- *
- * A host that reports no state at all is [SessionTabState.Idle], not a missing
- * dot: every tab keeps the same width vocabulary, so the strip does not reflow
- * when one session's state arrives before another's.
- */
-internal fun sessionTabState(session: SessionRow): SessionTabState =
-    when (session.agentState) {
-        AgentState.WORKING -> SessionTabState.Working
-        AgentState.WAITING -> SessionTabState.NeedsInput
-        AgentState.IDLE, null -> SessionTabState.Idle
-    }
+private fun sessionProgramLabel(session: SessionRow): String = when {
+    session.agent.equals("claude", ignoreCase = true) -> "Claude Code"
+    session.agent.equals("codex", ignoreCase = true) -> "Codex"
+    session.agent.equals("opencode", ignoreCase = true) -> "OpenCode"
+    session.agent.equals("grok", ignoreCase = true) -> "Grok"
+    session.engine.equals("shell", ignoreCase = true) -> "Shell"
+    !session.profile.isNullOrBlank() -> session.profile.orEmpty()
+    else -> "Terminal"
+}
 
 private fun String.looksLikeEndedSession(): Boolean =
     contains(" ended.") || contains(" ended (exit ") || contains(" ended:")

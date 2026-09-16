@@ -14,8 +14,6 @@ import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.async
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runCurrent
@@ -138,50 +136,6 @@ class ConnectionsRegistryTest {
 
         assertEquals(1, factory.dialCount)
         assertSame(first.connection, second.connection)
-    }
-
-    /**
-     * Issue #2635 2a: the host list's live feed — membership × per-connection
-     * state, never a dial. It reads empty before anything connects, flips on
-     * with the successful dial, and drops the id the moment the connection is
-     * closed, so the row dot can never outlive its transport.
-     */
-    @Test
-    fun `liveHostIds tracks dialed and closed connections`() = runTest {
-        val dispatcher = StandardTestDispatcher(testScheduler)
-        val factory = FakeHostConnectionFactory()
-        val registry = registry(factory, dispatcher)
-
-        val flow = registry.liveHostIds()
-
-        assertEquals(emptySet<Long>(), flow.first())
-
-        registry.getOrConnect(hostId) as ConnectResult.Connected
-        assertEquals(setOf(hostId), flow.first())
-
-        registry.close(hostId)
-        assertEquals(emptySet<Long>(), flow.first())
-    }
-
-    /**
-     * Issue #2635 2a, mutation pin: liveness is the connection's STATE, not
-     * just table membership. A dialed connection that goes dark (transport
-     * lost) without being closed must leave the feed, or the host list would
-     * paint a live dot for a dead transport.
-     */
-    @Test
-    fun `liveHostIds drops an id whose connection is lost`() = runTest {
-        val dispatcher = StandardTestDispatcher(testScheduler)
-        val factory = FakeHostConnectionFactory()
-        val registry = registry(factory, dispatcher)
-
-        val flow = registry.liveHostIds()
-        registry.getOrConnect(hostId) as ConnectResult.Connected
-        assertEquals(setOf(hostId), flow.first())
-
-        factory.connections.single().markLost("network dropped")
-
-        assertEquals(emptySet<Long>(), flow.first())
     }
 
     @Test

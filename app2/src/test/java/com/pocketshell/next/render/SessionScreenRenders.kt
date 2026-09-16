@@ -3,10 +3,7 @@ package com.pocketshell.next.render
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.pocketshell.next.composer.ComposerUiState
 import com.pocketshell.next.terminal.SessionScreen
@@ -139,83 +136,14 @@ class SessionScreenRenders {
         )
     }
 
-    // ── Issue #2635 D3 at the evidence bar's widths and font scale ──
-    // The live chrome below is the single-session case: header status dot, no
-    // "Connected" subtitle line, tab strip hidden and the "+" in the header.
-
-    @Test
-    @Config(qualifiers = "w360dp-h915dp-night-xxhdpi")
-    fun sessionLive360() = render("i2635-session-live-360") {
-        SessionChrome(SessionUiState.Live(createRemoteTerminalSession()))
-    }
-
-    @Test
-    @Config(qualifiers = "w600dp-h915dp-night-xxhdpi")
-    fun sessionLive600() = render("i2635-session-live-600") {
-        SessionChrome(SessionUiState.Live(createRemoteTerminalSession()))
-    }
-
-    @Test
-    fun sessionLiveFontScale13() = render(
-        name = "i2635-session-live-font-scale-13",
-        fontScale = 1.3f,
-    ) {
-        SessionChrome(SessionUiState.Live(createRemoteTerminalSession()))
-    }
-
-    @Test
-    @Config(qualifiers = "w360dp-h915dp-night-xxhdpi")
-    fun sessionAttaching360() = render("i2635-session-attaching-360") {
-        SessionChrome(SessionUiState.Connecting)
-    }
-
-    /** The single-session chrome under test, shared by the width variants. */
-    @Composable
-    private fun SessionChrome(state: SessionUiState) {
-        SessionScreen(
-            state = state,
-            composerState = ComposerUiState(),
-            sessionName = "git-pocketshell",
-            onBack = {},
-            onResized = { _, _ -> },
-            onRetry = {},
-            onHotkeySend = {},
-            onDraftChange = {},
-            onSend = { true },
-            onInsert = {},
-            onAttach = {},
-            onMicTap = {},
-            onCancelRecording = {},
-            onToggleHistory = {},
-            onTogglePreview = {},
-            onRemoveAttachment = {},
-            onDismissNotice = {},
-            onDiscardDraft = {},
-            onUseHistoryEntry = {},
-        )
-    }
-
-    private fun render(
-        name: String,
-        fontScale: Float? = null,
-        content: @Composable () -> Unit,
-    ) {
+    private fun render(name: String, content: @Composable () -> Unit) {
         captureRoboImage("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = PocketShellColors.Background,
                 ) {
-                    if (fontScale == null) {
-                        content()
-                    } else {
-                        val density = LocalDensity.current
-                        CompositionLocalProvider(
-                            LocalDensity provides Density(density.density, fontScale),
-                        ) {
-                            content()
-                        }
-                    }
+                    content()
                 }
             }
         }

@@ -20,7 +20,6 @@ import com.pocketshell.next.AppNavHost
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.nav.Destination
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -30,7 +29,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.annotation.Config
-import com.pocketshell.next.usage.usageGlanceCache
 
 /**
  * Add and edit a host through the REAL screens inside the REAL navigation
@@ -219,7 +217,7 @@ class AddEditHostNavigationTest {
      * production scoping too.
      */
     private fun setContent(): NavHostController {
-        val hostList = HostListViewModel(stack.db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), Dispatchers.Unconfined)
+        val hostList = HostListViewModel(stack.db.hostDao(), Dispatchers.Unconfined)
         val formViewModel = AddEditHostViewModel(
             stack.db.hostDao(),
             stack.db.sshKeyDao(),
@@ -240,7 +238,7 @@ class AddEditHostNavigationTest {
                     )
                 },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { hostId, _, _, _, _, _, _, _ -> Text("Tree(hostId=$hostId)") },
+                workspacesScreen = { hostId, _, _, _, _, _, _, _, _ -> Text("Tree(hostId=$hostId)") },
                 hostFormScreen = { hostId, onDone, onAddKey, onTestConnection ->
                     AddEditHostRoute(
                         hostId = hostId,

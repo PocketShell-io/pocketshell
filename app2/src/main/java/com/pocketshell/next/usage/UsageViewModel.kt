@@ -6,7 +6,6 @@ import com.pocketshell.next.connect.ConnectionsRegistry
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.settings.SettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import java.time.Instant
 import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -88,7 +87,6 @@ class UsageGlanceViewModel @Inject constructor(
     private val connections: ConnectionsRegistry,
     private val clients: HostCliClientFactory,
     private val settings: SettingsRepository,
-    private val cache: UsageGlanceCache,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<UsageGlancePillState?>(null)
@@ -118,18 +116,11 @@ class UsageGlanceViewModel @Inject constructor(
                 val detected = async { detectFocus(hostId, sessionId, sessionName) }
                 usage.await() to detected.await()
             }
-            val pill = usageGlancePillState(
+            _state.value = usageGlancePillState(
                 snapshots = result.snapshots,
                 warnPercent = settings.settings.value.usageWarnThresholdPercent.toDouble(),
                 focus = focus,
             )
-            _state.value = pill
-            // Issue #2632: the landing screen has no connection to read usage
-            // from, so the last reading is kept for it. Only a REAL reading is
-            // cached — a round that found no connected host must not overwrite
-            // a good number with nothing, or the pill would vanish from Hosts
-            // every time the app is opened while disconnected.
-            if (pill != null) cache.put(pill, Instant.now())
         }
     }
 

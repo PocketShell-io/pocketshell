@@ -112,7 +112,7 @@ class SessionTreeNavigationTest {
                     navController = controller,
                     hostsScreen = { Text("Hosts") },
                     connectViewModel = { stack.viewModel },
-                    workspacesScreen = { _, _, _, _, _, onBack, onOpenUsage, _ ->
+                    workspacesScreen = { _, _, _, _, _, _, onBack, onOpenUsage, _ ->
                         Column {
                             Text(STAND_IN_WORKSPACES_TEXT)
                             Button(

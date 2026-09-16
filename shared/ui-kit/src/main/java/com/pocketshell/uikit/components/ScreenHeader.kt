@@ -20,12 +20,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 import com.pocketshell.uikit.icons.PocketShellIcons
+import com.pocketshell.uikit.model.ConnectionStatus
 
 /**
  * Shared screen header — the title block that sits atop the tree, host list,
@@ -67,10 +67,6 @@ import com.pocketshell.uikit.icons.PocketShellIcons
  *   text nodes so screens that previously hand-rolled a tagged header (e.g. the
  *   folder tree's `FOLDER_LIST_TITLE_TAG` / counts tag) keep their existing
  *   instrumentation hooks after migrating onto [ScreenHeader].
- * - **[status] / [statusDescription] / [statusTestTag]** (issue #2635 D3) paint
- *   the live-state dot beside the title instead of a "Connected" subtitle —
- *   steady state costs no second line, and TalkBack gets the words through the
- *   dot's content description.
  *
  * This is presentational only — wire navigation through [onBack] and the one
  * secondary affordance through [trailing].
@@ -87,7 +83,6 @@ fun ScreenHeader(
     subtitleTestTag: String? = null,
     status: ConnectionStatus? = null,
     statusDescription: String? = null,
-    statusTestTag: String? = null,
     onBack: (() -> Unit)? = null,
     backTestTag: String? = null,
     leading: (@Composable () -> Unit)? = null,
@@ -129,19 +124,11 @@ fun ScreenHeader(
                 .weight(1f)
                 .padding(top = PocketShellSpacing.xs),
         ) {
-            // Issue #2635 D3: the live status rides as a dot beside the title,
-            // not as a "Connected" subtitle — steady state costs no second
-            // line. The description carries the words for TalkBack; the dot
-            // itself is paint.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (status != null) {
                     StatusDot(
                         status = status,
                         contentDescription = statusDescription,
-                        modifier = Modifier
-                            .let { base ->
-                                if (statusTestTag == null) base else base.testTag(statusTestTag)
-                            },
                     )
                     Spacer(modifier = Modifier.width(PocketShellSpacing.sm))
                 }
@@ -150,7 +137,7 @@ fun ScreenHeader(
                     color = PocketShellColors.Text,
                     style = titleStyle,
                     maxLines = titleMaxLines,
-                    overflow = TextOverflow.Ellipsis,
+                    overflow = TextOverflow.Clip,
                     modifier = Modifier
                         .semantics { heading() }
                         .let { base -> if (titleTestTag == null) base else base.testTag(titleTestTag) },

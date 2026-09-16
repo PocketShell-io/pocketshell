@@ -68,12 +68,11 @@ import com.pocketshell.next.settings.VoiceSettingsRoute
 import com.pocketshell.next.settings.AddWorkspaceRootRoute
 import com.pocketshell.next.settings.WorkspaceRootsRoute
 import com.pocketshell.next.terminal.GraceCoordinator
-import com.pocketshell.next.terminal.LastSessionStore
 import com.pocketshell.next.terminal.SessionRoute
 import com.pocketshell.next.usage.UsageRoute
 import com.pocketshell.next.workspaces.HostWorkspacesRoute
 import com.pocketshell.next.workspaces.ReorderWorkspacesRoute
-import com.pocketshell.next.workspaces.WorkspaceStartRoute
+import com.pocketshell.next.workspaces.WorkspaceRoute
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.uikit.theme.PocketShellTheme
@@ -122,15 +121,6 @@ class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var hostDao: HostDao
-
-    /**
-     * Issue #2632. Injected HERE rather than into [SessionViewModel] so the
-     * recording edge is the NAVIGATION edge: "the user opened this session" is
-     * exactly the moment the route composes, and nothing about the transport
-     * (attach, reconnect, stop) should be able to change what we resume into.
-     */
-    @Inject
-    lateinit var lastSessions: LastSessionStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -189,9 +179,6 @@ class MainActivity : FragmentActivity() {
                                 startupHostId = appSettings.defaultHostId,
                                 startupHostExists = { hostDao.getById(it) != null },
                                 onHostOpened = settingsViewModel::setDefaultHostId,
-                                onSessionOpened = { hostId, sessionName, workspacePath ->
-                                    lastSessions.record(hostId, sessionName, workspacePath)
-                                },
                             )
                     }
                 }
@@ -217,8 +204,6 @@ data class HostListActions(
     val onEditHost: (Long) -> Unit,
     val onOpenSettings: () -> Unit,
     val onOpenSshKeys: () -> Unit,
-    /** Issue #2632: the landing usage pill's destination. */
-    val onOpenUsage: () -> Unit = {},
 )
 
 /**
@@ -226,32 +211,17 @@ data class HostListActions(
  * already on the back stack. That keeps one terminal/ViewModel per
  * host-session-workspace identity and makes switching back return to the
  * existing terminal instead of stacking another copy of it.
- *
- * [replaceFrom] is issue #2648's forward fix for the first #2632 landing: a
- * LATERAL switch (tab strip / switcher sheet, from inside a terminal) to a
- * sibling the back stack has never held must REPLACE the current terminal
- * entry rather than push on top of it, or Back from the terminal returns to
- * the previous TAB instead of the list the user came from, and N tab taps cost
- * N+1 Backs. Callers that drill DOWN into a session (a workspace-row tap)
- * pass nothing and still push.
  */
 private fun NavHostController.openSession(
     hostId: Long,
     sessionName: String,
     workspacePath: String? = null,
     sessionId: String? = null,
-    replaceFrom: String? = null,
 ) {
     val route = Destination.Session.route(hostId, sessionName, workspacePath, sessionId)
     val existing = runCatching { getBackStackEntry(route) }.getOrNull()
     if (existing == null) {
-        if (replaceFrom == null) {
-            navigate(route)
-        } else {
-            navigate(route) {
-                popUpTo(replaceFrom) { inclusive = true }
-            }
-        }
+        navigate(route)
         return
     }
     while (currentBackStackEntry !== existing) {
@@ -278,36 +248,9 @@ private fun NavHostController.openSession(
  * still exercise the real navigation edge — the production defaults are the
  * real ones.
  */
-data class WorkspacesScreenLaunch(
+data class WorkspaceScreenLaunch(
     val initialRootPath: String? = null,
     val initialRootAction: String? = null,
-    /**
-     * Issue #2632: this visit was started by opening the HOST, so the host's
-     * last session should reopen once the live listing confirms it is still
-     * there. False for every other way of reaching the screen (a Back from a
-     * session, a workspace-root action) — otherwise leaving a terminal would
-     * immediately throw the user back into it.
-     */
-    val resumeLastSession: Boolean = false,
-)
-
-/**
- * Every non-dial action a terminal can start, grouped into one type. The
- * session screen's navigation seam carries SIX of them (#2721 added "Services
- * & tunnels"); passing them as six positional lambdas through [AppNavHost]
- * blew past the Compose compiler's transformed-parameter limit AND made every
- * test stand-in unreadable — the same two reasons [HostListActions] exists.
- */
-data class SessionScreenActions(
-    val onBack: () -> Unit,
-    /** Task P-5: the top bar's usage glance pill navigates here. */
-    val onOpenUsage: () -> Unit,
-    val onOpenFiles: () -> Unit,
-    /** Issue #2721 (N1): Services & tunnels, reachable from the terminal. */
-    val onOpenPorts: () -> Unit,
-    /** A lateral switch between sibling terminals (see [openSession]). */
-    val onOpenSession: (SessionRow) -> Unit,
-    val onOpenNewSession: () -> Unit,
 )
 
 @Composable
@@ -321,13 +264,6 @@ fun AppNavHost(
     startupHostExists: suspend (Long) -> Boolean = { true },
     /** Persists the host selection without making the host list own settings. */
     onHostOpened: (Long) -> Unit = {},
-    /**
-     * Issue #2632: records the session a route just opened, so the next time
-     * this host is opened it resumes there instead of the workspace list.
-     * Defaulted to a no-op so a Robolectric nav test needs no store.
-     */
-    onSessionOpened: (hostId: Long, sessionName: String, workspacePath: String?) -> Unit =
-        { _, _, _ -> },
     hostsScreen: @Composable (HostListActions) -> Unit = { actions ->
         HostListRoute(
             onOpenHost = actions.onOpenHost,
@@ -335,23 +271,24 @@ fun AppNavHost(
             onEditHost = actions.onEditHost,
             onOpenSettings = actions.onOpenSettings,
             onOpenSshKeys = actions.onOpenSshKeys,
-            onOpenUsage = actions.onOpenUsage,
             updateCheckViewModel = hiltViewModel(),
         )
     },
     connectViewModel: @Composable () -> ConnectViewModel = { hiltViewModel() },
     workspacesScreen: @Composable (
         hostId: Long,
+        onOpenWorkspace: (String) -> Unit,
         onOpenSession: (SessionRow) -> Unit,
         onOpenFiles: () -> Unit,
         onOpenFilesAtPath: (String) -> Unit,
         onOpenPorts: () -> Unit,
         onBack: () -> Unit,
         onOpenUsage: () -> Unit,
-        launch: WorkspacesScreenLaunch,
-    ) -> Unit = { hostId, onOpenSession, onOpenFiles, onOpenFilesAtPath, onOpenPorts, onBack, onOpenUsage, launch ->
+        launch: WorkspaceScreenLaunch,
+    ) -> Unit = { hostId, onOpenWorkspace, onOpenSession, onOpenFiles, onOpenFilesAtPath, onOpenPorts, onBack, onOpenUsage, launch ->
         val scope = rememberCoroutineScope()
         HostWorkspacesRoute(
+            onOpenWorkspace = onOpenWorkspace,
             onOpenSession = onOpenSession,
             onOpenFiles = onOpenFiles,
             onOpenFilesAtPath = onOpenFilesAtPath,
@@ -367,27 +304,29 @@ fun AppNavHost(
                     navController.popBackStack()
                 }
             },
-            // Issue #2721: the zero-sessions fallback only — a workspace with
-            // a live session never comes through here (the row opens its
-            // terminal directly).
             onStartSessionAtPath = { path ->
                 navController.navigate(Destination.WorkspaceStart.route(hostId, path))
             },
             initialRootPath = launch.initialRootPath,
             initialRootAction = launch.initialRootAction,
-            resumeLastSession = launch.resumeLastSession,
-            usageGlanceViewModel = hiltViewModel(),
         )
     },
-    workspaceStartScreen: @Composable (
+    workspaceScreen: @Composable (
         hostId: Long,
         workspacePath: String,
         onOpenSession: (String, String?) -> Unit,
+        onOpenFiles: () -> Unit,
+        onOpenPorts: () -> Unit,
         onBack: () -> Unit,
-    ) -> Unit = { hostId, _, onOpenSession, onBack ->
-        WorkspaceStartRoute(
+        onOpenUsage: () -> Unit,
+    ) -> Unit = { hostId, _, onOpenSession, onOpenFiles, onOpenPorts, onBack, onOpenUsage ->
+        WorkspaceRoute(
             onOpenSession = onOpenSession,
+            onOpenFiles = onOpenFiles,
+            onOpenPorts = onOpenPorts,
             onBack = onBack,
+            onOpenUsage = onOpenUsage,
+            onOpenReorder = { navController.navigate(Destination.ReorderWorkspaces.route(hostId)) },
         )
     },
     sessionScreen: @Composable (
@@ -395,19 +334,22 @@ fun AppNavHost(
         sessionName: String,
         workspacePath: String?,
         sessionId: String?,
-        actions: SessionScreenActions,
-    ) -> Unit = { hostId, sessionName, workspacePath, sessionId, actions ->
+        onBack: () -> Unit,
+        onOpenUsage: () -> Unit,
+        onOpenFiles: () -> Unit,
+        onOpenSession: (SessionRow) -> Unit,
+        onOpenNewSession: () -> Unit,
+    ) -> Unit = { hostId, sessionName, workspacePath, sessionId, onBack, onOpenUsage, onOpenFiles, onOpenSession, onOpenNewSession ->
         SessionRoute(
             hostId = hostId,
             sessionName = sessionName,
             workspacePath = workspacePath,
             sessionId = sessionId,
-            onBack = actions.onBack,
-            onOpenUsage = actions.onOpenUsage,
-            onOpenFiles = actions.onOpenFiles,
-            onOpenPorts = actions.onOpenPorts,
-            onOpenSession = actions.onOpenSession,
-            onOpenNewSession = actions.onOpenNewSession,
+            onBack = onBack,
+            onOpenUsage = onOpenUsage,
+            onOpenFiles = onOpenFiles,
+            onOpenSession = onOpenSession,
+            onOpenNewSession = onOpenNewSession,
         )
     },
     portsScreen: @Composable (onBack: () -> Unit) -> Unit = { onBack ->
@@ -552,13 +494,6 @@ fun AppNavHost(
     val initialStartupHostId = remember { startupHostId }
     val startupHostToConnect = remember { mutableStateOf<Long?>(null) }
 
-    // Issue #2632: which host, if any, the CURRENT navigation was started for
-    // by opening that host — a cold-launch resume or a host-row tap. The
-    // workspace destination consumes it exactly once, which is what keeps
-    // "resume my last session" from turning into "you can never leave that
-    // session": pressing Back returns to a workspace entry whose arm is spent.
-    val hostOpenedForResume = remember { mutableStateOf<Long?>(null) }
-
     NavHost(
         navController = navController,
         startDestination = Destination.start.pattern,
@@ -588,13 +523,8 @@ fun AppNavHost(
                     HostListActions(
                         onOpenHost = { hostId ->
                             onHostOpened(hostId)
-                            // Issue #2632: a host tap is a "take me back to
-                            // what I was doing" gesture, so it arms the resume
-                            // for the workspace destination the gate opens.
-                            hostOpenedForResume.value = hostId
                             onOpenHost(hostId)
                         },
-                        onOpenUsage = { navController.navigate(Destination.Usage.route()) },
                         // Task P-6: the management routes are plain
                         // navigations, deliberately NOT gated by the connect
                         // gate — editing a host must work while the host is
@@ -628,12 +558,6 @@ fun AppNavHost(
             val raw = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: Destination.NO_HOST_ID
             ConnectGate(
                 onConnected = { connectedHostId ->
-                    // Issue #2721 (N3): the connect gate arms the resume the
-                    // same way a host-row tap does, so "Save → connected →
-                    // terminal" is one flow — a host saved or edited in the
-                    // form reopens where the user left off, exactly as if the
-                    // host row had been tapped.
-                    hostOpenedForResume.value = connectedHostId
                     navController.navigate(Destination.Workspaces.route(connectedHostId)) {
                         // A successful form test is the access boundary. Keep
                         // Hosts below the new tree, but do not leave a stale
@@ -682,23 +606,16 @@ fun AppNavHost(
             val onOpenPorts: () -> Unit = { navController.navigate(Destination.Ports.route(hostId)) }
             val onBack: () -> Unit = { navController.popBackStack() }
             val onOpenUsage: () -> Unit = { navController.navigate(Destination.HostUsage.route(hostId)) }
-            // Issue #2632: consumed once, in the composition of THIS entry. A
-            // Back from the resumed session recomposes this entry with the arm
-            // already spent, so the user lands on the workspace list.
-            val resumeLastSession = remember {
-                (hostOpenedForResume.value == hostId).also {
-                    if (it) hostOpenedForResume.value = null
-                }
-            }
             workspacesScreen(
                 hostId,
+                { path -> navController.navigate(Destination.Workspace.route(hostId, path)) },
                 onOpenSession,
                 onOpenFiles,
                 { path -> navController.navigate(Destination.Files.route(hostId, path)) },
                 onOpenPorts,
                 onBack,
                 onOpenUsage,
-                WorkspacesScreenLaunch(resumeLastSession = resumeLastSession),
+                WorkspaceScreenLaunch(),
             )
         }
         composable(
@@ -717,13 +634,38 @@ fun AppNavHost(
             }
             workspacesScreen(
                 hostId,
+                { path -> navController.navigate(Destination.Workspace.route(hostId, path)) },
                 onOpenSession,
                 { navController.navigate(Destination.Files.route(hostId)) },
                 { path -> navController.navigate(Destination.Files.route(hostId, path)) },
                 { navController.navigate(Destination.Ports.route(hostId)) },
                 { navController.popBackStack() },
                 { navController.navigate(Destination.HostUsage.route(hostId)) },
-                WorkspacesScreenLaunch(rootPath, action),
+                WorkspaceScreenLaunch(rootPath, action),
+            )
+        }
+        composable(
+            route = Destination.Workspace.pattern,
+            arguments = listOf(
+                navArgument(Destination.ARG_HOST_ID) { type = NavType.LongType },
+                navArgument(Destination.ARG_WORKSPACE_PATH) { type = NavType.StringType },
+            ),
+        ) { entry ->
+            val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
+            val path = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH).orEmpty()
+            workspaceScreen(
+                hostId,
+                path,
+                { sessionName, sessionId ->
+                    navController.openSession(hostId, sessionName, path, sessionId)
+                },
+                { navController.navigate(Destination.Files.route(hostId, path)) },
+                { navController.navigate(Destination.Ports.route(hostId)) },
+                { navController.popBackStack() },
+                // Issue #2532: Usage is a host-scoped panel, same as Files/Ports,
+                // so the tree header is an entry point — not only the session
+                // glance pill.
+                { navController.navigate(Destination.HostUsage.route(hostId)) },
             )
         }
         composable(
@@ -733,19 +675,18 @@ fun AppNavHost(
                 navArgument(Destination.ARG_WORKSPACE_PATH) { type = NavType.StringType },
             ),
         ) { entry ->
-            // Issue #2721: the ONLY workspace-level screen left. It hosts the
-            // create sheet for a workspace whose tap found nothing running —
-            // there is never a blank intermediate page between the workspace
-            // row and a terminal.
             val hostId = entry.arguments?.getLong(Destination.ARG_HOST_ID) ?: 0L
             val path = entry.arguments?.getString(Destination.ARG_WORKSPACE_PATH).orEmpty()
-            workspaceStartScreen(
-                hostId,
-                path,
-                { sessionName, sessionId ->
+            WorkspaceRoute(
+                onOpenSession = { sessionName, sessionId ->
                     navController.openSession(hostId, sessionName, path, sessionId)
                 },
-                { navController.popBackStack() },
+                onOpenFiles = { navController.navigate(Destination.Files.route(hostId, path)) },
+                onOpenPorts = { navController.navigate(Destination.Ports.route(hostId)) },
+                onBack = { navController.popBackStack() },
+                onOpenUsage = { navController.navigate(Destination.HostUsage.route(hostId)) },
+                onOpenReorder = { navController.navigate(Destination.ReorderWorkspaces.route(hostId)) },
+                startSessionOnEntry = true,
             )
         }
         composable(
@@ -782,50 +723,25 @@ fun AppNavHost(
             // Issue #2572: the id, not the name, is what a back-stack entry
             // resolves against — a rename must not strand this screen.
             val sessionId = entry.arguments?.getString(Destination.ARG_SESSION_ID)
-            // Issue #2632: reaching this route IS "the user opened this
-            // session", including via the switcher, the tab strip, a deep
-            // link, and a process-death restoration of the back stack.
-            LaunchedEffect(hostId, name, workspacePath) {
-                onSessionOpened(hostId, name, workspacePath)
-            }
             sessionScreen(
                 hostId,
                 name,
                 workspacePath,
                 sessionId,
-                SessionScreenActions(
-                    onBack = { navController.popBackStack() },
-                    // Task P-5: the top bar's usage glance pill navigates here.
-                    onOpenUsage = { navController.navigate(Destination.HostUsage.route(hostId)) },
-                    onOpenFiles = {
-                        navController.navigate(Destination.Files.route(hostId, workspacePath))
-                    },
-                    // Issue #2721 (N1): "Services & tunnels" is reachable from
-                    // the terminal's own actions sheet — the workspace screen
-                    // that used to link it is gone.
-                    onOpenPorts = { navController.navigate(Destination.Ports.route(hostId)) },
-                    onOpenSession = { session ->
-                        // Issue #2632's switcher/tab-strip edge; issue #2648's
-                        // replaceFrom: this is a LATERAL switch between sibling
-                        // terminals, so it replaces the current terminal entry
-                        // instead of stacking on it — Back keeps pointing at
-                        // whatever the user drilled in from.
-                        navController.openSession(
-                            hostId,
-                            session.name,
-                            session.workspace,
-                            session.id,
-                            replaceFrom = Destination.Session.route(hostId, name, workspacePath, sessionId),
-                        )
-                    },
-                    onOpenNewSession = {
-                        if (workspacePath.isNullOrBlank()) {
-                            navController.navigate(Destination.Workspaces.route(hostId))
-                        } else {
-                            navController.navigate(Destination.WorkspaceStart.route(hostId, workspacePath))
-                        }
-                    },
-                ),
+                { navController.popBackStack() },
+                // Task P-5: the top bar's usage glance pill navigates here.
+                { navController.navigate(Destination.HostUsage.route(hostId)) },
+                { navController.navigate(Destination.Files.route(hostId, workspacePath)) },
+                { session ->
+                    navController.openSession(hostId, session.name, session.workspace, session.id)
+                },
+                {
+                    if (workspacePath.isNullOrBlank()) {
+                        navController.navigate(Destination.Workspaces.route(hostId))
+                    } else {
+                        navController.navigate(Destination.WorkspaceStart.route(hostId, workspacePath))
+                    }
+                },
             )
         }
         composable(
@@ -1027,10 +943,6 @@ fun AppNavHost(
             }
             // ConnectGate owns the dial, trust prompt, retry, and success
             // navigation. This handoff supplies only the validated id.
-            // Issue #2632: a cold launch that already resumes the host should
-            // land on the terminal the user actually left, not one level above
-            // it — so the workspace destination this dial opens is armed.
-            hostOpenedForResume.value = hostId
             startupHostToConnect.value = hostId
         }
     }

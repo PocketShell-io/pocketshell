@@ -22,15 +22,12 @@ import java.nio.charset.StandardCharsets
  *   connections registry (task M-3). That is the deliberate break from the old
  *   graph, where a credential-carrying destination was the norm.
  *
- * Route set is fixed by plan §A.1: Hosts, Workspaces, Session, Files, Settings, Usage,
+ * Route set is fixed by plan §A.1: Hosts, Workspaces, Workspace, Session, Files, Settings, Usage,
  * plus [Ports] (task P-4 — see its own doc for why forwarding is a host-scoped
  * route rather than a tab inside [Session]) and the host-management routes
  * task P-6 adds ([HostForm], [SshKeys]), plus the categorized
  * Settings/support routes from issue #2610. A new screen is a new object here,
- * never an ad-hoc string at a call site. Issue #2721 removed [Workspace]
- * (D22 hard cut): a workspace row opens its entry session's terminal
- * directly, and [WorkspaceStart] is the one workspace-level screen left,
- * hosting the create sheet.
+ * never an ad-hoc string at a call site.
  */
 sealed class Destination(val pattern: String) {
 
@@ -124,12 +121,16 @@ sealed class Destination(val pattern: String) {
     }
 
     /**
-     * The same workspace route with the new-session sheet already open. Since
-     * issue #2721 this is also the only workspace-level screen left: a
-     * workspace row tap opens its entry session's terminal directly, and this
-     * screen exists solely to host the create sheet for a workspace with
-     * nothing running (never a blank intermediate page).
+     * One persistent workspace on a host. The canonical absolute path is a
+     * query argument because it contains `/`; route restoration therefore
+     * carries the workspace identity without relying on in-memory selection.
      */
+    data object Workspace : Destination("workspace/{$ARG_HOST_ID}?$ARG_WORKSPACE_PATH={$ARG_WORKSPACE_PATH}") {
+        fun route(hostId: Long, path: String): String =
+            "workspace/$hostId?$ARG_WORKSPACE_PATH=${encodeSegment(path)}"
+    }
+
+    /** The same workspace route with the new-session sheet already open. */
     data object WorkspaceStart :
         Destination("workspace-start/{$ARG_HOST_ID}?$ARG_WORKSPACE_PATH={$ARG_WORKSPACE_PATH}") {
         fun route(hostId: Long, path: String): String =
@@ -335,7 +336,7 @@ sealed class Destination(val pattern: String) {
          */
         val all: List<Destination>
             get() = listOf(
-                Hosts, Workspaces, Session, Files, FileViewer, Ports, Settings,
+                Hosts, Workspaces, Workspace, Session, Files, FileViewer, Ports, Settings,
                 TerminalSettings, VoiceSettings, VoiceLanguage, ConnectionSettings,
                 GraceSettings, AdvancedSettings, AccountSync, Diagnostics, DiagnosticReport,
                 About, Update, Usage, HostUsage, TunnelDetail, AddTunnel,

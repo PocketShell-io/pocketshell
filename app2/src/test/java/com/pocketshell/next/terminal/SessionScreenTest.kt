@@ -22,7 +22,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import com.pocketshell.next.composer.COMPOSER_ATTACH_TAG
 import com.pocketshell.next.composer.COMPOSER_INSERT_TAG
 import com.pocketshell.next.composer.COMPOSER_DRAFT_TAG
 import com.pocketshell.next.composer.COMPOSER_REVIEW_ACTION_TAG
@@ -30,7 +29,6 @@ import com.pocketshell.next.composer.COMPOSER_REVIEW_TAG
 import com.pocketshell.next.composer.COMPOSER_SEND_TAG
 import com.pocketshell.next.composer.COMPOSER_TAG
 import com.pocketshell.next.composer.COMPOSER_TITLE_TAG
-import com.pocketshell.next.composer.COMPOSER_TOOLS_TRIGGER_TAG
 import com.pocketshell.next.composer.COMPOSER_UNDELIVERED_TAG
 import com.pocketshell.next.composer.ComposerNotice
 import com.pocketshell.next.composer.ComposerUiState
@@ -39,6 +37,7 @@ import com.pocketshell.next.tree.STOP_SESSION_CONFIRM_TAG
 import com.pocketshell.next.tree.STOP_SESSION_ITEM_TAG
 import com.pocketshell.next.tree.STOP_SESSION_TITLE
 import com.pocketshell.next.tree.stopSessionMessage
+import com.pocketshell.next.usage.USAGE_GLANCE_PILL_TAG
 import com.pocketshell.next.usage.UsageGlancePillState
 import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
 import com.pocketshell.uikit.components.SESSION_BAR_MORE_KEYS_TAG
@@ -46,9 +45,6 @@ import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
 import com.pocketshell.uikit.components.SESSION_TERMINAL_BAR_TAG
 import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PALETTE_TAG
 import com.pocketshell.uikit.model.PillKind
-import com.pocketshell.core.hostapi.SessionRow
-import com.pocketshell.uikit.components.SESSION_TAB_NEW_TAG
-import com.pocketshell.uikit.components.SESSION_TAB_STRIP_TAG
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -111,23 +107,6 @@ class SessionScreenTest {
         assertEquals(1, backs)
     }
 
-    /**
-     * Issue #2721 (N1): "Services & tunnels" is reachable FROM a terminal —
-     * the workspace screen that used to link it is gone, so the terminal's
-     * own actions sheet is its home now.
-     */
-    @Test
-    fun `terminal actions sheet reaches services and tunnels`() {
-        var ports = 0
-        setContent(SessionUiState.Connecting, onOpenPorts = { ports += 1 })
-
-        composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
-        composeRule.onNodeWithTag(TERMINAL_ACTIONS_PORTS_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(TERMINAL_ACTIONS_PORTS_TAG).performClick()
-
-        assertEquals(1, ports)
-    }
-
     @Test
     fun `usage fallback stays promoted out of the terminal actions sheet`() {
         setContent(SessionUiState.Connecting)
@@ -159,11 +138,7 @@ class SessionScreenTest {
             ),
         )
 
-        // Issue #2635: on this screen the pill answers to the SAME tag as the
-        // fallback "Usage" button — one control, one tag — so the pill's own
-        // "session:usage-pill" tag must be shadowed here.
-        composeRule.onNodeWithTag(SESSION_USAGE_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag("session:usage-pill").assertDoesNotExist()
+        composeRule.onNodeWithTag(USAGE_GLANCE_PILL_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).assertIsDisplayed()
         composeRule.onNodeWithContentDescription("Usage Claude 38%").assertIsDisplayed()
         composeRule.onNodeWithText("Claude 7d").assertDoesNotExist()
@@ -429,6 +404,7 @@ class SessionScreenTest {
         )
 
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsNotEnabled()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsNotEnabled()
         composeRule.onNodeWithTag(COMPOSER_DRAFT_TAG).performTextInput(" more")
 
         assertEquals("local draft more", drafts.last())
@@ -477,95 +453,6 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(SESSION_TERMINAL_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_CONNECTING_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SESSION_ERROR_BANNER_TAG).assertDoesNotExist()
-    }
-
-    /**
-     * Issue #2635 D3 / `ux-rules.md` rule 6: a strip with ONE item is vertical
-     * chrome without a choice. The single live session loses the strip and
-     * gains the "+" in the header instead — the create affordance never
-     * disappears, it stops costing a whole row of terminal.
-     */
-    @Test
-    fun `one live session hides the strip and moves the plus into the header`() {
-        setContent(
-            SessionUiState.Live(createRemoteTerminalSession()),
-            switcherState = SessionSwitcherUiState(
-                hostLabel = "hetzner",
-                sessions = listOf(switcherSession("git-pocketshell")),
-            ),
-        )
-
-        composeRule.onNodeWithTag(SESSION_TAB_STRIP_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(SESSION_HEADER_NEW_TAG).assertIsDisplayed()
-    }
-
-    /** D3: with a real choice on screen the strip is back, and the header "+" is not duplicated. */
-    @Test
-    fun `multiple sessions keep the strip and no header plus`() {
-        setContent(
-            SessionUiState.Live(createRemoteTerminalSession()),
-            switcherState = SessionSwitcherUiState(
-                hostLabel = "hetzner",
-                sessions = listOf(
-                    switcherSession("git-pocketshell"),
-                    switcherSession("agent-review"),
-                ),
-            ),
-        )
-
-        composeRule.onNodeWithTag(SESSION_TAB_STRIP_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_TAB_NEW_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_HEADER_NEW_TAG).assertDoesNotExist()
-    }
-
-    /**
-     * D3: the strip's job when the terminal is NOT live is "attach or start
-     * something else", so a lone connecting session still shows it.
-     */
-    @Test
-    fun `a non-live session keeps the strip even alone`() {
-        setContent(
-            SessionUiState.Connecting,
-            switcherState = SessionSwitcherUiState(
-                hostLabel = "hetzner",
-                sessions = listOf(switcherSession("git-pocketshell")),
-            ),
-        )
-
-        composeRule.onNodeWithTag(SESSION_TAB_STRIP_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_HEADER_NEW_TAG).assertDoesNotExist()
-    }
-
-    /**
-     * D3: the steady state costs no words. "Connected" lives on the header
-     * dot's content description (and in TalkBack), not in a subtitle line —
-     * and the dot itself is on screen with its test tag.
-     */
-    @Test
-    fun `a live header shows the status dot and no Connected subtitle`() {
-        setContent(
-            SessionUiState.Live(createRemoteTerminalSession()),
-            switcherState = SessionSwitcherUiState(hostLabel = "hetzner"),
-        )
-
-        composeRule.onNodeWithTag(SESSION_STATUS_DOT_TAG).assertIsDisplayed()
-        composeRule.onNodeWithContentDescription("hetzner · Connected").assertIsDisplayed()
-        composeRule.onNodeWithText("hetzner · Connected").assertDoesNotExist()
-    }
-
-    /** D3: transitional states keep their words — a colour alone cannot say "Reconnecting". */
-    @Test
-    fun `a reconnecting header keeps its subtitle line`() {
-        setContent(
-            SessionUiState.Reconnecting(
-                attempt = 1,
-                retryInMs = 1,
-                terminal = createRemoteTerminalSession(),
-            ),
-            switcherState = SessionSwitcherUiState(hostLabel = "hetzner"),
-        )
-
-        composeRule.onNodeWithText("hetzner · Reconnecting…").assertIsDisplayed()
     }
 
     /**
@@ -658,7 +545,7 @@ class SessionScreenTest {
 
         composeRule.onNodeWithTag(COMPOSER_TITLE_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
     }
@@ -731,7 +618,7 @@ class SessionScreenTest {
     }
 
     @Test
-    fun `paste from the tools row does not dismiss the composer sheet`() {
+    fun `insert does not dismiss the composer sheet`() {
         var inserts = 0
         setContent(
             SessionUiState.Live(createRemoteTerminalSession()),
@@ -741,8 +628,6 @@ class SessionScreenTest {
             embedComposerInWindow = false,
         )
 
-        // Issue #2635 C3: the discoverable paste row lives behind the "+".
-        composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).performClick()
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).performClick()
 
         assertEquals(1, inserts)
@@ -768,22 +653,6 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_UNDELIVERED_TAG).assertIsDisplayed()
     }
 
-    /** A session row as the switcher's host listing would carry it. */
-    private fun switcherSession(name: String): SessionRow = SessionRow(
-        name = name,
-        id = null,
-        workspace = null,
-        tag = null,
-        engine = null,
-        profile = null,
-        agent = null,
-        agentState = null,
-        agentStateSource = null,
-        attached = true,
-        createdEpoch = null,
-        activityEpoch = null,
-    )
-
     private fun setContent(
         state: SessionUiState,
         composerState: ComposerUiState = ComposerUiState(),
@@ -794,7 +663,6 @@ class SessionScreenTest {
         onHotkeySend: (ByteArray) -> Unit = {},
         usagePillState: UsageGlancePillState? = null,
         onOpenUsage: () -> Unit = {},
-        onOpenPorts: () -> Unit = {},
         onDraftChange: (String) -> Unit = {},
         onDismissNotice: () -> Unit = {},
         onSend: () -> Boolean = { true },
@@ -802,7 +670,6 @@ class SessionScreenTest {
         initiallyShowComposer: Boolean = false,
         initiallyShowHotkeys: Boolean = false,
         embedComposerInWindow: Boolean = true,
-        switcherState: SessionSwitcherUiState = SessionSwitcherUiState(),
     ) {
         composeRule.setContent {
             PocketShellTheme {
@@ -812,9 +679,7 @@ class SessionScreenTest {
                     sessionName = SESSION,
                     onBack = onBack,
                     usagePillState = usagePillState,
-                    sessionSwitcherState = switcherState,
                     onOpenUsage = onOpenUsage,
-                    onOpenPorts = onOpenPorts,
                     onResized = onResized,
                     onRetry = onRetry,
                     onStopSession = onStopSession,

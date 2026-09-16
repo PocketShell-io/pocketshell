@@ -50,7 +50,7 @@ class PromptComposerPermissionTest {
     }
 
     @Test
-    fun `the sheet offers paste in the tools and send on the row`() {
+    fun `the sheet is titled Prompt Composer and offers Insert and Send`() {
         var inserts = 0
         var sends = 0
         setContent(
@@ -60,9 +60,6 @@ class PromptComposerPermissionTest {
         )
 
         composeRule.onNodeWithTag(COMPOSER_TITLE_TAG).assertIsDisplayed()
-        // Issue #2635 C3: the discoverable paste row lives in the "+" tools
-        // sheet; Send commits from the row.
-        composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).performClick()
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).performClick()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).performClick()
 
@@ -96,7 +93,7 @@ class PromptComposerPermissionTest {
         composeRule.onNodeWithTag(COMPOSER_TITLE_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_DRAFT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_MIC_TAG).assertIsDisplayed()
     }
 

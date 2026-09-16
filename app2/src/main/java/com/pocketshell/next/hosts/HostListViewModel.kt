@@ -5,18 +5,13 @@ import androidx.lifecycle.viewModelScope
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.entity.HostEntity
 import com.pocketshell.next.di.IoDispatcher
-import com.pocketshell.next.di.LiveHostIds
-import com.pocketshell.next.usage.UsageGlanceCache
-import com.pocketshell.next.usage.UsageGlancePillState
-import com.pocketshell.next.usage.toPillState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -49,26 +44,6 @@ data class HostRow(
 data class HostListUiState(
     val hosts: List<HostRow> = emptyList(),
     val loaded: Boolean = false,
-    /**
-     * Ids whose connection is currently live (issue #2635 2a). One set, from
-     * the [LiveHostIds] feed; the row dot's colour and its accessibility
-     * label both read it, so the list cannot disagree with itself about a
-     * host. Never dials (D21) — membership follows connections the rest of
-     * the app already made.
-     */
-    val liveIds: Set<Long> = emptySet(),
-    /**
-     * The last usage reading this device saw, or null on an install that has
-     * never read one (issue #2632).
-     *
-     * Cached, never live: the host list is a pre-connection screen and usage
-     * never dials (D21). It is rendered by the same
-     * [com.pocketshell.next.usage.UsageGlancePill] the session screen uses, so
-     * a reading older than
-     * [com.pocketshell.next.usage.USAGE_GLANCE_STALE_AFTER] shows its muted
-     * "read at HH:mm" form rather than passing itself off as live.
-     */
-    val usagePill: UsageGlancePillState? = null,
 )
 
 /**
@@ -87,10 +62,6 @@ data class HostListUiState(
 @HiltViewModel
 class HostListViewModel @Inject constructor(
     private val hostDao: HostDao,
-    // @JvmSuppressWildcards keeps the Dagger key identical on the provider and
-    // the request side (see AppModule.provideLiveHostIds).
-    @LiveHostIds liveHostIds: Flow<@JvmSuppressWildcards Set<Long>>,
-    usageGlanceCache: UsageGlanceCache,
     @IoDispatcher dispatcher: CoroutineDispatcher,
 ) : ViewModel() {
 
@@ -108,16 +79,8 @@ class HostListViewModel @Inject constructor(
     }
 
     val state: StateFlow<HostListUiState> =
-        combine(hostDao.getAll(), usageGlanceCache.last, liveHostIds) { hosts, usage, live ->
-            HostListUiState(
-                hosts = hosts.map { toRow(it) },
-                loaded = true,
-                liveIds = live,
-                // Re-derived per emission, not stored: staleness is a function
-                // of when the reading was taken and when it is being looked at.
-                usagePill = usage?.toPillState(),
-            )
-        }
+        hostDao.getAll()
+            .map { hosts -> HostListUiState(hosts = hosts.map { toRow(it) }, loaded = true) }
             .flowOn(dispatcher)
             .stateIn(
                 scope = viewModelScope,

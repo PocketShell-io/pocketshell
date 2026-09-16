@@ -22,6 +22,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -43,7 +45,6 @@ import androidx.activity.compose.BackHandler
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
-import com.pocketshell.uikit.components.QuietTextField
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -593,6 +594,15 @@ private fun ViewerRenameSheet(
     onDismiss: () -> Unit,
 ) {
     val rename = state.renameFile
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = PocketShellColors.Text,
+        unfocusedTextColor = PocketShellColors.Text,
+        focusedBorderColor = PocketShellColors.Accent,
+        unfocusedBorderColor = PocketShellColors.BorderSoft,
+        focusedLabelColor = PocketShellColors.Accent,
+        unfocusedLabelColor = PocketShellColors.TextSecondary,
+        cursorColor = PocketShellColors.Accent,
+    )
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -613,11 +623,13 @@ private fun ViewerRenameSheet(
             rename.failure?.let { failure ->
                 Banner(text = failure, role = BannerRole.Error, maxLines = 4)
             }
-            QuietTextField(
+            OutlinedTextField(
                 value = rename.name,
                 onValueChange = onNameChange,
-                label = "File name",
+                label = { Text("File name") },
+                singleLine = true,
                 enabled = !rename.submitting,
+                colors = fieldColors,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(VIEWER_RENAME_NAME_TAG),

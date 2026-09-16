@@ -1,21 +1,12 @@
 # raw-component drift baseline (issue #865)
 # format: <file> <accepted-raw-call-site-count>
-# guards: AlertDialog( / CircularProgressIndicator( / TextButton( / OutlinedTextField(
+# guards: AlertDialog( / CircularProgressIndicator( / TextButton(
 # use instead: ConfirmDialog|FormDialog / LoadingIndicator.Spinner /
 #   PocketShellButton.Text (shared ui-kit). The ui-kit wrapper files
 #   themselves legitimately call the raw widget once — they are listed
 #   here like any other accepted site.
 # regenerate with: scripts/check-component-drift.sh --update
 # lower numbers are better — re-baseline after migrating a screen.
-app2/src/main/java/com/pocketshell/next/composer/SlashCommandAutocomplete.kt 1
-app2/src/main/java/com/pocketshell/next/connect/ConnectGate.kt 1
-app2/src/main/java/com/pocketshell/next/hosts/AddEditHostScreen.kt 2
-app2/src/main/java/com/pocketshell/next/hosts/SshKeysScreen.kt 7
-app2/src/main/java/com/pocketshell/next/hosts/SshKeyUnlock.kt 1
-app2/src/main/java/com/pocketshell/next/ports/AddTunnelScreen.kt 4
-app2/src/main/java/com/pocketshell/next/settings/WorkspaceRootsScreen.kt 3
-app2/src/main/java/com/pocketshell/next/sync/AccountSyncScreen.kt 1
-app2/src/main/java/com/pocketshell/next/workspaces/WorkspaceScreen.kt 1
 shared/ui-kit/src/main/java/com/pocketshell/uikit/components/HostCard.kt 2
 shared/ui-kit/src/main/java/com/pocketshell/uikit/components/LoadingIndicator.kt 2
 shared/ui-kit/src/main/java/com/pocketshell/uikit/components/PocketShellButton.kt 2

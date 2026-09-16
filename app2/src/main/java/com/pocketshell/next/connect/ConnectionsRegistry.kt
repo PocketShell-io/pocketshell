@@ -4,7 +4,6 @@ import android.util.Log
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.entity.HostEntity
 import com.pocketshell.core.transport.AuthMaterial
-import com.pocketshell.core.transport.CloseReason
 import com.pocketshell.core.transport.ConnectResult
 import com.pocketshell.core.transport.HostConnection
 import com.pocketshell.core.transport.HostConnectionFactory
@@ -13,15 +12,6 @@ import com.pocketshell.core.transport.TransportState
 import com.pocketshell.core.transport.TrustStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -85,18 +75,6 @@ class ConnectionsRegistry(
     private val connections = ConcurrentHashMap<Long, HostConnection>()
 
     /**
-     * Bumped on every table membership change (store, drop, close, clear).
-     * [liveHostIds] re-derives its subscription set from it: the per-connection
-     * state flows carry liveness from there on, so the version only has to
-     * track who is IN the table, not how they feel.
-     */
-    private val tableVersion = MutableStateFlow(0)
-
-    private fun bumpTableVersion() {
-        tableVersion.update { it + 1 }
-    }
-
-    /**
      * Returns the live connection for [hostId], dialing one if there is none
      * (or the stored one is dead).
      *
@@ -116,7 +94,6 @@ class ConnectionsRegistry(
                 // never leave a dead connection behind for `current()` to hand
                 // out.
                 connections.remove(hostId)
-                bumpTableVersion()
                 runCatching { existing.close() }
             }
 
@@ -129,7 +106,6 @@ class ConnectionsRegistry(
             when (result) {
                 is ConnectResult.Connected -> {
                     connections[hostId] = result.connection
-                    bumpTableVersion()
                     result
                 }
 
@@ -190,48 +166,10 @@ class ConnectionsRegistry(
     fun liveConnections(): List<HostConnection> =
         connections.values.filter { it.state.value.isLive() }
 
-    /**
-     * The ids whose connection is currently live, as a cold flow (issue #2635
-     * 2a — the host list's status dots). Membership × per-connection state,
-     * never a dial (D21): adding a row to the table happens only when
-     * [getOrConnect] already dialed, and an id drops out the moment its
-     * transport leaves the live states.
-     *
-     * The dot's colour AND its accessibility label come from this one set at
-     * the call site — membership in it means "live", absence means "not", so
-     * the list cannot disagree with itself about a host.
-     */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    fun liveHostIds(): Flow<Set<Long>> = tableVersion
-        .flatMapLatest {
-            val ids = connections.keys.toList()
-            if (ids.isEmpty()) {
-                flowOf(emptySet())
-            } else {
-                combine(
-                    ids.map { id ->
-                        // Defensive null: the entry can only be dropped under
-                        // [mutex] together with a version bump, but this
-                        // subscription may already hold the older snapshot.
-                        connections[id]?.state
-                            ?: MutableStateFlow(TransportState.Closed(CloseReason.Requested))
-                    },
-                ) { states ->
-                    states.mapIndexed { index, transport ->
-                        if (transport.isLive()) ids[index] else null
-                    }.filterNotNull().toSet()
-                }
-            }
-        }
-        .distinctUntilChanged()
-
     /** Closes and removes the connection for [hostId], if one is currently held. */
     suspend fun close(hostId: Long) = mutex.withLock {
         withContext(dispatcher) {
-            connections.remove(hostId)?.let {
-                bumpTableVersion()
-                runCatching { it.close() }
-            }
+            connections.remove(hostId)?.let { runCatching { it.close() } }
         }
     }
 
@@ -240,7 +178,6 @@ class ConnectionsRegistry(
         withContext(dispatcher) {
             val open = connections.values.toList()
             connections.clear()
-            bumpTableVersion()
             open.forEach { runCatching { it.close() } }
         }
     }

@@ -9,7 +9,6 @@ import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.next.nav.Destination
 import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -30,7 +29,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-import com.pocketshell.next.usage.usageGlanceCache
 
 /**
  * [AddEditHostViewModel] against a real in-memory Room database.
@@ -109,7 +107,7 @@ class AddEditHostViewModelTest {
         // The acceptance for "add a host on a fresh install → it appears in
         // HostListScreen": the row the form wrote is the row U-1's projection
         // paints, through the unchanged HostListViewModel.
-        val listed = HostListViewModel(db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), UnconfinedTestDispatcher())
+        val listed = HostListViewModel(db.hostDao(), UnconfinedTestDispatcher())
             .state.first { it.loaded }.hosts
         assertEquals(
             listOf(HostRow(id = rows.single().id, name = "hetzner", subtitle = "alexey@135.181.114.209")),

@@ -2,8 +2,6 @@ package com.pocketshell.next.connect
 
 import android.os.SystemClock
 import androidx.activity.ComponentActivity
-import androidx.compose.ui.semantics.SemanticsProperties
-import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -15,15 +13,15 @@ import androidx.compose.ui.test.swipeUp
 import com.pocketshell.next.hosts.HOST_LIST_TAG
 import com.pocketshell.next.hosts.hostRowTag
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
+import com.pocketshell.next.tree.sessionRowTag
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_EMPTY_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ERROR_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_LIST_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_LOADING_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
+import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.workspaceRowTag
 import com.pocketshell.next.workspaces.workspaceSessionRowTag
-import com.pocketshell.uikit.components.SESSION_TAB_STRIP_TAG
-import com.pocketshell.uikit.components.sessionTabTag
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
 import androidx.test.runner.lifecycle.Stage
@@ -31,12 +29,10 @@ import androidx.test.runner.lifecycle.Stage
 /**
  * Device-test navigation for the Quiet host → workspace → session hierarchy.
  *
- * Issue #2721: a workspace row tap opens the workspace's ENTRY session's
- * terminal directly — there is no workspace page in between. A session whose
- * cwd is exactly a root appears on the host screen; a session below a root is
- * reached by opening its workspace row (landing on the entry terminal) and
- * selecting the session's tab. Keeping that route here makes every
- * terminal/composer journey assert the same real path.
+ * The production route no longer exposes the legacy session-tree screen. A
+ * session whose cwd is exactly a root appears on the host screen; a session
+ * below a root appears after opening that workspace row. Keeping that choice
+ * here makes every terminal/composer journey assert the same real route.
  */
 fun ComposeTestRule.openQuietHost(hostId: Long, timeoutMillis: Long = 60_000L) {
     returnToHostListIfNeeded(hostId, timeoutMillis)
@@ -134,20 +130,10 @@ fun ComposeTestRule.openQuietSession(
     if (onAllNodesWithTag(rootSessionTag).fetchSemanticsNodes().isNotEmpty()) {
         onNodeWithTag(rootSessionTag).performClick()
     } else {
-        // Issue #2721: the workspace row opens its ENTRY session's terminal
-        // directly — there is no workspace page in between any more. The
-        // entry session is not necessarily the requested one, so the tab
-        // strip on the terminal that lands selects it.
         onNodeWithTag(workspaceTag).performClick()
-        awaitQuietTag(SESSION_SCREEN_TAG, timeoutMillis)
-        awaitQuietTag(SESSION_TAB_STRIP_TAG, timeoutMillis)
-        val tabTag = sessionTabTag(sessionName)
-        awaitQuietTag(tabTag, timeoutMillis)
-        val isSelected = onNodeWithTag(tabTag).fetchSemanticsNode()
-            .config.getOrNull(SemanticsProperties.Selected) == true
-        if (!isSelected) {
-            onNodeWithTag(tabTag).performClick()
-        }
+        awaitQuietTag(WORKSPACE_SCREEN_TAG, timeoutMillis)
+        awaitQuietTag(sessionRowTag(sessionName), timeoutMillis)
+        onNodeWithTag(sessionRowTag(sessionName)).performClick()
     }
     awaitQuietTag(SESSION_SCREEN_TAG, timeoutMillis)
 }

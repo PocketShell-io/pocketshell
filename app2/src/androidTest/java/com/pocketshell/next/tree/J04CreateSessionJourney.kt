@@ -26,18 +26,12 @@ import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
 import com.pocketshell.next.terminal.SESSION_TITLE_TAG
+import com.pocketshell.next.workspaces.WORKSPACE_ERROR_TAG
 import com.pocketshell.next.workspaces.WORKSPACE_CREATE_NOTICE_TAG
 import com.pocketshell.next.workspaces.WORKSPACE_NEW_SESSION_TAG
-import com.pocketshell.next.workspaces.WORKSPACE_START_SCREEN_TAG
-import com.pocketshell.next.workspaces.WORKSPACE_BACK_TAG
+import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.readableSessionName
 import com.pocketshell.next.workspaces.workspaceRowTag
-import com.pocketshell.next.terminal.SESSION_SWITCHER_SHEET_TAG
-import com.pocketshell.next.terminal.sessionSwitcherRowTag
-import com.pocketshell.uikit.components.SESSION_TAB_NEW_TAG
-import com.pocketshell.uikit.components.SESSION_TAB_OVERFLOW_TAG
-import com.pocketshell.uikit.components.SESSION_TAB_STRIP_TAG
-import com.pocketshell.uikit.components.sessionTabTag
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import org.json.JSONObject
@@ -156,9 +150,8 @@ class J04CreateSessionJourney {
     }
 
     /**
-     * The headline journey: workspace → terminal → the strip's `+` → the
-     * create-sheet screen → folder → Create → land in the new session, which
-     * the HOST agrees exists in the typed folder.
+     * The headline journey: workspace → New session → folder → Create → land
+     * in the new session, which the HOST agrees exists in the typed folder.
      */
     @Test
     fun creatingASessionFromTheTreeLandsOnItAndItAppearsOnTheTree() {
@@ -168,10 +161,7 @@ class J04CreateSessionJourney {
             SESSION_NEW !in hostSessionNames(),
         )
 
-        // The workspace row landed in its ENTRY terminal; the strip's + opens
-        // the create-sheet screen for THIS workspace (issue #2721 route).
-        compose.onNodeWithTag(SESSION_TAB_NEW_TAG).performClick()
-        awaitTag(WORKSPACE_START_SCREEN_TAG)
+        compose.onNodeWithTag(WORKSPACE_NEW_SESSION_TAG).performClick()
         awaitTag(CREATE_SESSION_SHEET_TAG)
         JourneyScreenshots.capture("01-create-sheet", JOURNEY)
 
@@ -211,63 +201,58 @@ class J04CreateSessionJourney {
             hostSessionPath(SESSION_NEW),
         )
 
-        // ...and the workspace's live listing the user can reach FROM this
-        // terminal (the strip's overflow) shows the new session next to the
-        // canned one.
-        compose.onNodeWithTag(SESSION_TAB_OVERFLOW_TAG).performClick()
-        awaitTag(SESSION_SWITCHER_SHEET_TAG)
-        awaitTag(sessionSwitcherRowTag(SESSION_NEW))
-        compose.onNodeWithTag(sessionSwitcherRowTag(SESSION_NEW)).assertIsDisplayed()
-        compose.onNodeWithTag(sessionSwitcherRowTag(CANNED_SESSION)).assertIsDisplayed()
+        // ...and the tree the user comes back to lists it.
+        pressBack()
+        awaitTag(sessionRowTag(SESSION_NEW))
+        compose.onNodeWithTag(sessionRowTag(SESSION_NEW)).assertIsDisplayed()
+        compose.onNodeWithTag(WORKSPACE_ERROR_TAG).assertDoesNotExist()
         JourneyScreenshots.capture("04-tree-after-create", JOURNEY)
     }
 
     /**
-     * The idempotency contract on a device: creating the SAME name twice is
-     * not an error. Issue #2721: with the workspace page gone there is no list
-     * left to pick the existing row from, so the second create OPENS the
-     * session that is already there — while a notice says plainly that nothing
-     * was newly created.
+     * The idempotency contract on a device: creating the SAME name twice is not
+     * an error, it opens the session that is already there.
      */
     @Test
     fun creatingTheSameNameTwiceOpensTheExistingSessionWithoutAnError() {
         openWorkspace()
 
-        compose.onNodeWithTag(SESSION_TAB_NEW_TAG).performClick()
-        awaitTag(WORKSPACE_START_SCREEN_TAG)
         createFromSheet(FOLDER_TWICE)
         awaitSessionScreen(SESSION_TWICE, FOLDER_TWICE)
+        pressBack()
+        awaitTag(WORKSPACE_SCREEN_TAG)
         assertEquals(
             "the first create must have made exactly one session",
             1,
             hostSessionNames().count { it == SESSION_TWICE },
         )
 
-        // Back re-enters the create-sheet screen (its whole job is hosting the
-        // sheet), where the SECOND create of the same name runs.
-        pressBack()
-        awaitTag(WORKSPACE_START_SCREEN_TAG)
+        // Exactly the same folder, so exactly the same derived name.
         createFromSheet(FOLDER_TWICE)
 
-        // The second create navigates INTO the existing session (#2721): with
-        // the workspace page gone, refusing to open it would strand the user.
-        awaitSessionScreen(SESSION_TWICE, FOLDER_TWICE)
+        // The second create remains on the workspace. `created:false` must not
+        // silently resume an existing session; the user chooses its row.
+        awaitTag(WORKSPACE_SCREEN_TAG)
+        awaitTag(WORKSPACE_CREATE_NOTICE_TAG)
+        compose.onNodeWithTag(SESSION_SCREEN_TAG).assertDoesNotExist()
         assertEquals(
             "an idempotent create must not duplicate the session",
             1,
             hostSessionNames().count { it == SESSION_TWICE },
         )
 
-        // ...and coming Back, the create-sheet screen still says plainly that
-        // nothing was newly created — as a notice, never as a failure.
-        pressBack()
-        awaitTag(WORKSPACE_CREATE_NOTICE_TAG)
+        // ...and it is reported as a notice, never as a failure.
         compose.onNodeWithTag(WORKSPACE_CREATE_NOTICE_TAG).assertIsDisplayed()
         compose.onNodeWithText(
-            "Session \"$SESSION_TWICE\" already existed — nothing new was created; opened it.",
+            "Session \"$SESSION_TWICE\" already exists — choose it from the list to open it.",
         ).assertIsDisplayed()
-        compose.onNodeWithTag(CREATE_SESSION_ERROR_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(sessionRowTag(SESSION_TWICE)).performClick()
+        awaitSessionScreen(SESSION_TWICE, FOLDER_TWICE)
         JourneyScreenshots.capture("05-existing-session-opened", JOURNEY)
+        pressBack()
+        awaitTag(WORKSPACE_SCREEN_TAG)
+        compose.onNodeWithTag(WORKSPACE_ERROR_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(CREATE_SESSION_ERROR_TAG).assertDoesNotExist()
         JourneyScreenshots.capture("06-already-existed-notice", JOURNEY)
     }
 
@@ -306,21 +291,9 @@ class J04CreateSessionJourney {
         )
     }
 
-    /**
-     * Sheet up (or the screen's New session button) → type the folder →
-     * Create. Leaves the screen mid-navigation.
-     *
-     * The create-sheet screen re-opens the sheet on arrival, so the button
-     * tap is conditional: a tap aimed THROUGH an open modal sheet would hit
-     * the scrim, not the row behind it.
-     */
+    /** FAB → type the folder → Create. Leaves the screen mid-navigation. */
     private fun createFromSheet(folder: String) {
-        val sheetUp = compose.onAllNodesWithTag(CREATE_SESSION_SHEET_TAG)
-            .fetchSemanticsNodes()
-            .isNotEmpty()
-        if (!sheetUp) {
-            compose.onNodeWithTag(WORKSPACE_NEW_SESSION_TAG).performClick()
-        }
+        compose.onNodeWithTag(WORKSPACE_NEW_SESSION_TAG).performClick()
         awaitTag(CREATE_SESSION_SHEET_TAG)
         compose.onNodeWithTag(CREATE_SESSION_TYPE_SHELL_TAG).performClick()
         compose.onNodeWithText("More options").performScrollTo().performClick()
@@ -349,18 +322,13 @@ class J04CreateSessionJourney {
         compose.onNodeWithTag(CREATE_SESSION_SUBMIT_TAG).performClick()
     }
 
-    /**
-     * Opens the seeded workspace and lands in its ENTRY terminal — the
-     * canned session is the one the seed recreated last, so the row's
-     * entry-session ladder picks it (#2721: no workspace page in between).
-     */
+    /** Opens the seeded workspace and waits for its first real listing. */
     private fun openWorkspace() {
         compose.openQuietHost(hostId, TIMEOUT_MS)
         awaitTag(workspaceRowTag(WORKSPACE_MAIN))
         compose.onNodeWithTag(workspaceRowTag(WORKSPACE_MAIN)).performClick()
-        awaitTag(SESSION_SCREEN_TAG)
-        awaitTag(SESSION_TAB_STRIP_TAG)
-        awaitTag(sessionTabTag(CANNED_SESSION))
+        awaitTag(WORKSPACE_SCREEN_TAG)
+        awaitTag(sessionRowTag(CANNED_SESSION))
     }
 
     private fun pressBack() {
@@ -386,7 +354,8 @@ class J04CreateSessionJourney {
                 CREATE_SESSION_SHEET_TAG,
                 CREATE_SESSION_SUBMIT_TAG,
                 CREATE_SESSION_ERROR_TAG,
-                WORKSPACE_START_SCREEN_TAG,
+                WORKSPACE_SCREEN_TAG,
+                WORKSPACE_ERROR_TAG,
                 WORKSPACE_CREATE_NOTICE_TAG,
                 SESSION_SCREEN_TAG,
                 SESSION_TITLE_TAG,

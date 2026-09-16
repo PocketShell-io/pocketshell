@@ -16,14 +16,12 @@ import com.pocketshell.next.hosts.HostListViewModel
 import com.pocketshell.next.hosts.hostRowTag
 import com.pocketshell.next.nav.Destination
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.flowOf
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import com.pocketshell.next.usage.usageGlanceCache
 
 /**
  * The whole U-2 edge as a real composition on the host JVM: the real host list
@@ -164,7 +162,7 @@ class ConnectGateNavigationTest {
         startupHostId: Long? = null,
         startupHostExists: suspend (Long) -> Boolean = { true },
     ): NavHostController {
-        val hostListViewModel = HostListViewModel(stack.db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), Dispatchers.Unconfined)
+        val hostListViewModel = HostListViewModel(stack.db.hostDao(), Dispatchers.Unconfined)
         lateinit var controller: NavHostController
         composeRule.setContent {
             controller = rememberNavController()
@@ -191,7 +189,7 @@ class ConnectGateNavigationTest {
                 // through `hiltViewModel()`. This suite is about the connect
                 // gate's navigation edge, so the destination is a stand-in that
                 // echoes the argument the route delivered.
-                workspacesScreen = { hostId, _, _, _, _, _, _, _ -> Text("Tree(hostId=$hostId)") },
+                workspacesScreen = { hostId, _, _, _, _, _, _, _, _ -> Text("Tree(hostId=$hostId)") },
             )
         }
         composeRule.waitForIdle()

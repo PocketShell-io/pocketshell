@@ -109,12 +109,6 @@ class QuietThemeTokenTest {
         assertEquals(DesignKitTokens.sizeDp("listRowMin").dp, PocketShellDensity.rowMinHeight)
         assertEquals(DesignKitTokens.sizeDp("workspaceRowMin").dp, PocketShellDensity.workspaceRowMinHeight)
         assertEquals(DesignKitTokens.sizeDp("touchMin").dp, PocketShellDensity.tapTargetMin)
-        // Issue #2635 2a: the ListRow 4dp rule — the vertical air belongs to the
-        // text column, so the token lives in `size` next to the row minima.
-        assertEquals(DesignKitTokens.sizeDp("rowPadV").dp, PocketShellDensity.rowPadV)
-        // Issue #2635: the QuietTextField's fill height lines up with 56dp rows
-        // and buttons.
-        assertEquals(DesignKitTokens.sizeDp("fieldMin").dp, PocketShellDensity.fieldMinHeight)
         // `standardRowMinHeight` is an alias, not a second value (#2630's drift class).
         assertEquals(PocketShellDensity.rowMinHeight, PocketShellDensity.standardRowMinHeight)
         // #2717 T3: the 32dp `section` rung is retired; sections separate with

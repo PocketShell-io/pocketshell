@@ -124,8 +124,7 @@ data class WorkspaceActionState(
  * [notice] carries the "that session already existed" message. The host CLI's
  * create is idempotent and reports `created: false` for a name that was already
  * there — a SUCCESS, per [com.pocketshell.core.hostapi.CreatedSession]. The
- * screen still opens that existing session (issue #2721: there is no workspace
- * page left to pick the row from), and the notice says nothing new was made.
+ * tree stays on screen so the user can choose that existing row explicitly.
  */
 data class CreateSessionState(
     /** The sheet is on screen. */
@@ -353,11 +352,10 @@ class SessionTreeViewModel @Inject constructor(
      * listing and ask the screen to open it.
      *
      * A session that already existed comes back `created == false`, which is a
-     * SUCCESS: the sheet closes, the screen OPENS the session that was found
-     * (issue #2721 — with the workspace page gone there is no list to pick the
-     * row from), and a notice says plainly nothing was newly created. A
-     * FAILURE leaves the sheet open with its text intact so the user can fix
-     * the folder and retry.
+     * SUCCESS: the sheet closes and the tree refreshes with a notice saying it
+     * was already there. The screen does not silently resume that existing
+     * session; the user chooses its row explicitly. A FAILURE leaves the sheet
+     * open with its text intact so the user can fix the folder and retry.
      *
      * [CreateSessionRequest.engine] / [CreateSessionRequest.profile] are
      * forwarded when set and omitted when null, so a Shell create with the
@@ -479,16 +477,13 @@ class SessionTreeViewModel @Inject constructor(
                             notice = if (created.created) {
                                 null
                             } else {
-                                "Session \"${created.name}\" already existed — nothing new was created; opened it."
+                                "Session \"${created.name}\" already exists — choose it from the list to open it."
                             },
-                            // Issue #2721: BOTH outcomes open the session. A
-                            // created:false used to leave the user on a list
-                            // to pick the row by hand, but the workspace page
-                            // that list lived on is gone — refusing to
-                            // navigate would strand the user. The notice
-                            // still says plainly nothing was newly created.
-                            openRequest = created.name,
-                            openRequestId = created.id,
+                            // Only a newly created session is opened by the
+                            // explicit New session action. An idempotent
+                            // existing result must remain an explicit row tap.
+                            openRequest = created.name.takeIf { created.created },
+                            openRequestId = created.id.takeIf { created.created },
                         )
                     }
                     // Same reason as the kill path: the new session must not

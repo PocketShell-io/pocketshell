@@ -351,20 +351,13 @@ fun UsageGlancePill(
     state: UsageGlancePillState,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    /**
-     * Issue #2635: the one tag the screen's usage control answers to. The
-     * session header passes its `SESSION_USAGE_TAG` here, shadowing the pill's
-     * own default — the fallback "Usage" button and the glance pill are one
-     * control in two skins, so tests target one tag, never two.
-     */
-    testTag: String = USAGE_GLANCE_PILL_TAG,
 ) {
     Row(
         modifier = modifier
             .heightIn(min = 48.dp)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { this.contentDescription = state.contentDescription }
-            .testTag(testTag)
+            .testTag(USAGE_GLANCE_PILL_TAG)
             .padding(horizontal = PocketShellSpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
     ) {

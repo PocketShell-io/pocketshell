@@ -4,7 +4,6 @@ import android.os.SystemClock
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
-import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
@@ -17,14 +16,11 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.openQuietHost
+import com.pocketshell.next.terminal.SESSION_CONTEXT_BAR_TAG
 import com.pocketshell.next.terminal.SESSION_HEADER_KEBAB_TAG
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
-import com.pocketshell.next.terminal.SESSION_SWITCHER_SHEET_TAG
-import com.pocketshell.next.terminal.sessionSwitcherRowTag
-import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
+import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.workspaceRowTag
-import com.pocketshell.uikit.components.SESSION_TAB_OVERFLOW_TAG
-import com.pocketshell.uikit.components.SESSION_TAB_STRIP_TAG
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import org.json.JSONArray
@@ -167,11 +163,9 @@ class J14StopSessionJourney {
             "claude-main is a fixture session this journey must not kill",
             CANNED_SESSION in hostSessionNames(),
         )
+        awaitTag(sessionRowTag(SESSION_TREE))
 
-        // The row tap landed in the workspace's ENTRY terminal (claude-main).
-        // Reach the throwaway through the strip's overflow — the switcher is
-        // backed by the workspace's live listing (#2721 route).
-        openSessionFromSwitcher(SESSION_TREE)
+        compose.onNodeWithTag(sessionRowTag(SESSION_TREE)).performClick()
         awaitSessionScreen()
         compose.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
         compose.onNodeWithTag(STOP_SESSION_ITEM_TAG, useUnmergedTree = true).assertIsDisplayed()
@@ -181,19 +175,10 @@ class J14StopSessionJourney {
 
         compose.onNodeWithTag(STOP_SESSION_CONFIRM_TAG).performClick()
 
-        // LeaveAfterStop pops Back — to the HOST workspaces, the level the
-        // terminal was entered from (#2721).
-        awaitTag(HOST_WORKSPACES_TAG)
-        awaitGone(SESSION_SCREEN_TAG)
+        awaitTag(WORKSPACE_SCREEN_TAG)
+        awaitGone(sessionRowTag(SESSION_TREE))
+        compose.onNodeWithTag(sessionRowTag(CANNED_SESSION)).assertIsDisplayed()
         JourneyScreenshots.capture("02-tree-after-stop", JOURNEY)
-
-        // The on-screen oracle: re-entering the workspace and opening the
-        // switcher shows the fresh listing WITHOUT the stopped session.
-        openWorkspace()
-        openSwitcher()
-        awaitGone(sessionSwitcherRowTag(SESSION_TREE))
-        compose.onNodeWithTag(sessionSwitcherRowTag(CANNED_SESSION)).assertIsDisplayed()
-        JourneyScreenshots.capture("02b-switcher-after-stop", JOURNEY)
 
         val names = hostSessionNames()
         assertFalse("the host must no longer list the stopped session, got $names", SESSION_TREE in names)
@@ -208,9 +193,10 @@ class J14StopSessionJourney {
     @Test
     fun cancellingStopLeavesTheSessionAlive() {
         openWorkspace()
-        openSessionFromSwitcher(SESSION_CANCEL)
-        awaitSessionScreen()
+        awaitTag(sessionRowTag(SESSION_CANCEL))
 
+        compose.onNodeWithTag(sessionRowTag(SESSION_CANCEL)).performClick()
+        awaitSessionScreen()
         compose.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
         compose.onNodeWithTag(STOP_SESSION_ITEM_TAG, useUnmergedTree = true).performClick()
         compose.onNodeWithTag(STOP_SESSION_CANCEL_TAG).performClick()
@@ -226,11 +212,10 @@ class J14StopSessionJourney {
     }
 
     @Test
-    fun stoppingTheAttachedSessionReturnsToTheHostWorkspaces() {
+    fun stoppingTheAttachedSessionReturnsToTheWorkspace() {
         openWorkspace()
-        // The entry terminal IS the attached session's workspace landing;
-        // reach the attached throwaway through the switcher like a user.
-        openSessionFromSwitcher(SESSION_ATTACHED)
+        awaitTag(sessionRowTag(SESSION_ATTACHED))
+        compose.onNodeWithTag(sessionRowTag(SESSION_ATTACHED)).performClick()
         awaitSessionScreen()
 
         compose.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
@@ -238,8 +223,10 @@ class J14StopSessionJourney {
         compose.onNodeWithText(STOP_SESSION_TITLE).assertIsDisplayed()
         compose.onNodeWithTag(STOP_SESSION_CONFIRM_TAG).performClick()
 
-        awaitTag(HOST_WORKSPACES_TAG)
+        awaitTag(WORKSPACE_SCREEN_TAG)
         awaitGone(SESSION_SCREEN_TAG)
+        awaitGone(sessionRowTag(SESSION_ATTACHED))
+        compose.onNodeWithTag(sessionRowTag(CANNED_SESSION)).assertIsDisplayed()
         JourneyScreenshots.capture("04-popped-after-stop", JOURNEY)
 
         val names = hostSessionNames()
@@ -266,26 +253,23 @@ class J14StopSessionJourney {
     fun aWorkerKilledOnTheHostLeavesTheDerivedListingAndTheTree() {
         try {
             openWorkspace()
+            awaitTag(sessionRowTag(SESSION_WORKER_DEATH))
             // The baseline that makes every later absence non-vacuous: while
-            // the worker is alive the switcher (the workspace's live listing,
-            // reached from the entry terminal's strip) really renders the row.
-            openSwitcher()
-            compose.onNodeWithTag(sessionSwitcherRowTag(SESSION_WORKER_DEATH)).assertIsDisplayed()
-            dismissSwitcher()
+            // the worker is alive the tree really renders the row.
+            compose.onNodeWithTag(sessionRowTag(SESSION_WORKER_DEATH)).assertIsDisplayed()
 
             killWorkerOutOfBand(SESSION_WORKER_DEATH)
 
-            // Re-enter through the real hierarchy so the listing re-derives
-            // from the host instead of trusting the render already up.
+            // Re-enter through the real hierarchy so the tree re-derives from
+            // the host listing instead of trusting the render already up.
             openWorkspace()
-            openSwitcher()
 
             // Control: the re-entry rendered a fresh listing (claude-main is
             // still live), so the throwaway's absence below is evidence, not
             // a render that never happened.
-            compose.onNodeWithTag(sessionSwitcherRowTag(CANNED_SESSION)).assertIsDisplayed()
-            awaitGone(sessionSwitcherRowTag(SESSION_WORKER_DEATH))
-            awaitStillGone(sessionSwitcherRowTag(SESSION_WORKER_DEATH))
+            compose.onNodeWithTag(sessionRowTag(CANNED_SESSION)).assertIsDisplayed()
+            awaitGone(sessionRowTag(SESSION_WORKER_DEATH))
+            awaitStillGone(sessionRowTag(SESSION_WORKER_DEATH))
             JourneyScreenshots.capture("05-host-worker-death", JOURNEY)
 
             // The discriminating pair, over the independent connection: the
@@ -314,39 +298,12 @@ class J14StopSessionJourney {
         }
     }
 
-    /**
-     * Opens the seeded workspace and lands in its ENTRY terminal — the
-     * recreate of claude-main in the seed is the most recent activity, so the
-     * row's entry-session ladder picks it (#2721: no workspace page between
-     * the row and the terminal).
-     */
     private fun openWorkspace() {
         compose.openQuietHost(hostId, TIMEOUT_MS)
         awaitTag(workspaceRowTag(WORKSPACE_MAIN))
         compose.onNodeWithTag(workspaceRowTag(WORKSPACE_MAIN)).performClick()
-        awaitTag(SESSION_SCREEN_TAG)
-        awaitTag(SESSION_TAB_STRIP_TAG)
-    }
-
-    /** The tab strip's overflow: the switcher over the workspace's live listing. */
-    private fun openSwitcher() {
-        compose.onNodeWithTag(SESSION_TAB_OVERFLOW_TAG).performClick()
-        awaitTag(SESSION_SWITCHER_SHEET_TAG)
-    }
-
-    private fun dismissSwitcher() {
-        // The sheet's own close affordance (SheetHeader's trailing X).
-        compose.onNodeWithContentDescription("Close").performClick()
-        awaitGone(SESSION_SWITCHER_SHEET_TAG)
-    }
-
-    /** Opens [name] from the entry terminal's switcher sheet. */
-    private fun openSessionFromSwitcher(name: String) {
-        openSwitcher()
-        awaitTag(sessionSwitcherRowTag(name))
-        compose.onNodeWithTag(sessionSwitcherRowTag(name)).performClick()
-        awaitTag(SESSION_SCREEN_TAG)
-        awaitGone(SESSION_SWITCHER_SHEET_TAG)
+        awaitTag(WORKSPACE_SCREEN_TAG)
+        awaitTag(sessionRowTag(CANNED_SESSION))
     }
 
     private fun hostSessionNames(): List<String> {
@@ -484,11 +441,11 @@ class J14StopSessionJourney {
 
     private fun awaitSessionScreen() {
         awaitTag(SESSION_SCREEN_TAG)
-        awaitTag(SESSION_TAB_STRIP_TAG)
+        awaitTag(SESSION_CONTEXT_BAR_TAG)
         compose.onNodeWithTag(SESSION_SCREEN_TAG).assertIsDisplayed()
         // Quiet terminal chrome puts the workspace name in the large header
-        // and the sibling sessions in the tab strip below it (#2632).
-        compose.onNodeWithTag(SESSION_TAB_STRIP_TAG).assertIsDisplayed()
+        // and the session identity in the compact switcher row below it.
+        compose.onNodeWithTag(SESSION_CONTEXT_BAR_TAG).assertIsDisplayed()
     }
 
     // #2648: the CI failure was a bare ComposeTimeoutException that never said

@@ -22,11 +22,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.pocketshell.next.release.UpdateCheckViewModel
-import com.pocketshell.next.usage.UsageGlancePill
 import com.pocketshell.next.release.launchUpdateUrl
 import com.pocketshell.next.release.updateAvailableBannerText
 import com.pocketshell.uikit.components.Banner
@@ -41,8 +38,6 @@ import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SheetHeader
-import com.pocketshell.uikit.components.StatusDot
-import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -89,7 +84,6 @@ fun HostListRoute(
     onEditHost: (Long) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSshKeys: () -> Unit = {},
-    onOpenUsage: () -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: HostListViewModel = hiltViewModel(),
     updateCheckViewModel: UpdateCheckViewModel? = null,
@@ -119,7 +113,6 @@ fun HostListRoute(
         onEditHost = onEditHost,
         onOpenSettings = onOpenSettings,
         onOpenSshKeys = onOpenSshKeys,
-        onOpenUsage = onOpenUsage,
         onDeleteHost = viewModel::delete,
         modifier = modifier,
         updateNotice = notice,
@@ -173,7 +166,6 @@ fun HostListScreen(
     onOpenSettings: () -> Unit,
     onDeleteHost: (Long) -> Unit,
     onOpenSshKeys: () -> Unit = {},
-    onOpenUsage: () -> Unit = {},
     modifier: Modifier = Modifier,
     updateNotice: HostListUpdateNotice? = null,
     onDownloadUpdate: (apkUrl: String) -> Unit = {},
@@ -186,22 +178,7 @@ fun HostListScreen(
     var showAddHostMethods by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
-        // Issue #2632: the usage/cost number is on the LANDING screen, before
-        // any tap. It is the cached last reading (the list is a pre-connection
-        // screen and usage never dials — D21), so it labels itself stale once
-        // it ages out instead of pretending to be live. The header actions
-        // stay where the current tree has them (footer/tools section); only
-        // the pill is added here.
-        ScreenHeader(
-            title = "Hosts",
-            // Issue #2635 2a: the count lives here, not in a redundant
-            // "Hosts" section header — at one host a count line is noise,
-            // from two up it earns the subtitle rung.
-            subtitle = if (state.hosts.size >= 2) "${state.hosts.size} hosts" else null,
-            trailing = state.usagePill?.let { pill ->
-                { UsageGlancePill(state = pill, onClick = onOpenUsage) }
-            },
-        )
+        ScreenHeader(title = "Hosts")
 
         when (val notice = updateNotice) {
             is HostListUpdateNotice.Available -> UpdateAvailableBanner(
@@ -243,28 +220,11 @@ fun HostListScreen(
                         .testTag(HOST_LIST_TAG),
                     contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
                 ) {
+                    item { SectionHeader(label = "Hosts", count = state.hosts.size) }
                     items(items = state.hosts, key = { it.id }) { host ->
-                        // Issue #2635 2a: one expression decides the dot's
-                        // colour AND its label — membership in liveIds is the
-                        // whole truth, so the row cannot render a live dot
-                        // with dead words or the reverse.
-                        val live = host.id in state.liveIds
                         ListRow(
                             title = host.name,
                             subtitle = host.subtitle,
-                            leading = {
-                                StatusDot(
-                                    status = if (live) {
-                                        ConnectionStatus.Connected
-                                    } else {
-                                        ConnectionStatus.Idle
-                                    },
-                                    modifier = Modifier.semantics {
-                                        contentDescription =
-                                            if (live) "${host.name} connected" else "${host.name} not connected"
-                                    },
-                                )
-                            },
                             trailing = {
                                 Kebab(
                                     items = listOf(

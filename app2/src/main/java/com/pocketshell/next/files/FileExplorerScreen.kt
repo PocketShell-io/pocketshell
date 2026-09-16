@@ -30,6 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -54,7 +56,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import com.pocketshell.core.transport.SftpEntry
-import com.pocketshell.uikit.components.QuietTextField
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -930,6 +931,15 @@ internal fun CreateFolderSheetContent(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = PocketShellColors.Text,
+        unfocusedTextColor = PocketShellColors.Text,
+        focusedBorderColor = PocketShellColors.Accent,
+        unfocusedBorderColor = PocketShellColors.BorderSoft,
+        focusedLabelColor = PocketShellColors.Accent,
+        unfocusedLabelColor = PocketShellColors.TextSecondary,
+        cursorColor = PocketShellColors.Accent,
+    )
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -944,11 +954,13 @@ internal fun CreateFolderSheetContent(
         state.failure?.let { failure ->
             Banner(text = failure, role = BannerRole.Error)
         }
-        QuietTextField(
+        OutlinedTextField(
             value = state.name,
             onValueChange = onNameChange,
-            label = "Folder name",
+            label = { Text("Folder name") },
+            singleLine = true,
             enabled = !state.submitting,
+            colors = fieldColors,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag(FILE_EXPLORER_CREATE_FOLDER_NAME_TAG),
@@ -996,6 +1008,15 @@ private fun NewTextFileSheet(
         modifier = Modifier.testTag(FILE_EXPLORER_NEW_TEXT_FILE_SHEET_TAG),
         containerColor = PocketShellColors.Surface,
     ) {
+        val fieldColors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = PocketShellColors.Text,
+            unfocusedTextColor = PocketShellColors.Text,
+            focusedBorderColor = PocketShellColors.Accent,
+            unfocusedBorderColor = PocketShellColors.BorderSoft,
+            focusedLabelColor = PocketShellColors.Accent,
+            unfocusedLabelColor = PocketShellColors.TextSecondary,
+            cursorColor = PocketShellColors.Accent,
+        )
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1010,11 +1031,13 @@ private fun NewTextFileSheet(
             state.failure?.let { failure ->
                 Banner(text = failure, role = BannerRole.Error)
             }
-            QuietTextField(
+            OutlinedTextField(
                 value = state.name,
                 onValueChange = onNameChange,
-                label = "File name",
+                label = { Text("File name") },
+                singleLine = true,
                 enabled = !state.submitting,
+                colors = fieldColors,
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(FILE_EXPLORER_NEW_TEXT_FILE_NAME_TAG),
@@ -1081,6 +1104,15 @@ internal fun RenameFileSheetContent(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        focusedTextColor = PocketShellColors.Text,
+        unfocusedTextColor = PocketShellColors.Text,
+        focusedBorderColor = PocketShellColors.Accent,
+        unfocusedBorderColor = PocketShellColors.BorderSoft,
+        focusedLabelColor = PocketShellColors.Accent,
+        unfocusedLabelColor = PocketShellColors.TextSecondary,
+        cursorColor = PocketShellColors.Accent,
+    )
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -1095,11 +1127,13 @@ internal fun RenameFileSheetContent(
         state.failure?.let { failure ->
             Banner(text = failure, role = BannerRole.Error)
         }
-        QuietTextField(
+        OutlinedTextField(
             value = state.name,
             onValueChange = onNameChange,
-            label = "File name",
+            label = { Text("File name") },
+            singleLine = true,
             enabled = !state.submitting,
+            colors = fieldColors,
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag(FILE_EXPLORER_RENAME_NAME_TAG),
