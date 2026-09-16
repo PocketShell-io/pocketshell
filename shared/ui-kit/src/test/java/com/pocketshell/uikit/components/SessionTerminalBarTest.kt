@@ -7,6 +7,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -69,7 +70,7 @@ class SessionTerminalBarTest {
     }
 
     @Test
-    fun `showKeys false leaves only the composer launcher`() {
+    fun `showKeys false leaves the composer launcher and the mic`() {
         val pressed = mutableListOf<SessionNavKey>()
         var moreKeys = 0
         setContent(
@@ -79,6 +80,9 @@ class SessionTerminalBarTest {
         )
 
         compose.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).assertIsDisplayed()
+        // #2475: the mic is input, not a key — it travels with the launcher
+        // when the "no key chrome" setting hides the key cluster.
+        compose.onNodeWithTag(SESSION_BAR_MIC_TAG).assertIsDisplayed()
         compose.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).assertDoesNotExist()
         compose.onNodeWithTag(SESSION_BAR_ARROW_UP_TAG).assertDoesNotExist()
         compose.onNodeWithTag(SESSION_BAR_ARROW_DOWN_TAG).assertDoesNotExist()
@@ -121,6 +125,7 @@ class SessionTerminalBarTest {
             SESSION_BAR_ARROW_DOWN_TAG,
             SESSION_BAR_ENTER_TAG,
             SESSION_BAR_MORE_KEYS_TAG,
+            SESSION_BAR_MIC_TAG,
         ).map { tag ->
             compose.onNodeWithTag(tag).getUnclippedBoundsInRoot()
         }
@@ -173,12 +178,87 @@ class SessionTerminalBarTest {
         compose.onNodeWithText("Tab").assertDoesNotExist()
     }
 
+    // ------------------------------------------------- #2475 dictation slot
+
+    @Test
+    fun `the mic exposes its accessible label and fires on tap`() {
+        var taps = 0
+        setContent(onMicTap = { taps += 1 })
+
+        compose.onNodeWithContentDescription(SESSION_BAR_MIC_LABEL).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_MIC_TAG).performClick()
+        compose.onNodeWithTag(SESSION_BAR_MIC_TAG).performClick()
+
+        assertEquals(2, taps)
+    }
+
+    @Test
+    fun `a disabled mic renders but does not fire`() {
+        var taps = 0
+        setContent(onMicTap = { taps += 1 }, micEnabled = false)
+
+        compose.onNodeWithTag(SESSION_BAR_MIC_TAG).assertIsNotEnabled()
+        compose.onNodeWithTag(SESSION_BAR_MIC_TAG).performClick()
+
+        assertEquals(0, taps)
+    }
+
+    @Test
+    fun `idle dictation shows no status chip`() {
+        setContent()
+
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG).assertDoesNotExist()
+    }
+
+    @Test
+    fun `listening shows the partial transcript in the status chip only`() {
+        setContent(
+            dictationPhase = SessionBarDictationPhase.Listening,
+            dictationText = "hello world",
+        )
+
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG)
+            .assertTextContains("hello world", substring = true)
+    }
+
+    @Test
+    fun `listening with no partial yet says it is listening`() {
+        setContent(dictationPhase = SessionBarDictationPhase.Listening)
+
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG)
+            .assertTextContains("Listening", substring = true)
+    }
+
+    @Test
+    fun `transcribing says it is transcribing`() {
+        setContent(dictationPhase = SessionBarDictationPhase.Transcribing)
+
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG)
+            .assertTextContains("Transcribing", substring = true)
+    }
+
+    @Test
+    fun `an idle dictation with an error message keeps the chip until cleared`() {
+        setContent(dictationText = "Nothing was heard — try again.")
+
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_DICTATION_CHIP_TAG)
+            .assertTextContains("Nothing was heard", substring = true)
+    }
+
     private fun setContent(
         onKey: (SessionNavKey) -> Unit = {},
         onOpenComposer: () -> Unit = {},
         onMoreKeys: () -> Unit = {},
         keysEnabled: Boolean = true,
         showKeys: Boolean = true,
+        onMicTap: () -> Unit = {},
+        micEnabled: Boolean = true,
+        dictationPhase: SessionBarDictationPhase = SessionBarDictationPhase.Idle,
+        dictationText: String = "",
     ) {
         compose.setContent {
             PocketShellTheme {
@@ -200,6 +280,10 @@ class SessionTerminalBarTest {
                         onMoreKeys = onMoreKeys,
                         keysEnabled = keysEnabled,
                         showKeys = showKeys,
+                        onMicTap = onMicTap,
+                        micEnabled = micEnabled,
+                        dictationPhase = dictationPhase,
+                        dictationText = dictationText,
                         modifier = Modifier.align(Alignment.BottomCenter),
                     )
                 }

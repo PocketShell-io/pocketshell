@@ -141,6 +141,12 @@ class DesignRenders {
         SessionTerminalBarRender()
     }
 
+    /** #2475: the key-bar dictation mic and partial-status chip, all phases. */
+    @Test
+    fun sessionTerminalBarDictation() = render("session-terminal-bar-dictation") {
+        SessionTerminalBarDictationRender()
+    }
+
     /** Issue #2521: Prompt Composer sheet chrome (title, draft, Insert, Send, mic). */
     @Test
     fun promptComposerSheet() = render("prompt-composer-sheet") {

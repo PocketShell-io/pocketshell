@@ -1,5 +1,7 @@
 package com.pocketshell.next.terminal
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,7 +27,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
@@ -33,11 +37,13 @@ import com.pocketshell.next.composer.ComposerUiState
 import com.pocketshell.next.composer.ComposerViewModel
 import com.pocketshell.next.composer.DeliveryUncertainReview
 import com.pocketshell.next.composer.MessageHistorySheet
+import com.pocketshell.next.composer.MicTapAction
 import com.pocketshell.next.composer.PromptComposerContent
 import com.pocketshell.next.composer.PromptComposerSheet
 import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.SessionSink
 import com.pocketshell.next.composer.SlashCommandAutocomplete
+import com.pocketshell.next.composer.decideMicTap
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.next.tree.STOP_SESSION_CANCEL_TAG
 import com.pocketshell.next.tree.STOP_SESSION_CONFIRM_LABEL
@@ -64,6 +70,7 @@ import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
+import com.pocketshell.uikit.components.SessionBarDictationPhase
 import com.pocketshell.uikit.components.SessionNavKey
 import com.pocketshell.uikit.components.SessionTerminalBar
 import com.pocketshell.uikit.components.TerminalHotkeysPaletteOverlay
@@ -112,6 +119,12 @@ const val SESSION_CONTEXT_BAR_TAG: String = "session-context-bar"
  * machinery. They are ordinary session input, though: when the link is down
  * they take the same held-input path as keystrokes (#2578), so a key tapped
  * at the "Reconnecting" banner is not lost.
+ *
+ * The #2475 key-bar dictation shares that seam at exactly one point: its
+ * controller's FINAL transcripts are collected straight into
+ * `sendBytes` (a raw write lands at the remote cursor). Partials never pass
+ * through here — they live in the bar's status chip — and a dictation is
+ * abandoned outright the moment the session stops being live.
  */
 @Composable
 fun SessionRoute(
@@ -129,6 +142,7 @@ fun SessionRoute(
     composerViewModel: ComposerViewModel = hiltViewModel(),
     usageGlanceViewModel: UsageGlanceViewModel = hiltViewModel(),
     sessionSwitcherViewModel: SessionSwitcherViewModel = hiltViewModel(),
+    dictationViewModel: InlineDictationViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
     val appSettings = LocalAppSettings.current
@@ -137,6 +151,7 @@ fun SessionRoute(
     val sessionSwitcherState by sessionSwitcherViewModel.state.collectAsState()
     val leaveAfterStop by viewModel.leaveAfterStop.collectAsState()
     val stopFailure by viewModel.stopFailure.collectAsState()
+    val dictationState by dictationViewModel.state.collectAsState()
 
     // Issue #2572: the id is the attach identity when the route carries one;
     // the name is presentation. A rename re-keys nothing on this screen.
@@ -160,6 +175,23 @@ fun SessionRoute(
         onBack()
     }
 
+    // #2475: the key-bar dictation's ONLY path to the PTY. `finals` carries
+    // final transcripts exclusively — partials stay in the bar's status chip
+    // inside the dictation controller — so this collector is where the
+    // never-send-a-partial invariant is enforced end to end: a raw write lands
+    // at the remote cursor with no cursor math, exactly like a typed burst.
+    LaunchedEffect(viewModel, dictationViewModel) {
+        dictationViewModel.finals.collect { final ->
+            viewModel.sendBytes(final.toByteArray())
+        }
+    }
+    // A dictation outliving its live PTY has nowhere honest to land — a final
+    // arriving during a reconnect would park in the held-input buffer and pop
+    // out minutes later. Abandon it when the session is not live.
+    LaunchedEffect(state) {
+        if (state !is SessionUiState.Live) dictationViewModel.cancel()
+    }
+
     val sink = remember(viewModel) {
         object : SessionSink {
             override val isLive: Boolean get() = viewModel.uiState.value is SessionUiState.Live
@@ -176,6 +208,42 @@ fun SessionRoute(
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments(),
     ) { uris: List<Uri> -> composerViewModel.attach(uris) }
+
+    // #2475: the bar mic's RECORD_AUDIO gate, the same contract as the
+    // composer's (decideMicTap): a stop-tap always goes straight through (the
+    // permission was necessarily held to start), a start-tap asks first. The
+    // phase is read at call time, not captured at composition, and a tap while
+    // Transcribing is dropped — the in-flight final must not be raced by a
+    // permission dialog.
+    val context = LocalContext.current
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) dictationViewModel.onMicTap() else dictationViewModel.onPermissionDenied()
+    }
+    val onBarMicTap: () -> Unit = {
+        val phase = dictationViewModel.state.value.phase
+        if (phase != InlineDictationPhase.Transcribing) {
+            when (
+                decideMicTap(
+                    hasRecordAudioPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO,
+                    ) == PackageManager.PERMISSION_GRANTED,
+                    recording = phase == InlineDictationPhase.Listening,
+                )
+            ) {
+                MicTapAction.StartOrStop -> dictationViewModel.onMicTap()
+                MicTapAction.RequestPermission ->
+                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            }
+        }
+    }
+    val barDictationPhase = when (dictationState.phase) {
+        InlineDictationPhase.Idle -> SessionBarDictationPhase.Idle
+        InlineDictationPhase.Listening -> SessionBarDictationPhase.Listening
+        InlineDictationPhase.Transcribing -> SessionBarDictationPhase.Transcribing
+    }
 
     SessionScreen(
         state = state,
@@ -196,6 +264,10 @@ fun SessionRoute(
         onStopSession = viewModel::stopSession,
         stopFailure = stopFailure,
         onHotkeySend = viewModel::sendBytes,
+        onBarMicTap = onBarMicTap,
+        micEnabled = state is SessionUiState.Live,
+        dictationPhase = barDictationPhase,
+        dictationText = dictationState.error ?: dictationState.partial,
         onDraftChange = composerViewModel::onDraftChange,
         onSend = { composerViewModel.send() },
         onInsert = composerViewModel::insert,
@@ -255,6 +327,14 @@ fun SessionScreen(
     onStopSession: () -> Unit = {},
     stopFailure: String? = null,
     onHotkeySend: (ByteArray) -> Unit,
+    /** #2475: the bottom bar's dictation mic tap (already permission-gated). */
+    onBarMicTap: () -> Unit = {},
+    /** #2475: false while the session cannot receive dictated bytes. */
+    micEnabled: Boolean = true,
+    /** #2475: the bar's dictation phase; drives the mic tint and status chip. */
+    dictationPhase: SessionBarDictationPhase = SessionBarDictationPhase.Idle,
+    /** #2475: the dictation chip's text (partial preview, or a failure). */
+    dictationText: String = "",
     onDraftChange: (String) -> Unit,
     /**
      * Production Send. Returns true when the message left (close the sheet);
@@ -565,7 +645,10 @@ fun SessionScreen(
         // #2612: the persistent bottom terminal bar. ↑ / ↓ / Enter reach the
         // PTY in one tap with no panel, the launcher opens the composer, and
         // More keys toggles the floating palette above. The bar is docked
-        // (stable, never draggable); only the palette floats.
+        // (stable, never draggable); only the palette floats. #2475 adds the
+        // dictation mic at the trailing end: its tap is permission-gated in
+        // the route, its finals are the route's sendBytes collector, and
+        // partials render ONLY in the bar's status chip.
         if (!sessionEnded) {
             SessionTerminalBar(
                 onKey = { navKey: SessionNavKey -> onHotkeySend(navKeyBytes(navKey)) },
@@ -579,6 +662,10 @@ fun SessionScreen(
                 },
                 keysEnabled = state is SessionUiState.Live,
                 showKeys = showCommonKeys && state !is SessionUiState.Failed,
+                onMicTap = onBarMicTap,
+                micEnabled = micEnabled,
+                dictationPhase = dictationPhase,
+                dictationText = dictationText,
             )
         }
         }

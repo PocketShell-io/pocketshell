@@ -27,6 +27,7 @@ import com.pocketshell.uikit.components.HotkeyLongPressAction
 import com.pocketshell.uikit.components.HotkeySection
 import com.pocketshell.uikit.components.LoadingIndicator
 import com.pocketshell.uikit.components.PocketShellButton
+import com.pocketshell.uikit.components.SessionBarDictationPhase
 import com.pocketshell.uikit.components.SessionTerminalBar
 import com.pocketshell.uikit.components.SpinnerSize
 import com.pocketshell.uikit.components.TerminalHotkeysPage
@@ -74,6 +75,73 @@ internal fun SessionTerminalBarRender() {
             onKey = {},
             onOpenComposer = {},
             onMoreKeys = {},
+        )
+    }
+}
+
+/**
+ * Issue #2475: the key-bar dictation mic and its status chip in the three
+ * phases — idle, listening with a live partial, transcribing. The chip is the
+ * ONLY surface partial recognition results are allowed to render on.
+ */
+@Composable
+internal fun SessionTerminalBarDictationRender() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PocketShellColors.Background),
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .background(PocketShellColors.TermBg),
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                SAMPLE_TERMINAL_LINES.forEach { line ->
+                    Text(
+                        text = line,
+                        color = PocketShellColors.TermText,
+                        style = PocketShellType.bodyMono,
+                    )
+                }
+            }
+        }
+        Text(
+            text = "idle",
+            color = PocketShellColors.TextMuted,
+            style = PocketShellType.metadata,
+            modifier = Modifier.padding(start = 12.dp, top = 8.dp),
+        )
+        SessionTerminalBar(
+            onKey = {},
+            onOpenComposer = {},
+            onMoreKeys = {},
+        )
+        Text(
+            text = "listening (partial preview)",
+            color = PocketShellColors.TextMuted,
+            style = PocketShellType.metadata,
+            modifier = Modifier.padding(start = 12.dp, top = 8.dp),
+        )
+        SessionTerminalBar(
+            onKey = {},
+            onOpenComposer = {},
+            onMoreKeys = {},
+            dictationPhase = SessionBarDictationPhase.Listening,
+            dictationText = "run the migration and restart the api service",
+        )
+        Text(
+            text = "transcribing",
+            color = PocketShellColors.TextMuted,
+            style = PocketShellType.metadata,
+            modifier = Modifier.padding(start = 12.dp, top = 8.dp),
+        )
+        SessionTerminalBar(
+            onKey = {},
+            onOpenComposer = {},
+            onMoreKeys = {},
+            dictationPhase = SessionBarDictationPhase.Transcribing,
         )
     }
 }

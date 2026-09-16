@@ -1443,6 +1443,15 @@ needed it.
   `app/src/main/java/com/pocketshell/app/session/InlineDictation.kt` (1,570
   — it was misfiled; it lands in `app2/.../voice/`), + `di/VoiceModule.kt`
   bindings (413).
+- ADDENDUM (#2475, 2026-09-16): the `InlineDictation.kt` line above is the
+  KEY-BAR inline dictation surface — a SEPARATE surface from the
+  composer-mic dictation this slice actually shipped (#2471). It is
+  P-10-ADJACENT, not part of the composer-mic slice: its old half
+  `VoiceSessionSurface.kt` hard-depends on the deferred in-app assistant
+  (`AssistantAgentLoop` et al.). Ported slim instead — key-bar mic in
+  `SessionTerminalBar` → the P-2 recognizer → `SessionViewModel.sendBytes`,
+  partials rendered in a status chip only (never written to the PTY) — with
+  the P-10-dependent files still deferred.
 - CREATE: `J08VoiceDictationJourney.kt` — mic tap → (fake recognition
   delegate injected) transcript lands in composer; offline: transcript
   queues in `PendingTranscriptionStore` and delivers on connectivity return
