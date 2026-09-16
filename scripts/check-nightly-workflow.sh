@@ -55,6 +55,14 @@
 #  11. scripts/check-nightly-fault-run.sh still identifies this workflow's
 #      journey job (default --workflow app2.yml, --job-needle matching .name).
 #
+# Issue #2739: tests.yml shares app2.yml's concurrency group scheme (own
+# never-cancelled schedule group, per-PR and per-ref groups) and therefore the
+# same #2736 pending-run collapse hazard, so the check-7 shape (schedule
+# special-cased, queue: max, cancel-in-progress unset or literal false) is
+# pinned for it too — concurrency only, since the job-graph checks above are
+# app2.yml's D37 cadence; tests.yml's own integrity lives in its unit-gate
+# wiring guard (scripts/check-unit-gate-wiring.sh) and scripts/test-ci-cadence.sh.
+#
 # Usage:
 #   scripts/check-nightly-workflow.sh              # check the real workflow
 #   scripts/check-nightly-workflow.sh --self-test  # red/green proof per check
@@ -63,6 +71,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_WORKFLOW="$ROOT_DIR/.github/workflows/app2.yml"
+TESTS_WORKFLOW="$ROOT_DIR/.github/workflows/tests.yml"
 FAULT_RUN_CONSUMER="$ROOT_DIR/scripts/check-nightly-fault-run.sh"
 JOURNEY_JOB="app2-journey"
 JOURNEY_JOB_NAME_NEEDLE="app2 journey suite"
@@ -227,6 +236,49 @@ puts "PASS: #{path} is valid YAML, carries the #{cron} cadence, has no workflow-
 RUBY
 }
 
+# Issue #2739: tests.yml carries the same concurrency group scheme as app2.yml
+# and the same #2736 pending-run collapse hazard, so the same never-cancelled
+# shape is pinned for it. Only the concurrency mapping is asserted here — the
+# cadence/job-graph checks above are app2.yml's; tests.yml's own integrity is
+# covered by scripts/check-unit-gate-wiring.sh and scripts/test-ci-cadence.sh.
+check_tests_concurrency() {
+  local workflow="$1"
+  command -v ruby >/dev/null 2>&1 || {
+    fail "ruby is required to parse GitHub Actions YAML"
+  }
+
+  ruby - "$workflow" <<'RUBY'
+require "yaml"
+
+path = ARGV[0]
+
+begin
+  document = YAML.safe_load_file(path, aliases: true)
+rescue Psych::Exception => error
+  abort "FAIL: #{path} is not valid YAML: #{error.message.lines.first.strip}"
+end
+
+abort "FAIL: #{path} must contain a mapping at the document root" unless document.is_a?(Hash)
+
+concurrency = document["concurrency"]
+abort "FAIL: #{path} has no concurrency mapping" unless concurrency.is_a?(Hash)
+group = concurrency["group"].to_s
+queue = concurrency["queue"].to_s
+cancel = concurrency["cancel-in-progress"]
+unless group.include?("sched")
+  abort "FAIL: #{path}'s concurrency group does not special-case schedule (#{group}) — a scheduled run sharing a push's group can be cancelled mid-flight, and a cancelled cadence reads as 'not failed' while proving nothing"
+end
+unless queue == "max"
+  abort "FAIL: #{path}'s concurrency.queue must be max (got #{queue.inspect}) — GitHub's default concurrency cancels a group's PENDING (never-started) run the moment a newer run joins it, regardless of cancel-in-progress (issue #2736: five queued app2 runs on main were collapsed within seconds of the next run's creation on 2026-09-16, each with zero jobs; tests.yml carried the same latent shape, #2739). queue: max keeps up to 100 runs waiting FIFO so a queued run stays a delayed validation, never a lost one (D40)"
+end
+if cancel && cancel.to_s.strip != "false"
+  abort "FAIL: #{path}'s cancel-in-progress must be unset (or the literal false) alongside queue: max (got #{cancel.to_s}) — GitHub rejects queue: max + cancel-in-progress: true as a workflow validation error, and any conditional form either breaks runs outright or re-arms the #2736 pending-run collapse. Nothing in these groups may be cancelled: the schedule keeps its own group and PR heads queue FIFO instead"
+end
+
+puts "PASS: #{path} concurrency is never-cancelled (own schedule group, queue: max, cancel-in-progress unset)"
+RUBY
+}
+
 # 11. the verdict consumer still looks at this workflow's journey job.
 check_fault_run_consumer() {
   local fault="${1:-$FAULT_RUN_CONSUMER}"
@@ -381,6 +433,43 @@ self_test() {
   sed -i 's/^JOB_NEEDLE="app2 journey suite"/JOB_NEEDLE="something else"/' "$m"
   expect_consumer_red "a fault-run consumer with the wrong job needle is rejected" "$m" "would miss the journey job"
 
+  # Issue #2739: the same never-cancelled shape is pinned for tests.yml. The
+  # green control is the real workflow. The noqueue mutant is the exact #2736
+  # regression shape (GitHub collapses every queued run), the D40-era mutant
+  # re-arms the pre-#2739 PR-only conditional, and the cancel-in-progress:
+  # true mutant is the combination GitHub rejects as a workflow validation error.
+  expect_tests_red() {  # $1 = label, $2 = mutant file, $3 = expected substring
+    if check_tests_concurrency "$2" >"$temp_dir/out" 2>&1; then
+      cat "$temp_dir/out" >&2
+      fail "$1: mutant was accepted"
+    fi
+    grep -qF "$3" "$temp_dir/out" || {
+      cat "$temp_dir/out" >&2
+      fail "$1: reddened for the wrong reason (wanted: $3)"
+    }
+    echo "  ok: $1"
+  }
+
+  t="$temp_dir/tests-valid.yml"; cp "$TESTS_WORKFLOW" "$t"
+  check_tests_concurrency "$t" >/dev/null || fail "self-test control: tests.yml does not pass its own concurrency guard"
+  echo "  ok: the shipped tests.yml is the green control"
+
+  m="$temp_dir/tests-noqueue.yml"; cp "$TESTS_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/d" "$m"
+  expect_tests_red "a queue-less tests.yml group that collapses pending runs is rejected" "$m" "concurrency.queue must be max"
+
+  m="$temp_dir/tests-d40cancel.yml"; cp "$TESTS_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: \${{ github.event_name=='pull_request' }}" "$m"
+  expect_tests_red "the D40-era PR-only cancel-in-progress form is rejected" "$m" "cancel-in-progress must be unset"
+
+  m="$temp_dir/tests-cictrue.yml"; cp "$TESTS_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: true" "$m"
+  expect_tests_red "queue: max + cancel-in-progress: true is rejected" "$m" "cancel-in-progress must be unset"
+
+  m="$temp_dir/tests-sharedgroup.yml"; cp "$TESTS_WORKFLOW" "$m"
+  sed -i "s|^  group: .*$|  group: \${{ github.workflow }}-\${{ github.ref }}|" "$m"
+  expect_tests_red "a shared tests.yml concurrency group is rejected" "$m" "does not special-case schedule"
+
   echo "PASS: check-nightly-workflow self-test."
 }
 
@@ -389,6 +478,7 @@ case "${1:-}" in
   "")
     check_workflow "$DEFAULT_WORKFLOW"
     check_fault_run_consumer || exit 1
+    check_tests_concurrency "$TESTS_WORKFLOW"
     ;;
   *) echo "unknown argument: $1" >&2; echo "usage: $0 [--self-test]" >&2; exit 1 ;;
 esac

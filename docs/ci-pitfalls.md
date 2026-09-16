@@ -464,9 +464,9 @@ What to do:
   promise matters, pin `queue: max` (FIFO, up to 100 pending runs, nothing
   cancelled; PR heads then queue serially — accepted trade). Note that
   `queue` and `cancel-in-progress: true` are mutually exclusive — GitHub
-  rejects the workflow. `scripts/check-nightly-workflow.sh` check 7 guards
-  the pin for `app2.yml`; `tests.yml` still carries the latent shape
-  (#2739).
+  rejects the workflow. `scripts/check-nightly-workflow.sh` guards the pin
+  for both heavy workflows: `app2.yml` via check 7, `tests.yml` via the
+  #2739 concurrency check (its latent shape was closed the same day).
 - When reading history, never reconstruct "was change X validated?" from run
   conclusions alone. Find the newest run where X's lane JOB executed
   (`gh run view --json jobs`), and check its head SHA is at or before X...

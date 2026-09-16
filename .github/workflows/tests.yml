@@ -5,9 +5,10 @@ name: Tests
 # the modules it covered; the surviving one lives in app2.yml.)
 # Issue #816/#953: PRs run the cheap merge gate; Docker/emulator validation is
 # batched on main pushes or manual dispatch so every trivial/independent PR does
-# not sit in the heavy runner queue. The main-push concurrency group cancels
-# older in-flight runs when newer merges land, so the newest main commit becomes
-# the current batch head. APK builds stay on the tag-only trigger in build.yml.
+# not sit in the heavy runner queue. Back-to-back main merges QUEUE their runs
+# (queue: max, #2736/#2739 — nothing is cancelled, running or queued) and each
+# run validates exactly its own diff. APK builds stay on the tag-only trigger
+# in build.yml.
 
 on:
   push:
@@ -26,15 +27,28 @@ on:
   schedule: [{cron: "0 0,8,16 * * *"}]
 
 concurrency:
-  # Issue #2593 (decision D40, same change as app2.yml): only PR runs cancel
-  # in progress. Push runs on a ref validate exactly their own diff, so a
-  # superseded push run is that commit's ONLY validation being dropped — its
-  # replacement's ci-plan diff base already contains the cancelled commit's
-  # changes, and they are never selected again. Back-to-back pushes on main
-  # now queue instead; PR iteration stays fast, and the schedule keeps its
-  # own never-cancelled group.
+  # Issue #2593 (decision D40, same change as app2.yml), corrected by #2736 and
+  # mirrored here by #2739: NOTHING in these groups is ever cancelled — neither
+  # a running run (D40) nor a queued one. GitHub's default concurrency also
+  # collapses a group's PENDING (never-started) run the moment a newer run
+  # joins, regardless of cancel-in-progress: five app2 main runs died
+  # `cancelled` with `"jobs":[]` that way on 2026-09-16 (#2736), and this
+  # workflow carried the same latent shape. A superseded push run is that
+  # commit's ONLY validation being dropped — its replacement's ci-plan diff
+  # base already contains its changes, so without its own completed run they
+  # are selected by no run ever after. `queue: max` keeps up to 100 runs
+  # waiting FIFO per group, so a queued run is a delayed validation, never a
+  # lost one. The schedule keeps its own never-cancelled group — a cancelled
+  # cadence reads as "not failed" while proving nothing. `cancel-in-progress`
+  # is GONE, not merely false: GitHub rejects `queue: max` +
+  # `cancel-in-progress: true` as a workflow validation error, so the PR-only
+  # conditional cannot stay; PR heads now queue serially in their per-PR group
+  # instead of superseding each other — the final head's result arrives later;
+  # nothing is validated less (accepted trade, same as app2.yml).
+  # scripts/check-nightly-workflow.sh pins this shape for both workflows
+  # (queue: max present, cancel-in-progress unset or literal false).
   group: ${{ github.event_name=='schedule'&&'sched'||format('{0}-{1}',github.workflow,github.event_name=='pull_request'&&format('pr-{0}',github.event.pull_request.number)||format('ref-{0}',github.ref)) }}
-  cancel-in-progress: ${{ github.event_name=='pull_request' }}
+  queue: max
 
 jobs:
   # Issue #2060 (CI Phase A): the ~25 SERIAL guard steps this job used to carry in
