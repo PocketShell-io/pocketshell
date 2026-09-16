@@ -375,11 +375,11 @@ laundering — the cost stays, the signal goes."
   [ -n "$gate_script" ] || fail "C13: could not extract \`$GATE_JOB\`'s \`run: |\` body — the fail-closed loop is unreadable, so this is not a pass"
   assert_rollup_exit() {
     local want="$1" label="$2"
-    local unit="$3" gs="$4" gch="$5" gts="$6" dex="$7"
+    local unit="$3" gs="$4" gch="$5" gts="$6" dex="$7" uim="$8"
     local out rc
     set +e
     out="$(UNIT="$unit" GUARDS_STATIC="$gs" GUARDS_CI_HARNESS="$gch" \
-           GUARDS_TEST_SELECTION="$gts" DEX="$dex" \
+           GUARDS_TEST_SELECTION="$gts" DEX="$dex" UI_MOCK="$uim" \
            bash <<<"$gate_script" 2>&1)"
     rc=$?
     set -e
@@ -388,14 +388,14 @@ laundering — the cost stays, the signal goes."
 $out"
     fi
   }
-  assert_rollup_exit 0 "all-success" success success success success success
-  assert_rollup_exit 1 "a failing input" failure success success success success
-  assert_rollup_exit 1 "a skipped input" success skipped success success success
-  assert_rollup_exit 1 "an empty/missing input" success success "" success success
+  assert_rollup_exit 0 "all-success" success success success success success success
+  assert_rollup_exit 1 "a failing input" failure success success success success success
+  assert_rollup_exit 1 "a skipped input" success skipped success success success success
+  assert_rollup_exit 1 "an empty/missing input" success success "" success success success
   # Conservative: a cancelled input WHILE THIS JOB RAN is a single-job cancel
   # (timeout / runner death), not a concurrency-supersession. Those must still
   # fail closed. The concurrency case never reaches this script (C11).
-  assert_rollup_exit 1 "cancelled-while-running" cancelled cancelled cancelled cancelled cancelled
+  assert_rollup_exit 1 "cancelled-while-running" cancelled cancelled cancelled cancelled cancelled success
 
   echo "OK: \`$GATE_JOB\` is named '$GATE_CHECK_NAME' and its three lists agree."
   echo "OK: \`$GATE_JOB\` if: is '$EXPECTED_GATE_IF' (concurrency-cancel concludes cancelled, #2187)."
@@ -488,7 +488,7 @@ self_test() {
 
   # Case 1 — a job in the loop and env but dropped from `needs:` (list 1 gap).
   local m1="$sandbox/m1.yml"
-  sed 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex\]$/    needs: [unit, guards-static, guards-ci-harness, dex]/' "$src" > "$m1"
+  sed 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock\]$/    needs: [unit, guards-static, guards-ci-harness, dex, ui-mock]/' "$src" > "$m1"
   cmp -s "$src" "$m1" && st_bad "1 mutation did not apply" || \
     expect_red "1 job dropped from needs:" "C4" "$m1"
 
@@ -555,9 +555,9 @@ self_test() {
   # Case 8 — a needed job that does not exist, wired consistently into all three
   #          lists, so ONLY the existence check can catch it.
   local m8="$sandbox/m8.yml"
-  sed -e 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex\]$/    needs: [unit, guards-static, guards-ci-harness, guards-test-selection, dex, ghost-job]/' \
+  sed -e 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock\]$/    needs: [unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock, ghost-job]/' \
       -e 's/^          DEX: \${{ needs.dex.result }}$/          DEX: ${{ needs.dex.result }}\n          GHOST_JOB: ${{ needs.ghost-job.result }}/' \
-      -e 's|^                      "Dex register-pressure ratchet:\$DEX"; do$|                      "Dex register-pressure ratchet:$DEX" \\\n                      "Ghost:$GHOST_JOB"; do|' \
+      -e 's|^                      "UI-mock Python tests:\$UI_MOCK"; do$|                      "UI-mock Python tests:$UI_MOCK" \\\n                      "Ghost:$GHOST_JOB"; do|' \
       "$src" > "$m8"
   cmp -s "$src" "$m8" && st_bad "8 mutation did not apply" || \
     expect_red "8 needs a nonexistent job" "C3" "$m8"

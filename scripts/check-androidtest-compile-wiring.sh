@@ -316,7 +316,7 @@ self_test() {
   #          reads exactly like protection and gates nothing. This is why W3 is
   #          scoped to the required lane rather than to the whole file.
   local m2="$sandbox/m2.yml"
-  sed 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex\]$/    needs: [unit, guards-static, guards-ci-harness, guards-test-selection]/' "$src" > "$m2"
+  sed 's/^    needs: \[unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock\]$/    needs: [unit, guards-static, guards-ci-harness, guards-test-selection, ui-mock]/' "$src" > "$m2"
   cmp -s "$src" "$m2" && st_bad "2 mutation did not apply" || \
     expect_red "2 compiling job dropped out of the required lane" "W3" "$m2"
 

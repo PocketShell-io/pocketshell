@@ -750,6 +750,35 @@ jobs:
           scripts/ci-test-selection-guards.sh
 
   # ---------------------------------------------------------------------------
+  # Issue #2636: the ui-mock loopback render tool's own Python test suite
+  # (ui-mock/tests — catalog discovery, the serialized/freshness build engine,
+  # and the loopback HTTP server's token/Origin/Host guards, all against fake
+  # Gradle output). Stdlib only, so like `guards-test-selection` there is no
+  # JDK/Gradle/SDK/Docker, no pip install, and nothing leaves loopback. Pinned
+  # to the OLDEST supported Python (the ui-mock README floors at 3.10, and a
+  # hosted runner's preinstalled python3 is newer) so an accidental dependency
+  # on a newer stdlib goes red here rather than only on a dev box. Same
+  # setup-python pin convention the deleted `python` job used (issue #2643).
+  # Wired into `unit-gate` like every other unit-lane job — C7 in
+  # scripts/check-unit-gate-wiring.sh leaves no ungated job behind by design.
+  ui-mock:
+    name: UI-mock Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Run the ui-mock unittest suite
+        run: python3 -m unittest discover -s ui-mock/tests -v
+
+  # ---------------------------------------------------------------------------
   # Issue #2060 (CI Phase A): split out of the `unit` job so the ONE step that
   # compiles anything runs off the Unit critical path, and so the workflow gets a
   # cheap "the tree compiles" signal early, which is what `emulator-journey` gates
@@ -859,7 +888,7 @@ jobs:
   unit-gate:
     name: Unit tests
     runs-on: ubuntu-latest
-    needs: [unit, guards-static, guards-ci-harness, guards-test-selection, dex]
+    needs: [unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock]
     if: ${{ !cancelled() }}
     timeout-minutes: 5
     steps:
@@ -870,6 +899,7 @@ jobs:
           GUARDS_CI_HARNESS: ${{ needs.guards-ci-harness.result }}
           GUARDS_TEST_SELECTION: ${{ needs.guards-test-selection.result }}
           DEX: ${{ needs.dex.result }}
+          UI_MOCK: ${{ needs.ui-mock.result }}
         run: |
           set -euo pipefail
           failed=0
@@ -877,7 +907,8 @@ jobs:
                       "Static guards:$GUARDS_STATIC" \
                       "CI harness guards:$GUARDS_CI_HARNESS" \
                       "Test-selection coverage guards:$GUARDS_TEST_SELECTION" \
-                      "Dex register-pressure ratchet:$DEX"; do
+                      "Dex register-pressure ratchet:$DEX" \
+                      "UI-mock Python tests:$UI_MOCK"; do
             job="${pair%%:*}"
             result="${pair##*:}"
             printf '%-32s %s\n' "$job" "$result"
