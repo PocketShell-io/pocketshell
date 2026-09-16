@@ -31,7 +31,7 @@ import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
 import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.settings.AppSettings
-import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
 import java.io.File
@@ -246,8 +246,8 @@ class J20ComposerUploadProgressJourney {
     }
 
     private fun openComposer() {
-        awaitTagVisible(SESSION_COMPOSER_LAUNCHER_TAG, "the Prompt Composer launcher")
-        compose.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).performClick()
+        awaitTagVisible(SESSION_BAR_COMPOSE_TAG, "the Prompt Composer launcher")
+        compose.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).performClick()
         awaitTagVisible(COMPOSER_TAG, "the Prompt Composer sheet")
     }
 

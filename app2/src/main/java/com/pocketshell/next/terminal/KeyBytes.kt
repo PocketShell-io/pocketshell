@@ -1,5 +1,7 @@
 package com.pocketshell.next.terminal
 
+import com.pocketshell.uikit.components.SessionNavKey
+
 /**
  * What each hotkeys-panel slot puts on the wire (rewrite task U-5, restored
  * catalog in #2521).
@@ -95,6 +97,19 @@ fun keyBarBytes(label: String, ctrlArmed: Boolean = false): ByteArray? = when (l
 /** CSI sequence: `ESC [ <final>`. */
 private fun csi(finalByte: Char): ByteArray =
     byteArrayOf(BYTE_ESC, '['.code.toByte(), finalByte.code.toByte())
+
+/**
+ * What a #2612 bottom-bar navigation key puts on the wire.
+ *
+ * The bar owns no strings, so this is the ONLY place the enum meets the
+ * label table — and therefore the pin a routing test drives: Up/Down are
+ * CSI `A`/`B`, Enter is `CR` (0x0D, never `\n`).
+ */
+fun navKeyBytes(key: SessionNavKey): ByteArray = when (key) {
+    SessionNavKey.ArrowUp -> requireNotNull(keyBarBytes(KEY_LABEL_ARROW_UP))
+    SessionNavKey.ArrowDown -> requireNotNull(keyBarBytes(KEY_LABEL_ARROW_DOWN))
+    SessionNavKey.Enter -> requireNotNull(keyBarBytes(KEY_LABEL_ENTER))
+}
 
 /**
  * `^X` / `^C` / `^\` labels from the #1662 catalog.

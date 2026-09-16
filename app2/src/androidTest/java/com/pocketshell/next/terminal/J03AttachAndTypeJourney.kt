@@ -40,11 +40,14 @@ import com.pocketshell.next.workspaces.workspaceSessionRowTag
 import com.pocketshell.next.tree.sessionRowTag
 import com.pocketshell.next.workspaces.WORKSPACE_SCREEN_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_TAG
-import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
-import com.pocketshell.uikit.components.SESSION_HOTKEYS_LAUNCHER_TAG
-import com.pocketshell.uikit.components.SESSION_LAUNCHER_BAR_TAG
-import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PANEL_CLOSE_TAG
-import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PANEL_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_ARROW_DOWN_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_ENTER_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_MORE_KEYS_TAG
+import com.pocketshell.uikit.components.SESSION_TERMINAL_BAR_TAG
+import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PALETTE_CLOSE_TAG
+import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PALETTE_TAG
 import com.termux.view.TerminalView
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -402,26 +405,32 @@ class J03AttachAndTypeJourney {
     }
 
     /**
-     * #2521: the circled always-visible 4-key bar + full composer is gone.
-     * Closed session chrome is the compact Prompt Composer + ⌨ launcher.
+     * #2612: closed chrome is the bottom terminal bar — the composer
+     * launcher, the permanent ↑ / ↓ / Enter keys, and More keys. The
+     * palette-only keys (Ctrl / Esc) stay behind the More keys affordance,
+     * and the composer stays closed.
      */
     @Test
-    fun closedChromeIsCompactLauncherOnly() {
+    fun closedChromeIsBottomBarOnly() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
 
-        compose.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
-        compose.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).assertIsDisplayed()
-        compose.onNodeWithTag(SESSION_HOTKEYS_LAUNCHER_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_ARROW_UP_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_ARROW_DOWN_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_ENTER_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).assertIsDisplayed()
         compose.onNodeWithText("Ctrl").assertDoesNotExist()
         compose.onNodeWithText("Esc").assertDoesNotExist()
         compose.onNodeWithTag(COMPOSER_TAG).assertDoesNotExist()
         compose.onNodeWithTag(COMPOSER_SEND_TAG).assertDoesNotExist()
-        capture("06-compact-launcher")
+        capture("06-bottom-bar")
     }
 
     /**
-     * Task U-5 / #2521: `^C` on the hotkeys panel is a real SIGINT.
+     * Task U-5 / #2521, retargeted by #2612: `^C` in the floating palette is
+     * a real SIGINT.
      *
      * The oracle is the HOST's process table, not the screen. A terminal shows
      * `^C` for any number of reasons — a locally echoed control glyph, a shell
@@ -449,14 +458,14 @@ class J03AttachAndTypeJourney {
         // sheet-drag. Each tap is one 0x03.
         compose.onNodeWithText("^C").performClick()
         compose.onNodeWithText("^C").performClick()
-        compose.awaitIdle("after the hotkeys-panel ^C taps")
-        compose.onNodeWithTag(TERMINAL_HOTKEYS_PANEL_TAG).assertIsDisplayed()
+        compose.awaitIdle("after the palette ^C taps")
+        compose.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG).assertIsDisplayed()
 
         awaitHostSleep(running = false)
         capture("08-interrupted")
 
-        compose.onNodeWithTag(TERMINAL_HOTKEYS_PANEL_CLOSE_TAG).performClick()
-        compose.awaitIdle("after closing the hotkeys panel")
+        compose.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_CLOSE_TAG).performClick()
+        compose.awaitIdle("after closing the palette")
         typeLine("echo $CTRL_MARKER")
         awaitTranscript("the post-interrupt marker twice") {
             it.split(CTRL_MARKER).size >= 3
@@ -468,15 +477,15 @@ class J03AttachAndTypeJourney {
     }
 
     /**
-     * Task U-5 / #2521: Enter on the hotkeys panel reaches the remote as CR.
+     * #2612: Enter on the persistent bottom bar reaches the remote as CR.
      *
-     * Enter is the load-bearing one — a panel that sent `\n` instead of `\r`
+     * Enter is the load-bearing one — a bar that sent `\n` instead of `\r`
      * submits nothing to a line editor — and it is asserted the only way that
-     * distinguishes them: by typing a command WITHOUT a newline and letting the
-     * panel's Enter run it. The panel stays open after the tap.
+     * distinguishes them: by typing a command WITHOUT a newline and letting
+     * the BAR's Enter run it. The bar is always there; no panel opens first.
      */
     @Test
-    fun theKeyBarsEnterSubmitsATypedCommand() {
+    fun theBarsEnterSubmitsATypedCommand() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
 
@@ -485,20 +494,19 @@ class J03AttachAndTypeJourney {
             it.contains(ENTER_MARKER)
         }
         assertEquals(
-            "the command must NOT have run yet, or the panel's Enter proves nothing:\n" +
+            "the command must NOT have run yet, or the bar's Enter proves nothing:\n" +
                 beforeEnter,
             2,
             squashed(beforeEnter).split(ENTER_MARKER).size,
         )
 
-        openHotkeys()
-        compose.onNodeWithText(KEY_LABEL_ENTER).performClick()
-        compose.onNodeWithTag(TERMINAL_HOTKEYS_PANEL_TAG).assertIsDisplayed()
+        compose.onNodeWithTag(SESSION_BAR_ENTER_TAG).performClick()
+        compose.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
 
         awaitTranscript("the marker echoed and run") { it.split(ENTER_MARKER).size >= 3 }
-        capture("09-hotkeys-enter")
+        capture("09-bar-enter")
         assertTrue(
-            "the host must show the command the hotkeys panel's Enter submitted",
+            "the host must show the command the bottom bar's Enter submitted",
             squashed(capturePane()).contains(ENTER_MARKER),
         )
     }
@@ -517,9 +525,9 @@ class J03AttachAndTypeJourney {
     }
 
     private fun openHotkeys() {
-        awaitTag(SESSION_HOTKEYS_LAUNCHER_TAG)
-        compose.onNodeWithTag(SESSION_HOTKEYS_LAUNCHER_TAG).performClick()
-        awaitTag(TERMINAL_HOTKEYS_PANEL_TAG)
+        awaitTag(SESSION_BAR_MORE_KEYS_TAG)
+        compose.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).performClick()
+        awaitTag(TERMINAL_HOTKEYS_PALETTE_TAG)
     }
 
     /**
@@ -1277,8 +1285,8 @@ class J03AttachAndTypeJourney {
             "attachingToAVanishedSessionSaysSoInsteadOfHangingOnAttaching" to 9_302L,
             "theRemoteTerminalSizeTracksTheKeyboardAndRotation" to 9_303L,
             "ctrlFromTheKeyBarInterruptsARunningCommand" to 9_304L,
-            "theKeyBarsEnterSubmitsATypedCommand" to 9_305L,
-            "closedChromeIsCompactLauncherOnly" to 9_306L,
+            "theBarsEnterSubmitsATypedCommand" to 9_305L,
+            "closedChromeIsBottomBarOnly" to 9_306L,
         )
     }
 }

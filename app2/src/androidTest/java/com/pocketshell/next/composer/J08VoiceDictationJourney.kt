@@ -27,7 +27,7 @@ import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.di.IoDispatcher
 import com.pocketshell.next.di.VoiceModule
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
-import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
 import kotlinx.coroutines.CoroutineDispatcher
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pocketshell.next.voice.ConnectivityProbe
@@ -303,8 +303,8 @@ class J08VoiceDictationJourney {
     }
 
     private fun openComposer() {
-        awaitTag(SESSION_COMPOSER_LAUNCHER_TAG, "the Prompt Composer launcher")
-        compose.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).performClick()
+        awaitTag(SESSION_BAR_COMPOSE_TAG, "the Prompt Composer launcher")
+        compose.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).performClick()
         awaitTag(COMPOSER_TAG, "the Prompt Composer sheet")
     }
 

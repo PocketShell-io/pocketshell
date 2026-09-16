@@ -65,10 +65,12 @@ import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
-import com.pocketshell.uikit.components.SessionLauncherBar
 import com.pocketshell.uikit.components.SessionTab
 import com.pocketshell.uikit.components.SessionTabState
 import com.pocketshell.uikit.components.SessionTabStrip
+import com.pocketshell.uikit.components.SessionNavKey
+import com.pocketshell.uikit.components.SessionTerminalBar
+import com.pocketshell.uikit.components.TerminalHotkeysPaletteOverlay
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.theme.PocketShellColors
@@ -106,11 +108,12 @@ const val SESSION_ENDED_TAG: String = "session-ended"
  * whenever the screen last recomposed, which is precisely when a send would
  * vanish into a dead pane and the draft would be cleared for it.
  *
- * Hotkeys-panel bytes go STRAIGHT to [SessionViewModel.sendBytes] — they are
- * not composed messages and have no business in the composer's
- * draft/history/attachment machinery. They are ordinary session input, though:
- * when the link is down they take the same held-input path as keystrokes
- * (#2578), so a hotkey tapped at the "Reconnecting" banner is not lost.
+ * Hotkeys bytes go STRAIGHT to [SessionViewModel.sendBytes] — from the
+ * #2612 bottom bar and the floating palette alike, they are not composed
+ * messages and have no business in the composer's draft/history/attachment
+ * machinery. They are ordinary session input, though: when the link is down
+ * they take the same held-input path as keystrokes (#2578), so a key tapped
+ * at the "Reconnecting" banner is not lost.
  */
 @Composable
 fun SessionRoute(
@@ -213,24 +216,28 @@ fun SessionRoute(
 }
 
 /**
- * One attached session: a title bar, a full-bleed terminal, and a compact
- * launcher bar. Prompt Composer and the hotkeys panel open as floating
- * overlays (#2521) and do not sit in this column.
+ * One attached session: a title bar, a full-bleed terminal, the #2612 bottom
+ * terminal bar, and floating overlays. The Prompt Composer opens as a floating
+ * sheet; the extended hotkeys live in a draggable floating palette over the
+ * terminal (#2612, replacing #2521's modal sheet); neither sits in this
+ * column.
  *
  * ## The keyboard overlays the terminal; it must not resize it (#887/#2533)
  *
  * The session column is a plain [Modifier.fillMaxSize] — no `imePadding`, no
  * pan. The window is `SOFT_INPUT_ADJUST_NOTHING` (see [com.pocketshell.next.MainActivity]),
  * so the OS neither resizes nor pans when the keyboard shows. The grid stays
- * put; [onResized] does not fire; aplexer does not reflow. The composer and
- * hotkeys sheets are [androidx.compose.material3.ModalBottomSheet]s with their
- * own IME policy, so Send/mic stay above the keyboard independently of this
- * column.
+ * put; [onResized] does not fire; aplexer does not reflow. The composer is a
+ * [androidx.compose.material3.ModalBottomSheet] with its own IME policy, so
+ * Send/mic stay above the keyboard independently of this column. The hotkeys
+ * palette floats inside the terminal slot and re-clamps to whatever viewport
+ * it is given, so it can never strand off-screen.
  *
  * @param onResized the terminal's size in character cells.
- * @param onHotkeySend raw bytes for the remote from the hotkeys panel.
+ * @param onHotkeySend raw bytes for the remote from the bottom bar and the
+ *   floating palette.
  * @param initiallyShowComposer test seam: start with the composer sheet open.
- * @param initiallyShowHotkeys test seam: start with the hotkeys panel open.
+ * @param initiallyShowHotkeys test seam: start with the floating palette open.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -533,22 +540,49 @@ fun SessionScreen(
                     }
                 }
             }
+
+            // #2612: the hotkeys palette floats INSIDE the terminal slot, so
+            // opening it never resizes the cell grid, never dims the
+            // terminal, and never blocks touches that miss the card. It is
+            // driven by the bottom bar's More keys affordance (and by the
+            // composer sheet's hotkeys entry point).
+            if (hotkeysOpen) {
+                TerminalHotkeysPaletteOverlay(
+                    mainSections = HOTKEY_PALETTE_MAIN_SECTIONS,
+                    ctrlSections = HOTKEY_CTRL_SECTIONS,
+                    onKey = { binding: KeyBinding ->
+                        keyBarBytes(binding.label)?.let(onHotkeySend)
+                    },
+                    onLongKey = { binding: KeyBinding ->
+                        when (binding.label) {
+                            "^C" -> keyBarBytes(KEY_LABEL_INTERRUPT_X2)?.let(onHotkeySend)
+                            "^D" -> keyBarBytes(KEY_LABEL_EOF_X2)?.let(onHotkeySend)
+                        }
+                    },
+                    onClose = { hotkeysOpen = false },
+                    enabled = state is SessionUiState.Live,
+                    longPressActions = HOTKEY_LONG_PRESS_ACTIONS,
+                )
+            }
         }
 
+        // #2612: the persistent bottom terminal bar. ↑ / ↓ / Enter reach the
+        // PTY in one tap with no panel, the launcher opens the composer, and
+        // More keys toggles the floating palette above. The bar is docked
+        // (stable, never draggable); only the palette floats.
         if (!sessionEnded) {
-            SessionLauncherBar(
+            SessionTerminalBar(
+                onKey = { navKey: SessionNavKey -> onHotkeySend(navKeyBytes(navKey)) },
                 onOpenComposer = {
                     hotkeysOpen = false
                     composerOpen = true
                 },
-                onOpenHotkeys = if (!showCommonKeys || state is SessionUiState.Failed) {
-                    null
-                } else {
-                    {
-                        composerOpen = false
-                        hotkeysOpen = true
-                    }
+                onMoreKeys = {
+                    composerOpen = false
+                    hotkeysOpen = !hotkeysOpen
                 },
+                keysEnabled = state is SessionUiState.Live,
+                showKeys = showCommonKeys && state !is SessionUiState.Failed,
             )
         }
         }
@@ -618,16 +652,6 @@ fun SessionScreen(
                 availableSlashCommands = availableSlashCommands,
             )
         }
-    }
-
-    if (hotkeysOpen) {
-        TerminalHotkeysSheet(
-            onKey = { binding: KeyBinding ->
-                keyBarBytes(binding.label)?.let(onHotkeySend)
-            },
-            onDismiss = { hotkeysOpen = false },
-            enabled = state is SessionUiState.Live,
-        )
     }
 
     if (terminalActionsOpen) {

@@ -1,5 +1,6 @@
 package com.pocketshell.next.terminal
 
+import com.pocketshell.uikit.components.HotkeyLongPressAction
 import com.pocketshell.uikit.components.HotkeySection
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.model.KeyKind
@@ -8,22 +9,33 @@ import com.pocketshell.uikit.model.KeyKind
 const val HOTKEY_CTRL_FLOW_LABEL: String = "Ctrl+…"
 
 /**
- * Issue #1662 main page: a one-screenful catalog of common controls.
- *
- * Ported from v0.4.47 `HotkeyMainSections`. The old CTRL COMBOS, visible
- * doubled tiles, sticky modifier, literal-letter grid, and expander are
- * deliberately gone. Arbitrary control chords live on [HOTKEY_CTRL_SECTIONS].
+ * Issue #2612: the three highest-frequency menu-navigation keys live
+ * permanently on the session bottom bar, one tap each — no panel to open or
+ * close around a terminal menu. Bytes route through [navKeyBytes].
  */
-val HOTKEY_MAIN_SECTIONS: List<HotkeySection> = listOf(
+val SESSION_BAR_NAV_KEYS: List<KeyBinding> = listOf(
+    KeyBinding(label = KEY_LABEL_ARROW_UP, kind = KeyKind.Arrow),
+    KeyBinding(label = KEY_LABEL_ARROW_DOWN, kind = KeyKind.Arrow),
+    KeyBinding(label = KEY_LABEL_ENTER, kind = KeyKind.Regular),
+)
+
+/**
+ * Issue #2612 palette main page: the extended key set MINUS what the bottom
+ * bar already carries permanently (↑ / ↓ / Enter — see
+ * [SESSION_BAR_NAV_KEYS]).
+ *
+ * Ported from the #1662 sheet catalog with those three removed. Every
+ * previously reachable key stays reachable: bar + palette + Ctrl page cover
+ * exactly the old sheet's catalog (pinned by [HotkeyCatalogTest]).
+ */
+val HOTKEY_PALETTE_MAIN_SECTIONS: List<HotkeySection> = listOf(
     HotkeySection(
         title = "ARROWS",
         keys = listOf(
             KeyBinding(label = KEY_LABEL_ARROW_LEFT, kind = KeyKind.Arrow),
-            KeyBinding(label = KEY_LABEL_ARROW_UP, kind = KeyKind.Arrow),
-            KeyBinding(label = KEY_LABEL_ARROW_DOWN, kind = KeyKind.Arrow),
             KeyBinding(label = KEY_LABEL_ARROW_RIGHT, kind = KeyKind.Arrow),
         ),
-        columns = 4,
+        columns = 2,
     ),
     HotkeySection(
         title = "KEYS",
@@ -31,9 +43,8 @@ val HOTKEY_MAIN_SECTIONS: List<HotkeySection> = listOf(
             KeyBinding(label = KEY_LABEL_ESC, kind = KeyKind.Regular),
             KeyBinding(label = KEY_LABEL_TAB, kind = KeyKind.Regular),
             KeyBinding(label = KEY_LABEL_SHIFT_TAB, kind = KeyKind.Regular),
-            KeyBinding(label = KEY_LABEL_ENTER, kind = KeyKind.Regular),
         ),
-        columns = 4,
+        columns = 3,
     ),
     HotkeySection(
         title = "CTRL",
@@ -64,5 +75,20 @@ val HOTKEY_CTRL_SECTIONS: List<HotkeySection> = listOf(
         keys = CTRL_ROWS.flatMap(::controlBindings),
         columns = 5,
         rows = CTRL_ROWS.map(::controlBindings),
+    ),
+)
+
+/**
+ * The palette's hold cues (from the #2521 sheet): long-press `^C` / `^D`
+ * sends the doubled control bytes.
+ */
+val HOTKEY_LONG_PRESS_ACTIONS: Map<String, HotkeyLongPressAction> = mapOf(
+    "^C" to HotkeyLongPressAction(
+        cue = "hold ×2",
+        accessibilityLabel = "Send Ctrl-C twice",
+    ),
+    "^D" to HotkeyLongPressAction(
+        cue = "hold ×2",
+        accessibilityLabel = "Send Ctrl-D twice",
     ),
 )

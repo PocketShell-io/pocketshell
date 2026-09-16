@@ -56,6 +56,7 @@ import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SegmentedToggle
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.components.StatusDot
+import com.pocketshell.uikit.components.TerminalHotkeysPage
 import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.model.Crumb
 import com.pocketshell.uikit.model.HostStatus
@@ -115,10 +116,31 @@ class DesignRenders {
         SessionTreeDesktopStyleRender()
     }
 
-    /** Issue #2521: closed-session compact launcher (Prompt Composer + ⌨). */
+    /**
+     * Issue #2612: the session screen's persistent bottom terminal bar docked
+     * below the terminal slot (replaces the docked #2631 launcher bar).
+     *
+     * Rendered at three widths because the acceptance bar is "no clipping or
+     * unreachable controls" at 360dp / 412dp / 600dp. The class default is the
+     * 412dp Pixel-7 viewport; the two below override the qualifier per method.
+     */
     @Test
-    fun sessionCompactLauncherBar() = render("session-compact-launcher-bar") {
-        SessionCompactLauncherBarRender()
+    fun sessionTerminalBar() = render("session-terminal-bar") {
+        SessionTerminalBarRender()
+    }
+
+    /** #2612 bar fit on a narrow (360dp) phone. */
+    @Config(qualifiers = "w360dp-h800dp-night-xxhdpi")
+    @Test
+    fun sessionTerminalBarNarrow() = render("session-terminal-bar-360") {
+        SessionTerminalBarRender()
+    }
+
+    /** #2612 bar fit on a wide (600dp) viewport. */
+    @Config(qualifiers = "w600dp-h915dp-night-xxhdpi")
+    @Test
+    fun sessionTerminalBarWide() = render("session-terminal-bar-600") {
+        SessionTerminalBarRender()
     }
 
     /** Issue #2521: Prompt Composer sheet chrome (title, draft, Insert, Send, mic). */
@@ -127,16 +149,16 @@ class DesignRenders {
         PromptComposerSheetRender()
     }
 
-    /** Issue #1662 common hotkeys page, including the visible hold cues. */
+    /** Issue #2612: the floating hotkeys palette over a live terminal (Main page). */
     @Test
-    fun terminalHotkeysPanel() = render("terminal-hotkeys-panel") {
-        TerminalHotkeysPanelRender()
+    fun terminalHotkeysPalette() = render("terminal-hotkeys-palette") {
+        TerminalHotkeysPaletteRender()
     }
 
-    /** Issue #1662 modal Ctrl picker with the five-column QWERTY layout. */
+    /** Issue #2612: the palette's Ctrl picker page with the QWERTY grid. */
     @Test
-    fun terminalHotkeysCtrlPage() = render("terminal-hotkeys-ctrl-page") {
-        TerminalHotkeysCtrlPageRender()
+    fun terminalHotkeysPaletteCtrl() = render("terminal-hotkeys-palette-ctrl") {
+        TerminalHotkeysPaletteRender(initialPage = TerminalHotkeysPage.Ctrl)
     }
 
     /** Issue #1487 fast visual check for single/multiple/restoring pill states. */
@@ -1119,7 +1141,7 @@ class DesignRenders {
     /**
      * Issue #784: the Prompt Composer with the keyboard up AFTER the key bar was
      * removed (hard-cut, D22). The terminal hotkeys moved to the dedicated
-     * `TerminalHotkeysPanel`, so the composer is back to just header → roomy
+     * `TerminalHotkeysPalette`, so the composer is back to just header → roomy
      * draft → action row (attach/snippets + Send + mic) above the soft keyboard.
      * This mirrors the un-squished target: a tall draft field and a Send/mic/
      * attach row fully visible above the IME — no key bar eating the space.

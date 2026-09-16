@@ -29,7 +29,7 @@ import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.settings.AppSettings
 import com.pocketshell.next.terminal.SESSION_RECONNECT_BANNER_TAG
 import com.pocketshell.next.terminal.SESSION_SCREEN_TAG
-import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
 import com.termux.view.TerminalView
 import dagger.hilt.android.testing.HiltAndroidRule
 import dagger.hilt.android.testing.HiltAndroidTest
@@ -417,8 +417,8 @@ class J07ComposerSendJourney {
     }
 
     private fun openComposer() {
-        awaitTag(SESSION_COMPOSER_LAUNCHER_TAG, "the Prompt Composer launcher")
-        compose.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).performClick()
+        awaitTag(SESSION_BAR_COMPOSE_TAG, "the Prompt Composer launcher")
+        compose.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).performClick()
         awaitTag(COMPOSER_TAG, "the Prompt Composer sheet")
     }
 

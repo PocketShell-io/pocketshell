@@ -7,12 +7,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -27,68 +27,104 @@ import com.pocketshell.uikit.components.HotkeyLongPressAction
 import com.pocketshell.uikit.components.HotkeySection
 import com.pocketshell.uikit.components.LoadingIndicator
 import com.pocketshell.uikit.components.PocketShellButton
-import com.pocketshell.uikit.components.SessionLauncherBar
+import com.pocketshell.uikit.components.SessionTerminalBar
 import com.pocketshell.uikit.components.SpinnerSize
-import com.pocketshell.uikit.components.TerminalHotkeysPanel
 import com.pocketshell.uikit.components.TerminalHotkeysPage
+import com.pocketshell.uikit.components.TerminalHotkeysPaletteOverlay
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.model.KeyKind
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellType
 
+/**
+ * Issue #2612: the session screen's persistent bottom terminal bar docked
+ * below the terminal slot. The terminal fill runs edge to edge above it; the
+ * bar carries the three permanent menu-navigation keys (↑ ↓ Enter), the
+ * composer launcher, and More keys — no floating corner buttons any more.
+ *
+ * **This fixture must stay `fillMaxSize()`** like the #2631 one it replaces:
+ * the docked bar is a BOTTOM relationship, and a fixture shorter than its
+ * slot cannot answer a question about where the bar sits.
+ */
 @Composable
-internal fun SessionCompactLauncherBarRender() {
-    Column(modifier = Modifier.fillMaxWidth()) {
+internal fun SessionTerminalBarRender() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PocketShellColors.Background),
+    ) {
         Box(
             modifier = Modifier
+                .weight(1f)
                 .fillMaxWidth()
-                .height(560.dp)
-                .background(PocketShellColors.Background),
+                .background(PocketShellColors.TermBg),
         ) {
-            Text(
-                text = "terminal stays full-size underneath",
-                color = PocketShellColors.TextMuted,
-                modifier = Modifier.padding(16.dp),
-            )
+            Column(modifier = Modifier.padding(12.dp)) {
+                SAMPLE_TERMINAL_LINES.forEach { line ->
+                    Text(
+                        text = line,
+                        color = PocketShellColors.TermText,
+                        style = PocketShellType.bodyMono,
+                    )
+                }
+            }
         }
-        SessionLauncherBar(
+        SessionTerminalBar(
+            onKey = {},
             onOpenComposer = {},
-            onOpenHotkeys = {},
+            onMoreKeys = {},
         )
     }
 }
 
-@Composable
-internal fun TerminalHotkeysPanelRender() {
-    Surface(color = PocketShellColors.Surface) {
-        TerminalHotkeysPanel(
-            sections = sampleMainHotkeySections(),
-            page = TerminalHotkeysPage.Main,
-            onKey = {},
-            onLongKey = {},
-            onOpenCtrlPage = {},
-            onBackToMain = {},
-            onClose = {},
-            longPressActions = mapOf(
-                "^C" to HotkeyLongPressAction("hold ×2", "Send Ctrl-C twice"),
-                "^D" to HotkeyLongPressAction("hold ×2", "Send Ctrl-D twice"),
-            ),
-        )
-    }
-}
+private val SAMPLE_TERMINAL_LINES = listOf(
+    "alexey@RMTHZ:~/git/pocketshell$ git status",
+    "On branch main",
+    "Your branch is up to date with 'origin/main'.",
+    "",
+    "nothing to commit, working tree clean",
+    "alexey@RMTHZ:~/git/pocketshell$ ./gradlew :app2:assembleDebug",
+    "BUILD SUCCESSFUL in 42s",
+    "alexey@RMTHZ:~/git/pocketshell$ ",
+)
 
+/**
+ * Issue #2612: the floating hotkeys palette over a live terminal — no dimming,
+ * no sheet, terminal rows intact behind it. [initialPage] selects Main or the
+ * Ctrl picker, mirroring the overlay's own page state seam.
+ */
 @Composable
-internal fun TerminalHotkeysCtrlPageRender() {
-    Surface(color = PocketShellColors.Surface) {
-        TerminalHotkeysPanel(
-            sections = sampleCtrlHotkeySections(),
-            page = TerminalHotkeysPage.Ctrl,
+internal fun TerminalHotkeysPaletteRender(initialPage: TerminalHotkeysPage = TerminalHotkeysPage.Main) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(PocketShellColors.TermBg),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            SAMPLE_TERMINAL_LINES.forEach { line ->
+                Text(
+                    text = line,
+                    color = PocketShellColors.TermText,
+                    style = PocketShellType.bodyMono,
+                )
+            }
+        }
+        TerminalHotkeysPaletteOverlay(
+            mainSections = samplePaletteMainSections(),
+            ctrlSections = sampleCtrlHotkeySections(),
             onKey = {},
             onLongKey = {},
-            onOpenCtrlPage = {},
-            onBackToMain = {},
             onClose = {},
+            longPressActions = if (initialPage == TerminalHotkeysPage.Main) {
+                mapOf(
+                    "^C" to HotkeyLongPressAction("hold ×2", "Send Ctrl-C twice"),
+                    "^D" to HotkeyLongPressAction("hold ×2", "Send Ctrl-D twice"),
+                )
+            } else {
+                emptyMap()
+            },
+            initialPage = initialPage,
         )
     }
 }
@@ -207,18 +243,16 @@ internal fun SessionSurfaceReconnectAffordanceRender() {
     }
 }
 
-/** Issue #1662 main hotkeys page: common controls plus the dedicated Ctrl-flow action. */
-private fun sampleMainHotkeySections(): List<HotkeySection> =
+/** Issue #2612 palette main page: the extended set minus the bottom bar's ↑/↓/Enter. */
+private fun samplePaletteMainSections(): List<HotkeySection> =
     listOf(
         HotkeySection(
             title = "ARROWS",
             keys = listOf(
                 KeyBinding("←", KeyKind.Arrow),
-                KeyBinding("↑", KeyKind.Arrow),
-                KeyBinding("↓", KeyKind.Arrow),
                 KeyBinding("→", KeyKind.Arrow),
             ),
-            columns = 4,
+            columns = 2,
         ),
         HotkeySection(
             title = "KEYS",
@@ -226,9 +260,8 @@ private fun sampleMainHotkeySections(): List<HotkeySection> =
                 KeyBinding("Esc", KeyKind.Regular),
                 KeyBinding("Tab", KeyKind.Regular),
                 KeyBinding("⇧Tab", KeyKind.Regular),
-                KeyBinding("Enter", KeyKind.Regular),
             ),
-            columns = 4,
+            columns = 3,
         ),
         HotkeySection(
             title = "CTRL",

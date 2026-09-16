@@ -8,7 +8,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -24,7 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.model.KeyBinding
@@ -240,22 +243,38 @@ fun KeyBar(
  * right colour / font / weight per [KeyKind], and reflects the active
  * state for modifiers (`.key.active` in the CSS).
  *
- * Kept private to the file because the visual recipe is tightly
- * coupled to the bar's padding / sizing decisions — extracting it
- * would just be ceremony.
+ * `internal` (not `private`) so the session bottom bar (#2612) reuses the
+ * exact same key treatment instead of growing a second one — the slot
+ * styling is the design system's key vocabulary, not [KeyBar]'s private
+ * detail.
+ *
+ * @param minHeight the slot's touch floor. [KeyBar] keeps its historical
+ *   38dp paint; the #2612 bottom bar passes [PocketShellDensity.tapTargetMin].
+ * @param enabled when false the slot mutes and drops its click.
+ * @param contentDescription optional a11y label — glyph keys like `↑` read
+ *   poorly as bare text.
  */
 @Composable
-private fun KeySlot(
+internal fun KeySlot(
     binding: KeyBinding,
     isActive: Boolean,
     modifier: Modifier,
     onTap: () -> Unit,
+    minHeight: Dp = 38.dp,
+    enabled: Boolean = true,
+    contentDescription: String? = null,
 ) {
     val (textColor: Color, bgColor: Color, borderColor: Color) = when {
         isActive -> Triple(
             PocketShellColors.Accent,
             PocketShellColors.AccentSoft,
             PocketShellColors.AccentDim,
+        )
+
+        !enabled -> Triple(
+            PocketShellColors.TextMuted,
+            PocketShellColors.SurfaceElev,
+            PocketShellColors.Border,
         )
 
         binding.kind == KeyKind.Arrow -> Triple(
@@ -271,16 +290,23 @@ private fun KeySlot(
         )
     }
 
+    val semanticsModifier = if (contentDescription != null) {
+        Modifier.semantics { this.contentDescription = contentDescription }
+    } else {
+        Modifier
+    }
+
     Box(
         modifier = modifier
             .widthIn(min = 30.dp)
-            .height(38.dp)
+            .heightIn(min = minHeight)
             .background(color = bgColor, shape = RoundedCornerShape(8.dp))
             .border(
                 border = BorderStroke(1.dp, borderColor),
                 shape = RoundedCornerShape(8.dp),
             )
-            .clickable(role = Role.Button, onClick = onTap)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onTap)
+            .then(semanticsModifier)
             .padding(horizontal = 4.dp),
         contentAlignment = Alignment.Center,
     ) {

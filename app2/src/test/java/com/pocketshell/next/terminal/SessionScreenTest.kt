@@ -39,10 +39,12 @@ import com.pocketshell.next.tree.STOP_SESSION_TITLE
 import com.pocketshell.next.tree.stopSessionMessage
 import com.pocketshell.next.usage.USAGE_GLANCE_PILL_TAG
 import com.pocketshell.next.usage.UsageGlancePillState
-import com.pocketshell.uikit.components.SESSION_COMPOSER_LAUNCHER_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_MORE_KEYS_TAG
+import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
+import com.pocketshell.uikit.components.SESSION_TERMINAL_BAR_TAG
+import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PALETTE_TAG
 import com.pocketshell.uikit.model.PillKind
-import com.pocketshell.uikit.components.SESSION_HOTKEYS_LAUNCHER_TAG
-import com.pocketshell.uikit.components.SESSION_LAUNCHER_BAR_TAG
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -89,7 +91,7 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(SESSION_ENDED_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("Session ended").assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_ERROR_BANNER_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SESSION_CONNECTING_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SESSION_TERMINAL_TAG).assertDoesNotExist()
     }
@@ -454,42 +456,84 @@ class SessionScreenTest {
     }
 
     /**
-     * #2521: closed chrome is the compact launcher only. The circled stack
-     * (Ctrl Esc Tab Enter + draft + Send + mic) must not sit in the session
-     * column.
+     * #2612: closed chrome is the bottom terminal bar only. The #2521 circled
+     * stack and the palette-only keys (Ctrl Esc Tab) must not sit in the
+     * session column; the bar's permanent keys (↑ ↓ Enter) must.
      */
     @Test
-    fun `closed chrome is the compact launcher, not the composer or key bar`() {
+    fun `closed chrome is the bottom bar, not the composer or palette keys`() {
         setContent(SessionUiState.Live(createRemoteTerminalSession()))
 
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_HOTKEYS_LAUNCHER_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_BAR_ARROW_UP_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("Ctrl").assertDoesNotExist()
         composeRule.onNodeWithText("Esc").assertDoesNotExist()
         composeRule.onNodeWithText("Tab").assertDoesNotExist()
-        composeRule.onNodeWithText("Enter").assertDoesNotExist()
+        composeRule.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertDoesNotExist()
     }
 
+    /**
+     * #2612: the bar docks BELOW the terminal slot (a stable strip the user
+     * can always reach), while the extended keys live in a floating palette
+     * that paints INSIDE the terminal's bounds — never dimming, resizing, or
+     * docking over the content being navigated.
+     */
     @Test
-    fun `the compact launcher is present while connecting`() {
+    fun `the bar docks below the terminal and the palette floats over it`() {
+        setContent(SessionUiState.Live(createRemoteTerminalSession()))
+
+        val slack = with(composeRule.density) { 1.dp.toPx() }
+        val terminal = composeRule.onNodeWithTag(SESSION_TERMINAL_TAG)
+            .fetchSemanticsNode().boundsInRoot
+        val bar = composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG)
+            .fetchSemanticsNode().boundsInRoot
+
+        assertTrue(
+            "the bar must dock below the terminal slot, got terminal=$terminal bar=$bar",
+            bar.top >= terminal.bottom - slack,
+        )
+        assertTrue(
+            "the bar must be full-width chrome, got ${bar.width} of ${terminal.width}",
+            bar.width >= terminal.width - slack,
+        )
+
+        composeRule.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).performClick()
+        composeRule.waitForIdle()
+
+        val palette = composeRule.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG)
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "the palette must float INSIDE the terminal bounds, got $palette in $terminal",
+            palette.left >= terminal.left - slack &&
+                palette.right <= terminal.right + slack &&
+                palette.top >= terminal.top - slack &&
+                palette.bottom <= terminal.bottom + slack,
+        )
+    }
+
+    @Test
+    fun `the bottom bar is present while connecting`() {
         setContent(SessionUiState.Connecting)
 
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_TAG).assertDoesNotExist()
     }
 
     @Test
-    fun `an ended session has no composer launcher`() {
+    fun `an ended session has no bar at all`() {
         setContent(SessionUiState.Failed("Session \"$SESSION\" ended (exit 3)."))
 
         composeRule.onNodeWithTag(SESSION_ENDED_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_ERROR_BANNER_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(SESSION_COMPOSER_LAUNCHER_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(SESSION_HOTKEYS_LAUNCHER_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(SESSION_BAR_COMPOSE_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).assertDoesNotExist()
     }
 
     @Test
@@ -503,7 +547,7 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(SESSION_LAUNCHER_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
     }
 
     @Test
