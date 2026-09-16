@@ -785,7 +785,7 @@ jobs:
         run: node --check ui-mock/web/app.js
 
       - name: Byte-compile the ui-mock Python entrypoints
-        run: python3 -m py_compile ui-mock/serve.py ui-mock/builder.py ui-mock/catalog.py ui-mock/engine.py
+        run: python3 -m py_compile ui-mock/serve.py ui-mock/builder.py ui-mock/catalog.py ui-mock/engine.py ui-mock/coverage.py
 
       - name: Run the ui-mock unittest suite
         run: python3 -m unittest discover -s ui-mock/tests -v
