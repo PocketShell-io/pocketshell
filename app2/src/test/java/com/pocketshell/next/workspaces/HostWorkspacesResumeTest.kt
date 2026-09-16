@@ -10,6 +10,7 @@ import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
 import com.pocketshell.next.nav.Destination
 import com.pocketshell.next.terminal.LastSessionStore
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -21,6 +22,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -39,6 +42,12 @@ import org.junit.runner.RunWith
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(AndroidJUnit4::class)
 class HostWorkspacesResumeTest {
+
+    // Issue #2724: this runTest class postdates #2707 suite-wide adoption and
+    // missed it - these guards pin leaks HERE (the class-guard grace catches
+    // post-test stragglers) instead of letting them blame the next runTest class.
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     private val dispatcher = StandardTestDispatcher()
     private lateinit var stack: TestConnectStack
@@ -198,7 +207,11 @@ class HostWorkspacesResumeTest {
         ],"errors":[]}
     """.trimIndent()
 
-    private companion object {
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         const val WORKSPACES =
             """{"schema":1,"workspaces":[{"path":"/home/testuser/git/pocketshell","display_path":"~/git/pocketshell"}]}"""
     }

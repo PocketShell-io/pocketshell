@@ -18,6 +18,9 @@ import com.pocketshell.next.hosts.SshKeysScreen
 import com.pocketshell.next.hosts.SshKeysUiState
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
+import com.pocketshell.testsupport.LeakGuard
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -46,6 +49,18 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
 class HostScreenRenders {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     /** A fresh install: the state that had no way forward before P-6. */
     @Test

@@ -3,6 +3,7 @@ package com.pocketshell.next.sync
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.pocketshell.core.storage.entity.HostEntity
+import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
@@ -12,6 +13,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -30,6 +33,18 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
 class SyncRepositoryTest {
+
+    // Issue #2724: this runTest class postdates #2707 suite-wide adoption and
+    // missed it - these guards pin leaks HERE (the class-guard grace catches
+    // post-test stragglers) instead of letting them blame the next runTest class.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private lateinit var context: Context
     private val prefsFile = "test-sync-repo-selection"

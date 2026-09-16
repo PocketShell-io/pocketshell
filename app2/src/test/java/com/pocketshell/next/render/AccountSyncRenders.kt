@@ -12,6 +12,9 @@ import com.pocketshell.next.sync.SyncOutcome
 import com.pocketshell.next.sync.SyncSignInCoordinator
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
+import com.pocketshell.testsupport.LeakGuard
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -36,6 +39,18 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
 class AccountSyncRenders {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     private val hosts = listOf(
         SyncHostRow("hetzner", "alexey@135.181.114.209:22", checked = true),

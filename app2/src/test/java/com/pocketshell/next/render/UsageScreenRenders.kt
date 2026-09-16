@@ -19,6 +19,9 @@ import com.pocketshell.next.usage.UsageScreenState
 import com.pocketshell.next.usage.UsageResetBannerState
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
+import com.pocketshell.testsupport.LeakGuard
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -46,6 +49,12 @@ import java.time.Instant
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
 class UsageScreenRenders {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
 
     @Test
     fun usageScreenCollapsed() = render("usage-screen-collapsed") {
@@ -82,6 +91,10 @@ class UsageScreenRenders {
     }
 
     companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+
         val NOW: Instant = Instant.parse("2026-09-05T18:25:00Z")
 
         val SAMPLE_STATE: UsageScreenState = UsageScreenState(
@@ -175,6 +188,18 @@ class UsageScreenRenders {
 @Config(qualifiers = "w360dp-h800dp-night-xxhdpi")
 class UsageScreen360Renders {
 
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
+
     @Test
     fun usageScreenAt360() = render("usage-screen-360") {
         UsageScreen(
@@ -200,6 +225,18 @@ class UsageScreen360Renders {
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w600dp-h915dp-night-xxhdpi")
 class UsageScreen600Renders {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun usageScreenAt600() = render("usage-screen-600") {
@@ -227,6 +264,18 @@ class UsageScreen600Renders {
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
 class UsageScreenLargeTextRenders {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun usageScreenWithLargeTextKeepsDetailsReachable() = render("usage-screen-large-text") {

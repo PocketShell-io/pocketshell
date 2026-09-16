@@ -69,7 +69,13 @@ import org.junit.runners.model.Statement
  * already carries them on its own test classpath (the #1048 convention).
  *
  * No-gradle-coincidence note: the rule is inert without the collector, so
- * plain (non-`runTest`) test classes need not adopt it.
+ * plain (non-`runTest`) test classes need not adopt it — with ONE standing
+ * exception (#2724): Roborazzi capture classes (`*Renders*`). A record-mode
+ * capture composes screens a plain unit-test run never composes
+ * (`captureRoboImage` early-returns unless a roborazzi task type is set), so a
+ * record-only composition that leaks has no `runTest` boundary of its own and
+ * the stored exception lands on whichever class runs next. Capture classes
+ * adopt BOTH declarations above so the leak fails the capturing class.
  */
 class LeakGuard private constructor(private val classBoundary: Boolean) : TestRule {
 

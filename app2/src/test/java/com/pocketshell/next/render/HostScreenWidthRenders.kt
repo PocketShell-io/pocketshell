@@ -17,6 +17,9 @@ import com.pocketshell.next.hosts.HostListUiState
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
+import com.pocketshell.testsupport.LeakGuard
+import org.junit.ClassRule
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -28,6 +31,18 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w360dp-h800dp-night-xxhdpi")
 class HostScreenRenders360 {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun hostsEmpty() = render("quiet-360-hosts-empty") { hosts(emptyList()) }
@@ -95,6 +110,18 @@ class HostScreenRenders360 {
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w600dp-h1000dp-night-xxhdpi")
 class HostScreenRenders600 {
+
+    // Issue #2724: record-mode captures compose screens a plain unit run never
+    // composes, so a leak from that composition fails HERE (the class-guard
+    // grace catches post-test stragglers), not whichever runTest class is next.
+    @get:Rule
+    val leakGuard = LeakGuard()
+
+    companion object {
+        @JvmStatic
+        @get:ClassRule
+        val leakGuardClass = LeakGuard.classGuard()
+    }
 
     @Test
     fun hostsEmpty() = render("quiet-600-hosts-empty") { hosts(emptyList()) }
