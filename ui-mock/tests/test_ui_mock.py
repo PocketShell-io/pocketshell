@@ -230,6 +230,15 @@ class EngineTests(Base):
         (folder/'a.png').write_bytes(png());self.assertEqual(source_stamp(self.root),before)
         self.source.write_text(FIXTURE+'// saved');self.assertNotEqual(source_stamp(self.root),before)
 
+    def test_watch_stamp_includes_render_init_script(self):
+        init=self.root/'ui-mock/render.init.gradle';init.parent.mkdir(parents=True)
+        before=source_stamp(self.root)
+        init.write_text('// init')
+        self.assertNotEqual(source_stamp(self.root),before)
+        mid=source_stamp(self.root)
+        init.write_text('// init // longer content changes size')
+        self.assertNotEqual(source_stamp(self.root),mid)
+
     def test_repository_lock_excludes_second_server(self):
         lock=RepositoryLock(self.root)
         try:

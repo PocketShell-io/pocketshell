@@ -59,6 +59,10 @@ def source_stamp(root: Path) -> tuple:
         if path.is_file():
             st = path.stat()
             result.append((name, st.st_mtime_ns, st.st_size))
+    init_script = root / "ui-mock" / "render.init.gradle"
+    if init_script.is_file():
+        st = init_script.stat()
+        result.append(("ui-mock/render.init.gradle", st.st_mtime_ns, st.st_size))
     return tuple(result)
 
 
