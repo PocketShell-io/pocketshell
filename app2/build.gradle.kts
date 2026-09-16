@@ -391,6 +391,11 @@ android {
             // Mirrors :shared:ui-kit's setup.
             isIncludeAndroidResources = true
             all { test ->
+                // Unfiltered Roborazzi record runs compose ~630 renders in one
+                // forked worker; the 512m default heap OOMs mid-run and the
+                // failure surfaces as UncaughtExceptionsBeforeTest in the next
+                // render class, not where it happened. (#2729)
+                test.maxHeapSize = "2g"
                 test.testLogging {
                     events("passed", "skipped", "failed")
                     showStandardStreams = true
