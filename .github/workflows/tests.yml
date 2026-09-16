@@ -775,6 +775,18 @@ jobs:
         with:
           python-version: "3.10"
 
+      # Issue #2636 slice A: the loopback tool's web client and entrypoints had
+      # no automated syntax check anywhere — a typo in ui-mock/web/app.js only
+      # surfaced when someone opened the catalog in a browser. Both checks are
+      # stdlib/runtime-bundled (no new deps), and py_compile deliberately runs
+      # under the pinned 3.10 above, so a newer-stdlib syntax construct goes
+      # red here rather than only on a dev box.
+      - name: Syntax-check the ui-mock web client JS
+        run: node --check ui-mock/web/app.js
+
+      - name: Byte-compile the ui-mock Python entrypoints
+        run: python3 -m py_compile ui-mock/serve.py ui-mock/builder.py ui-mock/catalog.py ui-mock/engine.py
+
       - name: Run the ui-mock unittest suite
         run: python3 -m unittest discover -s ui-mock/tests -v
 
