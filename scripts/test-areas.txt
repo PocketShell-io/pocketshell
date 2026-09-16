@@ -355,6 +355,11 @@ test   app2/src/*/java/com/pocketshell/next/crash/*        diagnostics-crash    
 # ui-kit primitives, so a ui-kit token change is what breaks them.
 test   app2/src/*/java/com/pocketshell/next/render/*       ui-shell             full
 test   app2/src/*/java/com/pocketshell/next/nav/*          app-shell            full
+# The #2636 mock-sandbox package: test-only fake of the app shell (pure
+# navigation/destination reducer + fixtures), no production counterpart, so
+# no `src` row. Same ownership as next/nav: the subject is app-level
+# navigation state.
+test   app2/src/*/java/com/pocketshell/next/mockapp/*      app-shell            full
 # :app2 ROOT-level test classes (App / nav host / Robolectric side-effect guard).
 # `+([A-Za-z0-9_])` cannot cross `/`, so this row matches only files sitting
 # directly in the `next` package — a test in a NEW subpackage falls through to
