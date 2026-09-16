@@ -111,10 +111,7 @@ fun ListRow(
                     },
                 )
                 .then(if (onClick != null || onLongClick != null) modifier else Modifier)
-                .padding(
-                    horizontal = PocketShellDensity.rowPadH,
-                    vertical = PocketShellDensity.rowPadV,
-                ),
+                .padding(horizontal = PocketShellDensity.rowPadH),
             verticalAlignment = Alignment.CenterVertically,
         ) {
         if (leading != null) {
@@ -127,7 +124,16 @@ fun ListRow(
             Spacer(modifier = Modifier.width(PocketShellSpacing.md))
         }
 
-        Column(modifier = Modifier.weight(1f)) {
+        // Issue #2635 2a — the ListRow 4dp rule: the vertical air belongs to
+        // the TEXT column, not the row. Padding the whole row meant a 48dp
+        // kebab forced its row taller (48 + 2×pad) than the rows beside it;
+        // with the padding here, every row measures against the same
+        // [PocketShellDensity.rowMinHeight] floor and lands on one height.
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = PocketShellDensity.rowPadV),
+        ) {
             Text(
                 text = title,
                 color = PocketShellColors.Text,

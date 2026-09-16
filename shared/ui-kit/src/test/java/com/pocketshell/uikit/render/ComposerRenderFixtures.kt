@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pocketshell.uikit.components.ComposerIdleControls
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -45,7 +46,7 @@ internal fun PromptComposerSheetRender() {
             .padding(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.sm),
     ) {
-        SheetHeader(title = "Prompt Composer", onClose = {})
+        SheetHeader(title = "Input to hetzner", onClose = {})
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -124,86 +125,20 @@ internal fun ComposerControlsRowRender() {
     }
 }
 
-/** v0.4.47 idle row (#2529): [📎  {}  /] .... [Insert] [Send ➤] [MIC]. */
+/**
+ * The idle row, rendered by the REAL kit component (issue #2635) — the old
+ * hand-drawn emoji mirror is gone; a change to [ComposerIdleControls] now
+ * changes these renders instead of drifting away from them.
+ */
 @Composable
 private fun ComposerIdleControlsRow() {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(22.dp))
-                .background(PocketShellColors.SurfaceElev, RoundedCornerShape(22.dp))
-                .padding(horizontal = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-        ) {
-            Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                Text(text = "📎", color = PocketShellColors.TextSecondary, fontSize = 18.sp)
-            }
-            Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "{}",
-                    color = PocketShellColors.TextSecondary,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
-                Text(
-                    text = "/",
-                    color = PocketShellColors.TextSecondary,
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-        }
-        Spacer(Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .height(44.dp)
-                .clip(RoundedCornerShape(22.dp))
-                .background(PocketShellColors.SurfaceElev, RoundedCornerShape(22.dp))
-                .border(1.dp, PocketShellColors.Border, RoundedCornerShape(22.dp))
-                .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                text = "Insert",
-                color = PocketShellColors.Text,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-        Row(
-            modifier = Modifier
-                .height(44.dp)
-                .clip(RoundedCornerShape(22.dp))
-                .background(PocketShellColors.Accent, RoundedCornerShape(22.dp))
-                .padding(horizontal = 18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp),
-        ) {
-            Text(
-                text = "Send",
-                color = PocketShellColors.OnAccent,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(text = "➤", color = PocketShellColors.OnAccent, fontSize = 13.sp)
-        }
-        Box(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(PocketShellColors.Accent, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(text = "●", color = PocketShellColors.OnAccent, fontSize = 18.sp)
-        }
-    }
+    ComposerIdleControls(
+        onAttach = {},
+        onOpenTools = {},
+        onSend = {},
+        onPaste = {},
+        onMicTap = {},
+    )
 }
 
 @Composable
@@ -245,11 +180,12 @@ internal fun ComposerRecordingControlsRowRender() {
             }
         }
         // Bottom row: a single right-aligned balanced action row —
-        // [Discard · Insert · Send · Stop]. Send is the #2602 demoted outline:
-        // the trailing Stop disc is the row's one accent, so a mis-tap on the
+        // [Discard · Send · Stop]. Send is the #2602 demoted outline: the
+        // trailing Stop disc is the row's one accent, so a mis-tap on the
         // costly control (Send submits) is less likely than on the cheap one
         // (Stop keeps the text). No editing tools compete for this row while
-        // recording (#1245).
+        // recording (#1245); paste is a Send long-press (issue #2635 C3), so
+        // the dedicated Insert pill is gone here too.
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -270,23 +206,6 @@ internal fun ComposerRecordingControlsRowRender() {
                     text = "Discard",
                     color = PocketShellColors.TextSecondary,
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            // Insert — outlined secondary pill (48dp).
-            Box(
-                modifier = Modifier
-                    .height(48.dp)
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(PocketShellColors.SurfaceElev, RoundedCornerShape(22.dp))
-                    .border(1.dp, PocketShellColors.Border, RoundedCornerShape(22.dp))
-                    .padding(horizontal = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = "Insert",
-                    color = PocketShellColors.Text,
-                    fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold,
                 )
             }

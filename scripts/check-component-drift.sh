@@ -18,6 +18,7 @@
 #   - AlertDialog(               -> use ConfirmDialog / FormDialog (ui-kit)
 #   - CircularProgressIndicator( -> use LoadingIndicator.Spinner (ui-kit)
 #   - TextButton(                -> use PocketShellButton.Text (ui-kit)
+#   - OutlinedTextField(         -> use QuietTextField (ui-kit, issue #2635)
 #
 # Import lines are excluded (an `import androidx...AlertDialog` is not a use).
 # The shared ui-kit wrapper components (ConfirmDialog.kt, FormDialog.kt,
@@ -51,7 +52,7 @@ BASELINE_FILE="scripts/component-drift-baseline.txt"
 # widget name followed by an open paren (allowing a space), which is the call
 # form; an `import ...AlertDialog` line has no `(` and is skipped anyway, but we
 # also drop import lines explicitly for safety.
-RAW_CALL='\b(AlertDialog|CircularProgressIndicator|TextButton)[[:space:]]*\('
+RAW_CALL='\b(AlertDialog|CircularProgressIndicator|TextButton|OutlinedTextField)[[:space:]]*\('
 
 # Emit "<file> <count>" for every file under SCAN_DIRS that has at least one
 # raw call-site, sorted by file.
@@ -137,6 +138,7 @@ self_test() (
   mutate_and_require_red AlertDialog 'AlertDialog('
   mutate_and_require_red Spinner 'CircularProgressIndicator('
   mutate_and_require_red TextButton 'TextButton('
+  mutate_and_require_red QuietField 'OutlinedTextField('
 
   # The live app2 source root must reject a raw component added to an existing
   # production file, even though that file has no baseline row today.
@@ -186,7 +188,7 @@ if [[ "${1:-}" == "--update" ]]; then
   {
     echo "# raw-component drift baseline (issue #865)"
     echo "# format: <file> <accepted-raw-call-site-count>"
-    echo "# guards: AlertDialog( / CircularProgressIndicator( / TextButton("
+    echo "# guards: AlertDialog( / CircularProgressIndicator( / TextButton( / OutlinedTextField("
     echo "# use instead: ConfirmDialog|FormDialog / LoadingIndicator.Spinner /"
     echo "#   PocketShellButton.Text (shared ui-kit). The ui-kit wrapper files"
     echo "#   themselves legitimately call the raw widget once — they are listed"

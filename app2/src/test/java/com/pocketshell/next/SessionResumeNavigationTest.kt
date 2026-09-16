@@ -18,6 +18,7 @@ import com.pocketshell.next.hosts.hostRowTag
 import com.pocketshell.next.nav.Destination
 import com.pocketshell.next.usage.usageGlanceCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOf
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -152,7 +153,7 @@ class SessionResumeNavigationTest {
         startupHostExists: suspend (Long) -> Boolean = { true },
     ): NavHostController {
         val hostListViewModel =
-            HostListViewModel(stack.db.hostDao(), usageGlanceCache(), Dispatchers.Unconfined)
+            HostListViewModel(stack.db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), Dispatchers.Unconfined)
         lateinit var controller: NavHostController
         composeRule.setContent {
             controller = rememberNavController()

@@ -36,6 +36,7 @@ object PsTokens {
     val fieldMin = 56.dp
     val workspaceRowMin = 64.dp
     val listRowMin = 56.dp
+    val rowPadV = 8.dp
     val icon = 24.dp
     val metadataIcon = 18.dp
     val screenGutter = 20.dp

@@ -108,11 +108,21 @@ internal fun WorkspaceTapToSessionRender() {
             trailing = { QuietUsageGlanceFacsimile("Claude 7d", 38) },
         )
         SectionHeader(label = "~/git")
+        // Issue #2635 D1 remainder: the dense one-line grammar — dot when a
+        // session is attached, bare muted count + recency, no chevron. The
+        // glance content is mirrored inline: the real WorkspaceGlance lives
+        // in app2.
         WorkspaceRow(
             title = "pocketshell",
-            subtitleContent = {
+            active = true,
+            trailing = {
                 Text(
-                    text = "Claude Code ×2 · Terminal",
+                    text = "4",
+                    color = PocketShellColors.TextMuted,
+                    style = PocketShellType.metadata,
+                )
+                Text(
+                    text = "now",
                     color = PocketShellColors.TextMuted,
                     style = PocketShellType.metadata,
                 )
@@ -122,13 +132,7 @@ internal fun WorkspaceTapToSessionRender() {
         )
         WorkspaceRow(
             title = "aplexer",
-            subtitleContent = {
-                Text(
-                    text = "No sessions",
-                    color = PocketShellColors.TextMuted,
-                    style = PocketShellType.metadata,
-                )
-            },
+            active = false,
             onClick = {},
             testTag = "render-workspace-aplexer",
         )

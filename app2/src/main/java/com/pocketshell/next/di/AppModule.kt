@@ -44,6 +44,7 @@ import javax.inject.Qualifier
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 
 /**
  * Marks the shared IO dispatcher. Screens/ViewModels take it as a constructor
@@ -53,6 +54,16 @@ import kotlinx.coroutines.Dispatchers
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class IoDispatcher
+
+/**
+ * The `Flow<Set<Long>>` of host ids that currently hold a live connection
+ * (issue #2635 2a). Qualified because a bare `Flow<Set<Long>>` binding would be
+ * an anonymous type in the graph.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class LiveHostIds
+
 
 /**
  * Marks the main-thread dispatcher.
@@ -222,6 +233,25 @@ object AppModule {
         hostDao: HostDao,
         @IoDispatcher dispatcher: CoroutineDispatcher,
     ): ConnectionsRegistry = ConnectionsRegistry(factory, trustStore, hostDao, dispatcher)
+
+    /**
+     * The host list's "which host is warm" feed (issue #2635 2a).
+     *
+     * Provided as the FLOW rather than the registry so `HostListViewModel`
+     * depends on the one thing it reads, not on the whole connection manager:
+     * a list screen holding a `ConnectionsRegistry` reference is one careless
+     * line away from dialling from a pre-connection screen (D21), and every
+     * test that builds the ViewModel would have to build a transport factory
+     * and a trust store to say "no host is connected".
+     */
+    @Provides
+    @LiveHostIds
+    // @JvmSuppressWildcards: the javac component round keys bindings off the
+    // JAVA view of the type, and Kotlin maps `Flow<Set<Long>>` to
+    // `Flow<? extends Set<Long>>` there — an invariant provider key against a
+    // wildcard request key reads as MissingBinding. Keep both sides the same.
+    fun provideLiveHostIds(connections: ConnectionsRegistry): Flow<@JvmSuppressWildcards Set<Long>> =
+        connections.liveHostIds()
 
     /**
      * The host-CLI seam (task U-3). Deliberately NOT a `@Singleton` client: a

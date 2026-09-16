@@ -9,6 +9,8 @@ import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -158,7 +160,7 @@ class HostListViewModelTest {
         val cache = usageGlanceCache()
 
         assertNull(
-            HostListViewModel(db.hostDao(), cache, UnconfinedTestDispatcher())
+            HostListViewModel(db.hostDao(), flowOf(emptySet()), cache, UnconfinedTestDispatcher())
                 .state.first { it.loaded }.usagePill,
         )
 
@@ -174,14 +176,30 @@ class HostListViewModelTest {
             java.time.Instant.now(),
         )
 
-        val pill = HostListViewModel(db.hostDao(), cache, UnconfinedTestDispatcher())
+        val pill = HostListViewModel(db.hostDao(), flowOf(emptySet()), cache, UnconfinedTestDispatcher())
             .state.first { it.loaded }.usagePill
         assertEquals(63, pill?.percent)
         assertEquals("Claude", pill?.provider)
     }
 
+    /**
+     * Issue #2635 2a: the live-id feed rides the state unchanged, so the row
+     * dot's colour and label come from one set. The ViewModel never dials —
+     * the flow here is whatever production hands it (@LiveHostIds).
+     */
+    @Test
+    fun `live host ids ride the state for the status dots`() = runTest {
+        val hostId = insertHost(name = "hetzner", hostname = "135.181.114.209", username = "alexey")
+        val live = MutableStateFlow(setOf(hostId))
+
+        val state = HostListViewModel(db.hostDao(), live, usageGlanceCache(), UnconfinedTestDispatcher())
+            .state.first { it.loaded }
+
+        assertEquals(setOf(hostId), state.liveIds)
+    }
+
     private fun viewModel(): HostListViewModel =
-        HostListViewModel(db.hostDao(), usageGlanceCache(), UnconfinedTestDispatcher())
+        HostListViewModel(db.hostDao(), flowOf(emptySet()), usageGlanceCache(), UnconfinedTestDispatcher())
 
     private suspend fun insertHost(
         name: String,

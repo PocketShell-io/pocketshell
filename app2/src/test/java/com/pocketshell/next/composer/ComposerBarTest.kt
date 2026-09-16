@@ -4,11 +4,15 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performCustomAccessibilityActionWithLabel
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import com.pocketshell.uikit.components.COMPOSER_PASTE_LABEL
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.uikit.theme.PocketShellTheme
@@ -41,11 +45,15 @@ class ComposerBarTest {
 
     @Test
     fun `an empty composer cannot send`() {
-        setContent(ComposerUiState())
+        var inserts = 0
+        setContent(ComposerUiState(), onInsert = { inserts += 1 })
 
         composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsNotEnabled()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsNotEnabled()
+        // Issue #2635 C3: paste rides on Send's long-press, so the same
+        // delivery gate that stops an empty send stops an empty paste.
+        composeRule.onNodeWithTag(COMPOSER_SEND_TAG).performTouchInput { longClick() }
+        assertEquals(0, inserts)
     }
 
     /**
@@ -71,11 +79,11 @@ class ComposerBarTest {
         setContent(ComposerUiState(draft = "something"))
 
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsEnabled()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsEnabled()
     }
 
+    /** Issue #2635 C3: one target, two gestures — tap sends, long-press pastes. */
     @Test
-    fun `insert and send are separate taps`() {
+    fun `send taps commit and long-press pastes`() {
         var inserts = 0
         var sends = 0
         setContent(
@@ -84,11 +92,24 @@ class ComposerBarTest {
             onSend = { sends += 1 },
         )
 
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).performClick()
+        composeRule.onNodeWithTag(COMPOSER_SEND_TAG).performTouchInput { longClick() }
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).performClick()
 
         assertEquals(1, inserts)
         assertEquals(1, sends)
+    }
+
+    /** C3: TalkBack cannot long-press, so the paste gesture is also a named action. */
+    @Test
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    fun `send publishes paste as a named accessibility action`() {
+        var inserts = 0
+        setContent(ComposerUiState(draft = "something"), onInsert = { inserts += 1 })
+
+        composeRule.onNodeWithTag(COMPOSER_SEND_TAG)
+            .performCustomAccessibilityActionWithLabel(COMPOSER_PASTE_LABEL)
+
+        assertEquals(1, inserts)
     }
 
     /** An attachment on its own is a complete message. */
@@ -362,13 +383,14 @@ class ComposerBarTest {
 
         composeRule.onNodeWithTag(COMPOSER_DISCARD_RECORDING_TAG).assertIsDisplayed()
         // Attach / history / slash / mic are text-composition tools, not
-        // usable mid-dictation. Insert and Send stay on the recording row.
+        // usable mid-dictation. Send stays on the recording row; paste is a
+        // Send long-press (C3) and the tools row, not a dedicated button.
         composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_HISTORY_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SLASH_TRIGGER_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_MIC_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
     }
 
@@ -431,14 +453,17 @@ class ComposerBarTest {
      * Send, and the mic share a row and the rewrite text tools are gone.
      */
     @Test
-    fun `idle controls sit on one row with grouped tools insert send and mic`() {
+    fun `idle controls sit on one row with attach tools send and mic`() {
         setContent(ComposerUiState(draft = "hello", micAvailable = true))
 
+        // Issue #2635 C3: attach is a one-tap paperclip on the row; the sheet
+        // keeps the occasional tools; insert is Send's long-press, not a row
+        // button.
         composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_HISTORY_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SLASH_TRIGGER_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_MIC_TAG).assertIsDisplayed()
 
@@ -448,8 +473,7 @@ class ComposerBarTest {
         composeRule.onNodeWithTag(COMPOSER_PREVIEW_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertDoesNotExist()
 
-        assertSameRow(COMPOSER_INSERT_TAG, COMPOSER_SEND_TAG, COMPOSER_MIC_TAG)
-        assertSameRow(COMPOSER_TOOLS_TRIGGER_TAG, COMPOSER_INSERT_TAG, COMPOSER_SEND_TAG, COMPOSER_MIC_TAG)
+        assertSameRow(COMPOSER_TOOLS_TRIGGER_TAG, COMPOSER_ATTACH_TAG, COMPOSER_SEND_TAG, COMPOSER_MIC_TAG)
     }
 
     /**
@@ -464,17 +488,16 @@ class ComposerBarTest {
         composeRule.onNodeWithTag(COMPOSER_TIMER_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_WAVEFORM_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_DISCARD_RECORDING_TAG).assertIsDisplayed()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsDisplayed()
 
         composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_HISTORY_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_SLASH_TRIGGER_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_MIC_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertDoesNotExist()
 
         assertSameRow(
             COMPOSER_DISCARD_RECORDING_TAG,
-            COMPOSER_INSERT_TAG,
             COMPOSER_SEND_TAG,
             COMPOSER_STOP_RECORDING_TAG,
         )
@@ -545,7 +568,6 @@ class ComposerBarTest {
         val density = composeRule.density.density
         val controls = listOf(
             COMPOSER_DISCARD_RECORDING_TAG,
-            COMPOSER_INSERT_TAG,
             COMPOSER_SEND_TAG,
             COMPOSER_STOP_RECORDING_TAG,
         ).associateWith { tag ->
@@ -591,7 +613,6 @@ class ComposerBarTest {
         )
 
         composeRule.onNodeWithTag(COMPOSER_SEND_TAG).assertIsNotEnabled()
-        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsNotEnabled()
         composeRule.onNodeWithTag(COMPOSER_DRAFT_TAG).performTextInput(" more")
 
         assertEquals("local draft more", drafts.last())

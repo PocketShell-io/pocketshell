@@ -135,6 +135,78 @@ class QuietWorkspaceRenders {
         )
     }
 
+    // ── Issue #2635 (density pass 2): the dense one-line workspace rows ──
+    // Above the search threshold the field is permanent; every row is the D1
+    // grammar: leading dot when a session is attached, bare muted count +
+    // recency, no chevron. Rendered at the evidence bar's three widths and at
+    // fontScale 1.3.
+
+    /** Ten workspaces (past WORKSPACE_SEARCH_THRESHOLD), three with sessions. */
+    private fun denseHostState(): HostWorkspacesUiState {
+        val memberships = (1..10).map { index ->
+            WorkspaceMembership("/home/alexey/git/w$index", "~/git/w$index")
+        }
+        val sessions = listOf(
+            session("shell", "/home/alexey/git/w1"),
+            session("agent-review", "/home/alexey/git/w1"),
+            session("build", "/home/alexey/git/w3"),
+        )
+        val roots = projectWorkspaceRoots(
+            sessions = sessions,
+            memberships = memberships,
+            registeredRoots = listOf(RegisteredWorkspaceRoot("/home/alexey/git", "Git", 1L)),
+        )
+        return HostWorkspacesUiState(
+            hostId = 7,
+            hostLabel = "hetzner",
+            loaded = true,
+            roots = roots,
+        )
+    }
+
+    @Test
+    @Config(qualifiers = "w360dp-h915dp-night-xxhdpi")
+    fun denseHostWorkspaces360() = render("i2635-host-workspaces-dense-360") {
+        HostWorkspacesScreen(state = denseHostState(), onRefresh = {}, onOpenWorkspace = {}, onOpenSession = {})
+    }
+
+    @Test
+    fun denseHostWorkspaces412() = render("i2635-host-workspaces-dense-412") {
+        HostWorkspacesScreen(state = denseHostState(), onRefresh = {}, onOpenWorkspace = {}, onOpenSession = {})
+    }
+
+    @Test
+    @Config(qualifiers = "w600dp-h915dp-night-xxhdpi")
+    fun denseHostWorkspaces600() = render("i2635-host-workspaces-dense-600") {
+        HostWorkspacesScreen(state = denseHostState(), onRefresh = {}, onOpenWorkspace = {}, onOpenSession = {})
+    }
+
+    @Test
+    fun denseHostWorkspacesFontScale13() = render(
+        name = "i2635-host-workspaces-dense-font-scale-13",
+        fontScale = 1.3f,
+    ) {
+        HostWorkspacesScreen(state = denseHostState(), onRefresh = {}, onOpenWorkspace = {}, onOpenSession = {})
+    }
+
+    /** D2: a live query keeps the field up on a short list (icon hidden). */
+    @Test
+    fun hostWorkspacesSearchQuery() = render("i2635-host-workspaces-search-query") {
+        val roots = hostState().roots
+        HostWorkspacesScreen(
+            state = HostWorkspacesUiState(
+                hostId = 7,
+                hostLabel = "hetzner",
+                loaded = true,
+                searchQuery = "mobile",
+                roots = roots,
+            ),
+            onRefresh = {},
+            onOpenWorkspace = {},
+            onOpenSession = {},
+        )
+    }
+
     private fun hostState(): HostWorkspacesUiState {
         val roots = projectWorkspaceRoots(
             sessions = listOf(session("root-shell", "/home/alexey/git")),

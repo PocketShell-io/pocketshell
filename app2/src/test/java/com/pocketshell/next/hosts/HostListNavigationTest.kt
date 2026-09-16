@@ -15,6 +15,7 @@ import com.pocketshell.next.AppNavHost
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.nav.Destination
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -191,7 +192,7 @@ class HostListNavigationTest {
     }
 
     private fun setContent(): NavHostController {
-        val vm = HostListViewModel(stack.db.hostDao(), usageGlanceCache(), Dispatchers.Unconfined)
+        val vm = HostListViewModel(stack.db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), Dispatchers.Unconfined)
         lateinit var controller: NavHostController
         composeRule.setContent {
             controller = rememberNavController()

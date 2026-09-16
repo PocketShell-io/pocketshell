@@ -10,14 +10,11 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SheetState
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -41,6 +38,7 @@ import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ListRow
+import com.pocketshell.uikit.components.QuietTextField
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SegmentedToggle
 import com.pocketshell.uikit.components.SheetHeader
@@ -466,15 +464,6 @@ fun CreateSessionSheetContent(
     },
     onRefreshEngines: () -> Unit = {},
 ) {
-    val fieldColors = OutlinedTextFieldDefaults.colors(
-        focusedTextColor = PocketShellColors.Text,
-        unfocusedTextColor = PocketShellColors.Text,
-        focusedBorderColor = PocketShellColors.Accent,
-        unfocusedBorderColor = PocketShellColors.BorderSoft,
-        focusedLabelColor = PocketShellColors.Accent,
-        unfocusedLabelColor = PocketShellColors.TextSecondary,
-        cursorColor = PocketShellColors.Accent,
-    )
     val available = availableEnginesForCreate(state.engines)
     LaunchedEffect(available.map { it.id }) {
         form.selectDefaultProgram(available)
@@ -586,34 +575,30 @@ fun CreateSessionSheetContent(
                     )
                 }
             } else if (optionsOpen) {
-                OutlinedTextField(
+                QuietTextField(
                     value = form.folder,
                     onValueChange = form::onFolderChange,
-                    singleLine = true,
                     enabled = !state.submitting,
-                    label = { Text(CREATE_SESSION_FOLDER_LABEL) },
-                    placeholder = { Text("/home/you/git/project") },
-                    colors = fieldColors,
+                    label = CREATE_SESSION_FOLDER_LABEL,
+                    placeholder = "/home/you/git/project",
                     textStyle = PocketShellType.bodyMono,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    imeAction = ImeAction.Next,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag(CREATE_SESSION_FOLDER_TAG),
                 )
 
-                OutlinedTextField(
+                QuietTextField(
                     value = form.name,
                     onValueChange = form::onNameChange,
-                    singleLine = true,
                     enabled = !state.submitting,
-                    label = { Text(CREATE_SESSION_NAME_LABEL) },
+                    label = CREATE_SESSION_NAME_LABEL,
                     isError = form.nameError != null,
                     supportingText = form.nameError?.let { message ->
                         { Text(message, color = MaterialTheme.colorScheme.error) }
                     },
-                    colors = fieldColors,
                     textStyle = PocketShellType.bodyMono,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                    imeAction = ImeAction.Done,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag(CREATE_SESSION_NAME_TAG),

@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Icon
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -174,32 +174,45 @@ fun SessionTabStrip(
                     )
                 }
             }
+            // Issue #2635 D3: the strip paints 40dp, but a touch target never
+            // drops below the 48dp floor — minimumInteractiveComponentSize
+            // keeps the hit area while the paint shrinks.
             if (onNewTab != null) {
-                IconButton(
-                    onClick = onNewTab,
+                Box(
                     modifier = Modifier
-                        .size(PocketShellDensity.tapTargetMin)
+                        .minimumInteractiveComponentSize()
                         .testTag(SESSION_TAB_NEW_TAG),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = PocketShellIcons.Plus,
-                        contentDescription = "New session",
-                        tint = PocketShellColors.TextSecondary,
-                    )
+                    IconButton(
+                        onClick = onNewTab,
+                        modifier = Modifier.size(STRIP_PAINT_HEIGHT),
+                    ) {
+                        Icon(
+                            imageVector = PocketShellIcons.Plus,
+                            contentDescription = "New session",
+                            tint = PocketShellColors.TextSecondary,
+                        )
+                    }
                 }
             }
             if (onOverflow != null) {
-                IconButton(
-                    onClick = onOverflow,
+                Box(
                     modifier = Modifier
-                        .size(PocketShellDensity.tapTargetMin)
+                        .minimumInteractiveComponentSize()
                         .testTag(SESSION_TAB_OVERFLOW_TAG),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        imageVector = PocketShellIcons.More,
-                        contentDescription = "All sessions",
-                        tint = PocketShellColors.TextSecondary,
-                    )
+                    IconButton(
+                        onClick = onOverflow,
+                        modifier = Modifier.size(STRIP_PAINT_HEIGHT),
+                    ) {
+                        Icon(
+                            imageVector = PocketShellIcons.More,
+                            contentDescription = "All sessions",
+                            tint = PocketShellColors.TextSecondary,
+                        )
+                    }
                 }
             }
         }
@@ -233,7 +246,8 @@ private fun SessionTabChip(
     val underline = PocketShellColors.Accent
     Row(
         modifier = Modifier
-            .heightIn(min = PocketShellDensity.tapTargetMin)
+            .height(STRIP_PAINT_HEIGHT)
+            .minimumInteractiveComponentSize()
             .widthIn(max = TAB_MAX_WIDTH)
             .clip(PocketShellShapes.medium)
             .background(if (selected) PocketShellColors.SurfaceElev else PocketShellColors.Background)
@@ -262,7 +276,9 @@ private fun SessionTabChip(
         Text(
             text = tab.label,
             color = if (selected) PocketShellColors.Text else PocketShellColors.TextSecondary,
-            style = PocketShellType.metadata,
+            // Issue #2635 D3: off the 11sp caption rung — tab labels are
+            // navigation, not metadata.
+            style = PocketShellType.bodyDense,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -272,6 +288,9 @@ private fun SessionTabChip(
 /** Wide enough for a real workspace tag, short enough that four tabs fit. */
 private val TAB_MAX_WIDTH = 160.dp
 private val UNDERLINE_THICKNESS = 2.dp
+
+/** Issue #2635 D3: the strip's paint height; touch stays on the 48dp floor. */
+private val STRIP_PAINT_HEIGHT = 40.dp
 
 /**
  * The 8dp workload dot. Static by construction — see [SessionTabState] for why

@@ -53,13 +53,13 @@ import com.pocketshell.next.files.MarkdownView
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
-import com.pocketshell.uikit.components.MicButton
+import com.pocketshell.uikit.components.ComposerIdleControls
+import com.pocketshell.uikit.components.COMPOSER_PASTE_LABEL
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ProgressBar
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.icons.PocketShellIcons
-import com.pocketshell.uikit.model.MicButtonState
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -155,7 +155,6 @@ fun ComposerBar(
     modifier: Modifier = Modifier,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
     var field by remember { mutableStateOf(TextFieldValue(state.draft, TextRange(state.draft.length))) }
@@ -271,6 +270,7 @@ fun ComposerBar(
             onSend = commitSend,
             deliveryEnabled = deliveryEnabled,
             onInsert = onInsert,
+            onAttach = onAttach,
             onOpenTools = { toolsOpen = !toolsOpen },
             onMicTap = onMicTap,
             onCancelRecording = onCancelRecording,
@@ -304,9 +304,9 @@ fun ComposerBar(
                     onDraftChange(seeded.text)
                     slashSheetOpen = true
                 },
-                onHotkeys = {
+                onPaste = {
                     toolsOpen = false
-                    onOpenHotkeys()
+                    onInsert()
                 },
                 onClear = {
                     toolsOpen = false
@@ -530,6 +530,7 @@ private fun ControlsRow(
     onSend: () -> Unit,
     deliveryEnabled: Boolean,
     onInsert: () -> Unit,
+    onAttach: () -> Unit,
     onOpenTools: () -> Unit,
     onMicTap: () -> Unit,
     onCancelRecording: () -> Unit,
@@ -541,41 +542,31 @@ private fun ControlsRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (state.recording == RecordingState.Idle) {
-            ComposerToolsTrigger(
-                enabled = !state.busy,
-                onClick = onOpenTools,
-            )
-        }
-        Spacer(modifier = Modifier.weight(1f))
         when (state.recording) {
             RecordingState.Idle -> {
-                InsertButton(
-                    onClick = onInsert,
-                    enabled = deliveryEnabled && state.canSend && !state.busy,
-                    modifier = Modifier.testTag(COMPOSER_INSERT_TAG),
-                )
-                SendButton(
-                    onClick = onSend,
-                    enabled = deliveryEnabled && state.canSend && !state.busy,
-                    modifier = Modifier.testTag(COMPOSER_SEND_TAG),
-                )
-                MicTriggerButton(
-                    onClick = onMicTap,
-                    enabled = state.micAvailable,
-                    modifier = Modifier.testTag(COMPOSER_MIC_TAG),
+                // Issue #2635 C3: the idle row is the kit component — attach,
+                // tools trigger, Send (whose long-press IS paste now), mic.
+                // The dedicated Insert button dies; paste-without-Enter is the
+                // Send long-press, the named a11y action, and the tools-sheet
+                // row, one verb in three places.
+                ComposerIdleControls(
+                    onAttach = onAttach,
+                    onOpenTools = onOpenTools,
+                    onSend = onSend,
+                    onPaste = onInsert,
+                    onMicTap = onMicTap,
+                    modifier = Modifier.weight(1f),
+                    attachEnabled = !state.busy,
+                    toolsEnabled = !state.busy,
+                    sendEnabled = deliveryEnabled && state.canSend && !state.busy,
+                    micEnabled = state.micAvailable,
                 )
             }
             RecordingState.Recording -> {
+                Spacer(modifier = Modifier.weight(1f))
                 DiscardRecordingButton(
                     onClick = onCancelRecording,
                     modifier = Modifier.testTag(COMPOSER_DISCARD_RECORDING_TAG),
-                )
-                InsertButton(
-                    onClick = onInsert,
-                    enabled = deliveryEnabled && state.canSend && !state.busy,
-                    recording = true,
-                    modifier = Modifier.testTag(COMPOSER_INSERT_TAG),
                 )
                 SendButton(
                     onClick = onSend,
@@ -593,6 +584,7 @@ private fun ControlsRow(
                 )
             }
             RecordingState.Transcribing -> {
+                Spacer(modifier = Modifier.weight(1f))
                 DiscardRecordingButton(
                     onClick = onCancelRecording,
                     label = "Cancel",
@@ -609,25 +601,6 @@ private fun ControlsRow(
     }
 }
 
-/**
- * The composer has one quiet entry point for secondary actions. The expanded
- * panel is rendered inside the existing composer surface, so opening it never
- * stacks a second modal over the draft.
- */
-@Composable
-private fun ComposerToolsTrigger(
-    enabled: Boolean,
-    onClick: () -> Unit,
-) {
-    ToolGlyphButton(
-        icon = PocketShellIcons.Plus,
-        contentDescription = "Add to input",
-        onClick = onClick,
-        enabled = enabled,
-        modifier = Modifier.testTag(COMPOSER_TOOLS_TRIGGER_TAG),
-    )
-}
-
 @Composable
 private fun ComposerToolsPanel(
     state: ComposerUiState,
@@ -636,7 +609,7 @@ private fun ComposerToolsPanel(
     onAttach: () -> Unit,
     onHistory: () -> Unit,
     onSlash: () -> Unit,
-    onHotkeys: () -> Unit,
+    onPaste: () -> Unit,
     onClear: () -> Unit,
 ) {
     Column(
@@ -676,11 +649,11 @@ private fun ComposerToolsPanel(
             )
         }
         ComposerToolRow(
-            title = "Terminal keys",
-            subtitle = "Send special keys to the current terminal",
-            icon = PocketShellIcons.Keyboard,
-            onClick = onHotkeys,
-            testTag = "composer-tools-hotkeys",
+            title = COMPOSER_PASTE_LABEL,
+            subtitle = "Insert the clipboard into the draft without sending",
+            icon = PocketShellIcons.Copy,
+            onClick = onPaste,
+            testTag = COMPOSER_INSERT_TAG,
         )
         ComposerToolRow(
             title = "Clear draft",
@@ -718,30 +691,6 @@ private fun ComposerToolRow(
         onClick = onClick,
         modifier = Modifier.testTag(testTag),
     )
-}
-
-@Composable
-private fun ToolGlyphButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    contentDescription: String,
-    onClick: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .size(COMPOSER_ACTION_ICON_BUTTON_SIZE)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { this.contentDescription = contentDescription },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = if (enabled) PocketShellColors.TextSecondary else PocketShellColors.TextMuted,
-            modifier = Modifier.size(18.dp),
-        )
-    }
 }
 
 /**
@@ -802,34 +751,6 @@ private fun SendButton(
 }
 
 @Composable
-private fun InsertButton(
-    onClick: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    recording: Boolean = false,
-) {
-    val height = if (recording) ComposerRecordingPillHeight else ComposerIdlePillHeight
-    Row(
-        modifier = modifier
-            .height(height)
-            .clip(ComposerActionPillShape)
-            .background(PocketShellColors.SurfaceElev, ComposerActionPillShape)
-            .border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = "Paste without submitting" }
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "Paste",
-            color = if (enabled) PocketShellColors.Text else PocketShellColors.TextMuted,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-@Composable
 private fun DiscardRecordingButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -859,7 +780,7 @@ private fun DiscardRecordingButton(
  * Ends a dictation and keeps the transcript (#2598).
  *
  * A filled accent disc with a stop square, in the same slot and at the same
- * size as [MicTriggerButton]: the mic turns into its own stop, which is the
+ * size as the mic button: the mic turns into its own stop, which is the
  * idiom every voice recorder uses. Deliberately NOT the [DiscardRecordingButton]
  * outline — one of these two throws the user's words away and the other keeps
  * them, so they must not look alike.
@@ -885,19 +806,6 @@ private fun StopRecordingButton(
             modifier = Modifier.size(COMPOSER_STOP_GLYPH_SIZE),
         )
     }
-}
-
-@Composable
-private fun MicTriggerButton(
-    onClick: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    MicButton(
-        state = if (enabled) MicButtonState.Idle else MicButtonState.Disabled,
-        onClick = onClick,
-        modifier = modifier.size(ComposerIdlePillHeight),
-    )
 }
 
 /** Quiet field/button radius for composer controls. */

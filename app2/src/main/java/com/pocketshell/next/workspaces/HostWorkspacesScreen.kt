@@ -14,7 +14,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -36,7 +35,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.material3.Icon
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.next.tree.SESSION_TREE_FILES_TAG
 import com.pocketshell.next.tree.SESSION_TREE_PORTS_TAG
@@ -50,10 +48,12 @@ import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.ConfirmDialog
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.FormDialog
+import com.pocketshell.uikit.components.HeaderIconAction
 import com.pocketshell.uikit.components.KebabTrigger
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.NavigationChevron
 import com.pocketshell.uikit.components.PocketShellButton
+import com.pocketshell.uikit.components.QuietTextField
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SheetHeader
@@ -76,6 +76,15 @@ const val HOST_WORKSPACES_BACK_TAG: String = "host-workspaces-back"
 const val HOST_WORKSPACES_ACTIONS_TAG: String = "host-workspaces-actions"
 const val HOST_WORKSPACES_REORDER_TAG: String = "host-workspaces-reorder"
 const val HOST_WORKSPACES_ADD_TAG: String = "host-workspaces-add"
+const val HOST_WORKSPACES_SEARCH_TOGGLE_TAG: String = "host-workspaces-search-toggle"
+
+/**
+ * Issue #2635 D2: above this many workspaces the search field is permanent;
+ * at or below it the field lives behind a header search icon that expands in
+ * place — a list you can see end to end does not need a permanent filter
+ * row, and the icon costs one header slot instead of a whole field.
+ */
+const val WORKSPACE_SEARCH_THRESHOLD: Int = 8
 const val HOST_WORKSPACES_SEARCH_TAG: String = "host-workspaces-search"
 const val HOST_WORKSPACES_ADD_PATH_TAG: String = "host-workspaces-add-path"
 const val HOST_WORKSPACES_ADD_CONFIRM_TAG: String = "host-workspaces-add-confirm"
@@ -347,6 +356,18 @@ fun HostWorkspacesScreen(
             .testTag(HOST_WORKSPACES_TAG),
     ) {
         val transport = hostWorkspacesTransport(state)
+        // Issue #2635 D2: the search field is gated. Permanent above
+        // [WORKSPACE_SEARCH_THRESHOLD] workspaces; below it a header icon
+        // expands it in place, and a live query keeps it visible so you never
+        // lose what you typed mid-filter.
+        var searchExpanded by remember { mutableStateOf(false) }
+        val searchPermanent = state.workspaceCount > WORKSPACE_SEARCH_THRESHOLD
+        val searchVisible = searchPermanent || searchExpanded || state.searchQuery.isNotBlank()
+        // Issue #2635 D1: the workspace glance's recency clock — one reading
+        // per composition, taken here where remember is legal (the
+        // LazyListScope builder below is not a composable context).
+        val nowSec = remember { System.currentTimeMillis() / 1000 }
+
         ScreenHeader(
             title = state.hostLabel.ifBlank { "Workspaces" },
             status = transport.status,
@@ -359,6 +380,14 @@ fun HostWorkspacesScreen(
             onBack = onBack,
             backTestTag = HOST_WORKSPACES_BACK_TAG,
             trailing = {
+                if (!searchVisible) {
+                    HeaderIconAction(
+                        icon = PocketShellIcons.Search,
+                        contentDescription = "Find a workspace",
+                        onClick = { searchExpanded = true },
+                        testTag = HOST_WORKSPACES_SEARCH_TOGGLE_TAG,
+                    )
+                }
                 // Issue #2632: usage sits ON the host screen, not three taps
                 // deep behind the kebab's Host tools sheet.
                 usagePillState?.let { pill ->
@@ -372,37 +401,22 @@ fun HostWorkspacesScreen(
             },
         )
 
-        OutlinedTextField(
-            value = state.searchQuery,
-            onValueChange = onSearchQueryChange,
-            placeholder = { Text("Find a workspace") },
-            leadingIcon = {
-                Icon(
-                    imageVector = PocketShellIcons.Search,
-                    contentDescription = null,
-                )
-            },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .padding(
-                    start = PocketShellSpacing.xl,
-                    end = PocketShellSpacing.xl,
-                    bottom = PocketShellSpacing.md,
-                )
-                .testTag(HOST_WORKSPACES_SEARCH_TAG),
-            shape = PocketShellShapes.medium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = PocketShellColors.Surface,
-                unfocusedContainerColor = PocketShellColors.Surface,
-                focusedTextColor = PocketShellColors.Text,
-                unfocusedTextColor = PocketShellColors.Text,
-                focusedBorderColor = PocketShellColors.Accent,
-                unfocusedBorderColor = PocketShellColors.Border,
-                cursorColor = PocketShellColors.Accent,
-            ),
-        )
+        if (searchVisible) {
+            QuietTextField(
+                value = state.searchQuery,
+                onValueChange = onSearchQueryChange,
+                label = "Find a workspace",
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        start = PocketShellSpacing.xl,
+                        end = PocketShellSpacing.xl,
+                        bottom = PocketShellSpacing.md,
+                    )
+                    .testTag(HOST_WORKSPACES_SEARCH_TAG),
+            )
+        }
 
         if (state.errors.isNotEmpty()) {
             Banner(
@@ -502,6 +516,7 @@ fun HostWorkspacesScreen(
                     filteredRoots(state).forEach { root ->
                         itemContent(
                             root = root,
+                            nowSec = nowSec,
                             sessionsUnavailable = state.statusUnavailable || state.errors.isNotEmpty(),
                             onOpenWorkspace = onOpenWorkspace,
                             onOpenSession = onOpenSession,
@@ -581,11 +596,10 @@ fun HostWorkspacesScreen(
                 color = PocketShellColors.TextMuted,
                 style = PocketShellType.metadata,
             )
-            OutlinedTextField(
+            QuietTextField(
                 value = state.createFolderName,
                 onValueChange = onCreateFolderNameChange,
-                label = { Text("Folder name") },
-                singleLine = true,
+                label = "Folder name",
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(HOST_WORKSPACES_CREATE_FOLDER_NAME_TAG),
@@ -743,24 +757,13 @@ private fun AddWorkspacePage(
                 onClick = onBrowse,
                 modifier = Modifier.testTag(HOST_WORKSPACES_ADD_LOCATION_TAG),
             )
-            OutlinedTextField(
+            QuietTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text("Find a folder") },
-                singleLine = true,
+                label = "Find a folder",
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag(HOST_WORKSPACES_ADD_PATH_TAG),
-                shape = PocketShellShapes.medium,
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedContainerColor = PocketShellColors.Surface,
-                    unfocusedContainerColor = PocketShellColors.Surface,
-                    focusedTextColor = PocketShellColors.Text,
-                    unfocusedTextColor = PocketShellColors.Text,
-                    focusedBorderColor = PocketShellColors.Accent,
-                    unfocusedBorderColor = PocketShellColors.Border,
-                    cursorColor = PocketShellColors.Accent,
-                ),
             )
             ListRow(
                 title = "Create folder",
@@ -920,28 +923,13 @@ private fun WorkspaceFolderBrowserPage(
             onClick = { parent?.let(onBrowse) },
             modifier = Modifier.padding(horizontal = PocketShellSpacing.xl),
         )
-        OutlinedTextField(
+        QuietTextField(
             value = query,
             onValueChange = { query = it },
-            placeholder = { Text("Find a folder") },
-            leadingIcon = {
-                Icon(imageVector = PocketShellIcons.Search, contentDescription = null)
-            },
-            singleLine = true,
+            label = "Find a folder",
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 56.dp)
                 .padding(horizontal = PocketShellSpacing.xl, vertical = PocketShellSpacing.sm),
-            shape = PocketShellShapes.medium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = PocketShellColors.Surface,
-                unfocusedContainerColor = PocketShellColors.Surface,
-                focusedTextColor = PocketShellColors.Text,
-                unfocusedTextColor = PocketShellColors.Text,
-                focusedBorderColor = PocketShellColors.Accent,
-                unfocusedBorderColor = PocketShellColors.Border,
-                cursorColor = PocketShellColors.Accent,
-            ),
         )
         LazyColumn(
             modifier = Modifier
@@ -1051,11 +1039,10 @@ private fun CreateFolderFormDialog(
             color = PocketShellColors.TextMuted,
             style = PocketShellType.metadata,
         )
-        OutlinedTextField(
+        QuietTextField(
             value = state.createFolderName,
             onValueChange = onNameChange,
-            label = { Text("Folder name") },
-            singleLine = true,
+            label = "Folder name",
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag(HOST_WORKSPACES_CREATE_FOLDER_NAME_TAG),
@@ -1073,6 +1060,7 @@ private fun CreateFolderFormDialog(
 
 private fun androidx.compose.foundation.lazy.LazyListScope.itemContent(
     root: WorkspaceRootProjection,
+    nowSec: Long,
     sessionsUnavailable: Boolean,
     onOpenWorkspace: (String) -> Unit,
     onOpenSession: (SessionRow) -> Unit,
@@ -1134,11 +1122,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemContent(
             items = root.workspaces,
             key = { workspace -> "workspace:${workspace.path}" },
         ) { workspace ->
+            // Issue #2635 D1 remainder: the dense one-line row — name, a dot
+            // when anything is attached, and the bare count + recency glance.
+            // The per-kind breakdown is not lost; opening the workspace still
+            // lists every session with its kind.
             WorkspaceRow(
                 title = workspace.label,
-                subtitleContent = {
-                    SessionKindSummary(
+                active = workspace.sessions.isNotEmpty(),
+                trailing = {
+                    WorkspaceGlance(
+                        path = workspace.path,
                         sessions = workspace.sessions,
+                        nowSec = nowSec,
                         unavailable = sessionsUnavailable,
                     )
                 },

@@ -77,7 +77,6 @@ fun PromptComposerSheet(
     hasRecordAudioPermission: (() -> Boolean)? = null,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
     val context = LocalContext.current
@@ -100,7 +99,11 @@ fun PromptComposerSheet(
 
     ComposerModalBottomSheet(
         onDismissRequest = dismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // Issue #2635 C1: the sheet opens to its partial height — header, a
+        // couple of draft lines, the controls row — so the terminal stays
+        // visible above it. Still a modal bottom sheet (D11); the composer
+        // never claimed the whole screen.
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
         modifier = modifier,
     ) {
         PromptComposerContent(
@@ -131,7 +134,6 @@ fun PromptComposerSheet(
             onDiscard = onDiscard,
             deliveryEnabled = deliveryEnabled,
             deliveryDisabledMessage = deliveryDisabledMessage,
-            onOpenHotkeys = onOpenHotkeys,
             availableSlashCommands = availableSlashCommands,
         )
     }
@@ -161,7 +163,6 @@ fun PromptComposerContent(
     imeVisible: Boolean = false,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
     val title = targetLabel.trim().takeIf { it.isNotEmpty() }?.let { "Input to $it" }
@@ -189,7 +190,6 @@ fun PromptComposerContent(
             onDiscard = onDiscard,
             deliveryEnabled = deliveryEnabled,
             deliveryDisabledMessage = deliveryDisabledMessage,
-            onOpenHotkeys = onOpenHotkeys,
             availableSlashCommands = availableSlashCommands,
         )
     }

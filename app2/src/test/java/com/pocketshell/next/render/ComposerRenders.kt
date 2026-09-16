@@ -51,6 +51,18 @@ class ComposerRenders {
     @get:Rule
     val leakGuard = LeakGuard()
 
+    /**
+     * Issue #2635 C3: the idle row at the narrowest supported width — paste is
+     * Send's long-press (not a fifth control), so attach/tools/Send/mic must
+     * all fit unclipped. The pixel-boundary pin lives in
+     * `ComposerIdleControlsNarrowScreenTest` (ui-kit); this is the visual twin.
+     */
+    @Test
+    @Config(qualifiers = "w360dp-h915dp-night-xxhdpi")
+    fun composerIdle360() = render("i2635-composer-idle-360") {
+        ComposerBar(state = ComposerUiState(draft = "check the deploy log", micAvailable = true))
+    }
+
     @Test
     fun composerEmpty() = render("p1-composer-empty") {
         ComposerBar(state = ComposerUiState(micAvailable = true))

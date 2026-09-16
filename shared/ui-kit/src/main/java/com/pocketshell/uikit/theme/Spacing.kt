@@ -56,7 +56,10 @@ object PocketShellDensity {
      * 56 dp — standard row minimum height (`tokens.json` `size.listRowMin`).
      *
      * Clears [tapTargetMin] with 8 dp to spare and still fits a title +
-     * subtitle at the reconciled 14sp/11sp rungs.
+     * subtitle at the reconciled 14sp/11sp rungs — and because [rowPadV] pads
+     * the text column rather than the row (issue #2635 2a, the ListRow 4dp
+     * rule), a row carrying a 48dp control lands on the same 56 as every
+     * other row.
      */
     val rowMinHeight = 56.dp
 
@@ -71,8 +74,17 @@ object PocketShellDensity {
      */
     val standardRowMinHeight = rowMinHeight
 
-    /** 16 dp — row vertical padding. Rows may grow for wrapped content. */
-    val rowPadV = 16.dp
+    /**
+     * 8 dp — row vertical padding, applied to the row's TEXT column.
+     *
+     * Padding the whole row meant a row whose trailing slot held a 48dp control
+     * could not share a height with the rows beside it (48 + 2×16 = 80 against
+     * a 72dp floor): the host list read as "tall rows, except the ones with a
+     * menu, which are taller". With the padding on the text, a 48dp kebab
+     * measures 48 against the 56dp floor and every row lands on one height
+     * (issue #2635 2a). Rows may still grow for wrapped content.
+     */
+    val rowPadV = 8.dp
 
     /** 20 dp — Quiet screen gutter used by standard and workspace rows. */
     val rowPadH = 20.dp
@@ -91,4 +103,7 @@ object PocketShellDensity {
 
     /** 48 dp — a11y touch-target floor. Visual density never drops the hit area below this. */
     val tapTargetMin = 48.dp
+
+    /** 56 dp — the minimum height of a text field or a full-width button. */
+    val fieldMinHeight = 56.dp
 }

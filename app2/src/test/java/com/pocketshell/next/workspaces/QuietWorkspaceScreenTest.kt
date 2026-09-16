@@ -66,7 +66,9 @@ class QuietWorkspaceScreenTest {
         composeRule.onNodeWithTag(workspaceRowTag(path)).assertIsDisplayed().performClick()
         assertEquals(listOf(path), opened)
         composeRule.onNodeWithText("~/git/pocketshell", substring = true).assertDoesNotExist()
-        composeRule.onNodeWithText("No sessions").assertIsDisplayed()
+        // Issue #2635 D1: an empty workspace reads as quiet — no count, no
+        // "No sessions" subtitle, just the name.
+        composeRule.onNodeWithText("No sessions").assertDoesNotExist()
     }
 
     @Test
@@ -117,6 +119,89 @@ class QuietWorkspaceScreenTest {
             .assertIsDisplayed()
         composeRule.onNodeWithTag(workspaceRowTag("/home/alexey/git/pocketshell"))
             .assertDoesNotExist()
+    }
+
+    @Test
+    fun `the search field hides behind a header icon on a short list`() {
+        // Issue #2635 D2: at or below WORKSPACE_SEARCH_THRESHOLD the field
+        // costs nothing until asked for.
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostLabel = "hetzner",
+                loaded = true,
+                roots = listOf(oneWorkspaceRoot()),
+            ),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TOGGLE_TAG).assertIsDisplayed()
+    }
+
+    @Test
+    fun `the header icon expands the search field in place`() {
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostLabel = "hetzner",
+                loaded = true,
+                roots = listOf(oneWorkspaceRoot()),
+            ),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TOGGLE_TAG).performClick()
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * Issue #2635 D2: a live query is state the user typed — the field must
+     * not collapse out from under it (mid-filter), even while the list is
+     * short enough to hide the field by default.
+     */
+    @Test
+    fun `a live query keeps the search field visible`() {
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostLabel = "hetzner",
+                loaded = true,
+                searchQuery = "pocket",
+                roots = listOf(oneWorkspaceRoot()),
+            ),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TOGGLE_TAG).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the search field is permanent above the threshold`() {
+        val workspaces = (1..(WORKSPACE_SEARCH_THRESHOLD + 1)).map { index ->
+            WorkspaceProjection(
+                path = "/home/alexey/git/w$index",
+                label = "w$index",
+                displayPath = "~/git/w$index",
+                sessions = emptyList(),
+                durable = true,
+            )
+        }
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostLabel = "hetzner",
+                loaded = true,
+                roots = listOf(
+                    WorkspaceRootProjection(
+                        key = "/home/alexey/git",
+                        label = "Git",
+                        displayPath = "~/git",
+                        path = "/home/alexey/git",
+                        workspaces = workspaces,
+                        rootSessions = emptyList(),
+                    ),
+                ),
+            ),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TOGGLE_TAG).assertDoesNotExist()
     }
 
     @Test
@@ -509,6 +594,25 @@ class QuietWorkspaceScreenTest {
         }
         composeRule.waitForIdle()
     }
+
+    private fun oneWorkspaceRoot(): WorkspaceRootProjection =
+        WorkspaceRootProjection(
+            key = "/home/alexey/git",
+            label = "Git",
+            displayPath = "~/git",
+            path = "/home/alexey/git",
+            workspaces = listOf(
+                WorkspaceProjection(
+                    path = "/home/alexey/git/pocketshell",
+                    label = "pocketshell",
+                    displayPath = "~/git/pocketshell",
+                    sessions = emptyList(),
+                    durable = true,
+                ),
+            ),
+            rootSessions = emptyList(),
+        )
+
 
     private fun session(name: String, workspace: String): SessionRow = SessionRow(
         name = name,

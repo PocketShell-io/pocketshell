@@ -60,6 +60,7 @@ import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.ConfirmDialog
 import com.pocketshell.uikit.components.EmptyState
+import com.pocketshell.uikit.components.HeaderIconAction
 import com.pocketshell.uikit.components.KebabTrigger
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
@@ -93,6 +94,13 @@ const val SESSION_HEADER_KEBAB_TAG: String = "session-header-kebab"
 const val SESSION_STOP_FAILURE_TAG: String = "session-stop-failure"
 const val SESSION_ACTIONS_ITEM_TAG: String = "session-actions-item"
 const val SESSION_ENDED_TAG: String = "session-ended"
+
+/** D3: header status dot — colour from [ConnectionStatus], label from the status description. */
+const val SESSION_STATUS_DOT_TAG: String = "session-status-dot"
+/** D3: the strip "+" label, reused by the header "+" when the strip is hidden. */
+const val SESSION_TAB_NEW_DESCRIPTION: String = "New session"
+/** D3: test tag for the header "+" shown while the tab strip is hidden. */
+const val SESSION_HEADER_NEW_TAG: String = "session-header-new"
 
 /**
  * Route-level entry point for `session/{hostId}/{sessionName}` (rewrite tasks
@@ -333,6 +341,15 @@ fun SessionScreen(
     // sentence ("devbox · Connected") through the dot's contentDescription.
     val transport = terminalHeaderTransport(state)
     val transportSentence = headerSentence(sessionSwitcherState.hostLabel, transport.words ?: "Connected")
+    // Issue #2635 D3 / `ux-rules.md` rule 6: a strip with one item is vertical
+    // chrome without a choice. With exactly one live session the strip is not
+    // rendered and its "+" moves into the header, so the affordance stays one
+    // tap away and the terminal gets the row back. The non-live states keep
+    // the strip: "attach or start something else" is the whole point of the
+    // screen when there is nothing to watch.
+    val showTabStrip = !sessionEnded &&
+        !deliveryReviewVisible &&
+        (sessionSwitcherState.sessions.size > 1 || state !is SessionUiState.Live)
 
     Column(
         modifier = modifier
@@ -361,19 +378,42 @@ fun SessionScreen(
                     headerSentence(sessionSwitcherState.hostLabel, words)
                 }
             },
-            titleMaxLines = 2,
+            // Issue #2635 D3: one line, ellipsised. The two-line allowance
+            // bought a wrapped header on long workspace names and cost every
+            // session a row of terminal; the full name stays in the switcher
+            // sheet.
+            titleMaxLines = 1,
             subtitleMaxLines = 2,
             titleTestTag = SESSION_TITLE_TAG,
+            // Issue #2635 D3: the dot carries a stable test tag for the chrome
+            // tests; colour and words come from the #2717 T2 transport above.
+            statusTestTag = SESSION_STATUS_DOT_TAG,
             onBack = handleBack,
             backTestTag = SESSION_BACK_TAG,
             trailing = if (deliveryReviewVisible) {
                 null
             } else {
                 {
+                    // Issue #2635 D3: with exactly one live session the strip
+                    // is not rendered, so its "+" moves here — the create
+                    // affordance never disappears, it just stops costing a
+                    // whole row. Same label as the strip's "+".
+                    if (!showTabStrip && !sessionEnded) {
+                        HeaderIconAction(
+                            icon = PocketShellIcons.Plus,
+                            contentDescription = SESSION_TAB_NEW_DESCRIPTION,
+                            onClick = onOpenNewSession,
+                            testTag = SESSION_HEADER_NEW_TAG,
+                        )
+                    }
                     if (usagePillState != null) {
+                        // Issue #2635: the glance pill answers to the same tag
+                        // as the fallback "Usage" button below — one control,
+                        // one tag, whichever skin is up.
                         UsageGlancePill(
                             state = usagePillState,
                             onClick = onOpenUsage,
+                            testTag = SESSION_USAGE_TAG,
                         )
                     } else {
                         PocketShellButton(
@@ -393,7 +433,7 @@ fun SessionScreen(
             },
         )
 
-        if (!sessionEnded && !deliveryReviewVisible) {
+        if (showTabStrip) {
             // Issue #2632: the sibling sessions in this workspace are ON
             // screen as tabs, so switching is one tap. The sheet is still
             // reachable through the overflow for the things a tab cannot
@@ -635,10 +675,6 @@ fun SessionScreen(
                 onPermissionDenied = onPermissionDenied,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
-                onOpenHotkeys = {
-                    composerOpen = false
-                    hotkeysOpen = true
-                },
                 availableSlashCommands = availableSlashCommands,
             )
         } else {
@@ -662,10 +698,6 @@ fun SessionScreen(
                 onDiscard = onDiscardDraft,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
-                onOpenHotkeys = {
-                    composerOpen = false
-                    hotkeysOpen = true
-                },
                 availableSlashCommands = availableSlashCommands,
             )
         }
@@ -918,6 +950,7 @@ private fun headerSentence(hostLabel: String, words: String): String =
         hostLabel.takeIf { it.isNotBlank() },
         words,
     ).joinToString(" · ").ifBlank { words }
+
 
 /**
  * The tabs for the session strip (issue #2632).

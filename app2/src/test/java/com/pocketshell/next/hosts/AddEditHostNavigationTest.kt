@@ -20,6 +20,7 @@ import com.pocketshell.next.AppNavHost
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.nav.Destination
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -218,7 +219,7 @@ class AddEditHostNavigationTest {
      * production scoping too.
      */
     private fun setContent(): NavHostController {
-        val hostList = HostListViewModel(stack.db.hostDao(), usageGlanceCache(), Dispatchers.Unconfined)
+        val hostList = HostListViewModel(stack.db.hostDao(), kotlinx.coroutines.flow.flowOf(emptySet()), usageGlanceCache(), Dispatchers.Unconfined)
         val formViewModel = AddEditHostViewModel(
             stack.db.hostDao(),
             stack.db.sshKeyDao(),
