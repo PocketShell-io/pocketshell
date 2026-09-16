@@ -69,6 +69,10 @@ def command(root: Path, case: Case) -> list[str]:
     if not wrapper.is_file():
         raise RuntimeError(f"Gradle wrapper not found: {wrapper}")
     prefix = [str(wrapper)] if os.name == "nt" else ["bash", str(wrapper)]
+    # POSIX DevBox convention: one global Gradle lock, so a render queues
+    # behind every other Gradle on the machine instead of colliding with it.
+    if os.name != "nt":
+        prefix = ["flock", "/tmp/ps-gradle.lock"] + prefix
     return prefix + [
         "--daemon", "--build-cache", "--max-workers=1", "--console=plain",
         "--init-script", str(Path(__file__).with_name("render.init.gradle")),

@@ -5,6 +5,7 @@ import base64
 import http.client
 import io
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -116,6 +117,13 @@ class BuilderTests(Base):
         self.assertIn('--daemon',args);self.assertIn('--build-cache',args)
         self.assertIn(':app2:testDebugUnitTest',args);self.assertIn(self.case.test_filter,args)
         self.assertNotIn('--rerun-tasks',args);self.assertFalse(any('assemble' in a for a in args))
+
+    @unittest.skipIf(os.name == "nt", "POSIX DevBox convention: one global Gradle lock")
+    def test_gradle_command_runs_under_global_devbox_lock(self):
+        args=command(self.root,self.case)
+        self.assertEqual(args[:2],["flock","/tmp/ps-gradle.lock"])
+        self.assertEqual(args[2],"bash")
+        self.assertIn("--daemon",args)
 
     def test_missing_wrapper_errors(self):
         (self.root/'gradlew').unlink();(self.root/'gradlew.bat').unlink()
