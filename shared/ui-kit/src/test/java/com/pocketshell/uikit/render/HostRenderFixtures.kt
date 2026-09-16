@@ -20,166 +20,32 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.components.AgentKindBadge
 import com.pocketshell.uikit.components.AgentStateChip
-import com.pocketshell.uikit.components.Badge
-import com.pocketshell.uikit.components.BadgeRole
 import com.pocketshell.uikit.components.ButtonVariant
-import com.pocketshell.uikit.components.HostCard
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
-import com.pocketshell.uikit.components.SectionHeader
-import com.pocketshell.uikit.components.SessionRow
 import com.pocketshell.uikit.components.StatusDot
 import com.pocketshell.uikit.model.ConnectionStatus
-import com.pocketshell.uikit.model.HostStatus
 import com.pocketshell.uikit.model.PillKind
 import com.pocketshell.uikit.model.SessionAgentState
-import com.pocketshell.uikit.model.Tag
-import com.pocketshell.uikit.model.TagKind
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellType
 
-@Composable
-internal fun HostListScreenRender() {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        ScreenHeader(
-            title = "Hosts",
-            subtitle = "5 hosts · 4 sessions",
-            trailing = {
-                Badge(label = "4 active", role = BadgeRole.Active, mono = false)
-            },
-        )
-        HostCard(
-            name = "hetzner",
-            subtitle = "alex@65.108.42.11",
-            status = HostStatus.Attached,
-            onClick = {},
-        )
-        HostCard(
-            name = "gpu-box",
-            subtitle = "alex@10.0.0.42",
-            status = HostStatus.ActiveSessions(count = 3),
-            onClick = {},
-        )
-        HostCard(
-            name = "prod",
-            subtitle = "deploy@prod.acme.io",
-            status = HostStatus.NoActiveSessions,
-            onClick = {},
-        )
-        HostCard(
-            name = "edge",
-            subtitle = "ci@edge.acme.io",
-            status = HostStatus.ConnectionError,
-            onClick = {},
-        )
-    }
-}
-
 /**
- * Quiet A1 visual anchor: an existing host surface followed by its existing
- * session rows. It exercises the production [HostCard], [SessionRow],
- * [SectionHeader], and [ScreenHeader] primitives under the updated theme so
- * the palette/shape change is visible in one fresh render artifact.
- */
-@Composable
-internal fun QuietHostSessionAnchorRender() {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ScreenHeader(
-            title = "hetzner",
-            subtitle = "Connected · 2 sessions",
-        )
-        HostCard(
-            name = "hetzner",
-            subtitle = "alex@65.108.42.11",
-            status = HostStatus.Attached,
-            onClick = {},
-        )
-        SectionHeader(label = "~/git", count = 2)
-        SessionRow(
-            name = "pocketshell",
-            tags = listOf(
-                Tag("Claude", TagKind.Agent),
-                Tag("Attached", TagKind.Attached),
-            ),
-            onClick = {},
-        )
-        SessionRow(
-            name = "aplexer",
-            tags = listOf(
-                Tag("Terminal", TagKind.Default),
-                Tag("Detached", TagKind.Detached),
-            ),
-            onClick = {},
-        )
-    }
-}
-
-@Composable
-internal fun HostCardResumeAffordanceRender() {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        HostCard(
-            name = "hetzner",
-            subtitle = "alex@65.108.42.11",
-            status = HostStatus.Attached,
-            onClick = {},
-        )
-        ResumeLastSessionRowFacsimile(sessionName = "claude-main")
-    }
-    HostCard(
-        name = "gpu-box",
-        subtitle = "alex@10.0.0.42",
-        status = HostStatus.NoActiveSessions,
-        onClick = {},
-    )
-}
-
-/**
- * Issue #1237: the agent-state chip (idle / working / waiting-for-input) on host
- * cards, plus the three chip variants standalone. The top card is "waiting" (the
- * amber come-look signal), then working (accent cyan), idle (neutral), and a
- * quiet host with NO agent activity (Unknown → no chip, decluttered single dot).
- * Rendered against the real theme so the fast JVM check shows the chip reads as a
- * compact status pill next to the host status dot; the emulator screenshot is the
- * acceptance.
+ * Issue #1237: the agent-state chip (idle / working / waiting-for-input), on a
+ * screen header plus the three chip variants standalone. Rendered against the
+ * real theme so the fast JVM check shows the chip vocabulary in one image; the
+ * emulator screenshot is the acceptance. (The fixture used to stage the chips
+ * on `HostCard`s; the dead-canon sweep in #2717 retired that component.)
  */
 @Composable
 internal fun AgentStateChipsRender() {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         ScreenHeader(title = "Hosts", subtitle = "4 hosts · 3 active")
-        HostCard(
-            name = "hetzner",
-            subtitle = "alex@65.108.42.11",
-            status = HostStatus.ActiveSessions(count = 3),
-            agentState = SessionAgentState.WaitingForInput,
-            onClick = {},
-        )
-        HostCard(
-            name = "gpu-box",
-            subtitle = "alex@10.0.0.42",
-            status = HostStatus.ActiveSessions(count = 2),
-            agentState = SessionAgentState.Working,
-            onClick = {},
-        )
-        HostCard(
-            name = "prod",
-            subtitle = "deploy@prod.acme.io",
-            status = HostStatus.ActiveSessions(count = 1),
-            agentState = SessionAgentState.Idle,
-            onClick = {},
-        )
-        HostCard(
-            name = "edge",
-            subtitle = "ci@edge.acme.io",
-            status = HostStatus.NoActiveSessions,
-            agentState = SessionAgentState.Unknown,
-            onClick = {},
-        )
         Spacer(modifier = Modifier.height(8.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AgentStateChip(state = SessionAgentState.WaitingForInput)
@@ -343,48 +209,6 @@ private fun AppBarGearFacsimile() {
         contentAlignment = Alignment.Center,
     ) {
         Text("⚙", color = PocketShellColors.TextSecondary)
-    }
-}
-
-/**
- * Issue #1239: JVM facsimile of the app-module `ResumeLastSessionRow` — the
- * one-tap "Resume last session" affordance under the matching host card. Same
- * chrome as the production row (accent play glyph, bright "Resume" label,
- * muted-mono session name, AccentSoft fill + 40%-accent hairline on the
- * `medium` card shape) so the fast render is a faithful design read; the
- * emulator screenshot is the acceptance.
- */
-@Composable
-private fun ResumeLastSessionRowFacsimile(sessionName: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .background(color = PocketShellColors.AccentSoft, shape = PocketShellShapes.medium)
-            .border(
-                width = 1.dp,
-                color = PocketShellColors.Accent.copy(alpha = 0.4f),
-                shape = PocketShellShapes.medium,
-            )
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("▶", color = PocketShellColors.Accent, style = PocketShellType.bodyDense)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = "Resume",
-            color = PocketShellColors.Accent,
-            style = PocketShellType.bodyDense,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = sessionName,
-            color = PocketShellColors.TextSecondary,
-            style = PocketShellType.bodyMono,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 

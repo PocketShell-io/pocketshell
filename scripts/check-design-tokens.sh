@@ -10,10 +10,11 @@
 #
 # What counts as an offender (in $SCAN_DIR/**.kt only):
 #   - RoundedCornerShape(<N>.dp) where <N> is NOT an on-ladder radius
-#     (8 / 14 / 20 / 28 — the PocketShellShapes rungs). Use PocketShellShapes.*
-#     instead of a freehand radius.
+#     (4 / 8 / 12 / 24 — the `radius` ladder in docs/design-kit/design-system/
+#     tokens.json: badge / chip / field+button+card / sheet). Use
+#     PocketShellShapes.* instead of a freehand radius.
 #   - fontSize = <N>.sp where <N> is NOT an on-ladder size
-#     (11 / 13 / 14 / 16 / 20 — the PocketShell type rungs). Use a
+#     (11 / 13 / 14 / 16 / 20 — the `type` rungs in tokens.json). Use a
 #     MaterialTheme.typography.* slot or a PocketShellType.* style instead.
 #
 # Genuine sub-ladder component geometry (e.g. a 6dp progress track, an icon
@@ -48,11 +49,12 @@ cd "$REPO_ROOT"
 SCAN_DIR="${POCKETSHELL_DESIGN_TOKEN_SCAN_DIR:-app2/src/main}"
 BASELINE_FILE="scripts/design-token-baseline.txt"
 
-# On-ladder allow-lists (kept in sync with shared/ui-kit theme tokens).
-#   radii  -> PocketShellShapes: extraSmall/small 8, medium 14, large 20, extraLarge 28
-#   sizes  -> headlineSmall 20, titleMedium 16, bodyMedium 14, bodyDense/bodyMono 13,
-#             labelSmall/labelMono 11
-RADIUS_ALLOWED='RoundedCornerShape\((8|14|20|28)\.dp\)'
+# On-ladder allow-lists (kept in sync with docs/design-kit/design-system/tokens.json,
+# the single source of truth — #2717).
+#   radii  -> tokens.json `radius` ladder: 4 badge, 8 chip, 12 field/button/card, 24 sheet
+#   sizes  -> tokens.json `type` rungs (screen 20, title 16, body/button 14,
+#             metadata/label 11) plus bodyDense/bodyMono 13
+RADIUS_ALLOWED='RoundedCornerShape\((4|8|12|24)\.dp\)'
 FONTSIZE_ALLOWED='fontSize = (11|13|14|16|20)\.sp'
 
 # EXISTS is not enough — it must have Kotlin in it. A self-test's `mkdir -p`

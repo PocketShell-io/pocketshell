@@ -32,26 +32,28 @@ The last image generated in the conversation is a visual reference, not the impl
 
 The accent identifies an intentional action or focus, not every selectable option. At most one filled cyan action per visible surface. Neutral text/radio outlines communicate a selection. Destructive actions use a red outline/text only after the target and consequences are explicit.
 
-Session marks always inherit muted gray. They do not use brand colors, chip fills, shadows, colored square tiles or individual green pips. A known running-session summary does not claim the agent is busy or waiting. Host **Connected** can have one green dot plus its text label. Do not equate SSH connected, terminal attached, process running and agent working.
+Session marks always inherit muted gray. They do not use brand colors, chip fills, shadows, colored square tiles or individual green pips. A known running-session summary does not claim the agent is busy or waiting. Host **Connected** is a green status dot with no words; the text label is reserved for transitional/failed states (Reconnecting, Offline), and when no words show, the dot carries the sentence for screen readers via its `contentDescription` (#2717 T2). Do not equate SSH connected, terminal attached, process running and agent working.
 
 ## Typography
-- **screen**: 28sp, 34sp line height, weight 700.
-- **workspace**: 20sp, 28sp line height, weight 600.
-- **title**: 20sp, 28sp line height, weight 600.
-- **body**: 18sp, 26sp line height, weight 400.
-- **metadata**: 16sp, 22sp line height, weight 400.
-- **label**: 16sp, 22sp line height, weight 500.
-- **button**: 18sp, 24sp line height, weight 600.
-- **terminal**: 16sp, 22sp line height, weight 400.
+The type roles — **screen**, **workspace**, **title**, **body**, **metadata**,
+**label**, **button**, **terminal** — and their exact size / line-height /
+weight values are the `type` block of
+[`design-system/tokens.json`](../design-system/tokens.json), the single source
+of truth (#2717). This spec names the roles; it does not restate the numbers.
 
 Use proportional system sans for app UI. Use monospace for commands, raw file content and terminal output only. Browser CSS pixels model dp at baseline; native text uses sp. Support Android system font scaling, wrapping, keyboard and safe insets. Do not scale down long workspace names to preserve a one-line layout.
 
 Terminal text size is a separate preference. The browser terminal is fixture text with its own fixed 16px grid; its surrounding app controls use the UI font scale. Do not enlarge or resize a real terminal implicitly when a composer or keyboard opens.
 
 ## Geometry
-20dp screen gutters; 4/8/12/16/20/24dp spacing; 32dp section separation. Minimum 48dp interactive target, 56dp field/button, 72dp standard row and 88dp workspace row. These are minima, not clipping heights. Labels and supporting text can grow rows.
-
-12dp field/button radius. 24dp top corners on sheets. No elevation on workspace rows. Thin separators, no nested cards. Input/control boundaries have a stronger neutral contrast than decorative dividers.
+Spacing rungs, row minima and the radius ladder are the `space`, `size` and
+`radius` blocks of [`design-system/tokens.json`](../design-system/tokens.json)
+(#2717): 20dp screen gutters; 4/8/12/16/20/24dp spacing rungs; 48dp interactive
+floor; 56dp standard rows and 64dp workspace rows; radius ladder
+{4 badge, 8 chip, 12 field/button/card, 24 sheet}. These are minima, not
+clipping heights. Labels and supporting text can grow rows. No elevation on
+workspace rows. Thin separators, no nested cards. Input/control boundaries have
+a stronger neutral contrast than decorative dividers.
 
 ## Component contracts
 ### Screen header
@@ -61,7 +63,7 @@ Back, title, optional meaningful context, at most one secondary action. The host
 Root path on the left; contextual **+ Add** on the right. The entire root label has a 48dp action target opening root actions. Add can find a folder, create one, or explicitly start a session in the root. Full Add workspace remains the accessibility description.
 
 ### Workspace row
-Name 20sp semibold, followed by muted 16sp session-kind summary. One row is one hit target. Agent marks are non-interactive metadata and have no independent tap or long-press action. This avoids tiny nested targets and ambiguous same-agent jumps. Open the workspace to choose a particular terminal.
+Name in the **title** rung semibold, followed by a muted **metadata**-rung session-kind summary. One row is one hit target. Agent marks are non-interactive metadata and have no independent tap or long-press action. This avoids tiny nested targets and ambiguous same-agent jumps. Open the workspace to choose a particular terminal.
 
 Collapse duplicate kinds into a count (Terminal ×2); show up to three kinds then +N more kinds. Announce readable labels, not glyph names. No sessions and Status unavailable are different states. Stable manual order, otherwise creation/first-discovery order; live refresh never reorders rows beneath a tap.
 
@@ -69,7 +71,7 @@ Collapse duplicate kinds into a count (Terminal ×2); show up to three kinds the
 Reuse the desktop's existing shape vocabulary: hexagon = Claude, code chevrons = Codex, terminal mark = OpenCode, bolt = Grok. Shell has the label Terminal. These are product-local identifiers, **not vendor logos**. Keep text beside the marks, so no onboarding legend is necessary. Mark geometry is an icon asset; do not substitute an emoji or character from a font.
 
 ### Standard row
-An 18sp main label, optional 16sp supporting text and quiet navigation chevron. Avoid putting long values in a narrow trailing column; move them below the label. The current compact trailing slot is only for short values such as 300ms or Current.
+A **body**-rung main label, optional **metadata**-rung supporting text and quiet navigation chevron. Avoid putting long values in a narrow trailing column; move them below the label. The current compact trailing slot is only for short values such as 300ms or Current.
 
 ### Fields and actions
 Persistent label above the field; no placeholder-only identification. Clear text input colors and native cursor/focus feedback. One primary action pinned above the safe/keyboard inset. Long forms scroll independently from the action area. Backend, profile and explicit session name remain in More options.
@@ -84,7 +86,7 @@ The real emulator stays. The terminal area owns its character grid. The session 
 Reuse the flat rows and named actions. Paths are useful in the file browser location bar, not duplicated on workspace rows. Save to host and Download are different actions. Tunnels and Usage are host-scoped even when opened from a workspace. A tunnel should show remote and local endpoints, and default to loopback-only local exposure.
 
 ## State vocabulary
-- Connected / Reconnecting / Offline: transport state, with a textual label.
+- Connected / Reconnecting / Offline: transport state. The steady state is a status dot with no words; textual labels are reserved for Reconnecting and Offline (#2717 T2).
 - Running: verified remote process/session state; no implication of CPU activity.
 - No sessions: a successful enumeration reported none.
 - Status unavailable: session enumeration is stale or unavailable.

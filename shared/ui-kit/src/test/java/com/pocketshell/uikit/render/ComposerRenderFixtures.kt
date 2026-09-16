@@ -25,7 +25,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.pocketshell.uikit.components.CommandChip
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -449,31 +448,6 @@ internal fun ComposerLongDraftCaretVisibleRender() {
             }
         }
     }
-}
-
-@Composable
-internal fun TerminalBottomChipsWithCompactHotkeysRender() {
-        Spacer(Modifier.height(560.dp))
-        // The reclaimed space: NO full-width bar row here anymore — just the
-        // single chip band below, with the compact `hotkeys` chip inline.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(PocketShellColors.Surface)
-                .border(1.dp, PocketShellColors.Border)
-                .padding(horizontal = 10.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            // The flexible static-chip strip yields/scrolls in production;
-            // the primary cluster (incl. the new compact `hotkeys` chip) is
-            // pinned to the right and always fully visible.
-            CommandChip(label = "clear", onClick = {})
-            Spacer(Modifier.weight(1f))
-            CommandChip(label = "Enter", onClick = {})
-            CommandChip(label = "hotkeys", onClick = {})
-            CommandChip(label = "snippets", onClick = {})
-        }
 }
 
 @Composable

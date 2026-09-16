@@ -1,7 +1,8 @@
 package com.pocketshell.uikit.model
 
 /**
- * One slot in the `KeyBar` (the 8-key strip above the system keyboard).
+ * One slot in a terminal key strip (the 8-key grid above the system keyboard;
+ * rendered today by `TerminalHotkeysPanel`).
  *
  * `kind` drives both visual treatment and tap behaviour:
  *
@@ -23,7 +24,7 @@ data class KeyBinding(
 )
 
 /**
- * Visual + interaction modes for keys in the `KeyBar`. See [KeyBinding].
+ * Visual + interaction modes for keys in a terminal key strip. See [KeyBinding].
  */
 enum class KeyKind {
     Modifier,

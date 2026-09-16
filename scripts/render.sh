@@ -12,7 +12,7 @@
 #      shared/ui-kit/src/test/java/com/pocketshell/uikit/render/DesignRenders.kt.
 #   2. Run this script:
 #        scripts/render.sh                 # render every case
-#        scripts/render.sh hostListScreen  # render just one case (test method)
+#        scripts/render.sh screenHeader     # render just one case (test method)
 #   3. Open the fresh PNG(s) printed at the end (build/renders/<name>.png).
 #   Repeat. Each run overwrites the same paths, so a tweak yields a new image at
 #   a stable location.

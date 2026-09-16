@@ -37,7 +37,7 @@ enum class BadgeRole {
 /**
  * Right-aligned pill badge — the shared "agent / type / status" chip that the
  * issue #489 design reference places at the trailing edge of a row. Generalises
- * the per-row tag-pill recipe `SessionRow` previously kept
+ * the per-row tag-pill recipe the retired `SessionRow` kept
  * private, so every screen renders the same pill.
  *
  * Tokens (#461 §3.5 chip/pill pattern):

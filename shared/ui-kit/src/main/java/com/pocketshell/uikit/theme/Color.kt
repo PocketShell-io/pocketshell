@@ -80,7 +80,7 @@ data class PocketShellSemanticColors(
     val statusConnecting: Color,
     /** Failed. Red dot. */
     val statusError: Color,
-    /** Needs-setup attention. Amber (folds with idle precedence per HostCard §8). */
+    /** Needs-setup attention. Amber (folds with idle precedence). */
     val statusAttention: Color,
     /** Agent / assistant role; Quiet keeps session marks muted. */
     val agentAccent: Color,

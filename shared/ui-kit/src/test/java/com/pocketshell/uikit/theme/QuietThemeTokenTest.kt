@@ -7,9 +7,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,12 +22,20 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Contract checks for the production side of Quiet A1.
+ * Contract checks pinning the PocketShell theme to the design kit's single
+ * machine-readable token source (#2717).
  *
- * The values mirror `docs/design-kit/design-system/tokens.json` and the slot
- * mapping in `docs/design-kit/android/PocketShellTheme.kt`. Keeping these
- * assertions next to the production theme makes a later token drift fail in
- * the normal shared ui-kit JVM gate instead of only in a visual review.
+ * Every pin READS `docs/design-kit/design-system/tokens.json` through
+ * [DesignKitTokens] instead of restating hand-copied constants: mutating a
+ * value in the JSON (e.g. flipping `type.screen.sizeSp` back to 28, the #2630
+ * drift) now turns the type-scale, row-height and kit-theme-sync tests red in
+ * the normal shared ui-kit JVM gate.
+ *
+ * The kit-theme-sync test additionally parses the *generated*
+ * `docs/design-kit/android/PocketShellTheme.kt`, so regenerating the kit
+ * artifacts from a stale or hand-edited JSON cannot silently reintroduce old
+ * numbers (the exact trap #2717 closed: the committed kit theme still carried
+ * 28sp after #2630 reconciled the scale).
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -35,31 +47,163 @@ class QuietThemeTokenTest {
 
     @Test
     fun quietColorTokensMatchTheDesignKit() {
-        assertEquals(Color(0xFF10171E), PocketShellColors.Background)
-        assertEquals(Color(0xFF19222B), PocketShellColors.Surface)
-        assertEquals(Color(0xFF222D38), PocketShellColors.SurfaceElev)
-        assertEquals(Color(0xFFF0F3F7), PocketShellColors.Text)
-        assertEquals(Color(0xFFA6B2C1), PocketShellColors.TextSecondary)
-        assertEquals(Color(0xFF92A0B0), PocketShellColors.TextMuted)
-        assertEquals(Color(0xFF2B3946), PocketShellColors.BorderSoft)
-        assertEquals(Color(0xFF64778A), PocketShellColors.Border)
-        assertEquals(Color(0xFF53D8EC), PocketShellColors.Accent)
-        assertEquals(Color(0xFF082027), PocketShellColors.OnAccent)
-        assertEquals(Color(0xFF5CDF89), PocketShellColors.Green)
-        assertEquals(Color(0xFFE6BC78), PocketShellColors.Amber)
-        assertEquals(Color(0xFFF3A1A1), PocketShellColors.Red)
-        assertEquals(Color(0xFF0B1117), PocketShellColors.TermBg)
+        assertColor("background", PocketShellColors.Background)
+        assertColor("surface", PocketShellColors.Surface)
+        assertColor("surfaceRaised", PocketShellColors.SurfaceElev)
+        assertColor("text", PocketShellColors.Text)
+        assertColor("secondary", PocketShellColors.TextSecondary)
+        assertColor("muted", PocketShellColors.TextMuted)
+        assertColor("divider", PocketShellColors.BorderSoft)
+        assertColor("inputBorder", PocketShellColors.Border)
+        assertColor("accent", PocketShellColors.Accent)
+        assertColor("onAccent", PocketShellColors.OnAccent)
+        assertColor("positive", PocketShellColors.Green)
+        assertColor("warning", PocketShellColors.Amber)
+        assertColor("error", PocketShellColors.Red)
+        assertColor("terminal", PocketShellColors.TermBg)
         assertEquals(PocketShellColors.Text, PocketShellColors.TermText)
         assertEquals(PocketShellColors.Accent, PocketShellColors.TermPrompt)
         assertEquals(PocketShellColors.TextMuted, PocketShellColors.TermComment)
-        assertEquals(Color(0x99000000), PocketShellColors.Scrim)
+        assertColor("scrim", PocketShellColors.Scrim)
     }
 
     @Test
     fun quietShapeTokensMatchTheDesignKit() {
-        assertEquals(12f, topStartRadius(PocketShellShapes.small), 0f)
-        assertEquals(12f, topStartRadius(PocketShellShapes.medium), 0f)
-        assertEquals(24f, topStartRadius(PocketShellShapes.large), 0f)
+        assertEquals(DesignKitTokens.radiusDp("field").dp, topStartRadius(PocketShellShapes.small).dp)
+        assertEquals(DesignKitTokens.radiusDp("button").dp, topStartRadius(PocketShellShapes.medium).dp)
+        assertEquals(DesignKitTokens.radiusDp("sheet").dp, topStartRadius(PocketShellShapes.large).dp)
+    }
+
+    @Test
+    fun typeScaleMatchesTheDesignKit() {
+        // The named rungs — one assertion per tokens.json `type` role.
+        assertType("screen", PocketShellType.screen)
+        assertType("title", PocketShellType.title)
+        assertType("body", PocketShellType.body)
+        assertType("metadata", PocketShellType.metadata)
+        assertType("label", PocketShellType.label)
+        assertType("button", PocketShellType.button)
+        // `workspace` and `terminal` are aliases, never independent values —
+        // the two-copies failure #2630 shipped with.
+        assertEquals(DesignKitTokens.typeSizeSp("workspace").sp, PocketShellType.workspace.fontSize)
+        assertEquals(DesignKitTokens.typeLineHeightSp("workspace").sp, PocketShellType.workspace.lineHeight)
+        assertEquals(DesignKitTokens.typeSizeSp("terminal").sp, PocketShellType.terminal.fontSize)
+        assertEquals(DesignKitTokens.typeLineHeightSp("terminal").sp, PocketShellType.terminal.lineHeight)
+
+        // The `quiet*` spellings are the same instances, not re-declared copies.
+        assertEquals(PocketShellType.screen, PocketShellType.quietScreen)
+        assertEquals(PocketShellType.title, PocketShellType.quietTitle)
+        assertEquals(PocketShellType.body, PocketShellType.quietBody)
+        assertEquals(PocketShellType.metadata, PocketShellType.quietMetadata)
+        assertEquals(PocketShellType.label, PocketShellType.quietLabel)
+
+        // The M3 slots the app actually reads.
+        assertType("screen", PocketShellTypography.headlineSmall)
+        assertType("title", PocketShellTypography.titleMedium)
+        assertType("body", PocketShellTypography.bodyMedium)
+        assertType("label", PocketShellTypography.labelSmall)
+    }
+
+    @Test
+    fun rowHeightsMatchTheDesignKit() {
+        assertEquals(DesignKitTokens.sizeDp("listRowMin").dp, PocketShellDensity.rowMinHeight)
+        assertEquals(DesignKitTokens.sizeDp("workspaceRowMin").dp, PocketShellDensity.workspaceRowMinHeight)
+        assertEquals(DesignKitTokens.sizeDp("touchMin").dp, PocketShellDensity.tapTargetMin)
+        // `standardRowMinHeight` is an alias, not a second value (#2630's drift class).
+        assertEquals(PocketShellDensity.rowMinHeight, PocketShellDensity.standardRowMinHeight)
+        // #2717 T3: the 32dp `section` rung is retired; sections separate with
+        // `sectionGap`, pinned to the surviving 24dp `space.xxl` rung.
+        assertEquals(DesignKitTokens.spaceDp("xxl").dp, PocketShellDensity.sectionGap)
+    }
+
+    @Test
+    fun generatedKitThemeStaysInSyncWithTokensJson() {
+        // Colors — the kit theme's `PsTokens` vals carry the same names.
+        val colors = DesignKitTokens.root.getJSONObject("color")
+        colors.keys().asSequence().forEach { key ->
+            assertEquals(
+                "kit theme color `$key` drifted from tokens.json",
+                DesignKitTokens.colorArgb(key),
+                DesignKitTokens.kitColorArgb(key),
+            )
+        }
+
+        // Sizes — same-name vals (`workspaceRowMin`, `listRowMin`, ...).
+        val sizes = DesignKitTokens.root.getJSONObject("size")
+        sizes.keys().asSequence().forEach { key ->
+            assertEquals(
+                "kit theme size `$key` drifted from tokens.json",
+                DesignKitTokens.sizeDp(key),
+                DesignKitTokens.kitDp(key),
+            )
+        }
+
+        // Spaces — `xs` -> `spaceXs`, etc. The retired 32dp `section` rung must
+        // NOT come back in a regeneration.
+        mapOf(
+            "xs" to "spaceXs",
+            "sm" to "spaceSm",
+            "md" to "spaceMd",
+            "lg" to "spaceLg",
+            "xl" to "spaceXl",
+            "xxl" to "spaceXxl",
+        ).forEach { (jsonKey, kitName) ->
+            assertEquals(
+                "kit theme space `$kitName` drifted from tokens.json",
+                DesignKitTokens.spaceDp(jsonKey),
+                DesignKitTokens.kitDp(kitName),
+            )
+        }
+        assertFalse(
+            "tokens.json has no `space.section` rung (#2717 T3) — the regenerated " +
+                "kit theme must not re-emit `spaceSection`",
+            DesignKitTokens.kitThemeText.contains("spaceSection"),
+        )
+
+        // Radius ladder — {4 badge, 8 chip, 12 field/button/card, 24 sheet}.
+        mapOf(
+            "badge" to "badgeRadius",
+            "chip" to "chipRadius",
+            "field" to "fieldRadius",
+            "button" to "buttonRadius",
+            "card" to "cardRadius",
+            "sheet" to "sheetRadius",
+        ).forEach { (jsonKey, kitName) ->
+            assertEquals(
+                "kit theme radius `$kitName` drifted from tokens.json",
+                DesignKitTokens.radiusDp(jsonKey),
+                DesignKitTokens.kitDp(kitName),
+            )
+        }
+
+        // Type — every `type` role against its `*Type` TextStyle, weight included.
+        mapOf(
+            "screen" to "screenType",
+            "workspace" to "workspaceType",
+            "title" to "titleType",
+            "body" to "bodyType",
+            "metadata" to "metadataType",
+            "label" to "labelType",
+            "button" to "buttonType",
+            "terminal" to "terminalType",
+        ).forEach { (jsonRole, kitName) ->
+            val (kitSize, kitLineHeight) = DesignKitTokens.kitType(kitName)
+            assertEquals(
+                "kit theme `$kitName` size drifted from tokens.json",
+                DesignKitTokens.typeSizeSp(jsonRole),
+                kitSize,
+            )
+            assertEquals(
+                "kit theme `$kitName` line height drifted from tokens.json",
+                DesignKitTokens.typeLineHeightSp(jsonRole),
+                kitLineHeight,
+            )
+            assertEquals(
+                "kit theme `$kitName` weight drifted from tokens.json",
+                DesignKitTokens.typeWeight(jsonRole),
+                DesignKitTokens.kitTypeWeight(kitName),
+            )
+        }
     }
 
     @Test
@@ -86,6 +230,32 @@ class QuietThemeTokenTest {
             assertEquals(PocketShellColors.Background, mapped.onError)
             assertEquals(PocketShellColors.Scrim, mapped.scrim)
         }
+    }
+
+    private fun assertColor(jsonKey: String, actual: Color) {
+        assertEquals(
+            "PocketShellColors token drifted from tokens.json `$jsonKey`",
+            Color(DesignKitTokens.colorArgb(jsonKey).toInt()),
+            actual,
+        )
+    }
+
+    private fun assertType(jsonRole: String, style: androidx.compose.ui.text.TextStyle) {
+        assertEquals(
+            "type rung `$jsonRole` size drifted from tokens.json",
+            DesignKitTokens.typeSizeSp(jsonRole).sp,
+            style.fontSize,
+        )
+        assertEquals(
+            "type rung `$jsonRole` line height drifted from tokens.json",
+            DesignKitTokens.typeLineHeightSp(jsonRole).sp,
+            style.lineHeight,
+        )
+        assertEquals(
+            "type rung `$jsonRole` weight drifted from tokens.json",
+            FontWeight(DesignKitTokens.typeWeight(jsonRole)),
+            style.fontWeight,
+        )
     }
 
     private fun topStartRadius(shape: Shape): Float {

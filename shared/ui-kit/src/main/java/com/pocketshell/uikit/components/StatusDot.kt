@@ -11,6 +11,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.LocalPocketShellSemantic
@@ -39,14 +41,18 @@ import com.pocketshell.uikit.theme.PocketShellSpacing
  * matching the CSS `@keyframes pulse { 0%, 100% { opacity: 1; }
  * 50% { opacity: 0.3; } }`.
  *
- * The dot is purely decorative — there's no `onClick` and no semantic
- * description. Wrap it in something labelled by its host name if you
- * need talkback support.
+ * The dot is purely decorative by default — there's no `onClick` and no
+ * semantic description. Pass [contentDescription] when the dot carries state
+ * that has no visible words (e.g. a screen header's steady transport state,
+ * #2717 T2) so TalkBack still hears the sentence; leave it null when the
+ * state's words are already visible next to the dot, or the state announces
+ * twice.
  */
 @Composable
 fun StatusDot(
     status: ConnectionStatus,
     modifier: Modifier = Modifier,
+    contentDescription: String? = null,
 ) {
     val semantic = LocalPocketShellSemantic.current
     val baseColor: Color = when (status) {
@@ -80,7 +86,17 @@ fun StatusDot(
     // Compose `Canvas` does NOT clip its drawing to its bounds, so we
     // can render the wider halo outside the 8dp box without changing
     // layout — same as CSS `box-shadow` extending past the element box.
-    Canvas(modifier = modifier.size(PocketShellSpacing.sm)) {
+    Canvas(
+        modifier = modifier
+            .size(PocketShellSpacing.sm)
+            .let { base ->
+                if (contentDescription == null) {
+                    base
+                } else {
+                    base.semantics { this.contentDescription = contentDescription }
+                }
+            },
+    ) {
         val coreRadius: Float = size.minDimension / 2f
         // Outer halo for Connected only, matching the CSS
         // `box-shadow: 0 0 7px rgba(34,197,94,0.7)`. Two stacked discs

@@ -72,6 +72,7 @@ import com.pocketshell.uikit.components.SessionNavKey
 import com.pocketshell.uikit.components.SessionTerminalBar
 import com.pocketshell.uikit.components.TerminalHotkeysPaletteOverlay
 import com.pocketshell.uikit.icons.PocketShellIcons
+import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -323,10 +324,12 @@ fun SessionScreen(
     }
     val visibleWorkspacePath = workspacePath ?: currentSession?.workspace
     val terminalTitle = workspaceLabelForTerminal(visibleWorkspacePath).ifBlank { sessionLabel }
-    val terminalSubtitle = terminalHeaderSubtitle(
-        state = state,
-        hostLabel = sessionSwitcherState.hostLabel,
-    )
+    // #2717 T2: the status dot carries the transport state; the subtitle line is
+    // reserved for transitional words ("Connecting…", "Reconnecting…", "Offline").
+    // In the steady (Live) state no words show — TalkBack still hears the full
+    // sentence ("devbox · Connected") through the dot's contentDescription.
+    val transport = terminalHeaderTransport(state)
+    val transportSentence = headerSentence(sessionSwitcherState.hostLabel, transport.words ?: "Connected")
 
     Column(
         modifier = modifier
@@ -339,10 +342,21 @@ fun SessionScreen(
                 sessionEnded -> "Session ended"
                 else -> terminalTitle
             },
+            status = if (deliveryReviewVisible || sessionEnded) null else transport.status,
+            // Transitional words are already visible on the subtitle line, so the
+            // dot stays decorative there (no double announcement); the steady
+            // state has no visible words and rides on the dot's description.
+            statusDescription = if (deliveryReviewVisible || sessionEnded || transport.words != null) {
+                null
+            } else {
+                transportSentence
+            },
             subtitle = when {
                 deliveryReviewVisible -> null
                 sessionEnded -> sessionLabel
-                else -> terminalSubtitle
+                else -> transport.words?.let { words ->
+                    headerSentence(sessionSwitcherState.hostLabel, words)
+                }
             },
             titleMaxLines = 2,
             subtitleMaxLines = 2,
@@ -872,35 +886,31 @@ private fun reconnectingComposerMessage(state: SessionUiState): String? =
         null
     }
 
-private fun statusLine(state: SessionUiState): String = when (state) {
-    SessionUiState.Connecting -> "attaching"
-    is SessionUiState.Live -> "attached"
-    is SessionUiState.Reconnecting -> "reconnecting"
-    is SessionUiState.Failed -> if (state.message.looksLikeEndedSession()) "ended" else "not attached"
-}
-
 private fun workspaceLabelForTerminal(path: String?): String =
     path?.trimEnd('/')?.substringAfterLast('/')?.ifBlank { path }.orEmpty()
 
-private fun terminalHeaderSubtitle(
-    state: SessionUiState,
-    hostLabel: String,
-): String {
-    val transport = when (state) {
-        SessionUiState.Connecting -> "Connecting…"
-        is SessionUiState.Live -> "Connected"
-        is SessionUiState.Reconnecting -> "Reconnecting"
-        is SessionUiState.Failed -> "Offline"
-    }
-    return listOfNotNull(
-        hostLabel.takeIf { it.isNotBlank() },
-        transport,
-    ).joinToString(" · ").ifBlank {
-        // Direct screen tests and previews do not have route metadata. Keep a
-        // useful state label there while production uses the host-scoped copy.
-        statusLine(state)
-    }
+/**
+ * The session's transport state for the header, per the #2717 T2 vocabulary:
+ * the status dot carries the steady state with no words; the subtitle line is
+ * reserved for the transitional words ("Connecting…", "Reconnecting…",
+ * "Offline"). In the steady state [HeaderTransport.words] is null and the
+ * caller passes the full sentence as the dot's contentDescription instead.
+ */
+private data class HeaderTransport(val status: ConnectionStatus, val words: String?)
+
+private fun terminalHeaderTransport(state: SessionUiState): HeaderTransport = when (state) {
+    SessionUiState.Connecting -> HeaderTransport(ConnectionStatus.Connecting, "Connecting…")
+    is SessionUiState.Live -> HeaderTransport(ConnectionStatus.Connected, null)
+    is SessionUiState.Reconnecting -> HeaderTransport(ConnectionStatus.Connecting, "Reconnecting…")
+    is SessionUiState.Failed -> HeaderTransport(ConnectionStatus.Error, "Offline")
 }
+
+/** `devbox · Reconnecting…` — the host label joined to the state words. */
+private fun headerSentence(hostLabel: String, words: String): String =
+    listOfNotNull(
+        hostLabel.takeIf { it.isNotBlank() },
+        words,
+    ).joinToString(" · ").ifBlank { words }
 
 /**
  * The tabs for the session strip (issue #2632).

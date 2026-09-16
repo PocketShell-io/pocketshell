@@ -58,6 +58,7 @@ import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.components.WorkspaceRow
+import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
@@ -321,9 +322,16 @@ fun HostWorkspacesScreen(
             .fillMaxSize()
             .testTag(HOST_WORKSPACES_TAG),
     ) {
+        val transport = hostWorkspacesTransport(state)
         ScreenHeader(
             title = state.hostLabel.ifBlank { "Workspaces" },
-            subtitle = hostWorkspacesSubtitle(state),
+            status = transport.status,
+            // #2717 T2: the steady state carries NO words — TalkBack hears it
+            // through the dot's contentDescription. Transitional states show the
+            // words on the subtitle line instead, so the dot stays decorative
+            // there and the state is announced exactly once.
+            statusDescription = if (transport.words == null) "Connected" else null,
+            subtitle = transport.words,
             onBack = onBack,
             backTestTag = HOST_WORKSPACES_BACK_TAG,
             trailing = {
@@ -1102,12 +1110,21 @@ private fun filteredRoots(state: HostWorkspacesUiState): List<WorkspaceRootProje
     }
 }
 
-private fun hostWorkspacesSubtitle(state: HostWorkspacesUiState): String = when {
-    state.refreshing -> "Reconnecting…"
-    state.failure != null && state.statusUnavailable -> "Offline · Saved list"
-    state.failure != null -> "Offline"
-    !state.loaded -> "Connecting…"
-    else -> "Connected"
+/**
+ * The host's transport state for the header, per the #2717 T2 vocabulary: the
+ * status dot carries the steady state with no words; the subtitle line is
+ * reserved for the transitional/failed words ("Reconnecting…",
+ * "Offline · Saved list"). In the steady state [HeaderTransport.words] is null
+ * and the caller passes the sentence as the dot's contentDescription instead.
+ */
+private data class HeaderTransport(val status: ConnectionStatus, val words: String?)
+
+private fun hostWorkspacesTransport(state: HostWorkspacesUiState): HeaderTransport = when {
+    state.refreshing -> HeaderTransport(ConnectionStatus.Connecting, "Reconnecting…")
+    state.failure != null && state.statusUnavailable -> HeaderTransport(ConnectionStatus.Error, "Offline · Saved list")
+    state.failure != null -> HeaderTransport(ConnectionStatus.Error, "Offline")
+    !state.loaded -> HeaderTransport(ConnectionStatus.Connecting, "Connecting…")
+    else -> HeaderTransport(ConnectionStatus.Connected, null)
 }
 
 private fun plural(count: Int, noun: String): String = if (count == 1) noun else "${noun}s"

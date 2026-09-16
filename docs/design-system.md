@@ -46,10 +46,10 @@ maintainer decision.
 |------------|---------------|--------------|----------|
 | Colour | `PocketShellColors` defines dark surface, text, accent, semantic, border, and terminal tokens in [`Color.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Color.kt). `PocketShellSemanticColors` adds status/agent/accent roles via `LocalPocketShellSemantic`. | Many screens still import raw `PocketShellColors` directly. That is acceptable during migration, but new code should prefer `MaterialTheme.colorScheme` for M3 roles and semantic locals for status/agent roles. Terminal selection still has hard-coded token-equivalent colours in [`SmartSelectionAffordanceOverlay.kt`](../shared/core-terminal/src/main/java/com/pocketshell/core/terminal/selection/SmartSelectionAffordanceOverlay.kt). | Keep the existing dark palette. Add no new colours unless a maintainer approves a new role. |
 | M3 scheme | [`Theme.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Theme.kt) maps background, surface, surfaceVariant, primary, outline, inverse, and error slots. PocketShell is always dark. | `surfaceContainer*`, `secondaryContainer`, and related selected/container slots remain M3 defaults because filling them is a visible change for menus, switches, cards, chips, and segmented controls. | Migrate M3 container slots in a visual-audited slice, not silently in a token-only slice. |
-| Type | [`Type.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Type.kt) overrides `headlineSmall` 20sp, `titleMedium` 16sp, `bodyMedium` 14sp, `labelSmall` 11sp. `PocketShellType` adds `bodyDense` 13sp, `bodyMono` 13sp, and `labelMono` 11sp. | Screen code still has raw `10.sp`, `12.sp`, `13.sp`, `15.sp`, and custom line heights, especially conversation, markdown, keybar, terminal chrome, and legacy local rows. | Use M3 slots for normal chrome, `PocketShellType.bodyDense` for compact rows, `bodyMono` for paths/commands/IDs, and `labelMono` for compact code labels. |
-| Spacing | [`Spacing.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt) currently codifies `xs` 4dp, `sm` 8dp, `md` 12dp, `lg` 16dp, plus density tokens. | Older docs referenced `xl`/`xxl`; those tokens do not exist on current `origin/main`. Raw `.dp` literals are widespread in screens and components, including off-grid values like 2, 5, 6, 10, 14, 20, 28, 30, and 38 where component geometry needs explicit tokens. | Keep the base spacing scale small. Add component-specific geometry tokens only when a pattern repeats across surfaces. |
-| Density | `PocketShellDensity` defines `rowMinHeight` 44dp, `rowPadV` 8dp, `rowPadH` 12dp, `chipPadV` 6dp, `chipPadH` 10dp, `sectionGap` 8dp, `treeIndent` 16dp, `tapTargetMin` 48dp. | Some compact rows draw below the visual density target, and some touch areas depend on surrounding layout rather than explicit `sizeIn`. | Visual density can be compact; touch targets stay at least 48dp. |
-| Shape | [`Shape.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Shape.kt) maps 8dp, 14dp, 20dp, and 28dp radii into M3 shape slots. | Screens still create local `RoundedCornerShape` values for micro badges, key slots, cards, and sheets. Some are legitimate component geometry; repeated values should move into shared components. | 8dp chip/key, 14dp card, 20dp sheet, 28dp FAB/mic. Avoid new radii. |
+| Type | [`Type.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Type.kt) mirrors the `type` block of [`tokens.json`](design-kit/design-system/tokens.json) — the single source of truth (#2717): `headlineSmall` screen 20/26, `titleMedium` title 16/22, `bodyMedium` body 14/20, `labelSmall` caption 11/16. `PocketShellType` adds the off-M3 dense/mono rungs `bodyDense` 13sp, `bodyMono` 13sp, and `labelMono` 11sp. `QuietThemeTokenTest` reads the JSON and fails on drift. | Screen code still has raw `10.sp`, `12.sp`, `13.sp`, `15.sp`, and custom line heights, especially conversation, markdown, keybar, terminal chrome, and legacy local rows. | Use M3 slots for normal chrome, `PocketShellType.bodyDense` for compact rows, `bodyMono` for paths/commands/IDs, and `labelMono` for compact code labels. |
+| Spacing | [`Spacing.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt) mirrors the `space` block of `tokens.json`: `xs` 4dp through `xxl` 24dp (the 32dp `section` rung was retired in #2717 — sections separate with `PocketShellDensity.sectionGap`, 24dp). | Raw `.dp` literals are widespread in screens and components, including off-grid values like 2, 5, 6, 10, 14, 20, 28, 30, and 38 where component geometry needs explicit tokens. | Keep the base spacing scale small. Add component-specific geometry tokens only when a pattern repeats across surfaces. |
+| Density | `PocketShellDensity` mirrors the `size` block of `tokens.json` for row minima: `rowMinHeight` 56dp, `workspaceRowMinHeight` 64dp, `tapTargetMin` 48dp, plus component geometry (`rowPadV` 16dp, `chipPadV` 6dp, `chipPadH` 10dp, `sectionGap` 24dp, `treeIndent` 16dp). | Some compact rows draw below the visual density target, and some touch areas depend on surrounding layout rather than explicit `sizeIn`. | Visual density can be compact; touch targets stay at least 48dp. |
+| Shape | [`Shape.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Shape.kt) maps the `radius` ladder of `tokens.json` into M3 shape slots: field/button corners (12dp) to `small`/`medium`, sheet corners (24dp) to `large`. The full ladder is `{4 badge, 8 chip, 12 field/button/card, 24 sheet}`. | Screens still create local `RoundedCornerShape` values for micro badges, key slots, cards, and sheets. Some are legitimate component geometry; repeated values should move into shared components. | 4dp badge, 8dp chip, 12dp field/button/card, 24dp sheet. Avoid new radii; `scripts/check-design-tokens.sh` allows exactly the ladder. |
 | Elevation | No standalone elevation token. Components mostly use borders; [`MicButton.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components/MicButton.kt) is the visible exception. | Local surfaces sometimes simulate card hierarchy by adding nested panels. | Hairline borders separate surfaces. FAB/mic is the only normal chrome with shadow. |
 | Motion | No `Motion.kt` exists on current `origin/main`. Motion is local and ad hoc, for example `MicButton` uses a recording pulse. | Older docs called `MotionDurations` codified; that is stale. `animate*` / `tween` values cannot be audited centrally today. | Define motion values in this spec now; add code tokens only in a later runtime slice. |
 
@@ -63,14 +63,10 @@ The current reusable catalog lives under
 | `ScreenHeader` | Page title, optional subtitle, compact trailing slot. | Use for every non-terminal full-screen header. Do not invent bespoke top bars. |
 | `SectionHeader` | Title-case section label with optional count. | Use above row groups, not as large page headings. |
 | `ListRow` | Dense row with leading, title, subtitle, trailing, and click slot. | Canonical row for settings, files, repos, keys, folders, share targets, crash reports, costs, and jobs. |
-| `HostCard` | Host dashboard card with avatar, subtitle, status, setup, usage, and trailing slot. | Host list should remain the only consumer unless another surface is truly host-card-shaped. |
-| `SessionRow` | Session list row with tags. | Folder/session surfaces increasingly use custom rows; migrate repeated session patterns back into one row API or retire this component. |
 | `Badge` / `Pill` | Compact labels for agent, shell, active, warning, neutral, and usage states. | Badge roles should replace one-off chips and hand-styled labels. |
 | `StatusDot` | Connection/status dot using `ConnectionStatus`. | Prefer this over local dot composables. Extend role mapping if needed. |
 | `Kebab` | Shared overflow trigger and menu item model. | Replace raw `DropdownMenu` blocks when menus have common section/destructive/status rows. A kebab opens actions; it must not directly perform or confirm an action. |
 | `SegmentedToggle` / `Tabs` | Compact mode/tab controls. | Use for mode switches and Terminal/Conversation tabs; avoid radio groups for view density. |
-| `Breadcrumb` | Host/session/window/pane path chrome. | Terminal chrome should converge here or document why it needs a local variant. |
-| `KeyBar` / `CommandChip` | Terminal input controls. | Shared surface for #454 and #459; no new command-chip styling. |
 | `MicButton` / `MicIcon` | Composer dictation FAB and icon. | Shared surface for #453; no second mic glyph or text-only dictate chip. |
 | `PocketShellButton` | Canonical button: `ButtonVariant.Primary` (filled accent CTA), `Secondary` (outlined accent), `Text` (muted Cancel/Retry), `Destructive` (red-text confirm). | Use for EVERY tappable button. Replaces all raw Material `Button`/`TextButton` and the per-screen `ButtonDefaults.buttonColors(Accent…)` block. Do not hand-declare button colours, shape, or weight. |
 | `LoadingIndicator` | Canonical **indeterminate** loading affordance: `Bar` (linear "in flight" strip) + `Spinner` (circular "something is happening", `SpinnerSize.Small`/`Medium`, optional label). | Use for ANY "busy, no known percentage" state. Replaces all raw Material `LinearProgressIndicator`/`CircularProgressIndicator`. Do not hand-pick a spinner diameter or bar height. |
@@ -140,34 +136,43 @@ not marketing.
 
 ### Spacing And Density
 
-Base spacing tokens are `xs` 4dp, `sm` 8dp, `md` 12dp, and `lg` 16dp.
-Screen-level padding should normally be 16dp; row groups can use 12dp internal
-padding when density matters.
+The spacing rungs and density geometry are the single source of truth in
+[`tokens.json`](design-kit/design-system/tokens.json) (`space` and `size`
+blocks), mirrored by [`Spacing.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt);
+`QuietThemeTokenTest` pins the two together (#2717). Screen-level padding
+should normally be the `lg` 16dp rung; row groups can use the `md` 12dp rung
+internal padding when density matters.
 
-Density defaults:
+Density defaults (Kotlin side; row minima come from the JSON `size` block):
 
 | Token | Value | Usage |
 |-------|-------|-------|
-| `rowMinHeight` | 44dp | Visual minimum for list/tree rows |
-| `rowPadV` | 8dp | Dense row vertical padding |
-| `rowPadH` | 12dp | Dense row horizontal padding |
-| `chipPadV` | 6dp | Dense chip vertical padding |
-| `chipPadH` | 10dp | Dense chip horizontal padding |
-| `sectionGap` | 8dp | Gap between row groups |
+| `rowMinHeight` | `tokens.json` `size.listRowMin` (56dp) | Visual minimum for list/tree rows |
+| `workspaceRowMinHeight` | `tokens.json` `size.workspaceRowMin` (64dp) | Workspace row navigation target |
+| `rowPadV` | 16dp | Row vertical padding |
+| `rowPadH` | 20dp | Row horizontal padding (the screen gutter rung) |
+| `chipPadV` | 6dp | Chip vertical padding |
+| `chipPadH` | 10dp | Chip horizontal padding |
+| `sectionGap` | 24dp (`space.xxl`) | Gap between independent sections (#2717 T3 retired the 32dp `section` rung) |
 | `treeIndent` | 16dp | Folder tree nesting |
-| `tapTargetMin` | 48dp | Accessibility floor for touch targets |
+| `tapTargetMin` | 48dp (`size.touchMin`) | Accessibility floor for touch targets |
 
 Touch target rule: compact paint is allowed; compact hit areas are not.
 
 ### Radius, Elevation, And Borders
 
+The radius ladder is the `radius` block of
+[`tokens.json`](design-kit/design-system/tokens.json): `{4 badge, 8 chip,
+12 field/button/card, 24 sheet}`. `scripts/check-design-tokens.sh` allows
+exactly those values.
+
 | Pattern | Radius | Separation |
 |---------|--------|------------|
-| List rows and cards | 14dp | 1dp `BorderSoft` or no border inside a grouped surface |
-| Chips, badges, key slots | 8dp | 1dp `BorderSoft`; active uses `AccentDim` |
-| Bottom sheets | 20dp top corners | `Surface` container, no decorative shadow |
-| FAB/mic | 28dp | Accent fill plus the only normal chrome shadow |
-| Micro role badges | 3-6dp | Local only until promoted into `Badge` |
+| Micro badges | 4dp (`badge`) | none |
+| Chips, key slots | 8dp (`chip`) | 1dp `BorderSoft`; active uses `AccentDim` |
+| List rows, cards, fields, buttons | 12dp (`field`/`button`/`card`) | 1dp `BorderSoft` or no border inside a grouped surface |
+| Bottom sheets | 24dp top corners (`sheet`) | `Surface` container, no decorative shadow |
+| Micro role badges below the ladder | 3-6dp | Local only until promoted into `Badge` |
 
 Do not nest cards inside cards. Use full-width sections, rows, and simple
 surface bands.
@@ -299,9 +304,10 @@ Don't:
 
 ### Cards And Grouped Surfaces
 
-Cards are repeated items such as `HostCard`, usage provider cards, and summary
-cards. A card uses `Surface`, 14dp radius, and a quiet border. Prefer rows inside
-a full-width section when content is navigational or list-like.
+Cards are repeated items such as usage provider cards and summary cards. A
+card uses `Surface`, the `card` rung of the `tokens.json` radius ladder (12dp),
+and a quiet border. Prefer rows inside a full-width section when content is
+navigational or list-like.
 
 Do not put cards inside cards. If content needs hierarchy, use spacing, section
 headers, leading icons, and muted text.
@@ -313,7 +319,7 @@ text entry, passphrase/API-key entry, and blocking errors.
 
 Standard sheet pattern:
 
-- `ModalBottomSheet`, `Surface` container, 20dp top corners.
+- `ModalBottomSheet`, `Surface` container, 24dp top corners (`tokens.json` `radius.sheet`).
 - [`SheetHeader`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components/SheetHeader.kt)
   title row, optional search/filter, dense `LazyColumn`, fixed action row only
   when needed.
@@ -372,12 +378,14 @@ Don't:
 
 ### Terminal Chrome And Keybar
 
-Terminal screens use `TermBg`, `KeyBar`, `CommandChip`, compact tabs, breadcrumb
-or equivalent terminal location chrome, and right-reachable bottom controls.
+Terminal screens use `TermBg`, `TerminalHotkeysPanel`, the in-session
+`SessionTabStrip`, the closed-session `SessionLauncherBar`, and right-reachable
+bottom controls. (`KeyBar` and `CommandChip` were retired with the #2717
+dead-canon sweep; the hotkeys chip styling now lives inside `SessionLauncherBar`.)
 
 Do:
 
-- Show `KeyBar` only for terminal input, not Conversation.
+- Offer terminal key chrome only for terminal input, not Conversation.
 - Keep Terminal/Conversation as compact tabs.
 - Put terminal content in the blacker terminal viewport.
 - Keep controls reachable near the bottom/right thumb area.
@@ -478,6 +486,12 @@ follow-up slices (shared spinners/bars first; terminal loading bars are gated by
 the current connection work).
 
 ## Screen And Sheet Inventory
+
+> Historical snapshot: this inventory describes the pre-rewrite `app/` module,
+> which no longer exists (current screens live under `app2/`). Components it
+> names that are not in the catalog above — `HostCard`, `SessionRow`,
+> `Breadcrumb`, `KeyBar`, `CommandChip` — were retired as dead canon in #2717
+> and must not be reintroduced.
 
 ### Primary Navigation Screens
 
@@ -656,7 +670,7 @@ Do:
 - Start with an existing shared component.
 - Cite this document when adding a new UI pattern.
 - Use `ScreenHeader`, `SectionHeader`, `ListRow`, `Badge`, `StatusDot`,
-  `Kebab`, `Tabs`, `SegmentedToggle`, `KeyBar`, `CommandChip`, and `MicButton`
+  `Kebab`, `Tabs`, `SegmentedToggle`, and `MicButton`
   before inventing local chrome.
 - Keep rows dense but touch targets at least 48dp.
 - Use mono for command/path/ID content, not for every label.
@@ -729,9 +743,8 @@ scripts/check-design-tokens.sh --update   # re-baseline after a migration
    24dp, 28dp, 38dp, and 40dp values become named component geometry tokens?
 3. When should M3 `surfaceContainer*`, selected-container, switch-track, and menu
    colours move from defaults to the PocketShell palette?
-4. Should `SessionRow` be revived as the single session row across folder,
-   drawer, and flat session lists, or replaced by a more general tree/session
-   row component?
+4. RESOLVED (#2717): `SessionRow` was retired as dead canon rather than
+   revived; folder/tree/flat session lists keep their live dedicated rows.
 5. Should `Kebab` grow section headers, destructive roles, and disabled/status
    rows, or should complex terminal menus keep local `DropdownMenu` blocks?
 6. Should secret entry and reveal flows share one dialog across Settings, Env,

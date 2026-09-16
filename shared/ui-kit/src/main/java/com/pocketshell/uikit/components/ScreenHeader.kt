@@ -25,6 +25,7 @@ import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 import com.pocketshell.uikit.icons.PocketShellIcons
+import com.pocketshell.uikit.model.ConnectionStatus
 
 /**
  * Shared screen header — the title block that sits atop the tree, host list,
@@ -38,12 +39,20 @@ import com.pocketshell.uikit.icons.PocketShellIcons
  * └───────────────────────────────────────────────────────┘
  * ```
  *
- * - **Title** uses the Quiet screen style (28sp/34sp) and the optional subtitle
- *   uses the 16sp metadata rung.
+ * - **Title** uses the Quiet screen style (20sp/26sp) and the optional subtitle
+ *   uses the 11sp metadata rung.
  * - **Subtitle** (optional) is the `N x · M y` facet line — muted, dense — the
  *   same count-subtitle vocabulary `ListRow`/`SectionHeader` use. Callers build
  *   the string (e.g. `"4 hosts · 7 sessions"`); this component does not invent
  *   pluralisation.
+ * - **[status]** (optional, #2717 T2) renders a leading [StatusDot] beside the
+ *   title — the steady transport state carries NO words (`design-language.md`:
+ *   "Status dots … Never text labels"). The subtitle line is reserved for the
+ *   transitional/failed words ("Reconnecting…", "Offline · Saved list"). Pass
+ *   [statusDescription] when the state has no visible words so TalkBack still
+ *   hears the full sentence through the dot's `contentDescription`; when the
+ *   words are already visible as the subtitle, leave it null so the state is
+ *   announced exactly once.
  * - **[onBack]** renders the shared 48dp navigation affordance. The legacy
  *   [leading] slot remains for non-navigation context.
  * - **[trailing]** is one meaningful secondary action, normally a kebab that
@@ -72,6 +81,8 @@ fun ScreenHeader(
     titleStyle: TextStyle = PocketShellType.screen,
     titleTestTag: String? = null,
     subtitleTestTag: String? = null,
+    status: ConnectionStatus? = null,
+    statusDescription: String? = null,
     onBack: (() -> Unit)? = null,
     backTestTag: String? = null,
     leading: (@Composable () -> Unit)? = null,
@@ -113,16 +124,25 @@ fun ScreenHeader(
                 .weight(1f)
                 .padding(top = PocketShellSpacing.xs),
         ) {
-            Text(
-                text = title,
-                color = PocketShellColors.Text,
-                style = titleStyle,
-                maxLines = titleMaxLines,
-                overflow = TextOverflow.Clip,
-                modifier = Modifier
-                    .semantics { heading() }
-                    .let { base -> if (titleTestTag == null) base else base.testTag(titleTestTag) },
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (status != null) {
+                    StatusDot(
+                        status = status,
+                        contentDescription = statusDescription,
+                    )
+                    Spacer(modifier = Modifier.width(PocketShellSpacing.sm))
+                }
+                Text(
+                    text = title,
+                    color = PocketShellColors.Text,
+                    style = titleStyle,
+                    maxLines = titleMaxLines,
+                    overflow = TextOverflow.Clip,
+                    modifier = Modifier
+                        .semantics { heading() }
+                        .let { base -> if (titleTestTag == null) base else base.testTag(titleTestTag) },
+                )
+            }
             if (subtitle != null) {
                 Spacer(modifier = Modifier.size(2.dp))
                 Text(
