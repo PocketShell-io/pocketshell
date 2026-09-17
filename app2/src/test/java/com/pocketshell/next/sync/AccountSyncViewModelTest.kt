@@ -23,6 +23,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.ClassRule
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -109,6 +110,7 @@ class AccountSyncViewModelTest {
     }
 
     @Test
+    @Ignore("quarantined: #2765, expires 2026-10-01 — AssertionError on the push-refusal outcome: run 35173682957 on ecc3ccf2c red, rerun 35177630382 of the same head green, adjacent diff docs-only — confirm root cause before lifting")
     fun `syncing with no passphrase refuses before touching the network`() = runTest {
         seedHosts()
         val http = RecordingSyncHttpClient.scripted(SyncHttpResponse(200, "{}"))
