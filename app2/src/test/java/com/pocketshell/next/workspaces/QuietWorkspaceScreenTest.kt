@@ -462,6 +462,26 @@ class QuietWorkspaceScreenTest {
         assertEquals(1, ports)
     }
 
+    /**
+     * Issue #2758: the host tools sheet uses the same words as the terminal
+     * actions sheet for the same action type — exactly "Browse files". The old
+     * "Browse host files" wording is retired, not kept as a second variant.
+     */
+    @Test
+    fun `host tools sheet labels the files row Browse files`() {
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostId = 7,
+                hostLabel = "hetzner",
+                loaded = true,
+            ),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        composeRule.onNodeWithText("Browse files").assertIsDisplayed()
+        composeRule.onNodeWithText("Browse host files").assertDoesNotExist()
+    }
+
     private fun setHostContent(
         state: HostWorkspacesUiState,
         onOpenWorkspace: (String) -> Unit = {},

@@ -284,7 +284,7 @@ fun TerminalActionsSheet(
                     .heightIn(max = 480.dp),
             ) {
                 item { TerminalActionRow("Sessions in workspace", onSessions, TERMINAL_ACTIONS_SESSIONS_TAG) }
-                item { TerminalActionRow("Browse workspace files", onBrowseFiles, TERMINAL_ACTIONS_FILES_TAG) }
+                item { TerminalActionRow("Browse files", onBrowseFiles, TERMINAL_ACTIONS_FILES_TAG) }
                 item { TerminalActionRow("Copy selection", onCopySelection, TERMINAL_ACTIONS_COPY_TAG) }
                 item { TerminalActionRow("Detach and keep running", onDetach, TERMINAL_ACTIONS_DETACH_TAG) }
                 item { TerminalActionRow(STOP_SESSION_ITEM_LABEL, onEndSession, STOP_SESSION_ITEM_TAG) }

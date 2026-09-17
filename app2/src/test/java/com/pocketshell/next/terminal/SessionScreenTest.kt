@@ -133,6 +133,21 @@ class SessionScreenTest {
     }
 
     /**
+     * Issue #2758: both host-scoped file rows share one vocabulary. The
+     * terminal actions sheet says exactly "Browse files" — the same words the
+     * workspaces tools sheet uses — and the old "Browse workspace files"
+     * wording is retired, not just renamed alongside a second variant.
+     */
+    @Test
+    fun `terminal actions sheet labels the files row Browse files`() {
+        setContent(SessionUiState.Live(createRemoteTerminalSession()))
+
+        composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
+        composeRule.onNodeWithText("Browse files").assertIsDisplayed()
+        composeRule.onNodeWithText("Browse workspace files").assertDoesNotExist()
+    }
+
+    /**
      * Issue #2579: on the session screen the pill is about THIS session's
      * agent. A focused state carries no window, and the rendered chrome has to
      * show exactly that — "Claude 38%", not "Claude 7d 38%". Asserting on the

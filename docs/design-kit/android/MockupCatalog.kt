@@ -304,7 +304,7 @@ private fun host_tools() = MockupScreen(
     back = "workspaces", headerIcon = "", headerRoute = "",
     layout = "sheet", base = "workspaces", connected = false,
     nodes = listOf(
-        MockupNode.Row("Browse host files", "", "files", "folder", "", false),
+        MockupNode.Row("Browse files", "", "files", "folder", "", false),
         MockupNode.Row("Services & tunnels", "", "services", "ports", "", false),
         MockupNode.Row("Usage", "", "usage", "chart", "", false),
         MockupNode.Row("Project roots", "", "roots", "folder", "", false),
@@ -618,7 +618,7 @@ private fun terminal_actions() = MockupScreen(
     layout = "sheet", base = "terminal", connected = false,
     nodes = listOf(
         MockupNode.Row("Sessions in workspace", "", "session-switch", "terminal", "", false),
-        MockupNode.Row("Browse workspace files", "", "files", "folder", "", false),
+        MockupNode.Row("Browse files", "", "files", "folder", "", false),
         MockupNode.Row("Copy selection", "", "toast:Select terminal text first", "copy", "", false),
         MockupNode.Row("Detach and keep running", "", "workspace", "", "", false),
         MockupNode.Row("End session…", "", "end-session", "stop", "", true),

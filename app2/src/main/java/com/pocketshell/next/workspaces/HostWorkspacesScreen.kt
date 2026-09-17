@@ -1201,7 +1201,7 @@ private fun HostToolsSheet(
                     modifier = Modifier.padding(horizontal = PocketShellSpacing.lg),
                 )
             }
-            item { HostToolRow("Browse host files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
+            item { HostToolRow("Browse files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
             item { HostToolRow("Services & tunnels", PocketShellIcons.Ports, onOpenPorts, SESSION_TREE_PORTS_TAG) }
             item { HostToolRow("Usage", PocketShellIcons.Chart, onOpenUsage, SESSION_TREE_USAGE_TAG) }
             item { HostToolRow("Project roots", PocketShellIcons.Folder, onOpenProjectRoots, HOST_WORKSPACES_PROJECT_ROOTS_TAG) }

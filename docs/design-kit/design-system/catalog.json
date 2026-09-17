@@ -944,7 +944,7 @@
       "blocks": [
         {
           "type": "row",
-          "title": "Browse host files",
+          "title": "Browse files",
           "subtitle": "",
           "route": "files",
           "icon": "folder",
@@ -2240,7 +2240,7 @@
         },
         {
           "type": "row",
-          "title": "Browse workspace files",
+          "title": "Browse files",
           "subtitle": "",
           "route": "files",
           "icon": "folder",
