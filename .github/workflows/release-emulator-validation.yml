@@ -65,9 +65,14 @@ jobs:
     # Issue #851: the nightly-fault release guard queries the latest "Nightly
     # Extensive Tests" run via `gh run list` / `gh run view`, which needs read
     # access to the Actions API.
+    # Issue #2754: the same guard now also SELF-HEALS a stale/missing journey
+    # verdict by dispatching the app2 workflow on the release commit
+    # (`gh api .../actions/workflows/app2.yml/dispatches`), which needs
+    # `actions: write`. This is not a waive path — the dispatched run's verdict
+    # is evaluated by the same D37 gate; a red verdict still blocks.
     permissions:
       contents: read
-      actions: read
+      actions: write
 
     env:
       ANDROID_SDK: /usr/local/lib/android/sdk

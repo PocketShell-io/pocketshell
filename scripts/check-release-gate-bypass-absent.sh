@@ -112,6 +112,9 @@ TEST_ONLY_FLAGS=(
   "--fixture"
   "--workflow"
   "--job-needle"
+  "--self-heal-fixture"
+  "--self-heal-timeout"
+  "--self-heal-poll"
 )
 
 FAILURES=0

@@ -99,6 +99,41 @@ set -euo pipefail
 # past run prints a NOTE line, so the release state shows the gap
 # explicitly instead of silently reading an older run.
 #
+# ISSUE #2754 — STALE/MISSING VERDICTS SELF-HEAL INSTEAD OF PAGING A HUMAN.
+# Four Release Emulator Validation runs (35051420588, 35092088955, 35096339243,
+# 35140845314 — 2026-09-16) went red on the same structural race: the nightly
+# chain ran REV on a release HEAD whose journey verdict belonged to the PARENT
+# commit (a push landed between chain stages), so this guard blocked STALE and
+# the sanctioned fix was the same manual loop every time: dispatch app2.yml on
+# the release commit, wait ~25 min for the 'app2 journey suite' job, re-run REV.
+# This guard now runs that loop itself, BEFORE failing:
+#
+#   1. `self_heal_required` decides — ONLY a stale verdict (real verdict whose
+#      head does not contain the release HEAD) or a missing one (no run in the
+#      window carries a terminal journey verdict) triggers self-heal.
+#   2. `self_heal_dispatch` POSTs the workflow dispatch on the RELEASE SHA —
+#      `gh api repos/$REPO/actions/workflows/$WORKFLOW/dispatches -f ref=<sha>`
+#      (the dispatches API accepts a commit SHA), pinned to this checkout's
+#      repository like every other gh call here. An 'app2' run already in
+#      flight on the release commit is ADOPTED instead of dispatching a
+#      duplicate suite attempt.
+#   3. The new run's journey/fault-verdict conclusion is polled with a bounded
+#      budget (--self-heal-timeout, default 3600s; the suite ran 24m54s on
+#      2026-09-16) and the SAME pure decision function re-evaluates the fresh
+#      verdict.
+#
+# D37 is not weakened and there is no override path: the self-heal closes ONLY
+# the stale/missing gap. A genuinely RED verdict (failure/timed_out) on a
+# covering run never triggers a dispatch — it blocks exactly as before, with
+# the same message (anti-flake-masking, #2754 AC4: at most ONE dispatch per
+# guard run, never a second suite attempt on a red). A dispatch failure, a
+# poll-budget timeout, and a completed-but-verdict-less self-heal run all
+# BLOCK fail-closed. Offline tests drive the whole story through
+# --self-heal-fixture: every gh interaction is canned and the dispatch is
+# RECORDED to "<fixture>.dispatchlog", never sent — a test never dispatches a
+# live workflow (#2754 hard constraint), and a --fixture dry run skips the
+# self-heal entirely, blocking STALE exactly as it did before.
+#
 # Two layers, kept separate so the decision logic is unit-testable WITHOUT any
 # network/`gh` dependency:
 #
@@ -138,6 +173,14 @@ set -euo pipefail
 #   --workflow <file>     workflow file (default: app2.yml).
 #   --job-needle <needle> substring identifying the journey job
 #                         (default: "app2 journey suite").
+#   --self-heal-fixture <path>  (issue #2754 offline harness) drive EVERY gh
+#                         interaction of the resolve walk AND the self-heal
+#                         dispatch/poll loop from this canned JSON; the
+#                         dispatch is RECORDED to "<path>.dispatchlog", never
+#                         sent. Output is marked "[FIXTURE DRY RUN]" like
+#                         --fixture, and a real dispatch is impossible.
+#   --self-heal-timeout <s>  self-heal poll budget in seconds (default 3600).
+#   --self-heal-poll <s>     self-heal poll interval in seconds (default 60).
 #
 # --release-head <sha> overrides the release HEAD (default: `git rev-parse HEAD`).
 
@@ -146,6 +189,14 @@ JOB_NEEDLE="app2 journey suite"
 FIXTURE=""
 RELEASE_HEAD_OVERRIDE=""
 FIXTURE_PREFIX=""
+
+# Issue #2754 self-heal knobs. Flags, never environment variables (same rule as
+# every knob above): the release path passes none of them — the budget lives in
+# the defaults — and check-release-gate-bypass-absent.sh (C4-static) fails if
+# the release script ever grows one of these flags.
+SELF_HEAL_FIXTURE=""
+SELF_HEAL_TIMEOUT_SECONDS="3600"
+SELF_HEAL_POLL_SECONDS="60"
 
 usage() {
   sed -n '/^# Usage:/,/^# --release-head/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -394,8 +445,151 @@ self_test() {
     "no scheduled journey run with a fault verdict" yes
 
   echo
+  # -------------------------------------------------------------------------
+  # Issue #2754 — the SELF-HEAL harness. --self-heal-fixture drives EVERY gh
+  # interaction (the resolve walk, the dispatch, the poll loop, the job view)
+  # from one canned JSON; the dispatch is RECORDED, never sent, so the full
+  # stale/missing -> dispatch -> poll -> fresh-verdict story runs offline with
+  # zero network. Each case pins the verdict, the REASON, the "[FIXTURE DRY
+  # RUN]" marking, and the dispatch RECORD COUNT — the bounded-cost property
+  # (#2754 AC4): one dispatch on stale/missing, ZERO on red/green, never a
+  # second suite attempt.
+  # -------------------------------------------------------------------------
+  self_heal_case() {
+    local label="$1" expect_rc="$2" reason_needle="$3" want_dispatches="$4" \
+      fixture_json="$5" extra_flags="${6:-}"
+    local tmp; tmp="$(mktemp)"
+    printf '%s' "$fixture_json" > "$tmp"
+    local log="${tmp}.dispatchlog"
+    set +e
+    # A 1s poll keeps the canned cases fast; extra_flags (later args win) can
+    # still override either self-heal knob for a specific case.
+    # shellcheck disable=SC2086  # extra_flags word-splits into separate args
+    out="$(bash "$self_path" --self-heal-fixture "$tmp" --release-head "$REL" \
+      --self-heal-poll 1 $extra_flags 2>&1)"
+    rc=$?
+    set -e
+    local got_dispatches=0
+    # grep -c exits 1 on a zero count — `|| true` keeps the "0" it printed
+    # without tripping the self-test's errexit.
+    [[ -f "$log" ]] && got_dispatches="$(grep -c '^DISPATCH ' "$log" || true)"
+    rm -f "$tmp" "$log"
+    if [[ "$rc" != "$expect_rc" ]]; then
+      printf 'FAIL [%s]: expected rc=%s got rc=%s\n%s\n' "$label" "$expect_rc" "$rc" "$out"
+      failures=$((failures + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "$reason_needle"; then
+      printf 'FAIL [%s]: rc=%s was right but the reason was not "%s"\n%s\n' \
+        "$label" "$rc" "$reason_needle" "$out"
+      failures=$((failures + 1))
+    elif [[ "$got_dispatches" != "$want_dispatches" ]]; then
+      printf 'FAIL [%s]: expected %s dispatch record(s), got %s\n%s\n' \
+        "$label" "$want_dispatches" "$got_dispatches" "$out"
+      failures=$((failures + 1))
+    elif ! printf '%s' "$out" | grep -qF -- "[FIXTURE DRY RUN]"; then
+      printf 'FAIL [%s]: self-heal fixture output was not marked as a dry run\n%s\n' "$label" "$out"
+      failures=$((failures + 1))
+    else
+      printf 'ok   [%s] guard rc=%s dispatches=%s :: %s\n' \
+        "$label" "$rc" "$got_dispatches" "$(printf '%s' "$out" | tail -1)"
+    fi
+  }
+
+  echo "--- self-heal dispatch-and-wait harness (issue #2754) ---"
+  local SH_GREEN='{"jobs":[{"name":"app2 journey suite (emulator + Docker agents)","conclusion":"success"}]}'
+  local SH_RED='{"jobs":[{"name":"app2 journey suite (emulator + Docker agents)","conclusion":"failure"}]}'
+  local SH_CANCELLED='{"jobs":[{"name":"app2 journey suite (emulator + Docker agents)","conclusion":"cancelled"}]}'
+
+  # AC1: the 35140845314 shape — green verdict on the PARENT commit, release
+  # HEAD one commit ahead. Self-heal dispatches on the release SHA, the fresh
+  # run comes back green, the guard PASSES with no human in the loop.
+  self_heal_case "selfheal-stale-green-recovers" 0 "safety verdict is green" 1 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1002,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:40:00Z"}],
+        [{"databaseId":1002,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1002":'"$SH_GREEN"'}}'
+
+  # AC1: MISSING verdict — nothing in the window carries a terminal journey
+  # verdict (all skipped/cancelled or never ran). Same recovery.
+  self_heal_case "selfheal-missing-green-recovers" 0 "safety verdict is green" 1 \
+    '{"dispatchOk":true,
+      "runList":[],
+      "pollRunLists":[
+        [],
+        [{"databaseId":1003,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued","conclusion":null,"createdAt":"2026-09-16T19:41:00Z"}],
+        [{"databaseId":1003,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:41:00Z"}]],
+      "jobViews":{"1003":'"$SH_GREEN"'}}'
+
+  # AC2: the fresh verdict comes back RED -> the guard blocks with the UNCHANGED
+  # D37 red message — and dispatches exactly ONCE (never a second suite attempt
+  # on red, AC4).
+  self_heal_case "selfheal-fresh-red-still-blocks" 1 "safety verdict is RED" 1 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1004,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"failure","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1004":'"$SH_RED"'}}'
+
+  # AC4/anti-flake-masking: a genuinely RED verdict on a COVERING run never
+  # triggers a dispatch at all — zero dispatch records.
+  self_heal_case "selfheal-red-covering-no-dispatch" 1 "safety verdict is RED" 0 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1005,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"failure","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[],
+      "jobViews":{"1005":'"$SH_RED"'}}'
+
+  # Cost bound: a green CURRENT verdict passes with zero dispatches.
+  self_heal_case "selfheal-green-current-no-dispatch" 0 "safety verdict is green" 0 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1006,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[],
+      "jobViews":{"1006":'"$SH_GREEN"'}}'
+
+  # Fail-closed: the dispatch call itself fails -> BLOCK, no poll, no green.
+  self_heal_case "selfheal-dispatch-failure-blocks" 1 "self-heal dispatch of the 'app2.yml' workflow on the release commit failed" 0 \
+    '{"dispatchOk":false,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[],
+      "jobViews":{"1001":'"$SH_GREEN"'}}'
+
+  # Fail-closed: the fresh run never terminates inside the budget -> BLOCK on
+  # the poll budget (short --self-heal-timeout drives this offline).
+  self_heal_case "selfheal-poll-timeout-blocks" 1 "poll budget exhausted" 1 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1007,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"'}}' \
+    "--self-heal-timeout 3 --self-heal-poll 1"
+
+  # Fail-closed: the self-healed run completes but a run-level cancellation
+  # killed its journey job -> a verdict GAP blocks; no second dispatch.
+  self_heal_case "selfheal-gap-no-second-attempt" 1 "verdict GAP" 1 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1008,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"cancelled","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1008":'"$SH_CANCELLED"'}}'
+
+  # Cost bound: an app2 run already in flight on the release commit is ADOPTED
+  # instead of dispatching a duplicate suite attempt — zero dispatch records.
+  self_heal_case "selfheal-adopts-inflight-no-second-dispatch" 0 "safety verdict is green" 0 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"},
+         {"databaseId":1009,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:39:00Z"}],
+        [{"databaseId":1009,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:39:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1009":'"$SH_GREEN"'}}'
+
+  echo
   if [[ "$failures" -eq 0 ]]; then
-    echo "SELF-TEST PASS: all pure-decision + fixture-driven cases produced the expected verdict."
+    echo "SELF-TEST PASS: all pure-decision + fixture-driven + self-heal cases produced the expected verdict."
     return 0
   fi
   echo "SELF-TEST FAIL: $failures case(s) wrong."
@@ -511,14 +705,21 @@ resolve_latest_fault_run() {
     return 0
   fi
 
-  command -v gh >/dev/null 2>&1 || { echo "gh CLI is required" >&2; return 2; }
   command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; return 2; }
+  # Issue #2754: with a self-heal harness fixture set, every gh interaction is
+  # canned by the guard_gh_* wrappers below — no gh binary, no repo slug and
+  # no network are needed, and none is consulted.
+  if [[ -z "$SELF_HEAL_FIXTURE" ]]; then
+    command -v gh >/dev/null 2>&1 || { echo "gh CLI is required" >&2; return 2; }
+  fi
 
-  local repo
-  repo="$(resolve_repo_slug)" || {
-    echo "could not derive owner/repo from remote.origin.url — refusing to query gh unpinned (an unpinned query trusts \$GH_REPO)" >&2
-    return 2
-  }
+  local repo=""
+  if [[ -z "$SELF_HEAL_FIXTURE" ]]; then
+    repo="$(resolve_repo_slug)" || {
+      echo "could not derive owner/repo from remote.origin.url — refusing to query gh unpinned (an unpinned query trusts \$GH_REPO)" >&2
+      return 2
+    }
+  fi
 
   # Pull recent runs. Walk newest→oldest and pick the FIRST whose fault-verdict
   # job produced a real terminal verdict (fault_verdict_stops_walk): a
@@ -526,9 +727,8 @@ resolve_latest_fault_run() {
   # verdict GAP (#2706) — neither is a signal, so the walk steps past them to
   # the newest run that actually produced one.
   local runs
-  runs="$(env -u GH_REPO -u GH_HOST gh run list --repo "$repo" --workflow="$WORKFLOW" --limit 15 \
-    --json databaseId,headSha,status,conclusion,createdAt 2>/dev/null)" || {
-    echo "gh run list failed for workflow '$WORKFLOW' in $repo" >&2
+  runs="$(guard_gh_run_list "$repo")" || {
+    echo "gh run list failed for workflow '$WORKFLOW' in ${repo:-<unresolved>}" >&2
     return 2
   }
 
@@ -542,7 +742,7 @@ resolve_latest_fault_run() {
 
     # Inspect this run's jobs; find the fault-verdict job by name needle.
     local jobs job_conclusion
-    jobs="$(env -u GH_REPO -u GH_HOST gh run view --repo "$repo" "$id" --json jobs 2>/dev/null)" || continue
+    jobs="$(guard_gh_run_jobs "$repo" "$id")" || continue
     job_conclusion="$(jq -r --arg needle "$JOB_NEEDLE" \
       'first(.jobs[] | select(.name | test($needle)) | .conclusion) // ""' \
       <<<"$jobs")"
@@ -565,6 +765,186 @@ resolve_latest_fault_run() {
   return 0
 }
 
+# ---------------------------------------------------------------------------
+# Issue #2754 — the SELF-HEAL layer.
+#
+# guard_gh_run_list / guard_gh_run_jobs / self_heal_dispatch are the ONLY gh
+# touchpoints of the resolve walk and the self-heal loop. With a self-heal
+# harness fixture set they are CANNED — the dispatch is recorded, never sent —
+# so offline tests exercise the real wiring shape without a network call.
+# ---------------------------------------------------------------------------
+
+guard_gh_run_list() {
+  # $1 repo. Prints the workflow's recent runs, newest first (the same query
+  # the resolve walk has always made).
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    jq -c '.runList // []' "$SELF_HEAL_FIXTURE"
+    return 0
+  fi
+  env -u GH_REPO -u GH_HOST gh run list --repo "$1" --workflow="$WORKFLOW" --limit 15 \
+    --json databaseId,headSha,status,conclusion,createdAt 2>/dev/null
+}
+
+guard_gh_run_jobs() {
+  # $1 repo, $2 run id. Prints that run's jobs JSON.
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    jq -c --arg id "$2" '.jobViews[$id] // {"jobs":[]}' "$SELF_HEAL_FIXTURE"
+    return 0
+  fi
+  env -u GH_REPO -u GH_HOST gh run view --repo "$1" "$2" --json jobs 2>/dev/null
+}
+
+# Successive poll iterations read successive .pollRunLists entries; once the
+# list is exhausted the LAST entry repeats (steady state), so a short
+# --self-heal-timeout drives the timeout case offline. Entry 0 is the
+# pre-dispatch state (the adopt scan reads it). The index is a PARAMETER, not
+# a counter global: $() command substitution runs in a subshell, so a counter
+# mutated inside this function would never advance for the caller.
+self_heal_poll_list_at() {
+  # $1 repo, $2 index into the canned poll sequence.
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    local n i
+    n="$(jq '.pollRunLists | length' "$SELF_HEAL_FIXTURE")"
+    i="$2"
+    if (( i >= n )); then i=$((n - 1)); fi
+    jq -c ".pollRunLists[$i]" "$SELF_HEAL_FIXTURE"
+    return 0
+  fi
+  guard_gh_run_list "$1"
+}
+
+self_heal_dispatch() {
+  # $1 repo, $2 release sha. THE dispatch (issue #2754 step 1) — the exact
+  # call the sanctioned manual loop ran by hand. The dispatches API accepts a
+  # commit SHA as ref; the repo is in the API path, so $GH_REPO cannot
+  # redirect it (same pinning rule as every gh call in this script).
+  #
+  # HARD CONSTRAINT (#2754): with a self-heal harness fixture set this
+  # RECORDS the dispatch to "<fixture>.dispatchlog" and never touches the
+  # network — a test never dispatches a live workflow.
+  local repo="$1" release_sha="$2"
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    if [[ "$(jq -r '.dispatchOk // false' "$SELF_HEAL_FIXTURE")" == "true" ]]; then
+      printf 'DISPATCH repo=%s workflow=%s ref=%s\n' "$repo" "$WORKFLOW" "$release_sha" \
+        >> "${SELF_HEAL_FIXTURE}.dispatchlog"
+      return 0
+    fi
+    return 1
+  fi
+  env -u GH_REPO -u GH_HOST gh api "repos/$repo/actions/workflows/$WORKFLOW/dispatches" -f ref="$release_sha"
+}
+
+# The TRIGGER (issue #2754 step 0). Self-heal fires ONLY for:
+#   * MISSING — no run in the window carries a terminal journey verdict
+#     (empty resolved headSha; the #2706 walk fell through), or
+#   * STALE — a real verdict whose run does not cover the release HEAD
+#     (head_is_ancestor != yes).
+# A RED verdict (failure/timed_out) on a covering run stops the walk and NEVER
+# reaches this function — no dispatch, no second suite attempt (D37 /
+# anti-flake-masking). An incomplete run likewise never triggers: the producer
+# is already working on exactly the run we would dispatch.
+self_heal_required() {
+  # $1 run_status (unused here; part of the stable call contract)
+  # $2 job_conclusion (ditto — the pure function owns the verdict semantics)
+  local run_status="$1" job_conclusion="$2" run_head_sha="$3" head_is_ancestor="$4"
+  if [[ -z "$run_head_sha" ]]; then
+    return 0 # MISSING: no verdict anywhere in the window
+  fi
+  if [[ "$head_is_ancestor" != "yes" ]]; then
+    return 0 # STALE: the verdict tests a line that does not contain the release HEAD
+  fi
+  return 1 # green, red, timed_out, cancelled, skipped, incomplete: not ours
+}
+
+note_self_heal_start() {
+  local reason="$1" release_head="$2" timeout="$3"
+  echo "NOTE (#2754): the journey verdict is $reason for the release HEAD ($release_head) — self-healing instead of blocking: dispatching the '$WORKFLOW' workflow on the release commit and waiting for a fresh 'app2 journey suite' verdict (budget ${timeout}s). A genuinely RED verdict still blocks (D37, no override)." >&2
+}
+
+note_self_heal_adopt() {
+  local id="${1:-?}"
+  echo "NOTE (#2754): found an '$WORKFLOW' run (${id}) already in flight on the release commit — adopting it instead of dispatching a duplicate suite attempt." >&2
+}
+
+note_self_heal_poll() {
+  local id="${1:-?}" status="${2:-?}"
+  echo "NOTE (#2754): self-heal run ${id} is status='${status}'; polling for a terminal journey verdict." >&2
+}
+
+# Wait for the dispatched/adopted run's journey verdict (issue #2754 steps 2+3).
+# On success sets SELF_HEAL_FRESH_* and returns 0. Any failure prints a BLOCK
+# reason and returns 1 — never a green, never a second dispatch.
+self_heal_wait_for_fresh_verdict() {
+  # $1 release_head
+  local release_head="$1"
+  local repo=""
+  if [[ -z "$SELF_HEAL_FIXTURE" ]]; then
+    repo="$(resolve_repo_slug)" || {
+      echo "BLOCK: self-heal could not resolve the repository slug for the dispatch (see error above)." >&2
+      return 1
+    }
+  fi
+
+  local snapshot before_ids adopted_id="" poll_idx=0
+  snapshot="$(self_heal_poll_list_at "$repo" "$poll_idx")" || snapshot="[]"
+  poll_idx=$((poll_idx + 1))
+  before_ids="$(jq -r '[.[].databaseId | tostring] | join(",")' <<<"$snapshot" 2>/dev/null)" || before_ids=""
+  before_ids="[$before_ids]"
+
+  adopted_id="$(jq -r --arg sha "$release_head" \
+    '[.[] | select(.headSha == $sha and .status != "completed")]
+       | sort_by(.databaseId) | reverse | (.[0].databaseId // "") | tostring' \
+    <<<"$snapshot" 2>/dev/null)" || adopted_id=""
+  if [[ -n "$adopted_id" ]]; then
+    note_self_heal_adopt "$adopted_id"
+  else
+    if ! self_heal_dispatch "$repo" "$release_head"; then
+      echo "BLOCK: self-heal dispatch of the '$WORKFLOW' workflow on the release commit failed (gh error above). The stale/missing verdict still blocks the release (D37): dispatch it manually, or fix the failure, then re-run the gate." >&2
+      return 1
+    fi
+  fi
+
+  local deadline=$((SECONDS + SELF_HEAL_TIMEOUT_SECONDS))
+  local runs candidate cand_id cand_status jobs job_conclusion
+  while :; do
+    candidate=""
+    if runs="$(self_heal_poll_list_at "$repo" "$poll_idx")"; then
+      poll_idx=$((poll_idx + 1))
+      candidate="$(jq -c --arg sha "$release_head" --arg adopted "$adopted_id" --argjson before "$before_ids" \
+        '[.[] | select(.headSha == $sha)
+              | (.databaseId | tostring) as $id
+              | select(($id == $adopted) or (($before | index($id)) | not))]
+         | sort_by(.databaseId) | reverse | .[0] // empty' \
+        <<<"$runs" 2>/dev/null)" || candidate=""
+    fi
+    if [[ -n "$candidate" ]]; then
+      cand_id="$(jq -r '(.databaseId // "") | tostring' <<<"$candidate")"
+      cand_status="$(jq -r '.status // ""' <<<"$candidate")"
+      if [[ "$cand_status" == "completed" ]]; then
+        jobs="$(guard_gh_run_jobs "$repo" "$cand_id")" || jobs='{"jobs":[]}'
+        job_conclusion="$(jq -r --arg needle "$JOB_NEEDLE" \
+          'first(.jobs[] | select(.name | test($needle)) | .conclusion) // ""' \
+          <<<"$jobs")"
+        if fault_verdict_stops_walk "$job_conclusion"; then
+          SELF_HEAL_FRESH_STATUS="completed"
+          SELF_HEAL_FRESH_CONCLUSION="$job_conclusion"
+          SELF_HEAL_FRESH_HEAD="$release_head"
+          SELF_HEAL_FRESH_ID="$cand_id"
+          return 0
+        fi
+        echo "BLOCK: self-heal run ${cand_id:-?} completed but its journey job produced no terminal verdict (conclusion='${job_conclusion:-none}') — a verdict GAP, not a red. No second suite attempt is made (bounded cost, #2754): the release stays BLOCKED (D37). Understand the gap, then re-run the gate." >&2
+        return 1
+      fi
+      note_self_heal_poll "$cand_id" "$cand_status"
+    fi
+    if (( SECONDS >= deadline )); then
+      echo "BLOCK: self-heal poll budget exhausted (${SELF_HEAL_TIMEOUT_SECONDS}s) without a terminal '$WORKFLOW' journey verdict on the release commit. The stale/missing verdict still blocks the release (D37): check the dispatched run, then re-run the gate." >&2
+      return 1
+    fi
+    sleep "$SELF_HEAL_POLL_SECONDS"
+  done
+}
+
 main() {
   if [[ "${1:-}" == "--self-test" ]]; then
     self_test
@@ -581,6 +961,9 @@ main() {
       --fixture)      FIXTURE="${2:-}";               shift 2 ;;
       --workflow)     WORKFLOW="${2:-}";              shift 2 ;;
       --job-needle)   JOB_NEEDLE="${2:-}";            shift 2 ;;
+      --self-heal-fixture) SELF_HEAL_FIXTURE="${2:-}"; shift 2 ;;
+      --self-heal-timeout) SELF_HEAL_TIMEOUT_SECONDS="${2:-}"; shift 2 ;;
+      --self-heal-poll)    SELF_HEAL_POLL_SECONDS="${2:-}";    shift 2 ;;
       -h|--help)      usage; exit 0 ;;
       *)
         echo "unknown argument: $1" >&2
@@ -590,12 +973,28 @@ main() {
     esac
   done
 
+  # Fail closed on non-numeric self-heal knobs: a garbage budget must be a hard
+  # usage error, not an unbounded or immediately-dead poll loop.
+  case "${SELF_HEAL_TIMEOUT_SECONDS}${SELF_HEAL_POLL_SECONDS}" in
+    ''|*[!0-9]*)
+      echo "error: --self-heal-timeout / --self-heal-poll take non-negative integer seconds" >&2
+      exit 2
+      ;;
+  esac
+
   # A fixture run is a DRY RUN, never a release verdict. Mark every line so the
   # output cannot be pasted into (or mistaken for) a release summary — the round-1
   # bypass produced a bare "PASS: ... verdict is green" from a fabricated file.
   if [[ -n "$FIXTURE" ]]; then
     FIXTURE_PREFIX="[FIXTURE DRY RUN] "
     echo "${FIXTURE_PREFIX}TEST MODE: reading $FIXTURE instead of the real nightly run. This is NOT a release verdict (D37)."
+  fi
+  # Issue #2754: a self-heal harness fixture is equally test-only. The canned
+  # dispatch RECORDS to a log file and never reaches the network, and the
+  # marking keeps a canned green out of any release summary.
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    FIXTURE_PREFIX="[FIXTURE DRY RUN] "
+    echo "${FIXTURE_PREFIX}TEST MODE: self-heal harness fixture $SELF_HEAL_FIXTURE drives every gh interaction (dispatch recorded, never sent). This is NOT a release verdict (D37)."
   fi
 
   local release_head
@@ -638,6 +1037,31 @@ main() {
     elif git merge-base --is-ancestor "$release_head" "$run_head_sha" 2>/dev/null; then
       head_is_ancestor="yes"
     fi
+  fi
+
+  # Issue #2754 — SELF-HEAL before blocking on a stale/missing verdict. Live
+  # path only: a --fixture dry run skips this entirely and blocks STALE exactly
+  # as it did before the feature (the offline repro of the 35140845314
+  # signature), and a --self-heal-fixture harness run exercises this code with
+  # canned gh responses. A red verdict on a covering run never enters
+  # self_heal_required — the D37 block below is byte-identical to pre-#2754.
+  if [[ -z "$FIXTURE" ]] && self_heal_required "$run_status" "$job_conclusion" "$run_head_sha" "$head_is_ancestor"; then
+    local self_heal_reason="STALE"
+    [[ -z "$run_head_sha" ]] && self_heal_reason="MISSING"
+    note_self_heal_start "$self_heal_reason" "$release_head" "$SELF_HEAL_TIMEOUT_SECONDS"
+    SELF_HEAL_FRESH_STATUS="" SELF_HEAL_FRESH_CONCLUSION="" SELF_HEAL_FRESH_HEAD="" SELF_HEAL_FRESH_ID=""
+    if ! self_heal_wait_for_fresh_verdict "$release_head"; then
+      exit 1
+    fi
+    run_status="$SELF_HEAL_FRESH_STATUS"
+    job_conclusion="$SELF_HEAL_FRESH_CONCLUSION"
+    run_head_sha="$SELF_HEAL_FRESH_HEAD"
+    db_id="$SELF_HEAL_FRESH_ID"
+    # The fresh run was selected BECAUSE its head is the release commit, so it
+    # covers by construction — recompute honestly rather than asserting.
+    head_is_ancestor="no"
+    [[ "$run_head_sha" == "$release_head" ]] && head_is_ancestor="yes"
+    echo "${FIXTURE_PREFIX}Self-healed verdict (issue #2754): workflow=$WORKFLOW id=${db_id:-none} status=$run_status fault-verdict-job-conclusion=$job_conclusion headSha=$run_head_sha"
   fi
 
   echo "${FIXTURE_PREFIX}Nightly fault run: workflow=$WORKFLOW id=${db_id:-none} status=${run_status:-?} fault-verdict-job-conclusion=${job_conclusion:-<none>} headSha=${run_head_sha:-<none>}"

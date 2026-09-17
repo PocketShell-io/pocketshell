@@ -66,7 +66,8 @@ chmod +x scripts/select-test-areas.sh \
          scripts/test-ci-release-validation-noxml-rootcause.sh \
          scripts/ci-release-emulator-red-issue.sh \
          scripts/test-ci-release-emulator-red-issue.sh \
-         scripts/check-release-red-notify-wiring.py
+         scripts/check-release-red-notify-wiring.py \
+         scripts/check-release-selfheal-wiring.py
 
 TIMINGS="$(mktemp)"
 trap 'rm -f "$TIMINGS"' EXIT
@@ -152,6 +153,12 @@ run_guard "check-release-red-notify-wiring-selftest" \
   scripts/check-release-red-notify-wiring.py --self-test
 run_guard "check-release-red-notify-wiring" \
   scripts/check-release-red-notify-wiring.py
+# #2754: pins the self-heal wiring (dispatch-on-stale/missing verdict,
+# bounded poll, actions:write grant, fixture dry-run never dispatches).
+run_guard "check-release-selfheal-wiring-selftest" \
+  scripts/check-release-selfheal-wiring.py --self-test
+run_guard "check-release-selfheal-wiring" \
+  scripts/check-release-selfheal-wiring.py
 
 suite_end=$(date +%s)
 printf '%-46s %4ss\n' "TOTAL" "$((suite_end - suite_start))" >> "$TIMINGS"
