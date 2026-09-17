@@ -4,10 +4,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -107,13 +109,27 @@ class SessionScreenTest {
         assertEquals(1, backs)
     }
 
+    /**
+     * Issue #2751: the terminal actions sheet carries no Usage entry point —
+     * usage stays promoted to the header (glance pill, or the fallback button).
+     * Opening the sheet also pins its surviving action set, so a lost row or a
+     * re-added Usage entry fails here rather than on a device.
+     */
     @Test
-    fun `usage fallback stays promoted out of the terminal actions sheet`() {
+    fun `usage entry stays in the header and the sheet keeps its action set`() {
         setContent(SessionUiState.Connecting)
 
         composeRule.onNodeWithTag(SESSION_USAGE_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
-        composeRule.onNodeWithTag(TERMINAL_ACTIONS_USAGE_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SHEET_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SESSIONS_TAG).assertExists()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_FILES_TAG).assertExists()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_COPY_TAG).assertExists()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_DETACH_TAG).assertExists()
+        composeRule.onNodeWithTag(STOP_SESSION_ITEM_TAG).assertExists()
+        // The only "Usage" text on screen is the header fallback button; the
+        // sheet adds none (a re-added sheet Usage row makes this 2).
+        composeRule.onAllNodesWithText("Usage").assertCountEquals(1)
     }
 
     /**

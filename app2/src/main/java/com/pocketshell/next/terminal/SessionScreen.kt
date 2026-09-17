@@ -660,10 +660,6 @@ fun SessionScreen(
                 terminalActionsOpen = false
                 onOpenFiles()
             },
-            onOpenUsage = {
-                terminalActionsOpen = false
-                onOpenUsage()
-            },
             onCopySelection = {
                 copyTerminalSelection?.invoke()
                 terminalActionsOpen = false

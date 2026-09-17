@@ -258,7 +258,6 @@ private fun sessionProgramLabel(session: SessionRow): String = when {
 fun TerminalActionsSheet(
     onSessions: () -> Unit,
     onBrowseFiles: () -> Unit,
-    onOpenUsage: () -> Unit,
     onCopySelection: () -> Unit,
     onDetach: () -> Unit,
     onEndSession: () -> Unit,
@@ -302,6 +301,5 @@ private fun TerminalActionRow(title: String, onClick: () -> Unit, testTag: Strin
 const val TERMINAL_ACTIONS_SHEET_TAG: String = "terminal-actions-sheet"
 const val TERMINAL_ACTIONS_SESSIONS_TAG: String = "terminal-actions-sessions"
 const val TERMINAL_ACTIONS_FILES_TAG: String = "terminal-actions-files"
-const val TERMINAL_ACTIONS_USAGE_TAG: String = "terminal-actions-usage"
 const val TERMINAL_ACTIONS_COPY_TAG: String = "terminal-actions-copy"
 const val TERMINAL_ACTIONS_DETACH_TAG: String = "terminal-actions-detach"
