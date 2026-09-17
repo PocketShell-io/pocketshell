@@ -109,6 +109,9 @@ class QuietThemeTokenTest {
         assertEquals(DesignKitTokens.sizeDp("listRowMin").dp, PocketShellDensity.rowMinHeight)
         assertEquals(DesignKitTokens.sizeDp("workspaceRowMin").dp, PocketShellDensity.workspaceRowMinHeight)
         assertEquals(DesignKitTokens.sizeDp("touchMin").dp, PocketShellDensity.tapTargetMin)
+        // #2747: the field rung is code-usable again so the composer draft
+        // editor does not restate a freehand minimum.
+        assertEquals(DesignKitTokens.sizeDp("fieldMin").dp, PocketShellDensity.fieldMin)
         // `standardRowMinHeight` is an alias, not a second value (#2630's drift class).
         assertEquals(PocketShellDensity.rowMinHeight, PocketShellDensity.standardRowMinHeight)
         // #2717 T3: the 32dp `section` rung is retired; sections separate with

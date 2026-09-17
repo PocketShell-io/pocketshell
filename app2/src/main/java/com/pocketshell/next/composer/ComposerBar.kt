@@ -61,6 +61,7 @@ import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.MicButtonState
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
 
@@ -911,5 +912,7 @@ private val COMPOSER_ACTION_ICON_BUTTON_SIZE = 48.dp
 private val COMPOSER_STOP_GLYPH_SIZE = 15.dp
 
 private val DRAFT_SHAPE = RoundedCornerShape(PocketShellSpacing.md)
-private val DRAFT_MIN_HEIGHT = 40.dp
+// #2747: the draft is a reading surface, so its floor is the 56dp field rung
+// (`size.fieldMin`), not a freehand 40dp under the 48dp touch-target floor.
+private val DRAFT_MIN_HEIGHT = PocketShellDensity.fieldMin
 private val DRAFT_MAX_HEIGHT = 168.dp

@@ -11,6 +11,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -326,6 +327,59 @@ class ComposerBarTest {
         val (settledHeight, settledControlsTop) = snapshot()
         assertEquals(idleHeight, settledHeight, 0.5f)
         assertEquals(idleControlsTop, settledControlsTop, 0.5f)
+    }
+
+    /**
+     * #2747: the draft editor's floor is the 56dp field rung
+     * (`tokens.json` `size.fieldMin` via `PocketShellDensity.fieldMin`), not a
+     * freehand 40dp — 40 sat under even the 48dp touch-target floor. The pins
+     * read the token, not a restated constant, so a tokens.json edit moves
+     * these tests with it (#2630's drift class). Each site is measured with a
+     * short draft, where the rendered height IS the `heightIn` minimum: the
+     * two bare editors pin it exactly, the markdown preview asserts the floor.
+     * One site per test — the compose rule allows a single setContent.
+     */
+    private fun floorDp(tag: String): Float =
+        composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot.height /
+            composeRule.density.density
+
+    @Test
+    fun `the idle draft editor floor is the field rung`() {
+        val rung = PocketShellDensity.fieldMin.value
+        setContent(ComposerUiState())
+        assertEquals(
+            "idle draft field must sit exactly on the ${rung}dp field rung",
+            rung,
+            floorDp(COMPOSER_DRAFT_TAG),
+            0.5f,
+        )
+    }
+
+    @Test
+    fun `the markdown preview surface clears the field rung`() {
+        val rung = PocketShellDensity.fieldMin.value
+        setContent(ComposerUiState(draft = "ok", previewing = true))
+        assertTrue(
+            "preview surface (${floorDp(COMPOSER_PREVIEW_VIEW_TAG)}dp) must clear " +
+                "the ${rung}dp field rung",
+            floorDp(COMPOSER_PREVIEW_VIEW_TAG) >= rung - 0.5f,
+        )
+    }
+
+    @Test
+    fun `the delivery-review draft floor is the field rung`() {
+        val rung = PocketShellDensity.fieldMin.value
+        composeRule.setContent {
+            PocketShellTheme {
+                DeliveryUncertainReview(draft = "ok", onDraftChange = {}, onReconnectAndInspect = {})
+            }
+        }
+        assertEquals(
+            "review draft field must sit exactly on the ${rung}dp field rung",
+            rung,
+            floorDp(COMPOSER_REVIEW_DRAFT_TAG),
+            0.5f,
+        )
     }
 
     /** A live-recomposition composer for tests that drive `state` over time. */

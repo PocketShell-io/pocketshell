@@ -71,6 +71,15 @@ object PocketShellDensity {
      */
     val standardRowMinHeight = rowMinHeight
 
+    /**
+     * 56 dp — input/field minimum height (`tokens.json` `size.fieldMin`).
+     *
+     * The composer draft editor's floor (#2747): a draft field is a reading
+     * surface, not just a touch target, so it holds the field rung rather
+     * than only [tapTargetMin].
+     */
+    val fieldMin = 56.dp
+
     /** 16 dp — row vertical padding. Rows may grow for wrapped content. */
     val rowPadV = 16.dp
 
