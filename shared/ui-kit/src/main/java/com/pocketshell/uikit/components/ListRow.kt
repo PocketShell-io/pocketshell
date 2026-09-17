@@ -44,10 +44,10 @@ import com.pocketshell.uikit.theme.PocketShellType
  *
  * - **[leading]** (optional) — status dot ([StatusDot]) / avatar / icon. Pass
  *   `null` for a flush-left title (e.g. settings rows).
- * - **title** — the primary scan target, [PocketShellType.body] (18sp) on the
+ * - **title** — the primary scan target, [PocketShellType.body] (14sp) on the
  *   bright text token.
  * - **[subtitle]** (optional) — paths / IDs / `user@host`, rendered
- *   [PocketShellType.metadata] (16sp) on the muted token. The default is a
+ *   [PocketShellType.metadata] (11sp) on the muted token. The default is a
  *   single ellipsised line; callers such as [WorkspaceRow] may opt into a
  *   second line when the label itself is part of navigation.
  * - **[trailing]** (optional) — badge ([Badge]) / count / kebab ([Kebab]). One
@@ -56,7 +56,7 @@ import com.pocketshell.uikit.theme.PocketShellType
  *
  * ### Density and touch floor
  *
- * Rows use the Quiet 72dp minimum and 20dp screen gutter. The whole row is the
+ * Rows use the Quiet 56dp minimum and 20dp screen gutter. The whole row is the
  * tap target when [onClick] is supplied, and wrapped content is allowed to grow.
  *
  * Colours stay on the always-dark raw tokens (#477 single dark scheme) so the
@@ -77,8 +77,8 @@ fun ListRow(
     titleWeight: FontWeight? = null,
     subtitleContent: (@Composable () -> Unit)? = null,
 ) {
-    // Every standard row is a 72dp minimum hit target. WorkspaceRow raises
-    // this to the separate 88dp workspace navigation target.
+    // Every standard row is a 56dp minimum hit target. WorkspaceRow raises
+    // this to the separate 64dp workspace navigation target.
     val minHeight = PocketShellDensity.rowMinHeight
 
     Column(

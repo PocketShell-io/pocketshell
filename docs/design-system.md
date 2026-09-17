@@ -99,23 +99,33 @@ The audit found these repeated drift patterns:
 Dark mode is the product mode. Do not add light-mode conditionals in #461
 follow-up work.
 
+Source of truth: `docs/design-kit/design-system/tokens.json`; the production
+values ship as `PocketShellColors` (`shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Color.kt`).
+
 | Role | Token | Hex | Usage |
 |------|-------|-----|-------|
-| App background | `Background` | `#0D1117` | Root surface, page chrome |
-| Surface | `Surface` | `#161B22` | Cards, dialogs, sheet content, row groups |
-| Elevated surface | `SurfaceElev` | `#1C2129` | Nested controls, active chips, key slots |
-| Terminal background | `TermBg` | `#010409` | Terminal viewport only |
-| Text primary | `Text` | `#E6EDF3` | Headings, row titles, primary labels |
-| Text secondary | `TextSecondary` | `#8B949E` | Subtitles, inactive chrome |
-| Text muted | `TextMuted` | `#6E7681` | Captions, timestamps, low-emphasis counts |
-| Accent | `Accent` | `#22D3EE` | Primary actions, active state, links, mic |
-| Accent soft | `AccentSoft` | `0x1F22D3EE` | Active chip fill, hint/banner fill |
-| Accent border | `AccentDim` | `#0891B2` | Accent borders, active separators |
-| On accent | `OnAccent` | `#04101A` | Text/icons on accent fill |
-| Status active | `statusActive` | `Green` | Connected, attached, healthy |
-| Status connecting | `statusConnecting` | `Amber` | Connecting, pending, attention |
-| Status error | `statusError` | `Red` | Failed, blocked, destructive confirmation |
-| Agent | `agentAccent` | `Purple` | Agent badges and assistant role marks |
+| App background | `Background` | `#10171E` | Root surface, page chrome |
+| Surface | `Surface` | `#19222B` | Cards, dialogs, sheet content, row groups |
+| Elevated surface | `SurfaceElev` | `#222D38` | Nested controls, active chips, key slots |
+| Divider | `BorderSoft` | `#2B3946` | Hairline separators, quiet borders |
+| Input border | `Border` | `#64778A` | Field/button boundaries, active separators |
+| Terminal background | `TermBg` | `#0B1117` | Terminal viewport only |
+| Text primary | `Text` | `#F0F3F7` | Headings, row titles, primary labels |
+| Text secondary | `TextSecondary` | `#A6B2C1` | Subtitles, inactive chrome |
+| Text muted | `TextMuted` | `#92A0B0` | Captions, timestamps, low-emphasis counts |
+| Accent | `Accent` | `#53D8EC` | Primary actions, active state, links, mic |
+| Accent soft | `AccentSoft` | `#222D38` | Alias of `SurfaceElev`: active chip fill, hint/banner fill (Quiet has no accent-fill tint) |
+| Accent border | `AccentDim` | `#64778A` | Alias of `Border`: accent borders, active separators |
+| On accent | `OnAccent` | `#082027` | Text/icons on accent fill |
+| Status active | `statusActive` | `#5CDF89` | Connected, attached, healthy |
+| Status connecting | `statusConnecting` | `#E6BC78` | Connecting, pending, attention |
+| Status error | `statusError` | `#F3A1A1` | Failed, blocked, destructive confirmation |
+| Agent | `agentAccent` | `#92A0B0` | Agent badges and assistant role marks (Quiet keeps session marks muted) |
+| Scrim | `Scrim` | `#00000099` | Non-Material overlays |
+
+`AccentSoft`/`AccentDim`/`agentAccent` are kept as neutral aliases of the Quiet
+tokens for source compatibility (`Color.kt`); components move to the Quiet
+primitives in later slices.
 
 Rule: semantic colour is for status, role, and action. It is not page chrome.
 

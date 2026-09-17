@@ -23,8 +23,8 @@ These describe **where** persistent UI elements live within a screen, so that mo
    Rationale: matches the platform expectation for navigation depth. Applies to: every screen that can be popped (e.g. `SessionScreen` breadcrumb chevron, `AddEditHostScreen` close icon, `UsageScreen` back arrow).
 2. **More / kebab menu — always top-right of the breadcrumb row.**
    Rationale: secondary actions live opposite the primary back affordance; the row reads left-to-right as "go back ↔ peek at extras". Applies to: `SessionScreen` overflow menu, host-list overflow menu, and session-tree actions.
-3. **Primary action FAB — always bottom-right, 56dp minimum.**
-   Rationale: thumb reachability on a Pixel 7 in one-handed grip; aligns with Material 3 FAB conventions. Applies to: `HostListScreen` `+` host FAB and `SessionScreen` mic FAB.
+3. **Primary action — full-width footer button, not a FAB.**
+   Rationale: one obvious, thumb-reachable primary action docked at the bottom of the screen; no floating-action-button chrome. Applies to: `HostListScreen` `+` host action, shipped as a full-width `PocketShellButton` in the populated list footer and as the empty-state action. The mic is a `MicButton` inside the composer bar, not a screen-level FAB.
 4. **Status / connection line — directly below the breadcrumb, above any tab row.**
    Rationale: status is a property of the current destination, so it must sit attached to the destination header, not floating above main content. Applies to: `SessionScreen` connection line, host-list usage strip, and agent-detection chip.
 5. **Tab row — immediately below status, spans full width.**
@@ -55,8 +55,8 @@ Material 3 reference tokens used below:
 - `motion-easing-emphasised-accelerate` — for exits
 - `motion-easing-emphasised-decelerate` — for entrances
 
-1. **Screen navigation (backstack push / pop) — 250ms slide-in from right, 250ms slide-out to right, `motion-easing-standard`.**
-   M3: forward navigation pattern. Forward = new screen slides in from the right; back = current screen slides out to the right, previous revealed. Applies to: `AppNavigator` push/pop transitions.
+1. **Screen navigation (backstack push / pop) — no enter/exit transition: atomic handoff.**
+   Explicit deviation from the M3 forward-navigation pattern (and from this rule's original slide-in/out spec): the `NavHost` sets `EnterTransition.None` / `ExitTransition.None` for push and pop. Navigation Compose's default 700ms destination fade left the outgoing screen visible on top after the next screen had already composed, making a successful trust handoff look stuck on "Connecting…"; full screens swap atomically instead. Sheet and palette motion still follows rules 2 and 4. Applies to: the app `NavHost` (`MainActivity.kt`).
 2. **Sheet open / close — 200ms slide-up + 150ms scrim fade-in, sheet uses `motion-easing-emphasised-decelerate`.**
    M3: bottom-sheet pattern. Scrim fades in slightly faster than the sheet to avoid a flash of un-scrimmed content. Applies to: `ModalBottomSheet` family (composer, picker, bootstrap, drawer).
 3. **Tab switch — 150ms cross-fade content, 200ms underline slide, `motion-easing-standard`.**
