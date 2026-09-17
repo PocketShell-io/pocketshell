@@ -37,22 +37,29 @@ object MockData {
     // ── Hosts ────────────────────────────────────────────────────────────────
 
     val hosts: List<HostRow> = listOf(
-        HostRow(1, "hetzner", "alexey@135.181.114.209"),
-        HostRow(2, "builder", "root@10.0.0.7"),
-        HostRow(3, "relay-eu-central-1-with-a-deliberately-long-name", "deploy@relay.example.io"),
+        HostRow(id = 1, name = "hetzner", subtitle = "alexey@135.181.114.209"),
+        HostRow(id = 2, name = "builder", subtitle = "root@10.0.0.7"),
+        HostRow(
+            id = 3,
+            name = "relay-eu-central-1-with-a-deliberately-long-name",
+            subtitle = "deploy@relay.example.io",
+        ),
     )
 
     // ── Workspaces / sessions (host 1 = hetzner) ─────────────────────────────
 
     val memberships: List<WorkspaceMembership> = listOf(
-        WorkspaceMembership("/home/alexey/git/pocketshell", "~/git/pocketshell"),
-        WorkspaceMembership("/home/alexey/git/aplexer", "~/git/aplexer"),
-        WorkspaceMembership("/home/alexey/work/mobile", "~/work/mobile"),
+        WorkspaceMembership(path = "/home/alexey/git/pocketshell", displayPath = "~/git/pocketshell"),
+        WorkspaceMembership(path = "/home/alexey/git/aplexer", displayPath = "~/git/aplexer"),
+        WorkspaceMembership(path = "/home/alexey/work/mobile", displayPath = "~/work/mobile"),
     )
 
+    // Named args per the D2 review: `1L`/`2L` bind to createdAt (and through it
+    // sortOrder), NOT id — id stays at its 0L default, which is behaviour-neutral
+    // because projectWorkspaceRoots reads only .path.
     val registeredRoots: List<RegisteredWorkspaceRoot> = listOf(
-        RegisteredWorkspaceRoot("/home/alexey/git", "Git", 1L),
-        RegisteredWorkspaceRoot("/home/alexey/work", "Work", 2L),
+        RegisteredWorkspaceRoot(path = "/home/alexey/git", label = "Git", createdAt = 1L),
+        RegisteredWorkspaceRoot(path = "/home/alexey/work", label = "Work", createdAt = 2L),
     )
 
     /** A live root session that makes the Git root non-empty. */
@@ -81,9 +88,19 @@ object MockData {
     // ── Services & tunnels ───────────────────────────────────────────────────
 
     val tunnels: List<TunnelInfo> = listOf(
-        TunnelInfo(5173, 35173, "vite", TunnelInfo.Status.FORWARDING),
-        TunnelInfo(8000, 38000, "python", TunnelInfo.Status.AVAILABLE),
-        TunnelInfo(22, 0, "sshd", TunnelInfo.Status.AVAILABLE),
+        TunnelInfo(
+            remotePort = 5173,
+            localPort = 35173,
+            process = "vite",
+            status = TunnelInfo.Status.FORWARDING,
+        ),
+        TunnelInfo(
+            remotePort = 8000,
+            localPort = 38000,
+            process = "python",
+            status = TunnelInfo.Status.AVAILABLE,
+        ),
+        TunnelInfo(remotePort = 22, localPort = 0, process = "sshd", status = TunnelInfo.Status.AVAILABLE),
     )
 
     // ── Usage ────────────────────────────────────────────────────────────────
@@ -108,7 +125,7 @@ object MockData {
                 resetCredits = UsageResetCredits(
                     availableCount = 3,
                     credits = listOf(
-                        UsageResetCredit("Full reset", NOW.plusSeconds(4 * 86_400)),
+                        UsageResetCredit(title = "Full reset", expiresAt = NOW.plusSeconds(4 * 86_400)),
                     ),
                     unavailable = false,
                 ),
