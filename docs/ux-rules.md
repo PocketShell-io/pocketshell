@@ -39,6 +39,8 @@ These describe **where** persistent UI elements live within a screen, so that mo
    Rationale: bottom is the input edge; sheets that come from any other edge break the "input lives at the bottom" mental model. Applies to: `PromptComposerSheet`, `CreateSessionSheet`, and `BootstrapSheet`.
 10. **Conversation pane — inherits all placement rules of the terminal pane.**
     Rationale: Terminal and Conversation are sibling tabs on one screen; the user must not have to re-orient when switching tabs. Applies to: `SessionScreen` conversation view (which when [#160](https://github.com/PocketShell-io/pocketshell/issues/160) lands gets bottom input controls per rule 8).
+11. **Overflow actions — scope decides the placement: a row kebab carries actions on that row's one item; the screen-header kebab carries screen-scoped actions.**
+    Rationale: a kebab must not make the user guess what it acts on; the anchor is the scope. Applies to: row `Kebab` dropdowns (`HostListScreen` per-host Edit/Delete, `SshKeysScreen` per-key Delete) vs header `KebabTrigger` sheets (`HostWorkspacesScreen` host tools, `WorkspaceScreen` workspace actions, `SessionScreen` terminal actions, `FileExplorerScreen` file tools, `ViewerScreen` viewer actions) and the header `Kebab` on `UsageScreen`. Placement of the header kebab is rule 2; the full scoping rule and shipped references are in [design-system.md — Overflow Menus](design-system.md#overflow-menus).
 
 ---
 

@@ -286,6 +286,37 @@ Standard row variants:
 Do not make one-off row padding or font sizes unless the row is a terminal
 viewport renderer.
 
+### Row Grammar: The Two Tiers (#2759)
+
+The app has exactly two row height tiers. Both are `ListRow` underneath —
+[`WorkspaceRow`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components/WorkspaceRow.kt)
+composes it — so the leading / title / subtitle / trailing slot grammar is
+identical; only the density rung and the row's job differ.
+
+| Tier | Component | Min height | Treatment | Use for |
+|------|-----------|------------|-----------|---------|
+| Primary navigation | `WorkspaceRow` | 64dp — `PocketShellDensity.workspaceRowMinHeight` (`tokens.json` `size.workspaceRowMin`) | `PocketShellType.workspace` SemiBold title, 2-line title/subtitle, trailing `NavigationChevron` | Workspace drill-in targets. The whole row is the one affordance; no kebab. |
+| Standard | `ListRow` | 56dp — `PocketShellDensity.rowMinHeight` (`tokens.json` `size.listRowMin`) | `body`/`metadata` by default, `bodyDense` for dense content | Every entity and content row: hosts, sessions, keys, files, settings, tools, empty states. |
+
+Rules:
+
+- Pick the tier by what the row opens, not by which screen it is on. A row that
+  drills into a workspace subtree is `WorkspaceRow`; everything else — including
+  root-level session rows rendered next to workspace rows — stays `ListRow`.
+- The tiers legitimately sit in one list. The host workspaces screen stacks
+  64dp workspace rows directly above 56dp root-session rows; that 8dp step is
+  the hierarchy signal, not a bug to normalize away.
+- Navigation rows carry no inline actions. Their actions live at the scope that
+  owns them (host tools in the header kebab, root actions in the section-label
+  sheet — see Overflow Menus below). Content rows may carry the one row kebab.
+- Both tiers clear the 48dp `tapTargetMin` floor; the taller rung is hierarchy,
+  not hit-area compensation.
+
+Shipped reference:
+[`HostWorkspacesScreen.kt`](../app2/src/main/java/com/pocketshell/next/workspaces/HostWorkspacesScreen.kt)
+— workspace rows at :987-997, root-session `ListRow`s via
+`WorkspaceSessionRow` at :1003-1020.
+
 ### Sections
 
 Use `SectionHeader` for row groups. Count is inline (`Title - N` or equivalent
@@ -358,6 +389,28 @@ Overflow invariant: tapping a kebab opens an action menu or sheet. It never
 directly triggers a destructive confirmation. Destructive actions are explicit
 menu items such as "Stop session" or "Delete key"; selecting that item then
 opens the confirmation dialog.
+
+Kebab scoping — row vs screen (#2759):
+
+- **Row kebab** (`Kebab` in the row's trailing slot, menu anchored to the row)
+  carries actions on that row's one item: Edit/Delete on a host
+  ([`HostListScreen.kt:229-236`](../app2/src/main/java/com/pocketshell/next/hosts/HostListScreen.kt)),
+  Delete on a key
+  ([`SshKeysScreen.kt:688-695`](../app2/src/main/java/com/pocketshell/next/hosts/SshKeysScreen.kt)).
+- **Screen kebab** (`KebabTrigger` in the `ScreenHeader` trailing slot opening
+  a bottom sheet; `UsageScreen` uses a header-anchored `Kebab` for its single
+  screen action) carries screen-scoped actions only — things that act on the
+  whole surface, never on one row: host tools
+  ([`HostWorkspacesScreen.kt:271-277`](../app2/src/main/java/com/pocketshell/next/workspaces/HostWorkspacesScreen.kt)),
+  workspace actions (`WorkspaceScreen.kt:178`), terminal actions
+  (`SessionScreen.kt:381`), file tools (`FileExplorerScreen.kt:346`), viewer
+  actions (`ViewerScreen.kt:259`), "Refresh usage" (`UsageScreen.kt:180`).
+- Never scope-hop. An item action in the screen sheet would fire on the wrong
+  target; a screen action repeated in every row would render once per row.
+- Scoped-group variant: where a screen shows several scoped groups (workspace
+  roots), the `SectionHeader` label opens a sheet for that group's subtree
+  (`RootActionsSheet`) — group actions belong to neither the rows nor the
+  screen menu.
 
 Menus should group actions by scope:
 
