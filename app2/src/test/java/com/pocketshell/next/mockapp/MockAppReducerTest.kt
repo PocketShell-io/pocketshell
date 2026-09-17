@@ -129,6 +129,23 @@ class MockAppReducerTest {
         assertEquals(MockDestination.Workspaces, reduce(inSession, MockAppEvent.Back).destination)
     }
 
+    @Test
+    fun `back walks every child destination to its documented parent`() {
+        val expectedParents = mapOf(
+            MockDestination.HostForm to MockDestination.Hosts,
+            MockDestination.Workspaces to MockDestination.Hosts,
+            MockDestination.Services to MockDestination.Hosts,
+            MockDestination.SshKeys to MockDestination.Settings,
+            MockDestination.WorkspaceStart to MockDestination.Workspaces,
+            MockDestination.Session to MockDestination.Workspaces,
+            MockDestination.Usage to MockDestination.Workspaces,
+        )
+        for ((child, parent) in expectedParents) {
+            val state = MockAppState.populated().copy(destination = child)
+            assertEquals("Back from $child", parent, reduce(state, MockAppEvent.Back).destination)
+        }
+    }
+
     // ── Host rows / form ─────────────────────────────────────────────────────
 
     @Test
@@ -159,6 +176,20 @@ class MockAppReducerTest {
         val next = HostFormState(name = "builder", hostname = "10.0.0.7", username = "root", port = "2222")
         val state = reduce(MockAppState.populated(), MockAppEvent.HostFormChange(next))
         assertEquals(next, state.hostForm)
+    }
+
+    @Test
+    fun `host form field edits accumulate without clobbering earlier fields`() {
+        var state = reduce(MockAppState.populated(), MockAppEvent.EditHost(2L))
+        state = reduce(state, MockAppEvent.HostFormChange(state.hostForm.copy(port = "2222")))
+        assertEquals("root", state.hostForm.username)
+        assertEquals("10.0.0.7", state.hostForm.hostname)
+        assertEquals("builder", state.hostForm.name)
+        assertEquals("2222", state.hostForm.port)
+        state = reduce(state, MockAppEvent.HostFormChange(state.hostForm.copy(username = "deploy")))
+        assertEquals("deploy", state.hostForm.username)
+        assertEquals("earlier edit must survive", "2222", state.hostForm.port)
+        assertEquals("10.0.0.7", state.hostForm.hostname)
     }
 
     // ── Composer ─────────────────────────────────────────────────────────────
@@ -198,6 +229,17 @@ class MockAppReducerTest {
         assertEquals("b", state.composerDraftHistoryEntry(2L))
         assertNull(state.composerDraftHistoryEntry(0L))
         assertNull(state.composerDraftHistoryEntry(3L))
+    }
+
+    @Test
+    fun `the long typed draft survives send and history restore verbatim`() {
+        var state = reduce(MockAppState.populated(), MockAppEvent.ComposerDraftChange(MockData.TYPED_DRAFT))
+        assertEquals(MockData.TYPED_DRAFT, state.composerDraft)
+        state = reduce(state, MockAppEvent.ComposerSend)
+        assertEquals("send clears the long draft", "", state.composerDraft)
+        assertEquals(listOf(MockData.TYPED_DRAFT), state.composerHistory)
+        state = reduce(state, MockAppEvent.ComposerHistoryRestore(1L))
+        assertEquals("restore must not truncate or mangle long content", MockData.TYPED_DRAFT, state.composerDraft)
     }
 
     // ── Workspaces / services / usage ────────────────────────────────────────
@@ -258,5 +300,38 @@ class MockAppReducerTest {
         val withMessage = MockAppState.populated().copy(sshKeyMessage = "Generated ed25519 key")
         val state = reduce(withMessage, MockAppEvent.SshKeysMessageDismiss)
         assertNull(state.sshKeyMessage)
+    }
+
+    @Test
+    fun `ssh keys one-shot message survives navigation away and clears on return`() {
+        val withMessage = MockAppState.populated().copy(
+            sshKeysLoaded = true,
+            sshKeyMessage = "Key added",
+        )
+        val elsewhere = reduce(withMessage, MockAppEvent.Navigate(MockDestination.Hosts))
+        assertEquals(
+            "navigating away must not silently eat the one-shot",
+            "Key added",
+            elsewhere.sshKeyMessage,
+        )
+        val returned = reduce(elsewhere, MockAppEvent.Navigate(MockDestination.SshKeys))
+        assertEquals(MockDestination.SshKeys, returned.destination)
+        assertTrue("returning keeps the screen loaded", returned.sshKeysLoaded)
+        assertNull(returned.sshKeyMessage)
+    }
+
+    // ── Error recovery ladder ─────────────────────────────────────────────────
+
+    @Test
+    fun `failed to retry to attached to live recovers with no residue`() {
+        var state = reduce(MockAppState.populated(), MockAppEvent.SessionFailed)
+        assertEquals(MockSessionPhase.FAILED, state.sessionPhase)
+        assertTrue(state.sessionMessage.isNotBlank())
+        state = reduce(state, MockAppEvent.SessionRetry)
+        assertEquals(MockSessionPhase.CONNECTING, state.sessionPhase)
+        assertEquals("", state.sessionMessage)
+        state = reduce(state, MockAppEvent.SessionAttached)
+        assertEquals(MockSessionPhase.LIVE, state.sessionPhase)
+        assertEquals("", state.sessionMessage)
     }
 }
