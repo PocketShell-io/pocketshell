@@ -1,6 +1,5 @@
 package com.pocketshell.next
 
-import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.setContent
@@ -23,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -75,6 +75,7 @@ import com.pocketshell.next.workspaces.ReorderWorkspacesRoute
 import com.pocketshell.next.workspaces.WorkspaceRoute
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.storage.dao.HostDao
+import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -140,8 +141,10 @@ class MainActivity : FragmentActivity() {
             isAppearanceLightStatusBars = false
             isAppearanceLightNavigationBars = false
         }
-        window.statusBarColor = AndroidColor.rgb(16, 23, 30)
-        window.navigationBarColor = AndroidColor.rgb(16, 23, 30)
+        // #2756: the system bars follow the ui-kit Background token instead of
+        // a hard-coded colour, so a palette change cannot leave them behind.
+        window.statusBarColor = PocketShellColors.Background.toArgb()
+        window.navigationBarColor = PocketShellColors.Background.toArgb()
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
