@@ -36,8 +36,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.pocketshell.next.release.ReleaseCheckResult
-import com.pocketshell.next.release.ReleaseInfo
 import com.pocketshell.next.release.UpdateCheckViewModel
 import com.pocketshell.next.release.launchUpdateUrl
 import com.pocketshell.uikit.components.Banner

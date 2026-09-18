@@ -14,12 +14,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.pocketshell.next.release.ReleaseCheckResult
-import com.pocketshell.next.release.ReleaseInfo
-import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.NavigationChevron
-import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.icons.PocketShellIcons
@@ -85,13 +81,31 @@ data class SettingsNavigation(
     val onOpenAbout: () -> Unit,
 )
 
-/** Route-level entry point for the categorized Quiet Settings index. */
-@Composable
-fun SettingsRoute(
-    navigation: SettingsNavigation,
-    modifier: Modifier = Modifier,
-) {
-    SettingsScreen(navigation = navigation, modifier = modifier)
+/**
+ * Pure display shape of an available release (#2636 D3). The app-side adapter
+ * (`settingsUpdateCheckState` in app2's `SettingsRoute.kt`) maps
+ * `com.pocketshell.next.release.ReleaseInfo` onto this, so no release-check
+ * service/result types cross into the shared presentation module.
+ */
+data class ReleaseUpdateDisplay(
+    val tagName: String,
+    val htmlUrl: String,
+    val apkUrl: String,
+    /** Local calendar date only (`d MMM yyyy`); empty when unknown. */
+    val publishedDateLabel: String = "",
+)
+
+/**
+ * Update-check UI state consumed by the About and Update pages. The
+ * `ReleaseCheckResult` → [SettingsUpdateCheckState] mapping stays on the app
+ * side (it is service/result adaptation, not presentation).
+ */
+sealed interface SettingsUpdateCheckState {
+    data object Idle : SettingsUpdateCheckState
+    data object Checking : SettingsUpdateCheckState
+    data object UpToDate : SettingsUpdateCheckState
+    data class UpdateAvailable(val info: ReleaseUpdateDisplay) : SettingsUpdateCheckState
+    data class Failed(val reason: String) : SettingsUpdateCheckState
 }
 
 private data class SettingsCategory(
@@ -106,6 +120,10 @@ private data class SettingsCategory(
  * The short Settings index from Quiet frame 70. Configuration controls live on
  * their own pages so a large-text user can read and reach every value without
  * navigating a mixed, card-heavy form.
+ *
+ * Lives in the shared presentation module (#2636 D3). The route that owns the
+ * navigation edges stays in app2 (`SettingsRoute`): this composable only
+ * paints the category index and fires the caller's lambdas.
  */
 @Composable
 fun SettingsScreen(
@@ -199,8 +217,15 @@ fun SettingsScreen(
     }
 }
 
+/**
+ * Shared header for the Settings landing and every categorized sub-page.
+ *
+ * Was `internal` in app2 (#2636 D3): moving it into the shared presentation
+ * module makes it public because the remaining app2-side settings pages
+ * (`SettingsPages.kt`) consume it across the module boundary.
+ */
 @Composable
-internal fun SettingsHeader(
+fun SettingsHeader(
     title: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -211,24 +236,4 @@ internal fun SettingsHeader(
         onBack = onBack,
         backTestTag = SETTINGS_BACK_TAG,
     )
-}
-
-internal fun settingsUpdateCheckState(
-    checking: Boolean,
-    lastResult: ReleaseCheckResult?,
-): SettingsUpdateCheckState = when {
-    checking -> SettingsUpdateCheckState.Checking
-    lastResult is ReleaseCheckResult.UpdateAvailable ->
-        SettingsUpdateCheckState.UpdateAvailable(lastResult.info)
-    lastResult is ReleaseCheckResult.UpToDate -> SettingsUpdateCheckState.UpToDate
-    lastResult is ReleaseCheckResult.Failed -> SettingsUpdateCheckState.Failed(lastResult.reason)
-    else -> SettingsUpdateCheckState.Idle
-}
-
-sealed interface SettingsUpdateCheckState {
-    data object Idle : SettingsUpdateCheckState
-    data object Checking : SettingsUpdateCheckState
-    data object UpToDate : SettingsUpdateCheckState
-    data class UpdateAvailable(val info: ReleaseInfo) : SettingsUpdateCheckState
-    data class Failed(val reason: String) : SettingsUpdateCheckState
 }

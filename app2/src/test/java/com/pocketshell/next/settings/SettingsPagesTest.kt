@@ -10,6 +10,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.pocketshell.next.release.ReleaseCheckResult
 import com.pocketshell.next.release.ReleaseInfo
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -144,7 +145,7 @@ class SettingsPagesTest {
 
     @Test
     fun `update available exposes both real native handoff URLs`() {
-        val info = ReleaseInfo(
+        val info = ReleaseUpdateDisplay(
             tagName = "v0.5.1",
             htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1",
             apkUrl = "https://example.com/pocketshell-0.5.1.apk",
@@ -163,6 +164,40 @@ class SettingsPagesTest {
         composeRule.onNodeWithText("Release notes").performClick()
         composeRule.onNodeWithText("Open release").performClick()
         assertEquals(listOf(info.htmlUrl, info.apkUrl), opened)
+    }
+
+    /**
+     * The #2636 D3 seam: the release-check adapter stays app-side and flattens
+     * `ReleaseInfo` onto the pure `ReleaseUpdateDisplay` shape field by field,
+     * so no `next.release` type reaches `shared:ui-screens`.
+     */
+    @Test
+    fun `release check adapter flattens release info onto the pure display shape`() {
+        val info = ReleaseInfo(
+            tagName = "v0.5.1",
+            htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v0.5.1",
+            apkUrl = "https://example.com/pocketshell-0.5.1.apk",
+            publishedDateLabel = "5 Sep 2026",
+        )
+
+        assertEquals(
+            SettingsUpdateCheckState.UpdateAvailable(
+                ReleaseUpdateDisplay(
+                    tagName = "v0.5.1",
+                    htmlUrl = info.htmlUrl,
+                    apkUrl = info.apkUrl,
+                    publishedDateLabel = "5 Sep 2026",
+                ),
+            ),
+            settingsUpdateCheckState(checking = false, lastResult = ReleaseCheckResult.UpdateAvailable(info)),
+        )
+        assertEquals(SettingsUpdateCheckState.Checking, settingsUpdateCheckState(checking = true, lastResult = null))
+        assertEquals(SettingsUpdateCheckState.UpToDate, settingsUpdateCheckState(checking = false, lastResult = ReleaseCheckResult.UpToDate))
+        assertEquals(
+            SettingsUpdateCheckState.Failed("rate-limited, try again later"),
+            settingsUpdateCheckState(checking = false, lastResult = ReleaseCheckResult.Failed("rate-limited, try again later")),
+        )
+        assertEquals(SettingsUpdateCheckState.Idle, settingsUpdateCheckState(checking = false, lastResult = null))
     }
 
     @Test
