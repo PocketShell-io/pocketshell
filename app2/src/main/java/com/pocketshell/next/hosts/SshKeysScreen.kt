@@ -1197,7 +1197,10 @@ internal fun SshKeyDetailContent(
             )
 
             key.publicKey != null -> {
-                val publicKey = key.publicKey
+                // SshKeyRow lives in :shared:ui-screens now (#2636 D1): Kotlin
+                // cannot smart-cast another module's `val` on the branch guard,
+                // so bind the checked value to a local non-null `val`.
+                val publicKey = key.publicKey ?: return@Column
                 Text(
                     text = "Public key",
                     color = PocketShellColors.TextSecondary,

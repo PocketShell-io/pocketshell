@@ -276,6 +276,10 @@ src    shared/core-portfwd/*         portfwd              full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
 src    shared/ui-kit/*               ui-shell             ui
+# #2636 D1: the presentation-boundary module. Its subject today is the hosts
+# screens (HostListScreen family), so it maps to hosts-settings; later #2636
+# slices moving other screen families in here must revisit these rows.
+src    shared/ui-screens/*           hosts-settings       full
 
 # -- :app2 production packages --
 src    app2/src/main/java/com/pocketshell/next/connect/*      connection-core      full
@@ -332,6 +336,8 @@ test   shared/core-portfwd/*         portfwd              full
 test   shared/core-storage/*         hosts-settings       full
 test   shared/core-usage/*           usage-costs          full
 test   shared/ui-kit/*               ui-shell             ui
+# #2636 D1: UiScreensDependencyBoundaryTest (the module's classpath guard).
+test   shared/ui-screens/*           hosts-settings       full
 
 # -- :app2 test packages (unit + androidTest share one taxonomy) --
 test   app2/src/*/java/com/pocketshell/next/connect/*      connection-core      full

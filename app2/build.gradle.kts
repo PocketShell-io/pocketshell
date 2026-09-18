@@ -453,6 +453,9 @@ dependencies {
 
     // Shared modules app2 builds on (plan §A.2).
     implementation(project(":shared:ui-kit"))
+    // #2636 D1: the shared presentation boundary — HostListScreen + its
+    // state/row types. ViewModels, routes and DI stay on the app side.
+    implementation(project(":shared:ui-screens"))
     implementation(project(":shared:core-storage"))
     implementation(project(":shared:core-terminal"))
     // Task M-3: the connections registry / Room trust store / secret resolver

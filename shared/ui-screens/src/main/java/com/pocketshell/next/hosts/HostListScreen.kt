@@ -13,19 +13,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.hilt.navigation.compose.hiltViewModel
-import com.pocketshell.next.release.UpdateCheckViewModel
-import com.pocketshell.next.release.launchUpdateUrl
-import com.pocketshell.next.release.updateAvailableBannerText
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -41,8 +35,6 @@ import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Stable test tags. The list container plus one tag per row, keyed by host id,
@@ -69,67 +61,6 @@ fun hostRowTag(hostId: Long): String = "host-row-$hostId"
 
 fun hostRowMenuTag(hostId: Long): String = "host-row-menu-$hostId"
 
-/**
- * Route-level entry point: binds the Hilt-provided [HostListViewModel] to the
- * stateless [HostListScreen].
- *
- * The split exists so the screen can be rendered from a test (or a design
- * render) with a hand-built state and no DI graph, which is what keeps the
- * screen itself free of `remember`-ed side state.
- */
-@Composable
-fun HostListRoute(
-    onOpenHost: (Long) -> Unit,
-    onAddHost: () -> Unit,
-    onEditHost: (Long) -> Unit,
-    onOpenSettings: () -> Unit,
-    onOpenSshKeys: () -> Unit = {},
-    modifier: Modifier = Modifier,
-    viewModel: HostListViewModel = hiltViewModel(),
-    updateCheckViewModel: UpdateCheckViewModel? = null,
-) {
-    val state by viewModel.state.collectAsState()
-    val available by collectOrNull(updateCheckViewModel?.available)
-    val failed by collectOrNull(updateCheckViewModel?.failed)
-    val context = LocalContext.current
-    val info = available
-    val failure = failed
-    val notice = when {
-        info != null -> HostListUpdateNotice.Available(
-            text = updateAvailableBannerText(
-                info,
-                updateCheckViewModel?.installedVersionLabel() ?: "",
-            ),
-            apkUrl = info.apkUrl,
-            htmlUrl = info.htmlUrl,
-        )
-        failure != null -> HostListUpdateNotice.Failed(failure)
-        else -> null
-    }
-    HostListScreen(
-        state = state,
-        onOpenHost = onOpenHost,
-        onAddHost = onAddHost,
-        onEditHost = onEditHost,
-        onOpenSettings = onOpenSettings,
-        onOpenSshKeys = onOpenSshKeys,
-        onDeleteHost = viewModel::delete,
-        modifier = modifier,
-        updateNotice = notice,
-        onDownloadUpdate = { url -> launchUpdateUrl(context, url) },
-        onOpenReleaseNotes = { url -> launchUpdateUrl(context, url) },
-        onDismissUpdate = { updateCheckViewModel?.dismissUpdate() },
-        onRetryUpdateCheck = { updateCheckViewModel?.refreshNow() },
-        onDismissUpdateFailure = { updateCheckViewModel?.dismissFailure() },
-    )
-}
-
-@Composable
-private fun <T> collectOrNull(flow: StateFlow<T?>?): androidx.compose.runtime.State<T?> {
-    val fallback = remember { MutableStateFlow(null as T?) }
-    return (flow ?: fallback).collectAsState()
-}
-
 /** In-app update surface on the host list (issue #2531). */
 sealed interface HostListUpdateNotice {
     data class Available(
@@ -155,6 +86,11 @@ sealed interface HostListUpdateNotice {
  * - A per-row [Kebab] with Edit / Delete. It sits in the trailing slot the
  *   navigation chevron used to occupy: the row's own tap still dials the host,
  *   and a menu tap does not (an inner clickable consumes it).
+ *
+ * Lives in the shared presentation module (#2636 D1). The Hilt-bound route
+ * that feeds it stays in app2 (`HostListRoute`): the Room→row projection and
+ * the update-check plumbing are app concerns, this composable only paints
+ * [HostListUiState] and fires the caller's lambdas.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

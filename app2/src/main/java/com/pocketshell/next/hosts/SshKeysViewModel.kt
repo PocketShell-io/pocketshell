@@ -15,24 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** One rendered key row. */
-data class SshKeyRow(
-    val id: Long,
-    val name: String,
-    val fingerprint: String,
-    val hasPassphrase: Boolean = false,
-    /** Complete authorized-keys line derived on demand; never a private PEM. */
-    val publicKey: String? = null,
-    val publicKeyLoading: Boolean = false,
-    val publicKeyError: String? = null,
-    /** Friendly algorithm label, populated when the public half is available. */
-    val algorithm: String? = null,
-    /** OpenSSH SHA-256 fingerprint, populated with the public half. */
-    val publicFingerprint: String? = null,
-    /** Configured hosts that would be removed by the key's cascade delete. */
-    val dependentHostNames: List<String> = emptyList(),
-)
-
 /** What [SshKeysScreen] renders. */
 data class SshKeysUiState(
     val keys: List<SshKeyRow> = emptyList(),

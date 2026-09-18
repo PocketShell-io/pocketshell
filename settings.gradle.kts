@@ -44,6 +44,12 @@ include(":shared:core-voice")
 include(":shared:core-assistant")
 include(":shared:ui-kit")
 
+// #2636 slice D1: the shared presentation boundary. Stateless screen
+// composables + UI state that app2 (and later the ui-mock app) consume.
+// The module must stay free of transport/storage/voice dependencies —
+// app2's ViewModels and routes keep the VM→UI mapping on the app side.
+include(":shared:ui-screens")
+
 // Test-only support module (issue #1048): the ONE audited shared de-flake
 // settle-pump, consumed via `testImplementation` only — never ships in the APK.
 include(":shared:test-support")
