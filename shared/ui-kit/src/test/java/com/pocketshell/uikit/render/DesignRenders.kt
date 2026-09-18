@@ -39,6 +39,9 @@ import com.pocketshell.uikit.components.Badge
 import com.pocketshell.uikit.components.BadgeRole
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
+import com.pocketshell.uikit.components.ComposerDiscardButton
+import com.pocketshell.uikit.components.ComposerSendButton
+import com.pocketshell.uikit.components.ComposerStopRecordingButton
 import com.pocketshell.uikit.components.ConfirmDialog
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.ListRow
@@ -1047,6 +1050,52 @@ class DesignRenders {
      */
     @Test
     fun composerRecordingControlsRow() = render("composer-recording-controls-row") { ComposerRecordingControlsRowRender() }
+
+    /**
+     * Issue #2763: the REAL composer action pills — [ComposerSendButton],
+     * [ComposerDiscardButton], [ComposerStopRecordingButton] — after their
+     * promotion from app2's `ComposerBar`. Unlike the static mirrors above,
+     * no copy is needed anymore: these are the production components under the
+     * production theme. Both state rows in one frame:
+     *  - idle: the borderless filled-accent Send primary (label muted when
+     *    disabled, shown dimmed here);
+     *  - recording: the #2602 demoted outline Send, the quiet Discard outline,
+     *    and the one accent — the Stop disc in the mic's trailing slot.
+     */
+    @Test
+    fun composerActionPills() = render("composer-action-pills") {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(PocketShellColors.Surface)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Spacer(Modifier.weight(1f))
+                ComposerSendButton(onClick = {}, enabled = true)
+                ComposerSendButton(onClick = {}, enabled = false)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Spacer(Modifier.weight(1f))
+                ComposerDiscardButton(onClick = {})
+                ComposerDiscardButton(onClick = {}, label = "Cancel")
+                ComposerSendButton(onClick = {}, enabled = true, recording = true)
+                ComposerStopRecordingButton(
+                    onClick = {},
+                    contentDescription = "Stop dictating and keep the text",
+                )
+            }
+        }
+    }
 
     /**
      * Issue #765: the LONG-draft, keyboard-up composer. The maintainer reported

@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -53,6 +52,9 @@ import com.pocketshell.next.files.MarkdownView
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
+import com.pocketshell.uikit.components.ComposerDiscardButton
+import com.pocketshell.uikit.components.ComposerSendButton
+import com.pocketshell.uikit.components.ComposerStopRecordingButton
 import com.pocketshell.uikit.components.MicButton
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.PocketShellButton
@@ -556,7 +558,7 @@ private fun ControlsRow(
                     enabled = deliveryEnabled && state.canSend && !state.busy,
                     modifier = Modifier.testTag(COMPOSER_INSERT_TAG),
                 )
-                SendButton(
+                ComposerSendButton(
                     onClick = onSend,
                     enabled = deliveryEnabled && state.canSend && !state.busy,
                     modifier = Modifier.testTag(COMPOSER_SEND_TAG),
@@ -568,17 +570,16 @@ private fun ControlsRow(
                 )
             }
             RecordingState.Recording -> {
-                DiscardRecordingButton(
+                ComposerDiscardButton(
                     onClick = onCancelRecording,
                     modifier = Modifier.testTag(COMPOSER_DISCARD_RECORDING_TAG),
                 )
                 InsertButton(
                     onClick = onInsert,
                     enabled = deliveryEnabled && state.canSend && !state.busy,
-                    recording = true,
                     modifier = Modifier.testTag(COMPOSER_INSERT_TAG),
                 )
-                SendButton(
+                ComposerSendButton(
                     onClick = onSend,
                     enabled = deliveryEnabled && state.canSend && !state.busy,
                     recording = true,
@@ -588,18 +589,19 @@ private fun ControlsRow(
                 // own slot — the trailing edge — because that is where the
                 // thumb that started the dictation already is, and a tap here
                 // is the same mic toggle, now meaning "stop".
-                StopRecordingButton(
+                ComposerStopRecordingButton(
                     onClick = onMicTap,
+                    contentDescription = COMPOSER_STOP_RECORDING_DESCRIPTION,
                     modifier = Modifier.testTag(COMPOSER_STOP_RECORDING_TAG),
                 )
             }
             RecordingState.Transcribing -> {
-                DiscardRecordingButton(
+                ComposerDiscardButton(
                     onClick = onCancelRecording,
                     label = "Cancel",
                     modifier = Modifier.testTag(COMPOSER_DISCARD_RECORDING_TAG),
                 )
-                SendButton(
+                ComposerSendButton(
                     onClick = onSend,
                     enabled = deliveryEnabled && state.canSend && !state.busy,
                     recording = true,
@@ -731,7 +733,9 @@ private fun ToolGlyphButton(
 ) {
     Box(
         modifier = modifier
-            .size(COMPOSER_ACTION_ICON_BUTTON_SIZE)
+            // 48dp touch-target floor (`PocketShellDensity.tapTargetMin`) —
+            // the quiet glyph trigger clears it exactly (#2763).
+            .size(PocketShellDensity.tapTargetMin)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { this.contentDescription = contentDescription },
         contentAlignment = Alignment.Center,
@@ -745,77 +749,29 @@ private fun ToolGlyphButton(
     }
 }
 
-/**
- * Send commits the draft and submits it.
- *
- * Idle, it is the row's primary: filled accent. On the recording/transcribing
- * rows it demotes to the shared Secondary outline (#2602): the trailing Stop
- * disc is the row's one accent, because a mis-tap on Stop costs nothing while
- * a mis-tap on Send submits a half-dictated sentence to a live session — the
- * two must not carry equal visual weight.
- */
-@Composable
-private fun SendButton(
-    onClick: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    recording: Boolean = false,
-) {
-    val height = if (recording) ComposerRecordingPillHeight else ComposerIdlePillHeight
-    val containerColor =
-        if (!recording && enabled) PocketShellColors.Accent else PocketShellColors.SurfaceElev
-    val contentColor = when {
-        !enabled -> PocketShellColors.TextMuted
-        recording -> PocketShellColors.Accent
-        else -> PocketShellColors.OnAccent
-    }
-    // Outline only on the dictation rows: idle Send keeps its borderless fill
-    // (the one Primary there), recording Send reads as the ui-kit Secondary.
-    val border = when {
-        !recording -> Modifier
-        enabled -> Modifier.border(1.dp, PocketShellColors.AccentDim, ComposerActionPillShape)
-        else -> Modifier.border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
-    }
-    Row(
-        modifier = modifier
-            .height(height)
-            .clip(ComposerActionPillShape)
-            .background(color = containerColor, shape = ComposerActionPillShape)
-            .then(border)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = if (recording) 16.dp else 18.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
-    ) {
-        Text(
-            text = "Send",
-            color = contentColor,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Icon(
-            imageVector = PocketShellIcons.Send,
-            contentDescription = null,
-            tint = contentColor,
-            modifier = Modifier.size(18.dp),
-        )
-    }
-}
+// Send / Discard / Stop pills live in the shared kit as
+// `ComposerSendButton` / `ComposerDiscardButton` / `ComposerStopRecordingButton`
+// (`com.pocketshell.uikit.components.ComposerControls`, #2763); this file only
+// picks the state permutation and carries the journey test tags.
 
+/**
+ * Paste-without-submitting pill. It is NOT part of the shared ui-kit pill
+ * family (#2763) — it has no recording/idle colour demotion, only the shared
+ * outline — but it wears the same token geometry: the quiet 12dp field/button
+ * corner (`PocketShellShapes.medium`) and the 48dp touch floor.
+ */
 @Composable
 private fun InsertButton(
     onClick: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier,
-    recording: Boolean = false,
 ) {
-    val height = if (recording) ComposerRecordingPillHeight else ComposerIdlePillHeight
     Row(
         modifier = modifier
-            .height(height)
-            .clip(ComposerActionPillShape)
-            .background(PocketShellColors.SurfaceElev, ComposerActionPillShape)
-            .border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
+            .height(PocketShellDensity.tapTargetMin)
+            .clip(PocketShellShapes.medium)
+            .background(PocketShellColors.SurfaceElev, PocketShellShapes.medium)
+            .border(1.dp, PocketShellColors.Border, PocketShellShapes.medium)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .semantics { contentDescription = "Paste without submitting" }
             .padding(horizontal = 16.dp),
@@ -831,64 +787,6 @@ private fun InsertButton(
 }
 
 @Composable
-private fun DiscardRecordingButton(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    label: String = "Discard",
-) {
-    Row(
-        modifier = modifier
-            .height(ComposerRecordingPillHeight)
-            .clip(ComposerActionPillShape)
-            .background(PocketShellColors.SurfaceElev, ComposerActionPillShape)
-            .border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
-            .clickable(role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = "Discard recording without transcribing" }
-            .padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = label,
-            color = PocketShellColors.TextSecondary,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-    }
-}
-
-/**
- * Ends a dictation and keeps the transcript (#2598).
- *
- * A filled accent disc with a stop square, in the same slot and at the same
- * size as [MicTriggerButton]: the mic turns into its own stop, which is the
- * idiom every voice recorder uses. Deliberately NOT the [DiscardRecordingButton]
- * outline — one of these two throws the user's words away and the other keeps
- * them, so they must not look alike.
- */
-@Composable
-private fun StopRecordingButton(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Box(
-        modifier = modifier
-            .size(ComposerIdlePillHeight)
-            .clip(CircleShape)
-            .background(color = PocketShellColors.Accent, shape = CircleShape)
-            .clickable(role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = COMPOSER_STOP_RECORDING_DESCRIPTION },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            imageVector = PocketShellIcons.Stop,
-            contentDescription = null,
-            tint = PocketShellColors.OnAccent,
-            modifier = Modifier.size(COMPOSER_STOP_GLYPH_SIZE),
-        )
-    }
-}
-
-@Composable
 private fun MicTriggerButton(
     onClick: () -> Unit,
     enabled: Boolean,
@@ -897,19 +795,17 @@ private fun MicTriggerButton(
     MicButton(
         state = if (enabled) MicButtonState.Idle else MicButtonState.Disabled,
         onClick = onClick,
-        modifier = modifier.size(ComposerIdlePillHeight),
+        // Same 48dp rung the shared pills use (see the ui-kit
+        // ComposerControls geometry, #2763): the mic, Send, Insert, and Stop
+        // sit on one height line.
+        modifier = modifier.size(PocketShellDensity.tapTargetMin),
     )
 }
 
-/** Quiet field/button radius for composer controls. */
-private val ComposerActionPillRadius = 12.dp
-private val ComposerActionPillShape = RoundedCornerShape(ComposerActionPillRadius)
+// Pill geometry (radius, heights, stop glyph) moved to the shared kit with the
+// pills — `com.pocketshell.uikit.components.ComposerControls` (#2763).
 /** Quiet metadata/label rung for readable composer draft text. */
 private val ComposerDraftFontSize = 16.sp
-private val ComposerIdlePillHeight = 48.dp
-private val ComposerRecordingPillHeight = 48.dp
-private val COMPOSER_ACTION_ICON_BUTTON_SIZE = 48.dp
-private val COMPOSER_STOP_GLYPH_SIZE = 15.dp
 
 private val DRAFT_SHAPE = RoundedCornerShape(PocketShellSpacing.md)
 // #2747: the draft is a reading surface, so its floor is the 56dp field rung
