@@ -12,8 +12,14 @@ import androidx.compose.material3.SheetValue
  * leave a settled partial anchor because the measured modal Surface crosses
  * its owning root's keyboard boundary, and whether an earlier policy-owned
  * expansion may be restored after the IME hides.
+ *
+ * Lives in the shared presentation module (#2636 D5); the chrome composable
+ * that applies its decisions stays in app2's `ComposerSheetChrome.kt`. The
+ * declarations dropped `internal` in the move: module-private visibility
+ * cannot cross the module boundary, and the consuming chrome + policy test
+ * live app2-side.
  */
-internal enum class ComposerImeAnchorAction {
+enum class ComposerImeAnchorAction {
     None,
     ExpandFromPartial,
     RestorePartial,
@@ -27,19 +33,19 @@ internal enum class ComposerImeAnchorAction {
  * user gesture wins its mutation mutex; either cancellation outcome must leave
  * the resulting anchor user-owned so hiding the IME cannot collapse it.
  */
-internal enum class ComposerImeExpansionOutcome {
+enum class ComposerImeExpansionOutcome {
     Completed,
     InterruptedByUser,
     EffectDisposed,
 }
 
-internal fun composerImeOwnsExpansionAfter(
+fun composerImeOwnsExpansionAfter(
     outcome: ComposerImeExpansionOutcome,
     preservePreImeExpanded: Boolean,
 ): Boolean = outcome == ComposerImeExpansionOutcome.Completed &&
     !preservePreImeExpanded
 
-internal data class ComposerImeAnchorSnapshot(
+data class ComposerImeAnchorSnapshot(
     val imeVisible: Boolean,
     val overlapsKeyboard: Boolean,
     val currentValue: SheetValue,
@@ -48,12 +54,12 @@ internal data class ComposerImeAnchorSnapshot(
     val autoExpandedFromPartial: Boolean,
 )
 
-internal data class ComposerModalSurfaceGeometry(
+data class ComposerModalSurfaceGeometry(
     val rootBottomPx: Int,
     val surfaceHeightPx: Int,
 )
 
-internal fun updateComposerPreImeExpanded(
+fun updateComposerPreImeExpanded(
     previous: Boolean,
     snapshot: ComposerImeAnchorSnapshot,
 ): Boolean {
@@ -70,7 +76,7 @@ internal fun updateComposerPreImeExpanded(
     }
 }
 
-internal fun composerModalSurfaceOverlapsIme(
+fun composerModalSurfaceOverlapsIme(
     geometry: ComposerModalSurfaceGeometry?,
     surfaceTopPx: Float?,
     imeBottomPx: Int,
@@ -80,7 +86,7 @@ internal fun composerModalSurfaceOverlapsIme(
     surfaceTopPx + geometry.surfaceHeightPx >
     geometry.rootBottomPx - imeBottomPx
 
-internal fun decideComposerImeAnchorAction(
+fun decideComposerImeAnchorAction(
     snapshot: ComposerImeAnchorSnapshot,
 ): ComposerImeAnchorAction {
     if (!snapshot.imeVisible) {

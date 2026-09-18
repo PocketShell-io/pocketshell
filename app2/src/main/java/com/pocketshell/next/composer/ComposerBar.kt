@@ -88,8 +88,9 @@ const val COMPOSER_STAGING_TAG: String = "composer-staging"
 
 /** The determinate upload bar under the staging label (#2568). */
 const val COMPOSER_STAGING_PROGRESS_TAG: String = "composer-staging-progress"
-const val COMPOSER_SLASH_TAG: String = "composer-slash-sheet"
-const val COMPOSER_SLASH_TRIGGER_TAG: String = "composer-slash-trigger"
+// COMPOSER_SLASH_TAG, COMPOSER_SLASH_TRIGGER_TAG and composerSlashRowTag live
+// in the shared presentation module (#2636 D5, `shared:ui-screens`, same
+// package) — same FQCN, so every reference in this file is unchanged.
 const val COMPOSER_TIMER_TAG: String = "composer-timer"
 const val COMPOSER_WAVEFORM_TAG: String = "composer-waveform"
 const val COMPOSER_TRANSCRIBING_TAG: String = "composer-transcribing"
@@ -102,8 +103,6 @@ const val COMPOSER_REVIEW_ACTION_TAG: String = "composer-delivery-review-action"
 const val COMPOSER_DELIVERY_REVIEW_TITLE: String = "Delivery could not be confirmed"
 const val COMPOSER_DELIVERY_REVIEW_TEXT: String =
     "The connection dropped while input was being sent. It may have reached the terminal. Your draft was kept."
-
-fun composerSlashRowTag(command: String): String = "composer-slash-row:$command"
 
 /** The text a send that never left the device puts on screen. */
 const val COMPOSER_UNDELIVERED_TEXT: String = "Not delivered — session offline. Your draft was kept."

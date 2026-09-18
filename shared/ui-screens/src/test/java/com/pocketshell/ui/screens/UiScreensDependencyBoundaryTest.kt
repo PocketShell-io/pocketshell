@@ -1,12 +1,23 @@
 package com.pocketshell.ui.screens
 
+import com.pocketshell.next.composer.COMPOSER_SLASH_TAG
+import com.pocketshell.next.composer.COMPOSER_SLASH_TRIGGER_TAG
+import com.pocketshell.next.composer.ComposerImeAnchorAction
+import com.pocketshell.next.composer.ComposerImeAnchorSnapshot
+import com.pocketshell.next.composer.ComposerImeExpansionOutcome
+import com.pocketshell.next.composer.ComposerModalSurfaceGeometry
 import com.pocketshell.next.composer.ComposerNotice
 import com.pocketshell.next.composer.ComposerText
 import com.pocketshell.next.composer.ComposerUiState
+import com.pocketshell.next.composer.composerImeOwnsExpansionAfter
+import com.pocketshell.next.composer.composerModalSurfaceOverlapsIme
+import com.pocketshell.next.composer.composerSlashRowTag
+import com.pocketshell.next.composer.decideComposerImeAnchorAction
 import com.pocketshell.next.composer.RecordingState
 import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.StagedAttachment
 import com.pocketshell.next.composer.StagingProgress
+import com.pocketshell.next.composer.updateComposerPreImeExpanded
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.share.ShareHostRow
 import com.pocketshell.next.share.ShareUploadState
@@ -41,6 +52,11 @@ import java.io.File
  * state types): the upload-transport class the screen previously reached into
  * for its display-path constant stays app2-side, so the transport/DI scan
  * below also forbids a reference to it by name.
+ *
+ * The #2636 D5 slice extended the composer family with the slash-sheet tags
+ * and the IME anchor policy — pure presentation, so no new seam guard; the
+ * moved declarations joined [movedTypeMarkers] (and the non-class members a
+ * non-type marker list below) so a silent deletion still fails the build.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -79,9 +95,9 @@ class UiScreensDependencyBoundaryTest {
     @org.junit.Test
     fun extractedDeclarationsArePresentInSources() {
         val sources = moduleMainSources().values.toList()
-        val missing = movedTypeMarkers.filter { (_, declaration) ->
+        val missing = movedDeclarations.filter { declaration ->
             sources.none { DECLARATION_PATTERNS.getValue(declaration).containsMatchIn(it) }
-        }.map { it.second }
+        }
         check(missing.isEmpty()) {
             "shared:ui-screens lost extracted presentation declarations $missing — " +
                 "the #2636 extractions moved them here verbatim; a gap means this " +
@@ -163,10 +179,38 @@ class UiScreensDependencyBoundaryTest {
             ShareUiState::class to "data class ShareUiState",
             ShareUploadState::class to "sealed interface ShareUploadState",
             ShareHostRow::class to "data class ShareHostRow",
+            // The D5 family — the IME anchor policy's class-like declarations.
+            // Its consts and functions have no KClass and ride in
+            // movedNonTypeMarkers below.
+            ComposerImeAnchorAction::class to "enum class ComposerImeAnchorAction",
+            ComposerImeExpansionOutcome::class to "enum class ComposerImeExpansionOutcome",
+            ComposerImeAnchorSnapshot::class to "data class ComposerImeAnchorSnapshot",
+            ComposerModalSurfaceGeometry::class to "data class ComposerModalSurfaceGeometry",
         )
 
-        private val DECLARATION_PATTERNS: Map<String, Regex> = movedTypeMarkers.associate {
-            it.second to Regex("""\b${Regex.escape(it.second)}\b""")
+        /**
+         * The D5 slice also moved top-level consts and functions
+         * (`ComposerBar.kt`'s slash-sheet tags, the IME anchor policy's pure
+         * functions), which cannot ride in [movedTypeMarkers] — no `KClass`.
+         * Each left-hand reference below is itself load-bearing: deleting the
+         * declaration fails the BUILD on this import/reference, exactly like
+         * a `KClass` reference would.
+         */
+        private val movedNonTypeMarkers: List<Pair<Any, String>> = listOf(
+            COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
+            COMPOSER_SLASH_TRIGGER_TAG to "const val COMPOSER_SLASH_TRIGGER_TAG",
+            ::composerSlashRowTag to "fun composerSlashRowTag",
+            ::composerImeOwnsExpansionAfter to "fun composerImeOwnsExpansionAfter",
+            ::updateComposerPreImeExpanded to "fun updateComposerPreImeExpanded",
+            ::composerModalSurfaceOverlapsIme to "fun composerModalSurfaceOverlapsIme",
+            ::decideComposerImeAnchorAction to "fun decideComposerImeAnchorAction",
+        )
+
+        private val movedDeclarations: List<String> =
+            movedTypeMarkers.map { it.second } + movedNonTypeMarkers.map { it.second }
+
+        private val DECLARATION_PATTERNS: Map<String, Regex> = movedDeclarations.associate {
+            it to Regex("""\b${Regex.escape(it)}\b""")
         }
 
         /**
