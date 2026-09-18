@@ -9,13 +9,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.junit4.ComposeContentTestRule
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.next.hosts.AddEditHostScreen
 import com.pocketshell.next.hosts.HostFormErrors
 import com.pocketshell.next.hosts.HostFormState
 import com.pocketshell.next.hosts.HostListScreen
 import com.pocketshell.next.hosts.HostListUiState
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.hosts.SshKeyRow
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -222,8 +222,9 @@ private fun hosts(rows: List<HostRow>) {
     )
 }
 
+/** A picker row: the key list renders only id and name (#2636 C1). */
 private fun key(id: Long, name: String) =
-    SshKeyEntity(id = id, name = name, privateKeyPath = "/data/data/ssh-keys/$name")
+    SshKeyRow(id = id, name = name, fingerprint = "")
 
 // File-level helper shared by the two width classes below; each forwards its
 // own [ComposeTestRule] so the frozen-clock capture (#2733) runs under that

@@ -6,12 +6,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.next.composer.ComposerUiState
+import com.pocketshell.next.terminal.NoOpTerminalSessionClient
 import com.pocketshell.next.terminal.SessionScreen
 import com.pocketshell.next.terminal.SessionUiState
-import com.pocketshell.next.terminal.createRemoteTerminalSession
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
+import com.termux.terminal.TerminalSession
 import org.junit.ClassRule
 import org.junit.Rule
 import org.junit.Test
@@ -92,7 +93,7 @@ class SessionScreenRenders {
     @Test
     fun sessionLiveWithKeyBar() = render("u5-session-key-bar") {
         SessionScreen(
-            state = SessionUiState.Live(createRemoteTerminalSession()),
+            state = SessionUiState.Live(fakeTerminalSession()),
             composerState = ComposerUiState(),
             sessionName = "git-pocketshell",
             onBack = {},
@@ -141,6 +142,23 @@ class SessionScreenRenders {
             onUseHistoryEntry = {},
         )
     }
+
+    /**
+     * A throwaway live terminal, built fixture-locally (#2636 C1) instead of
+     * through the PTY-bridge factory the shell uses in production. Same shape
+     * as `MockAppProjectionsTest.terminal()` and the same defaults the factory
+     * picks: the vendored session builds its emulator with no PTY, no thread
+     * and no Android call, and the Live render is the chrome around a blank
+     * grid on the JVM either way.
+     */
+    private fun fakeTerminalSession() = TerminalSession(
+        /* columns = */ 80,
+        /* rows = */ 24,
+        /* cellWidthPx = */ 8,
+        /* cellHeightPx = */ 16,
+        /* transcriptRows = */ 2000,
+        /* client = */ NoOpTerminalSessionClient(),
+    )
 
     private fun render(name: String, content: @Composable () -> Unit) {
         composeRule.captureFrozenRender("build/renders/$name.png") {

@@ -5,7 +5,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.next.hosts.AddEditHostScreen
 import com.pocketshell.next.hosts.HostFormErrors
 import com.pocketshell.next.hosts.HostFormState
@@ -212,8 +211,9 @@ class HostScreenRenders {
         )
     }
 
+    /** A picker row: the key list renders only id and name (#2636 C1). */
     private fun key(id: Long, name: String) =
-        SshKeyEntity(id = id, name = name, privateKeyPath = "/data/data/ssh-keys/$name")
+        SshKeyRow(id = id, name = name, fingerprint = "")
 
     private fun render(name: String, content: @Composable () -> Unit) {
         composeRule.captureFrozenRender("build/renders/$name.png") {

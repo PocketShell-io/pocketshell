@@ -19,7 +19,6 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertTrue
@@ -55,10 +54,10 @@ class AddEditHostImePlacementTest {
                         selectedKeyId = 1,
                     ),
                     keys = listOf(
-                        SshKeyEntity(
+                        SshKeyRow(
                             id = 1,
                             name = "device-key",
-                            privateKeyPath = "/data/data/keys/device-key",
+                            fingerprint = "",
                         ),
                     ),
                     onChange = { it },

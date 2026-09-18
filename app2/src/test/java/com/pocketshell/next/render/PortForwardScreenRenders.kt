@@ -7,7 +7,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
 import com.pocketshell.core.portfwd.TunnelInfo
-import com.pocketshell.next.ports.ForwardingController
 import com.pocketshell.next.ports.PortForwardScreen
 import com.pocketshell.next.ports.PortForwardUiState
 import com.pocketshell.uikit.theme.PocketShellColors
@@ -35,6 +34,16 @@ import org.robolectric.annotation.GraphicsMode
  * # then open the PNGs under app2/build/renders/
  * ```
  */
+/**
+ * The needs-trust banner text, fixture-locally (#2636 C1) rather than through
+ * the ports controller's production const. Byte-identical on purpose; the real
+ * string stays pinned against the controller by `PortForwardScreenTest` /
+ * the controller's own unit test, so a production copy change that ignores
+ * this mirror still fails the suite.
+ */
+private const val NEEDS_TRUST_ATTENTION: String =
+    "This host's key needs confirming. Open it from the host list and accept the key."
+
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
@@ -64,7 +73,7 @@ class PortForwardScreenRenders {
         PortForwardScreen(
             state = state(
                 connection = ConnectionState.Lost,
-                attention = ForwardingController.NEEDS_TRUST_ATTENTION,
+                attention = NEEDS_TRUST_ATTENTION,
             ),
             onSetEnabled = {},
             onTogglePort = {},

@@ -36,7 +36,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.pocketshell.core.storage.entity.SshKeyEntity
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -104,7 +103,12 @@ fun AddEditHostRoute(
 
     AddEditHostScreen(
         state = state,
-        keys = keys,
+        // Project Room rows to the picker's UI-level row type here, at the
+        // route boundary — see #2636 C1: the screen and its fixtures stay
+        // free of storage entities.
+        keys = keys.map {
+            SshKeyRow(id = it.id, name = it.name, fingerprint = it.fingerprint)
+        },
         onChange = viewModel::update,
         onSave = viewModel::save,
         onTestConnection = viewModel::testConnection,
@@ -131,7 +135,7 @@ fun AddEditHostRoute(
 @Composable
 fun AddEditHostScreen(
     state: HostFormState,
-    keys: List<SshKeyEntity>,
+    keys: List<SshKeyRow>,
     onChange: ((HostFormState) -> HostFormState) -> Unit,
     onSave: () -> Unit,
     onTestConnection: () -> Unit = {},
@@ -394,7 +398,7 @@ private fun ConnectionOptions(
  */
 @Composable
 private fun KeyPicker(
-    keys: List<SshKeyEntity>,
+    keys: List<SshKeyRow>,
     selectedKeyId: Long?,
     error: String?,
     onSelect: (Long) -> Unit,
