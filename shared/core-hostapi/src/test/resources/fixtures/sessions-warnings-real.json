@@ -1,0 +1,20 @@
+[
+  {
+    "session": "0d5a4d1e-6a5c-4a1e-9d2f-5b7a0c3e8f11",
+    "workspace": "/home/alexey/git/pocketshell",
+    "tag": "work",
+    "engine": "claude",
+    "kind": "oom",
+    "detail": "The kernel OOM killer terminated the session's main process (badness 812).",
+    "created_at_ms": 1768320000000
+  },
+  {
+    "session": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    "workspace": "/home/alexey/git/aplexer",
+    "tag": "api",
+    "engine": "codex",
+    "kind": "crash",
+    "detail": "The session ended without a recorded exit or a fatal finalization.",
+    "created_at_ms": 1768323600000
+  }
+]

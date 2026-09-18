@@ -424,6 +424,93 @@ class HostCliClientVerbsTest {
         assertEquals("pocketshell profiles list --json", error.command)
     }
 
+    // --- listWarnings -----------------------------------------------------
+
+    @Test
+    fun `listWarnings parses a real capture with both kinds`() {
+        val result = runSuspending {
+            HostCliClient(RecordingExec.ok(fixture("sessions-warnings-real.json"))).listWarnings()
+        }
+
+        val warnings = result.getOrThrow()
+        assertEquals(2, warnings.size)
+        assertEquals(listOf(WarningKind.OOM, WarningKind.CRASH), warnings.map { it.kind })
+        assertEquals(
+            listOf("work", "api"),
+            warnings.map { it.tag },
+        )
+        assertEquals("/home/alexey/git/pocketshell", warnings[0].workspace)
+        assertEquals(1_768_320_000_000L, warnings[0].createdAtMs)
+        assertTrue(warnings[0].detail.orEmpty().contains("OOM killer"))
+    }
+
+    @Test
+    fun `listWarnings keeps an empty acknowledgement list empty`() {
+        val result = runSuspending {
+            HostCliClient(RecordingExec.ok("[]")).listWarnings()
+        }
+
+        assertEquals(emptyList<WarningRow>(), result.getOrThrow())
+    }
+
+    @Test
+    fun `listWarnings keeps a row whose kind it does not know`() {
+        val result = runSuspending {
+            HostCliClient(
+                RecordingExec.ok("""[{"session":"s1","kind":"panic","detail":"died weirdly"}]"""),
+            ).listWarnings()
+        }
+
+        val warnings = result.getOrThrow()
+        assertEquals(1, warnings.size)
+        assertNull(warnings.single().kind)
+        assertEquals("died weirdly", warnings.single().detail)
+    }
+
+    @Test
+    fun `listWarnings fails a non-array payload as malformed`() {
+        val error = runSuspending {
+            HostCliClient(RecordingExec.ok("""{"schema":3,"warnings":[]}""")).listWarnings()
+        }.hostCliError()
+
+        assertTrue(error is HostCliError.Malformed)
+        assertTrue(error.userMessage.contains("expected a JSON array"))
+    }
+
+    @Test
+    fun `listWarnings reports an old helper's usage error as a failure the UI can swallow`() {
+        // A host CLI predating the verb answers with argparse's exit-2 usage
+        // text; the verb surfaces a plain failure so the tree keeps working.
+        val exec = RecordingExec.exit(code = 2, stderr = "Error: no such command: warnings\n")
+
+        val error = runSuspending { HostCliClient(exec).listWarnings() }.hostCliError()
+
+        val failed = error as HostCliError.Failed
+        assertEquals(2, failed.exitCode)
+        assertEquals("pocketshell sessions warnings --json", failed.command)
+    }
+
+    // --- ackWarnings ------------------------------------------------------
+
+    @Test
+    fun `ackWarnings succeeds on a quiet exit 0`() {
+        val result = runSuspending { HostCliClient(RecordingExec.ok("")).ackWarnings(null) }
+
+        assertTrue(result.isSuccess)
+    }
+
+    @Test
+    fun `ackWarnings reports a non-zero exit with the quoted command`() {
+        val exec = RecordingExec.exit(code = 3, stderr = "no warning matched\n")
+
+        val error = runSuspending { HostCliClient(exec).ackWarnings("a:b") }.hostCliError()
+
+        val failed = error as HostCliError.Failed
+        assertEquals(3, failed.exitCode)
+        assertEquals("pocketshell sessions ack --json -- 'a:b'", failed.command)
+        assertTrue(failed.userMessage.endsWith("no warning matched"))
+    }
+
     // --- one exec per call ------------------------------------------------
 
     @Test

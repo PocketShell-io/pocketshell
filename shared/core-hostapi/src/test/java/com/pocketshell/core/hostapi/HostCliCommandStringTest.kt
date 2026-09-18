@@ -205,4 +205,48 @@ class HostCliCommandStringTest {
             exec.commands,
         )
     }
+
+    // --- warnings ---------------------------------------------------------
+
+    @Test
+    fun `listWarnings runs the json warnings verb on the list budget`() {
+        val exec = RecordingExec.ok(fixture("sessions-warnings-real.json"))
+
+        runSuspending { HostCliClient(exec).listWarnings() }
+
+        assertEquals("pocketshell sessions warnings --json", exec.command)
+        assertEquals(listOf(HostCliClient.LIST_TIMEOUT_MS), exec.timeouts)
+    }
+
+    @Test
+    fun `ackWarnings without a selector runs the bare ack verb`() {
+        val exec = RecordingExec.ok("")
+
+        runSuspending { HostCliClient(exec).ackWarnings(null) }
+
+        assertEquals("pocketshell sessions ack --json", exec.command)
+        assertEquals(listOf(HostCliClient.ACK_TIMEOUT_MS), exec.timeouts)
+    }
+
+    @Test
+    fun `ackWarnings quotes the selector and terminates the options`() {
+        val exec = RecordingExec.ok("")
+
+        runSuspending { HostCliClient(exec).ackWarnings("it's a test") }
+
+        assertEquals(
+            "pocketshell sessions ack --json -- 'it'\\''s a test'",
+            exec.command,
+        )
+        assertEquals(listOf(HostCliClient.ACK_TIMEOUT_MS), exec.timeouts)
+    }
+
+    @Test
+    fun `ackWarnings keeps a flag-like selector a selector`() {
+        val exec = RecordingExec.ok("")
+
+        runSuspending { HostCliClient(exec).ackWarnings("--help") }
+
+        assertEquals("pocketshell sessions ack --json -- '--help'", exec.command)
+    }
 }

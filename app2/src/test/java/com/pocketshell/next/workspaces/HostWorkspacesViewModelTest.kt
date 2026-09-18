@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.storage.entity.ProjectRootEntity
 import com.pocketshell.core.transport.ExecResult
 import com.pocketshell.core.hostapi.HostCliClient
+import com.pocketshell.core.hostapi.WarningKind
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
@@ -239,6 +240,7 @@ class HostWorkspacesViewModelTest {
     private fun script(
         workspaces: String,
         sessions: String,
+        warnings: String = "[]",
         seen: MutableList<String> = mutableListOf(),
     ) {
         stack.factory.script = { connection ->
@@ -249,13 +251,96 @@ class HostWorkspacesViewModelTest {
                         ExecResult(0, workspaces, "", false)
                     command.startsWith("pocketshell sessions list") ->
                         ExecResult(0, sessions, "", false)
+                    command.startsWith("pocketshell sessions warnings") ->
+                        ExecResult(0, warnings, "", false)
                     else -> ExecResult(0, "", "", false)
                 }
             }
         }
     }
 
+    @Test
+    fun `crash warnings surface beside the tree and ack all clears them`() = runTest(dispatcher) {
+        val hostId = stack.seedHost()
+        val commands = mutableListOf<String>()
+        // The host keeps a warning until it is acknowledged, so the scripted
+        // store stops reporting it only once the ack verb has run.
+        var acked = false
+        stack.factory.script = { connection ->
+            connection.onExecMatching("workspace and sessions listing", once = false, { true }) { command ->
+                commands += command
+                when {
+                    command.startsWith("pocketshell workspaces list") ->
+                        ExecResult(0, """{"schema":1,"workspaces":[]}""", "", false)
+                    command.startsWith("pocketshell sessions list") ->
+                        ExecResult(0, emptySessions(), "", false)
+                    command.startsWith("pocketshell sessions ack") -> {
+                        acked = true
+                        ExecResult(0, "", "", false)
+                    }
+                    command.startsWith("pocketshell sessions warnings") ->
+                        ExecResult(0, if (acked) "[]" else crashWarnings(), "", false)
+                    else -> ExecResult(0, "", "", false)
+                }
+            }
+        }
+
+        val viewModel = viewModel(hostId)
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.loaded)
+        assertNull(state.failure)
+        assertEquals(1, state.warnings.size)
+        assertEquals(WarningKind.OOM, state.warnings.single().kind)
+        assertEquals("api", state.warnings.single().tag)
+        assertTrue(commands.none { it.startsWith("pocketshell sessions ack") })
+
+        viewModel.ackAllWarnings()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value.warnings.isEmpty())
+        assertEquals(
+            "pocketshell sessions ack --json",
+            commands.single { it.startsWith("pocketshell sessions ack") },
+        )
+    }
+
+    @Test
+    fun `an old helper without the warnings verb degrades to no warnings`() = runTest(dispatcher) {
+        val hostId = stack.seedHost()
+        stack.factory.script = { connection ->
+            connection.onExecMatching("listings", once = false, { true }) { command ->
+                when {
+                    command.startsWith("pocketshell workspaces list") ->
+                        ExecResult(0, """{"schema":1,"workspaces":[]}""", "", false)
+                    command.startsWith("pocketshell sessions list") ->
+                        ExecResult(0, emptySessions(), "", false)
+                    else -> ExecResult(2, "", "Error: no such command: warnings\n", false)
+                }
+            }
+        }
+
+        val viewModel = viewModel(hostId)
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue(state.loaded)
+        assertNull(state.failure)
+        assertTrue(state.warnings.isEmpty())
+    }
+
     private fun emptySessions(): String = """{"schema":3,"sessions":[],"errors":[]}"""
+
+    private fun crashWarnings(): String = """
+        [{"session":"0d5a4d1e-6a5c-4a1e-9d2f-5b7a0c3e8f11",
+          "workspace":"/home/testuser/git/app","tag":"api","engine":"claude",
+          "kind":"oom",
+          "detail":"The kernel OOM killer terminated the session's main process.",
+          "created_at_ms":1}]
+    """.trimIndent()
 
     private fun shellIdentity(identity: String): String = identity.replace("'", "'\\''")
 }

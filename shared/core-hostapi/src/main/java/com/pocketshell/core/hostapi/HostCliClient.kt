@@ -176,6 +176,45 @@ class HostCliClient(
         return Result.success(Unit)
     }
 
+    /**
+     * `pocketshell sessions warnings --json` — the unacknowledged crash/OOM
+     * warnings (issue #2771).
+     *
+     * A host CLI too old to know the verb fails right here; the caller owns
+     * the swallow, because an old helper must degrade to "no warnings", never
+     * break the tree.
+     */
+    suspend fun listWarnings(): Result<List<WarningRow>> {
+        val command = "$binary sessions warnings --json"
+        val stdout = captureJson(command, LIST_TIMEOUT_MS).getOrElse { return Result.failure(it) }
+        return WarningsJson.parseWarnings(stdout)
+    }
+
+    /**
+     * `pocketshell sessions ack --json [SELECTOR]` — acknowledges warnings so they
+     * stop surfacing. [selector] is a `workspace:tag` pair, a session-UUID
+     * (or prefix), or a bare tag; `null` acknowledges everything. It is
+     * quoted and terminated with `--` like every other positional, so a
+     * selector that reads like a flag is still a selector.
+     *
+     * Runs with `--json` so the host answers in machine mode like every
+     * other verb; the exit code still decides success (failures are
+     * non-zero with stderr detail in either mode). The acknowledged list
+     * is not parsed — the caller re-reads [listWarnings], which is the
+     * only truth about what is still showing.
+     *
+     * Success is exit 0; stdout is not parsed.
+     */
+    suspend fun ackWarnings(selector: String? = null): Result<Unit> {
+        val command = buildString {
+            append(binary).append(" sessions ack --json")
+            if (selector != null) append(" -- ").append(shellSingleQuote(selector))
+        }
+        val outcome = capture(command, ACK_TIMEOUT_MS).getOrElse { return Result.failure(it) }
+        if (outcome.exitCode != 0) return Result.failure(nonZeroExit(command, outcome))
+        return Result.success(Unit)
+    }
+
     /** `pocketshell engines list --json`. */
     suspend fun listEngines(): Result<List<EngineInfo>> {
         val command = "$binary engines list --json"
@@ -375,6 +414,12 @@ class HostCliClient(
          * session before returning.
          */
         const val KILL_TIMEOUT_MS: Long = 20_000
+
+        /**
+         * Budget for `sessions ack`: a warning-store update, one locked write
+         * like the other mutations.
+         */
+        const val ACK_TIMEOUT_MS: Long = 20_000
 
         private const val FIELD_SCHEMA = "schema"
         private const val FIELD_ERROR = "error"

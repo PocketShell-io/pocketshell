@@ -3,8 +3,10 @@ package com.pocketshell.next.workspaces
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.pocketshell.core.hostapi.HostCliClient
 import com.pocketshell.core.hostapi.HostCliError
 import com.pocketshell.core.hostapi.SessionListError
+import com.pocketshell.core.hostapi.WarningRow
 import com.pocketshell.core.storage.dao.HostDao
 import com.pocketshell.core.storage.dao.ProjectRootDao
 import com.pocketshell.core.transport.ConnectResult
@@ -35,6 +37,12 @@ data class HostWorkspacesUiState(
     val loaded: Boolean = false,
     val roots: List<WorkspaceRootProjection> = emptyList(),
     val errors: List<SessionListError> = emptyList(),
+    /** Unacknowledged crash/OOM warnings on the host, verbatim off the wire. */
+    val warnings: List<WarningRow> = emptyList(),
+    /** True while an `ack` mutation is running; re-taps are dropped. */
+    val ackingWarnings: Boolean = false,
+    /** Why the last acknowledgement attempt failed; cleared by the next attempt. */
+    val ackFailure: String? = null,
     val failure: String? = null,
     /** True when the rows are the last known projection and the refresh failed. */
     val statusUnavailable: Boolean = false,
@@ -102,6 +110,7 @@ class HostWorkspacesViewModel @Inject constructor(
     val state: StateFlow<HostWorkspacesUiState> = _state.asStateFlow()
 
     private var inFlight: Job? = null
+    private var ackInFlight: Job? = null
     private var browseInFlight: Job? = null
     private var folderInFlight: Job? = null
     private var rootFoldersInFlight: Job? = null
@@ -115,6 +124,62 @@ class HostWorkspacesViewModel @Inject constructor(
             )
         }
         inFlight = viewModelScope.launch { load() }
+    }
+
+    /**
+     * Acknowledges one warning: [warning] is reduced to [WarningRow.ackSelector]
+     * — the `workspace:tag` pair the whole surface shows, falling back to the
+     * session UUID — so a partially described row still acks. A warning with
+     * no address at all cannot be acked alone; only clear-all reaches it.
+     */
+    fun ackWarning(warning: WarningRow) {
+        warning.ackSelector?.let(::ack)
+    }
+
+    /** Acknowledges every unacknowledged warning on the host. */
+    fun ackAllWarnings() = ack(null)
+
+    private fun ack(selector: String?) {
+        if (ackInFlight?.isActive == true) return
+        _state.update { it.copy(ackFailure = null, ackingWarnings = true) }
+        ackInFlight = viewModelScope.launch {
+            val connection = resolveConnection { message ->
+                _state.update { it.copy(ackFailure = message, ackingWarnings = false) }
+            } ?: return@launch
+            clients.create(connection).ackWarnings(selector).fold(
+                onSuccess = {
+                    // Drop the acknowledged rows immediately — the banner must
+                    // not linger while the refetch runs — then let refresh()
+                    // reconcile with whatever the host still holds.
+                    _state.update { current ->
+                        current.copy(
+                            ackingWarnings = false,
+                            ackFailure = null,
+                            warnings = when (selector) {
+                                null -> emptyList()
+                                else -> current.warnings.filter {
+                                    it.ackSelector != selector
+                                }
+                            },
+                        )
+                    }
+                    refresh()
+                },
+                // A failed ack leaves the warning showing, which is accurate:
+                // the host still holds it. Say why instead of silently doing
+                // nothing — the user tapped an affordance and deserves to know
+                // the tap landed nowhere.
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            ackingWarnings = false,
+                            ackFailure = userMessage(error, "Could not acknowledge: "),
+                        )
+                    }
+                    refresh()
+                },
+            )
+        }
     }
 
     fun setSearchQuery(query: String) {
@@ -608,6 +673,10 @@ class HostWorkspacesViewModel @Inject constructor(
             fail(userMessage(error, "Could not list sessions on the host: "))
             return
         }
+        // An old host helper without `sessions warnings` must not break the
+        // tree (#2771): a failed read collapses to "no warnings", never to a
+        // failed listing — the failure is deliberately swallowed here.
+        val warnings = client.listWarnings().getOrNull().orEmpty()
         val registeredEntities = projectRootDao.getByHostId(hostId)
             .first()
             .sortedWith(compareBy({ it.sortOrder }, { it.createdAt }, { it.id }))
@@ -636,6 +705,7 @@ class HostWorkspacesViewModel @Inject constructor(
                     workspaceOrders = workspaceOrders,
                 ),
                 errors = sessions.errors,
+                warnings = warnings,
                 failure = null,
                 statusUnavailable = false,
             )

@@ -38,6 +38,8 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import com.pocketshell.core.hostapi.SessionRow
+import com.pocketshell.core.hostapi.WarningKind
+import com.pocketshell.core.hostapi.WarningRow
 import com.pocketshell.next.tree.SESSION_TREE_FILES_TAG
 import com.pocketshell.next.tree.SESSION_TREE_PORTS_TAG
 import com.pocketshell.next.tree.SESSION_TREE_USAGE_TAG
@@ -95,6 +97,10 @@ const val HOST_WORKSPACES_PROJECT_ROOTS_TAG: String = "host-workspaces-project-r
 const val HOST_WORKSPACES_CONNECTION_DETAILS_TAG: String = "host-workspaces-connection-details"
 const val HOST_WORKSPACES_REFRESH_TAG: String = "host-workspaces-refresh"
 const val HOST_WORKSPACES_DISCONNECT_TAG: String = "host-workspaces-disconnect"
+const val HOST_WORKSPACES_WARNINGS_TAG: String = "host-workspaces-warnings"
+const val HOST_WORKSPACES_WARNINGS_CLEAR_TAG: String = "host-workspaces-warnings-clear"
+const val HOST_WORKSPACES_WARNINGS_CLEAR_CONFIRM_TAG: String = "host-workspaces-warnings-clear-confirm"
+const val HOST_WORKSPACES_ACK_FAILURE_TAG: String = "host-workspaces-ack-failure"
 
 fun workspaceRowTag(path: String): String = "workspace-row-$path"
 
@@ -107,6 +113,9 @@ fun workspaceRootAddTag(key: String): String = "workspace-root-add-$key"
 fun workspaceRootActionsTag(key: String): String = "workspace-root-actions-$key"
 
 fun workspaceRootBrowseTag(path: String): String = "workspace-root-browse-$path"
+
+fun warningAckTag(warning: WarningRow): String =
+    "host-workspaces-warning-ack-" + (warning.session ?: warning.tag ?: warning.workspace ?: "row")
 
 /** Route-level binding for the real host workspace projection. */
 @Composable
@@ -170,6 +179,8 @@ fun HostWorkspacesRoute(
         onConfirmCreateFolder = viewModel::createFolder,
         onDismissCreateFolder = viewModel::dismissCreateFolder,
         onRemoveRoot = viewModel::removeRoot,
+        onAckWarning = viewModel::ackWarning,
+        onAckAllWarnings = viewModel::ackAllWarnings,
         modifier = modifier,
     )
 }
@@ -206,11 +217,14 @@ fun HostWorkspacesScreen(
     onConfirmCreateFolder: () -> Unit = {},
     onDismissCreateFolder: () -> Unit = {},
     onRemoveRoot: (WorkspaceRootProjection) -> Unit = {},
+    onAckWarning: (WarningRow) -> Unit = {},
+    onAckAllWarnings: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val clipboard = LocalClipboardManager.current
     var activeRootActions by remember { mutableStateOf<WorkspaceRootProjection?>(null) }
     var rootPendingRemoval by remember { mutableStateOf<WorkspaceRootProjection?>(null) }
+    var warningsPendingClear by remember { mutableStateOf(false) }
     var hostToolsVisible by remember { mutableStateOf(false) }
     var connectionDetailsVisible by remember { mutableStateOf(false) }
 
@@ -346,6 +360,46 @@ fun HostWorkspacesScreen(
                     .padding(bottom = PocketShellSpacing.sm)
                     .testTag(HOST_WORKSPACES_ERROR_TAG),
             )
+        }
+
+        // Crash/OOM warnings (#2771) sit above the tree so a death is visible
+        // without drilling into its session.
+        if (state.warnings.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = PocketShellSpacing.md)
+                    .padding(bottom = PocketShellSpacing.sm)
+                    .testTag(HOST_WORKSPACES_WARNINGS_TAG),
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(
+                    PocketShellSpacing.sm,
+                ),
+            ) {
+                state.warnings.forEach { warning ->
+                    WarningBanner(
+                        warning = warning,
+                        acking = state.ackingWarnings,
+                        onAcknowledge = { onAckWarning(warning) },
+                    )
+                }
+                PocketShellButton(
+                    text = "Clear all",
+                    onClick = { warningsPendingClear = true },
+                    variant = ButtonVariant.Text,
+                    compact = true,
+                    enabled = !state.ackingWarnings,
+                    modifier = Modifier
+                        .align(Alignment.End)
+                        .testTag(HOST_WORKSPACES_WARNINGS_CLEAR_TAG),
+                )
+                state.ackFailure?.let { message ->
+                    Text(
+                        text = message,
+                        color = PocketShellColors.Red,
+                        style = PocketShellType.metadata,
+                        modifier = Modifier.testTag(HOST_WORKSPACES_ACK_FAILURE_TAG),
+                    )
+                }
+            }
         }
 
         PullToRefreshBox(
@@ -546,6 +600,21 @@ fun HostWorkspacesScreen(
             },
             onDismiss = { rootPendingRemoval = null },
             confirmTestTag = HOST_WORKSPACES_ROOT_REMOVE_CONFIRM_TAG,
+        )
+    }
+
+    if (warningsPendingClear) {
+        ConfirmDialog(
+            title = "Clear all warnings?",
+            message = "This acknowledges every crash and OOM warning on " +
+                "${state.hostLabel.ifBlank { "this host" }}; the host stops surfacing them.",
+            confirmLabel = "Clear all",
+            onConfirm = {
+                warningsPendingClear = false
+                onAckAllWarnings()
+            },
+            onDismiss = { warningsPendingClear = false },
+            confirmTestTag = HOST_WORKSPACES_WARNINGS_CLEAR_CONFIRM_TAG,
         )
     }
 }
@@ -1017,6 +1086,74 @@ private fun WorkspaceSessionRow(
         onClick = onClick,
         modifier = Modifier.testTag(workspaceSessionRowTag(session.name)),
     )
+}
+
+/**
+ * One crash/OOM warning above the tree (#2771): the kind, where the session
+ * lived, the host's own one-sentence explanation, and how long ago it died —
+ * with a one-tap acknowledge.
+ */
+@Composable
+private fun WarningBanner(
+    warning: WarningRow,
+    acking: Boolean = false,
+    onAcknowledge: () -> Unit,
+) {
+    Banner(
+        text = warningBannerText(warning),
+        role = BannerRole.Error,
+        maxLines = 4,
+        trailingContent = {
+            PocketShellButton(
+                text = "Acknowledge",
+                onClick = onAcknowledge,
+                variant = ButtonVariant.Text,
+                compact = true,
+                enabled = !acking,
+                modifier = Modifier.testTag(warningAckTag(warning)),
+            )
+        },
+    )
+}
+
+private fun warningBannerText(warning: WarningRow): String = buildString {
+    append(
+        when (warning.kind) {
+            WarningKind.OOM -> "Out of memory"
+            WarningKind.CRASH -> "Crashed"
+            null -> "Died"
+        },
+    )
+    warningLabel(warning)?.let { append(" · ").append(it) }
+    warning.createdAtMs?.let { append(" · ").append(warningAgeLabel(it)) }
+    warning.detail?.takeIf { it.isNotBlank() }?.let { append('\n').append(it) }
+}
+
+/**
+ * The `workspace:tag` identity the host CLI keys warnings and acks by, spelled
+ * the way the rest of the tree spells workspaces (`~/git/app:api`); falls back
+ * to the session-UUID prefix when the host described the row only partially.
+ */
+private fun warningLabel(warning: WarningRow): String? {
+    val workspace = warning.workspace
+    val tag = warning.tag
+    return when {
+        workspace != null && tag != null ->
+            "${displayRemotePath(workspace) ?: workspace}:$tag"
+        tag != null -> tag
+        else -> warning.session?.take(8) // UUID prefix: enough to recognise
+    }
+}
+
+/** Coarse relative age; warnings persist on the host until acknowledged. */
+private fun warningAgeLabel(createdAtMs: Long): String {
+    val minutes = (System.currentTimeMillis() - createdAtMs).coerceAtLeast(0) / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        minutes < 60 * 24 -> "${minutes / 60}h ago"
+        else -> "${minutes / (60 * 24)}d ago"
+    }
 }
 
 private fun filteredRoots(state: HostWorkspacesUiState): List<WorkspaceRootProjection> {
