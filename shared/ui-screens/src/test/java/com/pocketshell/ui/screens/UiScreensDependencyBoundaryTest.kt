@@ -8,6 +8,9 @@ import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.StagedAttachment
 import com.pocketshell.next.composer.StagingProgress
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.share.ShareHostRow
+import com.pocketshell.next.share.ShareUploadState
+import com.pocketshell.next.share.ShareUiState
 import java.io.File
 
 /**
@@ -33,6 +36,11 @@ import java.io.File
  * guard below (`screenSourcesReferenceNoReleaseTypesOrPlatformClasses`)
  * locks the release-check seam and keeps `android.*` platform imports out
  * of the module.
+ *
+ * The #2636 D4 slice added the share family (`SharePickerScreen` + its pure
+ * state types): the upload-transport class the screen previously reached into
+ * for its display-path constant stays app2-side, so the transport/DI scan
+ * below also forbids a reference to it by name.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -96,7 +104,8 @@ class UiScreensDependencyBoundaryTest {
 
     /**
      * Source-level lock for the extracted screen families (#2636 D1 hosts,
-     * #2636 D3 settings). The classpath guard above stops whole modules from
+     * #2636 D3 settings, #2636 D4 share). The classpath guard above stops whole
+     * modules from
      * becoming dependencies; this one stops the subtler leak where a screen
      * family drags its former app-side service types along as imports —
      * concretely: no `com.pocketshell.next.release` reference (the settings
@@ -149,15 +158,25 @@ class UiScreensDependencyBoundaryTest {
             // The D1 family — imported so the manifest's dependency index keeps
             // this guard selected on hosts-side changes too.
             HostRow::class to "data class HostRow",
+            // The D4 family — same role: share-side changes keep this guard
+            // selected through these imports (invariant I11).
+            ShareUiState::class to "data class ShareUiState",
+            ShareUploadState::class to "sealed interface ShareUploadState",
+            ShareHostRow::class to "data class ShareHostRow",
         )
 
         private val DECLARATION_PATTERNS: Map<String, Regex> = movedTypeMarkers.associate {
             it.second to Regex("""\b${Regex.escape(it.second)}\b""")
         }
 
-        /** The app2-side seam, the whole `core-*` family, and DI wiring. */
+        /**
+         * The app2-side seam, the whole `core-*` family, and DI wiring. The
+         * share upload transport joined with D4: the screen's display-path
+         * constant moved into the module instead of the transport reference.
+         */
         private val FORBIDDEN_REFERENCES = Regex(
             """\bSessionSink\b""" +
+                """|\bShareUploader\b""" +
                 """|com\.pocketshell\.core\.""" +
                 """|dagger\.hilt""" +
                 """|javax\.inject""" +

@@ -11,13 +11,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.material3.Text
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
@@ -47,23 +44,8 @@ const val SHARE_EMPTY_TAG: String = "share-no-hosts"
 
 fun shareHostRowTag(hostId: Long): String = "share-host-$hostId"
 
-/** Route-level entry point: binds the Hilt ViewModel to the stateless screen. */
-@Composable
-fun ShareRoute(
-    onFinished: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: ShareViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    SharePickerScreen(
-        state = state,
-        onPickHost = viewModel::uploadTo,
-        onRetry = viewModel::retry,
-        onPickAnother = viewModel::backToPicker,
-        onFinished = onFinished,
-        modifier = modifier,
-    )
-}
+/** What the UI calls the destination. */
+const val INBOX_DISPLAY_PATH: String = "~/inbox/pocketshell"
 
 /**
  * The share target's one screen (rewrite task P-9).
@@ -77,6 +59,10 @@ fun ShareRoute(
  * The screen is stateless: everything it paints comes from [ShareUiState], which
  * is what lets a Robolectric test render each state directly and a design render
  * show them side by side.
+ *
+ * Lives in the shared presentation module (#2636 D4): the route that binds the
+ * Hilt ViewModel stays in app2's `ShareRoute.kt`, and the upload transport —
+ * whose display-path constant moved here with the screen — stays in app2 too.
  */
 @Composable
 fun SharePickerScreen(
@@ -147,7 +133,7 @@ private fun HostPicker(state: ShareUiState, onPickHost: (Long) -> Unit, modifier
             // The destination lives here, in full: it is the one thing the user
             // cannot change on this screen, so it must be stated rather than
             // discovered after the upload.
-            SectionHeader(label = "Send to ${ShareUploader.INBOX_DISPLAY_PATH} on")
+            SectionHeader(label = "Send to ${INBOX_DISPLAY_PATH} on")
             LazyColumn(
                 // `weight`, not `fillMaxSize`, for the same reason the body
                 // slot above uses it: under the section header, a full-height
@@ -199,7 +185,7 @@ private fun Progress(upload: ShareUploadState.Running, modifier: Modifier) {
             style = PocketShellType.bodyDense,
         )
         Text(
-            text = "to ${upload.hostName}:${ShareUploader.INBOX_DISPLAY_PATH}",
+            text = "to ${upload.hostName}:${INBOX_DISPLAY_PATH}",
             color = PocketShellColors.TextMuted,
             style = PocketShellType.bodyDense,
         )

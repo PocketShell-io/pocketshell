@@ -156,8 +156,9 @@ class ShareUploader(
         /** Home-relative inbox directory. Absolute form is resolved per host. */
         const val INBOX_RELATIVE_PATH: String = "inbox/pocketshell"
 
-        /** What the UI calls the destination. */
-        const val INBOX_DISPLAY_PATH: String = "~/inbox/pocketshell"
+        // INBOX_DISPLAY_PATH ("~/inbox/pocketshell") moved with the share
+        // screen into the shared presentation module (#2636 D4, same package)
+        // — it is what the UI calls the destination, not transport policy.
 
         const val TIMESTAMP_PATTERN: String = "yyyyMMdd-HHmmss"
 
