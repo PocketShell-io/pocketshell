@@ -276,9 +276,13 @@ src    shared/core-portfwd/*         portfwd              full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
 src    shared/ui-kit/*               ui-shell             ui
-# #2636 D1: the presentation-boundary module. Its subject today is the hosts
-# screens (HostListScreen family), so it maps to hosts-settings; later #2636
-# slices moving other screen families in here must revisit these rows.
+# #2636 D1/D2: the presentation-boundary module carries one screen family per
+# package, and each package maps to its own family's area — the generic row
+# below is the module default (the hosts family, D1); the composer row above it
+# carves out the composer presentation state (D2). The module's boundary test
+# imports types from BOTH families, so its import-derived dependency set keeps
+# the module's own test task selected no matter which family changed (I11).
+src    shared/ui-screens/src/main/java/com/pocketshell/next/composer/*     composer-voice       full
 src    shared/ui-screens/*           hosts-settings       full
 
 # -- :app2 production packages --
@@ -336,7 +340,10 @@ test   shared/core-portfwd/*         portfwd              full
 test   shared/core-storage/*         hosts-settings       full
 test   shared/core-usage/*           usage-costs          full
 test   shared/ui-kit/*               ui-shell             ui
-# #2636 D1: UiScreensDependencyBoundaryTest (the module's classpath guard).
+# #2636 D1: UiScreensDependencyBoundaryTest (the module's classpath + source
+# guard). D2 gave it imports from both screen families, so a composer-side
+# change selects it through the import-derived dependency set even though the
+# row itself keeps the hosts default.
 test   shared/ui-screens/*           hosts-settings       full
 
 # -- :app2 test packages (unit + androidTest share one taxonomy) --

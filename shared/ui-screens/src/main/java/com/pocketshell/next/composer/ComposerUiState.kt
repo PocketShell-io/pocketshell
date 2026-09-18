@@ -1,35 +1,5 @@
 package com.pocketshell.next.composer
 
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
-
-/**
- * Where the composer's send goes (rewrite task P-1).
- *
- * Deliberately two members. The composer needs to know whether the session is
- * attached AT THE MOMENT OF THE TAP and it needs somewhere to put bytes;
- * anything more would be the composer re-deriving session state that
- * `SessionViewModel` already owns, which is how the old client ended up with
- * two disagreeing views of one connection.
- *
- * [isLive] is a property, not a constructor value, so an implementation reads
- * the session's CURRENT state rather than one captured when the screen last
- * recomposed — a stale snapshot here would mean sending into a dead pane and
- * clearing the draft for it.
- */
-interface SessionSink {
-
-    /** True only when the session is attached and bytes can actually leave. */
-    val isLive: Boolean
-
-    /** Writes [bytes] to the session. Must not throw. */
-    fun sendBytes(bytes: ByteArray)
-
-    /** Emits when a PTY write failed after the composer thought the session was live. */
-    val sendFailures: Flow<Unit>
-        get() = emptyFlow()
-}
-
 /**
  * What the composer is telling the user right now.
  *
@@ -38,6 +8,10 @@ interface SessionSink {
  * retry timer, no queue depth and no "will send when reconnected", because
  * there is no queue — sending ONE message reliably is the job, and a message
  * that did not leave simply did not leave.
+ *
+ * Lives in the shared presentation module (#2636 D2). The transport-facing
+ * sink the send path goes through stays in app2, beside the session logic
+ * that implements it.
  */
 sealed interface ComposerNotice {
 
@@ -61,6 +35,8 @@ sealed interface ComposerNotice {
  * the current file has no byte information (not writing yet, or a channel
  * that reports no bytes), and the bar then falls back to the file-level
  * ratio #2568 shipped, so a byte-silent channel behaves exactly as before.
+ *
+ * Lives in the shared presentation module (#2636 D2).
  */
 data class StagingProgress(
     val index: Int,
@@ -86,7 +62,13 @@ data class StagingProgress(
         }
 }
 
-/** One entry of the per-session sent-message log. */
+/**
+ * One entry of the per-session sent-message log.
+ *
+ * Lives in the shared presentation module (#2636 D2); the Room entity behind
+ * it (`SentMessageEntity`, core-storage) stops at app2's route/ViewModel
+ * boundary.
+ */
 data class SentMessage(
     val id: Long,
     val body: String,
@@ -97,7 +79,12 @@ data class SentMessage(
     val label: String get() = ComposerText.historyLabel(body)
 }
 
-/** Everything the composer surface renders. */
+/**
+ * Everything the composer surface renders.
+ *
+ * Lives in the shared presentation module (#2636 D2); the send path's
+ * transport sink and the ViewModel that produces this state stay in app2.
+ */
 data class ComposerUiState(
     val draft: String = "",
     val attachments: List<StagedAttachment> = emptyList(),

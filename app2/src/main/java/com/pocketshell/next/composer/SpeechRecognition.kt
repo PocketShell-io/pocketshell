@@ -85,14 +85,3 @@ object UnavailableSpeechRecognitionProvider : SpeechRecognitionProvider {
         listener: SpeechRecognitionListener,
     ): SpeechRecognitionSession? = null
 }
-
-/** Where the composer is in a dictation. */
-enum class RecordingState {
-    Idle,
-
-    /** The mic is live and partials are landing in the draft. */
-    Recording,
-
-    /** The user stopped; the recognizer is resolving the final transcript. */
-    Transcribing,
-}

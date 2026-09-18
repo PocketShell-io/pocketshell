@@ -6,8 +6,12 @@ package com.pocketshell.next.composer
  * Everything here is a function of its arguments, so the exact bytes a send
  * puts on the wire are pinned by host-JVM tests rather than inferred from a
  * screenshot.
+ *
+ * Lives in the shared presentation module (#2636 D2) — it is the formatting
+ * dependency of [SentMessage.label], and every caller is in app2, so the old
+ * app2-`internal` visibility became public on the move.
  */
-internal object ComposerText {
+object ComposerText {
 
     /**
      * The message body: the user's draft with a block listing every staged
