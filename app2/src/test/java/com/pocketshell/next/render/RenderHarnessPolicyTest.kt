@@ -69,6 +69,42 @@ class RenderHarnessPolicyTest {
         )
     }
 
+    /**
+     * Issue #2773 guard: render fixtures mirror production types locally
+     * (#2636 C1) instead of importing them, so a fixture's visual contract
+     * can never silently couple a PNG to a production class's live shape
+     * before the shared-module extraction lands. Nothing prevents a future
+     * fixture from quietly re-importing them; this makes that a hard failure.
+     *
+     * "The production TerminalSession type" means the production construction
+     * path, [BANNED_PRODUCTION_SYMBOLS]'s `createRemoteTerminalSession`
+     * factory: the vendored `com.termux.terminal.TerminalSession` constructed
+     * fixture-locally in `SessionScreenRenders` is the sanctioned mirror and
+     * stays allowed.
+     */
+    @Test
+    fun noRenderFixtureSourceReferencesProductionTypes() {
+        val sources = renderDir()
+            .listFiles { file -> file.isFile && file.name.endsWith(".kt") }
+            .orEmpty()
+            .sortedBy { it.name }
+        assertTrue("no .kt sources found — path rot in the locator", sources.isNotEmpty())
+
+        for (file in sources) {
+            // This policy file names the banned symbols in its own failure
+            // strings; every other source under the dir must be clean.
+            if (file.name == "RenderHarnessPolicyTest.kt") continue
+            val source = file.readText()
+            for ((symbol, mirrorInstead) in BANNED_PRODUCTION_SYMBOLS) {
+                assertFalse(
+                    "${file.name}: render fixtures must not reference the production symbol " +
+                        "`$symbol` — $mirrorInstead (#2636 C1, #2773)",
+                    source.contains(symbol),
+                )
+            }
+        }
+    }
+
     private fun renderDir(): File = locateDir(
         "app2/src/test/java/com/pocketshell/next/render",
         "src/test/java/com/pocketshell/next/render",
@@ -87,5 +123,23 @@ class RenderHarnessPolicyTest {
 
     private companion object {
         val CLASS_DECLARATION = Regex("""^class \w+ \{""", setOf(RegexOption.MULTILINE))
+
+        /**
+         * The three production symbols C1 (#2636) de-leaked from these
+         * fixtures, each with the local mirror a fix belongs through. The
+         * Room entity and the ports controller are banned wholesale; for the
+         * terminal only the production PTY-bridge factory is banned — the
+         * vendored session type constructed fixture-locally is the mirror.
+         */
+        val BANNED_PRODUCTION_SYMBOLS = linkedMapOf(
+            "SshKeyEntity" to
+                "mirror the picker row as hosts.SshKeyRow (see HostScreenRenders.key())",
+            "ForwardingController" to
+                "mirror the controller's const strings fixture-locally " +
+                "(see PortForwardScreenRenders.NEEDS_TRUST_ATTENTION)",
+            "createRemoteTerminalSession" to
+                "construct the vendored TerminalSession fixture-locally " +
+                "(see SessionScreenRenders.fakeTerminalSession())",
+        )
     }
 }
