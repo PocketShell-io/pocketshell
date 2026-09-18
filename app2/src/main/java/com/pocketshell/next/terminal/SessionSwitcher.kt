@@ -270,25 +270,50 @@ fun TerminalActionsSheet(
         contentColor = PocketShellColors.Text,
         shape = PocketShellShapes.large,
     ) {
-        Column(
+        TerminalActionsSheetContent(
+            onSessions = onSessions,
+            onBrowseFiles = onBrowseFiles,
+            onCopySelection = onCopySelection,
+            onDetach = onDetach,
+            onEndSession = onEndSession,
+            onDismiss = onDismiss,
+        )
+    }
+}
+
+/**
+ * The terminal actions sheet without the modal container — the same split as
+ * [HostToolsSheetContent], so design renders and host-JVM tests can compose
+ * the real rows without Robolectric's modal window.
+ */
+@Composable
+internal fun TerminalActionsSheetContent(
+    onSessions: () -> Unit,
+    onBrowseFiles: () -> Unit,
+    onCopySelection: () -> Unit,
+    onDetach: () -> Unit,
+    onEndSession: () -> Unit,
+    onDismiss: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = PocketShellSpacing.lg)
+            .padding(bottom = PocketShellSpacing.lg)
+            .testTag(TERMINAL_ACTIONS_SHEET_TAG),
+    ) {
+        SheetHeader(title = "Terminal", onClose = onDismiss)
+        LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = PocketShellSpacing.lg)
-                .padding(bottom = PocketShellSpacing.lg)
-                .testTag(TERMINAL_ACTIONS_SHEET_TAG),
+                .heightIn(max = 480.dp),
         ) {
-            SheetHeader(title = "Terminal", onClose = onDismiss)
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 480.dp),
-            ) {
-                item { TerminalActionRow("Sessions in workspace", onSessions, TERMINAL_ACTIONS_SESSIONS_TAG) }
-                item { TerminalActionRow("Browse files", onBrowseFiles, TERMINAL_ACTIONS_FILES_TAG) }
-                item { TerminalActionRow("Copy selection", onCopySelection, TERMINAL_ACTIONS_COPY_TAG) }
-                item { TerminalActionRow("Detach and keep running", onDetach, TERMINAL_ACTIONS_DETACH_TAG) }
-                item { TerminalActionRow(STOP_SESSION_ITEM_LABEL, onEndSession, STOP_SESSION_ITEM_TAG) }
-            }
+            item { TerminalActionRow("Sessions in workspace", onSessions, TERMINAL_ACTIONS_SESSIONS_TAG) }
+            item { TerminalActionRow("Browse files", onBrowseFiles, TERMINAL_ACTIONS_FILES_TAG) }
+            item { TerminalActionRow("Copy selection", onCopySelection, TERMINAL_ACTIONS_COPY_TAG) }
+            item { TerminalActionRow("Detach and keep running", onDetach, TERMINAL_ACTIONS_DETACH_TAG) }
+            item { TerminalActionRow(STOP_SESSION_ITEM_LABEL, onEndSession, STOP_SESSION_ITEM_TAG) }
         }
     }
 }

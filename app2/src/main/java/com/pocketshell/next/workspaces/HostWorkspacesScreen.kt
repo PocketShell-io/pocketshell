@@ -1324,28 +1324,62 @@ private fun HostToolsSheet(
         shape = com.pocketshell.uikit.theme.PocketShellShapes.large,
         containerColor = PocketShellColors.Surface,
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 560.dp)
-                .testTag(HOST_WORKSPACES_HOST_TOOLS_TAG),
-            contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
-        ) {
-            item {
-                SheetHeader(
-                    title = hostLabel.ifBlank { "Host" },
-                    onClose = onDismiss,
-                    modifier = Modifier.padding(horizontal = PocketShellSpacing.lg),
-                )
-            }
-            item { HostToolRow("Browse files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
-            item { HostToolRow("Services & tunnels", PocketShellIcons.Ports, onOpenPorts, SESSION_TREE_PORTS_TAG) }
-            item { HostToolRow("Usage", PocketShellIcons.Chart, onOpenUsage, SESSION_TREE_USAGE_TAG) }
-            item { HostToolRow("Project roots", PocketShellIcons.Folder, onOpenProjectRoots, HOST_WORKSPACES_PROJECT_ROOTS_TAG) }
-            item { HostToolRow("Refresh workspaces", PocketShellIcons.Refresh, onRefresh, HOST_WORKSPACES_REFRESH_TAG) }
-            item { HostToolRow("Connection details", PocketShellIcons.Info, onOpenConnectionDetails, HOST_WORKSPACES_CONNECTION_DETAILS_TAG) }
-            item { HostToolRow("Disconnect", PocketShellIcons.Close, onDisconnect, HOST_WORKSPACES_DISCONNECT_TAG) }
+        HostToolsSheetContent(
+            hostLabel = hostLabel,
+            onOpenFiles = onOpenFiles,
+            onOpenPorts = onOpenPorts,
+            onOpenUsage = onOpenUsage,
+            onOpenProjectRoots = onOpenProjectRoots,
+            onOpenConnectionDetails = onOpenConnectionDetails,
+            onRefresh = onRefresh,
+            onReorder = onReorder,
+            onDisconnect = onDisconnect,
+            onDismiss = onDismiss,
+        )
+    }
+}
+
+/**
+ * The host tools sheet without the modal container — the same split as
+ * [RootActionsSheetContent] above, so design renders and host-JVM tests can
+ * compose the real rows without Robolectric's modal window. [onReorder] is
+ * carried for signature parity with [HostToolsSheet]; no row currently uses it.
+ */
+@Composable
+internal fun HostToolsSheetContent(
+    hostLabel: String,
+    onOpenFiles: () -> Unit = {},
+    onOpenPorts: () -> Unit = {},
+    onOpenUsage: () -> Unit = {},
+    onOpenProjectRoots: () -> Unit = {},
+    onOpenConnectionDetails: () -> Unit = {},
+    onRefresh: () -> Unit = {},
+    onReorder: () -> Unit = {},
+    onDisconnect: () -> Unit = {},
+    onDismiss: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+) {
+    LazyColumn(
+        modifier = modifier
+            .fillMaxWidth()
+            .heightIn(max = 560.dp)
+            .testTag(HOST_WORKSPACES_HOST_TOOLS_TAG),
+        contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
+    ) {
+        item {
+            SheetHeader(
+                title = hostLabel.ifBlank { "Host" },
+                onClose = onDismiss,
+                modifier = Modifier.padding(horizontal = PocketShellSpacing.lg),
+            )
         }
+        item { HostToolRow("Browse files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
+        item { HostToolRow("Services & tunnels", PocketShellIcons.Ports, onOpenPorts, SESSION_TREE_PORTS_TAG) }
+        item { HostToolRow("Usage", PocketShellIcons.Chart, onOpenUsage, SESSION_TREE_USAGE_TAG) }
+        item { HostToolRow("Project roots", PocketShellIcons.Folder, onOpenProjectRoots, HOST_WORKSPACES_PROJECT_ROOTS_TAG) }
+        item { HostToolRow("Refresh workspaces", PocketShellIcons.Refresh, onRefresh, HOST_WORKSPACES_REFRESH_TAG) }
+        item { HostToolRow("Connection details", PocketShellIcons.Info, onOpenConnectionDetails, HOST_WORKSPACES_CONNECTION_DETAILS_TAG) }
+        item { HostToolRow("Disconnect", PocketShellIcons.Close, onDisconnect, HOST_WORKSPACES_DISCONNECT_TAG) }
     }
 }
 
