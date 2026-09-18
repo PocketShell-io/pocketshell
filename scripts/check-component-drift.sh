@@ -12,8 +12,8 @@
 # on the current clean tree and FAILS when a file gains a NEW one (or a
 # brand-new file ships with any).
 #
-# What counts as a raw call-site (in app2/src/main + shared/ui-kit/src/main,
-# *.kt only): a call to one of these Material widgets, i.e. the widget name
+# What counts as a raw call-site (in app2/src/main + shared/ui-kit/src/main
+# + shared/ui-screens/src/main, *.kt only): a call to one of these Material widgets, i.e. the widget name
 # immediately followed by `(`:
 #   - AlertDialog(               -> use ConfirmDialog / FormDialog (ui-kit)
 #   - CircularProgressIndicator( -> use LoadingIndicator.Spinner (ui-kit)
@@ -35,7 +35,7 @@
 #   0  no NEW drift (counts <= baseline)            [also: --update succeeded]
 #   1  NEW drift found (a file exceeds its baseline, or a new file has raw uses)
 #
-# Cheap: pure grep over the two live source roots, runs in well under a second. Wired
+# Cheap: pure grep over the three live source roots, runs in well under a second. Wired
 # into the Unit job of .github/workflows/tests.yml (a fast static grep — it does
 # NOT need the emulator job).
 set -euo pipefail
@@ -44,7 +44,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-SCAN_DIRS=(app2/src/main shared/ui-kit/src/main)
+SCAN_DIRS=(app2/src/main shared/ui-kit/src/main shared/ui-screens/src/main)
 BASELINE_FILE="scripts/component-drift-baseline.txt"
 
 # The raw Material call-sites we guard. `\b<name>[[:space:]]*\(` matches the
@@ -79,11 +79,12 @@ self_test() (
 
   # These fixtures are REAL production files, so the self-test cannot drift
   # away from the source it validates. The shared fixture keeps the existing
-  # three-widget mutation coverage. The app2 fixture proves the live app source
-  # root is scanned too; it has no raw calls and therefore relies on the guard's
+  # three-widget mutation coverage. The ui-screens fixture (a real extracted
+  # presentation file, #2636 D3) proves the shared:ui-screens source root is
+  # scanned too; it has no raw calls and therefore relies on the guard's
   # default zero baseline until a mutation adds one.
   local fixture_rel="shared/ui-kit/src/main/java/com/pocketshell/uikit/components/ConfirmDialog.kt"
-  local app2_fixture_rel="app2/src/main/java/com/pocketshell/next/settings/SettingsScreen.kt"
+  local app2_fixture_rel="shared/ui-screens/src/main/java/com/pocketshell/next/settings/SettingsScreen.kt"
   scan_source="$sandbox/$fixture_rel"
   clean_source="$sandbox/clean/ConfirmDialog.kt"
   local app2_scan_source="$sandbox/$app2_fixture_rel"
