@@ -34,6 +34,7 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.Ignore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -135,6 +136,7 @@ class J21HostAddConnectJourney {
      * trust prompt with the real fingerprint → workspaces.
      */
     @Test
+    @Ignore("quarantined: #2776, expires 2026-10-02 — RootViewPicker: root never had window focus + no layout settle for 10 s on the hosted runner (run 35335062619 attempt 1, head 2a35f3f2e); green on the same-commit deciding rerun — focus/resize-settle flake family, bisect clean")
     fun addingAHostThroughTheRealFormSavesAndConnectsForTheFirstTime() {
         awaitTag(HOST_LIST_ADD_TAG)
         capture("01-empty-host-list")

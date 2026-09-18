@@ -343,6 +343,7 @@ class J03AttachAndTypeJourney {
      * the size at all (#887/#2533).
      */
     @Test
+    @Ignore("quarantined: #2776, expires 2026-10-02 — keyboard down: phone and host never agreed on a terminal size within 60000 ms (last host pane=63x50), run 35335062619 attempt 1 on 2a35f3f2e; same-commit rerun green — #1932 harness-timing settle family, bisect clean")
     fun theRemoteTerminalSizeTracksTheKeyboardAndRotation() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
