@@ -31,7 +31,8 @@ import org.robolectric.annotation.GraphicsMode
  * ./gradlew :app2:testDebugUnitTest --tests '*SettingsPagesRenders*' --rerun-tasks
  *
  * Two states per page, chosen so the state-bearing controls differ: the
- * terminal slider at its floor vs its 24 sp ceiling (with the common-keys
+ * terminal slider at its floor vs its 16 sp ceiling (MAX_TERMINAL_TEXT_SIZE_PX
+ * is 48 px, i.e. 16 sp at this xxhdpi density-3 qualifier; with the common-keys
  * switch on vs off), the voice language row showing Auto-detect vs an
  * explicit language, the language picker's selection on Auto vs mid-list,
  * and the grace picker on the 90 s default vs the shortest window.
