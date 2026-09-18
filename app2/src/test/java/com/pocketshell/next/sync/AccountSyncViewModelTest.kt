@@ -29,6 +29,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
 
 /**
  * [AccountSyncViewModel] over a real Room `hosts` table, a real selection
@@ -40,10 +41,15 @@ import org.robolectric.annotation.Config
  * from the renderer); on Android there is one process, so they have to be
  * asserted instead of assumed — against the ACTUAL rendered state and the
  * ACTUAL files on disk, not against a comment.
+ *
+ * The real crypto runs at 1k KDF rounds with Conscrypt off (issue #2778),
+ * same measures as `SyncRepositoryTest`; the 600k default itself is pinned
+ * once by a canary in `SyncCryptoTest`.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
+@ConscryptMode(ConscryptMode.Mode.OFF)
 class AccountSyncViewModelTest {
 
     // Issue #2724: this runTest class postdates #2707 suite-wide adoption and
@@ -51,6 +57,9 @@ class AccountSyncViewModelTest {
     // post-test stragglers) instead of letting them blame the next runTest class.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    @get:Rule
+    val testKdfIterations = TestKdfIterations()
 
     companion object {
         @JvmStatic

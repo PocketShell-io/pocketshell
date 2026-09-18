@@ -1,5 +1,6 @@
 package com.pocketshell.next.sync
 
+import androidx.annotation.VisibleForTesting
 import java.nio.charset.StandardCharsets
 import java.security.GeneralSecurityException
 import java.security.SecureRandom
@@ -80,6 +81,22 @@ object SyncCrypto {
     private val random = SecureRandom()
 
     /**
+     * Test-only KDF iteration override for [encryptToEnvelope]; `null` (the
+     * state production code always sees) means the real [KDF_ITERATIONS].
+     *
+     * The sync tests exercise the repository, ViewModel and envelope format
+     * through hundreds of real derivations, and 600k rounds each is what made
+     * the JVM gate grind for 45+ minutes under memory pressure (issue #2778).
+     * Tests default to 1k rounds via the `TestKdfIterations` rule; exactly one
+     * canary in `SyncCryptoTest` clears this back to `null` and pins the
+     * full-strength parameters, so the 600k default itself stays covered.
+     * Decryption needs no override — it honors the blob's own `iter` field.
+     */
+    @VisibleForTesting
+    @Volatile
+    internal var kdfIterationsOverride: Int? = null
+
+    /**
      * Encrypt [plaintext] under [passphrase] into the serialized envelope.
      * Fresh salt and IV on every call, so encrypting the same settings twice
      * never produces the same blob.
@@ -92,7 +109,8 @@ object SyncCrypto {
         val passwordBytes = passphraseBytes(passphrase)
         val salt = ByteArray(SALT_BYTES).also(randomSource::nextBytes)
         val iv = ByteArray(IV_BYTES).also(randomSource::nextBytes)
-        val key = pbkdf2HmacSha256(passwordBytes, salt, KDF_ITERATIONS, KEY_BYTES)
+        val iterations = kdfIterationsOverride ?: KDF_ITERATIONS
+        val key = pbkdf2HmacSha256(passwordBytes, salt, iterations, KEY_BYTES)
         val ciphertext = try {
             val cipher = Cipher.getInstance(AES_GCM)
             cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG_BYTES * 8, iv))
@@ -108,7 +126,7 @@ object SyncCrypto {
         return JSONObject()
             .put("v", FORMAT_VERSION)
             .put("kdf", KDF_NAME)
-            .put("iter", KDF_ITERATIONS)
+            .put("iter", iterations)
             .put("salt", b64encode(salt))
             .put("iv", b64encode(iv))
             .put("ct", b64encode(ciphertext))

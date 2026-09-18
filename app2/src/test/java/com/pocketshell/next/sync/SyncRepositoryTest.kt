@@ -19,19 +19,27 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
 
 /**
  * The sync policy end to end on the host JVM (issue #2633): pull → absorb →
  * assemble → encrypt → push, plus the 409 conflict retry.
  *
  * The HTTP layer is scripted, but everything above it is real — the real
- * envelope, the real 600k-iteration KDF, the real selection store. That is
+ * envelope, the real KDF code path, the real selection store. That is
  * deliberate: the interesting failures here are "what got encrypted" and "what
  * happened after a conflict", and a mocked crypto layer would answer neither.
+ *
+ * Two issue-#2778 measures keep this class off the JVM gate's 45-minute grind
+ * without weakening what it covers: the KDF runs at 1k rounds ([TestKdfIterations];
+ * the 600k default is pinned once by a canary in `SyncCryptoTest`), and
+ * Conscrypt stays off so HMAC lands on SunJCE instead of Robolectric's
+ * per-`doFinal` native-context churn.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
+@ConscryptMode(ConscryptMode.Mode.OFF)
 class SyncRepositoryTest {
 
     // Issue #2724: this runTest class postdates #2707 suite-wide adoption and
@@ -39,6 +47,9 @@ class SyncRepositoryTest {
     // post-test stragglers) instead of letting them blame the next runTest class.
     @get:Rule
     val leakGuard = LeakGuard()
+
+    @get:Rule
+    val testKdfIterations = TestKdfIterations()
 
     companion object {
         @JvmStatic

@@ -7,10 +7,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.ConscryptMode
 
 /**
  * [SyncCrypto] — the zero-knowledge half of settings sync (issue #2633).
@@ -33,10 +35,20 @@ import org.robolectric.annotation.Config
  * Robolectric because [SyncCrypto] parses the envelope with `org.json`, which
  * is stubbed in the plain unit-test android.jar (same reason
  * `ReleaseCheckerTest` uses it).
+ *
+ * Conscrypt stays off and the KDF runs at 1k rounds by default (issue #2778):
+ * the published vectors and the desktop envelope carry their own iteration
+ * counts, so nothing here needs 600k per call. The single exception is the
+ * canary below, which clears the override and pins the real production
+ * parameters.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [33])
+@ConscryptMode(ConscryptMode.Mode.OFF)
 class SyncCryptoTest {
+
+    @get:Rule
+    val testKdfIterations = TestKdfIterations()
 
     @Test
     fun `round-trips a plaintext`() {
@@ -57,7 +69,10 @@ class SyncCryptoTest {
         val fields = JSONObject(SyncCrypto.encryptToEnvelope("x", "pw"))
         assertEquals(1, fields.getInt("v"))
         assertEquals("pbkdf2-sha256", fields.getString("kdf"))
-        assertEquals(SyncCrypto.KDF_ITERATIONS, fields.getInt("iter"))
+        // The header echoes whatever count this write actually used (the rule
+        // has it at 1k here); that the count can also BE 600k is the canary's
+        // job, not this one's.
+        assertEquals(SyncCrypto.kdfIterationsOverride ?: SyncCrypto.KDF_ITERATIONS, fields.getInt("iter"))
         assertEquals(16, decode(fields.getString("salt")).size)
         assertEquals(12, decode(fields.getString("iv")).size)
         // ct is ciphertext + the 16-byte GCM tag, so longer than the tag alone.
@@ -197,14 +212,30 @@ class SyncCryptoTest {
     /** Our own writes must be readable by the same reader, at full strength. */
     @Test
     fun `an envelope this client writes uses the desktop parameters`() {
-        val fields = JSONObject(SyncCrypto.encryptToEnvelope(DESKTOP_PLAINTEXT, DESKTOP_PASSPHRASE))
-        assertEquals(600_000, fields.getInt("iter"))
-        assertEquals("pbkdf2-sha256", fields.getString("kdf"))
-        assertEquals(1, fields.getInt("v"))
-        assertEquals(
-            setOf("v", "kdf", "iter", "salt", "iv", "ct"),
-            fields.keys().asSequence().toSet(),
-        )
+        // The one deliberate opt-out from the TestKdfIterations rule (issue
+        // #2778): clear the override INSIDE the body so this write runs the
+        // real 600k production parameters — the canary that keeps the
+        // suite-wide test shortcut from silently lowering what ships.
+        SyncCrypto.kdfIterationsOverride = null
+        try {
+            val envelope = SyncCrypto.encryptToEnvelope(DESKTOP_PLAINTEXT, DESKTOP_PASSPHRASE)
+            val fields = JSONObject(envelope)
+            assertEquals(600_000, fields.getInt("iter"))
+            assertEquals("pbkdf2-sha256", fields.getString("kdf"))
+            assertEquals(1, fields.getInt("v"))
+            assertEquals(
+                setOf("v", "kdf", "iter", "salt", "iv", "ct"),
+                fields.keys().asSequence().toSet(),
+            )
+            // Round-trip the full-strength blob: the real parameters must
+            // produce something this reader can actually open, not merely a
+            // header that claims them.
+            assertEquals(DESKTOP_PLAINTEXT, SyncCrypto.decryptEnvelope(envelope, DESKTOP_PASSPHRASE))
+        } finally {
+            // The rule's own finally restores null too; this keeps the window
+            // at full-strength parameters exactly this one derivation pair.
+            SyncCrypto.kdfIterationsOverride = null
+        }
     }
 
     /**
