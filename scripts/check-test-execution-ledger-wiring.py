@@ -572,14 +572,17 @@ def self_test() -> None:
     # Mutations that must redden — each names the property it exists to prove.
     expect_red(
         "unit job without --record wrapper",
+        expect=f"tests.yml unit job must contain {RECORD_WRAPPER!r}",
         **{".github/workflows/tests.yml": tests.replace(RECORD_WRAPPER, "scripts/true")},
     )
     expect_red(
         "unit job without ledger cache path",
+        expect=f"tests.yml unit ledger cache path must contain 'path: {LEDGER_PATH}'",
         **{".github/workflows/tests.yml": tests.replace(f"path: {LEDGER_PATH}", "path: /tmp/not-the-ledger")},
     )
     expect_red(
         "journey job stops recording into the ledger",
+        expect="journey job must --record its connected JUnit XML",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 "--record app2/build/outputs", "--record-not app2/build/outputs"
@@ -610,6 +613,10 @@ def self_test() -> None:
     # shipped — recorder present, cache absent — and the guard was green on it.
     expect_red(
         "journey job records but never persists the rolling ledger cache (#2744)",
+        expect=(
+            "app2-journey must persist the rolling ledger: it has no "
+            f"{RESTORE_STEP_TITLE!r} cache step"
+        ),
         **{".github/workflows/app2.yml": journey.replace(restore_block, "")},
     )
     # The save must merge into restored history, not replace it. Move the whole
@@ -617,6 +624,7 @@ def self_test() -> None:
     # byte-identical, so the ordering check is the only thing that can redden.
     expect_red(
         "journey ledger cache restored AFTER the record step (#2744)",
+        expect="app2-journey must restore the ledger cache BEFORE the record step",
         **{
             ".github/workflows/app2.yml": journey.replace(restore_block, "").replace(
                 save_block, restore_block + save_block, 1
@@ -628,6 +636,7 @@ def self_test() -> None:
     # deprecated-and-non-functional in that same file.
     expect_red(
         "journey ledger reverts to the monolithic actions/cache (#2785)",
+        expect=f"app2-journey ledger restore step must contain {RESTORE_ACTION!r}",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 RESTORE_ACTION, "uses: actions/cache@v5", 1
@@ -636,12 +645,17 @@ def self_test() -> None:
     )
     expect_red(
         "journey ledger has a restore but no save step (#2785)",
+        expect=(
+            "app2-journey restores the ledger with the restore-only action "
+            f"but has no {SAVE_STEP_TITLE!r} step"
+        ),
         **{".github/workflows/app2.yml": journey.replace(save_block, "")},
     )
     # The load-bearing one: an if: success() save is precisely the monolithic
     # post-if the split exists to escape, so the split would buy nothing.
     expect_red(
         "journey ledger save runs only on success — a red run persists nothing (#2785)",
+        expect=f"the app2-journey ledger SAVE step must run with {ALWAYS_GATE}",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 save_block,
@@ -655,6 +669,7 @@ def self_test() -> None:
     )
     expect_red(
         "journey ledger saves BEFORE the record step (#2785)",
+        expect="app2-journey must SAVE the ledger cache AFTER the record step",
         **{
             ".github/workflows/app2.yml": journey.replace(save_block, "").replace(
                 restore_block, restore_block + save_block, 1
@@ -665,6 +680,7 @@ def self_test() -> None:
     # lane's restore-keys prefix never reads it back.
     expect_red(
         "journey ledger save key drifts from the restore key (#2785)",
+        expect="the app2-journey ledger save key must be byte-identical",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 save_block,
@@ -986,6 +1002,7 @@ def self_test() -> None:
     # Issue #2785, item 1: the recorded ledger must leave the runner.
     expect_red(
         "journey reports upload drops the ledger file (#2785)",
+        expect="app2-journey reports upload must include the ledger file (#2785)",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 upload_block,
@@ -996,6 +1013,7 @@ def self_test() -> None:
     )
     expect_red(
         "journey attendance drops the wholesale selected set",
+        expect="journey attendance must use the wholesale selected set",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 "--selected-from app2-journey", "--selected-from unit"
@@ -1004,6 +1022,7 @@ def self_test() -> None:
     )
     expect_red(
         "journey ledger step only records on success (a red run shows nothing)",
+        expect=f"the app2-journey ledger RECORD step must run with {ALWAYS_GATE}",
         **{
             ".github/workflows/app2.yml": journey.replace(
                 "      - name: Record journey execution into the rolling ledger (#2082)\n"
@@ -1015,14 +1034,17 @@ def self_test() -> None:
     )
     expect_red(
         "missing connect/trust journey pin",
+        expect="journey attendance must pin the connect/trust journey",
         **{".github/workflows/app2.yml": journey.replace(PIN_COLD, "com.example.NotThePin")},
     )
     expect_red(
         "missing attach/type journey pin",
+        expect="journey attendance must pin the attach/type journey",
         **{".github/workflows/app2.yml": journey.replace(PIN_WORKFLOW, "com.example.NotThePin")},
     )
     expect_red(
         "release without --verify",
+        expect="release must --verify the rolling ledger",
         **{
             ".github/workflows/release-emulator-validation.yml": release.replace(
                 "check-test-execution-ledger.sh --verify",
@@ -1032,6 +1054,7 @@ def self_test() -> None:
     )
     expect_red(
         "release without --record",
+        expect="release must --record real JUnit results",
         **{
             ".github/workflows/release-emulator-validation.yml": release.replace(
                 "check-test-execution-ledger.sh --record",
@@ -1041,6 +1064,10 @@ def self_test() -> None:
     )
     expect_red(
         "selection-guards job no longer runs this wiring check",
+        expect=(
+            "ci-test-selection-guards.sh must contain "
+            "'check-test-execution-ledger-wiring.py --self-test'"
+        ),
         **{
             "scripts/ci-test-selection-guards.sh": guards.replace(
                 "check-test-execution-ledger-wiring.py --self-test",
@@ -1050,22 +1077,27 @@ def self_test() -> None:
     )
     expect_red(
         "unit wrapper unread / no-op (YAML still names it)",
+        expect="unit ledger wrapper must --record this run's JUnit XML",
         **{RECORD_WRAPPER: "#!/bin/bash\nexit 0\n"},
     )
     expect_red(
         "unit wrapper drops --record",
+        expect="unit ledger wrapper must --record this run's JUnit XML",
         **{RECORD_WRAPPER: unit_wrapper.replace('bash "$GUARD" --record', "true --record-not")},
     )
     expect_red(
         "unit wrapper drops --attendance",
+        expect="unit ledger wrapper must run current-run attendance",
         **{RECORD_WRAPPER: unit_wrapper.replace('bash "$GUARD" --attendance', "true --attendance-not")},
     )
     expect_red(
         "unit wrapper drops --verify",
+        expect="unit ledger wrapper must --verify the rolling ledger",
         **{RECORD_WRAPPER: unit_wrapper.replace('bash "$GUARD" --verify', "true --verify-not")},
     )
     expect_red(
         "unit wrapper uses unscoped --selected-from unit",
+        expect="unit ledger wrapper must not pass unscoped --selected-from unit",
         **{
             RECORD_WRAPPER: unit_wrapper.replace(
                 '--selected-from "$SELECTED_FROM"',
@@ -1075,6 +1107,7 @@ def self_test() -> None:
     )
     expect_red(
         "unit wrapper drops unit-debug selected set",
+        expect="unit ledger wrapper must select unit-debug on Debug",
         **{RECORD_WRAPPER: unit_wrapper.replace('SELECTED_FROM="unit-debug"', 'SELECTED_FROM="unit"')},
     )
     # Three mutations, because validate_ledger_script now pins three separate
@@ -1084,10 +1117,15 @@ def self_test() -> None:
     # must be — the old single assertion could not tell those apart.
     expect_red(
         "ledger script drops the journey-lane root derivation",
+        expect=(
+            "journey-lane selected set must derive its androidTest root "
+            "from the suite that runs it"
+        ),
         **{LEDGER_SCRIPT: ledger_script.replace("journey_lane_android_test_dir", "some_other_helper")},
     )
     expect_red(
         "ledger script drops the androidTest root restriction from CODE",
+        expect="journey-lane selected set must be restricted to an androidTest root",
         **{
             LEDGER_SCRIPT: "\n".join(
                 line
@@ -1099,6 +1137,7 @@ def self_test() -> None:
     )
     expect_red(
         "ledger script stops rejecting a class-filtered journey suite",
+        expect="journey-lane derivation must reject a suite that filters which classes run",
         **{
             LEDGER_SCRIPT: ledger_script.replace(
                 "testInstrumentationRunnerArguments", "someOtherRunnerArgument"
@@ -1118,6 +1157,10 @@ def self_test() -> None:
     )
     expect_red(
         "tests.yml unit step does not pass --variant",
+        expect=(
+            "tests.yml unit ledger step must pass --variant so attendance "
+            "matches the shard"
+        ),
         **{
             ".github/workflows/tests.yml": tests.replace(
                 '--variant "${{ matrix.variant }}"',
