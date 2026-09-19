@@ -189,12 +189,28 @@ jobs:
       # run's JUnit XML, check current-run attendance, verify unit classes.
       # Cache save is the post step of Restore; an absent ledger never looks
       # like a passing verify (the wrapper fail-closes).
+      #
+      # Issue #2787 (the latent half of #2785, which fixed the journey lane's
+      # identical key): `github.run_id` is in the key deliberately. Without it,
+      # two runs of the SAME sha at attempt 1 — a push run and a later
+      # workflow_dispatch run on that commit — compute a byte-identical key.
+      # The second run's restore then EXACT-hits the first run's entry, and the
+      # monolithic action's post-step save is skipped for a primary-key hit, so
+      # the rows that run recorded are simply never persisted. Nothing goes red:
+      # the save path swallows the outcome into a log line, so the lane reads
+      # green while its ledger contribution is discarded. The run id makes every
+      # key unique per (run, attempt), so no run's rows can be dropped that way.
+      # The primary key is then never an exact hit, which is the intended
+      # rolling behaviour anyway: restore falls through to the shared
+      # `test-execution-ledger-<os>-` prefix below and takes the most recently
+      # created entry, and `--record` MERGES into that file rather than
+      # replacing it, so each save is a superset of the history it restored.
       - name: Restore test-execution ledger (#2082)
         if: always() && steps.unit_tests.conclusion != 'skipped'
         uses: actions/cache@v5
         with:
           path: build/test-execution-ledger.tsv
-          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-unit-${{ matrix.variant }}-${{ github.run_attempt }}
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-unit-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             test-execution-ledger-${{ runner.os }}-
 

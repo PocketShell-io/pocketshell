@@ -205,11 +205,28 @@ jobs:
           fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
+      # Issue #2787 (the latent half of #2785, which fixed the journey lane's
+      # identical key): `github.run_id` is in the key deliberately. Without it,
+      # two runs of the SAME sha at attempt 1 — a workflow_run-triggered run and
+      # a later workflow_dispatch re-validation of that commit — compute a
+      # byte-identical key. The second run's restore then EXACT-hits the first
+      # run's entry, and the monolithic action's post-step save is skipped for a
+      # primary-key hit, so the rows that run recorded are never persisted.
+      # Nothing goes red: the save path swallows the outcome into a log line, so
+      # the lane reads green while its ledger contribution is discarded — and on
+      # THIS lane the loss is doubly quiet, because the `--verify` below reads
+      # the 7-day rolling window rather than this run's own rows. The run id
+      # makes every key unique per (run, attempt), so no run's rows can be
+      # dropped that way. The primary key is then never an exact hit, which is
+      # the intended rolling behaviour anyway: restore falls through to the
+      # shared `test-execution-ledger-<os>-` prefix below and takes the most
+      # recently created entry, and `--record` MERGES into that file rather than
+      # replacing it, so each save is a superset of the history it restored.
       - name: Restore test-execution ledger (#2082)
         uses: actions/cache@v5
         with:
           path: build/test-execution-ledger.tsv
-          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-release-${{ github.run_attempt }}
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-release-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             test-execution-ledger-${{ runner.os }}-
 

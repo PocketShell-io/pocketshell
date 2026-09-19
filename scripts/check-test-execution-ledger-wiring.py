@@ -105,16 +105,20 @@ def require(haystack: str, needle: str, where: str) -> None:
 STEP_BOUNDARY_RE = re.compile(r"^      (?:#|- )", re.M)
 
 
-def step_slice(job: str, title: str) -> str:
+def step_slice(job: str, title: str, where: str = "app2-journey") -> str:
     """The text of ONE named step, bounded at the next step's first line.
 
     Running a slice to the end of the job is how an earlier version of this
     guard went vacuous: every later `if: always()` step vouched for the ledger
     step, so deleting always() from the ledger step alone stayed green.
+
+    `where` names the lane in the failure message. Issue #2787 made this shared
+    across three lanes, and a hard-coded "app2-journey" would have pointed a
+    reader at the wrong workflow for two of them.
     """
     at = job.find(title)
     if at < 0:
-        raise GuardFailure(f"app2-journey has no {title!r} step")
+        raise GuardFailure(f"{where} has no {title!r} step")
     match = STEP_BOUNDARY_RE.search(job, at)
     return job[at : match.start() if match else len(job)]
 
@@ -126,6 +130,25 @@ def step_key(step: str, where: str) -> str:
     return match.group(1)
 
 
+# Issue #2787: the same key-collision property, asserted identically on all
+# three lanes. Every lane's ledger job ALSO carries a Gradle `actions/cache@v5`,
+# so this takes a restore STEP slice, never a whole job — the #2744 comment
+# below records what an unscoped `job.find("uses: actions/cache@v5")` did to the
+# first draft of the journey lane's ordering check.
+def require_run_scoped_key(restore_step: str, where: str) -> str:
+    key = step_key(restore_step, where)
+    if RUN_SCOPE not in key:
+        raise GuardFailure(
+            f"the {where} cache key must be scoped by {RUN_SCOPE} (got {key!r}); "
+            "sha+run_attempt alone is byte-identical across two runs of the same "
+            "commit at attempt 1 (a push/workflow_run run and a later "
+            "workflow_dispatch), so the second run's restore exact-hits the "
+            "first entry, its own save is dropped, and the rows it recorded are "
+            "silently discarded behind a green lane"
+        )
+    return key
+
+
 def require_once(haystack: str, needle: str, where: str) -> None:
     count = haystack.count(needle)
     if count != 1:
@@ -135,10 +158,18 @@ def require_once(haystack: str, needle: str, where: str) -> None:
 def validate_tests_yml(text: str) -> None:
     job = extract_job(text, "unit")
     require(job, "Restore test-execution ledger", "tests.yml unit job")
-    require(job, "uses: actions/cache@v5", "tests.yml unit ledger cache step")
-    require(job, f"path: {LEDGER_PATH}", "tests.yml unit ledger cache path")
-    require(job, f"key: {CACHE_KEY_PREFIX}", "tests.yml unit ledger cache key")
-    require(job, f"restore-keys:", "tests.yml unit ledger restore-keys")
+    # Scope every cache assertion to the ledger restore STEP. The unit job also
+    # carries a Gradle `actions/cache@v5` with its own `key:`, so a whole-job
+    # search answers "does this job cache ANYTHING" — which is how the journey
+    # lane's first ordering check went vacuously green (#2744), and what would
+    # let #2787's run-id assertion be satisfied by the Gradle key instead.
+    restore_step = step_slice(job, RESTORE_STEP_TITLE, "tests.yml unit job")
+    require(restore_step, "uses: actions/cache@v5", "tests.yml unit ledger cache step")
+    require(restore_step, f"path: {LEDGER_PATH}", "tests.yml unit ledger cache path")
+    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "tests.yml unit ledger cache key")
+    require(restore_step, "restore-keys:", "tests.yml unit ledger restore-keys")
+    # Issue #2787: same collision the journey lane carried before #2785.
+    require_run_scoped_key(restore_step, "tests.yml unit ledger restore step")
     require(job, RECORD_WRAPPER, "tests.yml unit job")
     require(
         job,
@@ -298,12 +329,11 @@ def validate_journey_yml(text: str) -> None:
     # restore exact-hits the first entry, and the second save is rejected as a
     # duplicate key — which `actions/cache/save` swallows into a warning, so the
     # run reads green while its rows are silently dropped.
-    if RUN_SCOPE not in restore_key:
-        raise GuardFailure(
-            f"the journey ledger cache key must be scoped by {RUN_SCOPE} "
-            f"(got {restore_key!r}); sha+run_attempt alone collides across two "
-            "runs of the same commit and silently discards the second's rows"
-        )
+    # Issue #2787 folded this into the shared helper the unit and release lanes
+    # now use, so the three lanes cannot drift into asserting three different
+    # things about the same property. The lane name in `where` keeps each one's
+    # failure message distinct.
+    require_run_scoped_key(restore_step, "journey ledger restore step")
 
     # Issue #2785 (2/3): the recorded ledger must leave the runner as an
     # artifact, the way tests.yml's unit lane folds it into its reports upload.
@@ -320,8 +350,17 @@ def validate_journey_yml(text: str) -> None:
 
 def validate_release_yml(text: str) -> None:
     job = extract_job(text, "emulator-release-validation")
-    require(job, "uses: actions/cache@v5", "release ledger cache")
-    require(job, f"path: {LEDGER_PATH}", "release ledger cache path")
+    require(job, "Restore test-execution ledger", "release job")
+    # Step-scoped for the same reason as the unit lane above: this job carries a
+    # Gradle `actions/cache@v5` too, so the whole-job form these three lines
+    # used to take could not tell the two apart.
+    restore_step = step_slice(job, RESTORE_STEP_TITLE, "release job")
+    require(restore_step, "uses: actions/cache@v5", "release ledger cache")
+    require(restore_step, f"path: {LEDGER_PATH}", "release ledger cache path")
+    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "release ledger cache key")
+    require(restore_step, "restore-keys:", "release ledger restore-keys")
+    # Issue #2787: same collision the journey lane carried before #2785.
+    require_run_scoped_key(restore_step, "release ledger restore step")
     require(job, "check-test-execution-ledger.sh --record", "release must --record real JUnit results")
     require(job, "check-test-execution-ledger.sh --verify", "release must --verify the rolling ledger")
     record_at = job.find("check-test-execution-ledger.sh --record")
@@ -443,14 +482,29 @@ def self_test() -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
 
-    def expect_red(label: str, **files: str) -> None:
+    def expect_red(label: str, expect: str | None = None, **files: str) -> None:
+        """A mutation that must redden — optionally for a NAMED reason.
+
+        Issue #2787: "it went red" is a weaker claim than it looks once three
+        lanes assert the same property. A mutation to the release lane's key
+        that reddened on the unit lane's assertion instead would pass this
+        function silently while proving nothing about the lane it names. Pass
+        `expect` with a distinctive fragment of the intended failure message and
+        the mutation is pinned to the assertion it exists to exercise.
+        """
         nonlocal checks
         with tempfile.TemporaryDirectory() as tmp_name:
             tmp = Path(tmp_name)
             write_tree(tmp, **files)
             try:
                 validate_tree(tmp)
-            except GuardFailure:
+            except GuardFailure as exc:
+                if expect is not None and expect not in str(exc):
+                    raise GuardFailure(
+                        f"self-test mutation {label!r} reddened for the WRONG "
+                        f"reason: expected a failure mentioning {expect!r}, got "
+                        f"{str(exc)!r}"
+                    ) from exc
                 checks += 1
             else:
                 raise GuardFailure(f"self-test accepted an unsafe mutation: {label}")
@@ -582,11 +636,115 @@ def self_test() -> None:
         },
     )
     # Issue #2785, item 3: sha+run_attempt alone collides across two runs of the
-    # same commit, and the losing save is swallowed into a warning.
+    # same commit, and the losing save is swallowed into a warning. Both keys at
+    # once, deliberately: dropping the run id from one of them would redden on
+    # the save-key-drift check above instead, which is a different property.
     expect_red(
         "journey ledger cache key drops the run-id scope (#2785)",
+        expect="journey ledger restore step cache key must be scoped by",
         **{".github/workflows/app2.yml": journey.replace(RUN_SCOPE + "-", "")},
     )
+
+    # ---------------------------------------------------------------------
+    # Issue #2787: the SAME key collision on the two lanes #2785 left alone as
+    # scope discipline. Two mutations per lane. The first is the bug itself.
+    # The second is the one that matters for this guard's own honesty: every
+    # ledger job ALSO carries a Gradle `actions/cache@v5` with its own `key:`,
+    # so it drops the run id from the LEDGER key while adding it to the GRADLE
+    # key in the same job. A whole-job assertion — which is what both lanes
+    # carried before this change — goes GREEN on that tree while the collision
+    # it claims to prevent is fully present.
+    #
+    # The blocks are cut from the real files rather than retyped, for the same
+    # reason #2785 did it: if the YAML drifts, `replace(...)` becomes a no-op,
+    # the mutated tree stays green, and expect_red raises "accepted an unsafe
+    # mutation" — drift fails loudly instead of quietly disarming a mutation.
+    # Anchoring on the step also keeps the mutation off the release workflow's
+    # unrelated `github.run_id` uses in its notify jobs, which a whole-file
+    # replace would have rewritten too.
+    tests_job = extract_job(tests, "unit")
+    unit_restore_block = step_slice(tests_job, RESTORE_STEP_TITLE, "tests.yml unit job")
+    release_job = extract_job(release, "emulator-release-validation")
+    release_restore_block = step_slice(release_job, RESTORE_STEP_TITLE, "release job")
+    gradle_key = "key: ${{ runner.os }}-gradle-"
+    for label, lane_text, lane_job, lane_block in (
+        ("tests.yml unit", tests, tests_job, unit_restore_block),
+        ("release", release, release_job, release_restore_block),
+    ):
+        if lane_text.count(lane_block) != 1:
+            raise GuardFailure(
+                f"self-test cannot anchor the {label} ledger restore step "
+                f"uniquely (found {lane_text.count(lane_block)} occurrences)"
+            )
+        if lane_text.count(lane_job) != 1:
+            raise GuardFailure(
+                f"self-test cannot anchor the {label} ledger job uniquely "
+                f"(found {lane_text.count(lane_job)} occurrences)"
+            )
+        if lane_job.count(gradle_key) != 1:
+            raise GuardFailure(
+                f"self-test expected exactly one Gradle cache key inside the "
+                f"{label} ledger job (found {lane_job.count(gradle_key)}); the "
+                "wrong-step-satisfies-it mutation below has no second key to "
+                "move the run id onto, so it would prove nothing"
+            )
+
+    expect_red(
+        "tests.yml unit ledger cache key drops the run-id scope (#2787)",
+        expect="tests.yml unit ledger restore step cache key must be scoped by",
+        **{
+            ".github/workflows/tests.yml": tests.replace(
+                unit_restore_block,
+                unit_restore_block.replace(RUN_SCOPE + "-", ""),
+                1,
+            )
+        },
+    )
+    expect_red(
+        "tests.yml unit ledger key loses the run-id scope while the unit job's "
+        "GRADLE cache key gains it (#2787 vacuous-slice guard)",
+        expect="tests.yml unit ledger restore step cache key must be scoped by",
+        **{
+            ".github/workflows/tests.yml": tests.replace(
+                tests_job,
+                tests_job.replace(
+                    unit_restore_block,
+                    unit_restore_block.replace(RUN_SCOPE + "-", ""),
+                    1,
+                ).replace(gradle_key, gradle_key + RUN_SCOPE + "-", 1),
+                1,
+            )
+        },
+    )
+    expect_red(
+        "release ledger cache key drops the run-id scope (#2787)",
+        expect="release ledger restore step cache key must be scoped by",
+        **{
+            ".github/workflows/release-emulator-validation.yml": release.replace(
+                release_restore_block,
+                release_restore_block.replace(RUN_SCOPE + "-", ""),
+                1,
+            )
+        },
+    )
+    expect_red(
+        "release ledger key loses the run-id scope while the release job's "
+        "GRADLE cache key gains it (#2787 vacuous-slice guard)",
+        expect="release ledger restore step cache key must be scoped by",
+        **{
+            ".github/workflows/release-emulator-validation.yml": release.replace(
+                release_job,
+                release_job.replace(
+                    release_restore_block,
+                    release_restore_block.replace(RUN_SCOPE + "-", ""),
+                    1,
+                ).replace(gradle_key, gradle_key + RUN_SCOPE + "-", 1),
+                1,
+            )
+        },
+    )
+    # ---------------------------------------------------------------------
+
     # Issue #2785, item 1: the recorded ledger must leave the runner.
     expect_red(
         "journey reports upload drops the ledger file (#2785)",
@@ -734,7 +892,11 @@ def self_test() -> None:
     # restored after the record step) + #2785's seven: monolithic-action revert,
     # save step absent, save on success only, save before record, save key
     # drift, run-id scope dropped, and the artifact upload dropping the ledger.
-    expected = 29
+    # + #2787's four: the unit and release lanes each get the plain run-id-scope
+    # drop AND the vacuous-slice arm that hands the run id to the same job's
+    # Gradle cache key instead, which is the tree the pre-#2787 whole-job
+    # assertions accepted.
+    expected = 33
     if checks != expected:
         raise GuardFailure(f"self-test ran {checks} red mutations, expected {expected}")
 
