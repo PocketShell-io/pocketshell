@@ -9,6 +9,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 
 /**
  * Shared drill-in/navigation affordance for rows that route to another screen,
@@ -31,5 +32,5 @@ fun NavigationChevron(
     )
 }
 
-val NavigationChevronDefaultSize: Dp = 18.dp
+val NavigationChevronDefaultSize: Dp = PocketShellDensity.metadataIcon
 val NavigationChevronStrokeWidth: Dp = 2.dp

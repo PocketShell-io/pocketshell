@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import java.util.Locale
 
 /**
@@ -63,7 +64,7 @@ fun FileTypeIcon(
         else -> PocketShellColors.TextSecondary
     }
     Box(
-        modifier = modifier.size(24.dp),
+        modifier = modifier.size(PocketShellDensity.icon),
         contentAlignment = Alignment.Center,
     ) {
         Icon(

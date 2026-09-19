@@ -84,7 +84,7 @@ fun AdvancedSettingsScreen(
                 onClick = onResetAdvancedDefaults,
                 variant = ButtonVariant.Secondary,
                 modifier = Modifier
-                    .padding(horizontal = PocketShellDensity.rowPadH)
+                    .padding(horizontal = PocketShellDensity.screenGutter)
                     .testTag(SETTINGS_RESET_ADVANCED_TAG),
             )
         }

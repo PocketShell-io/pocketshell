@@ -97,7 +97,7 @@ fun ListRow(
                 )
                 .then(if (onClick != null) modifier else Modifier)
                 .padding(
-                    horizontal = PocketShellDensity.rowPadH,
+                    horizontal = PocketShellDensity.screenGutter,
                     vertical = PocketShellDensity.rowPadV,
                 ),
             verticalAlignment = Alignment.CenterVertically,
@@ -148,7 +148,7 @@ fun ListRow(
         }
         }
         HorizontalDivider(
-            modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             color = PocketShellColors.BorderSoft,
         )
     }

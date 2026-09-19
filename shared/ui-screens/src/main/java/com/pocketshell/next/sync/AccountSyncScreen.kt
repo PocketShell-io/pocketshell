@@ -108,7 +108,7 @@ fun AccountSyncScreen(
                         role = BannerRole.Warning,
                         leadingIcon = PocketShellIcons.Warning,
                         modifier = Modifier
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SYNC_UNCONFIGURED_TAG),
                     )
                 }
@@ -140,7 +140,7 @@ fun AccountSyncScreen(
                     variant = if (state.signedIn) ButtonVariant.Secondary else ButtonVariant.Primary,
                     enabled = state.clientConfigured || state.signedIn,
                     modifier = Modifier
-                        .padding(horizontal = PocketShellDensity.rowPadH)
+                        .padding(horizontal = PocketShellDensity.screenGutter)
                         .testTag(if (state.signedIn) SYNC_SIGN_OUT_TAG else SYNC_SIGN_IN_TAG),
                 )
             }
@@ -164,7 +164,7 @@ fun AccountSyncScreen(
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SYNC_PASSPHRASE_TAG),
                     )
                 }
@@ -217,7 +217,7 @@ fun AccountSyncScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = PocketShellDensity.rowPadH),
+                            .padding(horizontal = PocketShellDensity.screenGutter),
                         horizontalArrangement = Arrangement.spacedBy(PocketShellSpacing.sm),
                     ) {
                         PocketShellButton(
@@ -253,7 +253,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 text = "Finish signing in with Google in your browser.",
                 role = BannerRole.Info,
                 leadingIcon = PocketShellIcons.External,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             )
         }
         SyncSignInPhase.Exchanging -> item {
@@ -261,7 +261,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 text = "Completing sign-in…",
                 role = BannerRole.Info,
                 leadingIcon = PocketShellIcons.Refresh,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             )
         }
         is SyncSignInPhase.Failed -> item {
@@ -270,7 +270,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 role = BannerRole.Error,
                 leadingIcon = PocketShellIcons.Warning,
                 onClick = onDismiss,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             )
         }
         is SyncSignInPhase.SignedIn -> item {
@@ -279,7 +279,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 role = BannerRole.Info,
                 leadingIcon = PocketShellIcons.Check,
                 onClick = onDismiss,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             )
         }
     }
@@ -304,7 +304,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.outcomeBanner(outcome
             role = role,
             leadingIcon = if (role == BannerRole.Error) PocketShellIcons.Warning else PocketShellIcons.Info,
             modifier = Modifier
-                .padding(horizontal = PocketShellDensity.rowPadH)
+                .padding(horizontal = PocketShellDensity.screenGutter)
                 .testTag(SYNC_STATUS_TAG),
         )
     }
@@ -317,7 +317,7 @@ private fun Description(title: String, body: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH),
+            .padding(horizontal = PocketShellDensity.screenGutter),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Text(text = title, color = PocketShellColors.Text, style = PocketShellType.body)

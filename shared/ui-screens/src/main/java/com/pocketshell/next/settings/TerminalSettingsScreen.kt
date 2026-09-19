@@ -69,7 +69,7 @@ fun TerminalSettingsScreen(
                 style = PocketShellType.bodyMono.copy(fontSize = terminalTextSizeSp.sp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = PocketShellDensity.rowPadH)
+                    .padding(horizontal = PocketShellDensity.screenGutter)
                     .background(PocketShellColors.TermBg, PocketShellShapes.small)
                     .border(1.dp, PocketShellColors.BorderSoft, PocketShellShapes.small)
                     .padding(PocketShellSpacing.md)

@@ -45,7 +45,7 @@ fun PortTableHeader(columns: List<PortColumn>) {
             .fillMaxWidth()
             .background(PocketShellColors.Background)
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellDensity.rowPadV,
             ),
         verticalAlignment = Alignment.CenterVertically,
@@ -81,7 +81,7 @@ fun PortTableRow(
                 if (onClick != null) base.clickable(role = Role.Button, onClick = onClick) else base
             }
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellDensity.rowPadV,
             ),
         verticalAlignment = Alignment.CenterVertically,

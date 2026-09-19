@@ -24,6 +24,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.model.MicButtonState
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 
 /**
  * Round microphone button at the leading edge of the prompt composer.
@@ -111,7 +112,7 @@ fun MicButton(
 
     Box(
         modifier = modifier
-            .size(56.dp)
+            .size(PocketShellDensity.buttonMin)
             .then(shadowModifier)
             .background(
                 color = baseColor.copy(alpha = baseColor.alpha * pulseAlpha),
@@ -129,7 +130,7 @@ fun MicButton(
             imageVector = MicGlyphIcon,
             contentDescription = null,
             tint = glyphColor,
-            modifier = Modifier.size(24.dp),
+            modifier = Modifier.size(PocketShellDensity.icon),
         )
     }
 }

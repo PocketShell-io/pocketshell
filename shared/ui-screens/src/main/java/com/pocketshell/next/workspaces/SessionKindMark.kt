@@ -5,9 +5,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 
 /**
  * Quiet, monochrome session mark used as metadata beside a readable name.
@@ -34,6 +34,6 @@ fun SessionKindMark(
         imageVector = icon,
         contentDescription = null,
         tint = PocketShellColors.TextMuted,
-        modifier = modifier.size(18.dp),
+        modifier = modifier.size(PocketShellDensity.metadataIcon),
     )
 }

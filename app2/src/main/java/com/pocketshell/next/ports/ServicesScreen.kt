@@ -219,7 +219,7 @@ private fun DiscoveryRow(enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH, vertical = PocketShellSpacing.sm)
+            .padding(horizontal = PocketShellDensity.screenGutter, vertical = PocketShellSpacing.sm)
             .testTag(SERVICES_DISCOVERY_TAG),
         verticalAlignment = Alignment.CenterVertically,
     ) {

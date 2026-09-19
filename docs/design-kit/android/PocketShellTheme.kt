@@ -39,8 +39,6 @@ object PsTokens {
     val icon = 24.dp
     val metadataIcon = 18.dp
     val screenGutter = 20.dp
-    val systemTopPreview = 28.dp
-    val systemBottomPreview = 24.dp
     val spaceXs = 4.dp
     val spaceSm = 8.dp
     val spaceMd = 12.dp

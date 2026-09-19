@@ -195,7 +195,7 @@ private fun RenderPortTableHeader() {
             .fillMaxWidth()
             .background(PocketShellColors.Background)
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellDensity.rowPadV,
             ),
         verticalAlignment = Alignment.CenterVertically,
@@ -221,7 +221,7 @@ private fun RenderPortRowItem(row: RenderPortRow) {
                 .fillMaxWidth()
                 .defaultMinSize(minHeight = PocketShellDensity.tapTargetMin)
                 .padding(
-                    horizontal = PocketShellDensity.rowPadH,
+                    horizontal = PocketShellDensity.screenGutter,
                     vertical = PocketShellDensity.rowPadV,
                 ),
             verticalAlignment = Alignment.CenterVertically,
@@ -241,8 +241,8 @@ private fun RenderPortRowItem(row: RenderPortRow) {
             Text(
                 text = row.matchedText,
                 modifier = Modifier.padding(
-                    start = PocketShellDensity.rowPadH,
-                    end = PocketShellDensity.rowPadH,
+                    start = PocketShellDensity.screenGutter,
+                    end = PocketShellDensity.screenGutter,
                     bottom = PocketShellDensity.rowPadV,
                 ),
                 color = PocketShellColors.TextMuted,

@@ -106,14 +106,43 @@ class QuietThemeTokenTest {
 
     @Test
     fun rowHeightsMatchTheDesignKit() {
-        assertEquals(DesignKitTokens.sizeDp("listRowMin").dp, PocketShellDensity.rowMinHeight)
-        assertEquals(DesignKitTokens.sizeDp("workspaceRowMin").dp, PocketShellDensity.workspaceRowMinHeight)
-        assertEquals(DesignKitTokens.sizeDp("touchMin").dp, PocketShellDensity.tapTargetMin)
-        // #2747: the field rung is code-usable again so the composer draft
-        // editor does not restate a freehand minimum.
-        assertEquals(DesignKitTokens.sizeDp("fieldMin").dp, PocketShellDensity.fieldMin)
+        // #2800: EVERY `size` key in tokens.json is bound by name in
+        // PocketShellDensity. Six of ten used to have no Kotlin binding at
+        // all, so call sites restated them as `18.dp`/`24.dp` literals that
+        // nothing pinned. The map is keyed by the JSON name so the key-set
+        // assertion below fails both ways: a binding removed here (or in
+        // `PocketShellDensity`) reddens, and a key added to tokens.json with
+        // no binding reddens too.
+        val bindings = mapOf(
+            "touchMin" to PocketShellDensity.tapTargetMin,
+            "buttonMin" to PocketShellDensity.buttonMin,
+            "fieldMin" to PocketShellDensity.fieldMin,
+            "workspaceRowMin" to PocketShellDensity.workspaceRowMinHeight,
+            "listRowMin" to PocketShellDensity.rowMinHeight,
+            "icon" to PocketShellDensity.icon,
+            "metadataIcon" to PocketShellDensity.metadataIcon,
+            "screenGutter" to PocketShellDensity.screenGutter,
+        )
+        val jsonSizeKeys = DesignKitTokens.root.getJSONObject("size").keys().asSequence().toSortedSet()
+        assertEquals(
+            "every tokens.json `size` key needs a PocketShellDensity binding by name (#2800) — " +
+                "an unbound key is a literal waiting to drift",
+            jsonSizeKeys,
+            bindings.keys.toSortedSet(),
+        )
+        bindings.forEach { (key, bound) ->
+            assertEquals(
+                "PocketShellDensity binding for tokens.json `size.$key` drifted",
+                DesignKitTokens.sizeDp(key).dp,
+                bound,
+            )
+        }
         // `standardRowMinHeight` is an alias, not a second value (#2630's drift class).
         assertEquals(PocketShellDensity.rowMinHeight, PocketShellDensity.standardRowMinHeight)
+        // Same for the legacy `rowPadH` spelling (#2800): an alias of
+        // `screenGutter`, never a second 20dp literal. It exists only until
+        // `SectionHeader.kt` (frozen under review #2790) stops reading it.
+        assertEquals(PocketShellDensity.screenGutter, PocketShellDensity.rowPadH)
         // #2717 T3: the 32dp `section` rung is retired; sections separate with
         // `sectionGap`, pinned to the surviving 24dp `space.xxl` rung.
         assertEquals(DesignKitTokens.spaceDp("xxl").dp, PocketShellDensity.sectionGap)

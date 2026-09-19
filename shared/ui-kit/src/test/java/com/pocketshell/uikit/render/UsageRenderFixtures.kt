@@ -99,7 +99,7 @@ private fun UsageScreenChrome(content: @Composable () -> Unit) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    horizontal = PocketShellDensity.rowPadH + PocketShellSpacing.sm,
+                    horizontal = PocketShellDensity.screenGutter + PocketShellSpacing.sm,
                     vertical = PocketShellSpacing.md,
                 ),
             horizontalArrangement = Arrangement.SpaceBetween,

@@ -47,7 +47,7 @@ fun QuietChoiceRow(
                 onClick = onClick,
             )
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellDensity.rowPadV,
             ),
         verticalAlignment = Alignment.CenterVertically,

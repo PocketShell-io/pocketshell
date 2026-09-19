@@ -113,7 +113,7 @@ internal fun DiagnosticsScreen(
                             text = state.message,
                             role = BannerRole.Error,
                             leadingIcon = PocketShellIcons.Warning,
-                            modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
                         )
                     }
                     item {
@@ -121,7 +121,7 @@ internal fun DiagnosticsScreen(
                             text = "Retry loading reports",
                             onClick = viewModel::reload,
                             variant = ButtonVariant.Primary,
-                            modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
                         )
                     }
                 }
@@ -281,7 +281,7 @@ internal fun DiagnosticReportScreen(
                         text = (loadState as CrashReportsLoadState.Failed).message,
                         role = BannerRole.Error,
                         leadingIcon = PocketShellIcons.Warning,
-                        modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                        modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
                     )
                 }
 
@@ -322,7 +322,7 @@ internal fun DiagnosticReportScreen(
                                 style = PocketShellType.bodyMono,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = PocketShellDensity.rowPadH),
+                                    .padding(horizontal = PocketShellDensity.screenGutter),
                             )
                         }
                     }
@@ -333,7 +333,7 @@ internal fun DiagnosticReportScreen(
                             style = PocketShellType.body,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = PocketShellDensity.rowPadH)
+                                .padding(horizontal = PocketShellDensity.screenGutter)
                                 .testTag(CRASH_REPORT_PRIVACY_TAG),
                         )
                     }
@@ -341,7 +341,7 @@ internal fun DiagnosticReportScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = PocketShellDensity.rowPadH),
+                                .padding(horizontal = PocketShellDensity.screenGutter),
                             verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.sm),
                         ) {
                             PocketShellButton(
@@ -402,7 +402,7 @@ private fun DiagnosticsIntro(reportCount: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH),
+            .padding(horizontal = PocketShellDensity.screenGutter),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Text(
@@ -428,7 +428,7 @@ private fun ReportSummaryRows(report: CrashReport) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH),
+            .padding(horizontal = PocketShellDensity.screenGutter),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         ListRow(

@@ -15,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.defaultMinSize
 import com.pocketshell.uikit.theme.LocalPocketShellSemantic
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellType
 
@@ -139,7 +140,7 @@ fun PocketShellButton(
     val contentPadding = if (compact) CompactContentPadding else null
     // Compact changes only the label padding. Every visible button keeps the
     // Quiet 56dp button minimum even when it appears inside a banner.
-    val sizedModifier = modifier.defaultMinSize(minHeight = 56.dp)
+    val sizedModifier = modifier.defaultMinSize(minHeight = PocketShellDensity.buttonMin)
     when (variant) {
         ButtonVariant.Primary -> {
             Button(

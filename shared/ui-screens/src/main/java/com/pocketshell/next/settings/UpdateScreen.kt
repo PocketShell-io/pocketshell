@@ -62,7 +62,7 @@ fun UpdateScreen(
                         onClick = onCheckForUpdates,
                         variant = ButtonVariant.Primary,
                         modifier = Modifier
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SETTINGS_UPDATE_CHECK_TAG),
                     )
                 }
@@ -102,7 +102,7 @@ fun UpdateScreen(
                         onClick = onCheckForUpdates,
                         variant = ButtonVariant.Text,
                         modifier = Modifier
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SETTINGS_UPDATE_CHECK_TAG),
                     )
                 }
@@ -114,7 +114,7 @@ fun UpdateScreen(
                         text = "Couldn't check for updates: ${state.reason}",
                         role = BannerRole.Error,
                         leadingIcon = PocketShellIcons.Warning,
-                        modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                        modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
                     )
                 }
                 item {
@@ -123,7 +123,7 @@ fun UpdateScreen(
                         onClick = onCheckForUpdates,
                         variant = ButtonVariant.Primary,
                         modifier = Modifier
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SETTINGS_UPDATE_CHECK_TAG),
                     )
                 }
@@ -157,7 +157,7 @@ fun UpdateScreen(
                         onClick = { onOpenUrl(state.info.apkUrl) },
                         variant = ButtonVariant.Primary,
                         modifier = Modifier
-                            .padding(horizontal = PocketShellDensity.rowPadH)
+                            .padding(horizontal = PocketShellDensity.screenGutter)
                             .testTag(SETTINGS_UPDATE_CHECK_TAG),
                     )
                 }

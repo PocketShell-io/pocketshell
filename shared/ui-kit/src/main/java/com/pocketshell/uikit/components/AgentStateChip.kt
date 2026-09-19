@@ -5,10 +5,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.SessionAgentState
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 
 /**
  * Compact agent state icon (issues #1237/#1701) — idle / waiting / working —
@@ -73,4 +73,4 @@ private val SessionAgentState.accessibilityDescription: String?
         SessionAgentState.Unknown -> null
     }
 
-internal val AgentStateIconSize = 18.dp
+internal val AgentStateIconSize = PocketShellDensity.metadataIcon

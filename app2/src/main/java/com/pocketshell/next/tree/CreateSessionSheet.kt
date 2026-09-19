@@ -46,6 +46,7 @@ import com.pocketshell.uikit.components.SegmentedToggle
 import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
@@ -678,7 +679,7 @@ fun CreateSessionSheetContent(
                                         imageVector = PocketShellIcons.Check,
                                         contentDescription = "Selected",
                                         tint = PocketShellColors.Accent,
-                                        modifier = Modifier.size(18.dp),
+                                        modifier = Modifier.size(PocketShellDensity.metadataIcon),
                                     )
                                 }
                             } else {

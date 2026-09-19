@@ -342,7 +342,7 @@ private fun PaletteHeader(
                         imageVector = PocketShellIcons.Back,
                         contentDescription = null,
                         tint = if (enabled) PocketShellColors.Accent else PocketShellColors.TextMuted,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(PocketShellDensity.metadataIcon),
                     )
                 }
             }
@@ -374,7 +374,7 @@ private fun PaletteHeader(
                 imageVector = PocketShellIcons.Close,
                 contentDescription = null,
                 tint = PocketShellColors.TextSecondary,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(PocketShellDensity.metadataIcon),
             )
         }
     }

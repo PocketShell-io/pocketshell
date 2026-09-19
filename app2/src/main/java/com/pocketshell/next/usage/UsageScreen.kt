@@ -198,7 +198,7 @@ private fun UsageMeta(state: UsageScreenState) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(
-                horizontal = PocketShellDensity.rowPadH + PocketShellSpacing.sm,
+                horizontal = PocketShellDensity.screenGutter + PocketShellSpacing.sm,
                 vertical = PocketShellSpacing.md,
             ),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -267,7 +267,7 @@ private fun UsageProviderRow(
                 progress = (constrained.percent / 100.0).toFloat(),
                 kind = progressKind(constrained.percent, record.isBlocked, warnPercent),
                 modifier = Modifier
-                    .padding(horizontal = PocketShellDensity.rowPadH)
+                    .padding(horizontal = PocketShellDensity.screenGutter)
                     .padding(bottom = PocketShellSpacing.sm)
                     .testTag("${usageProviderToggleTag(record.provider)}-summary"),
             )
@@ -293,8 +293,8 @@ private fun UsageProviderDetails(
         modifier = Modifier
             .fillMaxWidth()
             .padding(
-                start = PocketShellDensity.rowPadH,
-                end = PocketShellDensity.rowPadH,
+                start = PocketShellDensity.screenGutter,
+                end = PocketShellDensity.screenGutter,
                 bottom = PocketShellSpacing.md,
             )
             .testTag(usageProviderDetailsTag(record.provider)),

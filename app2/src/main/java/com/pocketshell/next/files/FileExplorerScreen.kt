@@ -550,7 +550,7 @@ private fun CrumbBar(crumbs: List<RemotePath.Crumb>, onNavigateTo: (String) -> U
             .background(PocketShellColors.Surface)
             .horizontalScroll(rememberScrollState())
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellSpacing.sm,
             )
             .testTag(FILE_EXPLORER_CRUMBS_TAG),

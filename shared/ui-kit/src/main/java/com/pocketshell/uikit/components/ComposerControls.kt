@@ -104,7 +104,7 @@ fun ComposerSendButton(
             imageVector = PocketShellIcons.Send,
             contentDescription = null,
             tint = contentColor,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(PocketShellDensity.metadataIcon),
         )
     }
 }

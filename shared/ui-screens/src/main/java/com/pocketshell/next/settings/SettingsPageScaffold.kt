@@ -60,7 +60,7 @@ internal fun SettingsDescription(title: String, description: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH),
+            .padding(horizontal = PocketShellDensity.screenGutter),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Text(
@@ -93,7 +93,7 @@ internal fun SettingsSlider(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.rowPadH),
+            .padding(horizontal = PocketShellDensity.screenGutter),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {

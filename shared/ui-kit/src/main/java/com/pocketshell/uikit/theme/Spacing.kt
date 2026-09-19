@@ -80,11 +80,34 @@ object PocketShellDensity {
      */
     val fieldMin = 56.dp
 
+    /**
+     * 56 dp — button minimum height (`tokens.json` `size.buttonMin`).
+     *
+     * Every visible button keeps this floor even when it renders compact
+     * inside a banner or dialog row (#2800: it was a `56.dp` literal in
+     * `PocketShellButton` while the token existed unbound).
+     */
+    val buttonMin = 56.dp
+
     /** 16 dp — row vertical padding. Rows may grow for wrapped content. */
     val rowPadV = 16.dp
 
-    /** 20 dp — Quiet screen gutter used by standard and workspace rows. */
-    val rowPadH = 20.dp
+    /**
+     * 20 dp — the Quiet screen gutter (`tokens.json` `size.screenGutter`),
+     * used by standard and workspace rows and by every screen's page inset.
+     *
+     * Named for the token, not for the one call site it started at (#2800):
+     * `rowPadH` hid a JSON key behind a Kotlin-only spelling.
+     */
+    val screenGutter = 20.dp
+
+    /**
+     * Deprecated spelling of [screenGutter], kept as an alias (never a second
+     * value — #2630's drift class) only because `SectionHeader.kt` is frozen
+     * under review #2790 and still reads it. Delete once that lands; new call
+     * sites use [screenGutter].
+     */
+    val rowPadH = screenGutter
 
     /** 6 dp — chip vertical padding. */
     val chipPadV = 6.dp
@@ -100,4 +123,20 @@ object PocketShellDensity {
 
     /** 48 dp — a11y touch-target floor. Visual density never drops the hit area below this. */
     val tapTargetMin = 48.dp
+
+    /**
+     * 24 dp — the standard icon/glyph box (`tokens.json` `size.icon`).
+     *
+     * The size an `Icon` gets when it is the row's or button's primary
+     * affordance. Sub-24 dp glyph boxes use [metadataIcon].
+     */
+    val icon = 24.dp
+
+    /**
+     * 18 dp — the metadata icon/glyph box (`tokens.json` `size.metadataIcon`).
+     *
+     * The smaller glyph that sits beside metadata text (kebab items, sheet
+     * headers, session-kind marks) rather than carrying the row itself.
+     */
+    val metadataIcon = 18.dp
 }

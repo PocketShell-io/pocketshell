@@ -263,7 +263,7 @@ private fun ForwardingToggleRow(enabled: Boolean, onEnabledChange: (Boolean) -> 
             .background(PocketShellColors.SurfaceElev)
             .border(1.dp, PocketShellColors.BorderSoft)
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellSpacing.sm,
             ),
         verticalAlignment = Alignment.CenterVertically,

@@ -134,7 +134,7 @@ fun Kebab(
                                 imageVector = icon,
                                 contentDescription = null,
                                 tint = PocketShellColors.TextSecondary,
-                                modifier = Modifier.size(18.dp),
+                                modifier = Modifier.size(PocketShellDensity.metadataIcon),
                             )
                         }
                     },
@@ -175,7 +175,7 @@ fun KebabTrigger(
             imageVector = PocketShellIcons.More,
             contentDescription = null,
             tint = PocketShellColors.TextSecondary,
-            modifier = Modifier.size(24.dp),
+            modifier = Modifier.size(PocketShellDensity.icon),
         )
     }
 }

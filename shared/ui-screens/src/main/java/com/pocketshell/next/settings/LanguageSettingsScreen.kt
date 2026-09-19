@@ -55,7 +55,7 @@ fun LanguageSettingsScreen(
                 text = "Done",
                 onClick = onBack,
                 variant = ButtonVariant.Primary,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
             )
         }
     }

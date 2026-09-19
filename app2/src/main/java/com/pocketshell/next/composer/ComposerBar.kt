@@ -746,7 +746,7 @@ private fun ToolGlyphButton(
             imageVector = icon,
             contentDescription = null,
             tint = if (enabled) PocketShellColors.TextSecondary else PocketShellColors.TextMuted,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(PocketShellDensity.metadataIcon),
         )
     }
 }
