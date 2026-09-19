@@ -4,8 +4,8 @@ This is the authoritative design-system audit and foundation for issue #461.
 It is a docs/spec slice: runtime Kotlin and Compose code must not change as part
 of #461 implementation work.
 
-The screen inventory below began before the app2 rewrite. Rows and examples that
-name the retired session route are historical audit input; current product
+The screen inventory below began before the app2 rewrite. Its Drift and
+Standardize-on columns are historical audit input; current product
 session UI is the host workspaces screens (`HostWorkspacesScreen` /
 `WorkspaceScreen`) plus `SessionScreen`, backed by aplexer (the old
 `SessionTreeScreen` was deleted in #2726). New design work must use those
@@ -23,15 +23,15 @@ Use these files as citations when migrating screens:
 
 | Area | Current source |
 |------|----------------|
-| Theme entry point | [`MainActivity.kt`](../app/src/main/java/com/pocketshell/app/MainActivity.kt), [`Theme.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Theme.kt) |
-| Navigation inventory | [`AppDestination.kt`](../app/src/main/java/com/pocketshell/app/nav/AppDestination.kt), [`MainActivity.kt`](../app/src/main/java/com/pocketshell/app/MainActivity.kt) |
+| Theme entry point | [`MainActivity.kt`](../app2/src/main/java/com/pocketshell/next/MainActivity.kt), [`Theme.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Theme.kt) |
+| Navigation inventory | [`Destinations.kt`](../app2/src/main/java/com/pocketshell/next/nav/Destinations.kt), [`MainActivity.kt`](../app2/src/main/java/com/pocketshell/next/MainActivity.kt) |
 | Colour tokens | [`Color.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Color.kt) |
 | Type tokens | [`Type.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Type.kt) |
 | Spacing and density tokens | [`Spacing.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt) |
 | Shape tokens | [`Shape.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Shape.kt) |
 | Shared components | [`shared/ui-kit/components`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components) |
 | Fast render harness | [`DesignRenders.kt`](../shared/ui-kit/src/test/java/com/pocketshell/uikit/render/DesignRenders.kt), [`scripts/render.sh`](../scripts/render.sh) |
-| Emulator visual audit | [`docs/testing.md`](testing.md), [`WalkthroughVisualScreenshotTest.kt`](../app/src/androidTest/java/com/pocketshell/app/proof/WalkthroughVisualScreenshotTest.kt) |
+| Emulator visual audit | [`docs/testing.md`](testing.md), [`capture-walkthrough-screenshots.sh`](../scripts/capture-walkthrough-screenshots.sh) over the [`app2/src/androidTest`](../app2/src/androidTest/java/com/pocketshell/next) journeys |
 | Visual brief | [`design-language.md`](design-language.md), [`ux-rules.md`](ux-rules.md), [`decisions.md`](decisions.md) |
 
 When this document and the code disagree, treat the disagreement as drift. Fix
@@ -395,7 +395,7 @@ Kebab scoping — row vs screen (#2759):
 
 - **Row kebab** (`Kebab` in the row's trailing slot, menu anchored to the row)
   carries actions on that row's one item: Edit/Delete on a host
-  ([`HostListScreen.kt:229-236`](../app2/src/main/java/com/pocketshell/next/hosts/HostListScreen.kt)),
+  ([`HostListScreen.kt:165-169`](../shared/ui-screens/src/main/java/com/pocketshell/next/hosts/HostListScreen.kt)),
   Delete on a key
   ([`SshKeysScreen.kt:688-695`](../app2/src/main/java/com/pocketshell/next/hosts/SshKeysScreen.kt)).
 - **Screen kebab** (`KebabTrigger` in the `ScreenHeader` trailing slot opening
@@ -551,53 +551,43 @@ the current connection work).
 
 ## Screen And Sheet Inventory
 
-> Historical snapshot: this inventory describes the pre-rewrite `app/` module,
-> which no longer exists (current screens live under `app2/`). Components it
-> names that are not in the catalog above — `HostCard`, `SessionRow`,
+> Audit snapshot: every source link below points at a surface that exists on
+> `main` (#2794 repointed the survivors at `app2/` / `shared/ui-screens/` and
+> deleted the rows for screens the rewrite removed). The Drift and
+> Standardize-on columns are still pre-rewrite audit input and have not been
+> re-audited against the current screens. Components named in them that are
+> not in the catalog above — `HostCard`, `SessionRow`,
 > `Breadcrumb`, `KeyBar`, `CommandChip` — were retired as dead canon in #2717
 > and must not be reintroduced.
 
 ### Primary Navigation Screens
 
-This inventory is from [`AppDestination.kt`](../app/src/main/java/com/pocketshell/app/nav/AppDestination.kt)
-and the `when` dispatch in [`MainActivity.kt`](../app/src/main/java/com/pocketshell/app/MainActivity.kt).
+This inventory is from [`Destinations.kt`](../app2/src/main/java/com/pocketshell/next/nav/Destinations.kt)
+and the `NavHost` graph in [`MainActivity.kt`](../app2/src/main/java/com/pocketshell/next/MainActivity.kt).
 
 | Screen | Current components / patterns | Drift | Standardize on |
 |--------|-------------------------------|-------|----------------|
-| Host list [`HostListScreen.kt`](../app/src/main/java/com/pocketshell/app/hosts/HostListScreen.kt) | `ScreenHeader`, `SectionHeader`, `HostCard`, `Kebab`, host import/share/passphrase dialogs, usage badges. | Strongest shared-component adoption, but host trailing/usage/overflow still owns local glue and dialogs repeat styling. | Keep `HostCard`; move per-host usage/status/overflow grammar into reusable row/card slots. |
-| Add/Edit host [`AddEditHostScreen.kt`](../app/src/main/java/com/pocketshell/app/hosts/AddEditHostScreen.kt) | `ScreenHeader`, local tabs, text fields, key dropdown, discard dialog. | Form field, dropdown, and tab styling are local. Embedded key management is not expressed as shared rows. | Shared form section, field error pattern, `SegmentedToggle` or tabs, shared dialog actions. |
-| Settings [`SettingsScreen.kt`](../app/src/main/java/com/pocketshell/app/settings/SettingsScreen.kt) | `ScreenHeader`, `SectionHeader`, `ListRow`, switches/sliders/dialogs, API-key dialogs. | Good row adoption, but controls and repeated API-key dialogs are local. | Settings section + settings row component; shared secret-entry dialog. |
-| Usage [`UsageScreen.kt`](../app/src/main/java/com/pocketshell/app/usage/UsageScreen.kt) | `Breadcrumb`, `Pill`, `ProgressBar`, provider cards, blocked badges. | Uses custom card grammar rather than shared card/list-row pattern. | Usage provider card tokenized with shared badge/progress roles. |
-| AI Costs [`CostsScreen.kt`](../app/src/main/java/com/pocketshell/app/costs/CostsScreen.kt) | `ScreenHeader`, `ListRow`, local section cards, reset dialog. | Local cards duplicate Settings/Usage section surfaces. | Shared metric card and destructive confirmation dialog. |
-| Crash reports [`CrashReportsScreen.kt`](../app/src/main/java/com/pocketshell/app/crash/CrashReportsScreen.kt) | `ScreenHeader`, `ListRow`, mono body for report snippets. | Mostly aligned; long report text needs shared mono detail treatment. | Keep `ListRow`; standardize detail panes/empty states. |
-| Port-forward chooser [`ForwardingChooserScreen.kt`](../app/src/main/java/com/pocketshell/app/systemsurfaces/ForwardingChooserScreen.kt) | `ScreenHeader`, `ListRow`, warning dialog. | Mostly aligned; chooser/error state should share setup-needed pattern. | Shared chooser row and permission/setup error state. |
-| Port-forward panel [`PortForwardPanelScreen.kt`](../app/src/main/java/com/pocketshell/app/portfwd/PortForwardPanelScreen.kt) | Local status dot, tables, toggles, dense rows, semantic colours. | Does not use shared `StatusDot` or row/card catalog consistently. | `StatusDot`, metric/list rows, progress/error roles, shared table-density rules. |
-| Folder list [`FolderListScreen.kt`](../app/src/main/java/com/pocketshell/app/projects/FolderListScreen.kt) | `ScreenHeader`, `SectionHeader`, `ListRow`, `Badge`, `StatusDot`, `Kebab`, `MicButton`, local tree rows, session type picker. | Large local tree grammar; some local status dots/actions; hierarchy can drift easily. | Shared tree row/session row, shared folder action overflow, `Badge` for agent/shell, `treeIndent`. |
-| Watched folders [`WatchedFoldersScreen.kt`](../app/src/main/java/com/pocketshell/app/projects/WatchedFoldersScreen.kt) | `ScreenHeader`, `ListRow`, `Kebab`, `SegmentedToggle`, dialogs. | Section cards and edit dialogs are local. | Shared settings/list management rows, shared add/edit folder dialog. |
-| Repo browser [`RepoBrowserScreen.kt`](../app/src/main/java/com/pocketshell/app/projects/RepoBrowserScreen.kt) | `ScreenHeader`, `ListRow`, repo cards, clone/open pills. | Repo card duplicates dense row plus badge/action pattern. | `ListRow` with trailing action badge/button and shared loading/error rows. |
-| Env files [`EnvScreen.kt`](../app/src/main/java/com/pocketshell/app/env/EnvScreen.kt) | `ScreenHeader`, `ListRow`, `Kebab`, reveal/copy dialogs, copy-from sheet. | Sheet and secret rows are local; reveal/hide action styling should match settings secrets. | Shared secret row, shared copy-source sheet, shared destructive/reset dialog. |
-| File viewer [`FileViewerScreen.kt`](../app/src/main/java/com/pocketshell/app/fileviewer/FileViewerScreen.kt) | `ScreenHeader`, text/image/binary viewer states, share/copy actions. | File chrome is local; action placement can diverge from file explorer. | Shared file header/action row, mono text body, empty/error file state. |
-| File explorer [`FileExplorerScreen.kt`](../app/src/main/java/com/pocketshell/app/fileexplorer/FileExplorerScreen.kt) | `ListRow`, alert dialog, folder/file listing. | Header mirrors file viewer but does not use `ScreenHeader`; file rows need one shared file grammar. | Shared file browser scaffold, `ListRow` file/folder row, path breadcrumb. |
-| Recurring jobs [`RecurringJobsScreen.kt`](../app/src/main/java/com/pocketshell/app/jobs/RecurringJobsScreen.kt) | `Breadcrumb`, `ListRow`, `StatusDot`, `Kebab`, add/edit dialog. | Dialog form and breadcrumb/header pattern differ from other non-terminal screens. | Shared job row, shared form dialog, header decision: `ScreenHeader` or terminal breadcrumb. |
+| Host list [`HostListScreen.kt`](../shared/ui-screens/src/main/java/com/pocketshell/next/hosts/HostListScreen.kt), [`HostListRoute.kt`](../app2/src/main/java/com/pocketshell/next/hosts/HostListRoute.kt) | `ScreenHeader`, `SectionHeader`, `HostCard`, `Kebab`, host import/share/passphrase dialogs, usage badges. | Strongest shared-component adoption, but host trailing/usage/overflow still owns local glue and dialogs repeat styling. | Keep `HostCard`; move per-host usage/status/overflow grammar into reusable row/card slots. |
+| Add/Edit host [`AddEditHostScreen.kt`](../app2/src/main/java/com/pocketshell/next/hosts/AddEditHostScreen.kt) | `ScreenHeader`, local tabs, text fields, key dropdown, discard dialog. | Form field, dropdown, and tab styling are local. Embedded key management is not expressed as shared rows. | Shared form section, field error pattern, `SegmentedToggle` or tabs, shared dialog actions. |
+| Settings [`SettingsScreen.kt`](../shared/ui-screens/src/main/java/com/pocketshell/next/settings/SettingsScreen.kt), [`SettingsRoute.kt`](../app2/src/main/java/com/pocketshell/next/settings/SettingsRoute.kt) | `ScreenHeader`, `SectionHeader`, `ListRow`, switches/sliders/dialogs, API-key dialogs. | Good row adoption, but controls and repeated API-key dialogs are local. | Settings section + settings row component; shared secret-entry dialog. |
+| Usage [`UsageScreen.kt`](../app2/src/main/java/com/pocketshell/next/usage/UsageScreen.kt) | `Breadcrumb`, `Pill`, `ProgressBar`, provider cards, blocked badges. | Uses custom card grammar rather than shared card/list-row pattern. | Usage provider card tokenized with shared badge/progress roles. |
+| Diagnostics / crash reports [`CrashReportsScreen.kt`](../app2/src/main/java/com/pocketshell/next/crash/CrashReportsScreen.kt) | `ScreenHeader`, `ListRow`, mono body for report snippets. | Mostly aligned; long report text needs shared mono detail treatment. | Keep `ListRow`; standardize detail panes/empty states. |
+| Services and tunnels [`ServicesScreen.kt`](../app2/src/main/java/com/pocketshell/next/ports/ServicesScreen.kt), [`TunnelDetailScreen.kt`](../app2/src/main/java/com/pocketshell/next/ports/TunnelDetailScreen.kt), [`AddTunnelScreen.kt`](../app2/src/main/java/com/pocketshell/next/ports/AddTunnelScreen.kt) | Local status dot, tables, toggles, dense rows, semantic colours. | Does not use shared `StatusDot` or row/card catalog consistently. | `StatusDot`, metric/list rows, progress/error roles, shared table-density rules. |
+| Workspace roots [`WorkspaceRootsScreen.kt`](../app2/src/main/java/com/pocketshell/next/settings/WorkspaceRootsScreen.kt) | `ScreenHeader`, `ListRow`, `Kebab`, `SegmentedToggle`, dialogs. | Section cards and edit dialogs are local. | Shared settings/list management rows, shared add/edit folder dialog. |
+| File viewer [`ViewerScreen.kt`](../app2/src/main/java/com/pocketshell/next/files/ViewerScreen.kt) | `ScreenHeader`, text/image/binary viewer states, share/copy actions. | File chrome is local; action placement can diverge from file explorer. | Shared file header/action row, mono text body, empty/error file state. |
+| File explorer [`FileExplorerScreen.kt`](../app2/src/main/java/com/pocketshell/next/files/FileExplorerScreen.kt) | `ListRow`, alert dialog, folder/file listing. | Header mirrors file viewer but does not use `ScreenHeader`; file rows need one shared file grammar. | Shared file browser scaffold, `ListRow` file/folder row, path breadcrumb. |
 | Session tree (host workspaces) [`HostWorkspacesScreen.kt`](../app2/src/main/java/com/pocketshell/next/workspaces/HostWorkspacesScreen.kt) / [`WorkspaceScreen.kt`](../app2/src/main/java/com/pocketshell/next/workspaces/WorkspaceScreen.kt) | Host workspaces, live session rows, agent/shell badges, create-session sheet. | Tree rows and create/error states must keep host truth visible. | Shared tree row, status/agent badge, session-create sheet, and explicit error state. |
-| Session [`SessionScreen.kt`](../app2/src/main/java/com/pocketshell/next/terminal/SessionScreen.kt) | Terminal viewport, tabs, `KeyBar`, usage badge, status, conversation feed, lifecycle controls. | Terminal chrome and reconnect states must remain consistent with the tree's host session identity. | Terminal shell pattern: breadcrumb, tabs, keybar, composer, overflow menu, and connection status. |
+| Session [`SessionScreen.kt`](../app2/src/main/java/com/pocketshell/next/terminal/SessionScreen.kt) | `ScreenHeader` carrying the connection-status dot, the `UsageGlancePill` usage badge and a `KebabTrigger` for lifecycle actions; a `SessionContextBar` session-switcher row; the terminal viewport; the floating `TerminalHotkeysPaletteOverlay`; the docked `SessionTerminalBar`; and the `PromptComposerSheet` composer. | Terminal chrome and reconnect states must remain consistent with the workspace's host session identity. | Terminal shell pattern: `ScreenHeader` with status and usage, context bar, floating hotkeys palette, docked terminal bar, composer sheet, and overflow menu. |
 
 ### Hosted Sheets, Dialogs, And Secondary Surfaces
 
 | Surface | Current patterns | Drift | Standardize on |
 |---------|------------------|-------|----------------|
-| Prompt composer [`PromptComposerSheet.kt`](../app/src/main/java/com/pocketshell/app/composer/PromptComposerSheet.kt) and [`UnifiedComposer.kt`](../app/src/main/java/com/pocketshell/app/composer/UnifiedComposer.kt) | `ModalBottomSheet`, `MicButton`, recording/transcribing states, attachment chips, API-key dialog. | Many local controls and state rows; motion is local. | Composer component family: mic, paperclip, state row, attachment chip, send actions. |
-| Snippets screen [`SnippetsScreen.kt`](../app/src/main/java/com/pocketshell/app/snippets/SnippetsScreen.kt) | `ScreenHeader`, local library tabs, `ListRow`, `Kebab`, add/edit/rename/delete dialogs. | Tabs and dialogs are local. | Shared tabs/segmented control and edit dialog grammar. |
-| Snippet picker [`SnippetPickerSheet.kt`](../app/src/main/java/com/pocketshell/app/snippets/SnippetPickerSheet.kt) | `ModalBottomSheet`, search, rows, explicit send chips, delete dialog. | Sheet row/action density should match composer and command sheets. | Shared picker sheet with search, dense rows, trailing action chips. |
-| Agent command sheet [`AgentCommandSheet.kt`](../app/src/main/java/com/pocketshell/app/agentcommands/AgentCommandSheet.kt) | `ModalBottomSheet`, command rows, parameter rows, mono previews. | Similar to snippet picker but separate styling. | Shared command picker sheet and command row. |
-| Bootstrap sheet [`HostBootstrapSheet.kt`](../app/src/main/java/com/pocketshell/app/bootstrap/HostBootstrapSheet.kt) | `ModalBottomSheet`, progress/setup states, secondary buttons, confirm dialog. | Setup state cards should align with empty/error/setup-needed patterns. | Shared setup sheet, progress row, action footer. |
-| Folder context actions [`FolderContextActionSheet.kt`](../app/src/main/java/com/pocketshell/app/projects/FolderContextActionSheet.kt) | `ModalBottomSheet`, actions, confirm dialog. | Should be the canonical row action sheet for folders. | Shared action sheet rows with destructive confirm. |
-| Root project add [`RootProjectAddSheet.kt`](../app/src/main/java/com/pocketshell/app/projects/RootProjectAddSheet.kt) | `ModalBottomSheet`, autocomplete list. | Autocomplete/search rows should match session start directory picker. | Shared path picker sheet. |
-| Session type picker [`SessionTypePickerSheet.kt`](../app/src/main/java/com/pocketshell/app/projects/SessionTypePickerSheet.kt) | `ModalBottomSheet`, shell/agent choices. | Choice rows are local. | Shared session-create picker with agent/shell badges. |
-| Share host picker [`ShareActivity.kt`](../app/src/main/java/com/pocketshell/app/share/ShareActivity.kt), [`HostPickerScreen.kt`](../app/src/main/java/com/pocketshell/app/share/HostPickerScreen.kt) | Share-specific host/target lists, `ListRow`, dialogs. | Header and picker flow are separate from app host chooser. | Shared chooser row and target picker sheet. |
-| SSH keys [`SshKeysScreen.kt`](../app/src/main/java/com/pocketshell/app/hosts/SshKeysScreen.kt) | `ListRow`, `Kebab`, key rows, unlock dialog. | Not a nav destination but important form-management surface; needs `ScreenHeader` when standalone. | Shared key row, secret/unlock dialog. |
-| Voice session surface [`VoiceSessionSurface.kt`](../app2/src/main/java/com/pocketshell/next/voice/VoiceSessionSurface.kt) | Dictation UI shared by terminal routes. | Must not drift from composer and mic tokens. | `MicButton`, shared recording states, shared transcript controls. |
-| Terminal lab [`TerminalLabActivity.kt`](../app/src/main/java/com/pocketshell/app/terminal/TerminalLabActivity.kt) | Dev/test terminal activity. | Not production nav, but can mislead future agents. | Keep as lab-only; do not source product components from it without review. |
+| Prompt composer [`PromptComposerSheet.kt`](../app2/src/main/java/com/pocketshell/next/composer/PromptComposerSheet.kt) and [`ComposerBar.kt`](../app2/src/main/java/com/pocketshell/next/composer/ComposerBar.kt) | `ModalBottomSheet`, `MicButton`, recording/transcribing states, attachment chips, API-key dialog. | Many local controls and state rows; motion is local. | Composer component family: mic, paperclip, state row, attachment chip, send actions. |
+| Session create sheet [`CreateSessionSheet.kt`](../app2/src/main/java/com/pocketshell/next/tree/CreateSessionSheet.kt) | `ModalBottomSheet`, shell/agent choices. | Choice rows are local. | Shared session-create picker with agent/shell badges. |
+| Share host picker [`ShareActivity.kt`](../app2/src/main/java/com/pocketshell/next/share/ShareActivity.kt), [`SharePickerScreen.kt`](../shared/ui-screens/src/main/java/com/pocketshell/next/share/SharePickerScreen.kt) | Share-specific host/target lists, `ListRow`, dialogs. | Header and picker flow are separate from app host chooser. | Shared chooser row and target picker sheet. |
+| SSH keys [`SshKeysScreen.kt`](../app2/src/main/java/com/pocketshell/next/hosts/SshKeysScreen.kt) | `ListRow`, `Kebab`, key rows, unlock dialog. | Not a nav destination but important form-management surface; needs `ScreenHeader` when standalone. | Shared key row, secret/unlock dialog. |
+| Dictation surfaces [`InlineDictationController.kt`](../app2/src/main/java/com/pocketshell/next/terminal/InlineDictationController.kt), [`ComposerRecordingSurfaces.kt`](../app2/src/main/java/com/pocketshell/next/composer/ComposerRecordingSurfaces.kt) | Terminal-bar inline dictation plus the composer's recording panel. | Must not drift from composer and mic tokens. | `MicButton`, shared recording states, shared transcript controls. |
 
 ## Migration Slices
 

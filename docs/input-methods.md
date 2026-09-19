@@ -8,7 +8,7 @@ The full alternative-to-typing strategy. PocketShell reduces keyboard reliance t
 |---|---|---|
 | Prompt Composer | Voice/text composing for agent prompts | Tap mic FAB on session view |
 | Inline dictation | Voice straight into the terminal at cursor | Tap mic icon in the bottom controls |
-| Terminal hotkeys panel | Special keys, control combos, the sticky `Ctrl` modifier + a–z letters, arrows | Tap the `⌨` launcher on the Terminal tab |
+| Terminal hotkeys panel | Special keys, control combos, the `Ctrl+…` page's a–z letters, arrows | Tap More keys on `SessionTerminalBar`, or the hotkeys entry in the composer sheet |
 | Command chips / snippets | Whole commands or prompt templates | Always-visible chip row when keyboard is down |
 
 For session operations (detach, switch sessions, and stop) PocketShell uses
@@ -67,7 +67,7 @@ Behaviours:
 
 ### Inline dictation (escape hatch)
 
-For short shell commands when the prompt composer is overkill. Mic icon lives in the key bar. Tap → words stream directly into the terminal at cursor. Tap again → stop. No review step.
+For short shell commands when the prompt composer is overkill. The mic sits at the trailing end of `SessionTerminalBar`, the docked bar under the terminal (the composer sheet has its own mic). Tap → words stream directly into the terminal at cursor; partials render only in the bar's status chip. Tap again → stop. No review step.
 
 Inline dictation uses the same configured silence window as the prompt composer (30s default, adjustable from 2s to 60s).
 
@@ -103,19 +103,25 @@ Composer remains the preferred surface for prose and longer agent prompts.
 
 ## Terminal hotkeys panel
 
-The terminal control keys live in a dedicated **hotkeys panel** — its own
-bottom-sheet surface opened from the Terminal tab's `⌨` launcher (NOT crammed
-above the soft keyboard; #784/#789 hard-cut the old in-keyboard bar). The panel
-opens on one screenful of common controls and stays open after a tap so you can
-fire several keys in a row. It routes every key through
-`SessionViewModel.onKeyBarKey`, which maps the visible label to its control byte
-and writes it to the live terminal PTY — no terminal resize or redraw.
+The terminal control keys live in a dedicated hotkeys panel —
+`TerminalHotkeysPaletteOverlay`, a draggable card that floats INSIDE the
+terminal slot, opened from `SessionTerminalBar`'s More keys affordance or from
+the composer sheet's hotkeys entry (NOT crammed above the soft keyboard;
+#784/#789 hard-cut the old in-keyboard bar). Because it floats rather than
+docking, opening it never resizes the cell grid. The panel opens on one
+screenful of common controls and stays open after a tap so you can fire several
+keys in a row. Each tap maps the visible label to its control byte through
+`keyBarBytes` (`app2/.../terminal/KeyBytes.kt`) and hands the bytes to
+`SessionViewModel.sendBytes`, which writes them to the live terminal PTY — no
+terminal resize or redraw. Long-pressing `^C` / `^D` sends the doubled
+interrupt/EOF variant. The catalog itself lives in `HotkeyCatalog.kt`.
 
-Main page:
+Main page (`HOTKEY_PALETTE_MAIN_SECTIONS`) — ↑ / ↓ / Enter are NOT here: #2612
+moved them onto the bar itself, one tap each, no panel to open:
 
 ```
-ARROWS           ←  ↑  ↓  →
-KEYS             Esc  Tab  ⇧Tab  Enter
+ARROWS           ←  →
+KEYS             Esc  Tab  ⇧Tab
 CTRL             ^B  ^C  ^D  ^Q  ^X
                  [Ctrl+…]
 ```
@@ -134,15 +140,18 @@ N M \
 
 Each tap immediately sends that key's control byte and leaves the page open,
 so sequences such as `^B ^B` need no re-entry. `^Q` is XON (`0x11`) and `^\`
-is SIGQUIT (`0x1c`). Back returns to common keys; Back again, close, or a scrim
-tap dismisses. Reopening always starts on the main page. There is no hidden
-sticky-modifier state, and literal letters belong to the system IME.
+is SIGQUIT (`0x1c`). The panel header's back control returns to common keys;
+its close button, or toggling More keys again, dismisses. There is no scrim —
+the panel floats over the terminal without dimming it, and a tap that misses
+the card reaches the terminal. Reopening always starts on the main page. There
+is no hidden sticky-modifier state, and literal letters belong to the system
+IME.
 
 The main-page `^C` and `^D` keycaps show a persistent `hold ×2` cue. A normal
 tap sends one byte; holding sends the existing atomic two-byte sequence (`03
 03` / `04 04`) without also firing the single tap. Two ordinary taps remain the
-accessible fallback. The same sheet and byte path are used for shell and agent
-Terminal panes; controls are disabled when the pane is not live.
+accessible fallback. The same panel and byte path are used for shell and
+agent sessions; controls are disabled when the session is not live.
 
 ---
 
@@ -158,7 +167,7 @@ for bytes that belong to the shell or the foreground workload:
 | List sessions across hosts | Swipe down to dashboard |
 | Stop session | `⋮` menu on the session tree row |
 
-For things genuinely without native UI (vim `Esc :wq`, less `q`, copy mode entry) → the terminal hotkeys panel handles them (direct keys, or the sticky `Ctrl` + a letter).
+For things genuinely without native UI (vim `Esc :wq`, less `q`, copy mode entry) → the terminal hotkeys panel handles them (direct keys, or `Ctrl+…` + a letter).
 
 A power-user chord palette may return as opt-in settings post-v1 if real demand appears. v1 stays simple.
 
@@ -168,7 +177,7 @@ A power-user chord palette may return as opt-in settings post-v1 if real demand 
 
 Already covered in [vision.md](vision.md) §4. Whole commands or prompt templates. Per-host library.
 
-Distinct from the terminal hotkeys panel: chips send literal text strings; the hotkeys panel sends key codes / control bytes (and `Ctrl+<key>` via the sticky modifier).
+Distinct from the terminal hotkeys panel: chips send literal text strings; the hotkeys panel sends key codes / control bytes (and `Ctrl+<key>` from its `Ctrl+…` page).
 
 ---
 
@@ -188,7 +197,7 @@ Keyboard up:
 └────────────────────────────┘
 ```
 
-(Tapping `⌨ hotkeys` opens the terminal hotkeys panel bottom-sheet described
+(Tapping `⌨ hotkeys` opens the floating terminal hotkeys panel described
 above.)
 
 Keyboard down:

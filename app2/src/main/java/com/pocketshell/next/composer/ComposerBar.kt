@@ -612,9 +612,12 @@ private fun ControlsRow(
 }
 
 /**
- * The composer has one quiet entry point for secondary actions. The expanded
- * panel is rendered inside the existing composer surface, so opening it never
- * stacks a second modal over the draft.
+ * The composer has one quiet entry point for secondary actions. Tapping it
+ * opens [ComposerToolsPanel] in its own `ModalBottomSheet` above the composer
+ * sheet (see the `toolsOpen` branch in [ComposerBar]), so the draft stays
+ * behind it rather than being replaced. Every row in the panel closes the
+ * sheet before running its action, so the two modals are never both
+ * interactive.
  */
 @Composable
 private fun ComposerToolsTrigger(
