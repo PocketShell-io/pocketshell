@@ -142,7 +142,7 @@ class AccountSyncScreenTest {
                 clientConfigured = true,
                 signedIn = true,
                 hosts = hosts,
-                outcome = SyncOutcome.Failed("decryption failed — wrong passphrase or corrupted blob"),
+                outcome = SyncOutcomeDisplay.Failed("decryption failed — wrong passphrase or corrupted blob"),
             ),
         )
         composeRule.onNodeWithTag(SYNC_LIST_TAG).performScrollToNode(hasTestTag(SYNC_STATUS_TAG))

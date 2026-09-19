@@ -20,12 +20,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -56,27 +53,6 @@ const val SYNC_LIST_TAG: String = "sync-list"
 
 fun syncHostRowTag(alias: String): String = "sync-host-$alias"
 
-@Composable
-fun AccountSyncRoute(
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: AccountSyncViewModel = hiltViewModel(),
-) {
-    val context = LocalContext.current
-    val state by viewModel.state.collectAsStateWithLifecycle()
-    AccountSyncScreen(
-        state = state,
-        onBack = onBack,
-        onSignIn = { viewModel.signIn(context) },
-        onSignOut = viewModel::signOut,
-        onDismissSignInBanner = viewModel::acknowledgeSignIn,
-        onHostChecked = viewModel::setHostChecked,
-        onPush = viewModel::push,
-        onPull = viewModel::pull,
-        modifier = modifier,
-    )
-}
-
 /**
  * "Account & sync" — the optional Google-login settings sync (issue #2633).
  *
@@ -90,6 +66,12 @@ fun AccountSyncRoute(
  * saveable would put the passphrase into saved instance state, which the
  * system writes to disk. It lives in composition memory for as long as this
  * screen is on screen and is gone with it.
+ *
+ * Lives in the shared presentation module (#2636 D7). The route that binds the
+ * Hilt ViewModel stays in app2 (`AccountSyncRoute`): this composable only
+ * paints [AccountSyncUiState] and fires the caller's lambdas — the app-side
+ * result types (`SyncOutcome`, `SyncSignInCoordinator.State`) are mapped onto
+ * the pure display shapes by the adapters in app2's `AccountSyncViewModel.kt`.
  */
 @Composable
 fun AccountSyncScreen(
@@ -242,14 +224,14 @@ fun AccountSyncScreen(
                             text = "Sync now",
                             onClick = { onPush(passphrase) },
                             variant = ButtonVariant.Primary,
-                            enabled = state.outcome != SyncOutcome.Running,
+                            enabled = state.outcome != SyncOutcomeDisplay.Running,
                             modifier = Modifier.testTag(SYNC_PUSH_TAG),
                         )
                         PocketShellButton(
                             text = "Restore from account",
                             onClick = { onPull(passphrase) },
                             variant = ButtonVariant.Secondary,
-                            enabled = state.outcome != SyncOutcome.Running,
+                            enabled = state.outcome != SyncOutcomeDisplay.Running,
                             modifier = Modifier.testTag(SYNC_PULL_TAG),
                         )
                     }
@@ -261,12 +243,12 @@ fun AccountSyncScreen(
 }
 
 private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
-    phase: SyncSignInCoordinator.State,
+    phase: SyncSignInPhase,
     onDismiss: () -> Unit,
 ) {
     when (phase) {
-        SyncSignInCoordinator.State.Idle -> Unit
-        SyncSignInCoordinator.State.AwaitingRedirect -> item {
+        SyncSignInPhase.Idle -> Unit
+        SyncSignInPhase.AwaitingRedirect -> item {
             Banner(
                 text = "Finish signing in with Google in your browser.",
                 role = BannerRole.Info,
@@ -274,7 +256,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
             )
         }
-        SyncSignInCoordinator.State.Exchanging -> item {
+        SyncSignInPhase.Exchanging -> item {
             Banner(
                 text = "Completing sign-in…",
                 role = BannerRole.Info,
@@ -282,7 +264,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
             )
         }
-        is SyncSignInCoordinator.State.Failed -> item {
+        is SyncSignInPhase.Failed -> item {
             Banner(
                 text = "Sign-in failed: ${phase.message}",
                 role = BannerRole.Error,
@@ -291,7 +273,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
                 modifier = Modifier.padding(horizontal = PocketShellDensity.rowPadH),
             )
         }
-        is SyncSignInCoordinator.State.SignedIn -> item {
+        is SyncSignInPhase.SignedIn -> item {
             Banner(
                 text = "Signed in as ${phase.email ?: "your Google account"}.",
                 role = BannerRole.Info,
@@ -303,18 +285,18 @@ private fun androidx.compose.foundation.lazy.LazyListScope.signInPhaseBanner(
     }
 }
 
-private fun androidx.compose.foundation.lazy.LazyListScope.outcomeBanner(outcome: SyncOutcome) {
+private fun androidx.compose.foundation.lazy.LazyListScope.outcomeBanner(outcome: SyncOutcomeDisplay) {
     val (text, role) = when (outcome) {
-        SyncOutcome.None -> return
-        SyncOutcome.Running -> "Syncing…" to BannerRole.Info
-        is SyncOutcome.Pushed ->
+        SyncOutcomeDisplay.None -> return
+        SyncOutcomeDisplay.Running -> "Syncing…" to BannerRole.Info
+        is SyncOutcomeDisplay.Pushed ->
             "Uploaded ${outcome.uploaded} host${plural(outcome.uploaded)} (version ${outcome.version})." to
                 BannerRole.Info
-        is SyncOutcome.Pulled ->
+        is SyncOutcomeDisplay.Pulled ->
             "Your account holds ${outcome.hosts} host${plural(outcome.hosts)}." to BannerRole.Info
-        SyncOutcome.AccountEmpty ->
+        SyncOutcomeDisplay.AccountEmpty ->
             "Your account has no synced hosts yet. Tick some and Sync now." to BannerRole.Info
-        is SyncOutcome.Failed -> outcome.message to BannerRole.Error
+        is SyncOutcomeDisplay.Failed -> outcome.message to BannerRole.Error
     }
     item {
         Banner(

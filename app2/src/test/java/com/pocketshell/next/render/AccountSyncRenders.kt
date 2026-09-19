@@ -8,8 +8,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import com.pocketshell.next.sync.AccountSyncScreen
 import com.pocketshell.next.sync.AccountSyncUiState
 import com.pocketshell.next.sync.SyncHostRow
-import com.pocketshell.next.sync.SyncOutcome
-import com.pocketshell.next.sync.SyncSignInCoordinator
+import com.pocketshell.next.sync.SyncOutcomeDisplay
+import com.pocketshell.next.sync.SyncSignInPhase
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -99,9 +99,9 @@ class AccountSyncRenders {
                 clientConfigured = true,
                 signedIn = true,
                 email = "alexey.s.grigoriev@gmail.com",
-                signInPhase = SyncSignInCoordinator.State.SignedIn("alexey.s.grigoriev@gmail.com"),
+                signInPhase = SyncSignInPhase.SignedIn("alexey.s.grigoriev@gmail.com"),
                 hosts = hosts,
-                outcome = SyncOutcome.Pushed(uploaded = 2, version = 7),
+                outcome = SyncOutcomeDisplay.Pushed(uploaded = 2, version = 7),
             ),
             onBack = {},
             onSignIn = {},
@@ -121,7 +121,7 @@ class AccountSyncRenders {
                 signedIn = true,
                 email = "alexey.s.grigoriev@gmail.com",
                 hosts = hosts,
-                outcome = SyncOutcome.Failed("decryption failed — wrong passphrase or corrupted blob"),
+                outcome = SyncOutcomeDisplay.Failed("decryption failed — wrong passphrase or corrupted blob"),
             ),
             onBack = {},
             onSignIn = {},

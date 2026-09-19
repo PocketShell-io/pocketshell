@@ -128,7 +128,7 @@ class AccountSyncViewModelTest {
         vm.push("")
 
         assertEquals(
-            SyncOutcome.Failed("Enter your sync passphrase first."),
+            SyncOutcomeDisplay.Failed("Enter your sync passphrase first."),
             vm.state.value.outcome,
         )
         assertEquals(0, http.requests.size)
@@ -146,7 +146,7 @@ class AccountSyncViewModelTest {
 
         vm.push(passphrase)
 
-        assertEquals(SyncOutcome.Pushed(uploaded = 1, version = 1), vm.state.value.outcome)
+        assertEquals(SyncOutcomeDisplay.Pushed(uploaded = 1, version = 1), vm.state.value.outcome)
     }
 
     @Test
@@ -168,7 +168,7 @@ class AccountSyncViewModelTest {
         vm.pull(passphrase)
 
         val state = vm.state.value
-        assertEquals(SyncOutcome.Pulled(1), state.outcome)
+        assertEquals(SyncOutcomeDisplay.Pulled(1), state.outcome)
         val accountOnly = state.hosts.single { it.accountOnly }
         assertEquals("laptop-only", accountOnly.name)
         // Auto-ticked, because this device has never materialised it — that is
@@ -191,8 +191,8 @@ class AccountSyncViewModelTest {
         vm.pull("not the passphrase")
 
         val outcome = vm.state.value.outcome
-        assertTrue(outcome is SyncOutcome.Failed)
-        assertTrue((outcome as SyncOutcome.Failed).message.contains("wrong passphrase"))
+        assertTrue(outcome is SyncOutcomeDisplay.Failed)
+        assertTrue((outcome as SyncOutcomeDisplay.Failed).message.contains("wrong passphrase"))
     }
 
     /* --- containment -------------------------------------------------------- */

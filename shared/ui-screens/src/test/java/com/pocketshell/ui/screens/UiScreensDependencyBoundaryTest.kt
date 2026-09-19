@@ -26,6 +26,23 @@ import com.pocketshell.next.settings.terminalTextSizeSpFromPx
 import com.pocketshell.next.share.ShareHostRow
 import com.pocketshell.next.share.ShareUploadState
 import com.pocketshell.next.share.ShareUiState
+import com.pocketshell.next.sync.SYNC_ACCOUNT_ROW_TAG
+import com.pocketshell.next.sync.SYNC_BACK_TAG
+import com.pocketshell.next.sync.SYNC_HOSTS_EMPTY_TAG
+import com.pocketshell.next.sync.SYNC_LIST_TAG
+import com.pocketshell.next.sync.SYNC_PAGE_TAG
+import com.pocketshell.next.sync.SYNC_PASSPHRASE_TAG
+import com.pocketshell.next.sync.SYNC_PULL_TAG
+import com.pocketshell.next.sync.SYNC_PUSH_TAG
+import com.pocketshell.next.sync.SYNC_SIGN_IN_TAG
+import com.pocketshell.next.sync.SYNC_SIGN_OUT_TAG
+import com.pocketshell.next.sync.SYNC_STATUS_TAG
+import com.pocketshell.next.sync.SYNC_UNCONFIGURED_TAG
+import com.pocketshell.next.sync.AccountSyncUiState
+import com.pocketshell.next.sync.SyncHostRow
+import com.pocketshell.next.sync.SyncOutcomeDisplay
+import com.pocketshell.next.sync.SyncSignInPhase
+import com.pocketshell.next.sync.syncHostRowTag
 import java.io.File
 
 /**
@@ -67,6 +84,12 @@ import java.io.File
  * repository/`Context` — and the host display row. The routes, the Hilt view
  * models and the build-info read stay app2-side; the release/platform scan
  * below keeps it that way.
+ *
+ * The #2636 D7 slice added the sync family (`AccountSyncScreen` + its pure
+ * state/display types): the app2-side result types (`SyncOutcome`, the
+ * sign-in coordinator's `State`) stay in `AccountSyncViewModel.kt` and are
+ * mapped onto the shared display shapes by app2-side adapters — the same
+ * service/result seam D3 locked for the release check.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -202,16 +225,25 @@ class UiScreensDependencyBoundaryTest {
             // helpers ride in movedNonTypeMarkers below.
             AppSettings::class to "data class AppSettings",
             SettingsHostRow::class to "data class SettingsHostRow",
+            // The D7 family — same role: sync-side changes keep this guard
+            // selected through these imports (invariant I11).
+            AccountSyncUiState::class to "data class AccountSyncUiState",
+            SyncSignInPhase::class to "sealed interface SyncSignInPhase",
+            SyncOutcomeDisplay::class to "sealed interface SyncOutcomeDisplay",
+            SyncHostRow::class to "data class SyncHostRow",
         )
 
         /**
-         * The D5 and D6 slices also moved top-level consts and functions
+         * The D5, D6 and D7 slices also moved top-level consts and functions
          * (`ComposerBar.kt`'s slash-sheet tags, the IME anchor policy's pure
-         * functions, the settings terminal text-size px↔sp converters), which
-         * cannot ride in [movedTypeMarkers] — no `KClass`. Each left-hand
-         * reference below is itself load-bearing: deleting the declaration
-         * fails the BUILD on this import/reference, exactly like a `KClass`
-         * reference would.
+         * functions, the settings terminal text-size px↔sp converters,
+         * `AccountSyncScreen.kt`'s sync test tags), which cannot ride in
+         * [movedTypeMarkers] — no `KClass`. Each left-hand reference below is
+         * itself load-bearing: deleting the declaration fails the BUILD on
+         * this import/reference, exactly like a `KClass` reference would.
+         * Moved composable screens get none (matching D5/D6/D7): a composable
+         * function takes no `KFunction` reference, and app2's routes, render
+         * fixtures and tests pin them by importing them.
          */
         private val movedNonTypeMarkers: List<Pair<Any, String>> = listOf(
             COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
@@ -223,6 +255,19 @@ class UiScreensDependencyBoundaryTest {
             ::decideComposerImeAnchorAction to "fun decideComposerImeAnchorAction",
             ::terminalTextSizeSpFromPx to "fun terminalTextSizeSpFromPx",
             ::terminalTextSizePxFromSp to "fun terminalTextSizePxFromSp",
+            SYNC_PAGE_TAG to "const val SYNC_PAGE_TAG",
+            SYNC_BACK_TAG to "const val SYNC_BACK_TAG",
+            SYNC_SIGN_IN_TAG to "const val SYNC_SIGN_IN_TAG",
+            SYNC_SIGN_OUT_TAG to "const val SYNC_SIGN_OUT_TAG",
+            SYNC_ACCOUNT_ROW_TAG to "const val SYNC_ACCOUNT_ROW_TAG",
+            SYNC_PASSPHRASE_TAG to "const val SYNC_PASSPHRASE_TAG",
+            SYNC_PUSH_TAG to "const val SYNC_PUSH_TAG",
+            SYNC_PULL_TAG to "const val SYNC_PULL_TAG",
+            SYNC_STATUS_TAG to "const val SYNC_STATUS_TAG",
+            SYNC_UNCONFIGURED_TAG to "const val SYNC_UNCONFIGURED_TAG",
+            SYNC_HOSTS_EMPTY_TAG to "const val SYNC_HOSTS_EMPTY_TAG",
+            SYNC_LIST_TAG to "const val SYNC_LIST_TAG",
+            ::syncHostRowTag to "fun syncHostRowTag",
         )
 
         private val movedDeclarations: List<String> =

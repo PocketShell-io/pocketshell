@@ -17,16 +17,17 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** One tickable row in the Account & sync host picker. */
-data class SyncHostRow(
-    val name: String,
-    val subtitle: String,
-    val checked: Boolean,
-    /** True for an alias that exists only in the account, not on this device. */
-    val accountOnly: Boolean = false,
-)
-
-/** The last thing a sync did, as one line the screen can show. */
+/**
+ * The last thing a sync did, as one line the screen can show.
+ *
+ * Stays in app2 (#2636 D7): it is the ViewModel/repository's result language.
+ * The shared screen paints the mirrored display shape `SyncOutcomeDisplay`
+ * (`shared:ui-screens`, same package) — [syncOutcomeDisplay] below is the
+ * adapter, the same seam `ReleaseInfo` → `ReleaseUpdateDisplay` uses for the
+ * settings pages (#2636 D3). `SyncHostRow` and `AccountSyncUiState` moved to
+ * the shared module verbatim (same package, so every reference here is
+ * unchanged).
+ */
 sealed interface SyncOutcome {
     data object None : SyncOutcome
     data object Running : SyncOutcome
@@ -37,22 +38,30 @@ sealed interface SyncOutcome {
 }
 
 /**
- * Everything the Account & sync screen renders.
- *
- * Note what is NOT here: an ID token, a refresh token, or the passphrase. The
- * tokens never leave [GoogleAuth]/the Keystore-backed store, and the
- * passphrase lives in the text field's own state and is handed to a call as a
- * parameter. `AccountSyncViewModelTest` asserts that containment rather than
- * trusting this comment.
+ * Maps a sign-in phase onto the pure `SyncSignInPhase` display shape the
+ * shared screen paints (#2636 D7): the coordinator stays app2-side, and no
+ * app service type crosses into `shared:ui-screens`.
  */
-data class AccountSyncUiState(
-    val clientConfigured: Boolean = SyncConfig.isGoogleClientConfigured,
-    val signedIn: Boolean = false,
-    val email: String? = null,
-    val signInPhase: SyncSignInCoordinator.State = SyncSignInCoordinator.State.Idle,
-    val hosts: List<SyncHostRow> = emptyList(),
-    val outcome: SyncOutcome = SyncOutcome.None,
-)
+internal fun syncSignInPhase(phase: SyncSignInCoordinator.State): SyncSignInPhase = when (phase) {
+    SyncSignInCoordinator.State.Idle -> SyncSignInPhase.Idle
+    SyncSignInCoordinator.State.AwaitingRedirect -> SyncSignInPhase.AwaitingRedirect
+    SyncSignInCoordinator.State.Exchanging -> SyncSignInPhase.Exchanging
+    is SyncSignInCoordinator.State.Failed -> SyncSignInPhase.Failed(phase.message)
+    is SyncSignInCoordinator.State.SignedIn -> SyncSignInPhase.SignedIn(phase.email)
+}
+
+/**
+ * Maps a sync result onto the pure `SyncOutcomeDisplay` display shape the
+ * shared screen paints (#2636 D7).
+ */
+internal fun syncOutcomeDisplay(outcome: SyncOutcome): SyncOutcomeDisplay = when (outcome) {
+    SyncOutcome.None -> SyncOutcomeDisplay.None
+    SyncOutcome.Running -> SyncOutcomeDisplay.Running
+    is SyncOutcome.Pushed -> SyncOutcomeDisplay.Pushed(outcome.uploaded, outcome.version)
+    is SyncOutcome.Pulled -> SyncOutcomeDisplay.Pulled(outcome.hosts)
+    SyncOutcome.AccountEmpty -> SyncOutcomeDisplay.AccountEmpty
+    is SyncOutcome.Failed -> SyncOutcomeDisplay.Failed(outcome.message)
+}
 
 @HiltViewModel
 class AccountSyncViewModel @Inject constructor(
@@ -84,9 +93,9 @@ class AccountSyncViewModel @Inject constructor(
             clientConfigured = status.clientConfigured,
             signedIn = status.signedIn,
             email = status.email,
-            signInPhase = phase,
+            signInPhase = syncSignInPhase(phase),
             hosts = buildRows(hosts, account, checked),
-            outcome = lastOutcome,
+            outcome = syncOutcomeDisplay(lastOutcome),
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MS), AccountSyncUiState())
 
