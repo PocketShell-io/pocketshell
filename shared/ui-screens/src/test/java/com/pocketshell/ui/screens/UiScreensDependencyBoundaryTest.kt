@@ -20,12 +20,19 @@ import com.pocketshell.next.composer.StagingProgress
 import com.pocketshell.next.composer.updateComposerPreImeExpanded
 import com.pocketshell.next.connect.TRUST_SHEET_TAG
 import com.pocketshell.next.connect.TrustPromptState
+import com.pocketshell.next.files.FileTransferRecord
+import com.pocketshell.next.files.FileTransferStatus
 import com.pocketshell.next.files.InlineSpan
 import com.pocketshell.next.files.MARKDOWN_VIEW_TAG
 import com.pocketshell.next.files.MarkdownBlock
 import com.pocketshell.next.files.MarkdownParser
+import com.pocketshell.next.files.TRANSFERS_SCREEN_TAG
+import com.pocketshell.next.files.TransfersUiState
+import com.pocketshell.next.files.formatSize
 import com.pocketshell.next.files.normalizeUrl
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.hosts.SSH_KEYS_UNLOCK_BUTTON_TAG
+import com.pocketshell.next.hosts.sshKeyFallbackRowTag
 import com.pocketshell.next.ports.PortColumn
 import com.pocketshell.next.settings.AppSettings
 import com.pocketshell.next.settings.SettingsHostRow
@@ -110,6 +117,18 @@ import java.io.File
  * `Companion` extension, so `TrustPromptState.from(...)` call sites did not
  * change; the moved state is marked below and the module keeps a bare
  * `companion object` for it.
+ *
+ * The #2636 D9 slice finished the leftovers: the files family's Transfers page
+ * (its screen, tags, `formatSize` and the transfer record/status types) and
+ * the hosts family's `SshKeyUnlockPanel` + its `SSH_KEYS_*` tags. Both carry a
+ * D3-shaped seam. app2's `FileExplorerUiState` stays app2-side — it holds
+ * `SftpEntry` (core-transport) — and its `toTransfersUiState()` adapter hands
+ * the screen the pure `TransfersUiState`, whose `subtitle` is pre-spelled
+ * because `fileLocationSubtitle` resolves through a `core-hostapi` importer.
+ * The unlock panel's other half (`launchSshKeyUnlock`, the prompt launcher,
+ * the in-flight gate) stayed in app2's `SshKeyUnlock.kt`: `androidx.biometric`
+ * against a `FragmentActivity` and an Android `Context` are exactly what the
+ * platform scan below forbids here.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -265,21 +284,31 @@ class UiScreensDependencyBoundaryTest {
             PortColumn::class to "data class PortColumn",
             UsageResetBannerState::class to "data class UsageResetBannerState",
             UsageResetEvent::class to "data class UsageResetEvent",
+            // The D9 family — the last leftovers: the Transfers page's pure
+            // state, app2's `FileExplorerUiState` staying behind the
+            // `toTransfersUiState()` adapter. The moved composables
+            // (`TransfersScreen`, `SshKeyUnlockPanel`) get no markers; the
+            // families' tags, `formatSize` and the row-tag helper ride in
+            // movedNonTypeMarkers below, matching D5/D6/D8.
+            TransfersUiState::class to "data class TransfersUiState",
+            FileTransferRecord::class to "data class FileTransferRecord",
+            FileTransferStatus::class to "enum class FileTransferStatus",
         )
 
         /**
-         * The D5, D6, D7 and D8 slices also moved top-level consts and
+         * The D5, D6, D7, D8 and D9 slices also moved top-level consts and
          * functions (`ComposerBar.kt`'s slash-sheet tags, the IME anchor
          * policy's pure functions, the settings terminal text-size px↔sp
          * converters, `AccountSyncScreen.kt`'s sync test tags, the leftovers
-         * families' representative test tags and the URL normaliser), which
-         * cannot ride in [movedTypeMarkers] — no `KClass`. Each left-hand
-         * reference below is itself load-bearing: deleting the declaration
-         * fails the BUILD on this import/reference, exactly like a `KClass`
-         * reference would. Moved composable screens get none (matching
-         * D5/D6/D7/D8): a composable function takes no `KFunction` reference,
-         * and app2's routes, render fixtures and tests pin them by importing
-         * them.
+         * families' representative test tags, the URL normaliser, the
+         * Transfers page tag + `formatSize`, and the SSH-key unlock tags),
+         * which cannot ride in [movedTypeMarkers] — no `KClass`. Each
+         * left-hand reference below is itself load-bearing: deleting the
+         * declaration fails the BUILD on this import/reference, exactly like a
+         * `KClass` reference would. Moved composable screens get none
+         * (matching D5/D6/D7/D8/D9): a composable function takes no
+         * `KFunction` reference, and app2's routes, render fixtures and tests
+         * pin them by importing them.
          */
         private val movedNonTypeMarkers: List<Pair<Any, String>> = listOf(
             COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
@@ -308,6 +337,10 @@ class UiScreensDependencyBoundaryTest {
             MARKDOWN_VIEW_TAG to "const val MARKDOWN_VIEW_TAG",
             USAGE_RESET_BANNER_TAG to "const val USAGE_RESET_BANNER_TAG",
             ::normalizeUrl to "fun normalizeUrl",
+            TRANSFERS_SCREEN_TAG to "const val TRANSFERS_SCREEN_TAG",
+            ::formatSize to "fun formatSize",
+            SSH_KEYS_UNLOCK_BUTTON_TAG to "const val SSH_KEYS_UNLOCK_BUTTON_TAG",
+            ::sshKeyFallbackRowTag to "fun sshKeyFallbackRowTag",
         )
 
         private val movedDeclarations: List<String> =

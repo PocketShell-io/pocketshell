@@ -109,7 +109,12 @@ const val FILE_EXPLORER_RENAME_NAME_TAG: String = "file-explorer-rename-name"
 const val FILE_EXPLORER_RENAME_CONFIRM_TAG: String = "file-explorer-rename-confirm"
 const val FILE_EXPLORER_DELETE_TAG: String = "file-explorer-delete"
 const val FILE_EXPLORER_DELETE_CONFIRM_TAG: String = "file-explorer-delete-confirm"
-const val FILE_EXPLORER_TRANSFERS_TAG: String = "file-explorer-transfers"
+/**
+ * Alias of the shared Transfers page tag (#2636 D9): `TransfersScreen` and
+ * its tags moved to `shared:ui-screens`, so the literal is spelled there and
+ * the explorer's own tag list keeps its entry at the same value.
+ */
+const val FILE_EXPLORER_TRANSFERS_TAG: String = TRANSFERS_SCREEN_TAG
 const val FILE_EXPLORER_NEW_TEXT_FILE_TAG: String = "file-explorer-new-text-file"
 
 fun fileRowTag(name: String): String = "file-row-$name"
@@ -324,7 +329,7 @@ fun FileExplorerScreen(
     }
     if (state.transfersVisible) {
         TransfersScreen(
-            state = state,
+            state = state.toTransfersUiState(),
             onBack = onDismissTransfers,
             onRetry = onRetryTransfer,
             modifier = modifier,

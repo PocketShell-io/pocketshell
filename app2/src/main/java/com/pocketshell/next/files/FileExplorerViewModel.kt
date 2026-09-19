@@ -15,7 +15,6 @@ import com.pocketshell.next.nav.Destination
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
-import java.util.Locale
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
@@ -62,32 +61,6 @@ sealed interface TransferState {
         val id: Long? = null,
     ) : TransferState
 }
-
-/** The lifecycle state shown by the full Transfers surface. */
-enum class FileTransferStatus {
-    Running,
-    Completed,
-    Failed,
-}
-
-/**
- * A durable-in-this-screen record of one upload or download.
- *
- * The transport API is deliberately whole-file shaped, so an unknown remote
- * size is represented by a null [totalBytes] and the UI renders an indeterminate
- * transfer. Local uploads can report measured stream bytes as they are read.
- */
-data class FileTransferRecord(
-    val id: Long,
-    val name: String,
-    val uploading: Boolean,
-    val source: String,
-    val destination: String,
-    val bytesTransferred: Long = 0L,
-    val totalBytes: Long? = null,
-    val status: FileTransferStatus = FileTransferStatus.Running,
-    val message: String? = null,
-)
 
 /** State for the create-folder sheet. A failed request keeps the user's name. */
 data class CreateFolderUiState(
@@ -172,6 +145,22 @@ data class FileExplorerUiState(
     val transferring: Boolean
         get() = transfer is TransferState.Running
 }
+
+/**
+ * Maps the explorer's state onto the pure `TransfersUiState` the shared
+ * Transfers screen paints (#2636 D9).
+ *
+ * Stays app2-side, next to the type it maps, for two reasons: this state
+ * carries `SftpEntry` (core-transport) and `RemotePath.Crumb`, which the
+ * presentation boundary forbids; and the header subtitle is spelled by
+ * `fileLocationSubtitle`, which resolves through
+ * `com.pocketshell.next.workspaces.displayRemotePath` — a `core-hostapi`
+ * importer. Same seam D3 locked for the settings release check.
+ */
+internal fun FileExplorerUiState.toTransfersUiState(): TransfersUiState = TransfersUiState(
+    subtitle = fileLocationSubtitle(hostName, path),
+    transferRecords = transferRecords,
+)
 
 /**
  * The remote file explorer for one host (rewrite task P-3a, journey J10).
@@ -947,21 +936,6 @@ internal fun validateRemoteLeafName(name: String, label: String): String? {
     if (name.any { it == '/' || it == '\\' }) return "$label cannot contain a path separator"
     if (name.any(Char::isISOControl)) return "$label contains an unsupported character"
     return null
-}
-
-/**
- * Human file size, matching the explorer rows and the transfer banner.
- *
- * Pinned to [Locale.US] rather than the default: the decimal separator is not a
- * localisation the app does anywhere else (paths, ports and byte counts are all
- * rendered machine-style), and a default-locale format would make the same
- * string read `1,5 KB` on one device and `1.5 KB` on another.
- */
-internal fun formatSize(bytes: Long): String = when {
-    bytes < 1024 -> "$bytes B"
-    bytes < 1024 * 1024 -> "%.1f KB".format(Locale.US, bytes / 1024.0)
-    bytes < 1024L * 1024 * 1024 -> "%.1f MB".format(Locale.US, bytes / (1024.0 * 1024.0))
-    else -> "%.1f GB".format(Locale.US, bytes / (1024.0 * 1024.0 * 1024.0))
 }
 
 internal fun tooBigToUpload(name: String): String =

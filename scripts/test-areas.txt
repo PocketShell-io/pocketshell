@@ -276,18 +276,20 @@ src    shared/core-portfwd/*         portfwd              full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
 src    shared/ui-kit/*               ui-shell             ui
-# #2636 D1/D2/D4/D7/D8: the presentation-boundary module carries one screen
+# #2636 D1/D2/D4/D7/D8/D9: the presentation-boundary module carries one screen
 # family per package, and each package maps to its own family's area — the
 # generic row below is the module default (the hosts family, D1); the composer
 # row carves out the composer presentation state (D2), the share row the share
 # target's screen + pure state (D4), and the D8 rows the leftovers families
 # (connect trust sheet + pure state, files markdown model/parser/renderer,
 # ports table chrome, usage reset banner + event, workspaces session mark).
-# The sync family (D7) needs no carve-out: app2's own sync rows (#2633) already
-# map that family to hosts-settings, the module default. The module's boundary
-# test imports types from ALL of these families, so its import-derived
-# dependency set keeps the module's own test task selected no matter which
-# family changed (I11).
+# Two slices need no carve-out of their own: the sync family (D7), because
+# app2's own sync rows (#2633) already map that family to hosts-settings, the
+# module default; and D9, whose Transfers page lands in the existing files row
+# and whose SSH-key unlock panel lands on the hosts-settings default. The
+# module's boundary test imports types from ALL of these families, so its
+# import-derived dependency set keeps the module's own test task selected no
+# matter which family changed (I11).
 src    shared/ui-screens/src/main/java/com/pocketshell/next/composer/*     composer-voice       full
 src    shared/ui-screens/src/main/java/com/pocketshell/next/share/*        share                full
 src    shared/ui-screens/src/main/java/com/pocketshell/next/connect/*      connection-core      full

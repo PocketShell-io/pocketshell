@@ -27,8 +27,15 @@ import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 
-/** Stable tags for the usable transfer history surface (design-kit frame 64). */
-const val TRANSFERS_SCREEN_TAG: String = FILE_EXPLORER_TRANSFERS_TAG
+/**
+ * Stable tags for the usable transfer history surface (design-kit frame 64).
+ *
+ * Lives in the shared presentation module (#2636 D9). [TRANSFERS_SCREEN_TAG]
+ * now spells the tag literally and app2's `FILE_EXPLORER_TRANSFERS_TAG` aliases
+ * it (the alias direction flipped with the move; the value is unchanged), so
+ * the explorer's own tag block keeps reading as one list.
+ */
+const val TRANSFERS_SCREEN_TAG: String = "file-explorer-transfers"
 const val TRANSFERS_IN_PROGRESS_TAG: String = "file-transfers-in-progress"
 const val TRANSFERS_COMPLETED_TAG: String = "file-transfers-completed"
 const val TRANSFERS_FAILED_TAG: String = "file-transfers-failed"
@@ -41,10 +48,16 @@ fun transferRetryTag(id: Long): String = "file-transfer-retry-$id"
 /**
  * A full page rather than a transient banner so a user can inspect a failed
  * transfer after returning from the Android document picker.
+ *
+ * Lives in the shared presentation module (#2636 D9): it paints the pure
+ * [TransfersUiState] rather than app2's `FileExplorerUiState`, which carries
+ * `SftpEntry` (core-transport) and so cannot cross this boundary — the app2
+ * side maps between them with `FileExplorerUiState.toTransfersUiState()`, the
+ * same display-shape seam D3 locked for the settings release check.
  */
 @Composable
 fun TransfersScreen(
-    state: FileExplorerUiState,
+    state: TransfersUiState,
     onBack: () -> Unit,
     onRetry: (Long) -> Unit,
     modifier: Modifier = Modifier,
@@ -56,7 +69,7 @@ fun TransfersScreen(
     ) {
         ScreenHeader(
             title = "Transfers",
-            subtitle = fileLocationSubtitle(state.hostName, state.path),
+            subtitle = state.subtitle,
             onBack = onBack,
         )
 

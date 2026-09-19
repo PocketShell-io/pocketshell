@@ -12,6 +12,13 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
+/**
+ * Stays in app2 (#2636 D9) although `TransfersScreen` moved to
+ * `shared:ui-screens`: it deliberately drives the screen through
+ * `FileExplorerUiState.toTransfersUiState()`, so the app2-side display-shape
+ * adapter is covered by the same assertions — including the header subtitle,
+ * which only the app2 half can spell.
+ */
 @RunWith(AndroidJUnit4::class)
 class TransfersScreenTest {
 
@@ -47,7 +54,7 @@ class TransfersScreenTest {
                                 message = "Download failed: destination unavailable",
                             ),
                         ),
-                    ),
+                    ).toTransfersUiState(),
                     onBack = {},
                     onRetry = { retries += it },
                 )
