@@ -40,6 +40,27 @@ PIN_COLD = "com.pocketshell.next.connect.J01ConnectAndTrustJourney"
 PIN_WORKFLOW = "com.pocketshell.next.terminal.J03AttachAndTypeJourney"
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*(#.*)?$")
 CACHE_KEY_PREFIX = "test-execution-ledger-"
+# Issue #2785. The journey lane restores and saves through the SPLIT actions,
+# never the monolithic `actions/cache`: that one hard-codes `post-if: "success()"`
+# in its own action.yml, so a red journey job never persists the rows it did
+# reach, and its `save-always` input is documented in that same file as not
+# working ("save-always does not work as intended and will be removed in a
+# future release. A separate `actions/cache/restore` step should be used
+# instead."). `actions/cache/save` needs no such input — it is an ordinary main
+# step, so `if: always()` on the step is the mechanism.
+RESTORE_ACTION = "uses: actions/cache/restore@v5"
+SAVE_ACTION = "uses: actions/cache/save@v5"
+RESTORE_STEP_TITLE = "Restore test-execution ledger"
+RECORD_STEP_TITLE = "Record journey execution"
+SAVE_STEP_TITLE = "Save test-execution ledger"
+UPLOAD_STEP_TITLE = "Upload app2 journey reports"
+# Item 3: without the run id, two runs of the same sha at attempt 1 (a push run
+# and a later workflow_dispatch on that commit) compute an identical key; the
+# second restore exact-hits the first entry and the second save is rejected as a
+# duplicate — swallowed into a warning by saveImpl's catch-all, so the run reads
+# green while its rows are discarded.
+RUN_SCOPE = "${{ github.run_id }}"
+STEP_KEY_RE = re.compile(r"^[ \t]*key:[ \t]*(\S.*?)[ \t]*$", re.M)
 
 
 class GuardFailure(ValueError):
@@ -70,6 +91,39 @@ def extract_job(workflow: str, job_name: str) -> str:
 def require(haystack: str, needle: str, where: str) -> None:
     if needle not in haystack:
         raise GuardFailure(f"{where} must contain {needle!r}")
+
+
+# A step ends at the next thing written at STEP indentation — the next `- name:`
+# OR the comment block that introduces it. Bounding on `- name:` alone is not
+# enough and is not a hypothetical: this guard's own #2785 change added a
+# comment above the save step explaining why it carries `if: always()`, and that
+# comment sits inside a `- name:`-bounded slice of the step BEFORE it. The
+# record step's slice therefore contained the literal `if: always()` from its
+# neighbour's prose, and the mutation that strips always() off the record step
+# went green. Same family as the whole-job slice the comment below describes,
+# one step smaller.
+STEP_BOUNDARY_RE = re.compile(r"^      (?:#|- )", re.M)
+
+
+def step_slice(job: str, title: str) -> str:
+    """The text of ONE named step, bounded at the next step's first line.
+
+    Running a slice to the end of the job is how an earlier version of this
+    guard went vacuous: every later `if: always()` step vouched for the ledger
+    step, so deleting always() from the ledger step alone stayed green.
+    """
+    at = job.find(title)
+    if at < 0:
+        raise GuardFailure(f"app2-journey has no {title!r} step")
+    match = STEP_BOUNDARY_RE.search(job, at)
+    return job[at : match.start() if match else len(job)]
+
+
+def step_key(step: str, where: str) -> str:
+    match = STEP_KEY_RE.search(step)
+    if not match:
+        raise GuardFailure(f"{where} has no `key:` line")
+    return match.group(1)
 
 
 def require_once(haystack: str, needle: str, where: str) -> None:
@@ -174,9 +228,14 @@ def validate_journey_yml(text: str) -> None:
             "test-execution ledger' cache step, so every --record below writes "
             "rows into a file the runner throws away (#2744)"
         )
-    restore_end = job.find("\n      - name:", restore_at)
-    restore_step = job[restore_at : restore_end if restore_end > 0 else len(job)]
-    require(restore_step, "uses: actions/cache@v5", "journey ledger restore step")
+    restore_step = step_slice(job, RESTORE_STEP_TITLE)
+    # Issue #2785: the restore-only action, never the monolithic `actions/cache`.
+    # The monolithic one's save is its POST step, pinned `post-if: "success()"`
+    # in the action's own action.yml, so the rows a RED journey job did reach
+    # are thrown away — the runs whose ledger is worth the most are exactly the
+    # ones that never persist. Its `save-always` input is not an escape hatch:
+    # the same action.yml marks it deprecated and says to split the steps.
+    require(restore_step, RESTORE_ACTION, "journey ledger restore step")
     require(restore_step, f"path: {LEDGER_PATH}", "journey ledger cache path")
     require(restore_step, f"key: {CACHE_KEY_PREFIX}", "journey ledger cache key")
     require(restore_step, "restore-keys:", "journey ledger restore-keys")
@@ -189,13 +248,74 @@ def validate_journey_yml(text: str) -> None:
             "app2-journey must restore the ledger cache BEFORE the record step, "
             "or the saved ledger loses every class recorded by an earlier lane"
         )
-    next_step = job.find("\n      - name:", step_at)
-    ledger_step = job[step_at : next_step if next_step > 0 else len(job)]
+    ledger_step = step_slice(job, RECORD_STEP_TITLE)
     if "if: always()" not in ledger_step:
         raise GuardFailure(
             "the journey ledger step must run with if: always() — a lane that "
             "records only on success cannot show which classes a red run reached"
         )
+
+    # Issue #2785 (1/3): the save half of the split.
+    save_at = job.find(SAVE_STEP_TITLE)
+    if save_at < 0:
+        raise GuardFailure(
+            "app2-journey restores the ledger with the restore-only action but "
+            f"has no {SAVE_STEP_TITLE!r} step — nothing writes the merged ledger "
+            "back to the shared cache chain, so every --record is discarded"
+        )
+    save_step = step_slice(job, SAVE_STEP_TITLE)
+    require(save_step, SAVE_ACTION, "journey ledger save step")
+    require(save_step, f"path: {LEDGER_PATH}", "journey ledger save path")
+    # THE point of the split. `actions/cache/save` is an ordinary main step, so
+    # a plain always() actually works here where the monolithic action's
+    # `post-if: "success()"` could not be overridden at all.
+    if "if: always()" not in save_step:
+        raise GuardFailure(
+            "the journey ledger SAVE step must run with if: always() — the only "
+            "reason to split restore from save is that a RED journey job still "
+            "persists the classes it reached; an if: success() save is exactly "
+            "the monolithic post-if the split exists to escape"
+        )
+    # Saving after the record, or the entry holds pre-record content: a lane
+    # that looks fully wired and credits nothing.
+    if save_at < step_at:
+        raise GuardFailure(
+            "app2-journey must SAVE the ledger cache AFTER the record step, or "
+            "the saved entry is the restored file with this run's rows missing"
+        )
+    # A save under a drifted key lands outside the prefix chain the next lane's
+    # restore-keys reads: green step, orphaned entry.
+    restore_key = step_key(restore_step, "journey ledger restore step")
+    save_key = step_key(save_step, "journey ledger save step")
+    if save_key != restore_key:
+        raise GuardFailure(
+            "the journey ledger save key must be byte-identical to the restore "
+            f"step's primary key (restore={restore_key!r} save={save_key!r}); a "
+            "drifted key saves outside the chain the next restore reads"
+        )
+    # Issue #2785 (3/3): key scoping. Without the run id, a push run and a
+    # workflow_dispatch run on the SAME sha both compute attempt 1, the second
+    # restore exact-hits the first entry, and the second save is rejected as a
+    # duplicate key — which `actions/cache/save` swallows into a warning, so the
+    # run reads green while its rows are silently dropped.
+    if RUN_SCOPE not in restore_key:
+        raise GuardFailure(
+            f"the journey ledger cache key must be scoped by {RUN_SCOPE} "
+            f"(got {restore_key!r}); sha+run_attempt alone collides across two "
+            "runs of the same commit and silently discards the second's rows"
+        )
+
+    # Issue #2785 (2/3): the recorded ledger must leave the runner as an
+    # artifact, the way tests.yml's unit lane folds it into its reports upload.
+    # Without it the only copy is a cache entry, and answering "what did the
+    # record step write?" means downloading the cache and replaying the recorder
+    # by hand — which is what the #2744 on-call had to do.
+    upload_step = step_slice(job, UPLOAD_STEP_TITLE)
+    require(
+        upload_step,
+        LEDGER_PATH,
+        "app2-journey reports upload must include the ledger file (#2785)",
+    )
 
 
 def validate_release_yml(text: str) -> None:
@@ -372,45 +492,108 @@ def self_test() -> None:
             )
         },
     )
+    # The literal blocks the #2744/#2785 mutations below rewrite. Building them
+    # from the real file (rather than retyping them) is deliberate: if the YAML
+    # drifts, `journey.replace(...)` becomes a no-op, the mutated tree stays
+    # green, and expect_red raises "self-test accepted an unsafe mutation" —
+    # drift fails loudly instead of quietly disarming a mutation.
+    journey_job = extract_job(journey, "app2-journey")
+    restore_block = step_slice(journey_job, RESTORE_STEP_TITLE)
+    save_block = step_slice(journey_job, SAVE_STEP_TITLE)
+    upload_block = step_slice(journey_job, UPLOAD_STEP_TITLE)
+    for label, block in (
+        ("restore", restore_block),
+        ("save", save_block),
+        ("upload", upload_block),
+    ):
+        if journey.count(block) != 1:
+            raise GuardFailure(
+                f"self-test cannot anchor the journey {label} step uniquely "
+                f"(found {journey.count(block)} occurrences)"
+            )
+
     # Issue #2744: THE regression mutation. This is the exact tree shape that
     # shipped — recorder present, cache absent — and the guard was green on it.
     expect_red(
         "journey job records but never persists the rolling ledger cache (#2744)",
-        **{
-            ".github/workflows/app2.yml": journey.replace(
-                "      - name: Restore test-execution ledger (#2082)\n"
-                "        if: always() && steps.journey.conclusion != 'skipped'\n"
-                "        uses: actions/cache@v5\n"
-                "        with:\n"
-                f"          path: {LEDGER_PATH}\n"
-                "          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}"
-                "-journey-${{ github.run_attempt }}\n"
-                "          restore-keys: |\n"
-                f"            {CACHE_KEY_PREFIX}${{{{ runner.os }}}}-\n"
-                "\n",
-                "",
-            )
-        },
+        **{".github/workflows/app2.yml": journey.replace(restore_block, "")},
     )
-    # The save must merge into restored history, not replace it.
+    # The save must merge into restored history, not replace it. Move the whole
+    # restore step to sit AFTER the record step, leaving both steps otherwise
+    # byte-identical, so the ordering check is the only thing that can redden.
     expect_red(
         "journey ledger cache restored AFTER the record step (#2744)",
         **{
+            ".github/workflows/app2.yml": journey.replace(restore_block, "").replace(
+                save_block, restore_block + save_block, 1
+            )
+        },
+    )
+    # Issue #2785, item 2: the monolithic action cannot save a red run at all —
+    # `post-if: "success()"` is in its action.yml, and `save-always` is marked
+    # deprecated-and-non-functional in that same file.
+    expect_red(
+        "journey ledger reverts to the monolithic actions/cache (#2785)",
+        **{
             ".github/workflows/app2.yml": journey.replace(
-                "      - name: Restore test-execution ledger (#2082)\n"
-                "        if: always() && steps.journey.conclusion != 'skipped'\n"
-                "        uses: actions/cache@v5\n",
-                "      - name: Record journey execution into the rolling ledger (#2082)\n"
-                "        if: always() && steps.journey.conclusion != 'skipped'\n"
-                "        uses: actions/cache@v5\n",
+                RESTORE_ACTION, "uses: actions/cache@v5", 1
+            )
+        },
+    )
+    expect_red(
+        "journey ledger has a restore but no save step (#2785)",
+        **{".github/workflows/app2.yml": journey.replace(save_block, "")},
+    )
+    # The load-bearing one: an if: success() save is precisely the monolithic
+    # post-if the split exists to escape, so the split would buy nothing.
+    expect_red(
+        "journey ledger save runs only on success — a red run persists nothing (#2785)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                save_block,
+                save_block.replace(
+                    "if: always() && steps.journey.conclusion != 'skipped'",
+                    "if: success()",
+                ),
                 1,
-            ).replace(
-                "      - name: Record journey execution into the rolling ledger (#2082)\n"
-                "        if: always() && steps.journey.conclusion != 'skipped'\n"
-                "        run: |\n",
-                "      - name: Restore test-execution ledger (#2082)\n"
-                "        if: always() && steps.journey.conclusion != 'skipped'\n"
-                "        run: |\n",
+            )
+        },
+    )
+    expect_red(
+        "journey ledger saves BEFORE the record step (#2785)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(save_block, "").replace(
+                restore_block, restore_block + save_block, 1
+            )
+        },
+    )
+    # A drifted save key is a green step writing an orphaned entry: the next
+    # lane's restore-keys prefix never reads it back.
+    expect_red(
+        "journey ledger save key drifts from the restore key (#2785)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                save_block,
+                save_block.replace(
+                    f"key: {CACHE_KEY_PREFIX}", "key: some-other-cache-chain-"
+                ),
+                1,
+            )
+        },
+    )
+    # Issue #2785, item 3: sha+run_attempt alone collides across two runs of the
+    # same commit, and the losing save is swallowed into a warning.
+    expect_red(
+        "journey ledger cache key drops the run-id scope (#2785)",
+        **{".github/workflows/app2.yml": journey.replace(RUN_SCOPE + "-", "")},
+    )
+    # Issue #2785, item 1: the recorded ledger must leave the runner.
+    expect_red(
+        "journey reports upload drops the ledger file (#2785)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                upload_block,
+                upload_block.replace(f"            {LEDGER_PATH}\n", ""),
                 1,
             )
         },
@@ -548,8 +731,10 @@ def self_test() -> None:
     )
 
     # 20 + the two #2744 ledger-persistence mutations (cache absent, cache
-    # restored after the record step).
-    expected = 22
+    # restored after the record step) + #2785's seven: monolithic-action revert,
+    # save step absent, save on success only, save before record, save key
+    # drift, run-id scope dropped, and the artifact upload dropping the ledger.
+    expected = 29
     if checks != expected:
         raise GuardFailure(f"self-test ran {checks} red mutations, expected {expected}")
 

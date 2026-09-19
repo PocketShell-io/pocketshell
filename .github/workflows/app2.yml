@@ -888,22 +888,54 @@ jobs:
       # "NEVER executed" in run 35383053367 while the older 18 were about to
       # age past the 7-day cadence window together.
       #
-      # Cache save is the post step of Restore, same as the unit lane. Keyed on
-      # the `journey` tier so this lane's entry cannot collide with the unit or
-      # release entries while still restoring from the shared prefix.
+      # Issue #2785: the save is a SEPARATE `actions/cache/save@v5` step, not
+      # the post step of a monolithic `actions/cache@v5`. The monolithic action
+      # hard-codes `post-if: "success()"` in its own action.yml, so its save is
+      # skipped on exactly the runs whose rows are worth the most: a RED journey
+      # job records which classes it did reach and then throws the file away.
+      # Its `save-always` input is NOT the fix — v5 still accepts it but marks
+      # it deprecated in the same action.yml: "save-always does not work as
+      # intended and will be removed in a future release. A separate
+      # `actions/cache/restore` step should be used instead."
+      # `actions/cache/save@v5` carries no `save-always` input at all, because
+      # it does not need one: it is an ordinary main step, so a plain
+      # `if: always()` on it is the mechanism.
+      #
+      # Keyed on the `journey` tier so this lane's entry cannot collide with the
+      # unit or release entries while still restoring from the shared prefix.
+      # `github.run_id` is in the key for a reason (#2785 item 3): without it,
+      # two runs of the SAME sha at attempt 1 — a push run and a later
+      # workflow_dispatch run on that commit — compute an identical key, the
+      # second run's restore EXACT-hits the first run's entry, and its own save
+      # is then rejected as a duplicate key. `actions/cache/save` swallows that
+      # into a warning (saveImpl catches every error and calls logWarning), so
+      # the run reads green while its rows are silently discarded. The run id
+      # makes every key unique per (run, attempt), so no run's rows can be
+      # dropped that way. The primary key is then never an exact hit, which is
+      # the intended rolling behaviour anyway: restore falls through to the
+      # shared prefix and takes the most recently created entry, and `--record`
+      # MERGES into that file rather than replacing it, so each save is a
+      # superset of the history it restored.
       - name: Restore test-execution ledger (#2082)
+        id: ledger_restore
         if: always() && steps.journey.conclusion != 'skipped'
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: build/test-execution-ledger.tsv
-          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-journey-${{ github.run_attempt }}
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-journey-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
             test-execution-ledger-${{ runner.os }}-
 
       - name: Record journey execution into the rolling ledger (#2082)
         if: always() && steps.journey.conclusion != 'skipped'
+        env:
+          LEDGER_RESTORED_KEY: ${{ steps.ledger_restore.outputs.cache-matched-key }}
         run: |
           chmod +x scripts/check-test-execution-ledger.sh
+          # Which entry in the shared chain this lane merged into. Without it a
+          # "the rows did not persist" report cannot tell a restore that missed
+          # apart from a save that was dropped (#2785).
+          echo "ledger restore matched key: ${LEDGER_RESTORED_KEY:-<none>}"
           scripts/check-test-execution-ledger.sh \
             --record app2/build/outputs/androidTest-results/connected/debug \
             --tier journey
@@ -914,6 +946,17 @@ jobs:
             --require-class com.pocketshell.next.connect.J01ConnectAndTrustJourney \
             --require-class com.pocketshell.next.terminal.J03AttachAndTypeJourney \
             --report
+
+      # `if: always()` here is the entire point of the restore/save split — see
+      # the comment above the restore step. The key MUST be byte-identical to
+      # the restore step's primary key, or this lane saves outside the chain the
+      # next lane's restore-keys prefix reads.
+      - name: Save test-execution ledger (#2785)
+        if: always() && steps.journey.conclusion != 'skipped'
+        uses: actions/cache/save@v5
+        with:
+          path: build/test-execution-ledger.tsv
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-journey-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Collect Docker logs
         if: always()
@@ -926,6 +969,14 @@ jobs:
       # The actionable half of a red run: the per-class HTML report says WHICH
       # journey failed, the raw gradle log and logcat say why, and the journey
       # screenshots pulled off the device show what was on screen.
+      #
+      # Issue #2785: the ledger file ships here too, exactly as the unit lane
+      # folds it into `unit-test-reports-<variant>`. The recorded ledger used to
+      # be visible only as a cache entry, so answering "what did the record step
+      # actually write?" meant downloading the cache and replaying the recorder
+      # by hand — which is precisely what the #2744 on-call had to do. It is the
+      # post-record file, so it shows this lane's merged result whether or not
+      # the save that follows succeeds.
       - name: Upload app2 journey reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -937,6 +988,7 @@ jobs:
             app2/build/outputs/connected_android_test_additional_output/
             artifacts/app2-journey/
             artifacts/docker/
+            build/test-execution-ledger.tsv
           overwrite: true
           if-no-files-found: ignore
 
