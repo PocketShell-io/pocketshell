@@ -21,6 +21,7 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitInputFocus
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.hosts.hostRowTag
@@ -799,15 +800,20 @@ class J06BackgroundGraceReturnJourney {
         return null
     }
 
+    /**
+     * Types [line] followed by Enter as real key events.
+     *
+     * [awaitInputFocus] rather than a fire-and-forget `requestFocus()` plus
+     * main-looper idle (issue #2789): this journey types right after the app
+     * has come back from the background, the one moment window focus is
+     * guaranteed to be in flight. Events dispatched before it lands are
+     * deferred by `InputDispatcher` and lost, taking the LEADING characters of
+     * the line with them — which here would read as the grace window having
+     * dropped the session rather than as a harness race.
+     */
     private fun typeLine(line: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        compose.awaitIdle("before typing a line")
-        instrumentation.runOnMainSync {
-            val view = terminalView()
-            checkNotNull(view) { "no TerminalView on screen to type into" }
-            view.requestFocus()
-        }
-        instrumentation.waitForIdleSync()
+        compose.awaitInputFocus("before typing a line", TIMEOUT_MS) { terminalView() }
         instrumentation.sendStringSync(line)
         instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
         instrumentation.waitForIdleSync()

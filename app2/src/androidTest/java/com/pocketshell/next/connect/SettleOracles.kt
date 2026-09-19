@@ -30,6 +30,19 @@ import java.io.File
  *    never takes focus, this fails loudly naming the settle point instead of
  *    failing opaquely inside Espresso's root picker.
  *
+ *  - **Input focus** — [awaitInputFocus]. The same precondition one level
+ *    down, for injected KEY events rather than Espresso view interactions:
+ *    `Instrumentation.sendStringSync` / `sendKeyDownUpSync` hand their events
+ *    to the platform `InputDispatcher`, which delivers them to whatever the
+ *    FOCUSED WINDOW says is focused — and defers them when no window has
+ *    focus at all. A `View.requestFocus()` followed by `waitForIdleSync()`
+ *    observes neither half: `requestFocus` is a request whose answer is
+ *    `hasFocus()`, and main-looper idle is not window focus. The gap drops a
+ *    PREFIX of a typed line (the events dispatched before focus arrives) and
+ *    leaves the rest, which is why it reads as a corrupt command rather than
+ *    as a missing one — issue #2789's `echo po` (7 chars) and #1854's
+ *    `printf` → `tf` (4 chars) are the same defect.
+ *
  *  - **Size agreement** — [awaitImeViewportAck] / [awaitViewSizeStable]. The
  *    handshake between the IME and the hosted view, observed at the point the
  *    #887/#2533 resize path actually acts on: the IME inset reaches its
@@ -67,6 +80,69 @@ fun AndroidComposeTestRule<*, *>.awaitWindowFocus(what: String, timeoutMs: Long)
         "the window never took focus for $what within ${timeoutMs}ms — the " +
             "focus-settle signal stayed false (RootViewPicker's precondition, " +
             "observed instead of hoped for; see issue #2781)" + idleWedgeNote(),
+    )
+}
+
+/**
+ * Waits until [view] really holds the keyboard focus INSIDE a focused window —
+ * the precondition injected key events silently need — and throws a loud,
+ * settle-point-naming failure if it never does.
+ *
+ * Call before every `Instrumentation.sendStringSync` / `sendKeyDownUpSync`.
+ * Both halves are load-bearing and neither is observable from the
+ * `requestFocus()` + `waitForIdleSync()` shape this replaces (issue #2789):
+ *
+ *  1. **The window.** [awaitWindowFocus] first, so a window that never takes
+ *     focus fails with #2781's message rather than as a corrupted command
+ *     line. With no focused window the platform `InputDispatcher` logs
+ *     `Waiting because no window has focus …` and defers the events it was
+ *     handed; the ones dispatched during that window are lost, so a typed
+ *     line arrives with its LEADING characters missing.
+ *  2. **The view.** `requestFocus()` returns a request, not an acknowledgement
+ *     — a view that is not yet attached, laid out, or focusable refuses it and
+ *     says so only through [android.view.View.hasFocus]. So the request is
+ *     re-issued every poll and the platform's own answer is read back, in the
+ *     SAME main-thread read as `hasWindowFocus()`: checking them separately
+ *     would let a window that lost focus again slip between the two reads.
+ *
+ * The whole wait is bounded by one [timeoutMs] budget shared with the window
+ * half, so a caller's deadline means what it says. On success the caller's
+ * very next dispatch happens with both observables true.
+ */
+fun AndroidComposeTestRule<*, *>.awaitInputFocus(
+    what: String,
+    timeoutMs: Long,
+    view: () -> View?,
+) {
+    val deadline = SystemClock.elapsedRealtime() + timeoutMs
+    awaitWindowFocus(what, timeoutMs)
+
+    var state = "no view on screen to focus"
+    do {
+        awaitIdle("input-focus poll: $what")
+        val focused = runOnUiThread {
+            val target = view()
+            if (target == null) {
+                state = "no view on screen to focus"
+                false
+            } else {
+                if (!target.hasFocus()) target.requestFocus()
+                val hasFocus = target.hasFocus()
+                val hasWindowFocus = target.hasWindowFocus()
+                state = "hasFocus=$hasFocus hasWindowFocus=$hasWindowFocus " +
+                    "attached=${target.isAttachedToWindow} focusable=${target.isFocusable}"
+                hasFocus && hasWindowFocus
+            }
+        }
+        if (focused) return
+        SystemClock.sleep(SETTLE_POLL_MS)
+    } while (SystemClock.elapsedRealtime() < deadline)
+
+    throw AssertionError(
+        "the view never took input focus for $what within ${timeoutMs}ms — last " +
+            "observed: $state. Injected key events go to the focused view of the " +
+            "focused window, so dispatching here would drop a prefix of the typed " +
+            "line instead of failing (see issue #2789)" + idleWedgeNote(),
     )
 }
 

@@ -27,6 +27,7 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitInputFocus
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.hosts.HOST_LIST_TAG
@@ -560,16 +561,22 @@ class J02SessionTreeListJourney {
         )
     }
 
-    /** Writes a session-specific line through the real terminal input path. */
+    /**
+     * Writes a session-specific line through the real terminal input path.
+     *
+     * [awaitInputFocus] rather than a fire-and-forget `requestFocus()` plus
+     * main-looper idle (issue #2789): this journey types into a terminal it has
+     * just switched to, and an injected key event dispatched before the window
+     * holds focus is deferred by `InputDispatcher` and lost. Losing the leading
+     * characters of `printf '<marker>\n'` here would look like the marker
+     * landing in the WRONG session — the exact cross-session confusion this
+     * journey exists to detect.
+     */
     private fun typeMarker(marker: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        compose.awaitIdle("before typing terminal marker $marker")
-        instrumentation.runOnMainSync {
-            val view = findTerminalView(compose.activity.window.decorView)
-            checkNotNull(view) { "no TerminalView on screen to type into" }
-            view.requestFocus()
+        compose.awaitInputFocus("before typing terminal marker $marker", TIMEOUT_MS) {
+            findTerminalView(compose.activity.window.decorView)
         }
-        instrumentation.waitForIdleSync()
         instrumentation.sendStringSync("printf '$marker\\n'")
         instrumentation.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
         instrumentation.waitForIdleSync()

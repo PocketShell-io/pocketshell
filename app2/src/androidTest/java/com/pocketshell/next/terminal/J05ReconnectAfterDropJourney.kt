@@ -23,6 +23,7 @@ import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.ToxiproxyControl
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitInputFocus
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.connect.openQuietSession
 import com.termux.view.TerminalView
@@ -402,16 +403,18 @@ class J05ReconnectAfterDropJourney {
      * Types [line] followed by Enter as real key events, so the whole
      * `TerminalView.onKeyDown` → `TerminalSession.write` → bridge → PTY path is
      * exercised — which after a reconnect is a path through the SECOND bridge.
+     *
+     * [awaitInputFocus] rather than a fire-and-forget `requestFocus()` plus
+     * main-looper idle: this journey types immediately after a reconnect has
+     * rebuilt the screen, which is precisely when window focus is still in
+     * flight, and events dispatched then are dropped by `InputDispatcher` with
+     * no failure of their own (issue #2789 — a 7-character prefix lost from
+     * J03's typed line on two consecutive hosted heads). A partial line here
+     * would read as a reconnect defect.
      */
     private fun typeLine(line: String) {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        compose.awaitIdle("before typing a line")
-        instrumentation.runOnMainSync {
-            val view = terminalView()
-            checkNotNull(view) { "no TerminalView on screen to type into" }
-            view.requestFocus()
-        }
-        instrumentation.waitForIdleSync()
+        compose.awaitInputFocus("before typing a line", TIMEOUT_MS) { terminalView() }
         instrumentation.sendStringSync(line)
         instrumentation.sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER)
         instrumentation.waitForIdleSync()

@@ -20,6 +20,7 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitInputFocus
 import com.pocketshell.next.connect.idleWedgeNote
 import com.pocketshell.next.connect.openQuietSession
 import com.termux.view.TerminalView
@@ -347,14 +348,23 @@ class J15TerminalScrollJourney {
         return null
     }
 
+    /**
+     * Focuses the terminal and waits for the platform to acknowledge it, both
+     * halves, before the positive control injects its arrow key.
+     *
+     * The acknowledgement matters more here than anywhere: this journey's
+     * load-bearing assertion is that the key log is EMPTY after a drag, and
+     * [assertARealArrowKeyStillArrives] is the only thing keeping that honest.
+     * An arrow key dispatched at an unfocused window would be dropped by
+     * `InputDispatcher` exactly the way #2789 dropped `echo po`, and the
+     * positive control would then fail for a harness reason while looking like
+     * a product defect — or, with a looser oracle, pass an empty log off as
+     * proof. [awaitInputFocus] is the #2789 oracle.
+     */
     private fun focusTerminal() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        compose.awaitIdle("before taking terminal focus")
-        instrumentation.runOnMainSync {
-            checkNotNull(terminalView()) { "no TerminalView on screen to type into" }
-                .requestFocus()
+        compose.awaitInputFocus("before pressing a key into the terminal", TIMEOUT_MS) {
+            terminalView()
         }
-        instrumentation.waitForIdleSync()
     }
 
     private fun squashed(text: String): String = text.filterNot { it.isWhitespace() }

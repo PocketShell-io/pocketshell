@@ -29,6 +29,7 @@ import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
 import com.pocketshell.next.connect.awaitImeViewportAck
+import com.pocketshell.next.connect.awaitInputFocus
 import com.pocketshell.next.connect.awaitViewSizeStable
 import com.pocketshell.next.connect.imeInsetBottom
 import com.pocketshell.next.connect.openQuietSession
@@ -772,22 +773,27 @@ class J03AttachAndTypeJourney {
     private fun typeCharacter(character: Char) = typeCharacters(character.toString())
 
     /**
-     * Puts the keyboard focus back on the terminal.
+     * Puts the keyboard focus back on the terminal AND waits for the platform
+     * to acknowledge it, both halves, before any key is injected.
      *
      * Called before every injection because a tap on a Compose key bar slot
      * takes focus with it — and an injected key event goes to whatever the
      * window says is focused, so without this the letter after a Ctrl tap would
      * be delivered to the bar and silently vanish.
+     *
+     * The acknowledgement is the #2789 fix. This used to be `requestFocus()`
+     * plus `waitForIdleSync()`, which observes neither the request's answer nor
+     * the window's focus: on a contended runner the window focus was still in
+     * flight when `sendStringSync` ran, `InputDispatcher` logged
+     * `Waiting because no window has focus`, and `echo pocketshell-u4-ok`
+     * reached the host as `cketshell-u4-ok` — the leading 7 characters gone,
+     * on two consecutive hosted heads. [awaitInputFocus] waits for the two
+     * observables the dispatch actually depends on.
      */
     private fun focusTerminal() {
-        val instrumentation = InstrumentationRegistry.getInstrumentation()
-        compose.awaitIdle("before taking terminal focus")
-        instrumentation.runOnMainSync {
-            val view = terminalView()
-            checkNotNull(view) { "no TerminalView on screen to type into" }
-            view.requestFocus()
+        compose.awaitInputFocus("before typing into the terminal", TIMEOUT_MS) {
+            terminalView()
         }
-        instrumentation.waitForIdleSync()
     }
 
     /** Selects a known rendered word through TerminalView's native controller. */
