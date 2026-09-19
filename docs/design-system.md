@@ -161,7 +161,7 @@ Density defaults (Kotlin side; row minima come from the JSON `size` block):
 | `fieldMin` | `tokens.json` `size.fieldMin` (56dp) | Input/field minimum height (#2747 — composer draft editor floor) |
 | `workspaceRowMinHeight` | `tokens.json` `size.workspaceRowMin` (64dp) | Workspace row navigation target |
 | `rowPadV` | 16dp | Row vertical padding |
-| `rowPadH` | 20dp | Row horizontal padding (the screen gutter rung) |
+| `screenGutter` | 20dp | Row horizontal padding (the screen gutter rung) |
 | `chipPadV` | 6dp | Chip vertical padding |
 | `chipPadH` | 10dp | Chip horizontal padding |
 | `sectionGap` | 24dp (`space.xxl`) | Gap between independent sections (#2717 T3 retired the 32dp `section` rung) |

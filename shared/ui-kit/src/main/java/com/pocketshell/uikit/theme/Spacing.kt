@@ -97,17 +97,9 @@ object PocketShellDensity {
      * used by standard and workspace rows and by every screen's page inset.
      *
      * Named for the token, not for the one call site it started at (#2800):
-     * `rowPadH` hid a JSON key behind a Kotlin-only spelling.
+     * the pre-#2800 Kotlin spelling hid this JSON key behind a non-token name.
      */
     val screenGutter = 20.dp
-
-    /**
-     * Deprecated spelling of [screenGutter], kept as an alias (never a second
-     * value — #2630's drift class) only because `SectionHeader.kt` is frozen
-     * under review #2790 and still reads it. Delete once that lands; new call
-     * sites use [screenGutter].
-     */
-    val rowPadH = screenGutter
 
     /** 6 dp — chip vertical padding. */
     val chipPadV = 6.dp

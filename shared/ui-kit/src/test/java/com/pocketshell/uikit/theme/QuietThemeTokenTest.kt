@@ -139,10 +139,6 @@ class QuietThemeTokenTest {
         }
         // `standardRowMinHeight` is an alias, not a second value (#2630's drift class).
         assertEquals(PocketShellDensity.rowMinHeight, PocketShellDensity.standardRowMinHeight)
-        // Same for the legacy `rowPadH` spelling (#2800): an alias of
-        // `screenGutter`, never a second 20dp literal. It exists only until
-        // `SectionHeader.kt` (frozen under review #2790) stops reading it.
-        assertEquals(PocketShellDensity.screenGutter, PocketShellDensity.rowPadH)
         // #2717 T3: the 32dp `section` rung is retired; sections separate with
         // `sectionGap`, pinned to the surviving 24dp `space.xxl` rung.
         assertEquals(DesignKitTokens.spaceDp("xxl").dp, PocketShellDensity.sectionGap)

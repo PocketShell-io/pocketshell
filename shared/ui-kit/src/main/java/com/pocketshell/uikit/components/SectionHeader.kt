@@ -36,7 +36,7 @@ import com.pocketshell.uikit.theme.PocketShellType
  *   [PocketShellType.labelMono] on the muted token, so a section can show its
  *   size without a right-aligned pill.
  *
- * Horizontal padding matches [PocketShellDensity.rowPadH] so the label lines up
+ * Horizontal padding matches [PocketShellDensity.screenGutter] so the label lines up
  * with the rows beneath it; the vertical padding leans on
  * [PocketShellSpacing.sm] for a tight group gap. Colours stay on the always-dark
  * raw tokens (#477 single dark scheme).
@@ -64,7 +64,7 @@ fun SectionHeader(
         modifier = modifier
             .fillMaxWidth()
             .padding(
-                horizontal = PocketShellDensity.rowPadH,
+                horizontal = PocketShellDensity.screenGutter,
                 vertical = PocketShellSpacing.sm,
             ),
         verticalAlignment = Alignment.CenterVertically,
