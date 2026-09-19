@@ -41,6 +41,13 @@ import com.pocketshell.uikit.theme.PocketShellType
  * [PocketShellSpacing.sm] for a tight group gap. Colours stay on the always-dark
  * raw tokens (#477 single dark scheme).
  *
+ * The [PocketShellDensity.tapTargetMin] a11y floor applies **only** when
+ * [onLabelClick] is supplied (#2790). It is the hit-area rule for interactive
+ * elements — see the token's own KDoc — and a non-interactive heading has no hit
+ * area to protect. Flooring it anyway reserved 48 dp (+ 2 x `sm` = 64 dp) for an
+ * 11 sp muted word, which on the hosts screen put 115.6 dp between the screen
+ * title and the first row.
+ *
  * Presentational only.
  */
 @Composable
@@ -65,11 +72,15 @@ fun SectionHeader(
         Row(
             modifier = Modifier
                 .weight(if (trailing == null) 1f else 1f)
-                .defaultMinSize(minHeight = PocketShellDensity.tapTargetMin)
                 .semantics { heading() }
                 .then(
                     if (onLabelClick != null) {
                         Modifier
+                            // The 48 dp floor is the rule for *interactive*
+                            // elements, so it lives inside this branch (#2790).
+                            // A heading nobody can tap has no hit area to
+                            // protect and keeps its natural line box.
+                            .defaultMinSize(minHeight = PocketShellDensity.tapTargetMin)
                             .clickable(role = Role.Button, onClick = onLabelClick)
                             .let { base ->
                                 if (labelTestTag == null) base else base.testTag(labelTestTag)
