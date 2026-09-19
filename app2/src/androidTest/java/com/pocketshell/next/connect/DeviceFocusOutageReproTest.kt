@@ -17,6 +17,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.AssumptionViolatedException
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -66,10 +67,20 @@ import org.junit.runner.RunWith
  * ## Containment
  *
  * Both fixtures are local to this activity's own window and are undone in
- * [restoreTheDevice], which then waits for focus to come back before letting
- * the next class start — the unfiltered suite shares one process and one
+ * [restoreTheDevice], which also restores the process-wide outage record to
+ * whatever it inherited — the unfiltered suite shares one process and one
  * device (issue #2474), so a fixture left up here would be the next class's
  * mystery failure.
+ *
+ * ## Precondition
+ *
+ * This class manufactures the wedge itself, so it needs a HEALTHY device to
+ * start from: no outage on record, and a window manager that is granting focus
+ * to somebody. [captureOutage] asserts neither — it SKIPS — because on an
+ * already-wedged device those presumptions would turn one report into three
+ * extra failures, which is the shape #2830 exists to prevent. The focus half
+ * is polled rather than sampled, so a device that is merely slow to publish
+ * the focus is waited for instead of being mistaken for a wedged one.
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceFocusOutageReproTest {
@@ -81,16 +92,52 @@ class DeviceFocusOutageReproTest {
 
     private var preexistingOutage: String? = null
 
+    /**
+     * Records what this class inherited, and SKIPS it if the device is already
+     * in the state the class exists to manufacture (issue #2833, follow-up 5).
+     *
+     * Every test here starts from "no outage is on record and the device can
+     * grant focus" — `assertNull("no outage is on record before the first
+     * waiter", …)` and both `assertThrows` arms presume it. On a genuinely
+     * wedged hosted device an earlier journey has already recorded the outage,
+     * and those presumptions become two or three EXTRA failures in precisely
+     * the scenario #2830 exists to report once. A skip keeps that property
+     * whole: the one report stands, and this class says why it stood aside
+     * rather than adding noise to it.
+     *
+     * The device half goes through [awaitDeviceFocusGrantedToSomebody], not a
+     * bare probe: a skip is only worth having if it cannot fire on a device
+     * that was about to be fine.
+     */
     @Before
     fun captureOutage() {
         preexistingOutage = DeviceFocusOutage.recorded()
+        assumeTrue(
+            "$DEVICE_FOCUS_OUTAGE_MARKER was already reported before this class ran, so the " +
+                "device cannot be assumed healthy enough to manufacture the outage under test. " +
+                "The report this skip stands on:\n$preexistingOutage",
+            preexistingOutage == null,
+        )
+        val entryState = awaitDeviceFocusGrantedToSomebody()
+        assumeTrue(
+            "this class must start on a device that grants focus to SOMEBODY — it manufactures " +
+                "the no-focused-window state itself — but the device already reads as: " +
+                entryState.describe(),
+            entryState.verdict != DeviceFocusVerdict.NO_FOCUSED_WINDOW,
+        )
     }
 
     /**
-     * The record this class created is dropped; one it merely inherited is put
-     * back. On a genuinely wedged device the outage reported BEFORE this class
-     * ran is the single report every later class must keep skipping against,
-     * and clearing it here would let the suite report the same cause twice.
+     * Undoes this class's fixtures and its effect on the process-wide record.
+     *
+     * Clears `FLAG_NOT_FOCUSABLE`, dismisses the popup, then drops the record
+     * this class created and puts back one it merely inherited. It does NOT
+     * wait for focus to return: on a genuinely wedged device there would be
+     * nothing to wait for, and the next class's own `awaitWindowFocus` is the
+     * thing that re-earns the verdict from the device anyway. On a wedged
+     * device the outage reported BEFORE this class ran is the single report
+     * every later class must keep skipping against, and clearing it here would
+     * let the suite report the same cause twice.
      */
     @After
     fun restoreTheDevice() {
@@ -141,9 +188,21 @@ class DeviceFocusOutageReproTest {
 
         // 2. The NEXT waiter — the next class in the unfiltered suite — is
         //    skipped against that one report, and fast.
+        // The budget has to sit strictly ABOVE the ceiling or the timing
+        // assertion below says nothing — a skip that spent the caller's whole
+        // budget would still land under the ceiling and pass. SKIP_BUDGET_MS
+        // is derived from SKIP_CEILING_MS so that holds by construction; this
+        // states the relation at the point that depends on it, so re-writing
+        // either constant as a hand-picked literal reddens here instead of
+        // quietly making this arm vacuous.
+        assertTrue(
+            "SKIP_BUDGET_MS (${SKIP_BUDGET_MS}ms) must stay above SKIP_CEILING_MS " +
+                "(${SKIP_CEILING_MS}ms), or 'it did not spend the budget' is unfalsifiable",
+            SKIP_CEILING_MS < SKIP_BUDGET_MS,
+        )
         val startedAt = SystemClock.elapsedRealtime()
         val skip = assertThrows(AssumptionViolatedException::class.java) {
-            compose.awaitWindowFocus("the next window-sensitive journey", LATER_WAIT_MS)
+            compose.awaitWindowFocus("the next window-sensitive journey", SKIP_BUDGET_MS)
         }
         val elapsed = SystemClock.elapsedRealtime() - startedAt
         val skipMessage = skip.message.orEmpty()
@@ -153,9 +212,10 @@ class DeviceFocusOutageReproTest {
             skipMessage.contains("rerun the app2-journey lane"),
         )
         assertTrue(
-            "a known outage must abort fast, not spend the caller's ${LATER_WAIT_MS}ms budget " +
-                "(took ${elapsed}ms)",
-            elapsed < LATER_WAIT_MS / 2,
+            "a known outage must abort within the skip path's OWN bounds " +
+                "(${SKIP_CEILING_MS}ms = recheck + one bounded idle wait + the re-probe), not " +
+                "spend the caller's ${SKIP_BUDGET_MS}ms budget — took ${elapsed}ms",
+            elapsed < SKIP_CEILING_MS,
         )
 
         // 3. And an outage that ends does not poison the rest of the run.
@@ -289,6 +349,32 @@ class DeviceFocusOutageReproTest {
     }
 
     /**
+     * Polls until the device grants focus to SOMEBODY, or gives up and returns
+     * the last reading so [captureOutage] can name it.
+     *
+     * A single read would be a race in the one direction that hurts: the rule
+     * has only just launched this activity, and a device that is merely slow to
+     * publish the focus reads exactly like a wedged one. Skipping on THAT would
+     * turn the #2830 reproduction into a class that silently stops testing —
+     * the failure mode the precondition (issue #2833, follow-up 5) must not
+     * introduce while preventing another. So a `NO_FOCUSED_WINDOW` reading is
+     * given [FIXTURE_SETTLE_MS], the same window this class allows its own
+     * fixtures, to turn into a focus before it is believed. A device that is
+     * genuinely wedged still reads wedged at the end of it, and still skips.
+     */
+    private fun awaitDeviceFocusGrantedToSomebody(): DeviceFocusState {
+        val deadline = SystemClock.elapsedRealtime() + FIXTURE_SETTLE_MS
+        var state = readDeviceFocusState()
+        while (state.verdict == DeviceFocusVerdict.NO_FOCUSED_WINDOW &&
+            SystemClock.elapsedRealtime() < deadline
+        ) {
+            SystemClock.sleep(SETTLE_POLL_MS)
+            state = readDeviceFocusState()
+        }
+        return state
+    }
+
+    /**
      * Polls the real probe until it reports [want], or gives up and returns
      * whatever it last saw so the assertion can name it.
      */
@@ -306,8 +392,55 @@ class DeviceFocusOutageReproTest {
         /** Short: the fixture holds the failure still, so there is nothing to wait out. */
         const val FIRST_WAIT_MS = 3_000L
 
-        /** A journey-sized budget, so "it aborted fast" is a claim with teeth. */
+        /** A journey-sized budget for the recovered screen. */
         const val LATER_WAIT_MS = 20_000L
+
+        /**
+         * The worst case of the skip path, DERIVED from the constants that
+         * bound each of its steps rather than measured on one box
+         * (issue #2833, follow-up 4). Every term is a hard wall-clock bound, so
+         * no amount of lane contention can push a healthy skip past it:
+         *
+         *  - [FOCUS_OUTAGE_RECHECK_MS] — the short look `awaitWindowFocus`
+         *    gives a device that already has an outage on record, clamped
+         *    below the caller's budget.
+         *  - [ComposeIdle.BUDGET_MS] + [SETTLE_POLL_MS] — one poll iteration
+         *    may start just under that deadline and still run a full bounded
+         *    idle wait plus its sleep before the loop re-reads the clock.
+         *  - [DEVICE_FOCUS_PROBE_BUDGET_MS] — the re-probe that decides skip
+         *    vs. fail: at most two `dumpsys` calls, each individually bounded.
+         *
+         * The previous bound was `LATER_WAIT_MS / 2` — 10000ms, a stopwatch
+         * assertion on the one lane whose subject is contention: the #2830
+         * review measured the real skip cost at 6765ms against it, ~1.5x,
+         * while the path's own ceiling was already well above both. Widening
+         * that number by hand would have been the wrong fix; this one moves
+         * with the four constants it is made of, and a retune of any of them
+         * carries it along.
+         */
+        const val SKIP_CEILING_MS =
+            FOCUS_OUTAGE_RECHECK_MS + ComposeIdle.BUDGET_MS + SETTLE_POLL_MS +
+                DEVICE_FOCUS_PROBE_BUDGET_MS
+
+        /**
+         * The budget handed to the waiter that must be SKIPPED: twice
+         * [SKIP_CEILING_MS], so "it aborted instead of spending the budget" is
+         * a claim with teeth.
+         *
+         * The assertion under test is `elapsed < SKIP_CEILING_MS`, which says
+         * nothing unless spending the WHOLE budget would land above that
+         * ceiling — with a budget under the ceiling, the regression this arm
+         * exists to catch (`minOf(timeoutMs, FOCUS_OUTAGE_RECHECK_MS)` losing
+         * its clamp, so the skip polls the caller's full budget) would still
+         * pass. Derived rather than written as a literal for the same reason
+         * the ceiling is: retuning `ComposeIdle.BUDGET_MS` or the probe
+         * timeout moves the ceiling, and a literal here could silently sink
+         * below it and make this arm vacuous.
+         *
+         * Costs nothing on a green run — the skip path returns in seconds no
+         * matter how large this is. Only a regression pays it.
+         */
+        const val SKIP_BUDGET_MS = 2 * SKIP_CEILING_MS
 
         /** How long the window manager gets to publish the fixture's focus change. */
         const val FIXTURE_SETTLE_MS = 10_000L

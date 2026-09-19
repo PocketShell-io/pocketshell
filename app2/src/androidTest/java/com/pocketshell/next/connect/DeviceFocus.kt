@@ -213,6 +213,20 @@ fun anrEvidenceLines(dump: String, limit: Int = 12): List<String> =
 private const val SHELL_TIMEOUT_MS: Long = 8_000L
 
 /**
+ * The worst case of ONE [readDeviceFocusState] call.
+ *
+ * It runs at most two probes — the narrow `dumpsys window displays`, then the
+ * wide `dumpsys window` fallback when the narrow one could not be parsed — and
+ * each is bounded by [SHELL_TIMEOUT_MS]. Published because a caller that wants
+ * to assert "this path did not spend an unbounded amount of time" must derive
+ * its bound from the code's own constants rather than from a stopwatch reading
+ * taken on one box (issue #2833, follow-up 4): a number derived here moves
+ * with the timeout it depends on, and cannot be made flaky by a contended
+ * lane.
+ */
+const val DEVICE_FOCUS_PROBE_BUDGET_MS: Long = 2 * SHELL_TIMEOUT_MS
+
+/**
  * Runs [command] with the shell's identity and returns its stdout, bounded by
  * [SHELL_TIMEOUT_MS].
  *

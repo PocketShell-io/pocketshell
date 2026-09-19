@@ -513,9 +513,16 @@ line instead of fourteen. `scripts/ci-app2-journey-suite.sh
 
 Two things to expect when reading such a run:
 
-- The execution guard (`check-app2-lane-execution.py --min 26`) also reddens,
-  because skipped tests do not count as executed. That is correct and
-  SECONDARY: the primary-cause block is written before it, by the earlier step.
+- The execution guard (`check-app2-lane-execution.py --min 26`) also reddens —
+  but on `failures>0`, NOT on the executed-count floor. The first waiter's
+  outage failure is in the result XML, and the guard reds any run whose XML
+  reports failures or errors. Do not go looking for an "executed N < 26"
+  line: the skips do not come close to breaching that floor. A realistic
+  wedged shape `tests=96 skipped=34 failures=0` gives `executed=62 ≥ 26`,
+  rc=0; you would need 71 of 96 skipped before the count itself failed. The
+  same XML with `failures=1` gives rc=1, `result XML reports failures=1
+  errors=0`. Either way the guard is SECONDARY: the primary-cause block is
+  written before it, by the earlier step.
 - The verdict is retryable by construction, but it is not a licence to rerun
   blind — a device that wedges on every attempt is a lane capacity problem
   (see the contended-box section above), not a flake.

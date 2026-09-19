@@ -64,6 +64,14 @@ set -uo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 
+# This script's own absolute path, resolved BEFORE anything changes the working
+# directory (`run_suite` cds to $ROOT_DIR). The self-test drives the real CLI
+# route by exec'ing it (check 10), and `${BASH_SOURCE[0]}` alone is whatever
+# argv the caller typed — `./ci-app2-journey-suite.sh --self-test` from
+# scripts/ would exec a path that no longer resolves and score a 127 as a
+# missing route.
+SELF="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)/$(basename -- "${BASH_SOURCE[0]}")"
+
 GRADLE_CMD="${POCKETSHELL_APP2_JOURNEY_GRADLE:-./gradlew}"
 ARTIFACT_DIR="${POCKETSHELL_APP2_JOURNEY_ARTIFACTS:-artifacts/app2-journey}"
 APP_ID="${POCKETSHELL_APP2_JOURNEY_APP_ID:-com.pocketshell.app}"
@@ -74,7 +82,18 @@ ADB="${ADB:-adb}"
 # DEVICE_FOCUS_OUTAGE_MARKER in app2/src/androidTest/.../connect/DeviceFocus.kt.
 # One string, so "did the lane die of a device wedge?" is one grep across the
 # test XML, the gradle log and the job summary.
+#
+# It is a COPY, and the self-test (check 9, issue #2833) reads the Kotlin const
+# and compares — a drift would silently cost the in-test half of the scan.
 OUTAGE_MARKER="INFRA: device window-focus outage"
+
+# Reads DEVICE_FOCUS_OUTAGE_MARKER out of a DeviceFocus.kt. Prints the string
+# literal (empty if the const is not there), so the self-test can compare the
+# two copies instead of trusting the comment above.
+read_kotlin_outage_marker() {
+  sed -n 's/^const val DEVICE_FOCUS_OUTAGE_MARKER: String = "\(.*\)"$/\1/p' "$1" 2>/dev/null |
+    head -n 1
+}
 
 # The one task this lane runs. Kept in a named variable so the self-test can
 # assert it, and so the "no class filter" property is checkable rather than a
@@ -359,6 +378,23 @@ exit 0
 STUB
   chmod +x "$tmp/adb-replay"
 
+  # A gradle stub that lasts long enough for that log to be DELIVERED. `main`
+  # backgrounds the stub adb, runs gradle, then kills it; the real suite runs
+  # for minutes while `adb logcat` streams, but a stub that exits instantly can
+  # be killed before its `cat` has run at all, leaving an empty logcat.txt and
+  # reddening 8a with "an ANR run writes primary-cause.md" — a self-test flake
+  # (measured ~1 run in 20 on an idle box), not a script defect. The replay is
+  # one `cat` of a few lines, so a non-empty file is a complete one.
+  cat > "$tmp/gradle-42-wait" <<'STUB'
+#!/usr/bin/env bash
+deadline=$((SECONDS + 10))
+while [[ ! -s "${WAIT_FOR_LOGCAT:-}" && "$SECONDS" -lt "$deadline" ]]; do
+  sleep 0.05
+done
+exit 42
+STUB
+  chmod +x "$tmp/gradle-42-wait"
+
   # The five lines run 35435668085 actually logged, plus one that must NOT be
   # mistaken for them.
   cat > "$tmp/anr-logcat.txt" <<'LOGCAT'
@@ -380,7 +416,8 @@ LOGCAT
   #     so on the annotation channel, and still returns gradle's rc.
   ARTIFACT_DIR="$tmp/cause-anr"
   ADB="$tmp/adb-replay"
-  REPLAY_LOGCAT="$tmp/anr-logcat.txt" GRADLE_CMD="$tmp/gradle-42" main > "$tmp/cause-anr.out" 2> "$tmp/cause-anr.err"
+  REPLAY_LOGCAT="$tmp/anr-logcat.txt" WAIT_FOR_LOGCAT="$ARTIFACT_DIR/logcat.txt" \
+    GRADLE_CMD="$tmp/gradle-42-wait" main > "$tmp/cause-anr.out" 2> "$tmp/cause-anr.err"
   check "main still propagates rc with a primary cause" "$?" "42"
   local anr_block="$tmp/cause-anr/primary-cause.md"
   local wrote_block=no
@@ -405,7 +442,8 @@ LOGCAT
   # 8b. ...and a failing suite on a HEALTHY device writes nothing, so 8a is not
   #     a block this script emits on every red run.
   ARTIFACT_DIR="$tmp/cause-quiet"
-  REPLAY_LOGCAT="$tmp/quiet-logcat.txt" GRADLE_CMD="$tmp/gradle-42" main >/dev/null 2>"$tmp/cause-quiet.err"
+  REPLAY_LOGCAT="$tmp/quiet-logcat.txt" WAIT_FOR_LOGCAT="$ARTIFACT_DIR/logcat.txt" \
+    GRADLE_CMD="$tmp/gradle-42-wait" main >/dev/null 2>"$tmp/cause-quiet.err"
   check "an ordinary red run propagates rc" "$?" "42"
   local quiet_block=no
   [[ -r "$tmp/cause-quiet/primary-cause.md" ]] && quiet_block=yes
@@ -448,6 +486,66 @@ LOGCAT
   ARTIFACT_DIR="$tmp/never-ran"
   GITHUB_STEP_SUMMARY="$summary" report_primary_cause >/dev/null 2>&1
   check "--report-primary-cause exits 0 with no artifacts at all" "$?" "0"
+
+  # 9. THE MARKER IS DUPLICATED (issue #2833, follow-up 2). `$OUTAGE_MARKER`
+  #    above and `DEVICE_FOCUS_OUTAGE_MARKER` in DeviceFocus.kt are two copies
+  #    of one string, and check 8c cannot notice a drift because it builds its
+  #    own fixture out of `$OUTAGE_MARKER`. A drift is SILENT in the worst way:
+  #    the ANR half of the scan still works, so a wedged run still reports —
+  #    just without the harness's own in-test verdict, the half that survives
+  #    when the ANR has aged out of the log buffer. So read the Kotlin const and
+  #    compare the two.
+  local focus_kt="$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/connect/DeviceFocus.kt"
+  local kt_marker=""
+  kt_marker="$(read_kotlin_outage_marker "$focus_kt")"
+  check "the Kotlin outage marker is readable" "$([[ -n "$kt_marker" ]] && echo yes || echo no)" "yes"
+  check "shell and Kotlin outage markers agree" "$kt_marker" "$OUTAGE_MARKER"
+
+  # ...and the reader is not a constant function: over a copy whose const has
+  # drifted it must return the DRIFTED string, not the shell's. Without this,
+  # an extractor that quietly returned "$OUTAGE_MARKER" would pass check 9
+  # forever.
+  cp "$focus_kt" "$tmp/DeviceFocus-drifted.kt"
+  sed -i 's/^const val DEVICE_FOCUS_OUTAGE_MARKER: String = ".*"$/const val DEVICE_FOCUS_OUTAGE_MARKER: String = "INFRA: drifted marker"/' \
+    "$tmp/DeviceFocus-drifted.kt"
+  check "the marker reader reports a drift rather than the shell copy" \
+    "$(read_kotlin_outage_marker "$tmp/DeviceFocus-drifted.kt")" "INFRA: drifted marker"
+
+  # 10. THE CLI ROUTE (issue #2833, follow-up 3). Everything above calls
+  #     `report_primary_cause` as a shell FUNCTION; app2.yml calls the SCRIPT
+  #     with `--report-primary-cause`. Delete that dispatcher case and the
+  #     function-level checks stay green while the real step falls through to
+  #     `*)` and exits 2 — reddening the triage step on exactly the run it
+  #     exists to explain. Drive the real argv.
+  local route_dir="$tmp/cli-route"
+  mkdir -p "$route_dir"
+  printf 'com.pocketshell.next.terminal.J03AttachAndTypeJourney > attach FAILED\n    %s — the DEVICE never granted window focus\n' \
+    "$OUTAGE_MARKER" > "$route_dir/gradle.log"
+  local route_summary="$tmp/cli-route-summary.md"
+  : > "$route_summary"
+  POCKETSHELL_APP2_JOURNEY_ARTIFACTS="$route_dir" \
+    POCKETSHELL_APP2_JOURNEY_RESULTS="$tmp/no-results" \
+    GITHUB_STEP_SUMMARY="$route_summary" \
+    "$SELF" --report-primary-cause > "$tmp/cli-route.out" 2>&1
+  check "the --report-primary-cause CLI route exits 0 with evidence" "$?" "0"
+  local route_reported=no
+  grep -q 'PRIMARY CAUSE: the device wedged' "$tmp/cli-route.out" && route_reported=yes
+  check "the CLI route prints the primary cause" "$route_reported" "yes"
+  local route_summarised=no
+  grep -q 'PRIMARY CAUSE: the device wedged' "$route_summary" && route_summarised=yes
+  check "the CLI route appends to the job summary" "$route_summarised" "yes"
+
+  # ...on a healthy tree the same route is still a 0, so the triage step never
+  # reddens a run it only annotates.
+  POCKETSHELL_APP2_JOURNEY_ARTIFACTS="$tmp/cli-route-empty" \
+    POCKETSHELL_APP2_JOURNEY_RESULTS="$tmp/no-results" \
+    "$SELF" --report-primary-cause >/dev/null 2>&1
+  check "the --report-primary-cause CLI route exits 0 without evidence" "$?" "0"
+
+  # ...and rc=0 above is not vacuous: an unrecognised flag DOES exit 2, which is
+  # precisely what a deleted dispatcher case would turn the real step into.
+  "$SELF" --not-a-route >/dev/null 2>&1
+  check "an unknown flag exits 2 (the fall-through a deleted case would hit)" "$?" "2"
 
   ARTIFACT_DIR="$prev_artifacts"
   RESULTS_DIR="$prev_results"
