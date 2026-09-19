@@ -3,6 +3,7 @@ package com.pocketshell.uikit.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,22 +11,31 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.model.KeyKind
+import com.pocketshell.uikit.theme.JetBrainsMonoFamily
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
@@ -342,7 +352,7 @@ private fun DictationChip(
 
 /**
  * One bar key slot. [SessionNavKey] identity is carried for callers that need
- * it; the visual recipe is the shared [KeySlot] key treatment, at the bar's
+ * it; the visual recipe is the [KeySlot] key treatment below, at the bar's
  * 48dp touch floor.
  */
 @Composable
@@ -369,4 +379,96 @@ private fun NavKeySlot(
         onTap = onTap,
         modifier = modifier,
     )
+}
+
+/**
+ * The shared key treatment: renders the binding's label, picks the right
+ * colour / font / weight per [KeyKind], and reflects the active state for
+ * modifiers (`.key.active` in the CSS).
+ *
+ * `private` because this bar is its only caller. The slot used to be
+ * `internal` in `KeyBar.kt` so the #2612 bottom bar could reuse the exact
+ * same key treatment instead of growing a second one; #2792 deleted
+ * `KeyBar` as dead canon, which left this bar as the sole consumer, so the
+ * treatment now lives with the one surface that paints it.
+ *
+ * @param minHeight the slot's touch floor. The bar passes
+ *   [PocketShellDensity.tapTargetMin]; 38dp is `KeyBar`'s historical paint,
+ *   kept as the default so the recipe is unchanged.
+ * @param enabled when false the slot mutes and drops its click.
+ * @param contentDescription optional a11y label — glyph keys like `↑` read
+ *   poorly as bare text.
+ */
+@Composable
+private fun KeySlot(
+    binding: KeyBinding,
+    isActive: Boolean,
+    modifier: Modifier,
+    onTap: () -> Unit,
+    minHeight: Dp = 38.dp,
+    enabled: Boolean = true,
+    contentDescription: String? = null,
+) {
+    val (textColor: Color, bgColor: Color, borderColor: Color) = when {
+        isActive -> Triple(
+            PocketShellColors.Accent,
+            PocketShellColors.AccentSoft,
+            PocketShellColors.AccentDim,
+        )
+
+        !enabled -> Triple(
+            PocketShellColors.TextMuted,
+            PocketShellColors.SurfaceElev,
+            PocketShellColors.Border,
+        )
+
+        binding.kind == KeyKind.Arrow -> Triple(
+            PocketShellColors.TextSecondary,
+            PocketShellColors.SurfaceElev,
+            PocketShellColors.Border,
+        )
+
+        else -> Triple(
+            PocketShellColors.Text,
+            PocketShellColors.SurfaceElev,
+            PocketShellColors.Border,
+        )
+    }
+
+    val semanticsModifier = if (contentDescription != null) {
+        Modifier.semantics { this.contentDescription = contentDescription }
+    } else {
+        Modifier
+    }
+
+    Box(
+        modifier = modifier
+            .widthIn(min = 30.dp)
+            .heightIn(min = minHeight)
+            .background(color = bgColor, shape = RoundedCornerShape(8.dp))
+            .border(
+                border = BorderStroke(1.dp, borderColor),
+                shape = RoundedCornerShape(8.dp),
+            )
+            .clickable(enabled = enabled, role = Role.Button, onClick = onTap)
+            .then(semanticsModifier)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = binding.label,
+            color = textColor,
+            // Arrow keys use the UI sans-serif and a larger glyph
+            // (`.key.arrow` rule); everything else uses mono.
+            fontFamily = if (binding.kind == KeyKind.Arrow) null else JetBrainsMonoFamily,
+            fontSize = when {
+                binding.kind == KeyKind.Arrow -> 16.sp
+                binding.label.length >= 6 -> 9.sp
+                else -> 12.sp
+            },
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            softWrap = false,
+        )
+    }
 }

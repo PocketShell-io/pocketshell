@@ -127,7 +127,7 @@ private fun caretControlBytes(label: String): ByteArray? {
  * The bar itself ships no letter keys (the phone keyboard has them), so in
  * production this arm is only reachable if the key set grows. It exists
  * because it is the half of "Ctrl+C" that a test can drive through the REAL
- * `KeyBar` state machine on the host JVM, where there is no IME to type the
+ * hotkeys palette on the host JVM, where there is no IME to type the
  * letter with.
  */
 private fun characterKeyBytes(label: String, ctrlArmed: Boolean): ByteArray? {
