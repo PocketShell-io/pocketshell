@@ -9,10 +9,13 @@ gates looked fine in prose while never firing, and nothing in the repo read
 the wiring. This guard pins the LOAD-BEARING TEXT of the wiring, not the
 comments around it:
 
-  1. The dispatch is the REAL workflow-dispatches API call, targets the
-     RELEASE sha (`-f ref="$release_sha"`, never the stale run's head), and is
-     reachable ONLY past the canned-fixture branch — a harness test can never
-     dispatch a live workflow.
+  1. The dispatch is the REAL workflow-dispatches API call, is reachable ONLY
+     past the canned-fixture branch (a harness test can never dispatch a live
+     workflow), and targets a REF THE API ACCEPTS: since #2822 that is a
+     branch resolved from the release sha via `branches-where-head` — never
+     the raw sha (HTTP 422 "No ref found", which is how the whole recovery
+     path silently never fired), never the stale run's head, and never a
+     hardcoded branch whose head may have moved off the release commit.
   2. The trigger fires ONLY for MISSING (no verdict in the window) and STALE
      (verdict does not cover the release HEAD) — never for a genuine RED, so
      the anti-flake-masking property (one dispatch max, no second suite
@@ -167,11 +170,44 @@ def validate_guard_sh(text: str) -> None:
         'gh api "repos/$repo/actions/workflows/$WORKFLOW/dispatches"',
         "self_heal_dispatch (the workflow-dispatches API call)",
     )
+    # #2822: workflow_dispatch refs are branch/tag names. Passing the release
+    # sha is HTTP 422 "No ref found" — the defect that made D37's only
+    # sanctioned recovery path unreachable (run 35426894423). The ref must be
+    # the RESOLVED one, and the resolution must happen BEFORE the call.
     require_once(
         dispatch,
-        '-f ref="$release_sha"',
-        "self_heal_dispatch (must dispatch the RELEASE sha — not the stale "
-        "run's headSha, not a ref name)",
+        '-f ref="$dispatch_ref"',
+        "self_heal_dispatch (the dispatch ref must be the RESOLVED branch ref)",
+    )
+    if '-f ref="$release_sha"' in dispatch:
+        raise GuardFailure(
+            "self_heal_dispatch must not hand the release SHA to "
+            "workflow_dispatch (#2822: the API takes branch/tag refs only and "
+            'answers a raw SHA with HTTP 422 "No ref found")'
+        )
+    require_before(
+        dispatch,
+        'self_heal_resolve_dispatch_ref "$repo" "$release_sha"',
+        "-f ref=",
+        "self_heal_dispatch (the ref must be RESOLVED before the dispatch call)",
+    )
+    # Only a branch whose HEAD *is* the release commit gives the dispatched run
+    # the release sha as its headSha — the field the poll loop matches on. A
+    # containment query ("branches containing") would dispatch a moved head.
+    resolver = extract_func(text, "guard_gh_branches_where_head")
+    require_once(
+        resolver,
+        'gh api "repos/$1/commits/$2/branches-where-head"',
+        "guard_gh_branches_where_head (the ref must come from the branches "
+        "whose HEAD is the release commit)",
+    )
+    # Fail closed: no qualifying branch must BLOCK with the actionable manual
+    # instruction, never fall back to dispatching something.
+    require_once(
+        dispatch,
+        "dispatch '$WORKFLOW' manually on a branch containing $release_sha",
+        "self_heal_dispatch (an unresolvable ref must BLOCK with the "
+        "manual-dispatch instruction)",
     )
     require_before(
         dispatch,
@@ -372,13 +408,43 @@ def self_test() -> None:
         'gh api "repos/$repo/actions/workflows/$WORKFLOW/dispatches"',
         'echo "dispatch suppressed"',
     )
-    # RED: the dispatch targets the WRONG ref (a ref name instead of the
-    # release sha — the suite would run on a line that may not contain it).
+    # RED: the #2822 regression itself — the release sha goes back to being the
+    # dispatch ref, which the API answers with HTTP 422 and no run at all.
     expect_red(
-        "dispatch ref is not the release sha",
+        "dispatch ref regresses to the raw release sha",
         guard,
+        '-f ref="$dispatch_ref"',
         '-f ref="$release_sha"',
+    )
+    # RED: the ref is hardcoded instead of resolved — main's head may have moved
+    # past the release commit, so the suite would run on a different line.
+    expect_red(
+        "dispatch ref hardcoded instead of resolved",
+        guard,
+        '-f ref="$dispatch_ref"',
         '-f ref="main"',
+    )
+    # RED: the resolution step is skipped and the sha is used directly.
+    expect_red(
+        "ref resolution bypassed",
+        guard,
+        'if ! dispatch_ref="$(self_heal_resolve_dispatch_ref "$repo" "$release_sha")"; then',
+        'if ! dispatch_ref="$(printf \'%s\' "$release_sha")"; then',
+    )
+    # RED: the query stops pinning branch HEADS (a containing-branch query
+    # would dispatch a head that is not the release commit).
+    expect_red(
+        "branch query no longer pins the branch head",
+        guard,
+        'gh api "repos/$1/commits/$2/branches-where-head"',
+        'gh api "repos/$1/branches"',
+    )
+    # RED: the unresolvable-ref path loses its actionable manual instruction.
+    expect_red(
+        "manual-dispatch instruction dropped from the unresolvable-ref block",
+        guard,
+        "dispatch '$WORKFLOW' manually on a branch containing $release_sha",
+        "try again later",
     )
     # RED: the canned branch no longer gates the live call (tests dispatch).
     expect_red(
@@ -488,7 +554,7 @@ def self_test() -> None:
         "STALE/MISSING VERDICTS SELF-HEAL INSTEAD OF CALLING A HUMAN.",
     )
 
-    expected = 15
+    expected = 19
     if checks != expected:
         raise GuardFailure(f"self-test ran {checks} red mutations, expected {expected}")
 
@@ -515,9 +581,10 @@ def main(argv: list[str]) -> int:
         print(f"FAIL: {exc}", file=sys.stderr)
         return 1
     print(
-        "PASS: #2754 self-heal wiring intact — dispatch targets the release sha "
-        "behind the canned-fixture gate, only stale/missing triggers, bounded "
-        "poll, one decision function, D37 red message unchanged"
+        "PASS: #2754 self-heal wiring intact — dispatch targets a branch ref "
+        "resolved from the release sha (#2822) behind the canned-fixture gate, "
+        "only stale/missing triggers, bounded poll, one decision function, "
+        "D37 red message unchanged"
     )
     return 0
 

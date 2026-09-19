@@ -111,12 +111,17 @@ set -euo pipefail
 #   1. `self_heal_required` decides — ONLY a stale verdict (real verdict whose
 #      head does not contain the release HEAD) or a missing one (no run in the
 #      window carries a terminal journey verdict) triggers self-heal.
-#   2. `self_heal_dispatch` POSTs the workflow dispatch on the RELEASE SHA —
-#      `gh api repos/$REPO/actions/workflows/$WORKFLOW/dispatches -f ref=<sha>`
-#      (the dispatches API accepts a commit SHA), pinned to this checkout's
-#      repository like every other gh call here. An 'app2' run already in
-#      flight on the release commit is ADOPTED instead of dispatching a
-#      duplicate suite attempt.
+#   2. `self_heal_dispatch` POSTs the workflow dispatch FOR the RELEASE SHA —
+#      `gh api repos/$REPO/actions/workflows/$WORKFLOW/dispatches -f ref=<branch>`,
+#      pinned to this checkout's repository like every other gh call here. The
+#      ref is a BRANCH NAME resolved from the release SHA (#2822: the API
+#      rejects a raw commit SHA with HTTP 422 "No ref found"), and only a
+#      branch whose HEAD *is* that commit qualifies, so the dispatched run's
+#      headSha is the release commit the poll loop matches on. An 'app2' run
+#      already in flight on the release commit is ADOPTED instead of
+#      dispatching a duplicate suite attempt; a release commit that is no
+#      branch's head BLOCKS with an actionable manual-dispatch message instead
+#      of a doomed API call.
 #   3. The new run's journey/fault-verdict conclusion is polled with a bounded
 #      budget (--self-heal-timeout, default 3600s; the suite ran 24m54s on
 #      2026-09-16) and the SAME pure decision function re-evaluates the fresh
@@ -455,9 +460,14 @@ self_test() {
   # (#2754 AC4): one dispatch on stale/missing, ZERO on red/green, never a
   # second suite attempt.
   # -------------------------------------------------------------------------
+  # $7 (dispatch_needle, #2822) pins the CONTENT of the recorded dispatch —
+  # "ref=<branch> sha=<release sha>". Counting records alone could not tell a
+  # branch ref from the raw SHA the API answers with HTTP 422, which is exactly
+  # how the broken shape shipped green.
   self_heal_case() {
     local label="$1" expect_rc="$2" reason_needle="$3" want_dispatches="$4" \
-      fixture_json="$5" extra_flags="${6:-}"
+      fixture_json="$5" extra_flags="${6:-}" dispatch_needle="${7:-}" \
+      absent_needle="${8:-}"
     local tmp; tmp="$(mktemp)"
     printf '%s' "$fixture_json" > "$tmp"
     local log="${tmp}.dispatchlog"
@@ -469,10 +479,11 @@ self_test() {
       --self-heal-poll 1 $extra_flags 2>&1)"
     rc=$?
     set -e
-    local got_dispatches=0
+    local got_dispatches=0 log_body=""
     # grep -c exits 1 on a zero count — `|| true` keeps the "0" it printed
     # without tripping the self-test's errexit.
     [[ -f "$log" ]] && got_dispatches="$(grep -c '^DISPATCH ' "$log" || true)"
+    [[ -f "$log" ]] && log_body="$(cat "$log")"
     rm -f "$tmp" "$log"
     if [[ "$rc" != "$expect_rc" ]]; then
       printf 'FAIL [%s]: expected rc=%s got rc=%s\n%s\n' "$label" "$expect_rc" "$rc" "$out"
@@ -484,6 +495,13 @@ self_test() {
     elif [[ "$got_dispatches" != "$want_dispatches" ]]; then
       printf 'FAIL [%s]: expected %s dispatch record(s), got %s\n%s\n' \
         "$label" "$want_dispatches" "$got_dispatches" "$out"
+      failures=$((failures + 1))
+    elif [[ -n "$absent_needle" ]] && printf '%s' "$out" | grep -qF -- "$absent_needle"; then
+      printf 'FAIL [%s]: output must NOT contain "%s"\n%s\n' "$label" "$absent_needle" "$out"
+      failures=$((failures + 1))
+    elif [[ -n "$dispatch_needle" ]] && ! printf '%s' "$log_body" | grep -qF -- "$dispatch_needle"; then
+      printf 'FAIL [%s]: dispatch record did not contain "%s"\nrecorded: %s\n%s\n' \
+        "$label" "$dispatch_needle" "${log_body:-<none>}" "$out"
       failures=$((failures + 1))
     elif ! printf '%s' "$out" | grep -qF -- "[FIXTURE DRY RUN]"; then
       printf 'FAIL [%s]: self-heal fixture output was not marked as a dry run\n%s\n' "$label" "$out"
@@ -504,34 +522,40 @@ self_test() {
   # run comes back green, the guard PASSES with no human in the loop.
   self_heal_case "selfheal-stale-green-recovers" 0 "safety verdict is green" 1 \
     '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
       "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
       "pollRunLists":[
         [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
         [{"databaseId":1002,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:40:00Z"}],
         [{"databaseId":1002,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:40:00Z"}]],
-      "jobViews":{"1001":'"$SH_GREEN"',"1002":'"$SH_GREEN"'}}'
+      "jobViews":{"1001":'"$SH_GREEN"',"1002":'"$SH_GREEN"'}}' \
+    "" "ref=main sha=$REL"
 
   # AC1: MISSING verdict — nothing in the window carries a terminal journey
   # verdict (all skipped/cancelled or never ran). Same recovery.
   self_heal_case "selfheal-missing-green-recovers" 0 "safety verdict is green" 1 \
     '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
       "runList":[],
       "pollRunLists":[
         [],
         [{"databaseId":1003,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"queued","conclusion":null,"createdAt":"2026-09-16T19:41:00Z"}],
         [{"databaseId":1003,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:41:00Z"}]],
-      "jobViews":{"1003":'"$SH_GREEN"'}}'
+      "jobViews":{"1003":'"$SH_GREEN"'}}' \
+    "" "ref=main sha=$REL"
 
   # AC2: the fresh verdict comes back RED -> the guard blocks with the UNCHANGED
   # D37 red message — and dispatches exactly ONCE (never a second suite attempt
   # on red, AC4).
   self_heal_case "selfheal-fresh-red-still-blocks" 1 "safety verdict is RED" 1 \
     '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
       "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
       "pollRunLists":[
         [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
         [{"databaseId":1004,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"failure","createdAt":"2026-09-16T19:40:00Z"}]],
-      "jobViews":{"1001":'"$SH_GREEN"',"1004":'"$SH_RED"'}}'
+      "jobViews":{"1001":'"$SH_GREEN"',"1004":'"$SH_RED"'}}' \
+    "" "ref=main sha=$REL"
 
   # AC4/anti-flake-masking: a genuinely RED verdict on a COVERING run never
   # triggers a dispatch at all — zero dispatch records.
@@ -551,6 +575,7 @@ self_test() {
   # Fail-closed: the dispatch call itself fails -> BLOCK, no poll, no green.
   self_heal_case "selfheal-dispatch-failure-blocks" 1 "self-heal dispatch of the 'app2.yml' workflow on the release commit failed" 0 \
     '{"dispatchOk":false,
+      "branchesWhereHead":["main"],
       "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
       "pollRunLists":[],
       "jobViews":{"1001":'"$SH_GREEN"'}}'
@@ -559,22 +584,25 @@ self_test() {
   # the poll budget (short --self-heal-timeout drives this offline).
   self_heal_case "selfheal-poll-timeout-blocks" 1 "poll budget exhausted" 1 \
     '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
       "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
       "pollRunLists":[
         [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
         [{"databaseId":1007,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:40:00Z"}]],
       "jobViews":{"1001":'"$SH_GREEN"'}}' \
-    "--self-heal-timeout 3 --self-heal-poll 1"
+    "--self-heal-timeout 3 --self-heal-poll 1" "ref=main sha=$REL"
 
   # Fail-closed: the self-healed run completes but a run-level cancellation
   # killed its journey job -> a verdict GAP blocks; no second dispatch.
   self_heal_case "selfheal-gap-no-second-attempt" 1 "verdict GAP" 1 \
     '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
       "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
       "pollRunLists":[
         [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
         [{"databaseId":1008,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"cancelled","createdAt":"2026-09-16T19:40:00Z"}]],
-      "jobViews":{"1001":'"$SH_GREEN"',"1008":'"$SH_CANCELLED"'}}'
+      "jobViews":{"1001":'"$SH_GREEN"',"1008":'"$SH_CANCELLED"'}}' \
+    "" "ref=main sha=$REL"
 
   # Cost bound: an app2 run already in flight on the release commit is ADOPTED
   # instead of dispatching a duplicate suite attempt — zero dispatch records.
@@ -586,6 +614,119 @@ self_test() {
          {"databaseId":1009,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"in_progress","conclusion":null,"createdAt":"2026-09-16T19:39:00Z"}],
         [{"databaseId":1009,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:39:00Z"}]],
       "jobViews":{"1001":'"$SH_GREEN"',"1009":'"$SH_GREEN"'}}'
+
+  echo
+  # -------------------------------------------------------------------------
+  # Issue #2822 — THE DISPATCH REF. `gh ... /dispatches -f ref=<sha>` is HTTP
+  # 422 "No ref found" (run 35426894423), so the ref is resolved to a branch
+  # whose HEAD is the release commit. These arms pin BOTH directions of that
+  # resolution end-to-end: what gets recorded as the dispatch ref, and what
+  # happens when no branch qualifies (BLOCK with the manual-dispatch
+  # instruction — never a doomed SHA dispatch).
+  # -------------------------------------------------------------------------
+  echo "--- #2822 dispatch-ref resolution (end-to-end) ---"
+
+  # AC1: the release commit IS main's tip -> self-heal dispatches --ref main
+  # (and records the release SHA alongside it), and the gate recovers.
+  self_heal_case "selfheal-dispatches-main-not-sha" 0 "safety verdict is green" 1 \
+    '{"dispatchOk":true,
+      "branchesWhereHead":["main"],
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1010,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1010":'"$SH_GREEN"'}}' \
+    "" "DISPATCH repo= workflow=app2.yml ref=main sha=$REL"
+
+  # A release-branch head resolves to THAT branch, not to main and not to the
+  # SHA — the release/vX.Y.Z stabilisation case (#2754's 34402741674 shape).
+  self_heal_case "selfheal-dispatches-release-branch-head" 0 "safety verdict is green" 1 \
+    '{"dispatchOk":true,
+      "branchesWhereHead":["release/v0.5.4"],
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1011,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1011":'"$SH_GREEN"'}}' \
+    "" "ref=release/v0.5.4 sha=$REL"
+
+  # Several branch heads -> 'main' wins deterministically.
+  self_heal_case "selfheal-prefers-main-branch-head" 0 "safety verdict is green" 1 \
+    '{"dispatchOk":true,
+      "branchesWhereHead":["zz-topic","main"],
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+        [{"databaseId":1012,"headSha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:40:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"',"1012":'"$SH_GREEN"'}}' \
+    "" "ref=main sha=$REL"
+
+  # AC2: the release commit is no branch's head -> the explicit manual-dispatch
+  # BLOCK and ZERO dispatch records. The old code sent the SHA here and took an
+  # HTTP 422 instead.
+  self_heal_case "selfheal-unresolvable-ref-blocks-with-manual-message" 1 \
+    "dispatch 'app2.yml' manually on a branch containing $REL" 0 \
+    '{"dispatchOk":true,
+      "branchesWhereHead":[],
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"'}}' \
+    "--self-heal-timeout 3 --self-heal-poll 1" "" "poll budget exhausted"
+
+  # ...and it must NOT be reported as a failed gh call: that message told the
+  # 2026-09-19 on-call to look for a "gh error above" that never happened.
+  self_heal_case "selfheal-unresolvable-ref-is-not-a-gh-failure" 1 \
+    "no branch has that commit as its HEAD" 0 \
+    '{"dispatchOk":true,
+      "branchesWhereHead":[],
+      "runList":[],
+      "pollRunLists":[[]],
+      "jobViews":{}}' \
+    "--self-heal-timeout 3 --self-heal-poll 1" "" "gh error above"
+
+  # Missing data fails closed too: a fixture with no branch-head information at
+  # all must BLOCK, never default to some plausible branch.
+  self_heal_case "selfheal-absent-branch-head-data-blocks" 1 \
+    "no branch has that commit as its HEAD" 0 \
+    '{"dispatchOk":true,
+      "runList":[{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}],
+      "pollRunLists":[
+        [{"databaseId":1001,"headSha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","status":"completed","conclusion":"success","createdAt":"2026-09-16T19:00:00Z"}]],
+      "jobViews":{"1001":'"$SH_GREEN"'}}' \
+    "--self-heal-timeout 3 --self-heal-poll 1" "" "poll budget exhausted"
+
+  echo
+  echo "--- #2822 dispatch-ref resolution (pure) ---"
+  # The pure half: branch-head candidates in, the ref workflow_dispatch gets
+  # out. No gh, no fixture, no I/O.
+  ref_pick_case() {
+    local label="$1" expect_rc="$2" expect_ref="$3" candidates="$4"
+    local got="" rc=0
+    set +e
+    got="$(self_heal_pick_dispatch_ref "$candidates")"
+    rc=$?
+    set -e
+    if [[ "$rc" != "$expect_rc" ]]; then
+      printf 'FAIL [%s]: expected rc=%s got rc=%s (ref=%s)\n' "$label" "$expect_rc" "$rc" "${got:-<none>}"
+      failures=$((failures + 1))
+    elif [[ "$got" != "$expect_ref" ]]; then
+      printf 'FAIL [%s]: expected ref "%s" got "%s"\n' "$label" "$expect_ref" "$got"
+      failures=$((failures + 1))
+    else
+      printf 'ok   [%s] rc=%s ref=%s\n' "$label" "$rc" "${got:-<none>}"
+    fi
+  }
+  ref_pick_case "refpick-main-head"           0 "main"             "main"
+  ref_pick_case "refpick-main-preferred"      0 "main"             $'zz-topic\nmain'
+  ref_pick_case "refpick-main-preferred-rev"  0 "main"             $'main\nzz-topic'
+  # 'aa-topic' sorts BEFORE 'main', so this arm reddens if the main preference
+  # degrades into "lexicographically first" — the two rules only differ here.
+  ref_pick_case "refpick-main-beats-earlier"  0 "main"             $'aa-topic\nmain'
+  ref_pick_case "refpick-release-branch"      0 "release/v0.5.4"   "release/v0.5.4"
+  ref_pick_case "refpick-deterministic-first" 0 "alpha"            $'zeta\nalpha'
+  ref_pick_case "refpick-no-branch-head"      1 ""                 ""
+  ref_pick_case "refpick-blank-candidates"    1 ""                 $'\n\n'
 
   echo
   if [[ "$failures" -eq 0 ]]; then
@@ -813,25 +954,97 @@ self_heal_poll_list_at() {
   guard_gh_run_list "$1"
 }
 
+# ---------------------------------------------------------------------------
+# ISSUE #2822 — A workflow_dispatch REF IS A BRANCH/TAG NAME, NEVER A SHA.
+#
+# #2754 shipped the dispatch as `-f ref="$release_sha"`, asserting in code and
+# comment that the dispatches API accepts a commit SHA. It does not. Release
+# gate run 35426894423 (release commit d30585322, 2026-09-19) got HTTP 422
+# "No ref found for d30585322..." back, so D37's ONE sanctioned recovery path
+# failed exactly when it was needed and the gate stayed red until an unrelated
+# push happened to produce a fresh app2 run on a new head.
+#
+# The ref is therefore RESOLVED first, and only to a branch whose HEAD *is* the
+# release commit (`branches-where-head`). That shape is the only one that both
+# satisfies the API and guarantees the dispatched run carries the release SHA
+# as its headSha — the exact field the poll loop below matches on. A branch
+# that merely CONTAINS the commit would run the suite on a different head and
+# could never produce the verdict this gate is waiting for, so it is not a
+# fallback: when nothing has the commit as its head the guard BLOCKS with an
+# actionable manual-dispatch message. It never re-sends the SHA (that is the
+# 422 above) and never silently retargets a moved head.
+# ---------------------------------------------------------------------------
+guard_gh_branches_where_head() {
+  # $1 repo, $2 sha. Prints the name of every branch whose HEAD commit is $2,
+  # one per line (no output when none). Canned under a self-heal fixture like
+  # every other gh call here, so a test never touches the network.
+  if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
+    jq -r '(.branchesWhereHead // [])[]' "$SELF_HEAL_FIXTURE"
+    return 0
+  fi
+  env -u GH_REPO -u GH_HOST gh api "repos/$1/commits/$2/branches-where-head" \
+    --jq '.[].name' 2>/dev/null
+}
+
+self_heal_pick_dispatch_ref() {
+  # $1 newline-separated branch names (branches whose head IS the release
+  # commit). Prints the ref to dispatch; returns 1 when there is none. PURE —
+  # no gh, no git, no I/O — so the self-test drives it directly.
+  #
+  # 'main' wins whenever it is a candidate: that is the release-gate's common
+  # case and the ref the issue's acceptance criterion names. Otherwise the
+  # lexicographically first candidate, so a commit that is the head of several
+  # branches resolves deterministically instead of "whatever the API listed
+  # first".
+  local candidates="$1" branch="" chosen=""
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    if [[ "$branch" == "main" ]]; then
+      printf 'main\n'
+      return 0
+    fi
+    if [[ -z "$chosen" || "$branch" < "$chosen" ]]; then
+      chosen="$branch"
+    fi
+  done <<<"$candidates"
+  [[ -z "$chosen" ]] && return 1
+  printf '%s\n' "$chosen"
+}
+
+self_heal_resolve_dispatch_ref() {
+  # $1 repo, $2 release sha -> the branch name to hand workflow_dispatch.
+  local candidates=""
+  candidates="$(guard_gh_branches_where_head "$1" "$2")" || candidates=""
+  self_heal_pick_dispatch_ref "$candidates"
+}
+
 self_heal_dispatch() {
   # $1 repo, $2 release sha. THE dispatch (issue #2754 step 1) — the exact
-  # call the sanctioned manual loop ran by hand. The dispatches API accepts a
-  # commit SHA as ref; the repo is in the API path, so $GH_REPO cannot
-  # redirect it (same pinning rule as every gh call in this script).
+  # call the sanctioned manual loop ran by hand, with #2822's ref resolution in
+  # front of it. The repo is in the API path, so $GH_REPO cannot redirect it
+  # (same pinning rule as every gh call in this script).
+  #
+  # Exit codes: 0 dispatched, 2 no acceptable ref (the BLOCK is printed here
+  # and NOTHING is sent), 1 the dispatch call itself failed.
   #
   # HARD CONSTRAINT (#2754): with a self-heal harness fixture set this
   # RECORDS the dispatch to "<fixture>.dispatchlog" and never touches the
   # network — a test never dispatches a live workflow.
-  local repo="$1" release_sha="$2"
+  local repo="$1" release_sha="$2" dispatch_ref=""
+  if ! dispatch_ref="$(self_heal_resolve_dispatch_ref "$repo" "$release_sha")"; then
+    echo "BLOCK: self-heal cannot dispatch the '$WORKFLOW' workflow for release commit $release_sha — no branch has that commit as its HEAD, and workflow_dispatch takes branch/tag refs only (a raw SHA is HTTP 422 'No ref found', #2822). The stale/missing verdict still blocks the release (D37): dispatch '$WORKFLOW' manually on a branch containing $release_sha, then re-run the gate." >&2
+    return 2
+  fi
+  note_self_heal_dispatch_ref "$dispatch_ref" "$release_sha"
   if [[ -n "$SELF_HEAL_FIXTURE" ]]; then
     if [[ "$(jq -r '.dispatchOk // false' "$SELF_HEAL_FIXTURE")" == "true" ]]; then
-      printf 'DISPATCH repo=%s workflow=%s ref=%s\n' "$repo" "$WORKFLOW" "$release_sha" \
+      printf 'DISPATCH repo=%s workflow=%s ref=%s sha=%s\n' "$repo" "$WORKFLOW" "$dispatch_ref" "$release_sha" \
         >> "${SELF_HEAL_FIXTURE}.dispatchlog"
       return 0
     fi
     return 1
   fi
-  env -u GH_REPO -u GH_HOST gh api "repos/$repo/actions/workflows/$WORKFLOW/dispatches" -f ref="$release_sha"
+  env -u GH_REPO -u GH_HOST gh api "repos/$repo/actions/workflows/$WORKFLOW/dispatches" -f ref="$dispatch_ref"
 }
 
 # The TRIGGER (issue #2754 step 0). Self-heal fires ONLY for:
@@ -866,6 +1079,11 @@ note_self_heal_adopt() {
   echo "NOTE (#2754): found an '$WORKFLOW' run (${id}) already in flight on the release commit — adopting it instead of dispatching a duplicate suite attempt." >&2
 }
 
+note_self_heal_dispatch_ref() {
+  local ref="${1:-?}" sha="${2:-?}"
+  echo "NOTE (#2822): dispatching '$WORKFLOW' on ref '${ref}' — the branch whose HEAD is the release commit ${sha}. workflow_dispatch takes branch/tag refs only; a raw SHA is HTTP 422." >&2
+}
+
 note_self_heal_poll() {
   local id="${1:-?}" status="${2:-?}"
   echo "NOTE (#2754): self-heal run ${id} is status='${status}'; polling for a terminal journey verdict." >&2
@@ -898,7 +1116,14 @@ self_heal_wait_for_fresh_verdict() {
   if [[ -n "$adopted_id" ]]; then
     note_self_heal_adopt "$adopted_id"
   else
-    if ! self_heal_dispatch "$repo" "$release_head"; then
+    # rc 2 (#2822) means no branch has the release commit as its head, so no
+    # dispatch was attempted and self_heal_dispatch already printed the
+    # actionable BLOCK — there is no "gh error above" to point at.
+    local dispatch_rc=0
+    self_heal_dispatch "$repo" "$release_head" || dispatch_rc=$?
+    if (( dispatch_rc == 2 )); then
+      return 1
+    elif (( dispatch_rc != 0 )); then
       echo "BLOCK: self-heal dispatch of the '$WORKFLOW' workflow on the release commit failed (gh error above). The stale/missing verdict still blocks the release (D37): dispatch it manually, or fix the failure, then re-run the gate." >&2
       return 1
     fi

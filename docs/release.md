@@ -118,7 +118,13 @@ When the guard blocks, there are exactly two ways forward:
    the `app2` workflow (`workflow_dispatch`) on the release commit —
    workflow_dispatch fail-opens every lane, so the dispatched run always
    carries the journey job — and re-run the release gate once
-   `app2 journey suite` is green.
+   `app2 journey suite` is green. Dispatch it on the *branch whose head is the
+   release commit* (normally `main`): a `workflow_dispatch` ref is a branch or
+   tag name, and a raw commit SHA comes back HTTP 422 "No ref found" (#2822 —
+   the same trap that made the gate's own self-heal a no-op). If no branch has
+   that commit as its head, push it to one first; a run dispatched on a moved
+   head produces a verdict for a different commit, which the gate will (rightly)
+   treat as stale.
 2. **Quarantine the offending test/journey class** through the existing
    D36(4) flake mechanism — auto-filed issue, moved into the non-blocking
    lane, 2-week expiry — so the verdict covers a genuinely smaller but still
