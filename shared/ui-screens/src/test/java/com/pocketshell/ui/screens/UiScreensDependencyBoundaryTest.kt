@@ -19,6 +19,10 @@ import com.pocketshell.next.composer.StagedAttachment
 import com.pocketshell.next.composer.StagingProgress
 import com.pocketshell.next.composer.updateComposerPreImeExpanded
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.settings.AppSettings
+import com.pocketshell.next.settings.SettingsHostRow
+import com.pocketshell.next.settings.terminalTextSizePxFromSp
+import com.pocketshell.next.settings.terminalTextSizeSpFromPx
 import com.pocketshell.next.share.ShareHostRow
 import com.pocketshell.next.share.ShareUploadState
 import com.pocketshell.next.share.ShareUiState
@@ -57,6 +61,12 @@ import java.io.File
  * and the IME anchor policy — pure presentation, so no new seam guard; the
  * moved declarations joined [movedTypeMarkers] (and the non-class members a
  * non-type marker list below) so a silent deletion still fails the build.
+ *
+ * The #2636 D6 slice moved the settings sub-pages (`*Screen` composables from
+ * app2's `SettingsPages.kt`) plus `AppSettings` itself — pure value state, no
+ * repository/`Context` — and the host display row. The routes, the Hilt view
+ * models and the build-info read stay app2-side; the release/platform scan
+ * below keeps it that way.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -186,15 +196,22 @@ class UiScreensDependencyBoundaryTest {
             ComposerImeExpansionOutcome::class to "enum class ComposerImeExpansionOutcome",
             ComposerImeAnchorSnapshot::class to "data class ComposerImeAnchorSnapshot",
             ComposerModalSurfaceGeometry::class to "data class ComposerModalSurfaceGeometry",
+            // The D6 family — settings sub-pages' state. `AppSettings` moved
+            // whole because it is pure value state (no repository/`Context`);
+            // the composables themselves have no KClass and their pure
+            // helpers ride in movedNonTypeMarkers below.
+            AppSettings::class to "data class AppSettings",
+            SettingsHostRow::class to "data class SettingsHostRow",
         )
 
         /**
-         * The D5 slice also moved top-level consts and functions
+         * The D5 and D6 slices also moved top-level consts and functions
          * (`ComposerBar.kt`'s slash-sheet tags, the IME anchor policy's pure
-         * functions), which cannot ride in [movedTypeMarkers] — no `KClass`.
-         * Each left-hand reference below is itself load-bearing: deleting the
-         * declaration fails the BUILD on this import/reference, exactly like
-         * a `KClass` reference would.
+         * functions, the settings terminal text-size px↔sp converters), which
+         * cannot ride in [movedTypeMarkers] — no `KClass`. Each left-hand
+         * reference below is itself load-bearing: deleting the declaration
+         * fails the BUILD on this import/reference, exactly like a `KClass`
+         * reference would.
          */
         private val movedNonTypeMarkers: List<Pair<Any, String>> = listOf(
             COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
@@ -204,6 +221,8 @@ class UiScreensDependencyBoundaryTest {
             ::updateComposerPreImeExpanded to "fun updateComposerPreImeExpanded",
             ::composerModalSurfaceOverlapsIme to "fun composerModalSurfaceOverlapsIme",
             ::decideComposerImeAnchorAction to "fun decideComposerImeAnchorAction",
+            ::terminalTextSizeSpFromPx to "fun terminalTextSizeSpFromPx",
+            ::terminalTextSizePxFromSp to "fun terminalTextSizePxFromSp",
         )
 
         private val movedDeclarations: List<String> =

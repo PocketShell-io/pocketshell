@@ -14,9 +14,6 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
-/** One host row in the Workspace section — the picker into its roots screen. */
-data class SettingsHostRow(val id: Long, val name: String, val subtitle: String)
-
 /**
  * Backs [SettingsScreen] (rewrite task P-6).
  *

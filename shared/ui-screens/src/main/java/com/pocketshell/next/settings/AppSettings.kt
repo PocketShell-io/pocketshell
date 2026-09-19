@@ -3,6 +3,11 @@ package com.pocketshell.next.settings
 /**
  * Every user-tunable preference app2 has (rewrite task P-6).
  *
+ * Lives in the shared presentation module (#2636 D6): the settings sub-pages
+ * render directly against these values and option lists, and the class is pure
+ * state (no repository, no `Context`, no disk), so the move is verbatim. The
+ * persistence mapping (`SettingsRepository`) stays in app2.
+ *
  * ## Nine fields, not sixteen
  *
  * The old client's `AppSettings` carried sixteen. Most of them configured
