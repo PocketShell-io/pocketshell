@@ -41,9 +41,31 @@ on:
 # trigger shares the same group (github.ref here is this workflow's own
 # ref, effectively `main`), so a manual dispatch and the nightly run never
 # overlap on the one long-lived emulator runner either.
+#
+# Issue #2825: that queue is only real with `queue: max` — the same correction
+# app2.yml took in #2736 and tests.yml in #2739, which this workflow was never
+# covered by. `cancel-in-progress: false` (what stood here before) protects a
+# RUNNING run; it has never protected a QUEUED one. GitHub's default
+# concurrency collapses a group's PENDING (never-started) run the moment a
+# newer run joins the group, event-independent and regardless of
+# cancel-in-progress. On 2026-09-19 that discarded three REV runs on `main`
+# inside ~40 minutes — 35426896435, 35427717341, 35427808592 — each
+# `cancelled` with zero jobs; 35427717341 died at 06:52:57Z, one second after
+# 35427808592 was created. On the D37 gate that is the accidental-bypass
+# shape: a collapsed pending run reads as `cancelled`, not `failure`, while
+# having executed nothing — it never even reached the `if:` below to decide
+# whether it should skip. `queue: max` keeps up to 100 runs waiting FIFO per
+# group, so a queued validation is a delayed one, never a lost one. Dispatch
+# and workflow_run keep sharing the group on purpose (above): they now queue
+# behind each other instead of deleting each other.
+#
+# `cancel-in-progress` is GONE, not merely false: GitHub rejects `queue: max`
+# + `cancel-in-progress: true` as a workflow validation error, so no
+# conditional form can stay here. scripts/check-nightly-workflow.sh pins this
+# shape (queue: max present, cancel-in-progress unset or literal false).
 concurrency:
   group: release-emulator-validation-${{ github.ref }}
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   emulator-release-validation:

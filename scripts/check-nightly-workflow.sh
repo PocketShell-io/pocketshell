@@ -63,6 +63,22 @@
 # app2.yml's D37 cadence; tests.yml's own integrity lives in its unit-gate
 # wiring guard (scripts/check-unit-gate-wiring.sh) and scripts/test-ci-cadence.sh.
 #
+# Issue #2825: release-emulator-validation.yml — the D37 release gate itself —
+# carried the pre-#2736 shape (`cancel-in-progress: false`, no queue) and was
+# covered by neither fix nor by this guard. Three REV runs on `main` were
+# collapsed while PENDING on 2026-09-19 (35426896435, 35427717341,
+# 35427808592: each `cancelled` with zero jobs; the second died one second
+# after the third was created), so the never-cancelled shape is pinned for it
+# too. Same two assertions, one difference: REV has no `schedule:` trigger to
+# split off — its cadence is the `workflow_run` reaction to tests.yml's
+# schedule — so the schedule-group assertion does not apply and the group
+# check is skipped for it, deliberately, rather than asserted against a group
+# that shares dispatch and workflow_run by design. Concurrency only here as
+# well: REV's own job/step integrity is covered by
+# scripts/check-release-gate-bypass-absent.sh,
+# scripts/check-release-selfheal-wiring.py and
+# scripts/test-release-validation-provenance.sh.
+#
 # Usage:
 #   scripts/check-nightly-workflow.sh              # check the real workflow
 #   scripts/check-nightly-workflow.sh --self-test  # red/green proof per check
@@ -72,6 +88,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_WORKFLOW="$ROOT_DIR/.github/workflows/app2.yml"
 TESTS_WORKFLOW="$ROOT_DIR/.github/workflows/tests.yml"
+RELEASE_WORKFLOW="$ROOT_DIR/.github/workflows/release-emulator-validation.yml"
 FAULT_RUN_CONSUMER="$ROOT_DIR/scripts/check-nightly-fault-run.sh"
 JOURNEY_JOB="app2-journey"
 JOURNEY_JOB_NAME_NEEDLE="app2 journey suite"
@@ -236,21 +253,31 @@ puts "PASS: #{path} is valid YAML, carries the #{cron} cadence, has no workflow-
 RUBY
 }
 
-# Issue #2739: tests.yml carries the same concurrency group scheme as app2.yml
-# and the same #2736 pending-run collapse hazard, so the same never-cancelled
-# shape is pinned for it. Only the concurrency mapping is asserted here — the
+# Issue #2739 (tests.yml), issue #2825 (release-emulator-validation.yml): both
+# carry app2.yml's pending-run collapse hazard, so the same never-cancelled
+# shape is pinned for them. Only the concurrency mapping is asserted here — the
 # cadence/job-graph checks above are app2.yml's; tests.yml's own integrity is
-# covered by scripts/check-unit-gate-wiring.sh and scripts/test-ci-cadence.sh.
-check_tests_concurrency() {
+# covered by scripts/check-unit-gate-wiring.sh and scripts/test-ci-cadence.sh,
+# REV's by scripts/check-release-gate-bypass-absent.sh and
+# scripts/check-release-selfheal-wiring.py.
+#
+# $2 is the substring the concurrency group must contain so a scheduled run
+# lands in its own never-cancelled group. Pass it EMPTY only for a workflow
+# with no `schedule:` trigger to split off (REV: its cadence is the
+# workflow_run reaction to tests.yml's schedule, and its single per-ref group
+# is shared by dispatch and workflow_run on purpose) — the queue/cancel
+# assertions, which are what #2736 turns on, always apply.
+check_concurrency_shape() {
   local workflow="$1"
+  local group_needle="${2:-}"
   command -v ruby >/dev/null 2>&1 || {
     fail "ruby is required to parse GitHub Actions YAML"
   }
 
-  ruby - "$workflow" <<'RUBY'
+  ruby - "$workflow" "$group_needle" <<'RUBY'
 require "yaml"
 
-path = ARGV[0]
+path, group_needle = ARGV.values_at(0, 1)
 
 begin
   document = YAML.safe_load_file(path, aliases: true)
@@ -265,17 +292,18 @@ abort "FAIL: #{path} has no concurrency mapping" unless concurrency.is_a?(Hash)
 group = concurrency["group"].to_s
 queue = concurrency["queue"].to_s
 cancel = concurrency["cancel-in-progress"]
-unless group.include?("sched")
+unless group_needle.empty? || group.include?(group_needle)
   abort "FAIL: #{path}'s concurrency group does not special-case schedule (#{group}) — a scheduled run sharing a push's group can be cancelled mid-flight, and a cancelled cadence reads as 'not failed' while proving nothing"
 end
 unless queue == "max"
-  abort "FAIL: #{path}'s concurrency.queue must be max (got #{queue.inspect}) — GitHub's default concurrency cancels a group's PENDING (never-started) run the moment a newer run joins it, regardless of cancel-in-progress (issue #2736: five queued app2 runs on main were collapsed within seconds of the next run's creation on 2026-09-16, each with zero jobs; tests.yml carried the same latent shape, #2739). queue: max keeps up to 100 runs waiting FIFO so a queued run stays a delayed validation, never a lost one (D40)"
+  abort "FAIL: #{path}'s concurrency.queue must be max (got #{queue.inspect}) — GitHub's default concurrency cancels a group's PENDING (never-started) run the moment a newer run joins it, regardless of cancel-in-progress (issue #2736: five queued app2 runs on main were collapsed within seconds of the next run's creation on 2026-09-16, each with zero jobs; tests.yml carried the same latent shape, #2739; release-emulator-validation.yml carried it into the D37 release gate itself and lost three runs to it on 2026-09-19, #2825). queue: max keeps up to 100 runs waiting FIFO so a queued run stays a delayed validation, never a lost one (D40)"
 end
 if cancel && cancel.to_s.strip != "false"
-  abort "FAIL: #{path}'s cancel-in-progress must be unset (or the literal false) alongside queue: max (got #{cancel.to_s}) — GitHub rejects queue: max + cancel-in-progress: true as a workflow validation error, and any conditional form either breaks runs outright or re-arms the #2736 pending-run collapse. Nothing in these groups may be cancelled: the schedule keeps its own group and PR heads queue FIFO instead"
+  abort "FAIL: #{path}'s cancel-in-progress must be unset (or the literal false) alongside queue: max (got #{cancel.to_s}) — GitHub rejects queue: max + cancel-in-progress: true as a workflow validation error, and any conditional form either breaks runs outright or re-arms the #2736 pending-run collapse. Nothing in these groups may be cancelled: a schedule that needs its own group keeps one and the rest queue FIFO instead"
 end
 
-puts "PASS: #{path} concurrency is never-cancelled (own schedule group, queue: max, cancel-in-progress unset)"
+group_note = group_needle.empty? ? "" : "own schedule group, "
+puts "PASS: #{path} concurrency is never-cancelled (#{group_note}queue: max, cancel-in-progress unset)"
 RUBY
 }
 
@@ -438,8 +466,9 @@ self_test() {
   # regression shape (GitHub collapses every queued run), the D40-era mutant
   # re-arms the pre-#2739 PR-only conditional, and the cancel-in-progress:
   # true mutant is the combination GitHub rejects as a workflow validation error.
-  expect_tests_red() {  # $1 = label, $2 = mutant file, $3 = expected substring
-    if check_tests_concurrency "$2" >"$temp_dir/out" 2>&1; then
+  # $4 is the group needle (empty for a workflow with no schedule: trigger).
+  expect_concurrency_red() {  # $1 = label, $2 = mutant file, $3 = expected substring, $4 = group needle
+    if check_concurrency_shape "$2" "${4:-}" >"$temp_dir/out" 2>&1; then
       cat "$temp_dir/out" >&2
       fail "$1: mutant was accepted"
     fi
@@ -451,24 +480,50 @@ self_test() {
   }
 
   t="$temp_dir/tests-valid.yml"; cp "$TESTS_WORKFLOW" "$t"
-  check_tests_concurrency "$t" >/dev/null || fail "self-test control: tests.yml does not pass its own concurrency guard"
+  check_concurrency_shape "$t" sched >/dev/null || fail "self-test control: tests.yml does not pass its own concurrency guard"
   echo "  ok: the shipped tests.yml is the green control"
 
   m="$temp_dir/tests-noqueue.yml"; cp "$TESTS_WORKFLOW" "$m"
   sed -i "/^  queue: max$/d" "$m"
-  expect_tests_red "a queue-less tests.yml group that collapses pending runs is rejected" "$m" "concurrency.queue must be max"
+  expect_concurrency_red "a queue-less tests.yml group that collapses pending runs is rejected" "$m" "concurrency.queue must be max" sched
 
   m="$temp_dir/tests-d40cancel.yml"; cp "$TESTS_WORKFLOW" "$m"
   sed -i "/^  queue: max$/a\\  cancel-in-progress: \${{ github.event_name=='pull_request' }}" "$m"
-  expect_tests_red "the D40-era PR-only cancel-in-progress form is rejected" "$m" "cancel-in-progress must be unset"
+  expect_concurrency_red "the D40-era PR-only cancel-in-progress form is rejected" "$m" "cancel-in-progress must be unset" sched
 
   m="$temp_dir/tests-cictrue.yml"; cp "$TESTS_WORKFLOW" "$m"
   sed -i "/^  queue: max$/a\\  cancel-in-progress: true" "$m"
-  expect_tests_red "queue: max + cancel-in-progress: true is rejected" "$m" "cancel-in-progress must be unset"
+  expect_concurrency_red "queue: max + cancel-in-progress: true is rejected" "$m" "cancel-in-progress must be unset" sched
 
   m="$temp_dir/tests-sharedgroup.yml"; cp "$TESTS_WORKFLOW" "$m"
   sed -i "s|^  group: .*$|  group: \${{ github.workflow }}-\${{ github.ref }}|" "$m"
-  expect_tests_red "a shared tests.yml concurrency group is rejected" "$m" "does not special-case schedule"
+  expect_concurrency_red "a shared tests.yml concurrency group is rejected" "$m" "does not special-case schedule" sched
+
+  # Issue #2825: the same shape for the D37 release gate itself. No group
+  # needle — REV has no schedule: trigger to split off (see
+  # check_concurrency_shape) — so the queue/cancel pins ARE the whole check
+  # for it, and each one must be able to fail on its own bytes. The precancel
+  # mutant is the pre-#2825 block verbatim: the shape that let 35426896435 /
+  # 35427717341 / 35427808592 be collapsed while pending, each with zero jobs.
+  r="$temp_dir/release-valid.yml"; cp "$RELEASE_WORKFLOW" "$r"
+  check_concurrency_shape "$r" >/dev/null || fail "self-test control: release-emulator-validation.yml does not pass its own concurrency guard"
+  echo "  ok: the shipped release-emulator-validation.yml is the green control"
+
+  m="$temp_dir/release-noqueue.yml"; cp "$RELEASE_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/d" "$m"
+  expect_concurrency_red "a queue-less release-emulator-validation.yml group that collapses pending runs is rejected" "$m" "concurrency.queue must be max"
+
+  m="$temp_dir/release-precancel.yml"; cp "$RELEASE_WORKFLOW" "$m"
+  sed -i "s/^  queue: max$/  cancel-in-progress: false/" "$m"
+  expect_concurrency_red "the pre-#2825 release-emulator-validation.yml shape (cancel-in-progress: false, no queue) is rejected" "$m" "concurrency.queue must be max"
+
+  m="$temp_dir/release-cictrue.yml"; cp "$RELEASE_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: true" "$m"
+  expect_concurrency_red "queue: max + cancel-in-progress: true in release-emulator-validation.yml is rejected" "$m" "cancel-in-progress must be unset"
+
+  m="$temp_dir/release-condcancel.yml"; cp "$RELEASE_WORKFLOW" "$m"
+  sed -i "/^  queue: max$/a\\  cancel-in-progress: \${{ github.event_name=='workflow_dispatch' }}" "$m"
+  expect_concurrency_red "a conditional cancel-in-progress in release-emulator-validation.yml is rejected" "$m" "cancel-in-progress must be unset"
 
   echo "PASS: check-nightly-workflow self-test."
 }
@@ -478,7 +533,8 @@ case "${1:-}" in
   "")
     check_workflow "$DEFAULT_WORKFLOW"
     check_fault_run_consumer || exit 1
-    check_tests_concurrency "$TESTS_WORKFLOW"
+    check_concurrency_shape "$TESTS_WORKFLOW" sched
+    check_concurrency_shape "$RELEASE_WORKFLOW"
     ;;
   *) echo "unknown argument: $1" >&2; echo "usage: $0 [--self-test]" >&2; exit 1 ;;
 esac
