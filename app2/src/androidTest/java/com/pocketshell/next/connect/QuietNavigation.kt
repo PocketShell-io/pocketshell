@@ -36,8 +36,7 @@ import androidx.test.runner.lifecycle.Stage
  */
 fun ComposeTestRule.openQuietHost(hostId: Long, timeoutMillis: Long = 60_000L) {
     returnToHostListIfNeeded(hostId, timeoutMillis)
-    awaitQuietTag(hostRowTag(hostId), timeoutMillis)
-    onNodeWithTag(hostRowTag(hostId)).performClick()
+    clickQuietTag(hostRowTag(hostId), timeoutMillis)
     awaitQuietTag(HOST_WORKSPACES_TAG, timeoutMillis)
     waitUntil(timeoutMillis) {
         listOf(
@@ -132,8 +131,7 @@ fun ComposeTestRule.openQuietSession(
     } else {
         onNodeWithTag(workspaceTag).performClick()
         awaitQuietTag(WORKSPACE_SCREEN_TAG, timeoutMillis)
-        awaitQuietTag(sessionRowTag(sessionName), timeoutMillis)
-        onNodeWithTag(sessionRowTag(sessionName)).performClick()
+        clickQuietTag(sessionRowTag(sessionName), timeoutMillis)
     }
     awaitQuietTag(SESSION_SCREEN_TAG, timeoutMillis)
 }
@@ -143,3 +141,49 @@ fun ComposeTestRule.awaitQuietTag(tag: String, timeoutMillis: Long = 60_000L) {
         onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
     }
 }
+
+/**
+ * Awaits [tag] and clicks it, re-resolving the node on every attempt.
+ *
+ * [awaitQuietTag] proves the node existed at the moment the wait returned; it
+ * does not promise the node is still there one statement later. Between the two
+ * the screen can recompose — a seeded host row replaced between journey
+ * methods, a `LazyColumn` re-emitting when its backing flow settles — and the
+ * click then fails with
+ * `Failed to inject touch input ... could not find any node that satisfies`
+ * while the wait that just preceded it succeeded. That await/click gap is what
+ * reddened `J12UsagePanelJourney` on Release Emulator Validation run
+ * 35383053367 (`QuietNavigation.kt:39` awaited `host-row-9801`,
+ * `QuietNavigation.kt:40` could not find it) while the SAME commit's unfiltered
+ * app2 run 35374191870 attempt 2 was green — issue #2783.
+ *
+ * Retrying closes the gap without weakening the check: a node that vanished for
+ * a recomposition is awaited and clicked again, and a node that genuinely never
+ * arrives still fails at [timeoutMillis] carrying the real assertion error
+ * rather than a synthesised one. Nothing here waits unbounded — every attempt's
+ * await is capped by the time left, so the helper always returns control at its
+ * own deadline (the property `BoundedWaitTest` exists to protect).
+ */
+internal fun ComposeTestRule.clickQuietTag(tag: String, timeoutMillis: Long = 60_000L) {
+    val deadline = SystemClock.uptimeMillis() + timeoutMillis
+    var lastError: Throwable? = null
+    do {
+        val remaining = (deadline - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+        val attempt = runCatching {
+            awaitQuietTag(tag, remaining)
+            onNodeWithTag(tag).performClick()
+        }
+        if (attempt.isSuccess) return
+        lastError = attempt.exceptionOrNull()
+        SystemClock.sleep(CLICK_RETRY_BACKOFF_MS)
+    } while (SystemClock.uptimeMillis() < deadline)
+    throw lastError
+        ?: AssertionError("clickQuietTag($tag) gave up after ${timeoutMillis}ms")
+}
+
+/**
+ * Short enough that a one-recomposition disappearance costs the journey
+ * milliseconds, long enough that a genuinely missing node is not retried
+ * thousands of times before its deadline.
+ */
+private const val CLICK_RETRY_BACKOFF_MS = 50L
