@@ -205,6 +205,29 @@ jobs:
           fi
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
+      # Issue #2818: the save is a SEPARATE `actions/cache/save@v5` step below,
+      # not the post step of a monolithic `actions/cache@v5` — the same split
+      # #2785 gave the journey lane. The monolithic action hard-codes
+      # `post-if: "success()"` in its own action.yml, so its save is skipped on
+      # exactly the runs whose rows are worth the most: a RED release job
+      # records which classes it did reach and then throws the file away. Its
+      # `save-always` input is NOT the fix — v5 still accepts it but marks it
+      # deprecated in the same action.yml: "save-always does not work as
+      # intended and will be removed in a future release. A separate
+      # `actions/cache/restore` step should be used instead."
+      # `actions/cache/save@v5` carries no `save-always` input at all, because
+      # it does not need one: it is an ordinary main step, so a plain always()
+      # gate on the step itself is the mechanism.
+      #
+      # The RESTORE half needs an always() gate too, and this step used to
+      # carry no `if:` at all — i.e. the default `success()`. On a RED
+      # validation run it was therefore SKIPPED while the record step below
+      # (which is always()) still ran, recording this run's rows into a file
+      # with no restored history behind it. Harmless while nothing saved that
+      # file; with the always() save added below it would publish a truncated
+      # ledger as the newest entry in the shared chain, and the next lane's
+      # restore-keys prefix would read that back as the rolling history.
+      #
       # Issue #2787 (the latent half of #2785, which fixed the journey lane's
       # identical key): `github.run_id` is in the key deliberately. Without it,
       # two runs of the SAME sha at attempt 1 — a workflow_run-triggered run and
@@ -223,7 +246,9 @@ jobs:
       # recently created entry, and `--record` MERGES into that file rather than
       # replacing it, so each save is a superset of the history it restored.
       - name: Restore test-execution ledger (#2082)
-        uses: actions/cache@v5
+        id: ledger_restore
+        if: always()
+        uses: actions/cache/restore@v5
         with:
           path: build/test-execution-ledger.tsv
           key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-release-${{ github.run_id }}-${{ github.run_attempt }}
@@ -330,8 +355,13 @@ jobs:
         # logs via gh; the job already holds `actions: read`.
         env:
           GH_TOKEN: ${{ github.token }}
+          LEDGER_RESTORED_KEY: ${{ steps.ledger_restore.outputs.cache-matched-key }}
         run: |
           set -euo pipefail
+          # Which entry in the shared chain this lane merged into. Without it a
+          # "the rows did not persist" report cannot tell a restore that missed
+          # apart from a save that was dropped (#2785/#2818).
+          echo "ledger restore matched key: ${LEDGER_RESTORED_KEY:-<none>}"
           # Issue #2435: this step must NOT decide "did the run produce XML?"
           # through a pipeline. The previous shape was
           #   if ! find "$stage" -type f -name '*.xml' | grep -q .; then
@@ -410,6 +440,17 @@ jobs:
           # AssistantAgentLoopRealLlmTest (#2435). The class stays registered,
           # and both unit lanes already apply this identical carve-out.
           scripts/check-test-execution-ledger.sh --verify --max-age-days 7 --source-set unit-debug,unit-release,androidTest
+
+      # The always() gate here is the entire point of the restore/save split —
+      # see the comment above the restore step. The key MUST be byte-identical
+      # to the restore step's primary key, or this lane saves outside the chain
+      # the next lane's restore-keys prefix reads.
+      - name: Save test-execution ledger (#2818)
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: build/test-execution-ledger.tsv
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-release-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Publish validation summary
         if: always()

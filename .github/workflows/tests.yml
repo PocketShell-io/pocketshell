@@ -186,9 +186,23 @@ jobs:
             --gradle-log "${RUNNER_TEMP}/unit-test-gradle.log"
 
       # Issue #2082: restore the rolling executed-classes ledger, credit this
-      # run's JUnit XML, check current-run attendance, verify unit classes.
-      # Cache save is the post step of Restore; an absent ledger never looks
-      # like a passing verify (the wrapper fail-closes).
+      # run's JUnit XML, check current-run attendance, verify unit classes. An
+      # absent ledger never looks like a passing verify (the wrapper
+      # fail-closes).
+      #
+      # Issue #2818: the save is a SEPARATE `actions/cache/save@v5` step, not
+      # the post step of a monolithic `actions/cache@v5` — the same split #2785
+      # gave the journey lane. The monolithic action hard-codes
+      # `post-if: "success()"` in its own action.yml, so its save is skipped on
+      # exactly the runs whose rows are worth the most: a RED unit job records
+      # which classes it did reach and then throws the file away. Its
+      # `save-always` input is NOT the fix — v5 still accepts it but marks it
+      # deprecated in the same action.yml: "save-always does not work as
+      # intended and will be removed in a future release. A separate
+      # `actions/cache/restore` step should be used instead."
+      # `actions/cache/save@v5` carries no `save-always` input at all, because
+      # it does not need one: it is an ordinary main step, so a plain
+      # always() gate on the step itself is the mechanism.
       #
       # Issue #2787 (the latent half of #2785, which fixed the journey lane's
       # identical key): `github.run_id` is in the key deliberately. Without it,
@@ -206,8 +220,9 @@ jobs:
       # created entry, and `--record` MERGES into that file rather than
       # replacing it, so each save is a superset of the history it restored.
       - name: Restore test-execution ledger (#2082)
+        id: ledger_restore
         if: always() && steps.unit_tests.conclusion != 'skipped'
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: build/test-execution-ledger.tsv
           key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-unit-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -216,12 +231,29 @@ jobs:
 
       - name: Record and verify unit execution ledger (#2082)
         if: always() && steps.unit_tests.conclusion != 'skipped'
+        env:
+          LEDGER_RESTORED_KEY: ${{ steps.ledger_restore.outputs.cache-matched-key }}
         run: |
           chmod +x scripts/ci-record-test-execution-ledger.sh scripts/check-test-execution-ledger.sh
+          # Which entry in the shared chain this lane merged into. Without it a
+          # "the rows did not persist" report cannot tell a restore that missed
+          # apart from a save that was dropped (#2785/#2818).
+          echo "ledger restore matched key: ${LEDGER_RESTORED_KEY:-<none>}"
           scripts/ci-record-test-execution-ledger.sh \
             --tier "unit-${{ matrix.variant }}" \
             --variant "${{ matrix.variant }}" \
             --newer-than "${RUNNER_TEMP}/unit-test-run-start"
+
+      # The always() gate here is the entire point of the restore/save split —
+      # see the comment above the restore step. The key MUST be byte-identical
+      # to the restore step's primary key, or this lane saves outside the chain
+      # the next lane's restore-keys prefix reads.
+      - name: Save test-execution ledger (#2818)
+        if: always() && steps.unit_tests.conclusion != 'skipped'
+        uses: actions/cache/save@v5
+        with:
+          path: build/test-execution-ledger.tsv
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-unit-${{ matrix.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Issue #1646: upload ALWAYS, not just on failure. A green run's result XML
       # IS the evidence that the run was real; throwing it away and keeping only

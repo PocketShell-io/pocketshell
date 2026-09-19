@@ -40,9 +40,10 @@ PIN_COLD = "com.pocketshell.next.connect.J01ConnectAndTrustJourney"
 PIN_WORKFLOW = "com.pocketshell.next.terminal.J03AttachAndTypeJourney"
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*(#.*)?$")
 CACHE_KEY_PREFIX = "test-execution-ledger-"
-# Issue #2785. The journey lane restores and saves through the SPLIT actions,
-# never the monolithic `actions/cache`: that one hard-codes `post-if: "success()"`
-# in its own action.yml, so a red journey job never persists the rows it did
+# Issue #2785 (journey lane) / #2818 (unit + release lanes). EVERY ledger lane
+# restores and saves through the SPLIT actions, never the monolithic
+# `actions/cache`: that one hard-codes `post-if: "success()"` in its own
+# action.yml, so a red job on any of those lanes never persists the rows it did
 # reach, and its `save-always` input is documented in that same file as not
 # working ("save-always does not work as intended and will be removed in a
 # future release. A separate `actions/cache/restore` step should be used
@@ -50,8 +51,15 @@ CACHE_KEY_PREFIX = "test-execution-ledger-"
 # step, so `if: always()` on the step is the mechanism.
 RESTORE_ACTION = "uses: actions/cache/restore@v5"
 SAVE_ACTION = "uses: actions/cache/save@v5"
+# Issue #2818 generalised the split to the unit and release lanes, so the
+# monolithic action is now a MUTATION on every ledger lane rather than the
+# shape two of them still carried. Kept as a constant because the self-test
+# needs to write it back in.
+MONOLITHIC_ACTION = "uses: actions/cache@v5"
 RESTORE_STEP_TITLE = "Restore test-execution ledger"
 RECORD_STEP_TITLE = "Record journey execution"
+UNIT_RECORD_STEP_TITLE = "Record and verify unit execution ledger"
+RELEASE_RECORD_STEP_TITLE = "Record and verify execution ledger"
 SAVE_STEP_TITLE = "Save test-execution ledger"
 UPLOAD_STEP_TITLE = "Upload app2 journey reports"
 # Item 3: without the run id, two runs of the same sha at attempt 1 (a push run
@@ -60,6 +68,10 @@ UPLOAD_STEP_TITLE = "Upload app2 journey reports"
 # duplicate — swallowed into a warning by saveImpl's catch-all, so the run reads
 # green while its rows are discarded.
 RUN_SCOPE = "${{ github.run_id }}"
+# The literal every ledger step's gate is asserted against. Kept as a constant
+# so the three lanes' restore/save assertions and the self-test mutations that
+# strip it can never drift apart.
+ALWAYS_GATE = "if: always()"
 STEP_KEY_RE = re.compile(r"^[ \t]*key:[ \t]*(\S.*?)[ \t]*$", re.M)
 
 
@@ -149,6 +161,105 @@ def require_run_scoped_key(restore_step: str, where: str) -> str:
     return key
 
 
+def require_split_ledger_cache(job: str, *, lane: str, record_at: int) -> None:
+    """Every ledger lane persists the rolling ledger through the SPLIT actions.
+
+    Issue #2818 generalised to the unit and release lanes what #2785 did for the
+    journey lane, and this helper is why the three cannot drift into asserting
+    three different things about the same property — the same reason
+    `require_run_scoped_key` is shared. `lane` appears in EVERY message here, so
+    a mutation to one lane cannot be "proved" by another lane's assertion firing
+    instead: that is a red for the wrong reason, which is exactly what the
+    self-test's `expect=` pins exist to catch.
+
+    Every assertion is scoped to ONE step slice. All three ledger jobs also
+    carry a Gradle `actions/cache@v5` with its own `key:`, so a whole-job search
+    answers "does this job cache ANYTHING" — which is how the journey lane's
+    first ordering check went vacuously green (#2744), and what left both other
+    lanes' pre-#2787 run-id assertions satisfiable by the Gradle key.
+    """
+    restore_at = job.find(RESTORE_STEP_TITLE)
+    if restore_at < 0:
+        raise GuardFailure(
+            f"{lane} must persist the rolling ledger: it has no "
+            f"{RESTORE_STEP_TITLE!r} cache step, so every --record below writes "
+            "rows into a file the runner throws away (#2744)"
+        )
+    restore_step = step_slice(job, RESTORE_STEP_TITLE, lane)
+    # The restore-only action, never the monolithic `actions/cache`. The
+    # monolithic one's save is its POST step, pinned `post-if: "success()"` in
+    # the action's own action.yml, so the rows a RED job did reach are thrown
+    # away — the runs whose ledger is worth the most are exactly the ones that
+    # never persist. Its `save-always` input is not an escape hatch: the same
+    # action.yml marks it deprecated and says to split the steps.
+    require(restore_step, RESTORE_ACTION, f"{lane} ledger restore step")
+    require(restore_step, f"path: {LEDGER_PATH}", f"{lane} ledger cache path")
+    require(restore_step, f"key: {CACHE_KEY_PREFIX}", f"{lane} ledger cache key")
+    require(restore_step, "restore-keys:", f"{lane} ledger restore-keys")
+    # Issue #2818: the RESTORE half needs the always() gate too. The release
+    # lane carried no `if:` at all — the default `success()` — so on a red run
+    # it was skipped while the always() record step still ran, recording into a
+    # file with no restored history behind it. Harmless while nothing saved that
+    # file; with the always() save it publishes a TRUNCATED ledger as the newest
+    # entry in the shared chain, which the next lane's restore-keys prefix reads
+    # back as the rolling history. A persistence fix that erases history.
+    if ALWAYS_GATE not in restore_step:
+        raise GuardFailure(
+            f"the {lane} ledger RESTORE step must run with {ALWAYS_GATE} — the "
+            "record step below is always(), so a success()-gated restore lets a "
+            "RED job record into a file with no restored history and the "
+            "always() save then publishes that truncated ledger as the newest "
+            "entry in the shared cache chain (#2818)"
+        )
+    require_run_scoped_key(restore_step, f"{lane} ledger restore step")
+    # The cache must be restored BEFORE the record merges into it. A cache step
+    # sitting after the recorder satisfies every requirement above while saving
+    # a ledger that dropped each pre-existing row.
+    if restore_at > record_at:
+        raise GuardFailure(
+            f"{lane} must restore the ledger cache BEFORE the record step, or "
+            "the saved ledger loses every class recorded by an earlier lane"
+        )
+
+    save_at = job.find(SAVE_STEP_TITLE)
+    if save_at < 0:
+        raise GuardFailure(
+            f"{lane} restores the ledger with the restore-only action but has "
+            f"no {SAVE_STEP_TITLE!r} step — nothing writes the merged ledger "
+            "back to the shared cache chain, so every --record is discarded"
+        )
+    save_step = step_slice(job, SAVE_STEP_TITLE, lane)
+    require(save_step, SAVE_ACTION, f"{lane} ledger save step")
+    require(save_step, f"path: {LEDGER_PATH}", f"{lane} ledger save path")
+    # THE point of the split. `actions/cache/save` is an ordinary main step, so
+    # a plain always() actually works here where the monolithic action's
+    # `post-if: "success()"` could not be overridden at all.
+    if ALWAYS_GATE not in save_step:
+        raise GuardFailure(
+            f"the {lane} ledger SAVE step must run with {ALWAYS_GATE} — the only "
+            "reason to split restore from save is that a RED job still persists "
+            "the classes it reached; an if: success() save is exactly the "
+            "monolithic post-if the split exists to escape"
+        )
+    # Saving after the record, or the entry holds pre-record content: a lane
+    # that looks fully wired and credits nothing.
+    if save_at < record_at:
+        raise GuardFailure(
+            f"{lane} must SAVE the ledger cache AFTER the record step, or the "
+            "saved entry is the restored file with this run's rows missing"
+        )
+    # A save under a drifted key lands outside the prefix chain the next lane's
+    # restore-keys reads: green step, orphaned entry.
+    restore_key = step_key(restore_step, f"{lane} ledger restore step")
+    save_key = step_key(save_step, f"{lane} ledger save step")
+    if save_key != restore_key:
+        raise GuardFailure(
+            f"the {lane} ledger save key must be byte-identical to the restore "
+            f"step's primary key (restore={restore_key!r} save={save_key!r}); a "
+            "drifted key saves outside the chain the next restore reads"
+        )
+
+
 def require_once(haystack: str, needle: str, where: str) -> None:
     count = haystack.count(needle)
     if count != 1:
@@ -157,19 +268,20 @@ def require_once(haystack: str, needle: str, where: str) -> None:
 
 def validate_tests_yml(text: str) -> None:
     job = extract_job(text, "unit")
-    require(job, "Restore test-execution ledger", "tests.yml unit job")
-    # Scope every cache assertion to the ledger restore STEP. The unit job also
-    # carries a Gradle `actions/cache@v5` with its own `key:`, so a whole-job
-    # search answers "does this job cache ANYTHING" — which is how the journey
-    # lane's first ordering check went vacuously green (#2744), and what would
-    # let #2787's run-id assertion be satisfied by the Gradle key instead.
-    restore_step = step_slice(job, RESTORE_STEP_TITLE, "tests.yml unit job")
-    require(restore_step, "uses: actions/cache@v5", "tests.yml unit ledger cache step")
-    require(restore_step, f"path: {LEDGER_PATH}", "tests.yml unit ledger cache path")
-    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "tests.yml unit ledger cache key")
-    require(restore_step, "restore-keys:", "tests.yml unit ledger restore-keys")
-    # Issue #2787: same collision the journey lane carried before #2785.
-    require_run_scoped_key(restore_step, "tests.yml unit ledger restore step")
+    # Issue #2818: restore/save split, always() on both halves, run-scoped key,
+    # restore-before-record, save-after-record, save key == restore key. Shared
+    # with the journey and release lanes so the three cannot drift, and scoped
+    # to the ledger STEPS — the unit job also carries a Gradle
+    # `actions/cache@v5` with its own `key:`, so a whole-job search answers
+    # "does this job cache ANYTHING", which is how the journey lane's first
+    # ordering check went vacuously green (#2744) and what would let #2787's
+    # run-id assertion be satisfied by the Gradle key instead.
+    record_at = job.find(UNIT_RECORD_STEP_TITLE)
+    if record_at < 0:
+        raise GuardFailure(
+            f"tests.yml unit job has no {UNIT_RECORD_STEP_TITLE!r} step"
+        )
+    require_split_ledger_cache(job, lane="tests.yml unit", record_at=record_at)
     require(job, RECORD_WRAPPER, "tests.yml unit job")
     require(
         job,
@@ -237,103 +349,32 @@ def validate_journey_yml(text: str) -> None:
             "otherwise look like a passing attendance verdict"
         )
     validate_journey_ledger(job)
-    # The recording step must survive a RED suite, or the lane only ever records
-    # its own good news.
-    # Bound the slice to THIS step. Running it to the end of the job means every
-    # later `if: always()` (docker logs, artifact upload) vouches for the ledger
-    # step, so deleting always() from the ledger step alone stayed green.
-    step_at = job.find("Record journey execution")
+    # The record step anchors the cache ordering below (restore before it, save
+    # after it) and is itself checked for the always() gate.
+    step_at = job.find(RECORD_STEP_TITLE)
     if step_at < 0:
         raise GuardFailure("app2-journey has no 'Record journey execution' step")
     # Issue #2744: recording is only half of it — the rolling ledger lives in
     # the shared `test-execution-ledger-<os>-` Actions cache chain, so a lane
     # that records WITHOUT restoring/saving that cache writes its rows into a
-    # file the runner deletes at job end. Scope every assertion to the restore
-    # STEP: the job also carries a Gradle `actions/cache@v5`, and an unscoped
-    # `job.find("uses: actions/cache@v5")` silently resolves to that one —
-    # which made the first draft of this ordering check vacuously green.
-    restore_at = job.find("Restore test-execution ledger")
-    if restore_at < 0:
-        raise GuardFailure(
-            "app2-journey must persist the rolling ledger: it has no 'Restore "
-            "test-execution ledger' cache step, so every --record below writes "
-            "rows into a file the runner throws away (#2744)"
-        )
-    restore_step = step_slice(job, RESTORE_STEP_TITLE)
-    # Issue #2785: the restore-only action, never the monolithic `actions/cache`.
-    # The monolithic one's save is its POST step, pinned `post-if: "success()"`
-    # in the action's own action.yml, so the rows a RED journey job did reach
-    # are thrown away — the runs whose ledger is worth the most are exactly the
-    # ones that never persist. Its `save-always` input is not an escape hatch:
-    # the same action.yml marks it deprecated and says to split the steps.
-    require(restore_step, RESTORE_ACTION, "journey ledger restore step")
-    require(restore_step, f"path: {LEDGER_PATH}", "journey ledger cache path")
-    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "journey ledger cache key")
-    require(restore_step, "restore-keys:", "journey ledger restore-keys")
-    # The cache must be restored BEFORE the record merges into it. A cache step
-    # sitting after the recorder satisfies every requirement above while saving
-    # a ledger that dropped each pre-existing row — a persistence fix that
-    # erases history instead.
-    if restore_at > step_at:
-        raise GuardFailure(
-            "app2-journey must restore the ledger cache BEFORE the record step, "
-            "or the saved ledger loses every class recorded by an earlier lane"
-        )
+    # file the runner deletes at job end. Issue #2785 split this lane's
+    # monolithic cache into restore + always() save; issue #2818 moved the whole
+    # contract into the shared helper the unit and release lanes now call too,
+    # so the three lanes cannot assert three different things about it — every
+    # message it raises names the lane, which is what the self-test's `expect=`
+    # pins hold each mutation to.
+    require_split_ledger_cache(job, lane="app2-journey", record_at=step_at)
+    # The recording step itself must survive a RED suite, or the lane only ever
+    # records its own good news. Step-scoped for the reason above the slice
+    # helper: running to the end of the job means every later always() step
+    # (docker logs, artifact upload) vouches for the ledger step.
     ledger_step = step_slice(job, RECORD_STEP_TITLE)
-    if "if: always()" not in ledger_step:
+    if ALWAYS_GATE not in ledger_step:
         raise GuardFailure(
-            "the journey ledger step must run with if: always() — a lane that "
-            "records only on success cannot show which classes a red run reached"
+            "the app2-journey ledger RECORD step must run with if: always() — a "
+            "lane that records only on success cannot show which classes a red "
+            "run reached"
         )
-
-    # Issue #2785 (1/3): the save half of the split.
-    save_at = job.find(SAVE_STEP_TITLE)
-    if save_at < 0:
-        raise GuardFailure(
-            "app2-journey restores the ledger with the restore-only action but "
-            f"has no {SAVE_STEP_TITLE!r} step — nothing writes the merged ledger "
-            "back to the shared cache chain, so every --record is discarded"
-        )
-    save_step = step_slice(job, SAVE_STEP_TITLE)
-    require(save_step, SAVE_ACTION, "journey ledger save step")
-    require(save_step, f"path: {LEDGER_PATH}", "journey ledger save path")
-    # THE point of the split. `actions/cache/save` is an ordinary main step, so
-    # a plain always() actually works here where the monolithic action's
-    # `post-if: "success()"` could not be overridden at all.
-    if "if: always()" not in save_step:
-        raise GuardFailure(
-            "the journey ledger SAVE step must run with if: always() — the only "
-            "reason to split restore from save is that a RED journey job still "
-            "persists the classes it reached; an if: success() save is exactly "
-            "the monolithic post-if the split exists to escape"
-        )
-    # Saving after the record, or the entry holds pre-record content: a lane
-    # that looks fully wired and credits nothing.
-    if save_at < step_at:
-        raise GuardFailure(
-            "app2-journey must SAVE the ledger cache AFTER the record step, or "
-            "the saved entry is the restored file with this run's rows missing"
-        )
-    # A save under a drifted key lands outside the prefix chain the next lane's
-    # restore-keys reads: green step, orphaned entry.
-    restore_key = step_key(restore_step, "journey ledger restore step")
-    save_key = step_key(save_step, "journey ledger save step")
-    if save_key != restore_key:
-        raise GuardFailure(
-            "the journey ledger save key must be byte-identical to the restore "
-            f"step's primary key (restore={restore_key!r} save={save_key!r}); a "
-            "drifted key saves outside the chain the next restore reads"
-        )
-    # Issue #2785 (3/3): key scoping. Without the run id, a push run and a
-    # workflow_dispatch run on the SAME sha both compute attempt 1, the second
-    # restore exact-hits the first entry, and the second save is rejected as a
-    # duplicate key — which `actions/cache/save` swallows into a warning, so the
-    # run reads green while its rows are silently dropped.
-    # Issue #2787 folded this into the shared helper the unit and release lanes
-    # now use, so the three lanes cannot drift into asserting three different
-    # things about the same property. The lane name in `where` keeps each one's
-    # failure message distinct.
-    require_run_scoped_key(restore_step, "journey ledger restore step")
 
     # Issue #2785 (2/3): the recorded ledger must leave the runner as an
     # artifact, the way tests.yml's unit lane folds it into its reports upload.
@@ -350,17 +391,16 @@ def validate_journey_yml(text: str) -> None:
 
 def validate_release_yml(text: str) -> None:
     job = extract_job(text, "emulator-release-validation")
-    require(job, "Restore test-execution ledger", "release job")
-    # Step-scoped for the same reason as the unit lane above: this job carries a
-    # Gradle `actions/cache@v5` too, so the whole-job form these three lines
-    # used to take could not tell the two apart.
-    restore_step = step_slice(job, RESTORE_STEP_TITLE, "release job")
-    require(restore_step, "uses: actions/cache@v5", "release ledger cache")
-    require(restore_step, f"path: {LEDGER_PATH}", "release ledger cache path")
-    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "release ledger cache key")
-    require(restore_step, "restore-keys:", "release ledger restore-keys")
-    # Issue #2787: same collision the journey lane carried before #2785.
-    require_run_scoped_key(restore_step, "release ledger restore step")
+    # Issue #2818: same shared split-cache contract as the unit and journey
+    # lanes, step-scoped for the same reason — this job carries a Gradle
+    # `actions/cache@v5` too, so the whole-job form these assertions used to
+    # take could not tell the two apart.
+    record_at = job.find(RELEASE_RECORD_STEP_TITLE)
+    if record_at < 0:
+        raise GuardFailure(
+            f"release job has no {RELEASE_RECORD_STEP_TITLE!r} step"
+        )
+    require_split_ledger_cache(job, lane="release", record_at=record_at)
     require(job, "check-test-execution-ledger.sh --record", "release must --record real JUnit results")
     require(job, "check-test-execution-ledger.sh --verify", "release must --verify the rolling ledger")
     record_at = job.find("check-test-execution-ledger.sh --record")
@@ -641,7 +681,7 @@ def self_test() -> None:
     # the save-key-drift check above instead, which is a different property.
     expect_red(
         "journey ledger cache key drops the run-id scope (#2785)",
-        expect="journey ledger restore step cache key must be scoped by",
+        expect="app2-journey ledger restore step cache key must be scoped by",
         **{".github/workflows/app2.yml": journey.replace(RUN_SCOPE + "-", "")},
     )
 
@@ -664,18 +704,33 @@ def self_test() -> None:
     # replace would have rewritten too.
     tests_job = extract_job(tests, "unit")
     unit_restore_block = step_slice(tests_job, RESTORE_STEP_TITLE, "tests.yml unit job")
+    unit_save_block = step_slice(tests_job, SAVE_STEP_TITLE, "tests.yml unit job")
     release_job = extract_job(release, "emulator-release-validation")
     release_restore_block = step_slice(release_job, RESTORE_STEP_TITLE, "release job")
+    release_save_block = step_slice(release_job, SAVE_STEP_TITLE, "release job")
     gradle_key = "key: ${{ runner.os }}-gradle-"
-    for label, lane_text, lane_job, lane_block in (
-        ("tests.yml unit", tests, tests_job, unit_restore_block),
-        ("release", release, release_job, release_restore_block),
+    for label, lane_text, lane_job, lane_blocks in (
+        ("tests.yml unit", tests, tests_job, (unit_restore_block, unit_save_block)),
+        ("release", release, release_job, (release_restore_block, release_save_block)),
     ):
-        if lane_text.count(lane_block) != 1:
-            raise GuardFailure(
-                f"self-test cannot anchor the {label} ledger restore step "
-                f"uniquely (found {lane_text.count(lane_block)} occurrences)"
-            )
+        for half, lane_block in zip(("restore", "save"), lane_blocks):
+            if lane_text.count(lane_block) != 1:
+                raise GuardFailure(
+                    f"self-test cannot anchor the {label} ledger {half} step "
+                    f"uniquely (found {lane_text.count(lane_block)} occurrences)"
+                )
+            # Issue #2818: the always()-stripping mutations below rewrite the
+            # FIRST occurrence in the block. A second one — a step-internal
+            # comment quoting the gate, which is exactly the shape that made the
+            # #2785 record-step mutation go green — would leave the literal in
+            # place after the mutation and silently disarm the arm.
+            if lane_block.count(ALWAYS_GATE) != 1:
+                raise GuardFailure(
+                    f"self-test expected exactly one {ALWAYS_GATE!r} inside the "
+                    f"{label} ledger {half} step (found "
+                    f"{lane_block.count(ALWAYS_GATE)}); a second one would "
+                    "survive the mutation that strips the gate"
+                )
         if lane_text.count(lane_job) != 1:
             raise GuardFailure(
                 f"self-test cannot anchor the {label} ledger job uniquely "
@@ -687,6 +742,17 @@ def self_test() -> None:
                 f"{label} ledger job (found {lane_job.count(gradle_key)}); the "
                 "wrong-step-satisfies-it mutation below has no second key to "
                 "move the run id onto, so it would prove nothing"
+            )
+        # Issue #2818: after the split, the ONLY monolithic `actions/cache@v5`
+        # left in each ledger job is the Gradle one — which is what the
+        # vacuous-slice arm below hands the split action to. A second one and
+        # that mutation would be rewriting an unknown step.
+        if lane_job.count(MONOLITHIC_ACTION) != 1:
+            raise GuardFailure(
+                f"self-test expected exactly one {MONOLITHIC_ACTION!r} (the "
+                f"Gradle cache) inside the {label} ledger job (found "
+                f"{lane_job.count(MONOLITHIC_ACTION)}); the vacuous-slice "
+                "mutation below would otherwise rewrite the wrong step"
             )
 
     expect_red(
@@ -743,6 +809,178 @@ def self_test() -> None:
             )
         },
     )
+
+    # ---------------------------------------------------------------------
+    # Issue #2818: the restore/save split itself, now asserted on the unit and
+    # release lanes as well. #2785 gave it to the journey lane only; the other
+    # two kept the monolithic `actions/cache@v5`, whose save is its POST step
+    # pinned `post-if: "success()"`, so a RED unit or release job recorded which
+    # classes it reached and then threw the file away.
+    #
+    # Two arms per property, per lane, because a step-scoped assertion is the
+    # only kind that can tell the ledger cache apart from the Gradle cache
+    # sitting in the same job: the plain arm proves the property is asserted at
+    # all, and the vacuous-slice arm proves it is asserted about the LEDGER
+    # step — it satisfies a whole-job search (the split action on the Gradle
+    # step, the run id on the Gradle key) while the ledger step is broken, which
+    # is exactly the tree a whole-job form goes green on.
+    #
+    # Every arm is `expect=`-pinned to a LANE-NAMED fragment of its intended
+    # message. Three lanes now assert the same properties through one shared
+    # helper, so "it went red" is worth very little on its own: a unit-lane
+    # mutation that reddened on the release lane's assertion would pass a bare
+    # expect_red while proving nothing about the lane it names.
+    expect_red(
+        "app2-journey ledger RESTORE step loses its always() gate (#2818)",
+        expect=f"the app2-journey ledger RESTORE step must run with {ALWAYS_GATE}",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                restore_block,
+                restore_block.replace(ALWAYS_GATE, "if: success()", 1),
+                1,
+            )
+        },
+    )
+    for lane, lane_wf, lane_text, lane_job, lane_restore, lane_save in (
+        (
+            "tests.yml unit",
+            ".github/workflows/tests.yml",
+            tests,
+            tests_job,
+            unit_restore_block,
+            unit_save_block,
+        ),
+        (
+            "release",
+            ".github/workflows/release-emulator-validation.yml",
+            release,
+            release_job,
+            release_restore_block,
+            release_save_block,
+        ),
+    ):
+        expect_red(
+            f"{lane} ledger reverts to the monolithic actions/cache (#2818)",
+            expect=f"{lane} ledger restore step must contain {RESTORE_ACTION!r}",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_restore,
+                    lane_restore.replace(RESTORE_ACTION, MONOLITHIC_ACTION, 1),
+                    1,
+                )
+            },
+        )
+        # The vacuous-slice twin: the LEDGER step goes back to the monolithic
+        # action while the job's GRADLE cache step takes the split one, so a
+        # whole-job search for the restore-only action is satisfied by a step
+        # that has nothing to do with the ledger.
+        expect_red(
+            f"{lane} ledger reverts to the monolithic action while the job's "
+            "GRADLE cache step gains the split one (#2818 vacuous-slice guard)",
+            expect=f"{lane} ledger restore step must contain {RESTORE_ACTION!r}",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_job,
+                    lane_job.replace(MONOLITHIC_ACTION, RESTORE_ACTION).replace(
+                        lane_restore,
+                        lane_restore.replace(RESTORE_ACTION, MONOLITHIC_ACTION, 1),
+                        1,
+                    ),
+                    1,
+                )
+            },
+        )
+        # A success()-gated restore under an always() record+save is worse than
+        # no split: the red run records into a file with no restored history and
+        # the save publishes that truncated ledger as the chain's newest entry.
+        expect_red(
+            f"{lane} ledger RESTORE step loses its always() gate (#2818)",
+            expect=f"the {lane} ledger RESTORE step must run with {ALWAYS_GATE}",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_restore,
+                    lane_restore.replace(ALWAYS_GATE, "if: success()", 1),
+                    1,
+                )
+            },
+        )
+        # The save step exists but is not the save ACTION: a `run:` step, or the
+        # monolithic action pasted back in, satisfies "there is a step called
+        # Save test-execution ledger" while writing nothing to the cache chain.
+        expect_red(
+            f"{lane} ledger save step is not actions/cache/save (#2818)",
+            expect=f"{lane} ledger save step must contain {SAVE_ACTION!r}",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_save,
+                    lane_save.replace(SAVE_ACTION, MONOLITHIC_ACTION, 1),
+                    1,
+                )
+            },
+        )
+        expect_red(
+            f"{lane} ledger has a restore but no save step (#2818)",
+            expect=(
+                f"{lane} restores the ledger with the restore-only action but "
+                "has no"
+            ),
+            **{lane_wf: lane_text.replace(lane_save, "", 1)},
+        )
+        # The load-bearing one: an if: success() save is precisely the
+        # monolithic post-if the split exists to escape, so the split would buy
+        # this lane nothing at all.
+        expect_red(
+            f"{lane} ledger save runs only on success — a red job persists "
+            "nothing (#2818)",
+            expect=f"the {lane} ledger SAVE step must run with {ALWAYS_GATE}",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_save,
+                    lane_save.replace(ALWAYS_GATE, "if: success()", 1),
+                    1,
+                )
+            },
+        )
+        expect_red(
+            f"{lane} ledger saves BEFORE the record step (#2818)",
+            expect=f"{lane} must SAVE the ledger cache AFTER the record step",
+            **{
+                lane_wf: lane_text.replace(lane_save, "", 1).replace(
+                    lane_restore, lane_restore + lane_save, 1
+                )
+            },
+        )
+        expect_red(
+            f"{lane} ledger save key drifts from the restore key (#2818)",
+            expect=f"the {lane} ledger save key must be byte-identical",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_save,
+                    lane_save.replace(
+                        f"key: {CACHE_KEY_PREFIX}", "key: some-other-cache-chain-", 1
+                    ),
+                    1,
+                )
+            },
+        )
+        # The #2787 vacuous-slice shape, applied to the half this issue adds:
+        # the SAVE key loses the run-id scope while the same job's Gradle cache
+        # key gains one, so a whole-job run-id search still finds it. The save
+        # then lands under a key the restore half never reads back.
+        expect_red(
+            f"{lane} ledger SAVE key loses the run-id scope while the job's "
+            "GRADLE cache key gains it (#2818 vacuous-slice guard)",
+            expect=f"the {lane} ledger save key must be byte-identical",
+            **{
+                lane_wf: lane_text.replace(
+                    lane_job,
+                    lane_job.replace(
+                        lane_save, lane_save.replace(RUN_SCOPE + "-", "", 1), 1
+                    ).replace(gradle_key, gradle_key + RUN_SCOPE + "-", 1),
+                    1,
+                )
+            },
+        )
     # ---------------------------------------------------------------------
 
     # Issue #2785, item 1: the recorded ledger must leave the runner.
@@ -896,7 +1134,14 @@ def self_test() -> None:
     # drop AND the vacuous-slice arm that hands the run id to the same job's
     # Gradle cache key instead, which is the tree the pre-#2787 whole-job
     # assertions accepted.
-    expected = 33
+    # + #2818's nineteen: the journey lane's restore-half always() gate, plus
+    # nine per lane for the unit and release lanes — monolithic revert (plain
+    # and vacuous-slice), restore-half always() dropped, save step not the save
+    # action, save step absent, save gated on success, save before record, save
+    # key drift (plain and vacuous-slice). Each is pinned to a lane-named
+    # message, so a mutation cannot be "proved" by a sibling lane's copy of the
+    # same assertion.
+    expected = 52
     if checks != expected:
         raise GuardFailure(f"self-test ran {checks} red mutations, expected {expected}")
 
