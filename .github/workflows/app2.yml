@@ -846,6 +846,26 @@ jobs:
           emulator-boot-timeout: 900
           script: scripts/ci-app2-journey-suite.sh
 
+      # Issue #2830: the on-call's first question on a red journey run is "the
+      # tree or the device?", and run 35435668085's answer — a launcher ANR with
+      # `Input dispatching timed out (Application does not have a focused
+      # window)` on a runner at load 10.52 — was reachable only by downloading
+      # the logcat artifact, while the job itself showed 14 identical
+      # product-shaped assertion failures across 8 journeys. This step puts that
+      # answer at the TOP of the job summary, before the execution guard below
+      # can redden with its own (correct but secondary) complaint.
+      #
+      # A separate step rather than something the in-emulator script writes
+      # directly: `reactivecircus/android-emulator-runner` runs its `script:`
+      # inside the emulator wrapper, and a summary that depends on
+      # GITHUB_STEP_SUMMARY surviving that wrapper is a summary that can silently
+      # stop being written. The script leaves primary-cause.md in the artifact
+      # dir; this ordinary step appends it. It never fails the job — a reporting
+      # step that reddens would hide the failure it exists to explain.
+      - name: Surface the journey's primary cause in the job summary (#2830)
+        if: always() && steps.journey.outcome == 'failure'
+        run: scripts/ci-app2-journey-suite.sh --report-primary-cause
+
       # G3: a green `BUILD SUCCESSFUL` proves nothing on its own. 30 tests across
       # the 11 journey classes ran when this lane landed; floor 26 tolerates
       # ordinary churn while a lost class (2-5 tests each) or a vacuous

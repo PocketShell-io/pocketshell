@@ -28,8 +28,24 @@
 # pipe cannot pass either). `--self-test` drives that red->green with a stub
 # gradle, no emulator required.
 #
+# PRIMARY CAUSE (issue #2830)
+#
+# Run 35435668085 died twice on one tree with 14 identical
+# `the window never took focus …` assertion failures across 8 journeys. The
+# actual cause was one line nobody had opened yet, in the logcat ARTIFACT:
+# `ANR in com.google.android.apps.nexuslauncher … Input dispatching timed out
+# (Application does not have a focused window)` on a runner at load 10.52. So
+# the two readings that identify a wedged device — a system ANR in logcat, and
+# the harness's own `INFRA: device window-focus outage` verdict (see
+# app2/src/androidTest/.../connect/DeviceFocus.kt) — are scanned here and
+# written to $ARTIFACT_DIR/primary-cause.md. `--report-primary-cause` then puts
+# that block at the top of the JOB SUMMARY, where the on-call reads it without
+# downloading anything. Absence of evidence writes nothing: a lane that failed
+# for an ordinary reason must not grow an infra-shaped excuse.
+#
 # USAGE
 #   scripts/ci-app2-journey-suite.sh            # the CI entry point
+#   scripts/ci-app2-journey-suite.sh --report-primary-cause
 #   scripts/ci-app2-journey-suite.sh --self-test
 #
 # Overridable for the self-test and for a local reproduction:
@@ -37,6 +53,8 @@
 #   POCKETSHELL_APP2_JOURNEY_ARTIFACTS  artifact root (default artifacts/app2-journey)
 #   POCKETSHELL_APP2_JOURNEY_APP_ID     applicationId whose external files dir
 #                                       holds the journey screenshots
+#   POCKETSHELL_APP2_JOURNEY_RESULTS    androidTest result XML root, scanned for
+#                                       the harness's outage verdict
 #   POCKETSHELL_APP2_JOURNEY_GRADLE_EXTRA_ARGS
 #                                       extra gradle args, space-separated (e.g.
 #                                       -Pandroid.testInstrumentationRunnerArguments.agentsPort=2474
@@ -49,7 +67,14 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 GRADLE_CMD="${POCKETSHELL_APP2_JOURNEY_GRADLE:-./gradlew}"
 ARTIFACT_DIR="${POCKETSHELL_APP2_JOURNEY_ARTIFACTS:-artifacts/app2-journey}"
 APP_ID="${POCKETSHELL_APP2_JOURNEY_APP_ID:-com.pocketshell.app}"
+RESULTS_DIR="${POCKETSHELL_APP2_JOURNEY_RESULTS:-app2/build/outputs/androidTest-results/connected/debug}"
 ADB="${ADB:-adb}"
+
+# The harness's own environment verdict, byte-identical to
+# DEVICE_FOCUS_OUTAGE_MARKER in app2/src/androidTest/.../connect/DeviceFocus.kt.
+# One string, so "did the lane die of a device wedge?" is one grep across the
+# test XML, the gradle log and the job summary.
+OUTAGE_MARKER="INFRA: device window-focus outage"
 
 # The one task this lane runs. Kept in a named variable so the self-test can
 # assert it, and so the "no class filter" property is checkable rather than a
@@ -97,6 +122,93 @@ start_logcat() {
   echo $!
 }
 
+# ---------------------------------------------------------------------------
+# Primary cause (issue #2830)
+# ---------------------------------------------------------------------------
+
+# The `ANR in …` banner plus the lines that explain it. `Reason:` says whether
+# input dispatch timed out, `Load:`/`avg10=` say whether the runner was starved
+# — the two facts that turn "an ANR happened" into a retry decision.
+anr_evidence() {
+  local logcat="$ARTIFACT_DIR/logcat.txt"
+  [[ -r "$logcat" ]] || return 0
+  grep -aE 'ANR in |Reason: Input dispatching timed out|Load: |avg10=' "$logcat" 2>/dev/null |
+    head -n 20
+}
+
+# The harness's own verdict, from wherever it surfaced: gradle's console echo of
+# the failure, or the JUnit XML the run left behind.
+outage_verdict() {
+  local hits=""
+  if [[ -r "$ARTIFACT_DIR/gradle.log" ]]; then
+    hits="$(grep -aF "$OUTAGE_MARKER" "$ARTIFACT_DIR/gradle.log" 2>/dev/null | head -n 3)"
+  fi
+  if [[ -z "$hits" && -d "$RESULTS_DIR" ]]; then
+    hits="$(grep -arhF "$OUTAGE_MARKER" "$RESULTS_DIR" 2>/dev/null | head -n 3)"
+  fi
+  printf '%s' "$hits"
+}
+
+# Writes $ARTIFACT_DIR/primary-cause.md and returns 0 when this run carries
+# device-wedge evidence; returns 1 (writing nothing) when it does not.
+detect_primary_cause() {
+  local anr verdict
+  anr="$(anr_evidence)"
+  verdict="$(outage_verdict)"
+  # An `ANR in ` banner, not merely a Load: line, is what makes this a wedge.
+  if ! printf '%s' "$anr" | grep -q 'ANR in '; then
+    anr=""
+  fi
+  if [[ -z "$anr" && -z "$verdict" ]]; then
+    rm -f "$ARTIFACT_DIR/primary-cause.md"
+    return 1
+  fi
+
+  mkdir -p "$ARTIFACT_DIR"
+  {
+    echo "## app2-journey PRIMARY CAUSE: the device wedged, not the product"
+    echo
+    echo "This run's own device evidence says the emulator — not the tree under test —"
+    echo "is why window-sensitive journeys could not start. **Rerun the lane**; a"
+    echo "window-focus outage is an environment failure (issue #2830)."
+    echo
+    if [[ -n "$verdict" ]]; then
+      echo "### The journey harness diagnosed it in-test"
+      echo
+      echo '```'
+      printf '%s\n' "$verdict"
+      echo '```'
+      echo
+    fi
+    if [[ -n "$anr" ]]; then
+      echo "### ANR on this device during the run (artifacts/app2-journey/logcat.txt)"
+      echo
+      echo '```'
+      printf '%s\n' "$anr"
+      echo '```'
+      echo
+    fi
+    echo "Full evidence: \`artifacts/app2-journey/logcat.txt\`,"
+    echo "\`artifacts/app2-journey/gradle.log\`, \`app2/build/reports/androidTests/\`."
+  } > "$ARTIFACT_DIR/primary-cause.md"
+  return 0
+}
+
+# The `--report-primary-cause` entry point: puts the block at the top of the job
+# summary. NEVER fails the job — it is a reporting step, and a reporting step
+# that reddens a run would hide the failure it exists to explain.
+report_primary_cause() {
+  if ! detect_primary_cause; then
+    echo "app2 journey: no device-wedge evidence in $ARTIFACT_DIR — nothing to report as a primary cause."
+    return 0
+  fi
+  cat "$ARTIFACT_DIR/primary-cause.md"
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    cat "$ARTIFACT_DIR/primary-cause.md" >> "$GITHUB_STEP_SUMMARY"
+  fi
+  return 0
+}
+
 collect_device_evidence() {
   # Journey screenshots (JourneyScreenshots.capture) land in the app's external
   # files dir. Best-effort: absent screenshots must never redden a green suite.
@@ -126,6 +238,12 @@ main() {
   collect_device_evidence
 
   if [[ "$rc" -ne 0 ]]; then
+    # Issue #2830: say WHY first when the device itself is the reason, so the
+    # `::error` an on-call sees in the log is the cause rather than the symptom.
+    if detect_primary_cause; then
+      echo "::error title=app2 journey: the DEVICE wedged::$OUTAGE_MARKER / system ANR observed on this run — window-sensitive journeys could not start. This is an environment failure; rerun the lane (issue #2830). Details in the job summary and $ARTIFACT_DIR/primary-cause.md." >&2
+      cat "$ARTIFACT_DIR/primary-cause.md"
+    fi
     echo "::error title=app2 journey suite::$JOURNEY_TASK failed (rc=$rc). Reports: app2/build/reports/androidTests/connected/, raw log: $ARTIFACT_DIR/gradle.log, device log: $ARTIFACT_DIR/logcat.txt" >&2
   fi
   return "$rc"
@@ -226,6 +344,115 @@ STUB
   ARTIFACT_DIR="$prev_artifacts"
   ADB="$prev_adb"
 
+  # 8. PRIMARY CAUSE (issue #2830). The on-call's question is "is this the tree
+  #    or the device?", and the answer used to live only in a logcat artifact.
+  #    Driven through the real entry points with a stub `adb` that replays a
+  #    device log, so the scan, the file and the summary append are all real.
+  local prev_results="$RESULTS_DIR"
+  cat > "$tmp/adb-replay" <<'STUB'
+#!/usr/bin/env bash
+# Stands in for `adb logcat -v threadtime`, which main redirects into logcat.txt.
+if [[ "${1:-}" == "logcat" && "${2:-}" == "-v" ]]; then
+  cat "$REPLAY_LOGCAT"
+fi
+exit 0
+STUB
+  chmod +x "$tmp/adb-replay"
+
+  # The five lines run 35435668085 actually logged, plus one that must NOT be
+  # mistaken for them.
+  cat > "$tmp/anr-logcat.txt" <<'LOGCAT'
+09-19 11:24:11.100  1234  1250 I ActivityManager: Start proc for com.pocketshell.app
+09-19 11:24:12.205  1234  1250 E ActivityManager: ANR in com.google.android.apps.nexuslauncher (com.google.android.apps.nexuslauncher/.NexusLauncherActivity)
+09-19 11:24:12.205  1234  1250 E ActivityManager: Reason: Input dispatching timed out (Application does not have a focused window).
+09-19 11:24:12.205  1234  1250 E ActivityManager: Load: 10.52 / 2.4 / 0.79
+09-19 11:24:12.205  1234  1250 E ActivityManager: ----- Output from /proc/pressure/cpu -----
+09-19 11:24:12.205  1234  1250 E ActivityManager: some avg10=77.71 avg60=30.47 avg300=7.60
+LOGCAT
+  cat > "$tmp/quiet-logcat.txt" <<'LOGCAT'
+09-19 11:24:11.100  1234  1250 I ActivityManager: Start proc for com.pocketshell.app
+09-19 11:24:31.900  1234  1250 I ActivityManager: Displayed com.pocketshell.app/.MainActivity
+LOGCAT
+
+  RESULTS_DIR="$tmp/no-results"
+
+  # 8a. A failing suite on a device that ANR'd: main writes the block and says
+  #     so on the annotation channel, and still returns gradle's rc.
+  ARTIFACT_DIR="$tmp/cause-anr"
+  ADB="$tmp/adb-replay"
+  REPLAY_LOGCAT="$tmp/anr-logcat.txt" GRADLE_CMD="$tmp/gradle-42" main > "$tmp/cause-anr.out" 2> "$tmp/cause-anr.err"
+  check "main still propagates rc with a primary cause" "$?" "42"
+  local anr_block="$tmp/cause-anr/primary-cause.md"
+  local wrote_block=no
+  [[ -r "$anr_block" ]] && wrote_block=yes
+  check "an ANR run writes primary-cause.md" "$wrote_block" "yes"
+  local names_anr=no
+  grep -q 'ANR in com.google.android.apps.nexuslauncher' "$anr_block" 2>/dev/null && names_anr=yes
+  check "the block quotes the ANR banner" "$names_anr" "yes"
+  local names_pressure=no
+  grep -q 'avg10=77.71' "$anr_block" 2>/dev/null && names_pressure=yes
+  check "the block quotes the CPU-pressure line" "$names_pressure" "yes"
+  local says_rerun=no
+  grep -q 'Rerun the lane' "$anr_block" 2>/dev/null && says_rerun=yes
+  check "the block states the action" "$says_rerun" "yes"
+  local annotated=no
+  grep -q '::error title=app2 journey: the DEVICE wedged::' "$tmp/cause-anr.err" && annotated=yes
+  check "the device wedge is annotated before the generic failure" "$annotated" "yes"
+  local ignores_noise=no
+  grep -q 'Start proc for' "$anr_block" 2>/dev/null || ignores_noise=yes
+  check "unrelated ActivityManager lines are not quoted as evidence" "$ignores_noise" "yes"
+
+  # 8b. ...and a failing suite on a HEALTHY device writes nothing, so 8a is not
+  #     a block this script emits on every red run.
+  ARTIFACT_DIR="$tmp/cause-quiet"
+  REPLAY_LOGCAT="$tmp/quiet-logcat.txt" GRADLE_CMD="$tmp/gradle-42" main >/dev/null 2>"$tmp/cause-quiet.err"
+  check "an ordinary red run propagates rc" "$?" "42"
+  local quiet_block=no
+  [[ -r "$tmp/cause-quiet/primary-cause.md" ]] && quiet_block=yes
+  check "an ordinary red run writes no primary cause" "$quiet_block" "no"
+  local quiet_annotation=no
+  grep -q 'the DEVICE wedged' "$tmp/cause-quiet.err" && quiet_annotation=yes
+  check "an ordinary red run is not annotated as a device wedge" "$quiet_annotation" "no"
+
+  # 8c. The harness's own in-test verdict is evidence on its own — a wedge whose
+  #     ANR aged out of the log buffer still reports as one.
+  ARTIFACT_DIR="$tmp/cause-verdict"
+  mkdir -p "$ARTIFACT_DIR"
+  printf 'com.pocketshell.next.terminal.J03AttachAndTypeJourney > attach FAILED\n    %s — the DEVICE never granted window focus\n' \
+    "$OUTAGE_MARKER" > "$ARTIFACT_DIR/gradle.log"
+  cp "$tmp/quiet-logcat.txt" "$ARTIFACT_DIR/logcat.txt"
+  detect_primary_cause
+  check "the in-test outage verdict alone is a primary cause" "$?" "0"
+  local names_verdict=no
+  grep -q 'diagnosed it in-test' "$ARTIFACT_DIR/primary-cause.md" 2>/dev/null && names_verdict=yes
+  check "the block names the harness verdict" "$names_verdict" "yes"
+
+  # 8d. --report-primary-cause appends to the JOB SUMMARY and never reddens the
+  #     job, with evidence or without it. This is the half app2.yml calls.
+  local summary="$tmp/step-summary.md"
+  : > "$summary"
+  GITHUB_STEP_SUMMARY="$summary" report_primary_cause >/dev/null 2>&1
+  check "--report-primary-cause exits 0 with evidence" "$?" "0"
+  local summarised=no
+  grep -q 'PRIMARY CAUSE: the device wedged' "$summary" && summarised=yes
+  check "the job summary carries the primary cause" "$summarised" "yes"
+
+  ARTIFACT_DIR="$tmp/cause-quiet"
+  : > "$summary"
+  GITHUB_STEP_SUMMARY="$summary" report_primary_cause >/dev/null 2>&1
+  check "--report-primary-cause exits 0 without evidence" "$?" "0"
+  local empty_summary=no
+  [[ ! -s "$summary" ]] && empty_summary=yes
+  check "a healthy run adds nothing to the job summary" "$empty_summary" "yes"
+
+  ARTIFACT_DIR="$tmp/never-ran"
+  GITHUB_STEP_SUMMARY="$summary" report_primary_cause >/dev/null 2>&1
+  check "--report-primary-cause exits 0 with no artifacts at all" "$?" "0"
+
+  ARTIFACT_DIR="$prev_artifacts"
+  RESULTS_DIR="$prev_results"
+  ADB="$prev_adb"
+
   if [[ "$failures" -ne 0 ]]; then
     echo "ci-app2-journey-suite.sh --self-test: $failures/$checks check(s) FAILED" >&2
     return 1
@@ -239,12 +466,16 @@ case "${1:-}" in
     self_test
     exit $?
     ;;
+  --report-primary-cause)
+    report_primary_cause
+    exit $?
+    ;;
   "")
     main
     exit $?
     ;;
   *)
-    echo "usage: $0 [--self-test]" >&2
+    echo "usage: $0 [--self-test|--report-primary-cause]" >&2
     exit 2
     ;;
 esac

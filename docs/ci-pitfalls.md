@@ -475,3 +475,47 @@ What to do:
   walk), re-audit this entry: the pure-git/fail-open selector is what kept
   the failure mode a concurrency problem instead of also an API-dependency
   problem.
+
+## A wedged DEVICE reads as N identical product failures (app2-journey)
+
+`app2-journey` run 35435668085 went red twice on the SAME tree (`9424a3900`),
+5 failures over 2 classes and then 17 over 8 — a failure count that GREW on a
+rerun of an unchanged commit, which no commit-bound defect can do. 14 of the
+17 carried one byte-identical message, `awaitWindowFocus`'s `the window never
+took focus … the focus-settle signal stayed false`, and none of them had
+reached a product assertion. The cause was one line in the logcat ARTIFACT:
+
+```
+E ActivityManager: ANR in com.google.android.apps.nexuslauncher (…/.NexusLauncherActivity)
+E ActivityManager: Reason: Input dispatching timed out (Application does not have a focused window).
+E ActivityManager: Load: 10.52 / 2.4 / 0.79
+E ActivityManager: some avg10=77.71 avg60=30.47 avg300=7.60
+```
+
+A CPU-starved runner, the emulator's own LAUNCHER ANR'd, and a window manager
+left with no focused window at all. Every window-sensitive journey then failed
+its precondition, in the vocabulary of a product defect, once per class.
+
+`hasWindowFocus() == false` cannot be the discriminator — it is false whether
+the device granted focus to nobody or this screen merely did not get it. The
+window manager's own `mCurrentFocus` is: `null` everywhere is the environment;
+a named window (even the launcher's) is a product-shaped answer, deliberately,
+because `J06BackgroundGraceReturnJourney` backgrounds the app on purpose and
+"the launcher holds focus" is exactly what its own bug would leave behind.
+
+Since issue #2830 the harness asks that question at the timeout
+(`app2/src/androidTest/.../connect/DeviceFocus.kt`), fails the first waiter
+with `INFRA: device window-focus outage` — one grep-able signature, a distinct
+`DeviceWindowFocusOutageException` type — and SKIPS every later waiter against
+that one report while the device is still wedged, so a lane collapse is one
+line instead of fourteen. `scripts/ci-app2-journey-suite.sh
+--report-primary-cause` puts the same finding at the top of the job summary.
+
+Two things to expect when reading such a run:
+
+- The execution guard (`check-app2-lane-execution.py --min 26`) also reddens,
+  because skipped tests do not count as executed. That is correct and
+  SECONDARY: the primary-cause block is written before it, by the earlier step.
+- The verdict is retryable by construction, but it is not a licence to rerun
+  blind — a device that wedges on every attempt is a lane capacity problem
+  (see the contended-box section above), not a flake.
