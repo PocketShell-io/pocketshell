@@ -49,13 +49,21 @@ data class WorkspaceProjection(
 )
 
 /**
- * The quiet one-line summary shown under a workspace name. A workspace row is
- * already scoped by its root, so repeating its full path spends the secondary
- * line on information the user has already seen. The useful distinction here
- * is what kind of terminals are inside it.
+ * The quiet one-line summary shown under a workspace name, or `null` when
+ * there is nothing to say. A workspace row is already scoped by its root, so
+ * repeating its full path spends the secondary line on information the user
+ * has already seen. The useful distinction here is what kind of terminals are
+ * inside it.
+ *
+ * Issue #2798: an empty workspace returns `null` rather than "No sessions" —
+ * a subtitle whose content is the absence of content. Callers drop the
+ * subtitle entirely so the row collapses toward its height floor instead of
+ * reserving a second line. This is the same rule the kind list below already
+ * applies one step down (`count == 1` is suppressed): a field that can only
+ * ever read one value distinguishes nothing.
  */
-fun workspaceSessionSummary(sessions: List<SessionRow>): String {
-    if (sessions.isEmpty()) return "No sessions"
+fun workspaceSessionSummary(sessions: List<SessionRow>): String? {
+    if (sessions.isEmpty()) return null
     val counts = linkedMapOf<String, Int>()
     sessions.forEach { session ->
         val kind = sessionKindLabel(session)

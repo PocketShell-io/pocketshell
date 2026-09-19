@@ -1053,13 +1053,25 @@ private fun androidx.compose.foundation.lazy.LazyListScope.itemContent(
             items = root.workspaces,
             key = { workspace -> "workspace:${workspace.path}" },
         ) { workspace ->
+            // Issue #2798: an empty workspace gets no subtitle slot at all, so
+            // ListRow reserves neither the spacer nor the line and the row
+            // collapses toward its height floor (104dp -> 67dp at w412dp, over
+            // the 64dp navigation floor). Passing a lambda that happens to
+            // render nothing is NOT the same thing — ListRow keys the spacer
+            // off the slot being non-null, not off what it draws.
+            // "Status unavailable" is real information and keeps its line.
+            val subtitleIsEmpty = workspace.sessions.isEmpty() && !sessionsUnavailable
             WorkspaceRow(
                 title = workspace.label,
-                subtitleContent = {
-                    SessionKindSummary(
-                        sessions = workspace.sessions,
-                        unavailable = sessionsUnavailable,
-                    )
+                subtitleContent = if (subtitleIsEmpty) {
+                    null
+                } else {
+                    {
+                        SessionKindSummary(
+                            sessions = workspace.sessions,
+                            unavailable = sessionsUnavailable,
+                        )
+                    }
                 },
                 onClick = { onOpenWorkspace(workspace.path) },
                 testTag = workspaceRowTag(workspace.path),

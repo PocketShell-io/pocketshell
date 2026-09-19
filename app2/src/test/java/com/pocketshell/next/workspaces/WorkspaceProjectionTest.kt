@@ -4,6 +4,7 @@ import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.hostapi.AgentState
 import com.pocketshell.core.hostapi.WorkspaceMembership
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -160,6 +161,40 @@ class WorkspaceProjectionTest {
         assertEquals(
             "Claude Code ×2 · Codex · Terminal",
             workspaceSessionSummary(sessions),
+        )
+    }
+
+    // Issue #2798, the three cardinalities of the summary field. 0 is the one
+    // that changed; 1 and 2 are pinned alongside it so a future "just put the
+    // empty label back" edit cannot pass by leaving the populated cases alone.
+    @Test
+    fun `workspace summary is null for an empty workspace`() {
+        assertNull(
+            "an empty workspace spends no subtitle saying it is empty",
+            workspaceSessionSummary(emptyList()),
+        )
+    }
+
+    @Test
+    fun `workspace summary names one session with no count beside it`() {
+        assertEquals(
+            "Claude Code",
+            workspaceSessionSummary(
+                listOf(session("claude", "/home/x/git/app").copy(agent = "claude")),
+            ),
+        )
+    }
+
+    @Test
+    fun `workspace summary counts a kind from two up`() {
+        assertEquals(
+            "Claude Code \u00d72",
+            workspaceSessionSummary(
+                listOf(
+                    session("claude-1", "/home/x/git/app").copy(agent = "claude"),
+                    session("claude-2", "/home/x/git/app").copy(agent = "claude"),
+                ),
+            ),
         )
     }
 

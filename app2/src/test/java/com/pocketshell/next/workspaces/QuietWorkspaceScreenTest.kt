@@ -1,8 +1,12 @@
 package com.pocketshell.next.workspaces
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -10,16 +14,20 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.core.hostapi.AgentState
 import com.pocketshell.core.hostapi.SessionRow
-import com.pocketshell.next.tree.SessionTreeUiState
 import com.pocketshell.next.tree.SESSION_TREE_FILES_TAG
 import com.pocketshell.next.tree.SESSION_TREE_PORTS_TAG
-import com.pocketshell.next.tree.sessionRowTag
+import com.pocketshell.next.tree.SessionTreeUiState
 import com.pocketshell.next.tree.sessionRowMenuTag
+import com.pocketshell.next.tree.sessionRowTag
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -68,7 +76,8 @@ class QuietWorkspaceScreenTest {
         composeRule.onNodeWithTag(workspaceRowTag(path)).assertIsDisplayed().performClick()
         assertEquals(listOf(path), opened)
         composeRule.onNodeWithText("~/git/pocketshell", substring = true).assertDoesNotExist()
-        composeRule.onNodeWithText("No sessions").assertIsDisplayed()
+        // #2798: the empty row no longer spends a second line saying it is empty.
+        composeRule.onNodeWithText("No sessions").assertDoesNotExist()
     }
 
     @Test
@@ -482,6 +491,112 @@ class QuietWorkspaceScreenTest {
         composeRule.onNodeWithText("Browse host files").assertDoesNotExist()
     }
 
+    // Issue #2798: the workspace row's subtitle across all three
+    // cardinalities. The empty case is the fix; 1 and 2 are pinned next to it
+    // so restoring an empty-case label cannot slip through on the strength of
+    // the populated cases still passing. Height is asserted against the token,
+    // not a literal dp, so #2800's size work stays free to move the floor.
+    @Test
+    fun `an empty workspace row drops its subtitle and still meets the touch floor`() {
+        setHostContent(state = hostStateWith(sessionCount = 0))
+
+        composeRule.onNodeWithText("No sessions").assertDoesNotExist()
+        composeRule.onNodeWithText("Terminal").assertDoesNotExist()
+        composeRule.onNodeWithText("Claude Code", substring = true).assertDoesNotExist()
+        // The row still honours the navigation touch floor; how much of the
+        // reclaimed line it gives back is asserted against a real two-line row
+        // in the next test, not against a literal dp here.
+        assertTrue(
+            "an empty row must still meet the workspace navigation touch floor",
+            workspaceRowHeight() >= PocketShellDensity.workspaceRowMinHeight,
+        )
+    }
+
+    @Test
+    fun `a one session workspace row keeps its subtitle and is taller than an empty one`() {
+        // One composition, recomposed from 0 to 1 session, so the two heights
+        // are measured under identical density/font conditions — comparing a
+        // number from a different test run would prove nothing.
+        var state by mutableStateOf(hostStateWith(sessionCount = 0))
+        composeRule.setContent {
+            PocketShellTheme {
+                HostWorkspacesScreen(
+                    state = state,
+                    onRefresh = {},
+                    onOpenWorkspace = {},
+                    onOpenSession = {},
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        val emptyHeight = workspaceRowHeight()
+        composeRule.onNodeWithText("Claude Code").assertDoesNotExist()
+
+        state = hostStateWith(sessionCount = 1)
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithText("Claude Code").assertIsDisplayed()
+        val oneHeight = workspaceRowHeight()
+        assertTrue(
+            "a row with a subtitle must be taller than the collapsed empty row " +
+                "(empty=$emptyHeight, one=$oneHeight)",
+            oneHeight > emptyHeight,
+        )
+    }
+
+    @Test
+    fun `a two session workspace row counts the repeated kind`() {
+        setHostContent(state = hostStateWith(sessionCount = 2))
+
+        composeRule.onNodeWithText("Claude Code \u00d72").assertIsDisplayed()
+        composeRule.onNodeWithText("No sessions").assertDoesNotExist()
+    }
+
+    @Test
+    fun `an empty workspace row keeps its line when the host could not report status`() {
+        setHostContent(state = hostStateWith(sessionCount = 0, statusUnavailable = true))
+
+        // "Status unavailable" is real information, not the absence of it, so
+        // #2798 leaves that line alone.
+        composeRule.onNodeWithText("Status unavailable").assertIsDisplayed()
+    }
+
+    private fun workspaceRowHeight(): Dp =
+        composeRule.onNodeWithTag(workspaceRowTag(SUBTITLE_WORKSPACE_PATH))
+            .getUnclippedBoundsInRoot()
+            .height
+
+    private fun hostStateWith(
+        sessionCount: Int,
+        statusUnavailable: Boolean = false,
+    ) = HostWorkspacesUiState(
+        hostId = 7,
+        hostLabel = "hetzner",
+        loaded = true,
+        statusUnavailable = statusUnavailable,
+        roots = listOf(
+            WorkspaceRootProjection(
+                key = "/home/alexey/git",
+                label = "Git",
+                displayPath = "~/git",
+                path = "/home/alexey/git",
+                workspaces = listOf(
+                    WorkspaceProjection(
+                        path = SUBTITLE_WORKSPACE_PATH,
+                        label = "pocketshell",
+                        displayPath = "~/git/pocketshell",
+                        sessions = (1..sessionCount).map { index ->
+                            session("claude-$index", SUBTITLE_WORKSPACE_PATH)
+                                .copy(agent = "claude")
+                        },
+                        durable = true,
+                    ),
+                ),
+                rootSessions = emptyList(),
+            ),
+        ),
+    )
+
     private fun setHostContent(
         state: HostWorkspacesUiState,
         onOpenWorkspace: (String) -> Unit = {},
@@ -536,4 +651,9 @@ class QuietWorkspaceScreenTest {
         createdEpoch = 1L,
         activityEpoch = null,
     )
+
+    private companion object {
+        /** The one workspace row #2798's subtitle rules are measured on. */
+        const val SUBTITLE_WORKSPACE_PATH = "/home/alexey/git/pocketshell"
+    }
 }

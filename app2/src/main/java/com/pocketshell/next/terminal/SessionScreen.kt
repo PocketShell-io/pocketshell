@@ -99,6 +99,17 @@ const val SESSION_ENDED_TAG: String = "session-ended"
 const val SESSION_CONTEXT_BAR_TAG: String = "session-context-bar"
 
 /**
+ * The session-context bar's trailing count, composed only from 2 sessions up
+ * (#2798) — so its absence is itself the assertion.
+ *
+ * Find it with `useUnmergedTree = true`: the bar is a clickable [ListRow], so
+ * this Text's semantics merge into the row node and a merged-tree finder
+ * reports the count missing whether or not it was composed — an absence
+ * assertion written that way passes vacuously.
+ */
+const val SESSION_CONTEXT_COUNT_TAG: String = "session-context-count"
+
+/**
  * Route-level entry point for `session/{hostId}/{sessionName}` (rewrite tasks
  * U-4, U-5, U-7, P-1, and #2521).
  *
@@ -471,7 +482,7 @@ fun SessionScreen(
             SessionContextBar(
                 sessionLabel = sessionLabel,
                 session = currentSession,
-                sessionCount = sessionSwitcherState.sessions.size.coerceAtLeast(1),
+                sessionCount = sessionSwitcherState.sessions.size,
                 onClick = { sessionSwitcherOpen = true },
             )
         }
@@ -996,11 +1007,18 @@ private fun SessionContextBar(
             )
         },
         trailing = {
-            Text(
-                text = sessionCount.toString(),
-                color = PocketShellColors.TextSecondary,
-                style = PocketShellType.metadata,
-            )
+            // Issue #2798: the count reads only from 2 up. A "1" beside a row
+            // that already stands for one session is a field that can never
+            // say anything else, and 0 is not a number worth printing either.
+            // The clamp this replaces guaranteed exactly that dead value.
+            if (sessionCount >= 2) {
+                Text(
+                    text = sessionCount.toString(),
+                    color = PocketShellColors.TextSecondary,
+                    style = PocketShellType.metadata,
+                    modifier = Modifier.testTag(SESSION_CONTEXT_COUNT_TAG),
+                )
+            }
             Icon(
                 imageVector = PocketShellIcons.Down,
                 contentDescription = "Switch sessions",

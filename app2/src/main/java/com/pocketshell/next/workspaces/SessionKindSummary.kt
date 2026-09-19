@@ -21,7 +21,14 @@ private data class KindGroup(
     val count: Int,
 )
 
-/** Compact wrapped summary used under workspace rows in the host projection. */
+/**
+ * Compact wrapped summary used under workspace rows in the host projection.
+ *
+ * Renders nothing at all for an empty, available workspace (#2798) — "No
+ * sessions" was a subtitle whose content was the absence of content, and the
+ * row's own accent/status already carries it. "Status unavailable" is real
+ * information and keeps its line.
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SessionKindSummary(
@@ -38,16 +45,10 @@ fun SessionKindSummary(
         )
         return
     }
-    if (sessions.isEmpty()) {
-        Text(
-            text = "No sessions",
-            color = PocketShellColors.TextMuted,
-            style = PocketShellType.metadata,
-            modifier = modifier,
-        )
-        return
-    }
-
+    // Issue #2798: an empty workspace prints nothing here. The row's caller
+    // drops the subtitle slot outright so no second line is reserved; the
+    // empty FlowRow below is only the belt-and-braces case, never the path a
+    // row is supposed to take.
     val groups = buildList<KindGroup> {
         sessions.forEach { session ->
             val label = sessionKindLabel(session)

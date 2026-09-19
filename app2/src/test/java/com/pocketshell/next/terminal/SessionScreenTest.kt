@@ -2,30 +2,33 @@ package com.pocketshell.next.terminal
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeUp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import com.pocketshell.next.composer.COMPOSER_INSERT_TAG
+import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.next.composer.COMPOSER_DRAFT_TAG
+import com.pocketshell.next.composer.COMPOSER_INSERT_TAG
 import com.pocketshell.next.composer.COMPOSER_REVIEW_ACTION_TAG
 import com.pocketshell.next.composer.COMPOSER_REVIEW_TAG
 import com.pocketshell.next.composer.COMPOSER_SEND_TAG
@@ -41,9 +44,9 @@ import com.pocketshell.next.tree.STOP_SESSION_TITLE
 import com.pocketshell.next.tree.stopSessionMessage
 import com.pocketshell.next.usage.USAGE_GLANCE_PILL_TAG
 import com.pocketshell.next.usage.UsageGlancePillState
+import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
 import com.pocketshell.uikit.components.SESSION_BAR_COMPOSE_TAG
 import com.pocketshell.uikit.components.SESSION_BAR_MORE_KEYS_TAG
-import com.pocketshell.uikit.components.SESSION_BAR_ARROW_UP_TAG
 import com.pocketshell.uikit.components.SESSION_TERMINAL_BAR_TAG
 import com.pocketshell.uikit.components.TERMINAL_HOTKEYS_PALETTE_TAG
 import com.pocketshell.uikit.model.PillKind
@@ -684,6 +687,71 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_UNDELIVERED_TAG).assertIsDisplayed()
     }
 
+    // Issue #2798: the session-context count reads only from 2 up. The old
+    // `.coerceAtLeast(1)` on the call site made "1" the floor, so the field
+    // could never say anything but "1" in the overwhelmingly common
+    // single-session case. All three cardinalities are pinned: 0 and 1 print
+    // nothing, 2 prints the real number.
+    @Test
+    fun `no session count is shown for a zero session host`() {
+        setContent(
+            SessionUiState.Live(createRemoteTerminalSession()),
+            sessionSwitcherState = SessionSwitcherUiState(sessions = emptyList()),
+        )
+
+        composeRule.onNodeWithTag(SESSION_CONTEXT_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_CONTEXT_COUNT_TAG, useUnmergedTree = true)
+            .assertDoesNotExist()
+    }
+
+    @Test
+    fun `no session count is shown for a single session host`() {
+        setContent(
+            SessionUiState.Live(createRemoteTerminalSession()),
+            sessionSwitcherState = SessionSwitcherUiState(
+                sessions = listOf(switcherSession("only")),
+            ),
+        )
+
+        // The bar itself is on screen, and the two-session test above proves
+        // this exact finder DOES resolve the count when one is composed — so
+        // the absence below is a real absence. (The count Text's semantics
+        // merge into the clickable row, so a merged-tree finder never finds it
+        // either way: that spelling passes here vacuously.)
+        composeRule.onNodeWithTag(SESSION_CONTEXT_BAR_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(SESSION_CONTEXT_COUNT_TAG, useUnmergedTree = true)
+            .assertDoesNotExist()
+    }
+
+    @Test
+    fun `the real session count is shown from two up`() {
+        setContent(
+            SessionUiState.Live(createRemoteTerminalSession()),
+            sessionSwitcherState = SessionSwitcherUiState(
+                sessions = listOf(switcherSession("one"), switcherSession("two")),
+            ),
+        )
+
+        composeRule.onNodeWithTag(SESSION_CONTEXT_COUNT_TAG, useUnmergedTree = true)
+            .assertExists()
+            .assertTextEquals("2")
+    }
+
+    private fun switcherSession(name: String): SessionRow = SessionRow(
+        name = name,
+        id = name,
+        workspace = "/home/alexey/git/pocketshell",
+        tag = null,
+        engine = "shell",
+        profile = null,
+        agent = null,
+        agentState = null,
+        agentStateSource = null,
+        attached = false,
+        createdEpoch = 1L,
+        activityEpoch = null,
+    )
+
     private fun setContent(
         state: SessionUiState,
         composerState: ComposerUiState = ComposerUiState(),
@@ -701,6 +769,7 @@ class SessionScreenTest {
         initiallyShowComposer: Boolean = false,
         initiallyShowHotkeys: Boolean = false,
         embedComposerInWindow: Boolean = true,
+        sessionSwitcherState: SessionSwitcherUiState = SessionSwitcherUiState(),
     ) {
         composeRule.setContent {
             PocketShellTheme {
@@ -708,6 +777,7 @@ class SessionScreenTest {
                     state = state,
                     composerState = composerState,
                     sessionName = SESSION,
+                    sessionSwitcherState = sessionSwitcherState,
                     onBack = onBack,
                     usagePillState = usagePillState,
                     onOpenUsage = onOpenUsage,
