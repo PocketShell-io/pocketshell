@@ -2,8 +2,8 @@ package com.pocketshell.next.files
 
 /**
  * Pure Markdown parser for the in-app file viewer (rewrite task P-3b; ported
- * unchanged from the old client, minus its `isMarkdownPath` helper which now
- * lives on [FileKindDetector] beside the rest of the type decision).
+ * unchanged from the old client, minus its `isMarkdownPath` helper which lives
+ * on app2's `FileKindDetector` beside the rest of the type decision).
  *
  * Parses a well-bounded CommonMark subset — ATX headings, fenced/indented code
  * blocks, ordered/unordered lists, block quotes, thematic breaks, paragraphs,
@@ -13,8 +13,12 @@ package com.pocketshell.next.files
  *
  * Visible-for-test: every decision is a pure function so the block/inline
  * structure is pinned without an emulator.
+ *
+ * Lives in the shared presentation module (#2636 D8) with the model it parses
+ * and the renderer that paints it; every remaining caller is in app2, so the
+ * old app2-`internal` visibility became public on the move.
  */
-internal object MarkdownParser {
+object MarkdownParser {
 
     private val FENCE = Regex("^\\s{0,3}(`{3,}|~{3,})\\s*(.*)$")
     private val ATX = Regex("^\\s{0,3}(#{1,6})\\s+(.*?)\\s*#*\\s*$")

@@ -20,9 +20,6 @@ import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellType
 
-/** One column of the port table: a header label and its width weight. */
-internal data class PortColumn(val label: String, val weight: Float)
-
 /**
  * The port-table chrome, ported from the old client's `portfwd/PortTable.kt`.
  *
@@ -31,9 +28,18 @@ internal data class PortColumn(val label: String, val weight: Float)
  * headers on the background surface, the same row padding, the same tap-target
  * floor on a clickable row. Everything composes ui-kit tokens only, so a token
  * change moves every port table at once (docs/design-system.md).
+ *
+ * Lives in the shared presentation module (#2636 D8): pure chrome, no port
+ * transport types — the usage/portfwd screens that compose it and their
+ * `core.portfwd` state stay in app2, so the old app2-`internal` visibility
+ * became public on the move.
  */
+
+/** One column of the port table: a header label and its width weight. */
+data class PortColumn(val label: String, val weight: Float)
+
 @Composable
-internal fun PortTableHeader(columns: List<PortColumn>) {
+fun PortTableHeader(columns: List<PortColumn>) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -56,7 +62,7 @@ internal fun PortTableHeader(columns: List<PortColumn>) {
  * not by each caller.
  */
 @Composable
-internal fun PortTableRow(
+fun PortTableRow(
     onClick: (() -> Unit)?,
     modifier: Modifier = Modifier,
     content: @Composable RowScope.() -> Unit,
@@ -84,7 +90,7 @@ internal fun PortTableRow(
 }
 
 @Composable
-internal fun RowScope.PortHeaderCell(text: String, weight: Float) {
+fun RowScope.PortHeaderCell(text: String, weight: Float) {
     Text(
         text = text.uppercase(),
         modifier = Modifier.weight(weight),
@@ -95,7 +101,7 @@ internal fun RowScope.PortHeaderCell(text: String, weight: Float) {
 }
 
 @Composable
-internal fun RowScope.PortBodyCell(
+fun RowScope.PortBodyCell(
     text: String,
     weight: Float,
     monospace: Boolean = false,

@@ -16,6 +16,9 @@ import java.time.Instant
  * [resetKey] is the server-side de-dup identity: the same reset keeps the same
  * key across later captures, so the banner shows once per actual reset rather
  * than once per read.
+ *
+ * Lives in the shared presentation module (#2636 D8) with the banner it feeds;
+ * the usage panel and its `core.usage` fetcher stay in app2.
  */
 data class UsageResetEvent(
     val provider: String,

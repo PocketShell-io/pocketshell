@@ -51,33 +51,91 @@ const val TRUST_SHEET_REJECT_TAG: String = "trust-sheet-reject"
 /**
  * Copy for the two prompt shapes, kept next to the component so the
  * first-contact / key-changed distinction is one table rather than scattered
- * `if (isMismatch)` branches through the layout. `internal` so the render test
+ * `if (isMismatch)` branches through the layout. Exposed so the render test
  * asserts on the SAME strings the screen paints instead of a hand-copied
- * duplicate that can silently drift.
+ * duplicate that can silently drift (the test stayed in app2 through the
+ * #2636 D8 move, so the old app2-`internal` became public).
  */
-internal const val UNKNOWN_TITLE = "Verify server"
-internal const val MISMATCH_TITLE = "Host key CHANGED"
+const val UNKNOWN_TITLE = "Verify server"
+const val MISMATCH_TITLE = "Host key CHANGED"
 
-internal const val UNKNOWN_EXPLANATION =
+const val UNKNOWN_EXPLANATION =
     "First connection to this host. Check the fingerprint below matches the " +
         "server before trusting it."
-internal const val MISMATCH_EXPLANATION =
+const val MISMATCH_EXPLANATION =
     "This host is presenting a DIFFERENT key than the one you trusted before. " +
         "That happens after a legitimate server rebuild — and it is also exactly " +
         "what an interception attack looks like. Only trust the new key if you " +
         "know why it changed."
 
-internal const val UNKNOWN_TRUST_LABEL = "Trust and connect"
-internal const val MISMATCH_TRUST_LABEL = "Trust the new key"
+const val UNKNOWN_TRUST_LABEL = "Trust and connect"
+const val MISMATCH_TRUST_LABEL = "Trust the new key"
+
+/**
+ * What the trust prompt shows (rewrite task M-3).
+ *
+ * A plain data holder, not a ViewModel: app2's connections registry surfaces a
+ * transport "needs trust" result, the caller maps it with the app2-side
+ * `TrustPromptState.from`, and this sheet renders it. Keeping the mapping
+ * (unit tested) on the app2 side means the "first contact" vs "the key
+ * CHANGED" distinction — the one thing a user must never see collapsed into a
+ * generic "accept?" — is decided once, not re-derived per screen.
+ *
+ * Lives in the shared presentation module (#2636 D8) with the sheet that
+ * renders it: the state is pure display data, while the transport decision
+ * type it is mapped FROM stays in app2 (`core.transport`), so the factory
+ * moved too — as a `Companion` extension in app2's `TrustPromptState.kt`,
+ * keeping every `TrustPromptState.from(...)` call site unchanged. It shares
+ * the sheet's FILE rather than getting its own because both modules keep a
+ * `TrustPromptState.kt` in this package, and same-named Kotlin files emit
+ * same-named JVM facade classes: on app2's classpath the app2 copy would
+ * shadow this module's, and the display-property getters below would die with
+ * `NoSuchMethodError` looking for `fingerprintAlgorithmLabel` in a class that
+ * only carries the factory. One file per package per module for top-level
+ * declarations avoids the collision with no `@JvmName` renames.
+ */
+data class TrustPromptState(
+    val hostId: Long,
+    /** The fingerprint the server just presented, e.g. `SHA256:abc...`. */
+    val fingerprintSha256: String,
+    /** True when a DIFFERENT key was already trusted for this host. */
+    val isMismatch: Boolean,
+    /** The previously trusted fingerprint; non-null exactly when [isMismatch]. */
+    val previousFingerprintSha256: String?,
+) {
+    /**
+     * The digest algorithm named by the transport fingerprint. The transport
+     * contract carries `SHA256:<base64>` and deliberately does not carry the
+     * server key type, so this label describes the value the user is copying.
+     */
+    val fingerprintAlgorithm: String
+        get() = fingerprintAlgorithmLabel(fingerprintSha256)
+
+    /** Same digest label for the old value in a changed-key comparison. */
+    val previousFingerprintAlgorithm: String?
+        get() = previousFingerprintSha256?.let(::fingerprintAlgorithmLabel)
+
+    companion object
+}
+
+internal fun fingerprintAlgorithmLabel(value: String): String {
+    return when (value.substringBefore(':').uppercase()) {
+        "SHA256" -> "SHA-256"
+        "SHA512" -> "SHA-512"
+        "SHA1" -> "SHA-1"
+        else -> "Fingerprint digest"
+    }
+}
 
 /**
  * The host-key confirmation bottom sheet (rewrite task U-2).
  *
- * Raised when a dial comes back [com.pocketshell.core.transport.ConnectResult.NeedsTrust].
- * It is the ONLY place a host key can be accepted, so it deliberately renders
- * the presented fingerprint verbatim rather than a summarised "unknown host"
- * line: a user who cannot read the fingerprint cannot make the decision the
- * prompt is asking for.
+ * Raised when a dial comes back needing a trust decision — the app-side
+ * registry maps the transport's decision onto the plain [TrustPromptState]
+ * this sheet renders. It is the ONLY place a host key can be accepted, so it
+ * deliberately renders the presented fingerprint verbatim rather than a
+ * summarised "unknown host" line: a user who cannot read the fingerprint
+ * cannot make the decision the prompt is asking for.
  *
  * ## Why a mismatch does not look like first contact
  *
@@ -94,6 +152,11 @@ internal const val MISMATCH_TRUST_LABEL = "Trust the new key"
  * Dismissing the sheet (scrim tap / back / drag-down) routes to [onReject], so
  * "get out of this prompt" can never be mistaken for consent — nothing is
  * recorded unless the trust button is actually pressed.
+ *
+ * Lives in the shared presentation module (#2636 D8): the sheet and its plain
+ * state render pure UI, while the connect transport behind them (registry,
+ * decisions, trust recording) and the route that binds the view model stay in
+ * app2.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

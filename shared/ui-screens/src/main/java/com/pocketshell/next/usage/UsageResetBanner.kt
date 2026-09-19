@@ -59,7 +59,14 @@ fun usageResetBannerState(
     )
 }
 
-/** Flat Quiet row rendered at the top of [UsageScreen] after a recent reset. */
+/**
+ * Flat Quiet row rendered at the top of app2's usage screen after a recent
+ * reset.
+ *
+ * Lives in the shared presentation module (#2636 D8) with the event type the
+ * banner picker consumes ([UsageResetEvent]); the usage panel that renders it
+ * and its `core.usage` state stay in app2.
+ */
 @Composable
 fun UsageResetBanner(
     state: UsageResetBannerState,

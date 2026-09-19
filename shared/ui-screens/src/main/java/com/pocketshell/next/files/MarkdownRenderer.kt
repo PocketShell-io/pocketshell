@@ -55,9 +55,13 @@ const val MARKDOWN_TABLE_TAG: String = "viewer-markdown-table"
  * means the platform opens the URL, handles accessibility focus for the link,
  * and needs no `Context` — which is why this file has no Android imports at all
  * and renders in a plain Robolectric composition.
+ *
+ * Lives in the shared presentation module (#2636 D8) with the model and parser
+ * it renders; every remaining caller is in app2, so the old app2-`internal`
+ * visibility became public on the move.
  */
 @Composable
-internal fun MarkdownView(
+fun MarkdownView(
     blocks: List<MarkdownBlock>,
     modifier: Modifier = Modifier,
 ) {
@@ -306,10 +310,11 @@ private fun BodyText(
  * to span styles, inline code to a monospaced tinted run, and a link to a
  * `LinkAnnotation.Url` so the platform opens it.
  *
- * Internal rather than private so the styling is pinned by a unit test without
- * rendering — the same reason the old client exposed it.
+ * Exposed rather than private so the styling is pinned by a unit test without
+ * rendering — the same reason the old client exposed it (the test stayed in
+ * app2 through the #2636 D8 move, so the old app2-`internal` became public).
  */
-internal fun annotated(spans: List<InlineSpan>): AnnotatedString = buildAnnotatedString {
+fun annotated(spans: List<InlineSpan>): AnnotatedString = buildAnnotatedString {
     spans.forEach { span ->
         when (span) {
             is InlineSpan.Text -> withStyle(
@@ -354,5 +359,5 @@ internal fun annotated(spans: List<InlineSpan>): AnnotatedString = buildAnnotate
  * has no handler, so the tap would silently do nothing. Anything already
  * carrying a scheme is left alone.
  */
-internal fun normalizeUrl(url: String): String =
+fun normalizeUrl(url: String): String =
     if (url.contains("://") || url.startsWith("mailto:")) url else "https://$url"

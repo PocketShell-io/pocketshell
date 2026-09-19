@@ -18,7 +18,15 @@ import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.StagedAttachment
 import com.pocketshell.next.composer.StagingProgress
 import com.pocketshell.next.composer.updateComposerPreImeExpanded
+import com.pocketshell.next.connect.TRUST_SHEET_TAG
+import com.pocketshell.next.connect.TrustPromptState
+import com.pocketshell.next.files.InlineSpan
+import com.pocketshell.next.files.MARKDOWN_VIEW_TAG
+import com.pocketshell.next.files.MarkdownBlock
+import com.pocketshell.next.files.MarkdownParser
+import com.pocketshell.next.files.normalizeUrl
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.ports.PortColumn
 import com.pocketshell.next.settings.AppSettings
 import com.pocketshell.next.settings.SettingsHostRow
 import com.pocketshell.next.settings.terminalTextSizePxFromSp
@@ -43,6 +51,9 @@ import com.pocketshell.next.sync.SyncHostRow
 import com.pocketshell.next.sync.SyncOutcomeDisplay
 import com.pocketshell.next.sync.SyncSignInPhase
 import com.pocketshell.next.sync.syncHostRowTag
+import com.pocketshell.next.usage.USAGE_RESET_BANNER_TAG
+import com.pocketshell.next.usage.UsageResetBannerState
+import com.pocketshell.next.usage.UsageResetEvent
 import java.io.File
 
 /**
@@ -90,6 +101,15 @@ import java.io.File
  * sign-in coordinator's `State`) stay in `AccountSyncViewModel.kt` and are
  * mapped onto the shared display shapes by app2-side adapters — the same
  * service/result seam D3 locked for the release check.
+ *
+ * The #2636 D8 slice added the leftovers families (files markdown model +
+ * parser + renderer, ports table chrome, workspaces session mark, usage reset
+ * banner + its event type, connect trust sheet + its pure state) — all pure
+ * presentation. The trust sheet's transport seam mirrors D3/D4: its state
+ * moved here while the `TrustDecision` factory stayed app2-side as a
+ * `Companion` extension, so `TrustPromptState.from(...)` call sites did not
+ * change; the moved state is marked below and the module keeps a bare
+ * `companion object` for it.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -231,19 +251,35 @@ class UiScreensDependencyBoundaryTest {
             SyncSignInPhase::class to "sealed interface SyncSignInPhase",
             SyncOutcomeDisplay::class to "sealed interface SyncOutcomeDisplay",
             SyncHostRow::class to "data class SyncHostRow",
+            // The D8 family — the leftovers: markdown model/parser/renderer,
+            // port-table chrome, usage reset banner + its event type, the
+            // session mark, and the trust sheet's pure state (whose
+            // `TrustDecision` factory stayed app2-side as a `Companion`
+            // extension, so no `core.transport` import crossed). The moved
+            // composables get no markers and the families' pure tags/urls ride
+            // in movedNonTypeMarkers below, matching D5/D6.
+            TrustPromptState::class to "data class TrustPromptState",
+            MarkdownBlock::class to "sealed interface MarkdownBlock",
+            InlineSpan::class to "sealed interface InlineSpan",
+            MarkdownParser::class to "object MarkdownParser",
+            PortColumn::class to "data class PortColumn",
+            UsageResetBannerState::class to "data class UsageResetBannerState",
+            UsageResetEvent::class to "data class UsageResetEvent",
         )
 
         /**
-         * The D5, D6 and D7 slices also moved top-level consts and functions
-         * (`ComposerBar.kt`'s slash-sheet tags, the IME anchor policy's pure
-         * functions, the settings terminal text-size px↔sp converters,
-         * `AccountSyncScreen.kt`'s sync test tags), which cannot ride in
-         * [movedTypeMarkers] — no `KClass`. Each left-hand reference below is
-         * itself load-bearing: deleting the declaration fails the BUILD on
-         * this import/reference, exactly like a `KClass` reference would.
-         * Moved composable screens get none (matching D5/D6/D7): a composable
-         * function takes no `KFunction` reference, and app2's routes, render
-         * fixtures and tests pin them by importing them.
+         * The D5, D6, D7 and D8 slices also moved top-level consts and
+         * functions (`ComposerBar.kt`'s slash-sheet tags, the IME anchor
+         * policy's pure functions, the settings terminal text-size px↔sp
+         * converters, `AccountSyncScreen.kt`'s sync test tags, the leftovers
+         * families' representative test tags and the URL normaliser), which
+         * cannot ride in [movedTypeMarkers] — no `KClass`. Each left-hand
+         * reference below is itself load-bearing: deleting the declaration
+         * fails the BUILD on this import/reference, exactly like a `KClass`
+         * reference would. Moved composable screens get none (matching
+         * D5/D6/D7/D8): a composable function takes no `KFunction` reference,
+         * and app2's routes, render fixtures and tests pin them by importing
+         * them.
          */
         private val movedNonTypeMarkers: List<Pair<Any, String>> = listOf(
             COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
@@ -268,6 +304,10 @@ class UiScreensDependencyBoundaryTest {
             SYNC_HOSTS_EMPTY_TAG to "const val SYNC_HOSTS_EMPTY_TAG",
             SYNC_LIST_TAG to "const val SYNC_LIST_TAG",
             ::syncHostRowTag to "fun syncHostRowTag",
+            TRUST_SHEET_TAG to "const val TRUST_SHEET_TAG",
+            MARKDOWN_VIEW_TAG to "const val MARKDOWN_VIEW_TAG",
+            USAGE_RESET_BANNER_TAG to "const val USAGE_RESET_BANNER_TAG",
+            ::normalizeUrl to "fun normalizeUrl",
         )
 
         private val movedDeclarations: List<String> =

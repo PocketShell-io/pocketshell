@@ -9,7 +9,12 @@ import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
 
-/** Quiet, monochrome session mark used as metadata beside a readable name. */
+/**
+ * Quiet, monochrome session mark used as metadata beside a readable name.
+ *
+ * Lives in the shared presentation module (#2636 D8) — a pure agent-key to
+ * icon mapping; the workspaces screens/tree that render it stay in app2.
+ */
 @Composable
 fun SessionKindMark(
     agent: String?,

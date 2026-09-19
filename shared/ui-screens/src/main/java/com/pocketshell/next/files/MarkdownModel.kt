@@ -21,14 +21,18 @@ package com.pocketshell.next.files
  *
  * A focused parser keeps the APK lean (zero new deps, no `libs.versions.toml`
  * churn), composes straight into the existing `PocketShellTheme` text styling,
- * and — being pure Kotlin — is unit-tested without an emulator. This matches
- * the module's existing pattern of small in-house helpers (see
- * [FileKindDetector], [RemotePath]). Syntax highlighting inside code blocks is
- * explicitly out of scope; fenced code is shown monospaced verbatim.
+ * and — being pure Kotlin — is unit-tested without an emulator (same spirit as
+ * app2's small in-house helpers `FileKindDetector`/`RemotePath`, which stayed
+ * app2-side). Syntax highlighting inside code blocks is explicitly out of
+ * scope; fenced code is shown monospaced verbatim.
+ *
+ * Lives in the shared presentation module (#2636 D8) — it is the model the
+ * parser and renderer consume, and every remaining caller is in app2, so the
+ * old app2-`internal` visibility became public on the move.
  */
 
 /** A block-level Markdown element. */
-internal sealed interface MarkdownBlock {
+sealed interface MarkdownBlock {
 
     /** `#`..`######` heading. [level] is 1..6; [spans] is the inline content. */
     data class Heading(val level: Int, val spans: List<InlineSpan>) : MarkdownBlock
@@ -87,7 +91,7 @@ internal sealed interface MarkdownBlock {
 }
 
 /** An inline-level Markdown run. */
-internal sealed interface InlineSpan {
+sealed interface InlineSpan {
 
     /** Plain text with optional emphasis. */
     data class Text(
