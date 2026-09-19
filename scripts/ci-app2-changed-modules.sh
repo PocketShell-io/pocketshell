@@ -48,6 +48,35 @@
 # gate. The next fixture input added from elsewhere in the repo reddens here
 # instead of silently under-selecting.
 #
+# APP2-ONLY DEPENDENCY EDGES (issue #2824)
+# app2 compiles against shared modules that no core lane owns — ui-kit,
+# ui-screens, core-storage, core-terminal, core-voice, core-usage. Until #2824
+# they appeared in neither list, so a commit touching only one of them selected
+# ZERO lanes: the app2-journey emulator lane (the D36 full-suite signal and the
+# D37 fault/release verdict) SKIPPED while the run still reported success. They
+# are edges onto the app2 lane alone, not SHARED_PREFIXES: none of them reaches
+# core-hostapi/core-transport/core-portfwd, so fanning all four lanes out would
+# over-select. shared/test-support/ IS a shared prefix instead — the core
+# lanes' own tests compile against it too.
+#
+# core-hostapi is the same edge with a different shape: it OWNS a lane
+# (MODULE_DIRS[0]) and app2 also compiles against it (app2/build.gradle.kts:468,
+# added by 2df828cb8), so the edge is written against the lane hit rather than
+# against APP2_DEP_DIRS. It was missed for the same reason the six above were:
+# nothing derived the edge list from app2's real dependencies.
+#
+# That list is likewise not one anyone has to remember, and the guard that keeps
+# it honest derives from LANE SELECTION, not from membership of a list:
+# --self-test parses every project(":shared:...") dependency out of
+# app2/build.gradle.kts and, for each one, drives this very script over a
+# synthetic one-file diff under that module and requires app2=true. The weaker
+# predicate ("is the module NAMED by some lane rule") is what hid core-hostapi
+# for two weeks — it is in MODULE_DIRS, so a membership test reads it as
+# covered, while the lane it selects was hostapi and not app2. The next module
+# #2636 extracts out of app2/src reddens here instead of silently deselecting
+# the journey lane, and so does any future dependency on a module some other
+# lane already names.
+#
 # USAGE
 #   ci-app2-changed-modules.sh --base <sha|ref>      # push: github.event.before
 #   ci-app2-changed-modules.sh --base ""             # unknown -> everything
@@ -92,6 +121,26 @@ declare -a SHARED_PREFIXES=(
   # fail-opens every lane instead of starting a run whose every job deselects
   # itself (the runner path is not under app2/).
   "scripts/ci-app2-journey-suite.sh"
+  # Issue #2824: shared/test-support is a test dependency of app2 AND of
+  # core-transport, core-portfwd, core-storage, core-terminal and core-voice, so
+  # a change to it can redden any lane's tests -> it belongs here, not on the
+  # app2-only edge list below.
+  "shared/test-support/"
+)
+
+# Shared modules app2 compiles against that no lane of its own covers: each is a
+# dependency edge onto the app2 lane (issue #2824). A module that DOES own a
+# lane (core-hostapi, core-transport, core-portfwd) is not listed here — its
+# edge is written against the lane hit in plan() instead. Kept honest by
+# --self-test's app2-dependency drift guard, which derives from the lane
+# selection this script actually produces, so neither form can go stale.
+declare -a APP2_DEP_DIRS=(
+  "shared/ui-kit"
+  "shared/ui-screens"
+  "shared/core-storage"
+  "shared/core-terminal"
+  "shared/core-voice"
+  "shared/core-usage"
 )
 
 # True when <path> is at or under any of the remaining arguments (prefix list).
@@ -204,6 +253,87 @@ check_fixture_copy_sources_covered() {
   return $rc
 }
 
+# Issue #2824 — the anti-drift half of the app2 dependency-edge rule.
+#
+# Prints, one per line, every `shared/<module>` directory app2/build.gradle.kts
+# declares a project dependency on, in any configuration (implementation,
+# testImplementation, androidTestImplementation, testFixtures). `//` comments
+# are stripped first so a commented-out example cannot invent an edge, and a
+# file that yields NO shared dependency at all is a hard failure rather than a
+# silent pass — an unparsed build script is exactly the invisible input this
+# guard exists to stop.
+app2_shared_project_deps() {
+  local root="$1"
+  local f="$root/app2/build.gradle.kts"
+  if [[ ! -f "$f" ]]; then
+    echo "app2_shared_project_deps: no '${f}'" >&2
+    return 2
+  fi
+  local deps
+  deps="$(sed 's://.*::' "$f" |
+    grep -oE 'project\("?:shared:[A-Za-z0-9_.-]+"?\)' |
+    sed -E 's/.*:shared:([A-Za-z0-9_.-]+).*/shared\/\1/' |
+    sort -u)"
+  if [[ -z "$deps" ]]; then
+    echo "app2_shared_project_deps: parsed no project(\":shared:...\") out of '${f}'" >&2
+    return 2
+  fi
+  printf '%s\n' "$deps"
+}
+
+# Fails (rc 1) when a shared module app2 depends on does NOT select the app2
+# lane. rc 2 means the build script could not be read/parsed, or the scratch
+# repo could not be built — never a silent pass.
+#
+# THE PREDICATE IS LANE SELECTION, NOT LIST MEMBERSHIP. The first form of this
+# guard asked "is this module NAMED by MODULE_DIRS / SHARED_PREFIXES /
+# APP2_DEP_DIRS", which is strictly weaker, and the gap between the two is
+# where shared/core-hostapi hid: it is MODULE_DIRS[0], so a membership test
+# read it as covered, while MODULE_DIRS[0] selects the HOSTAPI lane and no edge
+# carried it to app2. Driving the real selector over a synthetic one-file diff
+# under each dependency closes that gap by construction — the guard asserts the
+# property the lane rules exist to provide, so it cannot be satisfied by a rule
+# that names a module without selecting app2 for it.
+#
+#   <root>     tree whose app2/build.gradle.kts is parsed for dependencies
+#   <selector> the selector script to drive (this file, or a mutant of it in
+#              the self-test's own liveness arm)
+#   <scratch>  an empty directory the caller owns; a throwaway git repo is
+#              built here and left for the caller to clean up
+check_app2_deps_select_app2() {
+  local root="$1" selector="$2" scratch="$3"
+  local deps dep base out rc=0
+  deps="$(app2_shared_project_deps "$root")" || return 2
+  if ! mkdir -p "$scratch" || ! git -C "$scratch" init -q 2>/dev/null; then
+    echo "check_app2_deps_select_app2: cannot build scratch repo at '${scratch}'" >&2
+    return 2
+  fi
+  git -C "$scratch" config user.email t@example.com
+  git -C "$scratch" config user.name t
+  echo seed >"$scratch/seed.txt"
+  git -C "$scratch" add -A
+  git -C "$scratch" commit -qm seed
+  if ! base="$(git -C "$scratch" rev-parse HEAD 2>/dev/null)"; then
+    echo "check_app2_deps_select_app2: no seed commit in '${scratch}'" >&2
+    return 2
+  fi
+  while IFS= read -r dep; do
+    [[ -z "$dep" ]] && continue
+    git -C "$scratch" reset -q --hard "$base"
+    mkdir -p "$scratch/$dep/src/main"
+    date +%s%N >"$scratch/$dep/src/main/DriftProbe.kt"
+    git -C "$scratch" add -A
+    git -C "$scratch" commit -qm "probe $dep"
+    out="$(cd "$scratch" && env -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY bash "$selector" --base "$base" 2>/dev/null)"
+    if ! grep -qx 'app2=true' <<<"$out"; then
+      echo "app2 depends on '${dep}' but a diff touching only that module does NOT select the app2 lane (selector emitted: $(tr '\n' ' ' <<<"$out")) -> app2-unit and app2-journey would skip while a break in that module can redden app2 (issue #2824)" >&2
+      rc=1
+    fi
+  done <<<"$deps"
+  git -C "$scratch" reset -q --hard "$base"
+  return $rc
+}
+
 emit() {
   # emit <hostapi> <transport> <portfwd> <app2>
   local out
@@ -253,12 +383,17 @@ plan() {
   done <<<"$changed"
 
   local -a hit=(false false false false)
-  local i
+  local i dep app2_dep_hit=false
   while IFS= read -r path; do
     [[ -z "$path" ]] && continue
     for i in 0 1 2 3; do
       if [[ "$path" == "${MODULE_DIRS[i]}/"* ]]; then
         hit[i]=true
+      fi
+    done
+    for dep in "${APP2_DEP_DIRS[@]}"; do
+      if [[ "$path" == "$dep/"* ]]; then
+        app2_dep_hit=true
       fi
     done
   done <<<"$changed"
@@ -272,7 +407,23 @@ plan() {
   #     its TrustStore / AuthSecretResolver seams)
   #   core-portfwd   -> app2         (task P-4: the ports package drives the
   #     forwarder and supervisor directly)
-  # app2 does NOT depend on core-hostapi yet; add the same edge when it does.
+  #   shared/ui-kit, shared/ui-screens, shared/core-storage,
+  #   shared/core-terminal, shared/core-voice, shared/core-usage -> app2
+  #     (issue #2824: app2/build.gradle.kts compiles against all six; none of
+  #     them reaches a core lane, so the edge lands on app2 only)
+  #   core-hostapi -> app2           (issue #2824:
+  #     app2/build.gradle.kts:468 `implementation(project(":shared:core-hostapi"))`,
+  #     added by 2df828cb8; the session tree, session switcher, create-session
+  #     sheet and MainActivity all compile against it. This edge is written
+  #     against the lane hit, not APP2_DEP_DIRS, because core-hostapi owns a
+  #     lane of its own — which is exactly why the membership-shaped drift
+  #     guard used to read it as covered while it selected only hostapi.)
+  if [[ "$app2_dep_hit" == "true" ]]; then
+    hit[3]=true
+  fi
+  if [[ "${hit[0]}" == "true" ]]; then
+    hit[3]=true
+  fi
   if [[ "${hit[1]}" == "true" ]]; then
     hit[2]=true
     hit[3]=true
@@ -294,7 +445,8 @@ self_test() {
   git -C "$tmp" config user.email t@example.com
   git -C "$tmp" config user.name t
   mkdir -p "$tmp/shared/core-hostapi" "$tmp/shared/core-transport" \
-    "$tmp/shared/core-portfwd" "$tmp/app2" "$tmp/gradle" "$tmp/shared/ui-kit"
+    "$tmp/shared/core-portfwd" "$tmp/app2" "$tmp/gradle" "$tmp/shared/ui-kit" \
+    "$tmp/shared/ui-screens"
   echo seed >"$tmp/seed.txt"
   git -C "$tmp" add -A
   git -C "$tmp" commit -qm seed
@@ -324,8 +476,15 @@ self_test() {
     git -C "$tmp" commit -qm "touch $rel"
   }
 
+  # app2 rides along: app2/build.gradle.kts:468 declares
+  # implementation(project(":shared:core-hostapi")) (added by 2df828cb8), and
+  # the session tree / switcher / create-session sheet / MainActivity compile
+  # against it. This arm asserted `false` for the app2 column from f0996c079
+  # until issue #2824 — it pinned the under-selection as intended behaviour and
+  # proved it green on every run of the workflow's self-test step, exactly like
+  # the "unrelated module" arm the issue body indicts.
   commit_file "shared/core-hostapi/src/main/A.kt"
-  check "hostapi only" true false false false
+  check "hostapi pulls app2 in (#2824, app2/build.gradle.kts:468)" true false false true
 
   git -C "$tmp" reset -q --hard "$base"
   commit_file "shared/core-transport/src/main/B.kt"
@@ -341,9 +500,60 @@ self_test() {
   commit_file "app2/src/main/C.kt"
   check "app2 only" false false false true
 
+  # Issue #2824. These six arms used to be a single "unrelated module" case
+  # asserting that a shared/ui-kit commit selects NOTHING — the selector pinned
+  # the under-selection as intended behaviour and proved it green on every run
+  # of the workflow's self-test step. app2 compiles against all six modules, so
+  # each one is an edge onto the app2 lane and onto no other.
   git -C "$tmp" reset -q --hard "$base"
   commit_file "shared/ui-kit/src/main/D.kt"
-  check "unrelated module" false false false false
+  check "ui-kit pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/ui-screens/src/main/E.kt"
+  check "ui-screens pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/ui-kit/src/main/D.kt"
+  commit_file "shared/ui-screens/src/main/E.kt"
+  check "ui-kit + ui-screens together pull app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-storage/src/main/S.kt"
+  check "core-storage pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-terminal/src/main/T.kt"
+  check "core-terminal pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-voice/src/main/V.kt"
+  check "core-voice pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-usage/src/main/U.kt"
+  check "core-usage pulls app2 in (#2824)" false false false true
+
+  # ...and the app2 edge is an edge, not a blanket "anything under shared/".
+  # core-assistant is in settings.gradle.kts but app2/build.gradle.kts declares
+  # no dependency on it, so it must still deselect every lane. The dependency
+  # drift guard below is what flips this arm the day that stops being true.
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-assistant/src/main/A2.kt"
+  check "a shared module app2 does NOT depend on selects nothing" false false false false
+
+  # shared/test-support is a test dependency of app2 AND of the core modules, so
+  # unlike the six above it fans every lane out (issue #2824).
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/test-support/src/main/TS.kt"
+  check "test-support (shared)" true true true true
+
+  # The retained negative: a genuinely unrelated path still deselects every
+  # lane. Without it the positive arms above could be satisfied by a selector
+  # that had simply stopped being able to say no (acceptance criterion 3).
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "docs/architecture.md"
+  check "a docs-only change selects nothing" false false false false
 
   git -C "$tmp" reset -q --hard "$base"
   commit_file "gradle/libs.versions.toml"
@@ -443,6 +653,107 @@ self_test() {
     status=1
   fi
 
+  # Issue #2824 — the app2 dependency-edge anti-drift property, asserted against
+  # the REAL tree and in its STRONG form: every shared module
+  # app2/build.gradle.kts declares a project dependency on must make THIS
+  # selector emit app2=true for a diff touching only that module. This is what
+  # stops the edge rules going stale as #2636 keeps extracting app2 presentation
+  # into new shared modules.
+  checks=$((checks + 1))
+  if check_app2_deps_select_app2 "$REPO_ROOT" "$SELF" "$tmp/dep-real"; then
+    echo "ok   [every shared module app2 depends on selects the app2 lane]"
+  else
+    echo "FAIL [an app2 shared dependency does not select the app2 lane] (see above)" >&2
+    status=1
+  fi
+
+  # ...and the guard's predicate is SELECTION, not membership of a lane list.
+  # That distinction is the whole finding: shared/core-hostapi under-selected
+  # from 2df828cb8 until this change while the first form of this guard — "is
+  # the module NAMED by MODULE_DIRS / SHARED_PREFIXES / APP2_DEP_DIRS" — read it
+  # as covered, because it is MODULE_DIRS[0] and MODULE_DIRS[0] selects the
+  # HOSTAPI lane. Two halves prove the strong form is in force:
+  #
+  #   (a) core-hostapi IS named by a lane rule, so a membership predicate passes
+  #       it -- i.e. the two predicates genuinely differ here;
+  #   (b) a mutant selector with the core-hostapi -> app2 edge disabled is still
+  #       caught, because the guard asks which lane the selector actually picks.
+  #
+  # (a) alone would not discriminate the weak form from the strong; (b) alone
+  # would be a liveness arm that cannot say WHICH predicate is live. Together
+  # they pin it. A guard that cannot fail is decoration (G6).
+  checks=$((checks + 2))
+  local -a module_prefixes=()
+  for prefix in "${MODULE_DIRS[@]}"; do module_prefixes+=("$prefix/"); done
+  if matches_any_prefix "shared/core-hostapi/" "${module_prefixes[@]}"; then
+    echo "ok   [core-hostapi is named by a lane rule, so a membership predicate would pass it]"
+  else
+    echo "FAIL [core-hostapi is not in MODULE_DIRS any more: the anti-blindness arm below no longer discriminates the two predicates]" >&2
+    status=1
+  fi
+
+  mkdir -p "$tmp/blind"
+  # shellcheck disable=SC2016 # the ${hit[0]} here is literal SOURCE TEXT being matched in a copy of this file, not an expansion.
+  sed 's/"${hit\[0\]}" == "true"/"${hit[0]}" == "edge-disabled-by-self-test"/' \
+    "$SELF" >"$tmp/blind/selector.sh"
+  if cmp -s "$SELF" "$tmp/blind/selector.sh"; then
+    # The mutation did not apply, so a green result below would prove nothing —
+    # a silent no-op mutant is the classic way a liveness arm goes vacuous.
+    echo "FAIL [anti-blindness mutant is byte-identical to the selector: the core-hostapi -> app2 edge no longer matches the mutation anchor]" >&2
+    status=1
+  else
+    check_app2_deps_select_app2 "$REPO_ROOT" "$tmp/blind/selector.sh" "$tmp/dep-blind" 2>/dev/null
+    grc=$?
+    if [[ $grc -eq 1 ]]; then
+      echo "ok   [the guard reddens for a selector that NAMES core-hostapi but does not select app2 for it]"
+    else
+      echo "FAIL [guard passed a selector with the core-hostapi -> app2 edge disabled: rc=$grc -- it is testing membership, not selection]" >&2
+      status=1
+    fi
+  fi
+
+  # ...and a NEW shared module added to app2/build.gradle.kts reddens too — the
+  # literal #2636 drift scenario, on a synthetic tree so it stays true whatever
+  # the real build script currently declares.
+  mkdir -p "$tmp/dep-drift/app2"
+  printf 'dependencies {\n    implementation(project(":shared:ui-motion"))\n}\n' \
+    >"$tmp/dep-drift/app2/build.gradle.kts"
+  checks=$((checks + 1))
+  check_app2_deps_select_app2 "$tmp/dep-drift" "$SELF" "$tmp/dep-drift-repo" 2>/dev/null
+  grc=$?
+  if [[ $grc -eq 1 ]]; then
+    echo "ok   [a NEW shared module app2 depends on reddens the dependency guard]"
+  else
+    echo "FAIL [drift of a new app2 shared dependency went undetected: rc=$grc]" >&2
+    status=1
+  fi
+
+  # ...and an unreadable/unparseable build script is rc 2 (hard failure), never
+  # a silent pass: the guard must not go quiet when its input disappears.
+  mkdir -p "$tmp/dep-empty/app2"
+  printf 'dependencies {\n    // implementation(project(":shared:ui-kit"))\n}\n' \
+    >"$tmp/dep-empty/app2/build.gradle.kts"
+  checks=$((checks + 2))
+  check_app2_deps_select_app2 "$tmp/dep-empty" "$SELF" "$tmp/dep-empty-repo" 2>/dev/null
+  grc=$?
+  if [[ $grc -eq 2 ]]; then
+    echo "ok   [a build script with no parseable shared dependency is rc 2, not a pass]"
+  else
+    echo "FAIL [unparseable app2 build script did not hard-fail: rc=$grc]" >&2
+    status=1
+  fi
+  # "$tmp/dep-missing" is DELIBERATELY never created — this arm asserts that a
+  # vanished app2/build.gradle.kts hard-fails instead of passing quietly. Do not
+  # add a mkdir for it: creating the path turns the arm into a silent pass.
+  check_app2_deps_select_app2 "$tmp/dep-missing" "$SELF" "$tmp/dep-missing-repo" 2>/dev/null
+  grc=$?
+  if [[ $grc -eq 2 ]]; then
+    echo "ok   [a missing app2 build script is rc 2, not a pass]"
+  else
+    echo "FAIL [missing app2 build script did not hard-fail: rc=$grc]" >&2
+    status=1
+  fi
+
   # Fail-open: an unusable base selects everything.
   checks=$((checks + 3))
   out="$(cd "$tmp" && env -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY bash "$SELF" --base "$ZERO" 2>/dev/null)"
@@ -472,9 +783,17 @@ self_test() {
   # Bumped 13 -> 14 by issue #2474's journey-runner case, 14 -> 20 by issue
   # #2592's fixture-input diff cases plus the three COPY-source drift-guard
   # checks; the #2592 CLI-tree cases were re-pointed to the fixture pins file
-  # and image definition by issue #2643.
-  if [[ $checks -ne 20 ]]; then
-    echo "FAIL: expected 20 checks, ran $checks" >&2
+  # and image definition by issue #2643. 20 -> 35 by issue #2824: nine added diff
+  # cases for the app2-only dependency edges (five new positives plus the
+  # repurposed ui-kit arm, the ui-kit + ui-screens pair, the core-assistant
+  # discriminator, test-support, and the docs-only negative) plus six
+  # app2-dependency drift-guard checks (the real-tree selection assertion, the
+  # two anti-blindness halves, the new-module drift case, and the two rc-2
+  # hard-failure cases). The core-hostapi arm was REPURPOSED, not added — it
+  # already existed asserting app2=false, which is the defect it now pins shut —
+  # so it moves no count.
+  if [[ $checks -ne 35 ]]; then
+    echo "FAIL: expected 35 checks, ran $checks" >&2
     status=1
   fi
 
