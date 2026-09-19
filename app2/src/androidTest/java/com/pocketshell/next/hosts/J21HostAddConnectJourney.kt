@@ -1,6 +1,7 @@
 package com.pocketshell.next.hosts
 
 import android.os.SystemClock
+import android.view.inputmethod.InputMethodManager
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -11,7 +12,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
-import androidx.test.espresso.Espresso
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pocketshell.core.storage.entity.SshKeyEntity
@@ -24,6 +24,9 @@ import com.pocketshell.next.connect.TRUST_SHEET_PREVIOUS_FINGERPRINT_TAG
 import com.pocketshell.next.connect.TRUST_SHEET_TRUST_TAG
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitImeViewportAck
+import com.pocketshell.next.connect.awaitWindowFocus
+import com.pocketshell.next.connect.imeInsetBottom
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_EMPTY_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ERROR_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_LIST_TAG
@@ -34,7 +37,6 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
-import org.junit.Ignore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -136,9 +138,14 @@ class J21HostAddConnectJourney {
      * trust prompt with the real fingerprint → workspaces.
      */
     @Test
-    @Ignore("quarantined: #2776, expires 2026-10-02 — RootViewPicker: root never had window focus + no layout settle for 10 s on the hosted runner (run 35335062619 attempt 1, head 2a35f3f2e); green on the same-commit deciding rerun — focus/resize-settle flake family, bisect clean")
     fun addingAHostThroughTheRealFormSavesAndConnectsForTheFirstTime() {
         awaitTag(HOST_LIST_ADD_TAG)
+        // Focus-settle oracle (#2781): the window must actually HAVE focus
+        // before the journey interacts. Espresso's RootViewPicker blind-waits
+        // for exactly this precondition and threw RootViewWithoutFocusException
+        // after a 10 s hopeless wait on the hosted runner (run 35335062619
+        // attempt 1, #2776) — here it is observed instead of hoped for.
+        compose.awaitWindowFocus("the hosts list after launch", TIMEOUT_MS)
         capture("01-empty-host-list")
 
         compose.onNodeWithTag(HOST_LIST_ADD_TAG).performClick()
@@ -166,9 +173,9 @@ class J21HostAddConnectJourney {
         typeInto(HOST_FORM_NAME_TAG, HOST_NAME)
         typeInto(HOST_FORM_HOSTNAME_TAG, AgentsFixture.host)
         typeInto(HOST_FORM_USERNAME_TAG, AgentsFixture.USER)
-        Espresso.closeSoftKeyboard()
+        hideSoftKeyboard()
         typeInto(HOST_FORM_PORT_TAG, AgentsFixture.port.toString(), replace = true)
-        Espresso.closeSoftKeyboard()
+        hideSoftKeyboard()
 
         // Pick the seeded fixture key through the real dropdown.
         compose.onNodeWithText(CHOOSE_LABEL).performClick()
@@ -244,6 +251,38 @@ class J21HostAddConnectJourney {
     }
 
     // --- helpers ----------------------------------------------------------
+
+    /**
+     * Closes the soft keyboard without Espresso — the J21 red of run
+     * 35335062619 attempt 1 (#2776) was thrown by Espresso's RootViewPicker,
+     * which blind-waits 10 s for "window focus + no pending layout" and gives
+     * up on a contended emulator. The same two preconditions, observed
+     * instead of hoped for (#2781): [awaitWindowFocus] first, then the IME
+     * inset must read 0 and the window layout must hold stable across two
+     * consecutive frames ([awaitImeViewportAck] on the decor view — the
+     * keyboard overlays it under `ADJUST_NOTHING`, so "stable" here means
+     * "no layout churn left"). A no-op when no keyboard is up; a loud,
+     * settle-point-naming failure when one that is up refuses to go down.
+     */
+    private fun hideSoftKeyboard() {
+        compose.awaitWindowFocus(
+            "closing the soft keyboard before the next form field",
+            TIMEOUT_MS,
+        )
+        if (compose.imeInsetBottom() <= 0) return
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        instrumentation.runOnMainSync {
+            val decorView = compose.activity.window.decorView
+            decorView.context.getSystemService(InputMethodManager::class.java)
+                ?.hideSoftInputFromWindow(decorView.windowToken, 0)
+        }
+        compose.awaitImeViewportAck(
+            what = "the soft keyboard hiding",
+            imeVisible = false,
+            timeoutMs = TIMEOUT_MS,
+            view = { compose.activity.window.decorView },
+        )
+    }
 
     /**
      * Click-to-focus, then type (J19's proven idiom). [replace] is for the

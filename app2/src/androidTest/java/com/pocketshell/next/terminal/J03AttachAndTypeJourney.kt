@@ -17,8 +17,6 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pocketshell.core.storage.entity.HostEntity
@@ -30,6 +28,9 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitImeViewportAck
+import com.pocketshell.next.connect.awaitViewSizeStable
+import com.pocketshell.next.connect.imeInsetBottom
 import com.pocketshell.next.connect.openQuietSession
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.connect.idleWedgeNote
@@ -59,7 +60,6 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
-import org.junit.Ignore
 import org.junit.Test
 import org.junit.rules.RuleChain
 import org.junit.runner.Description
@@ -343,7 +343,6 @@ class J03AttachAndTypeJourney {
      * the size at all (#887/#2533).
      */
     @Test
-    @Ignore("quarantined: #2776, expires 2026-10-02 — keyboard down: phone and host never agreed on a terminal size within 60000 ms (last host pane=63x50), run 35335062619 attempt 1 on 2a35f3f2e; same-commit rerun green — #1932 harness-timing settle family, bisect clean")
     fun theRemoteTerminalSizeTracksTheKeyboardAndRotation() {
         openSession()
         awaitTranscript("the fixture's banner line") { it.contains(BANNER) }
@@ -949,12 +948,19 @@ class J03AttachAndTypeJourney {
     /**
      * Waits for a FRESH `stty size` reply — a bare `rows cols` line rendered
      * BELOW [sentinel], the marker this attempt's own probe printed — to say
-     * [host], giving up as soon as the host's own pane size stops being
-     * [host].
+     * [host], giving up as soon as the host's own pane size is observably
+     * DIFFERENT from [host].
      *
      * The early give-up is the point: once the pane has moved, no reply to the
      * command just typed can ever match, so waiting out the clock only turns a
-     * recoverable situation into a timeout.
+     * recoverable situation into a timeout. But only a pane that provably
+     * moved is that signal (#2781): [hostPaneSize] returns null when its own
+     * probe could not be read at all — the interleaved `a send`/`a capture`
+     * round trip lagging on a contended emulator, not a resize — and treating
+     * that as "moved" abandoned every attempt of the J03 red of run
+     * 35335062619 (#2776) in ~10 s each, six times over, while both ends sat
+     * agreed on 63x50 the whole minute. A null read keeps polling; only a
+     * non-null read that disagrees gives up.
      */
     private fun awaitSizeReply(host: RemoteSize, sentinel: String): Boolean {
         val expected = "${host.rows} ${host.cols}"
@@ -964,7 +970,8 @@ class J03AttachAndTypeJourney {
             compose.awaitIdle("stty reply poll")
             if (freshSizeReply(sentinel) == expected) return true
             if (SystemClock.elapsedRealtime() >= nextHostCheck) {
-                if (hostPaneSize() != host) return false
+                val current = hostPaneSize()
+                if (current != null && current != host) return false
                 nextHostCheck = SystemClock.elapsedRealtime() + SIZE_SETTLE_MS
             }
             SystemClock.sleep(POLL_MS)
@@ -981,7 +988,7 @@ class J03AttachAndTypeJourney {
      * for the common case of "still where we left it".
      */
     private fun ensureKeyboard(visible: Boolean) {
-        if (imeInsetBottom() > 0 == visible) return
+        if (compose.imeInsetBottom() > 0 == visible) return
         if (visible) showKeyboard() else hideKeyboard()
     }
 
@@ -1050,7 +1057,7 @@ class J03AttachAndTypeJourney {
         return lines.drop(anchor + 1).lastOrNull { STTY_SIZE_LINE.matches(it) }
     }
 
-    /** Raises the soft keyboard on the terminal and waits for the inset to appear. */
+    /** Raises the soft keyboard on the terminal and waits for the settled viewport ack. */
     private fun showKeyboard() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         focusTerminal()
@@ -1059,7 +1066,7 @@ class J03AttachAndTypeJourney {
             val manager = view.context.getSystemService(InputMethodManager::class.java)
             manager?.showSoftInput(view, InputMethodManager.SHOW_IMPLICIT)
         }
-        awaitImeInset(visible = true)
+        awaitImeViewportSettled("the keyboard raising", visible = true)
     }
 
     private fun hideKeyboard() {
@@ -1069,46 +1076,34 @@ class J03AttachAndTypeJourney {
             val manager = view.context.getSystemService(InputMethodManager::class.java)
             manager?.hideSoftInputFromWindow(view.windowToken, 0)
         }
-        awaitImeInset(visible = false)
+        awaitImeViewportSettled("the keyboard hiding", visible = false)
     }
 
     /**
-     * Waits for the framework's own IME inset to reach the expected state.
+     * Waits for the framework's own IME inset to reach the expected state AND
+     * the terminal view to acknowledge the settled viewport.
      *
      * The inset — not a screenshot, not `isActive()` — because it is the
      * quantity that would have shrunk the terminal when the session column
      * still had `imePadding()`. If it never appears, asserting "rows
      * unchanged with the keyboard up" (#887/#2533) would be vacuous. If it
      * never does, the test says so instead of quietly asserting a no-op.
+     *
+     * The settle itself is observed, not slept out (#2781):
+     * [awaitImeViewportAck] additionally requires the [TerminalView]'s size
+     * to hold stable across two consecutive frame-gated reads — the resize
+     * path's acknowledgement that the transition has finished — replacing the
+     * old fixed IME_SETTLE_MS wait whose fixed 1500 ms is exactly the
+     * wall-clock window the J03 red of run 35335062619 attempt 1 (#2776)
+     * fell over.
      */
-    /** The framework's own IME inset, in pixels. 0 when the keyboard is down. */
-    private fun imeInsetBottom(): Int {
-        compose.awaitIdle("before reading the IME inset")
-        return compose.runOnUiThread {
-            ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
-                ?.getInsets(WindowInsetsCompat.Type.ime())
-                ?.bottom
-                ?: 0
-        }
-    }
-
-    private fun awaitImeInset(visible: Boolean) {
-        val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
-        var bottom = -1
-        while (SystemClock.elapsedRealtime() < deadline) {
-            bottom = imeInsetBottom()
-            if ((bottom > 0) == visible) {
-                // Let the inset animation finish before anything measures.
-                SystemClock.sleep(IME_SETTLE_MS)
-                return
-            }
-            SystemClock.sleep(POLL_MS)
-        }
-        val shot = capture("failure-ime-${visible}")
-        throw AssertionError(
-            "the keyboard never became ${if (visible) "visible" else "hidden"} " +
-                "(ime inset bottom=$bottom). Screenshot: ${shot.absolutePath}" +
-                compose.idleWedgeNote(),
+    private fun awaitImeViewportSettled(what: String, visible: Boolean) {
+        compose.awaitImeViewportAck(
+            what = what,
+            imeVisible = visible,
+            timeoutMs = TIMEOUT_MS,
+            view = { terminalView() },
+            capture = { name -> capture(name) },
         )
     }
 
@@ -1159,7 +1154,17 @@ class J03AttachAndTypeJourney {
                 }
             }
             if (laidOut) {
-                SystemClock.sleep(IME_SETTLE_MS)
+                // The settle is observed, not slept out (#2781): the rebuilt
+                // view's size must hold stable across two consecutive
+                // frame-gated reads — the recreation's relayout waves (inset
+                // re-application, the renderer's first pass) have actually
+                // finished — replacing the old fixed IME_SETTLE_MS wait.
+                compose.awaitViewSizeStable(
+                    "the terminal settling $want",
+                    timeoutMs = TIMEOUT_MS,
+                    view = { terminalView() },
+                    capture = { name -> capture(name) },
+                )
                 return
             }
             SystemClock.sleep(POLL_MS)
@@ -1259,13 +1264,6 @@ class J03AttachAndTypeJourney {
     private companion object {
         const val TIMEOUT_MS = 60_000L
         const val POLL_MS = 250L
-
-        /**
-         * How long an inset/rotation animation is given to finish before
-         * anything measures. A frame grabbed mid-animation reports a viewport
-         * neither the old nor the new size.
-         */
-        const val IME_SETTLE_MS = 1_500L
 
         /** Gap between the two agreeing reads that count as a settled size. */
         const val SIZE_SETTLE_MS = 500L
