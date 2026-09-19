@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
+import com.pocketshell.uikit.theme.PocketShellSpacing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -85,7 +86,9 @@ internal fun ComposerDragHandle(modifier: Modifier = Modifier) {
 internal val ComposerDragHandleBlockHeight: Dp
     get() = ComposerDragHandleVerticalPadding * 2 + ComposerDragHandleBarHeight
 
-internal val ComposerDragHandleVerticalPadding = 9.dp
+// The 8dp `sm` rung (#2812: was a freehand 9dp, which put the handle block
+// on an odd 22dp instead of the grid's 20dp).
+internal val ComposerDragHandleVerticalPadding = PocketShellSpacing.sm
 internal val ComposerDragHandleBarWidth = 32.dp
 internal val ComposerDragHandleBarHeight = 4.dp
 

@@ -8,9 +8,21 @@ import androidx.compose.ui.unit.dp
  * The single source of truth for the rung values is
  * `docs/design-kit/design-system/tokens.json` (`space` block) — edit there
  * first, then mirror here; `QuietThemeTokenTest` fails when the two drift
- * apart (#2717). Call sites should reach for these named rungs instead of
- * freehand `.dp` literals so the 4 dp grid stays enforced; if a padding/gap/margin
- * value doesn't land on a rung, it's a bug or scope creep (§3).
+ * apart (#2717). Call sites reach for these named rungs instead of freehand
+ * `.dp` literals, and since #2812 that is enforced rather than merely asked
+ * for: every padding, gap and margin under `app2/src/main`,
+ * `shared/ui-kit/src/main` and `shared/ui-screens/src/main` must land on a
+ * rung, and `TokenLiteralGuardTest` fails the ui-kit JVM gate when one does
+ * not. Before #2812 this paragraph was the whole enforcement: the #2635 audit
+ * counted ~58 off-grid literals living under it at `1caa29c1b`, 47 of which were
+ * still in the guard's scope at `9424a3900`.
+ *
+ * The grid governs *layout spacing*: the distance between elements. It does
+ * not govern hairlines (1 dp borders), corner radii (the `radius` ladder —
+ * `scripts/check-design-tokens.sh`), or component geometry (stroke widths,
+ * glyph boxes, drawn instruments, key-cap boxes). Those are allowlisted
+ * one-by-one in `TokenLiteralGuardTest`, each row carrying the reason it is
+ * not spacing.
  *
  * The scale follows the Quiet design kit. Row and touch dimensions live in
  * [PocketShellDensity] so spacing and hit targets cannot drift independently.
@@ -101,10 +113,33 @@ object PocketShellDensity {
      */
     val screenGutter = 20.dp
 
-    /** 6 dp — chip vertical padding. */
+    /**
+     * 6 dp — chip vertical paint. A deliberate off-grid exception (#2812).
+     *
+     * A chip is the smallest labelled surface in the app, and 6 dp around an
+     * 11-13 sp label's line box draws a 28-30 dp chip: recognisably a chip,
+     * between the 24 dp badge and the 32 dp-plus row. Both neighbouring rungs
+     * break that — 4 dp draws a 24-26 dp chip indistinguishable from a badge,
+     * 8 dp a 32-34 dp one that crowds every dense row it sits in. The 4 dp grid
+     * governs the gaps *between* elements; this is a component's own paint.
+     *
+     * Enforced as an exception rather than left as an oversight:
+     * `TokenLiteralGuardTest` allowlists exactly this declaration, so a second
+     * off-grid chip value cannot appear without a reason of its own. Touch is
+     * unaffected either way — the 48 dp floor is [tapTargetMin]'s job, never
+     * this paint's (see the class KDoc).
+     */
     val chipPadV = 6.dp
 
-    /** 10 dp — chip horizontal padding. */
+    /**
+     * 10 dp — chip horizontal paint. The same deliberate off-grid exception as
+     * [chipPadV] (#2812).
+     *
+     * Wider than the vertical paint on purpose, so a one- or two-glyph label
+     * (`2`, `^C`) still reads as a chip instead of a square. The rungs either
+     * side put it flush with the label (8 dp) or as wide as a row's own `md`
+     * inset (12 dp).
+     */
     val chipPadH = 10.dp
 
     /** 24 dp — separation between independent sections (the retired 32 dp rung's replacement). */

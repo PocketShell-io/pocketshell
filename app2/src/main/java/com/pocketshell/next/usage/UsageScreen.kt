@@ -415,7 +415,7 @@ private fun UsageWindowRow(
                 fontWeight = FontWeight.Medium,
             )
         }
-        Spacer(modifier = Modifier.height(PocketShellSpacing.xs + 2.dp))
+        Spacer(modifier = Modifier.height(PocketShellSpacing.xs))
         ProgressBar(
             progress = (window.percent / 100.0).toFloat(),
             kind = progressKind(window.percent, record.isBlocked, warnPercent),
@@ -444,7 +444,7 @@ private fun UsageResetFoot(
     val absolute = formatResetAbsolute(window.resetAt, zone)
     val unavailable = if (window.resetAt == null) "Reset time unavailable." else null
     if (primary.isBlank() && absolute == null && unavailable == null) return
-    Column(modifier = Modifier.padding(top = PocketShellSpacing.xs + 2.dp)) {
+    Column(modifier = Modifier.padding(top = PocketShellSpacing.xs)) {
         if (primary.isNotBlank()) {
             Text(
                 text = primary,
@@ -465,7 +465,7 @@ private fun UsageResetFoot(
                 text = unavailable,
                 color = PocketShellColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(top = 3.dp),
+                modifier = Modifier.padding(top = PocketShellSpacing.xs),
             )
         }
     }

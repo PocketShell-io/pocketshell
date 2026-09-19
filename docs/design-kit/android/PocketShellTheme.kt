@@ -99,6 +99,12 @@ object PsTokens {
         fontWeight = FontWeight(400),
         platformStyle = PlatformTextStyle(includeFontPadding = false),
     )
+    val keycapType = TextStyle(
+        fontFamily = FontFamily.Monospace,
+        fontSize = 12.sp, lineHeight = 16.sp,
+        fontWeight = FontWeight(500),
+        platformStyle = PlatformTextStyle(includeFontPadding = false),
+    )
 }
 
 @Composable

@@ -46,7 +46,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pocketshell.next.files.MarkdownParser
 import com.pocketshell.next.files.MarkdownView
 import com.pocketshell.uikit.components.Banner
@@ -66,6 +65,7 @@ import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
+import com.pocketshell.uikit.theme.PocketShellType
 
 /** Stable test tags for the composer surface. */
 const val COMPOSER_TAG: String = "composer"
@@ -782,7 +782,7 @@ private fun InsertButton(
         Text(
             text = "Paste",
             color = if (enabled) PocketShellColors.Text else PocketShellColors.TextMuted,
-            fontSize = 14.sp,
+            fontSize = PocketShellType.button.fontSize,
             fontWeight = FontWeight.SemiBold,
         )
     }
@@ -806,8 +806,16 @@ private fun MicTriggerButton(
 
 // Pill geometry (radius, heights, stop glyph) moved to the shared kit with the
 // pills — `com.pocketshell.uikit.components.ComposerControls` (#2763).
-/** Quiet metadata/label rung for readable composer draft text. */
-private val ComposerDraftFontSize = 16.sp
+/**
+ * The 16sp `title` rung (`tokens.json` `type.title`) for composer draft text.
+ *
+ * #2812 corrected this KDoc: it used to claim the "quiet metadata/label rung",
+ * but both of those are 11sp and this value has always been 16sp. The draft is
+ * the app's primary editable surface — the one place that earns the largest UI
+ * rung rather than a reading-row size — so the value stays and the name of the
+ * rung it actually uses is now the one written down.
+ */
+private val ComposerDraftFontSize = PocketShellType.title.fontSize
 
 private val DRAFT_SHAPE = RoundedCornerShape(PocketShellSpacing.md)
 // #2747: the draft is a reading surface, so its floor is the 56dp field rung

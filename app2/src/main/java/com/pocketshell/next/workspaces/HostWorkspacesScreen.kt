@@ -1409,7 +1409,6 @@ private fun HostToolRow(
                 imageVector = icon,
                 contentDescription = null,
                 tint = PocketShellColors.TextSecondary,
-                modifier = Modifier.padding(2.dp),
             )
         },
         trailing = {

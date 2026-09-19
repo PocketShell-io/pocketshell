@@ -4,6 +4,7 @@ import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 
 /**
@@ -28,7 +29,8 @@ import androidx.compose.ui.unit.sp
  * again, change `tokens.json` first and mirror it here — the code never leads
  * the spec, and `QuietThemeTokenTest` fails when the two drift apart.
  *
- * The dense/mono rungs ([bodyDense], [bodyMono], [labelMono]) sit deliberately
+ * The dense/mono/key-cap rungs ([bodyDense], [bodyMono], [labelMono],
+ * [keycap]) sit deliberately
  * between these and are NOT part of this M3 table — but they ARE `type` roles
  * in `tokens.json` and pinned by `QuietThemeTokenTest` like every other rung
  * (#2810). They used to exist only here, in no token file and no test, which
@@ -227,4 +229,45 @@ object PocketShellType {
         fontSize = 11.sp,
         lineHeight = 14.sp, // ~1.3× of 11sp
     )
+
+    /**
+     * 12sp key-cap glyph — the `type.keycap` rung in `tokens.json`.
+     *
+     * A rung rather than a rounding of [bodyDense]: a key cap is a ~30dp box
+     * that has to show `Esc`, `Tab` or `^C` unwrapped and in mono, so its glyph
+     * sits one step below the 13sp dense-row rung. #2812 added it because the
+     * terminal bar and the hotkeys palette were drawing the same key cap at two
+     * different freehand sizes (12sp and 13sp) with nothing naming either.
+     *
+     * An arrow cap is not a key cap: arrows use [title] and the UI sans-serif —
+     * a glyph, not a word. A label too long for a cap uses [keycapSqueezeSize].
+     */
+    val keycap: TextStyle = TextStyle(
+        fontFamily = JetBrainsMonoFamily,
+        fontWeight = FontWeight.Medium,
+        fontSize = 12.sp,
+        lineHeight = 16.sp, // ~1.33× of 12sp
+    )
+
+    /**
+     * 9sp — the key cap's long-label squeeze. Deliberately below every reading
+     * rung, and therefore NOT a rung itself.
+     *
+     * A cap holding a 6+ character label (`Enter`, `PgDown`) cannot render at
+     * [keycap] inside a 30dp slot without clipping, and a clipped key label
+     * makes the key unusable. #2812 kept the value and named it rather than
+     * rounding it onto a rung where it does not belong; `TokenLiteralGuardTest`
+     * allowlists this one declaration with the same reason, so a THIRD squeeze
+     * size cannot appear unnoticed.
+     */
+    val keycapSqueezeSize: TextUnit = 9.sp
+
+    /**
+     * 8sp — the hotkeys-palette long-press cue printed under a cap's label.
+     *
+     * A secondary hint inside an already-small cap rather than text to read;
+     * like [keycapSqueezeSize] it is a named sub-rung value, not a rung, and is
+     * allowlisted once in `TokenLiteralGuardTest`.
+     */
+    val keycapCueSize: TextUnit = 8.sp
 }

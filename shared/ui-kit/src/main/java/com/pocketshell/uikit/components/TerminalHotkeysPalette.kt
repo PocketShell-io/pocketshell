@@ -60,6 +60,7 @@ import com.pocketshell.uikit.theme.JetBrainsMonoFamily
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
+import com.pocketshell.uikit.theme.PocketShellType
 import kotlin.math.roundToInt
 
 /**
@@ -250,7 +251,7 @@ fun TerminalHotkeysPaletteOverlay(
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 12.dp)
                         .padding(bottom = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.md),
                 ) {
                     (if (currentPage == TerminalHotkeysPage.Main) mainSections else ctrlSections)
                         .forEach { section ->
@@ -349,7 +350,7 @@ private fun PaletteHeader(
             Text(
                 text = if (page == TerminalHotkeysPage.Ctrl) "Ctrl + …" else "More keys",
                 color = PocketShellColors.Text,
-                fontSize = 16.sp,
+                fontSize = PocketShellType.title.fontSize,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 softWrap = false,
@@ -411,7 +412,7 @@ private fun HotkeyPageAction(
             text = label,
             color = if (enabled) PocketShellColors.Accent else PocketShellColors.TextMuted,
             fontFamily = JetBrainsMonoFamily,
-            fontSize = 13.sp,
+            fontSize = PocketShellType.bodyMono.fontSize,
             fontWeight = FontWeight.SemiBold,
         )
     }
@@ -425,10 +426,10 @@ private fun HotkeySectionGrid(
     longPressActions: Map<String, HotkeyLongPressAction>,
     enabled: Boolean,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs)) {
         Text(
             text = section.title,
-            fontSize = 11.sp,
+            fontSize = PocketShellType.label.fontSize,
             fontWeight = FontWeight.Medium,
             letterSpacing = 0.4.sp,
             color = PocketShellColors.TextMuted,
@@ -436,7 +437,7 @@ private fun HotkeySectionGrid(
         section.rows.forEach { rowKeys ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
             ) {
                 rowKeys.forEach { binding ->
                     HotkeySlot(
@@ -506,7 +507,14 @@ private fun HotkeySlot(
                 text = binding.label,
                 color = textColor,
                 fontFamily = if (binding.kind == KeyKind.Arrow) null else JetBrainsMonoFamily,
-                fontSize = if (binding.kind == KeyKind.Arrow) 18.sp else 13.sp,
+                // Every key cap in the app sits on the 12sp `keycap` rung and every
+                // arrow glyph on 16sp `title` (#2812) — the palette used to run
+                // 18/13sp while the terminal bar ran 16/12sp for the same two roles.
+                fontSize = if (binding.kind == KeyKind.Arrow) {
+                    PocketShellType.title.fontSize
+                } else {
+                    PocketShellType.keycap.fontSize
+                },
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
                 softWrap = false,
@@ -518,7 +526,7 @@ private fun HotkeySlot(
                     text = longPressAction.cue,
                     color = if (enabled) PocketShellColors.TextMuted else PocketShellColors.Border,
                     fontFamily = JetBrainsMonoFamily,
-                    fontSize = 8.sp,
+                    fontSize = PocketShellType.keycapCueSize,
                     maxLines = 1,
                     softWrap = false,
                 )

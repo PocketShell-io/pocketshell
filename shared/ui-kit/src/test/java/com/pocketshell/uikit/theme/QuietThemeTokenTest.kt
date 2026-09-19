@@ -109,6 +109,8 @@ class QuietThemeTokenTest {
             "bodyDense" to PocketShellType.bodyDense,
             "bodyMono" to PocketShellType.bodyMono,
             "labelMono" to PocketShellType.labelMono,
+            // #2812: the one new rung, mono/Medium/12sp for a key cap.
+            "keycap" to PocketShellType.keycap,
         )
         val jsonTypeRoles = DesignKitTokens.root.getJSONObject("type").keys().asSequence().toSortedSet()
         assertEquals(
@@ -263,6 +265,7 @@ class QuietThemeTokenTest {
             "label" to "labelType",
             "button" to "buttonType",
             "terminal" to "terminalType",
+            "keycap" to "keycapType",
         )
         // #2810: the kit hand-off predates the app's own dense/mono rungs
         // (#461 Δ7/Δ8), so `PocketShellTheme.kt` declares no `bodyDenseType`

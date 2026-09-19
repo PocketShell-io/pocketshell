@@ -33,10 +33,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.components.LoadingIndicator
 import com.pocketshell.uikit.components.SpinnerSize
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 
 /**
@@ -64,7 +64,7 @@ internal fun RecordingSurface(
                 color = PocketShellColors.Border,
                 shape = RoundedCornerShape(ComposerRecordingPanelRadius),
             )
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = PocketShellSpacing.md, vertical = PocketShellSpacing.sm),
         verticalArrangement = Arrangement.Center,
     ) {
         Row(
@@ -125,7 +125,7 @@ internal fun TranscribingSurface(modifier: Modifier = Modifier) {
                 color = PocketShellColors.Border,
                 shape = RoundedCornerShape(ComposerRecordingPanelRadius),
             )
-            .padding(horizontal = 14.dp, vertical = 10.dp),
+            .padding(horizontal = PocketShellSpacing.md, vertical = PocketShellSpacing.sm),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -247,4 +247,6 @@ private const val WAVEFORM_PHASE_AMPLITUDE = 0.18
 private const val TWO_PI = 2.0 * kotlin.math.PI
 private val ComposerRecordingPanelRadius = 12.dp
 private val ComposerWaveformBarRadius = 2.dp
-private val ComposerRecordingStatusFontSize = 15.sp
+// The recording/transcribing status line reads at the 14sp `body` rung
+// (#2812: it was a freehand 15sp, one of nine sizes in the composer region).
+private val ComposerRecordingStatusFontSize = PocketShellType.body.fontSize

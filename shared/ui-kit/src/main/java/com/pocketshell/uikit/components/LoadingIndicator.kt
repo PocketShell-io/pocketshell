@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.theme.LocalPocketShellSemantic
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 
@@ -139,7 +140,7 @@ object LoadingIndicator {
         val semantic = LocalPocketShellSemantic.current
         val arcColor = if (onAccent) PocketShellColors.Background else semantic.accent
         val diameter: Dp = when (size) {
-            SpinnerSize.Small -> 18.dp
+            SpinnerSize.Small -> PocketShellDensity.metadataIcon
             SpinnerSize.Medium -> 28.dp
         }
         val stroke: Dp = when (size) {

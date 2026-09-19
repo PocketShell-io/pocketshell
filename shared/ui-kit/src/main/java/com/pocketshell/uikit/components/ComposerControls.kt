@@ -23,11 +23,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
+import com.pocketshell.uikit.theme.PocketShellSpacing
+import com.pocketshell.uikit.theme.PocketShellType
 
 /**
  * Pill geometry for the composer action controls (#2763).
@@ -90,14 +91,16 @@ fun ComposerSendButton(
             .background(color = containerColor, shape = ComposerActionPillShape)
             .then(border)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = if (recording) 16.dp else 18.dp),
+            // One 16dp `lg` inset in both states (#2812): the pre-grid code used
+            // 16dp while recording and a freehand 18dp when idle.
+            .padding(horizontal = PocketShellSpacing.lg),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
+        horizontalArrangement = Arrangement.spacedBy(PocketShellSpacing.sm),
     ) {
         Text(
             text = "Send",
             color = contentColor,
-            fontSize = 14.sp,
+            fontSize = PocketShellType.button.fontSize,
             fontWeight = FontWeight.SemiBold,
         )
         Icon(
@@ -133,13 +136,13 @@ fun ComposerDiscardButton(
             .border(1.dp, PocketShellColors.Border, ComposerActionPillShape)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { this.contentDescription = contentDescription }
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = PocketShellSpacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = label,
             color = PocketShellColors.TextSecondary,
-            fontSize = 13.sp,
+            fontSize = PocketShellType.bodyDense.fontSize,
             fontWeight = FontWeight.SemiBold,
         )
     }

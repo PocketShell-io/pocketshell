@@ -26,9 +26,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 import java.util.Locale
 
@@ -109,13 +109,18 @@ private fun AttachmentTile(attachment: StagedAttachment, onRemove: (String) -> U
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(start = 6.dp, end = 6.dp, top = 8.dp, bottom = 18.dp),
+                .padding(
+                    start = PocketShellSpacing.xs,
+                    end = PocketShellSpacing.xs,
+                    top = PocketShellSpacing.sm,
+                    bottom = PocketShellSpacing.lg,
+                ),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = extensionLabel(attachment.displayName),
                 color = PocketShellColors.Accent,
-                fontSize = 13.sp,
+                fontSize = PocketShellType.bodyDense.fontSize,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -132,7 +137,11 @@ private fun AttachmentTile(attachment: StagedAttachment, onRemove: (String) -> U
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .fillMaxWidth()
-                .padding(start = 5.dp, end = 5.dp, bottom = 4.dp),
+                .padding(
+                    start = PocketShellSpacing.xs,
+                    end = PocketShellSpacing.xs,
+                    bottom = PocketShellSpacing.xs,
+                ),
         )
 
         Box(
@@ -146,7 +155,7 @@ private fun AttachmentTile(attachment: StagedAttachment, onRemove: (String) -> U
         ) {
             Box(
                 modifier = Modifier
-                    .padding(2.dp)
+                    .padding(PocketShellSpacing.xs)
                     .size(REMOVE_SIZE)
                     .background(color = PocketShellColors.Surface, shape = REMOVE_SHAPE)
                     .border(width = 1.dp, color = PocketShellColors.BorderSoft, shape = REMOVE_SHAPE),
@@ -176,5 +185,6 @@ private val REMOVE_TOUCH_SIZE = 48.dp
 private val REMOVE_SIZE = 22.dp
 private val REMOVE_SHAPE = RoundedCornerShape(11.dp)
 
-// The caption sits inside a 64dp square; keep it on the Quiet caption rung.
-private val LABEL_FONT_SIZE = 11.sp
+// The caption sits inside a 64dp square; keep it on the Quiet 11sp `label`
+// rung (#2812 named the rung instead of restating its size).
+private val LABEL_FONT_SIZE = PocketShellType.label.fontSize

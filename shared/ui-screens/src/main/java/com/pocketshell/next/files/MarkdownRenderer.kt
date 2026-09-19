@@ -35,6 +35,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellSpacing
 
 /** Test tags for the rendered Markdown surfaces. */
 const val MARKDOWN_VIEW_TAG: String = "viewer-markdown"
@@ -120,7 +121,7 @@ private fun CodeBlock(block: MarkdownBlock.CodeBlock) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp)
+            .padding(vertical = PocketShellSpacing.xs)
             .background(color = PocketShellColors.SurfaceElev, shape = RoundedCornerShape(6.dp)),
     ) {
         Text(
@@ -270,7 +271,7 @@ private fun TableRow(
                 },
                 modifier = Modifier
                     .width(140.dp)
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                    .padding(horizontal = PocketShellSpacing.sm, vertical = PocketShellSpacing.xs),
             )
         }
     }

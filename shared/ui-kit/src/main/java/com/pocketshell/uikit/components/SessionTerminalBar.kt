@@ -31,7 +31,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.model.KeyBinding
 import com.pocketshell.uikit.model.KeyKind
@@ -462,9 +461,9 @@ private fun KeySlot(
             // (`.key.arrow` rule); everything else uses mono.
             fontFamily = if (binding.kind == KeyKind.Arrow) null else JetBrainsMonoFamily,
             fontSize = when {
-                binding.kind == KeyKind.Arrow -> 16.sp
-                binding.label.length >= 6 -> 9.sp
-                else -> 12.sp
+                binding.kind == KeyKind.Arrow -> PocketShellType.title.fontSize
+                binding.label.length >= 6 -> PocketShellType.keycapSqueezeSize
+                else -> PocketShellType.keycap.fontSize
             },
             fontWeight = FontWeight.Medium,
             maxLines = 1,
