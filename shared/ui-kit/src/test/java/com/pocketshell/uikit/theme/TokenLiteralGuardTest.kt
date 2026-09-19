@@ -23,6 +23,12 @@ import org.junit.Test
  * on a rung nor in [OFF_GRID_DP_ALLOWLIST] / [OFF_RUNG_SP_ALLOWLIST] with a
  * written reason.
  *
+ * #2829 added two more guards in the same style, for gaps this one could not
+ * see: a literal that is perfectly on-grid but is a `size`-block token written
+ * out by hand ([sizeBlockLiteralsUseTheirNamedDensityToken]), and a `dp`/`sp`
+ * import left behind after its last literal was replaced
+ * ([unitImportsAreActuallyUsed]).
+ *
  * ## What the 4 dp grid governs
  *
  * **Layout spacing**: padding, margins, gaps, spacers — the distance between
@@ -95,7 +101,7 @@ class TokenLiteralGuardTest {
 
     @Test
     fun everyAllowlistRowCarriesAReason() {
-        (OFF_GRID_DP_ALLOWLIST + OFF_RUNG_SP_ALLOWLIST).forEach { row ->
+        (OFF_GRID_DP_ALLOWLIST + OFF_RUNG_SP_ALLOWLIST + OFF_TOKEN_SIZE_ALLOWLIST).forEach { row ->
             assertTrue(
                 "allowlist row ${row.file} ${row.literal} has no reason — an exception without a " +
                     "written reason is just an unenforced rule again (#2812)",
@@ -137,6 +143,89 @@ class TokenLiteralGuardTest {
         )
     }
 
+    @Test
+    fun sizeOnlyLiteralsReallyAreTheirNamedDensityToken() {
+        // Anti-vacuity pin for [SIZE_ONLY_TOKENS], the same job
+        // [typeRungFontSizesAreTheExpectedLadder] does for the type ladder: the
+        // scan below bans a bare literal by VALUE, so if a token's value ever
+        // moves, the banned value has to move with it or the guard starts
+        // policing a number that no longer means anything. These tokens are
+        // themselves pinned to `tokens.json` by `QuietThemeTokenTest`, so this
+        // closes the chain literal -> token -> JSON.
+        assertEquals("48", literalOf(PocketShellDensity.tapTargetMin.value.toDouble()))
+        assertEquals("56", literalOf(PocketShellDensity.rowMinHeight.value.toDouble()))
+        assertEquals("56", literalOf(PocketShellDensity.fieldMin.value.toDouble()))
+        assertEquals("56", literalOf(PocketShellDensity.buttonMin.value.toDouble()))
+        assertEquals("64", literalOf(PocketShellDensity.workspaceRowMinHeight.value.toDouble()))
+        assertEquals("18", literalOf(PocketShellDensity.metadataIcon.value.toDouble()))
+        // And no SPACING rung shares one of these values — if one ever did, a
+        // banned literal would have two legitimate readings and this guard
+        // would be telling call sites to use the wrong one.
+        val spacingRungs = setOf(
+            PocketShellSpacing.xs, PocketShellSpacing.sm, PocketShellSpacing.md,
+            PocketShellSpacing.lg, PocketShellSpacing.xl, PocketShellSpacing.xxl,
+        ).map { literalOf(it.value.toDouble()) }.toSet()
+        assertEquals(
+            "a `size`-block value that is ALSO a spacing rung cannot be banned by value — " +
+                "`20.dp` is `screenGutter` in a row and `PocketShellSpacing.xl` in a layout, and " +
+                "this guard cannot tell them apart (#2829)",
+            emptySet<String>(),
+            SIZE_ONLY_TOKENS.keys intersect spacingRungs,
+        )
+    }
+
+    @Test
+    fun sizeBlockLiteralsUseTheirNamedDensityToken() {
+        // #2829 (5): `heightIn(min = 56.dp)` on the two workspace search fields
+        // was `size.fieldMin` written out longhand — the token existed, was
+        // bound, was pinned to tokens.json, and the call site still carried the
+        // number. #2812's grid guard could not see it: 56 is a perfectly
+        // on-grid multiple of 4, so nothing was off-grid and nothing was wrong,
+        // except that the one value the design system says is a NAME was a
+        // number again.
+        //
+        // The values in [SIZE_ONLY_TOKENS] are the `size` block's own — 18, 48,
+        // 56, 64 — minus everything that is also a spacing rung (24 `icon` is
+        // `xxl` too; 20 `screenGutter` is `xl`), because those are genuinely
+        // ambiguous at a call site and banning them would just move the drift.
+        // The four that remain have exactly one meaning each.
+        val actual = scan("dp") { value, occurrence ->
+            occurrence.isRadius || literalOf(value) !in SIZE_ONLY_TOKENS
+        }
+        assertEquals(
+            SIZE_ONLY_MESSAGE,
+            render(OFF_TOKEN_SIZE_ALLOWLIST),
+            render(actual),
+        )
+    }
+
+    @Test
+    fun unitImportsAreActuallyUsed() {
+        // #2829 (2): three files imported `androidx.compose.ui.unit.dp` with no
+        // `.dp` left in them, residue from #2800/#2812 replacing the literals.
+        // There is no ktlint/detekt/spotless in this build, and the Kotlin
+        // compiler does not warn on an unused import at any warning level the
+        // build turns on, so nothing anywhere caught it — and the leftover
+        // import is the exact thing that makes writing the next literal
+        // frictionless again.
+        //
+        // No allowlist: an unused import has no legitimate form.
+        val unused = sortedSetOf<String>()
+        forEachScannedFile { relative, file ->
+            val lines = codeLines(file)
+            val code = lines.filterNot { it.trimStart().startsWith("import ") }
+            UNIT_EXTENSION_IMPORTS.forEach { unit ->
+                val importLine = "import androidx.compose.ui.unit.$unit"
+                if (lines.none { it.trim() == importLine }) return@forEach
+                // `dp`/`sp` are extension properties: every use is `<expr>.dp`.
+                if (code.none { Regex("""\.\s*$unit\b""").containsMatchIn(it) }) {
+                    unused += "$relative $importLine"
+                }
+            }
+        }
+        assertEquals(UNUSED_IMPORT_MESSAGE, "", unused.joinToString("\n"))
+    }
+
     // ── scanning ─────────────────────────────────────────────────────────────
 
     private data class Occurrence(val isRadius: Boolean, val isLineHeight: Boolean)
@@ -145,31 +234,35 @@ class TokenLiteralGuardTest {
      * Tally every `<n>.<unit>` literal in the scan roots that [allowed] rejects,
      * keyed by `"<repo-relative path> <literal>"`.
      */
-    private fun scan(unit: String, allowed: (Double, Occurrence) -> Boolean): List<LiteralException> {
-        val pattern = Regex("""(?<![\w.])(\d+(?:\.\d+)?)\.$unit(?![\w])""")
-        val tally = sortedMapOf<String, Int>()
+    /** Every Kotlin file under [SCAN_ROOTS], as `(repo-relative path, file)`. */
+    private fun forEachScannedFile(action: (String, File) -> Unit) {
         SCAN_ROOTS.keys.forEach { root ->
             repoFile(root).walkTopDown()
                 .filter { it.isFile && it.extension == "kt" }
                 .sortedBy { it.path }
-                .forEach { file ->
-                    val relative = root + file.path.substringAfter(repoFile(root).path)
-                    codeLines(file).forEach { line ->
-                        val radiusSpans = roundedCornerShapeSpans(line)
-                        pattern.findAll(line).forEach { match ->
-                            val value = match.groupValues[1].toDouble()
-                            val occurrence = Occurrence(
-                                isRadius = radiusSpans.any { match.range.first in it },
-                                isLineHeight = LINE_HEIGHT_ASSIGNMENT
-                                    .containsMatchIn(line.substring(0, match.range.first)),
-                            )
-                            if (!allowed(value, occurrence)) {
-                                val key = "$relative ${literalOf(value)}"
-                                tally[key] = (tally[key] ?: 0) + 1
-                            }
-                        }
+                .forEach { file -> action(root + file.path.substringAfter(repoFile(root).path), file) }
+        }
+    }
+
+    private fun scan(unit: String, allowed: (Double, Occurrence) -> Boolean): List<LiteralException> {
+        val pattern = Regex("""(?<![\w.])(\d+(?:\.\d+)?)\.$unit(?![\w])""")
+        val tally = sortedMapOf<String, Int>()
+        forEachScannedFile { relative, file ->
+            codeLines(file).forEach { line ->
+                val radiusSpans = roundedCornerShapeSpans(line)
+                pattern.findAll(line).forEach { match ->
+                    val value = match.groupValues[1].toDouble()
+                    val occurrence = Occurrence(
+                        isRadius = radiusSpans.any { match.range.first in it },
+                        isLineHeight = LINE_HEIGHT_ASSIGNMENT
+                            .containsMatchIn(line.substring(0, match.range.first)),
+                    )
+                    if (!allowed(value, occurrence)) {
+                        val key = "$relative ${literalOf(value)}"
+                        tally[key] = (tally[key] ?: 0) + 1
                     }
                 }
+            }
         }
         return tally.map { (key, count) ->
             val (file, literal) = key.split(' ', limit = 2)
@@ -291,6 +384,85 @@ class TokenLiteralGuardTest {
                 "Use a PocketShellType rung's `.fontSize` (or `style =` the rung) instead of a literal. " +
                 "A genuinely sub-rung glyph size needs a named constant in Type.kt plus a row here " +
                 "explaining why no rung fits.\n"
+
+        /** The `dp`/`sp` extension-property imports [unitImportsAreActuallyUsed] checks. */
+        val UNIT_EXTENSION_IMPORTS = listOf("dp", "sp")
+
+        /**
+         * `tokens.json` `size` values with exactly ONE meaning -> the token to
+         * use instead of the bare literal.
+         *
+         * 24 (`icon`) and 20 (`screenGutter`) are deliberately absent: they are
+         * also the `xxl` and `xl` spacing rungs, so a call site's `24.dp` may
+         * legitimately be either and this guard cannot tell. Pinned against the
+         * real tokens by [sizeOnlyLiteralsReallyAreTheirNamedDensityToken].
+         */
+        val SIZE_ONLY_TOKENS = mapOf(
+            "18" to "PocketShellDensity.metadataIcon",
+            "48" to "PocketShellDensity.tapTargetMin",
+            "56" to "PocketShellDensity.rowMinHeight / .fieldMin / .buttonMin (pick the one you mean)",
+            "64" to "PocketShellDensity.workspaceRowMinHeight",
+        )
+
+        val SIZE_ONLY_MESSAGE =
+            "`size`-block literals changed (#2829). Left = allowlist, right = what is in the tree.\n" +
+                "A row on the right that is missing on the left is a density token written out as a " +
+                "number. Use the token:\n" +
+                SIZE_ONLY_TOKENS.entries.joinToString("\n") { (literal, token) -> "  $literal.dp -> $token" } +
+                "\nIf the value genuinely is component geometry that happens to collide with one of " +
+                "them (a 64dp attachment tile is not a workspace row), add a row to " +
+                "OFF_TOKEN_SIZE_ALLOWLIST with the reason.\n" +
+                "A row on the left that is missing on the right means an instance was fixed: delete " +
+                "its row.\n"
+
+        const val UNUSED_IMPORT_MESSAGE =
+            "Unused `androidx.compose.ui.unit.dp`/`sp` import(s) (#2829). The file has no `.dp`/`.sp` " +
+                "left in it — delete the import.\nThere is no ktlint/detekt/spotless in this build, so " +
+                "this test is the only thing that notices; a leftover unit import is what makes " +
+                "writing the next raw literal frictionless.\n"
+
+        /**
+         * The `size`-block literals that are NOT a call site writing a token
+         * out by hand — the declarations themselves, plus real geometry that
+         * happens to share a number.
+         */
+        val OFF_TOKEN_SIZE_ALLOWLIST: List<LiteralException> = listOf(
+            LiteralException(
+                "app2/src/main/java/com/pocketshell/next/composer/ComposerAttachmentTiles.kt",
+                "64",
+                1,
+                "TILE_SIZE — the attachment thumbnail's own square. It shares a number with " +
+                    "`workspaceRowMin` and nothing else: a tile is not a row, and binding it to the " +
+                    "workspace row's minimum would make resizing one resize the other.",
+            ),
+            LiteralException(
+                "shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt",
+                "18",
+                1,
+                "The `metadataIcon` declaration itself — this is where the value is allowed to be a " +
+                    "literal, because this is the file that gives it its name.",
+            ),
+            LiteralException(
+                "shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt",
+                "48",
+                1,
+                "The `tapTargetMin` declaration itself — the a11y floor's single point of definition.",
+            ),
+            LiteralException(
+                "shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt",
+                "56",
+                3,
+                "The `rowMinHeight`, `fieldMin` and `buttonMin` declarations. Three separate tokens " +
+                    "that happen to share a value today: `QuietThemeTokenTest` pins each to its own " +
+                    "`tokens.json` key, so they are free to diverge without touching a call site.",
+            ),
+            LiteralException(
+                "shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt",
+                "64",
+                1,
+                "The `workspaceRowMinHeight` declaration itself.",
+            ),
+        )
 
         val OFF_GRID_DP_ALLOWLIST: List<LiteralException> = listOf(
             LiteralException(

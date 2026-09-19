@@ -14,11 +14,11 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import com.pocketshell.core.usage.UsageProviderRecord
 import com.pocketshell.core.usage.UsageThresholdState
 import com.pocketshell.uikit.model.PillKind
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 import java.time.Duration
@@ -354,7 +354,7 @@ fun UsageGlancePill(
 ) {
     Row(
         modifier = modifier
-            .heightIn(min = 48.dp)
+            .heightIn(min = PocketShellDensity.tapTargetMin)
             .clickable(role = Role.Button, onClick = onClick)
             .semantics { this.contentDescription = state.contentDescription }
             .testTag(USAGE_GLANCE_PILL_TAG)

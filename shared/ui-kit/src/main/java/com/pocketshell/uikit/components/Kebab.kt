@@ -19,7 +19,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
@@ -81,7 +80,8 @@ data class KebabItem(
  * screen that already has stable instrumentation for its overflow button can
  * adopt this component without breaking existing tests.
  *
- * [triggerSize] defaults to the 48dp Quiet touch target.
+ * [triggerSize] defaults to [PocketShellDensity.tapTargetMin], the 48dp Quiet
+ * touch target (#2829 named the token instead of restating its value).
  */
 @Composable
 fun Kebab(
@@ -89,7 +89,7 @@ fun Kebab(
     modifier: Modifier = Modifier,
     contentDescription: String = "More actions",
     triggerTestTag: String = KEBAB_BUTTON_TAG,
-    triggerSize: Dp = 48.dp,
+    triggerSize: Dp = PocketShellDensity.tapTargetMin,
     expanded: Boolean? = null,
     onExpandedChange: ((Boolean) -> Unit)? = null,
 ) {
@@ -161,7 +161,7 @@ fun KebabTrigger(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     triggerTestTag: String = KEBAB_BUTTON_TAG,
-    triggerSize: Dp = 48.dp,
+    triggerSize: Dp = PocketShellDensity.tapTargetMin,
 ) {
     val accessibleTriggerSize = maxOf(triggerSize, PocketShellDensity.tapTargetMin)
     IconButton(

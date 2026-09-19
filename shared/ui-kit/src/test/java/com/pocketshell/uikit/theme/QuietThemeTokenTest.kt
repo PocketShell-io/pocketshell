@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.sp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -197,6 +198,28 @@ class QuietThemeTokenTest {
 
     @Test
     fun generatedKitThemeStaysInSyncWithTokensJson() {
+        // #2829 (3): every loop below walks tokens.json and looks the key up in
+        // the generated theme, so a `PsTokens` val with NO key behind it passed
+        // all of them silently — the exact residue a regeneration from a stale
+        // JSON leaves behind (`spaceSection` had to be caught by a hand-written
+        // one-off `assertFalse` precisely because no loop could see it). The
+        // three set assertions here make the artifact's own declarations the
+        // left-hand side, so an orphan val reddens by name.
+        val sizeKeys = DesignKitTokens.root.getJSONObject("size").keys().asSequence().toSet()
+        assertEquals(
+            "the generated kit theme declares a `<n>.dp` val for every tokens.json `size`, " +
+                "`space` and `radius` key and nothing else (#2829) — an extra val is a token " +
+                "nothing generates and nothing pins",
+            (sizeKeys + SPACE_TO_KIT_VAL.values + RADIUS_TO_KIT_VAL.values).toSortedSet(),
+            DesignKitTokens.kitDpNames.toSortedSet(),
+        )
+        assertEquals(
+            "the generated kit theme declares a `Color(0x…)` val for every tokens.json `color` " +
+                "key and nothing else (#2829)",
+            DesignKitTokens.root.getJSONObject("color").keys().asSequence().toSortedSet(),
+            DesignKitTokens.kitColorNames.toSortedSet(),
+        )
+
         // Colors — the kit theme's `PsTokens` vals carry the same names.
         val colors = DesignKitTokens.root.getJSONObject("color")
         colors.keys().asSequence().forEach { key ->
@@ -219,14 +242,7 @@ class QuietThemeTokenTest {
 
         // Spaces — `xs` -> `spaceXs`, etc. The retired 32dp `section` rung must
         // NOT come back in a regeneration.
-        mapOf(
-            "xs" to "spaceXs",
-            "sm" to "spaceSm",
-            "md" to "spaceMd",
-            "lg" to "spaceLg",
-            "xl" to "spaceXl",
-            "xxl" to "spaceXxl",
-        ).forEach { (jsonKey, kitName) ->
+        SPACE_TO_KIT_VAL.forEach { (jsonKey, kitName) ->
             assertEquals(
                 "kit theme space `$kitName` drifted from tokens.json",
                 DesignKitTokens.spaceDp(jsonKey),
@@ -240,14 +256,7 @@ class QuietThemeTokenTest {
         )
 
         // Radius ladder — {4 badge, 8 chip, 12 field/button/card, 24 sheet}.
-        mapOf(
-            "badge" to "badgeRadius",
-            "chip" to "chipRadius",
-            "field" to "fieldRadius",
-            "button" to "buttonRadius",
-            "card" to "cardRadius",
-            "sheet" to "sheetRadius",
-        ).forEach { (jsonKey, kitName) ->
+        RADIUS_TO_KIT_VAL.forEach { (jsonKey, kitName) ->
             assertEquals(
                 "kit theme radius `$kitName` drifted from tokens.json",
                 DesignKitTokens.radiusDp(jsonKey),
@@ -256,16 +265,12 @@ class QuietThemeTokenTest {
         }
 
         // Type — every `type` role against its `*Type` TextStyle, weight included.
-        val kitTypeNames = mapOf(
-            "screen" to "screenType",
-            "workspace" to "workspaceType",
-            "title" to "titleType",
-            "body" to "bodyType",
-            "metadata" to "metadataType",
-            "label" to "labelType",
-            "button" to "buttonType",
-            "terminal" to "terminalType",
-            "keycap" to "keycapType",
+        val kitTypeNames = TYPE_TO_KIT_VAL
+        assertEquals(
+            "the generated kit theme declares a `TextStyle` val for every `type` role it covers " +
+                "and nothing else (#2829)",
+            kitTypeNames.values.toSortedSet(),
+            DesignKitTokens.kitTextStyleNames.toSortedSet(),
         )
         // #2810: the kit hand-off predates the app's own dense/mono rungs
         // (#461 Δ7/Δ8), so `PocketShellTheme.kt` declares no `bodyDenseType`
@@ -275,7 +280,7 @@ class QuietThemeTokenTest {
         // failure this issue is about. The assertion below therefore still
         // reddens when a NEW role lands in tokens.json: whoever adds it has
         // to say which side it belongs on.
-        val rolesTheKitHandOffPredates = setOf("bodyDense", "bodyMono", "labelMono")
+        val rolesTheKitHandOffPredates = ROLES_THE_HAND_OFF_PREDATES
         assertEquals(
             "every tokens.json `type` role is either checked against the generated kit theme " +
                 "or listed as one the kit hand-off predates (#2810)",
@@ -326,6 +331,184 @@ class QuietThemeTokenTest {
             assertEquals(PocketShellColors.Background, mapped.onError)
             assertEquals(PocketShellColors.Scrim, mapped.scrim)
         }
+    }
+
+    @Test
+    fun generatedTokensCssStaysInSyncWithTokensJson() {
+        // #2829 (4): `tokens.css` is the design kit's second generated hand-off
+        // — the browser half of what `PocketShellTheme.kt` is the Android half
+        // of — and until now nothing in this repo read it. No test parsed it,
+        // no script checked it, so it could carry any numbers at all. It does
+        // drift: at `0a3242e7e` the stylesheet was still missing `keycap`, a
+        // role #2812 added to tokens.json AND to the Kotlin hand-off the same
+        // day. One artifact regenerated, the other did not, and nothing said so.
+        //
+        // The pin is the same shape as the kit-theme one above: exhaustive per
+        // key, with set assertions both ways so a `--var` with no token behind
+        // it reddens too.
+
+        // Which tokens.json blocks the stylesheet emits at all. Stated as two
+        // sets rather than left implicit, so a NEW top-level block in the JSON
+        // forces someone to say which side it belongs on instead of silently
+        // landing on the omitted side.
+        assertEquals(
+            "every tokens.json top-level block is either pinned against tokens.css or named " +
+                "as one the stylesheet does not emit (#2829)",
+            DesignKitTokens.root.keys().asSequence().toSortedSet(),
+            (BLOCKS_TOKENS_CSS_EMITS + BLOCKS_TOKENS_CSS_OMITS).toSortedSet(),
+        )
+
+        // Colours — the `color` block is emitted with no prefix (`--accent`),
+        // and in CSS notation on both sides, so the strings compare directly.
+        val colors = DesignKitTokens.root.getJSONObject("color")
+        assertEquals(
+            "tokens.css declares a custom property for every tokens.json `color` key and " +
+                "nothing else (#2829)",
+            colors.keys().asSequence().toSortedSet(),
+            DesignKitTokens.cssBareVarNames.toSortedSet(),
+        )
+        colors.keys().asSequence().forEach { key ->
+            assertEquals(
+                "tokens.css colour `--$key` drifted from tokens.json",
+                colors.getString(key).lowercase(),
+                DesignKitTokens.cssVar(key).lowercase(),
+            )
+        }
+
+        // Spacing rungs and density sizes — `<n>dp` in the JSON is `<n>px` here.
+        mapOf("space" to "space", "size" to "size").forEach { (jsonBlock, cssPrefix) ->
+            val keys = DesignKitTokens.root.getJSONObject(jsonBlock).keys().asSequence().toSortedSet()
+            assertEquals(
+                "tokens.css declares a `--$cssPrefix-*` property for every tokens.json " +
+                    "`$jsonBlock` key and nothing else (#2829)",
+                keys,
+                DesignKitTokens.cssVarNames(cssPrefix).toSortedSet(),
+            )
+            keys.forEach { key ->
+                assertEquals(
+                    "tokens.css `--$cssPrefix-$key` drifted from tokens.json",
+                    DesignKitTokens.root.getJSONObject(jsonBlock).getInt(key),
+                    DesignKitTokens.cssPx("$cssPrefix-$key"),
+                )
+            }
+        }
+
+        // Type — size, leading and weight per role. The stylesheet predates the
+        // app's own dense/mono rungs exactly as the Kotlin hand-off does, and
+        // reuses that ONE exemption set rather than keeping a second copy: two
+        // hand-written "roles we skip" lists is how the halves drift apart.
+        assertEquals(
+            "every tokens.json `type` role is either pinned against tokens.css or listed as " +
+                "one the hand-off predates (#2829)",
+            DesignKitTokens.root.getJSONObject("type").keys().asSequence().toSortedSet(),
+            (DesignKitTokens.cssTypeRoles + ROLES_THE_HAND_OFF_PREDATES).toSortedSet(),
+        )
+        DesignKitTokens.cssTypeRoles.forEach { role ->
+            assertEquals(
+                "tokens.css `--type-$role-size` drifted from tokens.json",
+                DesignKitTokens.typeSizeSp(role),
+                DesignKitTokens.cssTypePx(role, "size"),
+            )
+            assertEquals(
+                "tokens.css `--type-$role-leading` drifted from tokens.json",
+                DesignKitTokens.typeLineHeightSp(role),
+                DesignKitTokens.cssTypePx(role, "leading"),
+            )
+            assertEquals(
+                "tokens.css `--type-$role-weight` drifted from tokens.json",
+                DesignKitTokens.typeWeight(role),
+                DesignKitTokens.cssTypeWeight(role),
+            )
+        }
+    }
+
+    @Test
+    fun designSystemDocDensityTableListsEveryDensityRung() {
+        // #2829 (1): `docs/design-system.md`'s density table is the human-facing
+        // half of [PocketShellDensity], and the only half a designer or a new
+        // implementer reads before reaching for a literal. #2800 bound four new
+        // rungs in Kotlin — `icon`, `metadataIcon`, `buttonMin`, `screenGutter`
+        // — and the table said nothing about three of them, so the documented
+        // token vocabulary was a strict subset of the real one and the missing
+        // members were precisely the ones whose absence causes a raw literal.
+        //
+        // Prose cannot be compiled, so nothing but a test keeps it honest.
+        assertTrue(
+            "no `val` rows parsed out of PocketShellDensity — this pin would be comparing two " +
+                "empty sets and reporting perfection over nothing",
+            DesignKitTokens.densityValNames.size >= 10,
+        )
+        assertEquals(
+            "docs/design-system.md's `Density defaults` table must list every PocketShellDensity " +
+                "rung, and only real rungs (#2829) — an undocumented token is a literal waiting " +
+                "to be written, and a documented non-token is a name nobody can use",
+            DesignKitTokens.densityValNames.toSortedSet(),
+            DesignKitTokens.docDensityTableTokens.toSortedSet(),
+        )
+    }
+
+    private companion object {
+        /** tokens.json `space` key -> the generated kit theme's val name. */
+        val SPACE_TO_KIT_VAL = mapOf(
+            "xs" to "spaceXs",
+            "sm" to "spaceSm",
+            "md" to "spaceMd",
+            "lg" to "spaceLg",
+            "xl" to "spaceXl",
+            "xxl" to "spaceXxl",
+        )
+
+        /** tokens.json `radius` key -> the generated kit theme's val name. */
+        val RADIUS_TO_KIT_VAL = mapOf(
+            "badge" to "badgeRadius",
+            "chip" to "chipRadius",
+            "field" to "fieldRadius",
+            "button" to "buttonRadius",
+            "card" to "cardRadius",
+            "sheet" to "sheetRadius",
+        )
+
+        /** tokens.json `type` role -> the generated kit theme's `TextStyle` val name. */
+        val TYPE_TO_KIT_VAL = mapOf(
+            "screen" to "screenType",
+            "workspace" to "workspaceType",
+            "title" to "titleType",
+            "body" to "bodyType",
+            "metadata" to "metadataType",
+            "label" to "labelType",
+            "button" to "buttonType",
+            "terminal" to "terminalType",
+            "keycap" to "keycapType",
+        )
+
+        /**
+         * The `type` roles BOTH generated hand-offs predate (#2810, #2829).
+         *
+         * `bodyDense`/`bodyMono`/`labelMono` are the app's own dense and mono
+         * rungs (#461 Δ7/Δ8); neither `PocketShellTheme.kt` nor `tokens.css`
+         * declares them, and the mono ones could not carry their defining
+         * property — the font family — in either artifact anyway. One shared
+         * set, not one per artifact: a second hand-written "roles we skip"
+         * list is how the two halves of a hand-off drift apart in the first
+         * place.
+         */
+        val ROLES_THE_HAND_OFF_PREDATES = setOf("bodyDense", "bodyMono", "labelMono")
+
+        /** tokens.json blocks `tokens.css` emits as custom properties. */
+        val BLOCKS_TOKENS_CSS_EMITS = setOf("color", "space", "size", "type")
+
+        /**
+         * tokens.json blocks `tokens.css` deliberately does not emit.
+         *
+         * `radius`/`motion` are real ladders the stylesheet has simply never
+         * carried — the browser preview draws its own corners and transitions —
+         * while `name`/`version`/`referenceViewport`/`font` are metadata, not
+         * values a `:root` block could hold. Listed rather than skipped so a new
+         * block in the JSON reddens [generatedTokensCssStaysInSyncWithTokensJson]
+         * and someone has to decide which side it belongs on.
+         */
+        val BLOCKS_TOKENS_CSS_OMITS =
+            setOf("name", "version", "referenceViewport", "radius", "motion", "font")
     }
 
     private fun assertColor(jsonKey: String, actual: Color) {

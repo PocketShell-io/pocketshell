@@ -79,7 +79,7 @@ internal const val CREATE_SESSION_NAME_LABEL = "Session name"
 internal const val CREATE_SESSION_SUBMIT_LABEL = "Start"
 internal const val CREATE_SESSION_PROFILE_LABEL = "Profile"
 
-private val PICKER_SEGMENT_HEIGHT = 48.dp
+private val PICKER_SEGMENT_HEIGHT = PocketShellDensity.tapTargetMin
 private const val CREATE_SESSION_HEIGHT_FRACTION = 0.85f
 private val CREATE_SESSION_MAX_HEIGHT = 560.dp
 

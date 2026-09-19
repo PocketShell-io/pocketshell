@@ -28,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
 import java.util.Locale
@@ -181,7 +182,7 @@ internal fun extensionLabel(displayName: String): String =
         ?: "FILE"
 
 private val TILE_SIZE = 64.dp
-private val REMOVE_TOUCH_SIZE = 48.dp
+private val REMOVE_TOUCH_SIZE = PocketShellDensity.tapTargetMin
 private val REMOVE_SIZE = 22.dp
 private val REMOVE_SHAPE = RoundedCornerShape(11.dp)
 

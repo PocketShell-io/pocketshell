@@ -59,6 +59,7 @@ import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.components.WorkspaceRow
 import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellType
@@ -304,7 +305,7 @@ fun HostWorkspacesScreen(
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 56.dp)
+                .heightIn(min = PocketShellDensity.fieldMin)
                 .padding(
                     start = PocketShellSpacing.xl,
                     end = PocketShellSpacing.xl,
@@ -778,7 +779,7 @@ private fun RemoteLocationRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .heightIn(min = 48.dp),
+            .heightIn(min = PocketShellDensity.tapTargetMin),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -850,7 +851,7 @@ private fun WorkspaceFolderBrowserPage(
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 56.dp)
+                .heightIn(min = PocketShellDensity.fieldMin)
                 .padding(horizontal = PocketShellSpacing.xl, vertical = PocketShellSpacing.sm),
             shape = PocketShellShapes.medium,
             colors = OutlinedTextFieldDefaults.colors(
