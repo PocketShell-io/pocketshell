@@ -26,12 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
-import com.github.takahirom.roborazzi.captureRoboImage
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
@@ -64,6 +64,7 @@ import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.uikit.theme.PocketShellType
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -93,15 +94,25 @@ import org.robolectric.annotation.GraphicsMode
  * 3. Open the PNG under `build/renders/`.
  *
  * Each `@Test` writes a stable, predictably-named PNG into `build/renders/` so a
- * design tweak yields a fresh image at the same path every time. The
- * `captureRoboImage(filePath) { … }` overload launches its own headless
- * `ComponentActivity` and snapshots the composition, so no Compose test rule is
- * needed.
+ * design tweak yields a fresh image at the same path every time. Captures go
+ * through [captureFrozenRender] — the compose-test-rule window with
+ * `mainClock.autoAdvance = false` — NOT the bare
+ * `captureRoboImage(filePath) { … }` overload this class used to call. That
+ * overload composes under the production choreographer frame clock, which any
+ * infinite animation keeps fed forever, so Roborazzi's pre-capture looper
+ * drain never reaches quiescence and record mode wedges (#2733 in :app2,
+ * #2834 here). [RenderHarnessPolicyTest] keeps it that way.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
 class DesignRenders {
+
+    // Issue #2834 (the ui-kit port of #2733): frozen frame clock for record
+    // captures — see [captureFrozenRender]. Without it an animated fixture
+    // never lets the Robolectric main looper drain and record mode wedges.
+    @get:Rule
+    val composeRule = createComposeRule()
 
     /**
      * Issue #2530: desktop-style session tree — `~/git` / `other` roots, folder
@@ -1476,7 +1487,10 @@ class DesignRenders {
             Banner(
                 text = "Uploading report.txt…",
                 role = BannerRole.Info,
-                leadingContent = { LoadingIndicator.Spinner(size = SpinnerSize.Small) },
+                // #2834: static painter, same reason as every other render
+                // fixture — a live indeterminate spinner paints an arbitrary
+                // phase into a design PNG.
+                leadingContent = { StaticLoadingIndicator.Spinner(size = SpinnerSize.Small) },
             )
             Banner(
                 text = "Claude usage: 85% — approaching your limit. Tap for details.",
@@ -1949,7 +1963,7 @@ class DesignRenders {
     }
 
     private fun render(name: String, content: @Composable () -> Unit) {
-        captureRoboImage("build/renders/$name.png") {
+        composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),

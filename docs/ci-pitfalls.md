@@ -526,3 +526,81 @@ Two things to expect when reading such a run:
 - The verdict is retryable by construction, but it is not a licence to rerun
   blind — a device that wedges on every attempt is a lane capacity problem
   (see the contended-box section above), not a flake.
+
+## A wedged RENDER reads as a coroutine failure in an unrelated test class
+
+`:shared:ui-kit:recordRoborazziDebug` was red on clean `main` (#2834) with a
+signature that names nothing involved in the defect:
+
+```
+QuietThemeTokenTest > quietShapeTokensMatchTheDesignKit FAILED
+    kotlinx.coroutines.test.UncaughtExceptionsBeforeTest at TestScope.kt:242
+```
+
+`QuietThemeTokenTest` is innocent, and so are its token assertions.
+`UncaughtExceptionsBeforeTest` means kotlinx-coroutines-test's process-wide
+collector was ALREADY holding a report when this class opened its `TestScope`
+(it owns a `createComposeRule`), so the next scope in the worker inherits
+whatever leaked earlier. The cause appears only in
+`build/test-results/**/TEST-*.xml`, as a *suppressed* throwable — here
+`java.lang.OutOfMemoryError: Java heap space`, thrown inside a Compose
+window-recomposer coroutine several test classes back.
+
+The chain, which no single artifact shows end to end:
+
+1. `DesignRenders.sessionSurfaceReconnectAffordance` rendered the LIVE
+   `LoadingIndicator.Spinner`. An M3 indeterminate indicator reposts a frame
+   from every frame callback.
+2. The bare `captureRoboImage(path) { … }` harness composes under the
+   PRODUCTION choreographer frame clock, so those reposts never stop.
+3. Roborazzi idles Robolectric's paused looper to quiescence before it captures
+   (`captureScreenIfMultipleWindows` -> `ShadowPausedLooper.idle`). Quiescence
+   never arrives. A `jcmd Thread.print` on the worker showed one `SDK 26 Main
+   Thread` at ~100% CPU — 1519 s of CPU in 1527 s of wall clock — parked in
+   that drain, inside `DesignRenders.render`.
+4. The spin allocates, so the heap fills, and the `OutOfMemoryError` lands in a
+   coroutine rather than on the test thread — collected, not reported.
+5. The next `TestScope` re-throws it under its own name.
+
+Four things worth carrying forward:
+
+- **Read the XML's suppressed throwables before believing the console.** Same
+  rule as the `runTest` stack-trace section above, with a nastier variant: the
+  cause is not merely on a different line, it is in a different test class, and
+  the console never mentions it.
+- **Raising the heap makes this WORSE, not better.** On the 512m Gradle default
+  the OOM arrives fast and breaks the spin, so the suite finishes (195 tests,
+  9m55s) carrying one misattributed failure. Raising the worker to 2g was tried
+  during #2834: the same run reached 30 of 81 renders in 25 minutes before it
+  was killed, with a ~966 MB live set and two cores in G1. A bigger heap buys a
+  longer spin. A change that makes a wedge quieter rather than shorter is not a
+  fix.
+- **"Green in the unit lane, red only in record mode" is a mode difference, not
+  a flake.** Outside record mode `captureRoboImage` is a no-op, so an ordinary
+  unit run never composes a render — which is exactly why the very same class
+  was green in the hosted unit shards.
+- **Fixing the module in front of you does not fix the class.** #2733 hit this
+  wedge in `:app2` and fixed it structurally: capture from inside the compose
+  test rule, whose recomposer runs on a test-driven frame clock no animation
+  can outrun. Nothing carried that harness across to `:shared:ui-kit`, which
+  kept a hand-listed static-painter convention (#1772) covering two named
+  fixtures — and #2834 was a third fixture that list never mentioned. ui-kit
+  now captures through its own `captureFrozenRender`, and both modules have a
+  `RenderHarnessPolicyTest` that reds if a render class reaches the bare
+  harness again.
+
+Two traps specific to writing such a harness, both hit while fixing #2834:
+
+- A capture scoped to `onRoot()` silently drops Compose `Dialog`/`Popup`
+  windows. `confirm-dialog-destructive.png` and `form-dialog.png` came back as
+  two byte-identical empty frames. ui-kit's helper uses
+  `captureScreenRoboImage`, which composites every Robolectric window root.
+- A clock frozen at t=0 captures an overlay that animates IN before it has
+  arrived — same empty PNG, different cause. The helper pumps a fixed, bounded
+  amount of virtual time (`SETTLE_MILLIS`) so entry animations settle while an
+  infinite one lands on a reproducible phase. A render harness that quietly
+  renders nothing is worse than one that wedges: the wedge announces itself.
+
+No CI job runs `recordRoborazziDebug`, so none of this reddened a lane. It was
+paid entirely by people running `scripts/render.sh` locally and routing around
+it.

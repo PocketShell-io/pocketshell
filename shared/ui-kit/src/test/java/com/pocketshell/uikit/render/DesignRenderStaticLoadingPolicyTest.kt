@@ -15,6 +15,17 @@ import java.io.File
  * This source guard makes restoring either fixture to the production infinite
  * animation a hard failure while also protecting the opposite boundary:
  * production [com.pocketshell.uikit.components.LoadingIndicator] must stay live.
+ *
+ * It names TWO fixtures, which is why it could not save #2834: a third one
+ * (`sessionSurfaceReconnectAffordance`) rendered the live spinner and wedged
+ * the drain, because a hand-kept list only covers what someone remembered to
+ * add. The structural answer landed with #2834 — every capture now goes
+ * through [captureFrozenRender], which drives a test-owned frame clock for a
+ * bounded amount of virtual time, so no animation can hold the pre-capture
+ * looper drain open; [RenderHarnessPolicyTest] holds that. These per-fixture
+ * pins are no longer what keeps record mode alive. They stay because a design
+ * PNG should show one deterministic, recognisable in-flight frame rather than
+ * whichever phase a capture happened to land on — visual intent, not safety.
  */
 class DesignRenderStaticLoadingPolicyTest {
 
@@ -44,6 +55,42 @@ class DesignRenderStaticLoadingPolicyTest {
         assertFalse(LIVE_SPINNER_CALL.containsMatchIn(body))
     }
 
+    /**
+     * Issue #2834: the two checks above name their fixtures, and a hand-kept
+     * list only covers what someone remembered to add. Two render sources —
+     * `SessionSurfaceReconnectAffordanceRender` and the `bannerSlots`
+     * leading slot — carried the LIVE spinner for exactly that reason, and
+     * one of them wedged record mode for long enough to cost a root-cause
+     * investigation. This scan is TOTAL over the render sources instead:
+     * zero live indicator calls, no list to keep.
+     */
+    @Test
+    fun noRenderSourceCallsTheLiveIndicator() {
+        val sources = renderDir()
+            .listFiles { file -> file.isFile && file.name.endsWith(".kt") }
+            .orEmpty()
+            .sortedBy { it.name }
+        assertTrue("no render sources found — path rot in the locator", sources.isNotEmpty())
+
+        for (file in sources) {
+            // This policy file has to name the banned calls to check for them.
+            if (file.name == "DesignRenderStaticLoadingPolicyTest.kt") continue
+            val body = file.readText()
+            assertFalse(
+                "${file.name}: render fixtures paint StaticLoadingIndicator, never the live " +
+                    "LoadingIndicator.Bar — a design PNG should not capture an arbitrary " +
+                    "animation phase (#1772, made total by #2834)",
+                LIVE_BAR_CALL.containsMatchIn(body),
+            )
+            assertFalse(
+                "${file.name}: render fixtures paint StaticLoadingIndicator, never the live " +
+                    "LoadingIndicator.Spinner — a design PNG should not capture an arbitrary " +
+                    "animation phase (#1772, made total by #2834)",
+                LIVE_SPINNER_CALL.containsMatchIn(body),
+            )
+        }
+    }
+
     @Test
     fun staticFixtureHasNoAnimationAndProductionIndicatorRemainsLive() {
         val fixture = locateTestSource("StaticLoadingIndicator.kt")
@@ -71,6 +118,14 @@ class DesignRenderStaticLoadingPolicyTest {
 
     private fun String.countOccurrences(needle: String): Int =
         windowed(size = needle.length, step = 1).count { it == needle }
+
+    private fun renderDir(): File = listOf(
+        "shared/ui-kit/src/test/java/com/pocketshell/uikit/render",
+        "src/test/java/com/pocketshell/uikit/render",
+    )
+        .map(::File)
+        .firstOrNull { it.isDirectory }
+        ?: error("Could not locate the ui-kit render dir from ${File(".").absolutePath}")
 
     private fun locateTestSource(name: String): String =
         locate(

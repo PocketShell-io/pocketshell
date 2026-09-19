@@ -25,7 +25,6 @@ import androidx.compose.ui.unit.sp
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.HotkeyLongPressAction
 import com.pocketshell.uikit.components.HotkeySection
-import com.pocketshell.uikit.components.LoadingIndicator
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.SessionBarDictationPhase
 import com.pocketshell.uikit.components.SessionTerminalBar
@@ -295,7 +294,11 @@ internal fun SessionSurfaceReconnectAffordanceRender() {
             .background(color = PocketShellColors.Background),
         contentAlignment = Alignment.Center,
     ) {
-        LoadingIndicator.Spinner(
+        // #2834: the static painter, matching `SessionConnectingStatesRender`'s
+        // two "Attaching…" fixtures. The live M3 spinner paints whatever phase
+        // the capture happens to land on, so this render used to show a
+        // different arc from its own siblings for no reason a reader could see.
+        StaticLoadingIndicator.Spinner(
             size = SpinnerSize.Medium,
             label = "Attaching…",
         )
