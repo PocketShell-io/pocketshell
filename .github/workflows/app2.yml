@@ -872,6 +872,34 @@ jobs:
       # depends on; attendance fails closed on an absent results root or an
       # empty XML set, so a suite that silently ran nothing cannot record a
       # green lane.
+      #
+      # Issue #2744: the recorder above was wired without this restore/save
+      # pair, so every `--record` wrote the journey rows into a file that the
+      # runner threw away — the ledger is persisted ONLY through the
+      # `test-execution-ledger-<os>-` Actions cache chain that tests.yml (unit)
+      # and release-emulator-validation.yml (release) share. The result was the
+      # exact failure the comment above says the recorder exists to prevent:
+      # nothing credited the app2-journey selected set. No other lane can cover
+      # for it either — the release gate runs this same suite through raw
+      # `adb shell am instrument`, which emits no JUnit XML at all, so its
+      # `--record` stages 472 files and credits 0 journey classes. The only
+      # journey rows in the live ledger came from one stale `release`-tier
+      # record on 2026-09-13, which is why J19-J23 (all added after it) read
+      # "NEVER executed" in run 35383053367 while the older 18 were about to
+      # age past the 7-day cadence window together.
+      #
+      # Cache save is the post step of Restore, same as the unit lane. Keyed on
+      # the `journey` tier so this lane's entry cannot collide with the unit or
+      # release entries while still restoring from the shared prefix.
+      - name: Restore test-execution ledger (#2082)
+        if: always() && steps.journey.conclusion != 'skipped'
+        uses: actions/cache@v5
+        with:
+          path: build/test-execution-ledger.tsv
+          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}-journey-${{ github.run_attempt }}
+          restore-keys: |
+            test-execution-ledger-${{ runner.os }}-
+
       - name: Record journey execution into the rolling ledger (#2082)
         if: always() && steps.journey.conclusion != 'skipped'
         run: |

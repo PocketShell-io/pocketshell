@@ -113,6 +113,16 @@ def validate_journey_ledger(job: str) -> None:
     there are no shards to merge. What still has to hold is that the lane
     RECORDS and is held to the wholesale selected set, with the load-bearing
     journeys pinned by name.
+
+    Issue #2744: recording is only half of it. The rolling ledger lives in the
+    shared `test-execution-ledger-<os>-` Actions cache chain, so a lane that
+    `--record`s WITHOUT restoring/saving that cache writes its rows into a file
+    the runner deletes at job end. app2-journey shipped in exactly that state:
+    the recorder was present and green, and not one journey class was ever
+    credited. No other lane can substitute — the release gate runs this same
+    suite through raw `adb shell am instrument`, which emits no JUnit XML for
+    app2 at all. Demand the same restore/save pair the unit and release lanes
+    already carry.
     """
     require(job, LEDGER_SCRIPT_REL, "journey job must invoke the execution ledger")
     # The flag AND its argument: a bare "--record" substring is satisfied by
@@ -150,6 +160,35 @@ def validate_journey_yml(text: str) -> None:
     step_at = job.find("Record journey execution")
     if step_at < 0:
         raise GuardFailure("app2-journey has no 'Record journey execution' step")
+    # Issue #2744: recording is only half of it — the rolling ledger lives in
+    # the shared `test-execution-ledger-<os>-` Actions cache chain, so a lane
+    # that records WITHOUT restoring/saving that cache writes its rows into a
+    # file the runner deletes at job end. Scope every assertion to the restore
+    # STEP: the job also carries a Gradle `actions/cache@v5`, and an unscoped
+    # `job.find("uses: actions/cache@v5")` silently resolves to that one —
+    # which made the first draft of this ordering check vacuously green.
+    restore_at = job.find("Restore test-execution ledger")
+    if restore_at < 0:
+        raise GuardFailure(
+            "app2-journey must persist the rolling ledger: it has no 'Restore "
+            "test-execution ledger' cache step, so every --record below writes "
+            "rows into a file the runner throws away (#2744)"
+        )
+    restore_end = job.find("\n      - name:", restore_at)
+    restore_step = job[restore_at : restore_end if restore_end > 0 else len(job)]
+    require(restore_step, "uses: actions/cache@v5", "journey ledger restore step")
+    require(restore_step, f"path: {LEDGER_PATH}", "journey ledger cache path")
+    require(restore_step, f"key: {CACHE_KEY_PREFIX}", "journey ledger cache key")
+    require(restore_step, "restore-keys:", "journey ledger restore-keys")
+    # The cache must be restored BEFORE the record merges into it. A cache step
+    # sitting after the recorder satisfies every requirement above while saving
+    # a ledger that dropped each pre-existing row — a persistence fix that
+    # erases history instead.
+    if restore_at > step_at:
+        raise GuardFailure(
+            "app2-journey must restore the ledger cache BEFORE the record step, "
+            "or the saved ledger loses every class recorded by an earlier lane"
+        )
     next_step = job.find("\n      - name:", step_at)
     ledger_step = job[step_at : next_step if next_step > 0 else len(job)]
     if "if: always()" not in ledger_step:
@@ -333,6 +372,49 @@ def self_test() -> None:
             )
         },
     )
+    # Issue #2744: THE regression mutation. This is the exact tree shape that
+    # shipped — recorder present, cache absent — and the guard was green on it.
+    expect_red(
+        "journey job records but never persists the rolling ledger cache (#2744)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                "      - name: Restore test-execution ledger (#2082)\n"
+                "        if: always() && steps.journey.conclusion != 'skipped'\n"
+                "        uses: actions/cache@v5\n"
+                "        with:\n"
+                f"          path: {LEDGER_PATH}\n"
+                "          key: test-execution-ledger-${{ runner.os }}-${{ github.sha }}"
+                "-journey-${{ github.run_attempt }}\n"
+                "          restore-keys: |\n"
+                f"            {CACHE_KEY_PREFIX}${{{{ runner.os }}}}-\n"
+                "\n",
+                "",
+            )
+        },
+    )
+    # The save must merge into restored history, not replace it.
+    expect_red(
+        "journey ledger cache restored AFTER the record step (#2744)",
+        **{
+            ".github/workflows/app2.yml": journey.replace(
+                "      - name: Restore test-execution ledger (#2082)\n"
+                "        if: always() && steps.journey.conclusion != 'skipped'\n"
+                "        uses: actions/cache@v5\n",
+                "      - name: Record journey execution into the rolling ledger (#2082)\n"
+                "        if: always() && steps.journey.conclusion != 'skipped'\n"
+                "        uses: actions/cache@v5\n",
+                1,
+            ).replace(
+                "      - name: Record journey execution into the rolling ledger (#2082)\n"
+                "        if: always() && steps.journey.conclusion != 'skipped'\n"
+                "        run: |\n",
+                "      - name: Restore test-execution ledger (#2082)\n"
+                "        if: always() && steps.journey.conclusion != 'skipped'\n"
+                "        run: |\n",
+                1,
+            )
+        },
+    )
     expect_red(
         "journey attendance drops the wholesale selected set",
         **{
@@ -465,7 +547,9 @@ def self_test() -> None:
         },
     )
 
-    expected = 20
+    # 20 + the two #2744 ledger-persistence mutations (cache absent, cache
+    # restored after the record step).
+    expected = 22
     if checks != expected:
         raise GuardFailure(f"self-test ran {checks} red mutations, expected {expected}")
 
