@@ -1064,7 +1064,7 @@ install_or_fallback_uninstall() {
     wait_package_manager_idle
     return 0
   fi
-  if printf '%s\n' "\$output" | grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'; then
+  if grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' <<<"\$output"; then
     uninstall_with_idle_wait "\$package"
     '$ADB' install -r -d -t "\$apk"
     wait_package_manager_idle
@@ -1210,7 +1210,7 @@ install_or_fallback_uninstall() {
     wait_package_manager_idle
     return 0
   fi
-  if printf '%s\n' "\$output" | grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE'; then
+  if grep -q 'INSTALL_FAILED_UPDATE_INCOMPATIBLE' <<<"\$output"; then
     printf 'LEGACY-V1: uninstall fallback for incompatible app package before migration setup\n'
     '$ADB' uninstall com.pocketshell.app >/dev/null 2>&1 || true
     wait_package_manager_idle
@@ -1222,7 +1222,7 @@ install_or_fallback_uninstall() {
 }
 
 adb_output_has_transport_drop_markers() {
-  printf '%s\n' "\${1:-}" | grep -Eiq 'device offline|device still connecting|error: closed|error: device .+ not found|no devices/emulators found|connection reset|connection refused|protocol fault|failed to read|read failed|transport.*(offline|error|closed)|adb: failed to'
+  grep -Eiq 'device offline|device still connecting|error: closed|error: device .+ not found|no devices/emulators found|connection reset|connection refused|protocol fault|failed to read|read failed|transport.*(offline|error|closed)|adb: failed to' <<<"\${1:-}"
 }
 
 logcat_has_app_crash_signature() {
@@ -1755,7 +1755,7 @@ instrumentation_output_has_failure_markers() {
   # whose whole point is to NOT gate anything. Matching every negative code
   # made a clean "0 failed, 2 ignored" run indistinguishable from a real
   # failure, which is exactly the false failure this run reproduced.
-  printf '%s\n' "\$output" | grep -Eq '(^FAILURES!!!$|^FAILURE: |^INSTRUMENTATION_STATUS_CODE: -[12]$|^INSTRUMENTATION_STATUS: stack=|^[[:space:]]*at (com[.]pocketshell|androidx[.]test|org[.]junit|kotlin[.]|java[.]|android[.])|^[[:alnum:]_.]*(Exception|Error): |^Process crashed[.])'
+  grep -Eq '(^FAILURES!!!$|^FAILURE: |^INSTRUMENTATION_STATUS_CODE: -[12]$|^INSTRUMENTATION_STATUS: stack=|^[[:space:]]*at (com[.]pocketshell|androidx[.]test|org[.]junit|kotlin[.]|java[.]|android[.])|^[[:alnum:]_.]*(Exception|Error): |^Process crashed[.])' <<<"\$output"
 }
 
 logcat_has_app_or_test_failure_markers() {
@@ -1777,8 +1777,7 @@ logcat_has_adb_transport_drop_markers() {
 # also having the GL marker reproduce across a fresh boot.
 instrumentation_has_gl_compose_failure_signature() {
   # The authoritative app-level signature: Compose surface never rendered.
-  if printf '%s\n' "\$output" |
-    grep -Eq 'No compose hierarchies found|the Activity that calls setContent did not launch'; then
+  if grep -Eq 'No compose hierarchies found|the Activity that calls setContent did not launch' <<<"\$output"; then
     return 0
   fi
   if [ -f "\$full_logcat_file" ] &&
@@ -1842,7 +1841,7 @@ cold_reboot_emulator_for_gl_recovery() {
 
 should_retry_interrupted_instrumentation() {
   [ "\$instrument_status" -eq 255 ] || return 1
-  printf '%s\n' "\$output" | grep -q 'INSTRUMENTATION_CODE: -1' && return 1
+  grep -q 'INSTRUMENTATION_CODE: -1' <<<"\$output" && return 1
   instrumentation_output_has_failure_markers && return 1
   logcat_has_app_or_test_failure_markers && return 1
   logcat_has_adb_transport_drop_markers
@@ -1868,16 +1867,16 @@ while [ "\$attempt" -le "\$max_instrumentation_runs" ]; do
   '$ADB' logcat -d -v time -t 5000 > "\$full_logcat_file" 2>&1 || true
   printf '%s\n' "\$output"
   if [ "\$instrument_status" -eq 0 ] &&
-    printf '%s\n' "\$output" | grep -q 'INSTRUMENTATION_CODE: -1' &&
+    grep -q 'INSTRUMENTATION_CODE: -1' <<<"\$output" &&
     ! instrumentation_output_has_failure_markers; then
     # Issue #2481 / G3: an unfiltered run has no selector that can go stale, so
     # the way it lies is 'OK (0 tests)' — a green over nothing
     # (docs/ci-pitfalls.md). Refuse it here rather than let the gate publish it.
-    if printf '%s\n' "\$output" | grep -Eq '^OK \\(0 tests\\)'; then
+    if grep -Eq '^OK \\(0 tests\\)' <<<"\$output"; then
       dump_instrumentation_diagnostics "the app2 instrumented suite reported OK (0 tests): the run executed nothing, so it proves nothing"
       exit 1
     fi
-    if ! printf '%s\n' "\$output" | grep -Eq '^OK \\([1-9][0-9]* tests?\\)'; then
+    if ! grep -Eq '^OK \\([1-9][0-9]* tests?\\)' <<<"\$output"; then
       dump_instrumentation_diagnostics "the app2 instrumented suite did not report an 'OK (N tests)' summary with N >= 1"
       exit 1
     fi
@@ -1885,7 +1884,7 @@ while [ "\$attempt" -le "\$max_instrumentation_runs" ]; do
     exit 0
   fi
   if [ "\$attempt" -eq 1 ] &&
-    { printf '%s\n' "\$output" | grep -q 'Process crashed'; } &&
+    { grep -q 'Process crashed' <<<"\$output"; } &&
     grep -q 'Crash of app com[.]pocketshell[.]app running instrumentation' "\$full_logcat_file"; then
     cp "\$full_logcat_file" "\$full_logcat_file.attempt1" || true
     printf 'Focused instrumentation crashed after external app force-stop; retrying selector once.\n' >&2
@@ -1937,7 +1936,7 @@ while [ "\$attempt" -le "\$max_instrumentation_runs" ]; do
     fi
     exit "\$instrument_status"
   fi
-  if printf '%s\n' "\$output" | grep -q 'INSTRUMENTATION_CODE: -1' &&
+  if grep -q 'INSTRUMENTATION_CODE: -1' <<<"\$output" &&
     instrumentation_output_has_failure_markers; then
     dump_instrumentation_diagnostics "instrumentation reported INSTRUMENTATION_CODE: -1 with failure markers"
     exit 1
