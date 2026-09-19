@@ -26,7 +26,16 @@ when the Kotlin in `ui-kit` drifts from the file.
 
 - UI chrome: system sans (bundling Inter/SF Pro deferred)
 - Terminal + inline code: system mono (bundling JetBrains Mono deferred)
-- Sizes: the `type` block of `tokens.json` — four rungs from 11sp captions to 20sp screen headings; one restrained scale
+- Sizes: the `type` block of `tokens.json` — seven rungs. Four proportional
+  sizes carry the chrome (11sp captions, 14sp body, 16sp titles, 20sp screen
+  headings), plus a 13sp dense rung for compact rows and two mono rungs (13sp
+  body, 11sp label) for paths, commands and IDs. Still one restrained scale:
+  every rung is in the token file and pinned by `QuietThemeTokenTest` (#2810),
+  so none of them can be added or resized in Kotlin alone.
+- The desktop client's 13px body rung (`--fs-300` in `pocketshell-electron`)
+  is the same value as the phone's `type.bodyDense`, and is now backed by a
+  pinned token rather than derived by reading `Type.kt`'s source. Changing
+  13sp here is a cross-product change.
 
 ## Components (to live in `ui-kit`)
 

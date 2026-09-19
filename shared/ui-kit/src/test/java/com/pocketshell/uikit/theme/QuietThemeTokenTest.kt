@@ -7,6 +7,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -14,6 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -76,19 +78,66 @@ class QuietThemeTokenTest {
 
     @Test
     fun typeScaleMatchesTheDesignKit() {
-        // The named rungs — one assertion per tokens.json `type` role.
-        assertType("screen", PocketShellType.screen)
-        assertType("title", PocketShellType.title)
-        assertType("body", PocketShellType.body)
-        assertType("metadata", PocketShellType.metadata)
-        assertType("label", PocketShellType.label)
-        assertType("button", PocketShellType.button)
-        // `workspace` and `terminal` are aliases, never independent values —
-        // the two-copies failure #2630 shipped with.
-        assertEquals(DesignKitTokens.typeSizeSp("workspace").sp, PocketShellType.workspace.fontSize)
-        assertEquals(DesignKitTokens.typeLineHeightSp("workspace").sp, PocketShellType.workspace.lineHeight)
-        assertEquals(DesignKitTokens.typeSizeSp("terminal").sp, PocketShellType.terminal.fontSize)
-        assertEquals(DesignKitTokens.typeLineHeightSp("terminal").sp, PocketShellType.terminal.lineHeight)
+        // #2810: EVERY `type` role in tokens.json is bound by name to a
+        // `PocketShellType` rung, the same shape #2800 gave the `size` table.
+        // `bodyDense` / `bodyMono` / `labelMono` — 42 references across 23
+        // files, including the ui-kit primitives themselves — used to live
+        // only in Kotlin: in no token file and in no test. That gap is not
+        // academic. The desktop client read the ladder off `Type.kt` source
+        // rather than the token file and adopted the unpinned 13sp rung as
+        // its body size (`--fs-300`), so the value bridging the two products
+        // was the one nothing protected.
+        //
+        // The map is keyed by the JSON name so the key-set assertion below
+        // fails BOTH ways: a rung added to `PocketShellType` without a
+        // tokens.json entry reddens, and a tokens.json role with no Kotlin
+        // binding reddens too.
+        //
+        // `workspace` and `terminal` are aliases (`= title`, `= metadata`),
+        // never independent values — the two-copies failure #2630 shipped
+        // with. They are bound here like any other role, which also brings
+        // them under the weight assertion they previously escaped.
+        val rungs = mapOf(
+            "screen" to PocketShellType.screen,
+            "workspace" to PocketShellType.workspace,
+            "title" to PocketShellType.title,
+            "body" to PocketShellType.body,
+            "metadata" to PocketShellType.metadata,
+            "label" to PocketShellType.label,
+            "button" to PocketShellType.button,
+            "terminal" to PocketShellType.terminal,
+            "bodyDense" to PocketShellType.bodyDense,
+            "bodyMono" to PocketShellType.bodyMono,
+            "labelMono" to PocketShellType.labelMono,
+        )
+        val jsonTypeRoles = DesignKitTokens.root.getJSONObject("type").keys().asSequence().toSortedSet()
+        assertEquals(
+            "every tokens.json `type` role needs a PocketShellType binding by name (#2810) — " +
+                "an unbound rung is a size waiting to drift, and a sibling product waiting to " +
+                "derive its scale from our source code instead of our token file",
+            jsonTypeRoles,
+            rungs.keys.toSortedSet(),
+        )
+        rungs.forEach { (role, style) -> assertType(role, style) }
+
+        // tokens.json carries size/lineHeight/weight but has no per-role font
+        // family — the family lives in its top-level `font` block, one entry
+        // for UI chrome and one for mono. So `bodyDense` and `bodyMono` are
+        // byte-identical in the JSON (both 13/18/400) and the assertions above
+        // cannot tell them apart: `assertType("bodyMono", bodyDense)` would
+        // pass. Mono-ness is the whole point of a mono rung, so it is pinned
+        // here in Kotlin space instead, including the discrimination the JSON
+        // cannot express.
+        assertEquals(JetBrainsMonoFamily, PocketShellType.bodyMono.fontFamily)
+        assertEquals(JetBrainsMonoFamily, PocketShellType.labelMono.fontFamily)
+        assertEquals(FontFamily.SansSerif, PocketShellType.bodyDense.fontFamily)
+        assertNotEquals(
+            "`bodyDense` and `bodyMono` share every number tokens.json records (13/18/400); " +
+                "the font family is the only thing separating them, so losing it would make " +
+                "the two rungs silently interchangeable",
+            PocketShellType.bodyDense,
+            PocketShellType.bodyMono,
+        )
 
         // The `quiet*` spellings are the same instances, not re-declared copies.
         assertEquals(PocketShellType.screen, PocketShellType.quietScreen)
@@ -205,7 +254,7 @@ class QuietThemeTokenTest {
         }
 
         // Type — every `type` role against its `*Type` TextStyle, weight included.
-        mapOf(
+        val kitTypeNames = mapOf(
             "screen" to "screenType",
             "workspace" to "workspaceType",
             "title" to "titleType",
@@ -214,7 +263,23 @@ class QuietThemeTokenTest {
             "label" to "labelType",
             "button" to "buttonType",
             "terminal" to "terminalType",
-        ).forEach { (jsonRole, kitName) ->
+        )
+        // #2810: the kit hand-off predates the app's own dense/mono rungs
+        // (#461 Δ7/Δ8), so `PocketShellTheme.kt` declares no `bodyDenseType`
+        // and this map cannot cover them. That exemption is spelled out as a
+        // set rather than left as a silent omission, because a hand-kept list
+        // that quietly ignores whatever it does not mention is exactly the
+        // failure this issue is about. The assertion below therefore still
+        // reddens when a NEW role lands in tokens.json: whoever adds it has
+        // to say which side it belongs on.
+        val rolesTheKitHandOffPredates = setOf("bodyDense", "bodyMono", "labelMono")
+        assertEquals(
+            "every tokens.json `type` role is either checked against the generated kit theme " +
+                "or listed as one the kit hand-off predates (#2810)",
+            DesignKitTokens.root.getJSONObject("type").keys().asSequence().toSortedSet(),
+            (kitTypeNames.keys + rolesTheKitHandOffPredates).toSortedSet(),
+        )
+        kitTypeNames.forEach { (jsonRole, kitName) ->
             val (kitSize, kitLineHeight) = DesignKitTokens.kitType(kitName)
             assertEquals(
                 "kit theme `$kitName` size drifted from tokens.json",

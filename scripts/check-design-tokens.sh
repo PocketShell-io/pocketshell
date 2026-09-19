@@ -53,7 +53,9 @@ BASELINE_FILE="scripts/design-token-baseline.txt"
 # the single source of truth — #2717).
 #   radii  -> tokens.json `radius` ladder: 4 badge, 8 chip, 12 field/button/card, 24 sheet
 #   sizes  -> tokens.json `type` rungs (screen 20, title 16, body/button 14,
-#             metadata/label 11) plus bodyDense/bodyMono 13
+#             bodyDense/bodyMono 13, metadata/label/labelMono 11). The 13sp
+#             entry used to be a hand-added exception here because the rung
+#             existed only in Kotlin; #2810 pinned it as a real `type` role.
 RADIUS_ALLOWED='RoundedCornerShape\((4|8|12|24)\.dp\)'
 FONTSIZE_ALLOWED='fontSize = (11|13|14|16|20)\.sp'
 

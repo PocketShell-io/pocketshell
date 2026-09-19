@@ -29,7 +29,11 @@ import androidx.compose.ui.unit.sp
  * the spec, and `QuietThemeTokenTest` fails when the two drift apart.
  *
  * The dense/mono rungs ([bodyDense], [bodyMono], [labelMono]) sit deliberately
- * between these and are NOT part of this table.
+ * between these and are NOT part of this M3 table — but they ARE `type` roles
+ * in `tokens.json` and pinned by `QuietThemeTokenTest` like every other rung
+ * (#2810). They used to exist only here, in no token file and no test, which
+ * is how the desktop client came to derive its body size by reading this
+ * file's source instead of the token file.
  *
  * Font families:
  *
@@ -188,7 +192,7 @@ object PocketShellType {
      * 13sp dense body (Δ8) — the canonical dense-row size between `labelSmall`(11)
      * and `bodyMedium`(14). Promotes the de-facto 13sp literal (the 2nd most-used
      * size in the app) into a real rung: dense list/tree rows, conversation lines,
-     * settings rows.
+     * settings rows. The `type.bodyDense` rung in `tokens.json`.
      */
     val bodyDense: TextStyle = TextStyle(
         fontFamily = FontFamily.SansSerif,
@@ -200,7 +204,10 @@ object PocketShellType {
     /**
      * 13sp mono body (Δ7) — terminal-adjacent UI: host subtitles, paths, command
      * chips, aplexer names, tool-call previews. System monospace via
-     * [JetBrainsMonoFamily] (bundling deferred).
+     * [JetBrainsMonoFamily] (bundling deferred). The `type.bodyMono` rung in
+     * `tokens.json`; the JSON records the metrics, and the family — the only
+     * thing distinguishing this rung from [bodyDense], which shares all three
+     * numbers — is pinned in `QuietThemeTokenTest`.
      */
     val bodyMono: TextStyle = TextStyle(
         fontFamily = JetBrainsMonoFamily,
@@ -211,7 +218,8 @@ object PocketShellType {
 
     /**
      * 11sp mono label (Δ7) — inline counts/IDs in a mono context. System
-     * monospace via [JetBrainsMonoFamily] (bundling deferred).
+     * monospace via [JetBrainsMonoFamily] (bundling deferred). The
+     * `type.labelMono` rung in `tokens.json`.
      */
     val labelMono: TextStyle = TextStyle(
         fontFamily = JetBrainsMonoFamily,
