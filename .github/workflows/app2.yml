@@ -195,13 +195,14 @@ jobs:
             echo "| core-portfwd integration (Docker) | ${{ steps.select.outputs.portfwd == 'true' && 'RUNS' || 'skipped' }} |"
             echo "| app2 unit | ${{ steps.select.outputs.app2 == 'true' && 'RUNS' || 'skipped' }} |"
             echo "| app2 journey (emulator) | ${{ steps.select.outputs.app2 == 'true' && 'RUNS' || 'skipped' }} |"
+            echo "| shared/ui-kit connected (emulator) | ${{ steps.select.outputs.app2 == 'true' && 'RUNS' || 'skipped' }} |"
           } >> "${GITHUB_STEP_SUMMARY}"
           if [ "${{ steps.select.outputs.app2 }}" != "true" ]; then
             {
               echo
-              echo "> ⚠️ **The app2 journey lane is skipped on this run. This run is NOT validation of the journeys.**"
+              echo "> ⚠️ **The app2 journey and shared/ui-kit connected lanes are skipped on this run. This run is NOT validation of the journeys or of the ui-kit connected suite.**"
             } >> "${GITHUB_STEP_SUMMARY}"
-            echo "::warning title=Journey lane skipped::The app2 journey lane is skipped on this run — its conclusion is not journey-lane validation (#2600)"
+            echo "::warning title=Emulator lanes skipped::The app2 journey and shared/ui-kit connected lanes are skipped on this run — its conclusion is not validation of either (#2600, #2826)"
           fi
 
   # ---------------------------------------------------------------------------
@@ -995,6 +996,153 @@ jobs:
       - name: Stop Docker fixtures
         if: always()
         run: docker compose -f tests/docker/docker-compose.yml down --volumes --remove-orphans
+
+  # ---------------------------------------------------------------------------
+  # shared/ui-kit connected suite (issue #2826).
+  #
+  # WHY THIS LANE EXISTS. `UiKitPrimitivesTest` is the ui-kit's only instrumented
+  # suite, and until this issue NOTHING in tests.yml or app2.yml EXECUTED it —
+  # tests.yml compiles the source set
+  # (`:shared:ui-kit:compileDebugAndroidTestKotlin`, still there and still
+  # wanted, it is the cheap PR-time link check) and stops. The single lane that
+  # ran it was the release gate's pre-release confidence step. That gate had
+  # been blocking at the D37 nightly-fault guard BEFORE any test ran, so when
+  # #2717's type retune left a stale height oracle behind, the red was invisible
+  # for three days and then surfaced as a release blocker. "Compiling proves it
+  # links, not that it passes" (docs/ci-pitfalls.md), compounded by a guard that
+  # masked the only consumer.
+  #
+  # SELECTION. Gated on the app2 lane bit, not a new selector output: since
+  # issue #2824 `shared/ui-kit/` is an app2 dependency edge, so a ui-kit-only
+  # commit already sets it, and shared-infrastructure paths fail it open. That
+  # over-selects (an app2-only commit also runs this) and never under-selects,
+  # which is the correct error direction for a lane whose entire reason for
+  # existing is that it was under-selected to zero.
+  #
+  # BUDGET. 12 fast component tests, no Docker fixtures, no app2 APK, so the
+  # cost is almost entirely the AVD boot this job cannot share with
+  # `app2-journey` (the emulator action owns one boot per step). Push/schedule
+  # only, the same cadence as `app2-journey`, and the two run in parallel — this
+  # adds no wall clock to the run. The step cap is deliberately below the job cap
+  # for the same reason app2-journey's is: a job killed at ITS cap uploads
+  # nothing.
+  ui-kit-connected:
+    name: shared/ui-kit connected suite (emulator)
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && needs.changes.result == 'success' && needs.changes.outputs.app2 == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      # fetch-depth 0: scripts/check-emulator-apk-version-wiring.sh requires it
+      # of every emulator-booting job — a shallow clone makes the version
+      # derivation report the 0.0.0-dev placeholder.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Cache Gradle
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', '**/*.gradle*', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Assemble before the AVD boots, exactly as app2-journey does: a tree that
+      # does not compile reddens in minutes without spending an emulator.
+      - name: Assemble ui-kit androidTest APKs
+        timeout-minutes: 20
+        run: |
+          ./gradlew :shared:ui-kit:assembleDebugAndroidTest \
+            --no-daemon --stacktrace --console=plain \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The same two hosted-runner failure modes every other emulator lane hits
+      # (#760 disk pressure, #771 sdkmanager crash), through the same scripts.
+      - name: Free disk space for the AVD
+        run: scripts/ci-emulator-free-disk.sh
+
+      - name: Repair Android cmdline-tools + accept licenses (issue #771)
+        run: scripts/ci-emulator-repair-sdk-tools.sh
+
+      # The execution guard below credits only result XML newer than this
+      # marker, so an UP-TO-DATE/FROM-CACHE task or a run that died before
+      # instrumenting cannot be certified by a previous run's leftovers.
+      - name: Mark ui-kit connected run start
+        run: touch "${RUNNER_TEMP}/ui-kit-connected-run-start"
+
+      - name: Run the ui-kit connected suite on the emulator
+        id: uikit
+        timeout-minutes: 30
+        # Same SHA-pinned v2.37.0 commit and same AVD definition as the other
+        # emulator lanes (scripts/check-emulator-action-pin.sh).
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          # --rerun-tasks --no-build-cache: the G3 pair. Without them a
+          # cache-restored connectedDebugAndroidTest unpacks a previous run's
+          # XML with a fresh mtime and real counts, which defeats the guard
+          # below and this lane certifies a run that never touched the device.
+          # No `tee`, no pipeline: gradle's own rc is the step's rc.
+          script: >-
+            ./gradlew :shared:ui-kit:connectedDebugAndroidTest
+            --rerun-tasks --no-build-cache
+            --no-daemon --stacktrace --console=plain
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8"
+
+      # G3 again, from the other side: a green `BUILD SUCCESSFUL` proves
+      # nothing. UiKitPrimitivesTest carried 12 tests when this lane landed;
+      # floor 10 tolerates ordinary churn while a lost class, an
+      # assumeTrue-skipped suite or a vacuous zero-executed run still reddens.
+      # `executed = tests - skipped`, and `--newer-than` rejects stale XML.
+      - name: Assert the ui-kit connected suite actually executed
+        if: always() && steps.uikit.conclusion != 'skipped'
+        run: |
+          chmod +x scripts/check-app2-lane-execution.py
+          scripts/check-app2-lane-execution.py --self-test
+          scripts/check-app2-lane-execution.py \
+            --label ":shared:ui-kit:connectedDebugAndroidTest" \
+            --results-dir shared/ui-kit/build/outputs/androidTest-results/connected/debug \
+            --min 10 \
+            --newer-than "${RUNNER_TEMP}/ui-kit-connected-run-start"
+
+      - name: Upload ui-kit connected reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ui-kit-connected-reports
+          path: |
+            shared/ui-kit/build/reports/androidTests/
+            shared/ui-kit/build/outputs/androidTest-results/
+            shared/ui-kit/build/outputs/connected_android_test_additional_output/
+          overwrite: true
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------
   # Production-binding mutations (issue #1932, rolled up to #1671).

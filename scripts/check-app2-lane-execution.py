@@ -1,8 +1,10 @@
 #!/usr/bin/python3 -I
 """Prove an app2.yml lane actually EXECUTED tests (rewrite task M-2).
 
-The G3 rule ("ban '0 tests completed' as a pass") applied to the four narrow
-per-module lanes in ``.github/workflows/app2.yml``.  Gradle prints test counts
+The G3 rule ("ban '0 tests completed' as a pass") applied to the narrow
+per-module lanes in ``.github/workflows/app2.yml`` -- the four unit/integration
+lanes, the ``app2-journey`` connected lane, and (issue #2826) the
+``ui-kit-connected`` lane.  Gradle prints test counts
 only on failure, so a green ``BUILD SUCCESSFUL`` alone proves nothing; and the
 new lanes have two live ways to be vacuously green:
 

@@ -16,16 +16,19 @@ import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.captureToImage
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.pocketshell.uikit.model.ConnectionStatus
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
+import com.pocketshell.uikit.theme.PocketShellType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -62,12 +65,45 @@ class UiKitPrimitivesTest {
         composeRule.onNodeWithText("live").assertIsDisplayed()
     }
 
+    /**
+     * Issue #2826 — the wrapped-title floor is DERIVED from the live
+     * `type.screen` rung, never a literal.
+     *
+     * This assertion used to read `assertHeightIsAtLeast(60.dp)`. 60 dp was
+     * never a design intent: it was "two lines of the 28sp/34sp screen rung"
+     * frozen into a number. `9bb92c14b` (#2717) retuned that rung to the
+     * 20sp/26sp `type.screen` token, so the same correctly-wrapped two-line
+     * title measured 49.9 dp and the stale oracle went red — the ci-pitfalls
+     * "shared-literal / default-flip regression that no per-PR check catches"
+     * class. Nothing about [ScreenHeader] regressed, and `d2690ecfa` (#2727,
+     * which the report first blamed) touches no height-bearing property of
+     * this component at all.
+     *
+     * The rung is the locked design token (`docs/design-kit/design-system/
+     * tokens.json` `type.screen`, pinned both ways by `QuietThemeTokenTest`),
+     * so it is the ORACLE that gets re-derived, not the component:
+     *
+     * - **floor** `1.5 x lineHeight` — one line cannot reach it, so this still
+     *   pins the thing the test is named for: the long title wraps past a
+     *   single line.
+     * - **ceiling** `titleMaxLines x lineHeight` — Compose lays each line out
+     *   at exactly the style's `lineHeight` (the last line's descent leading is
+     *   trimmed, which is why the real measurement lands just under), so the
+     *   node can never exceed its line budget. This catches the opposite
+     *   regression: a third line, or padding smuggled onto the title node.
+     *
+     * Intended height for a wrapped long title, stated explicitly: two lines of
+     * `PocketShellType.screen.lineHeight` (26 sp today) = 52 dp nominal,
+     * measuring ~49.9 dp on the release gate's emulator after that trim. Retune
+     * the rung in `tokens.json` and this test follows it; it will not need a
+     * new number again.
+     */
     @Test
     fun screenHeader_wrapsLongTitleAndKeepsSubtitle() {
         composeRule.setContent {
             PocketShellTheme {
                 ScreenHeader(
-                    title = "A very long workspace name that should wrap",
+                    title = LONG_TITLE,
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag(HEADER_TAG),
@@ -78,11 +114,68 @@ class UiKitPrimitivesTest {
             }
         }
 
-        composeRule.onNodeWithTag(HEADER_TITLE_TAG)
+        val title = composeRule.onNodeWithTag(HEADER_TITLE_TAG)
+        title
             .assertIsDisplayed()
-            .assertHeightIsAtLeast(60.dp)
             .assert(SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading))
+
+        val lineHeight = with(composeRule.density) { PocketShellType.screen.lineHeight.toDp() }
+        val measured = title.getUnclippedBoundsInRoot().height
+        assertTrue(
+            "The long ScreenHeader title measured $measured, below the " +
+                "${lineHeight * WRAPPED_TITLE_MIN_LINES} two-line floor derived from the live " +
+                "type.screen rung (lineHeight $lineHeight). It did not wrap (#2826).",
+            measured >= lineHeight * WRAPPED_TITLE_MIN_LINES,
+        )
+        assertTrue(
+            "The long ScreenHeader title measured $measured, above its " +
+                "$TITLE_MAX_LINES-line budget of ${lineHeight * TITLE_MAX_LINES} at the live " +
+                "type.screen rung (lineHeight $lineHeight) — an extra line or padding " +
+                "appeared on the title node (#2826).",
+            measured <= lineHeight * TITLE_MAX_LINES,
+        )
+
         composeRule.onNodeWithTag(HEADER_SUBTITLE_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * Anti-vacuity for the test above (#2826): the SAME header with a short
+     * title must measure a SINGLE line of the same rung. Without this, a
+     * floor-only assertion could be satisfied by a header that stopped wrapping
+     * and grew padding instead, and the ceiling could be satisfied by a title
+     * that never wrapped at all.
+     */
+    @Test
+    fun screenHeader_shortTitleStaysOneLine() {
+        composeRule.setContent {
+            PocketShellTheme {
+                ScreenHeader(
+                    title = "Hosts",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag(HEADER_TAG),
+                    subtitle = "4 hosts · 7 sessions",
+                    titleTestTag = HEADER_TITLE_TAG,
+                )
+            }
+        }
+
+        val lineHeight = with(composeRule.density) { PocketShellType.screen.lineHeight.toDp() }
+        val measured = composeRule.onNodeWithTag(HEADER_TITLE_TAG)
+            .assertIsDisplayed()
+            .getUnclippedBoundsInRoot()
+            .height
+        assertTrue(
+            "A short ScreenHeader title measured $measured, at or above the " +
+                "${lineHeight * WRAPPED_TITLE_MIN_LINES} two-line floor — the wrap assertion in " +
+                "screenHeader_wrapsLongTitleAndKeepsSubtitle would then pin nothing (#2826).",
+            measured < lineHeight * WRAPPED_TITLE_MIN_LINES,
+        )
+        assertTrue(
+            "A short ScreenHeader title collapsed to $measured; it should be one line box of " +
+                "the live type.screen rung (lineHeight $lineHeight).",
+            measured > lineHeight / 2,
+        )
     }
 
     @Test
@@ -294,6 +387,19 @@ class UiKitPrimitivesTest {
         const val HEADER_TITLE_TAG = "test:screen-header-title"
         const val HEADER_SUBTITLE_TAG = "test:screen-header-subtitle"
         const val SECTION_LABEL_TAG = "test:section-header-label"
+
+        /** Long enough to wrap at every phone width the kit targets. */
+        const val LONG_TITLE = "A very long workspace name that should wrap"
+
+        /** [ScreenHeader]'s own `titleMaxLines` default — the title's line budget. */
+        const val TITLE_MAX_LINES = 2
+
+        /**
+         * Floor multiplier for "this title wrapped past one line" (#2826). Half
+         * a line of slack below two full lines absorbs Compose's last-line
+         * descent trim without ever being reachable by a single line.
+         */
+        const val WRAPPED_TITLE_MIN_LINES = 1.5f
     }
 }
 

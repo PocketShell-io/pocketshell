@@ -220,6 +220,20 @@ class DesignRenders {
         )
     }
 
+    /**
+     * Issue #2826: the SAME header with a title long enough to wrap, so the
+     * two-line `type.screen` (20sp/26sp) block that
+     * `UiKitPrimitivesTest.screenHeader_wrapsLongTitleAndKeepsSubtitle` measures
+     * is a visible artifact and not only a number in an assertion message.
+     */
+    @Test
+    fun screenHeaderWrappedTitle() = render("screen-header-wrapped-title") {
+        ScreenHeader(
+            title = "A very long workspace name that should wrap",
+            subtitle = "host.example · 2 sessions",
+        )
+    }
+
     /** Bottom-sheet title row with subtitle, trailing action, and close affordance. */
     @Test
     fun sheetHeader() = render("sheet-header") {

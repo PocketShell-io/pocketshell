@@ -145,6 +145,16 @@ Rule: semantic colour is for status, role, and action. It is not page chrome.
 Do not use display typography in PocketShell chrome. The viewport is for work,
 not marketing.
 
+**Never pin a text block's height as a dp literal** (issue #2826). A text node
+measures one natural line box plus exactly one `lineHeight` per additional line,
+so its height is a function of the rung and moves with it: a wrapped two-line
+`ScreenHeader` title is ~50 dp at today's 20sp/26sp screen heading and was ~67 dp
+at the 28sp/34sp rung #2717 replaced. A test that wrote the old number down went
+red on a correctly-wrapping header three days after the retune, and only the
+release gate ever ran it. Derive the bound from
+`PocketShellType.<rung>.lineHeight` instead — see
+`ScreenHeaderWrapHeightTest` and `UiKitPrimitivesTest`.
+
 ### Spacing And Density
 
 The spacing rungs and density geometry are the single source of truth in
