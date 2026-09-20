@@ -576,6 +576,8 @@ fun CreateSessionSheetContent(
                     title = "Technical details",
                     subtitle = if (technicalDetailsOpen) "Hide details" else "Show host capability details",
                     onClick = { technicalDetailsOpen = !technicalDetailsOpen },
+                    // A disclosure row inside a gapped sheet block (#2804).
+                    showDivider = false,
                 )
                 if (technicalDetailsOpen) {
                     Text(
@@ -698,6 +700,10 @@ fun CreateSessionSheetContent(
                                 }
                                 else -> { { unavailableProgram = program } }
                             },
+                            // The picker is a deliberately gapped block, so
+                            // the rows drop their dividers rather than float a
+                            // hairline in each 4dp gap (#2804).
+                            showDivider = false,
                             modifier = Modifier.testTag(
                                 if (program.id == "shell") {
                                     CREATE_SESSION_TYPE_SHELL_TAG
@@ -711,6 +717,7 @@ fun CreateSessionSheetContent(
                         title = "More options",
                         subtitle = "Name and profile",
                         onClick = { if (!state.submitting) optionsOpen = true },
+                        showDivider = false,
                         modifier = Modifier.testTag(CREATE_SESSION_OPTIONS_TAG),
                     )
                 }

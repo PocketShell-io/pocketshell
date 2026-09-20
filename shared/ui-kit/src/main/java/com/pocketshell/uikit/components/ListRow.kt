@@ -74,6 +74,21 @@ import com.pocketshell.uikit.theme.PocketShellType
  *
  * Colours stay on the always-dark raw tokens (#477 single dark scheme) so the
  * row never flips with the system light setting.
+ *
+ * ### Inter-row rhythm (#2804)
+ *
+ * There is ONE rhythm for a list of these rows: **divider, zero gap**. The
+ * divider below each row is what separates it from the next, so the list that
+ * holds them must not also add a `verticalArrangement` gap — a hairline
+ * floating in the middle of a 4/12dp gap reads as neither a separator nor a
+ * group break, which is exactly the drift the #2635 audit's P-3 found across
+ * three copies of the same list.
+ *
+ * A row that sits inside a deliberately gapped block (a form, a sheet, rows
+ * interleaved with fields/prose/buttons) turns its divider off with
+ * [showDivider] instead of doubling up. `RowRhythmGuardTest` fails the build on
+ * any list in `app2/src/main` / `shared/ui-screens/src/main` that combines the
+ * two.
  */
 @Composable
 fun ListRow(
@@ -89,6 +104,7 @@ fun ListRow(
     subtitleStyle: TextStyle = PocketShellType.metadata,
     titleWeight: FontWeight? = null,
     subtitleContent: (@Composable () -> Unit)? = null,
+    showDivider: Boolean = true,
 ) {
     // Every standard row is a 56dp minimum hit target. WorkspaceRow raises
     // this to the separate 64dp workspace navigation target.
@@ -176,9 +192,11 @@ fun ListRow(
             }
         }
         }
-        HorizontalDivider(
-            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
-            color = PocketShellColors.BorderSoft,
-        )
+        if (showDivider) {
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
+                color = PocketShellColors.BorderSoft,
+            )
+        }
     }
 }

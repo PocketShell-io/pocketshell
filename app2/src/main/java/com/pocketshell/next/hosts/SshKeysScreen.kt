@@ -327,6 +327,8 @@ private fun SshKeysUnlockSheet(
                                 subtitle = "Passphrase protected",
                                 selected = selectedKeyId == key.id,
                                 onClick = { onSelectKey(key.id) },
+                                // Gapped form block, not a list (#2804).
+                                showDivider = false,
                                 modifier = Modifier.testTag(sshKeyFallbackRowTag(key.id)),
                             )
                         }
@@ -864,6 +866,9 @@ private fun SshKeysGeneratePage(
             subtitle = SshKeyGenerationType.ED25519.description,
             selected = type == SshKeyGenerationType.ED25519,
             onClick = { onTypeChange(SshKeyGenerationType.ED25519) },
+            // The generate page is a gapped form (SshKeysPageInset blocks
+            // at 8dp), so its choices drop the divider (#2804).
+            showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_ED25519_TAG),
         )
         QuietChoiceRow(
@@ -871,6 +876,9 @@ private fun SshKeysGeneratePage(
             subtitle = SshKeyGenerationType.RSA.description,
             selected = type == SshKeyGenerationType.RSA,
             onClick = { onTypeChange(SshKeyGenerationType.RSA) },
+            // The generate page is a gapped form (SshKeysPageInset blocks
+            // at 8dp), so its choices drop the divider (#2804).
+            showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_RSA_TAG),
         )
         SshKeysPageInset {
@@ -881,6 +889,9 @@ private fun SshKeysGeneratePage(
             subtitle = SshKeyProtection.NONE.description,
             selected = protection == SshKeyProtection.NONE,
             onClick = { onProtectionChange(SshKeyProtection.NONE) },
+            // The generate page is a gapped form (SshKeysPageInset blocks
+            // at 8dp), so its choices drop the divider (#2804).
+            showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_NO_PASSPHRASE_TAG),
         )
         QuietChoiceRow(
@@ -888,6 +899,9 @@ private fun SshKeysGeneratePage(
             subtitle = SshKeyProtection.PASSPHRASE.description,
             selected = protection == SshKeyProtection.PASSPHRASE,
             onClick = { onProtectionChange(SshKeyProtection.PASSPHRASE) },
+            // The generate page is a gapped form (SshKeysPageInset blocks
+            // at 8dp), so its choices drop the divider (#2804).
+            showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_PASSPHRASE_TAG),
         )
         if (protection == SshKeyProtection.PASSPHRASE) {
@@ -1159,21 +1173,26 @@ internal fun SshKeyDetailContent(
             ?: key.publicKey?.let { publicKey ->
                 runCatching { SshKeyMaterial.publicKeyFingerprint(publicKey) }.getOrNull()
             }
+        // The detail sheet is a gapped block of metadata rows interleaved with
+        // copy buttons and prose, so the rows drop their dividers (#2804).
         ListRow(
             title = "Type",
             subtitle = keyAlgorithm ?: "Read the public key to identify",
+            showDivider = false,
         )
         ListRow(
             title = "Protection",
             subtitle = if (key.hasPassphrase) "Passphrase required" else "No passphrase",
+            showDivider = false,
         )
         ListRow(
             title = "Used by",
             subtitle = key.dependentHostNames.takeIf { it.isNotEmpty() }?.joinToString()
                 ?: "No configured hosts",
+            showDivider = false,
         )
         if (publicFingerprint != null) {
-            ListRow(title = "Fingerprint", subtitle = publicFingerprint)
+            ListRow(title = "Fingerprint", subtitle = publicFingerprint, showDivider = false)
             PocketShellButton(
                 text = if (copiedFingerprintKeyId == key.id) "Fingerprint copied" else "Copy fingerprint",
                 onClick = { onCopyFingerprint(publicFingerprint) },
@@ -1187,7 +1206,7 @@ internal fun SshKeyDetailContent(
             // The stored digest is for import deduplication. It is not
             // presented as the server-installable public-key identity until
             // the public half has been read.
-            ListRow(title = "Stored key digest", subtitle = key.fingerprint)
+            ListRow(title = "Stored key digest", subtitle = key.fingerprint, showDivider = false)
         }
         when {
             key.publicKeyLoading -> Text(

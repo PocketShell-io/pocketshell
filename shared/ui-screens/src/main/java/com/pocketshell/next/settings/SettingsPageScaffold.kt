@@ -45,21 +45,45 @@ internal fun SettingsPageScaffold(
             .testTag(pageTag),
     ) {
         SettingsHeader(title = title, onBack = onBack)
+        // No `verticalArrangement` (#2804, #2635 audit P-3). Every row this
+        // list holds paints its own divider, and a 12dp gap around that
+        // hairline read as neither a separator nor a group break. The one
+        // rhythm is divider-with-zero-gap (what Hosts already did); the blocks
+        // that are NOT rows — [SettingsDescription], [SettingsSlider], the
+        // page buttons — carry their own vertical padding instead, so the gap
+        // is owned by the thing that needs it rather than sprayed between
+        // every pair of items. `RowRhythmGuardTest` pins this list's shape.
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
-            verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.md),
             content = content,
         )
     }
 }
 
+/**
+ * A settings block that is a title with one supporting line but no row
+ * affordance.
+ *
+ * The supporting line is on the shared row grammar (#2804): the
+ * [PocketShellType.metadata] rung in [PocketShellColors.TextMuted], the same
+ * pairing `ListRow` and `QuietChoiceRow` use. It rendered
+ * [PocketShellType.body] (14sp) on [PocketShellColors.TextSecondary] until
+ * then — a third treatment for the same job, side by side with the other two
+ * on one sub-page.
+ *
+ * The vertical padding is this block's own, since the enclosing scaffold no
+ * longer spaces its items (see [SettingsPageScaffold]).
+ */
 @Composable
 internal fun SettingsDescription(title: String, description: String) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.screenGutter),
+            .padding(
+                horizontal = PocketShellDensity.screenGutter,
+                vertical = PocketShellSpacing.md,
+            ),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Text(
@@ -69,12 +93,18 @@ internal fun SettingsDescription(title: String, description: String) {
         )
         Text(
             text = description,
-            color = PocketShellColors.TextSecondary,
-            style = PocketShellType.body,
+            color = PocketShellColors.TextMuted,
+            style = PocketShellType.metadata,
         )
     }
 }
 
+/**
+ * A settings block whose title + supporting line sit above a [Slider].
+ *
+ * Supporting line and vertical padding follow [SettingsDescription] — see its
+ * KDoc for why both moved in #2804.
+ */
 @Composable
 internal fun SettingsSlider(
     title: String,
@@ -92,13 +122,18 @@ internal fun SettingsSlider(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.screenGutter),
+            .padding(
+                horizontal = PocketShellDensity.screenGutter,
+                vertical = PocketShellSpacing.md,
+            ),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = title, color = PocketShellColors.Text, style = PocketShellType.body)
-                Text(text = description, color = PocketShellColors.TextSecondary, style = PocketShellType.body)
+                // Same supporting-line rung and colour as SettingsDescription
+                // and the shared rows (#2804).
+                Text(text = description, color = PocketShellColors.TextMuted, style = PocketShellType.metadata)
             }
             Text(
                 text = valueLabel,

@@ -1,7 +1,6 @@
 package com.pocketshell.next.settings
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
@@ -188,12 +187,14 @@ fun SettingsScreen(
             .background(PocketShellColors.Background),
     ) {
         SettingsHeader(title = "Settings", onBack = navigation.onBack)
+        // No `verticalArrangement` (#2804, #2635 audit P-3): the category rows
+        // paint their own dividers, so a 4dp gap on top of them left a hairline
+        // floating between rows. One rhythm — divider, zero gap.
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag(SETTINGS_LIST_TAG),
             contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
-            verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
         ) {
             item { SectionHeader(label = "Preferences") }
             items(categories, key = { it.id }) { category ->

@@ -46,7 +46,11 @@ import com.pocketshell.uikit.theme.PocketShellTypography
  * Tokens (NO raw `dp`/`sp`/hex):
  * - Title is [PocketShellTypography] `titleMedium` (16sp) in [PocketShellColors.Text].
  * - The supporting line is [PocketShellType.bodyDense] (13sp) in the muted
- *   `statusIdle` semantic colour, centered.
+ *   `statusIdle` semantic colour, centered. The code rendered
+ *   [PocketShellType.body] (14sp) until #2804 (#2635 audit P-4): this KDoc has
+ *   named `bodyDense` since the component shipped, so the code was the half
+ *   that moved. [EmptyStateTest] pins the rung against the rendered style so
+ *   the two cannot drift apart again.
  * - Icon (when supplied) is [IconSize] tall, tinted muted `statusIdle`.
  * - Vertical rhythm uses [PocketShellSpacing] (`sm` between icon/title/body,
  *   `md` before the action).
@@ -99,7 +103,7 @@ fun EmptyState(
                 Text(
                     text = description,
                     color = semantic.statusIdle,
-                    style = PocketShellType.body,
+                    style = PocketShellType.bodyDense,
                     fontWeight = FontWeight.Normal,
                     textAlign = TextAlign.Center,
                 )

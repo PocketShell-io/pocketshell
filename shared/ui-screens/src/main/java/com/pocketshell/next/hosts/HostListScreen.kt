@@ -262,6 +262,9 @@ private fun AddHostMethodSheet(
                 title = "Enter connection details",
                 subtitle = "Address, user and SSH key",
                 onClick = onEnterDetails,
+                // A lone row inside a gapped sheet block, not a list: the gap
+                // separates it, so the divider would double up (#2804).
+                showDivider = false,
                 modifier = Modifier.testTag(HOST_LIST_ADD_DETAILS_TAG),
             )
         }

@@ -8,6 +8,7 @@ import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.theme.PocketShellDensity
+import com.pocketshell.uikit.theme.PocketShellSpacing
 import kotlin.math.roundToInt
 
 /**
@@ -83,8 +84,13 @@ fun AdvancedSettingsScreen(
                 text = "Reset advanced defaults",
                 onClick = onResetAdvancedDefaults,
                 variant = ButtonVariant.Secondary,
+                // The scaffold no longer spaces its items (#2804), so a
+                // block that is not a divider-bearing row carries its own gap.
                 modifier = Modifier
-                    .padding(horizontal = PocketShellDensity.screenGutter)
+                    .padding(
+                        horizontal = PocketShellDensity.screenGutter,
+                        vertical = PocketShellSpacing.md,
+                    )
                     .testTag(SETTINGS_RESET_ADVANCED_TAG),
             )
         }

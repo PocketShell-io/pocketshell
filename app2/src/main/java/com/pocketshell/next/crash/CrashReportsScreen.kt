@@ -89,12 +89,15 @@ internal fun DiagnosticsScreen(
             .background(PocketShellColors.Background),
     ) {
         DiagnosticsHeader(onBack = onBack)
+        // No `verticalArrangement` (#2804, #2635 audit P-3): the report rows
+        // paint their own dividers, so a 12dp gap around each hairline read as
+        // neither separator nor group break. The blocks that are not rows carry
+        // their own vertical padding instead.
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag(DIAGNOSTICS_PAGE_TAG),
             contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
-            verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.md),
         ) {
             when (val state = loadState) {
                 CrashReportsLoadState.Loading -> item {
@@ -113,7 +116,10 @@ internal fun DiagnosticsScreen(
                             text = state.message,
                             role = BannerRole.Error,
                             leadingIcon = PocketShellIcons.Warning,
-                            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
+                            modifier = Modifier.padding(
+                                horizontal = PocketShellDensity.screenGutter,
+                                vertical = PocketShellSpacing.md,
+                            ),
                         )
                     }
                     item {
@@ -121,7 +127,10 @@ internal fun DiagnosticsScreen(
                             text = "Retry loading reports",
                             onClick = viewModel::reload,
                             variant = ButtonVariant.Primary,
-                            modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
+                            modifier = Modifier.padding(
+                                horizontal = PocketShellDensity.screenGutter,
+                                vertical = PocketShellSpacing.md,
+                            ),
                         )
                     }
                 }
@@ -258,12 +267,15 @@ internal fun DiagnosticReportScreen(
             .background(PocketShellColors.Background),
     ) {
         DiagnosticsHeader(title = "Connection report", onBack = onBack)
+        // No `verticalArrangement` (#2804, #2635 audit P-3): the report rows
+        // paint their own dividers, so a 12dp gap around each hairline read as
+        // neither separator nor group break. The blocks that are not rows carry
+        // their own vertical padding instead.
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .testTag(DIAGNOSTIC_REPORT_PAGE_TAG),
             contentPadding = PaddingValues(bottom = PocketShellSpacing.lg),
-            verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.md),
         ) {
             when {
                 loadState is CrashReportsLoadState.Loading -> item {
@@ -281,7 +293,10 @@ internal fun DiagnosticReportScreen(
                         text = (loadState as CrashReportsLoadState.Failed).message,
                         role = BannerRole.Error,
                         leadingIcon = PocketShellIcons.Warning,
-                        modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
+                        modifier = Modifier.padding(
+                            horizontal = PocketShellDensity.screenGutter,
+                            vertical = PocketShellSpacing.md,
+                        ),
                     )
                 }
 
@@ -322,7 +337,10 @@ internal fun DiagnosticReportScreen(
                                 style = PocketShellType.bodyMono,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = PocketShellDensity.screenGutter),
+                                    .padding(
+                                        horizontal = PocketShellDensity.screenGutter,
+                                        vertical = PocketShellSpacing.md,
+                                    ),
                             )
                         }
                     }
@@ -333,7 +351,7 @@ internal fun DiagnosticReportScreen(
                             style = PocketShellType.body,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = PocketShellDensity.screenGutter)
+                                .padding(horizontal = PocketShellDensity.screenGutter, vertical = PocketShellSpacing.md)
                                 .testTag(CRASH_REPORT_PRIVACY_TAG),
                         )
                     }
@@ -341,7 +359,10 @@ internal fun DiagnosticReportScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = PocketShellDensity.screenGutter),
+                                .padding(
+                                    horizontal = PocketShellDensity.screenGutter,
+                                    vertical = PocketShellSpacing.md,
+                                ),
                             verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.sm),
                         ) {
                             PocketShellButton(
@@ -402,7 +423,7 @@ private fun DiagnosticsIntro(reportCount: Int) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.screenGutter),
+            .padding(horizontal = PocketShellDensity.screenGutter, vertical = PocketShellSpacing.md),
         verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
     ) {
         Text(
@@ -425,12 +446,10 @@ private fun DiagnosticsIntro(reportCount: Int) {
 
 @Composable
 private fun ReportSummaryRows(report: CrashReport) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = PocketShellDensity.screenGutter),
-        verticalArrangement = Arrangement.spacedBy(PocketShellSpacing.xs),
-    ) {
+    // Three shared rows and nothing else: the one rhythm is divider with zero
+    // gap, so this block drops the 4dp `verticalArrangement` it used to add on
+    // top of each row's own hairline (#2804).
+    Column(modifier = Modifier.fillMaxWidth()) {
         ListRow(
             title = "Time",
             subtitle = crashReportTimestamp(report),

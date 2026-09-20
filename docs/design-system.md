@@ -336,6 +336,46 @@ Shipped reference:
 — workspace rows at :987-997, root-session `ListRow`s via
 `WorkspaceSessionRow` at :1003-1020.
 
+### Row Grammar: One Supporting Line, One Rhythm (#2804)
+
+The #2635 audit found three treatments for "a title with one supporting line"
+rendered side by side on a single settings sub-page, and three different
+inter-row rhythms for the same `ListRow`. Both are now one rule each.
+
+**The supporting line is `PocketShellType.metadata` (11sp) on `TextMuted`.**
+That is the pairing `ListRow` has always used; `QuietChoiceRow`,
+`SettingsDescription` and `SettingsSlider` moved onto it. `QuietChoiceRow` is
+no longer a second copy of the row body at all — it is
+`ListRow(trailing = { radio mark })` with `Modifier.selectable(role =
+Role.RadioButton)` handed in as the row's modifier, so the row (not the mark)
+owns the selection semantics and TalkBack still announces one control.
+`RowGrammarTest` (`:shared:ui-kit`) and `SettingsRowGrammarTest` (`:app2`)
+read the rung and the colour back off the rendered text layout.
+
+**The inter-row rhythm is: divider, zero gap.** A `ListRow` paints a hairline
+under itself and that hairline IS the separator, so a list of rows adds no
+`verticalArrangement`. A hairline floating in the middle of a 4dp or 12dp gap
+reads as neither a separator nor a group break — which is what the Settings
+index and the settings sub-page scaffold both did.
+
+A block that is deliberately gapped — a form, a sheet, rows interleaved with
+fields, prose or buttons — turns the divider off instead of doubling up:
+
+```kotlin
+ListRow(title = "Browse folders", onClick = …, showDivider = false)
+```
+
+`showDivider` is on `ListRow`, `QuietChoiceRow` and `WorkspaceRow` (which
+forwards it). `RowRhythmGuardTest` (`:app2`, `app-shell` area, so it always
+runs) scans `app2/src/main` and `shared/ui-screens/src/main` and fails the
+build on any `Column`/`LazyColumn` that combines a `spacedBy(...)` gap with a
+divider-bearing row.
+
+Consequence for a page-level list: the blocks that are NOT rows own their own
+vertical padding (`SettingsDescription`, `SettingsSlider`, page buttons and
+banners carry `vertical = PocketShellSpacing.md`) rather than relying on the
+list to space everything uniformly.
+
 ### Sections
 
 Use `SectionHeader` for row groups. Count is inline (`Title - N` or equivalent

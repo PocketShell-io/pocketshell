@@ -408,6 +408,8 @@ fun AddWorkspaceRootScreen(
                     browserVisible = true
                     onBrowseRoot(path.ifBlank { "~" })
                 },
+                // A lone row between two form fields in a gapped column (#2804).
+                showDivider = false,
                 modifier = Modifier.testTag(WORKSPACE_ROOTS_BROWSE_TAG),
             )
             OutlinedTextField(

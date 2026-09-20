@@ -683,6 +683,8 @@ private fun AddWorkspacePage(
                     cursorColor = PocketShellColors.Accent,
                 ),
             )
+            // The add-workspace sheet is a gapped form (field, labels, prose
+            // between the rows), so its rows drop the divider (#2804).
             ListRow(
                 title = "Create folder",
                 leading = {
@@ -693,6 +695,7 @@ private fun AddWorkspacePage(
                     )
                 },
                 onClick = onCreateFolder,
+                showDivider = false,
                 modifier = Modifier.testTag(HOST_WORKSPACES_CREATE_FOLDER_TAG),
             )
             Text(
@@ -724,6 +727,7 @@ private fun AddWorkspacePage(
                         title = folder.name,
                         subtitle = "Already added".takeIf { alreadyAdded },
                         onClick = { onSelectFolder(folder.path) },
+                        showDivider = false,
                     )
                 }
             }
@@ -737,6 +741,7 @@ private fun AddWorkspacePage(
                     )
                 },
                 onClick = onBrowse,
+                showDivider = false,
                 modifier = Modifier.testTag(HOST_WORKSPACES_ADD_BROWSE_TAG),
             )
             ListRow(
@@ -750,6 +755,7 @@ private fun AddWorkspacePage(
                     )
                 },
                 onClick = onStartSession,
+                showDivider = false,
             )
             state.addWorkspaceFailure?.let { message ->
                 Text(

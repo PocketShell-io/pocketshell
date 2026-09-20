@@ -69,7 +69,11 @@ fun TerminalSettingsScreen(
                 style = PocketShellType.bodyMono.copy(fontSize = terminalTextSizeSp.sp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = PocketShellDensity.screenGutter)
+                    // Own gap: the scaffold no longer spaces its items (#2804).
+                    .padding(
+                        horizontal = PocketShellDensity.screenGutter,
+                        vertical = PocketShellSpacing.md,
+                    )
                     .background(PocketShellColors.TermBg, PocketShellShapes.small)
                     .border(1.dp, PocketShellColors.BorderSoft, PocketShellShapes.small)
                     .padding(PocketShellSpacing.md)

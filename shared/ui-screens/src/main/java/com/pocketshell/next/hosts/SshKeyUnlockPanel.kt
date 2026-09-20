@@ -113,6 +113,9 @@ fun SshKeyUnlockPanel(
                             )
                         },
                         onClick = { onSelectKey(key.id) },
+                        // Gapped form block, not a list — the gap separates
+                        // these rows, so the divider would double up (#2804).
+                        showDivider = false,
                         modifier = Modifier.testTag(sshKeyFallbackRowTag(key.id)),
                     )
                 }

@@ -218,6 +218,8 @@ fun AddTunnelScreen(
                 subtitle = "Remote target and exposure",
                 onClick = { moreOptionsExpanded = !moreOptionsExpanded },
                 trailing = { DisclosureIcon(expanded = moreOptionsExpanded) },
+                // A disclosure row inside a gapped form, not a list (#2804).
+                showDivider = false,
                 modifier = Modifier.testTag(ADD_TUNNEL_OPTIONS_TAG),
             )
             if (moreOptionsExpanded) {

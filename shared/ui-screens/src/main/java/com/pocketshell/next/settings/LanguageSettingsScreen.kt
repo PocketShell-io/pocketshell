@@ -11,6 +11,7 @@ import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.QuietChoiceRow
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.theme.PocketShellDensity
+import com.pocketshell.uikit.theme.PocketShellSpacing
 
 /**
  * The dictation-language picker sub-page.
@@ -55,7 +56,12 @@ fun LanguageSettingsScreen(
                 text = "Done",
                 onClick = onBack,
                 variant = ButtonVariant.Primary,
-                modifier = Modifier.padding(horizontal = PocketShellDensity.screenGutter),
+                // The scaffold no longer spaces its items (#2804), so a block
+                // that is not a divider-bearing row carries its own gap.
+                modifier = Modifier.padding(
+                    horizontal = PocketShellDensity.screenGutter,
+                    vertical = PocketShellSpacing.md,
+                ),
             )
         }
     }
