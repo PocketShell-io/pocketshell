@@ -63,6 +63,15 @@ import com.pocketshell.uikit.theme.PocketShellType
  * Rows use the Quiet 56dp minimum and 20dp screen gutter. The whole row is the
  * tap target when [onClick] is supplied, and wrapped content is allowed to grow.
  *
+ * `rowPadV` belongs to the **text block**, not to the slots. A row's height is
+ * its title/subtitle column plus that padding, floored at `rowMinHeight`; a
+ * [leading] glyph or a [trailing] affordance is centred inside whatever that
+ * comes to. Issue #2806: padding every child instead meant [Kebab]'s hard-sized
+ * 48dp trigger measured 48 + 2 × 16 = 80dp and dragged the whole row up with
+ * it, so a host row (with a kebab) stood 16.7dp taller than the "SSH keys" row
+ * (without one) directly under it in the same list. A slot affordance is an
+ * affordance, not content — it must not set the row's height.
+ *
  * Colours stay on the always-dark raw tokens (#477 single dark scheme) so the
  * row never flips with the system light setting.
  */
@@ -100,10 +109,7 @@ fun ListRow(
                     },
                 )
                 .then(if (onClick != null) modifier else Modifier)
-                .padding(
-                    horizontal = PocketShellDensity.screenGutter,
-                    vertical = PocketShellDensity.rowPadV,
-                ),
+                .padding(horizontal = PocketShellDensity.screenGutter),
             verticalAlignment = Alignment.CenterVertically,
         ) {
         if (leading != null) {
@@ -129,7 +135,13 @@ fun ListRow(
             Spacer(modifier = Modifier.width(PocketShellSpacing.md))
         }
 
-        Column(modifier = Modifier.weight(1f)) {
+        // The vertical padding lives here rather than on the Row so the text
+        // block alone decides how tall the row grows past its floor (#2806).
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = PocketShellDensity.rowPadV),
+        ) {
             Text(
                 text = title,
                 color = PocketShellColors.Text,
