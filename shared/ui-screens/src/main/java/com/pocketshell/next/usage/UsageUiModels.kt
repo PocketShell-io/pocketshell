@@ -1,8 +1,5 @@
 package com.pocketshell.next.usage
 
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageThresholdState
 import java.time.Instant
 
 /**
@@ -12,13 +9,17 @@ import java.time.Instant
  * Ported from the pre-rewrite client's `UsageScheduler.UsageSnapshot`, but the
  * scheduler itself is NOT ported: there is no poll cadence, no active-host
  * tracking, and no lease fan-out any more. A snapshot is simply "what the host
- * said when [UsageFetcher] last asked", and [fetchedAt] is when that was.
+ * said when the fetcher last asked", and [fetchedAt] is when that was.
  *
  * The four outcomes are deliberately distinguishable, for the same reason the
  * session tree distinguishes its three empty states: "the host has no usage
  * tooling", "the usage read failed" and "the usage read timed out" must not
  * render identically, or the panel says nothing useful about any of them
  * (#2498: a slow provider is not a changed response format).
+ *
+ * Lives in the shared presentation module (#2636 D10); the records it carries
+ * are the pure [UsageProviderRecordDisplay] mirrors, mapped from core.usage
+ * at app2's single ingestion point.
  */
 sealed interface UsageSnapshot {
     val hostId: Long
@@ -29,7 +30,7 @@ sealed interface UsageSnapshot {
     data class Records(
         override val hostId: Long,
         override val hostName: String,
-        val records: List<UsageProviderRecord>,
+        val records: List<UsageProviderRecordDisplay>,
         override val fetchedAt: Instant,
     ) : UsageSnapshot
 
@@ -64,7 +65,7 @@ sealed interface UsageSnapshot {
 data class UsageHostSnapshot(
     val hostId: Long,
     val hostName: String,
-    val records: List<UsageProviderRecord>,
+    val records: List<UsageProviderRecordDisplay>,
     val lastSyncedAt: Instant?,
 )
 
@@ -111,7 +112,7 @@ data class UsageScreenState(
     /** The "limits just reset" banner content, or null when nothing recent. */
     val resetBanner: UsageResetBannerState? = null,
     /** The persisted warning threshold used for every rendered quota surface. */
-    val warnPercent: Double = UsageProviderRecord.DEFAULT_WARN_PERCENT,
+    val warnPercent: Double = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT,
 ) {
     val providerCount: Int
         get() = hosts.sumOf { it.records.size }
@@ -119,7 +120,7 @@ data class UsageScreenState(
     val hostCount: Int
         get() = hosts.size
 
-    val allRecords: List<UsageProviderRecord>
+    val allRecords: List<UsageProviderRecordDisplay>
         get() = hosts.flatMap { it.records }
 
     /** Nothing to paint and nothing wrong: no host is connected right now. */
@@ -151,7 +152,7 @@ fun usageScreenState(
     resetBanner: UsageResetBannerState? = null,
     selectedHostId: Long? = null,
     selectedHostName: String? = null,
-    warnPercent: Double = UsageProviderRecord.DEFAULT_WARN_PERCENT,
+    warnPercent: Double = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT,
 ): UsageScreenState = UsageScreenState(
     selectedHostId = selectedHostId,
     selectedHostName = selectedHostName ?: snapshots.firstOrNull { it.hostId == selectedHostId }?.hostName,
@@ -206,11 +207,11 @@ fun usageScreenState(
  */
 data class UsageDashboardRow(
     val provider: String,
-    val status: UsageStatus,
+    val status: UsageStatusDisplay,
     val percent: Double,
     val blocked: Boolean,
     val nearLimit: Boolean,
-    val thresholdState: UsageThresholdState = UsageThresholdState.Ok,
+    val thresholdState: UsageThresholdStateDisplay = UsageThresholdStateDisplay.Ok,
     /** Soonest `reset_at` across the provider's windows; null when it reports none. */
     val soonestReset: Instant? = null,
 ) {
@@ -232,7 +233,7 @@ data class UsageDashboardRow(
  * provider is never invisible.
  */
 fun UsageScreenState.dashboardRows(
-    warnPercent: Double = UsageProviderRecord.DEFAULT_WARN_PERCENT,
+    warnPercent: Double = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT,
 ): List<UsageDashboardRow> =
     allRecords
         .sortedBy { it.provider }
@@ -240,7 +241,7 @@ fun UsageScreenState.dashboardRows(
             val window = record.mostConstrainedWindow
             val thresholdState = record.thresholdState(warnPercent = warnPercent)
             val percent = window?.percent
-                ?: if (thresholdState == UsageThresholdState.Exceeded) {
+                ?: if (thresholdState == UsageThresholdStateDisplay.Exceeded) {
                     100.0
                 } else {
                     return@mapNotNull null

@@ -58,9 +58,19 @@ import com.pocketshell.next.sync.SyncHostRow
 import com.pocketshell.next.sync.SyncOutcomeDisplay
 import com.pocketshell.next.sync.SyncSignInPhase
 import com.pocketshell.next.sync.syncHostRowTag
+import com.pocketshell.next.usage.USAGE_PROVIDER_LIST_TAG
 import com.pocketshell.next.usage.USAGE_RESET_BANNER_TAG
+import com.pocketshell.next.usage.USAGE_SCREEN_TAG
+import com.pocketshell.next.usage.UsageProviderRecordDisplay
 import com.pocketshell.next.usage.UsageResetBannerState
 import com.pocketshell.next.usage.UsageResetEvent
+import com.pocketshell.next.usage.UsageScreenState
+import com.pocketshell.next.usage.UsageSnapshot
+import com.pocketshell.next.usage.UsageStatusDisplay
+import com.pocketshell.next.usage.UsageThresholdStateDisplay
+import com.pocketshell.next.usage.usageProviderRowTag
+import com.pocketshell.next.usage.usageSyncLabel
+import com.pocketshell.next.usage.usageWindowRowTag
 import java.io.File
 
 /**
@@ -129,6 +139,14 @@ import java.io.File
  * the in-flight gate) stayed in app2's `SshKeyUnlock.kt`: `androidx.biometric`
  * against a `FragmentActivity` and an Android `Context` are exactly what the
  * platform scan below forbids here.
+ *
+ * The #2636 D10 slice added the usage panel family: the screen composable +
+ * tags, its whole pure state family (`UsageScreenState`, the `UsageSnapshot`
+ * folds, the dashboard rows) and the format family, plus pure `Display`
+ * mirrors of the six `core.usage` types the panel paints. The core → mirror
+ * mapping stays app2-side at `UsageFetcher`'s single ingestion point — the D3
+ * seam at family scale — so the `core-*` scan below keeps the mirrors the only
+ * record shape this module sees.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -293,6 +311,15 @@ class UiScreensDependencyBoundaryTest {
             TransfersUiState::class to "data class TransfersUiState",
             FileTransferRecord::class to "data class FileTransferRecord",
             FileTransferStatus::class to "enum class FileTransferStatus",
+            // The D10 family — the usage panel: the screen's pure state family
+            // moved whole, and the six core.usage types it paints got pure
+            // Display mirrors mapped app-side at `UsageFetcher`'s single
+            // ingestion point (the D3 release-check seam at family scale).
+            UsageProviderRecordDisplay::class to "data class UsageProviderRecordDisplay",
+            UsageScreenState::class to "data class UsageScreenState",
+            UsageSnapshot::class to "sealed interface UsageSnapshot",
+            UsageStatusDisplay::class to "enum class UsageStatusDisplay",
+            UsageThresholdStateDisplay::class to "enum class UsageThresholdStateDisplay",
         )
 
         /**
@@ -341,6 +368,14 @@ class UiScreensDependencyBoundaryTest {
             ::formatSize to "fun formatSize",
             SSH_KEYS_UNLOCK_BUTTON_TAG to "const val SSH_KEYS_UNLOCK_BUTTON_TAG",
             ::sshKeyFallbackRowTag to "fun sshKeyFallbackRowTag",
+            // The D10 family's representative tags and pure helpers (the
+            // screen's full tag set moved with it; these pin the family the
+            // way D5-D9's single rows do).
+            USAGE_SCREEN_TAG to "const val USAGE_SCREEN_TAG",
+            USAGE_PROVIDER_LIST_TAG to "const val USAGE_PROVIDER_LIST_TAG",
+            ::usageProviderRowTag to "fun usageProviderRowTag",
+            ::usageWindowRowTag to "fun usageWindowRowTag",
+            ::usageSyncLabel to "fun usageSyncLabel",
         )
 
         private val movedDeclarations: List<String> =

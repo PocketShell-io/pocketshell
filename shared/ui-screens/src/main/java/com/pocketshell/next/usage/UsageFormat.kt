@@ -1,9 +1,5 @@
 package com.pocketshell.next.usage
 
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageThresholdState
-import com.pocketshell.core.usage.UsageWindow
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -25,10 +21,16 @@ import kotlin.math.max
  * ("last captured HH:mm · refreshing…", "couldn't refresh — showing cached
  * from HH:mm"), and the rewrite deletes that cache path entirely. What is left
  * is one honest [usageSyncLabel]: syncing, or the time of the fetch on screen.
+ *
+ * Lives in the shared presentation module (#2636 D10) and reads only the pure
+ * [UsageProviderRecordDisplay] mirrors; app2 maps core records onto them at
+ * its ingestion point. [formatClock] is public because app2's glance pill (a
+ * session-screen surface that stays app2-side) formats its stale-reading
+ * clock with it.
  */
 internal fun statusLabel(
-    record: UsageProviderRecord,
-    warnPercent: Double = UsageProviderRecord.DEFAULT_WARN_PERCENT,
+    record: UsageProviderRecordDisplay,
+    warnPercent: Double = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT,
 ): String = usageProviderStatusUi(
     record,
     state = record.thresholdState(warnPercent = warnPercent),
@@ -58,8 +60,8 @@ internal const val POCKETSHELL_NOT_INSTALLED_HINT: String =
     "Install it on the host with `uv tool install pocketshell`, then refresh usage."
 
 internal fun usageProviderStateDescription(
-    record: UsageProviderRecord,
-    state: UsageThresholdState = record.thresholdState(),
+    record: UsageProviderRecordDisplay,
+    state: UsageThresholdStateDisplay = record.thresholdState(),
 ): String = usageProviderStatusUi(record, state).description
 
 internal data class UsageProviderStatusUi(
@@ -69,25 +71,25 @@ internal data class UsageProviderStatusUi(
 )
 
 internal fun usageProviderStatusUi(
-    record: UsageProviderRecord,
-    state: UsageThresholdState = record.thresholdState(),
+    record: UsageProviderRecordDisplay,
+    state: UsageThresholdStateDisplay = record.thresholdState(),
 ): UsageProviderStatusUi {
     val needsAuthSetup = usageAuthSetupMessageForDisplay(record.lastError) != null
     val label = when {
         needsAuthSetup -> USAGE_AUTH_SETUP_REQUIRED
-        state == UsageThresholdState.Exceeded -> "Exceeded"
-        record.status == UsageStatus.Warn ||
-            state == UsageThresholdState.Approaching ||
-            state == UsageThresholdState.Critical -> "Warn"
-        record.status == UsageStatus.Ok -> "OK"
-        record.status == UsageStatus.Unsupported -> "Unsupported"
-        record.status == UsageStatus.Error -> USAGE_DATA_UNAVAILABLE
+        state == UsageThresholdStateDisplay.Exceeded -> "Exceeded"
+        record.status == UsageStatusDisplay.Warn ||
+            state == UsageThresholdStateDisplay.Approaching ||
+            state == UsageThresholdStateDisplay.Critical -> "Warn"
+        record.status == UsageStatusDisplay.Ok -> "OK"
+        record.status == UsageStatusDisplay.Unsupported -> "Unsupported"
+        record.status == UsageStatusDisplay.Error -> USAGE_DATA_UNAVAILABLE
         else -> record.rawStatus.replaceFirstChar { it.uppercase() }
     }
     val description = when {
         needsAuthSetup -> USAGE_AUTH_SETUP_REQUIRED
-        record.status == UsageStatus.Error -> USAGE_DATA_UNAVAILABLE
-        record.status == UsageStatus.Unsupported -> "Unsupported"
+        record.status == UsageStatusDisplay.Error -> USAGE_DATA_UNAVAILABLE
+        record.status == UsageStatusDisplay.Unsupported -> "Unsupported"
         state.warrantsWarning -> thresholdRowDescription(state)
         else -> "OK"
     }
@@ -152,7 +154,7 @@ internal fun formatPercent(value: Double): String =
 internal fun formatPercentUsed(value: Double): String = "${formatPercent(value)} used"
 
 internal fun formatWindowFoot(
-    window: UsageWindow,
+    window: UsageWindowDisplay,
     now: Instant,
     blockReason: String?,
     zoneId: ZoneId = ZoneId.systemDefault(),
@@ -161,7 +163,10 @@ internal fun formatWindowFoot(
     return listOfNotNull(reset, blockReason?.let(::quotaMessageForDisplay)).joinToString(" · ")
 }
 
-internal fun blockReasonForWindow(record: UsageProviderRecord, window: UsageWindow): String? {
+internal fun blockReasonForWindow(
+    record: UsageProviderRecordDisplay,
+    window: UsageWindowDisplay,
+): String? {
     val reason = record.blockReason?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     if (record.windows.size <= 1) return reason
     return when (quotaReasonScope(reason)) {
@@ -215,12 +220,12 @@ private val SHORT_TERM_TOKENS = listOf(
     "short_term", "short term", "5h", "five_hour", "five hour", "primary",
 )
 
-private fun UsageWindow.isLongTermUsageWindow(): Boolean {
+private fun UsageWindowDisplay.isLongTermUsageWindow(): Boolean {
     val lower = name.lowercase(Locale.US)
     return LONG_TERM_TOKENS.any { it in lower }
 }
 
-private fun UsageWindow.isShortTermUsageWindow(): Boolean {
+private fun UsageWindowDisplay.isShortTermUsageWindow(): Boolean {
     val lower = name.lowercase(Locale.US)
     return SHORT_TERM_TOKENS.any { it in lower }
 }
@@ -310,11 +315,11 @@ internal fun formatCreditExpiry(
  * The soonest (smallest non-null `resetAt`) across a provider's windows, for
  * the summary strip. Null when the provider reports no reset times at all.
  */
-internal fun soonestReset(record: UsageProviderRecord): Instant? =
+internal fun soonestReset(record: UsageProviderRecordDisplay): Instant? =
     record.windows.mapNotNull { it.resetAt }.minOrNull()
 
 /** Local "HH:mm" clock for a fetch timestamp; [RESET_PLACEHOLDER] when unknown. */
-internal fun formatClock(at: Instant?, zoneId: ZoneId): String {
+fun formatClock(at: Instant?, zoneId: ZoneId): String {
     if (at == null) return RESET_PLACEHOLDER
     return DateTimeFormatter.ofPattern("HH:mm", Locale.US).withZone(zoneId).format(at)
 }

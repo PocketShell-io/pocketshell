@@ -14,6 +14,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -22,26 +26,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.lifecycle.compose.LifecycleEventEffect
-import androidx.lifecycle.Lifecycle
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageResetCredits
-import com.pocketshell.core.usage.UsageThresholdState
-import com.pocketshell.core.usage.UsageWindow
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
-import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.Kebab
 import com.pocketshell.uikit.components.KebabItem
 import com.pocketshell.uikit.components.ListRow
-import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ProgressBar
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.model.ProgressKind
@@ -53,37 +43,17 @@ import java.time.Instant
 import java.time.ZoneId
 
 /**
- * Route-level entry point for `usage` (rewrite task P-5, journey J12).
- *
- * Fetch-on-view: `ON_START` triggers exactly one refresh pass, which is one
- * `pocketshell usage --json` exec per CONNECTED host. There is no poll loop, no
- * scheduler and no stale-while-revalidate tier — the pre-rewrite client's
- * `UsageScheduler` (564 lines of cadence, active-host tracking and lease
- * fan-out) is deliberately not ported. What is on screen is what the host said
- * when the panel was opened or when the user pulled Refresh.
- */
-@Composable
-fun UsageRoute(
-    onBack: () -> Unit,
-    selectedHostId: Long? = null,
-    modifier: Modifier = Modifier,
-    viewModel: UsageViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refresh(selectedHostId) }
-    UsageScreen(
-        state = state,
-        onBack = onBack,
-        onRefresh = { viewModel.refresh(selectedHostId) },
-        modifier = modifier,
-    )
-}
-
-/**
  * The host-scoped provider quota panel. Each provider is a shared Quiet row;
  * tapping it reveals the real windows, reset timing, credits, and provider
  * messages inline. The screen contains no cross-host dashboard or nested card
  * chrome, so the selected host remains the only data scope the user sees.
+ *
+ * Lives in the shared presentation module (#2636 D10): the composable, its
+ * helpers and its test tags moved here verbatim, reading only the pure
+ * [UsageProviderRecordDisplay] mirrors. The route stays in app2
+ * (`UsageRoute` in app2's `UsageScreen.kt`) with the Hilt view model, the
+ * lifecycle fetch-on-view and the core → display mapping — the D3
+ * `SettingsRoute` seam at family scale.
  */
 @Composable
 fun UsageScreen(
@@ -225,7 +195,7 @@ private fun UsageMeta(state: UsageScreenState) {
 /** One real provider record rendered as a Quiet row with optional inline detail. */
 @Composable
 private fun UsageProviderRow(
-    record: UsageProviderRecord,
+    record: UsageProviderRecordDisplay,
     expanded: Boolean,
     now: Instant,
     warnPercent: Double,
@@ -280,7 +250,7 @@ private fun UsageProviderRow(
 
 @Composable
 private fun UsageProviderDetails(
-    record: UsageProviderRecord,
+    record: UsageProviderRecordDisplay,
     now: Instant,
     warnPercent: Double,
 ) {
@@ -328,7 +298,7 @@ private fun UsageProviderDetails(
  */
 @Composable
 private fun UsageResetCreditsSection(
-    resetCredits: UsageResetCredits,
+    resetCredits: UsageResetCreditsDisplay,
     now: Instant,
 ) {
     val zone = ZoneId.systemDefault()
@@ -388,8 +358,8 @@ private fun UsageResetCreditsSection(
 
 @Composable
 private fun UsageWindowRow(
-    window: UsageWindow,
-    record: UsageProviderRecord,
+    window: UsageWindowDisplay,
+    record: UsageProviderRecordDisplay,
     now: Instant,
     warnPercent: Double,
 ) {
@@ -435,7 +405,7 @@ private fun UsageWindowRow(
  */
 @Composable
 private fun UsageResetFoot(
-    window: UsageWindow,
+    window: UsageWindowDisplay,
     now: Instant,
     blockReason: String?,
 ) {
@@ -525,24 +495,24 @@ private fun UsageFailedHostPanel(host: UsageFailedHost) {
 }
 
 @Composable
-internal fun thresholdTextColor(state: UsageThresholdState): Color = when (state) {
-    UsageThresholdState.Ok -> PocketShellColors.TextSecondary
-    UsageThresholdState.Approaching -> PocketShellColors.Amber
-    UsageThresholdState.Critical -> PocketShellColors.Red
-    UsageThresholdState.Exceeded -> PocketShellColors.Red
+internal fun thresholdTextColor(state: UsageThresholdStateDisplay): Color = when (state) {
+    UsageThresholdStateDisplay.Ok -> PocketShellColors.TextSecondary
+    UsageThresholdStateDisplay.Approaching -> PocketShellColors.Amber
+    UsageThresholdStateDisplay.Critical -> PocketShellColors.Red
+    UsageThresholdStateDisplay.Exceeded -> PocketShellColors.Red
 }
 
-internal fun thresholdRowDescription(state: UsageThresholdState): String = when (state) {
-    UsageThresholdState.Ok -> "OK"
-    UsageThresholdState.Approaching -> "Approaching limit"
-    UsageThresholdState.Critical -> "Critical — close to limit"
-    UsageThresholdState.Exceeded -> exceededUsageDescription()
+internal fun thresholdRowDescription(state: UsageThresholdStateDisplay): String = when (state) {
+    UsageThresholdStateDisplay.Ok -> "OK"
+    UsageThresholdStateDisplay.Approaching -> "Approaching limit"
+    UsageThresholdStateDisplay.Critical -> "Critical — close to limit"
+    UsageThresholdStateDisplay.Exceeded -> exceededUsageDescription()
 }
 
 private fun progressKind(
     percent: Double,
     blocked: Boolean,
-    warnPercent: Double = UsageProviderRecord.DEFAULT_WARN_PERCENT,
+    warnPercent: Double = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT,
 ): ProgressKind = when {
     blocked || percent >= 100.0 -> ProgressKind.Danger
     percent >= warnPercent -> ProgressKind.Warn

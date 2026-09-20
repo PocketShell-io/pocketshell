@@ -11,11 +11,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageResetCredit
-import com.pocketshell.core.usage.UsageResetCredits
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageWindow
 import com.pocketshell.uikit.theme.PocketShellTheme
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
@@ -34,6 +29,11 @@ import java.time.Instant
  * banner), tapping a row reveals its real windows and reset credits inline, and
  * the compact percent stays the most-constrained window even when a less-used
  * window resets sooner.
+ *
+ * The screen moved to `shared:ui-screens` (#2636 D10), so the fixtures build
+ * the pure [UsageProviderRecordDisplay] mirrors directly — the shared panel
+ * paints mirrors only; app2's core → display mapping has its own equivalence
+ * suite in `UsageDisplayMappingTest`.
  */
 @RunWith(AndroidJUnit4::class)
 class UsageScreenTest {
@@ -192,31 +192,34 @@ class UsageScreenTest {
         ),
     )
 
-    private fun claude(): UsageProviderRecord = record(
+    private fun claude(): UsageProviderRecordDisplay = record(
         provider = "claude",
+        displayName = "Claude Code",
         windows = listOf(
             window("5h", percent = 12.0, resetAt = CLAUDE_5H_RESET),
             window("7d", percent = 11.0, resetAt = CLAUDE_7D_RESET),
         ),
     )
 
-    private fun codex(): UsageProviderRecord = record(
+    private fun codex(): UsageProviderRecordDisplay = record(
         provider = "codex",
+        displayName = "Codex",
         windows = listOf(
             window("5h", percent = 10.0, resetAt = CODEX_5H_RESET),
             window("7d", percent = 60.0, resetAt = CODEX_7D_RESET),
         ),
-        resetCredits = UsageResetCredits(
+        resetCredits = UsageResetCreditsDisplay(
             availableCount = 3,
             credits = listOf(
-                UsageResetCredit(title = "Full reset", expiresAt = CODEX_CREDIT_EXPIRY),
+                UsageResetCreditDisplay(title = "Full reset", expiresAt = CODEX_CREDIT_EXPIRY),
             ),
             unavailable = false,
         ),
     )
 
-    private fun copilot(): UsageProviderRecord = record(
+    private fun copilot(): UsageProviderRecordDisplay = record(
         provider = "copilot",
+        displayName = "GitHub Copilot",
         windows = listOf(
             window("5h", percent = 0.0, resetAt = null),
             window("monthly", percent = 6.0, resetAt = COPILOT_MONTHLY_RESET),
@@ -225,22 +228,22 @@ class UsageScreenTest {
 
     private fun record(
         provider: String,
-        windows: List<UsageWindow>,
-        resetCredits: UsageResetCredits? = null,
-    ): UsageProviderRecord = UsageProviderRecord(
+        displayName: String,
+        windows: List<UsageWindowDisplay>,
+        resetCredits: UsageResetCreditsDisplay? = null,
+    ): UsageProviderRecordDisplay = UsageProviderRecordDisplay(
         provider = provider,
-        status = UsageStatus.Ok,
-        windows = windows,
+        status = UsageStatusDisplay.Ok,
         rawStatus = "ok",
+        displayName = displayName,
+        windows = windows,
         resetCredits = resetCredits,
     )
 
-    private fun window(name: String, percent: Double, resetAt: Instant?): UsageWindow =
-        UsageWindow(
+    private fun window(name: String, percent: Double, resetAt: Instant?): UsageWindowDisplay =
+        UsageWindowDisplay(
             name = name,
-            used = percent,
-            limit = 100.0,
-            unit = "percent",
+            percent = percent,
             resetAt = resetAt,
         )
 

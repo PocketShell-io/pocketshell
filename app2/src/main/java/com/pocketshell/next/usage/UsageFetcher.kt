@@ -129,7 +129,11 @@ class UsageFetcher @Inject constructor(
                 .ifBlank { "usage command exited ${outcome.exitCode}" }
             return UsageSnapshot.Failed(hostId, hostName, reason, Instant.now())
         }
-        return UsageSnapshot.Records(hostId, hostName, records, Instant.now())
+        // The core → display mapping (#2636 D10) runs at this one ingestion
+        // point, so the snapshot pipeline — and everything downstream of it:
+        // the panel, the glance pill, the state folding — only ever sees the
+        // pure mirrors; no core.usage type crosses into shared:ui-screens.
+        return UsageSnapshot.Records(hostId, hostName, records.map { it.toDisplay() }, Instant.now())
     }
 
     /**

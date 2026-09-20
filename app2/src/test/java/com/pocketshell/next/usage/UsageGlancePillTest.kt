@@ -1,8 +1,5 @@
 package com.pocketshell.next.usage
 
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageWindow
 import com.pocketshell.uikit.model.PillKind
 import java.time.Duration
 import java.time.Instant
@@ -179,7 +176,7 @@ class UsageGlancePillTest {
                 HOST to records(
                     record(
                         provider = "claude",
-                        status = UsageStatus.Blocked,
+                        status = UsageStatusDisplay.Blocked,
                         windows = listOf(window("5h", 98.0), window("7d", 38.0)),
                     ),
                 ),
@@ -197,7 +194,7 @@ class UsageGlancePillTest {
         val pill = pill(
             snapshots = mapOf(
                 HOST to records(
-                    record(provider = "claude", status = UsageStatus.Blocked, windows = emptyList()),
+                    record(provider = "claude", status = UsageStatusDisplay.Blocked, windows = emptyList()),
                 ),
             ),
             focus = GlanceFocus(HOST, "claude"),
@@ -272,7 +269,7 @@ class UsageGlancePillTest {
     fun `a focus on a record with no windows and no block falls back`() {
         val snapshots = mapOf(
             HOST to records(
-                record(provider = "claude", status = UsageStatus.Unsupported, windows = emptyList()),
+                record(provider = "claude", status = UsageStatusDisplay.Unsupported, windows = emptyList()),
                 grok(sevenDayPercent = 83.0),
             ),
         )
@@ -384,25 +381,28 @@ class UsageGlancePillTest {
     )
 
     private fun records(
-        vararg records: UsageProviderRecord,
+        vararg records: UsageProviderRecordDisplay,
         hostId: Long = HOST,
         fetchedAt: Instant = FETCHED_AT,
     ) = UsageSnapshot.Records(hostId, "box-$hostId", records.toList(), fetchedAt)
 
     private fun record(
         provider: String,
-        windows: List<UsageWindow>,
-        status: UsageStatus = UsageStatus.Ok,
-    ) = UsageProviderRecord(
+        windows: List<UsageWindowDisplay>,
+        status: UsageStatusDisplay = UsageStatusDisplay.Ok,
+        // The pill never reads it, but the shared mirror pre-spells it (#2636 D10).
+        displayName: String = provider,
+    ) = UsageProviderRecordDisplay(
         provider = provider,
         status = status,
-        windows = windows,
         rawStatus = status.name.lowercase(),
+        displayName = displayName,
+        windows = windows,
     )
 
-    /** `used` is already in percent units, exactly as the usage parser emits. */
+    /** The percent arrives pre-derived on the display window, as the mapper emits it. */
     private fun window(name: String, percent: Double) =
-        UsageWindow(name = name, used = percent, limit = 100.0, unit = "percent", resetAt = null)
+        UsageWindowDisplay(name = name, percent = percent, resetAt = null)
 
     private fun claude(fiveHourPercent: Double, sevenDayPercent: Double) = record(
         provider = "claude",
@@ -415,7 +415,7 @@ class UsageGlancePillTest {
     private companion object {
         const val HOST = 7L
         const val OTHER_HOST = 8L
-        const val WARN = UsageProviderRecord.DEFAULT_WARN_PERCENT
+        const val WARN = UsageProviderRecordDisplay.DEFAULT_WARN_PERCENT
         val FETCHED_AT: Instant = Instant.parse("2026-09-06T10:15:00Z")
     }
 }

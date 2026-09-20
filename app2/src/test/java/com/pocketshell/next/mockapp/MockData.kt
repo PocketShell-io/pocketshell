@@ -3,13 +3,13 @@ package com.pocketshell.next.mockapp
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.hostapi.WorkspaceMembership
 import com.pocketshell.core.portfwd.TunnelInfo
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageResetCredit
-import com.pocketshell.core.usage.UsageResetCredits
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageWindow
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.usage.UsageHostSnapshot
+import com.pocketshell.next.usage.UsageProviderRecordDisplay
+import com.pocketshell.next.usage.UsageResetCreditDisplay
+import com.pocketshell.next.usage.UsageResetCreditsDisplay
+import com.pocketshell.next.usage.UsageStatusDisplay
+import com.pocketshell.next.usage.UsageWindowDisplay
 import com.pocketshell.next.workspaces.RegisteredWorkspaceRoot
 import java.time.Instant
 
@@ -111,6 +111,7 @@ object MockData {
         records = listOf(
             record(
                 provider = "claude",
+                displayName = "Claude Code",
                 windows = listOf(
                     window("5h", 12.0, NOW.plusSeconds(9_000)),
                     window("7d", 41.0, NOW.plusSeconds(3 * 86_400)),
@@ -118,20 +119,22 @@ object MockData {
             ),
             record(
                 provider = "codex",
+                displayName = "Codex",
                 windows = listOf(
                     window("5h", 8.0, NOW.plusSeconds(16_000)),
                     window("7d", 60.0, NOW.plusSeconds((1.4 * 86_400).toLong())),
                 ),
-                resetCredits = UsageResetCredits(
+                resetCredits = UsageResetCreditsDisplay(
                     availableCount = 3,
                     credits = listOf(
-                        UsageResetCredit(title = "Full reset", expiresAt = NOW.plusSeconds(4 * 86_400)),
+                        UsageResetCreditDisplay(title = "Full reset", expiresAt = NOW.plusSeconds(4 * 86_400)),
                     ),
                     unavailable = false,
                 ),
             ),
             record(
                 provider = "zai",
+                displayName = "Zai",
                 windows = listOf(window("7d", 7.0, NOW.plusSeconds(5 * 86_400))),
             ),
         ),
@@ -140,23 +143,20 @@ object MockData {
 
     fun record(
         provider: String,
-        windows: List<UsageWindow>,
-        resetCredits: UsageResetCredits? = null,
-    ): UsageProviderRecord = UsageProviderRecord(
+        displayName: String,
+        windows: List<UsageWindowDisplay>,
+        resetCredits: UsageResetCreditsDisplay? = null,
+    ): UsageProviderRecordDisplay = UsageProviderRecordDisplay(
         provider = provider,
-        status = UsageStatus.Ok,
-        windows = windows,
+        status = UsageStatusDisplay.Ok,
         rawStatus = "ok",
+        displayName = displayName,
+        windows = windows,
         resetCredits = resetCredits,
     )
 
-    fun window(name: String, percent: Double, resetAt: Instant?): UsageWindow = UsageWindow(
-        name = name,
-        used = percent,
-        limit = 100.0,
-        unit = "percent",
-        resetAt = resetAt,
-    )
+    fun window(name: String, percent: Double, resetAt: Instant?): UsageWindowDisplay =
+        UsageWindowDisplay(name = name, percent = percent, resetAt = resetAt)
 
     // ── Composer ─────────────────────────────────────────────────────────────
 

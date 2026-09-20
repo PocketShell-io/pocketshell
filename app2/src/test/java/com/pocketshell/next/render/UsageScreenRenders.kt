@@ -8,15 +8,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageResetCredit
-import com.pocketshell.core.usage.UsageResetCredits
-import com.pocketshell.core.usage.UsageStatus
-import com.pocketshell.core.usage.UsageWindow
 import com.pocketshell.next.usage.UsageHostSnapshot
+import com.pocketshell.next.usage.UsageProviderRecordDisplay
+import com.pocketshell.next.usage.UsageResetCreditDisplay
+import com.pocketshell.next.usage.UsageResetCreditsDisplay
 import com.pocketshell.next.usage.UsageScreen
 import com.pocketshell.next.usage.UsageScreenState
 import com.pocketshell.next.usage.UsageResetBannerState
+import com.pocketshell.next.usage.UsageStatusDisplay
+import com.pocketshell.next.usage.UsageWindowDisplay
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -32,8 +32,10 @@ import java.time.Instant
 /**
  * Fast design renders for the host-scoped Quiet usage layout (issue #2611).
  *
- * The real [UsageScreen] lives in app2, so this harness snapshots it directly
- * rather than mirroring primitives in `:shared:ui-kit`'s DesignRenders:
+ * [UsageScreen] moved to `shared:ui-screens` (#2636 D10); the app2 render
+ * harness still snapshots it directly — the fixtures construct the shared
+ * [UsageProviderRecordDisplay] mirrors (post-extraction shape of the #2636 C1
+ * fixture-local-mirror rule), not `core.usage` production types:
  *
  * ```
  * ./gradlew :app2:testDebugUnitTest --tests '*UsageScreenRenders*' --rerun-tasks
@@ -113,6 +115,7 @@ class UsageScreenRenders {
                     records = listOf(
                         record(
                             provider = "claude",
+                            displayName = "Claude Code",
                             windows = listOf(
                                 window("5h", 12.0, Instant.parse("2026-09-05T20:59:00Z")),
                                 window("7d", 11.0, Instant.parse("2026-09-10T14:59:00Z")),
@@ -120,14 +123,15 @@ class UsageScreenRenders {
                         ),
                         record(
                             provider = "codex",
+                            displayName = "Codex",
                             windows = listOf(
                                 window("5h", 8.0, Instant.parse("2026-09-05T23:00:00Z")),
                                 window("7d", 60.0, Instant.parse("2026-09-07T08:45:00Z")),
                             ),
-                            resetCredits = UsageResetCredits(
+                            resetCredits = UsageResetCreditsDisplay(
                                 availableCount = 3,
                                 credits = listOf(
-                                    UsageResetCredit(
+                                    UsageResetCreditDisplay(
                                         title = "Full reset",
                                         expiresAt = Instant.parse("2026-09-21T00:13:00Z"),
                                     ),
@@ -137,6 +141,7 @@ class UsageScreenRenders {
                         ),
                         record(
                             provider = "copilot",
+                            displayName = "GitHub Copilot",
                             windows = listOf(
                                 window("5h", 0.0, null),
                                 window("monthly", 0.0, Instant.parse("2026-10-01T00:00:00Z")),
@@ -144,14 +149,17 @@ class UsageScreenRenders {
                         ),
                         record(
                             provider = "go",
+                            displayName = "OpenCode Go",
                             windows = listOf(window("5h", 58.0, Instant.parse("2026-09-05T23:25:00Z"))),
                         ),
                         record(
                             provider = "grok",
+                            displayName = "Grok Build",
                             windows = listOf(window("7d", 45.0, Instant.parse("2026-09-08T18:25:00Z"))),
                         ),
                         record(
                             provider = "zai",
+                            displayName = "Zai",
                             windows = listOf(window("7d", 7.0, Instant.parse("2026-09-10T18:25:00Z"))),
                         ),
                     ),
@@ -169,23 +177,20 @@ class UsageScreenRenders {
 
         fun record(
             provider: String,
-            windows: List<UsageWindow>,
-            resetCredits: UsageResetCredits? = null,
-        ): UsageProviderRecord = UsageProviderRecord(
+            displayName: String,
+            windows: List<UsageWindowDisplay>,
+            resetCredits: UsageResetCreditsDisplay? = null,
+        ): UsageProviderRecordDisplay = UsageProviderRecordDisplay(
             provider = provider,
-            status = UsageStatus.Ok,
-            windows = windows,
+            status = UsageStatusDisplay.Ok,
             rawStatus = "ok",
+            displayName = displayName,
+            windows = windows,
             resetCredits = resetCredits,
         )
 
-        fun window(name: String, percent: Double, resetAt: Instant?): UsageWindow = UsageWindow(
-            name = name,
-            used = percent,
-            limit = 100.0,
-            unit = "percent",
-            resetAt = resetAt,
-        )
+        fun window(name: String, percent: Double, resetAt: Instant?): UsageWindowDisplay =
+            UsageWindowDisplay(name = name, percent = percent, resetAt = resetAt)
     }
 }
 

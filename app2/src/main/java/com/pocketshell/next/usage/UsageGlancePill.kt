@@ -14,8 +14,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import com.pocketshell.core.usage.UsageProviderRecord
-import com.pocketshell.core.usage.UsageThresholdState
 import com.pocketshell.uikit.model.PillKind
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellDensity
@@ -85,7 +83,7 @@ data class UsageGlancePillState(
 
 /**
  * Compact provider label for the pill — shorter than
- * [com.pocketshell.core.usage.UsageProviderRecord.displayName] ("Claude Code",
+ * [UsageProviderRecordDisplay.displayName] ("Claude Code",
  * "GitHub Copilot") so it fits a session top bar without crowding the title.
  */
 internal fun glanceProviderLabel(provider: String): String = when (provider.lowercase()) {
@@ -149,7 +147,7 @@ const val USAGE_GLANCE_PILL_TAG: String = "session:usage-pill"
  * read "Grok 7d 83%".
  *
  * [provider] is the RAW host vocabulary — the aplexer-detected agent name
- * ("claude") — matched case-insensitively against [UsageProviderRecord.provider]
+ * ("claude") — matched case-insensitively against [UsageProviderRecordDisplay.provider]
  * after the agent→producer alias in [usageProviderKey]. Deliberately not a
  * display label: a future edit to [glanceProviderLabel] must not be able to
  * break the match.
@@ -230,7 +228,7 @@ fun usageGlancePillState(
             val state = record.thresholdState(warnPercent = warnPercent)
             val winningWindow = record.mostConstrainedWindow
             val percent = winningWindow?.percent
-                ?: if (state == UsageThresholdState.Exceeded) {
+                ?: if (state == UsageThresholdStateDisplay.Exceeded) {
                     100.0
                 } else {
                     return@mapNotNull null
@@ -282,7 +280,7 @@ private fun focusedCandidate(
     // across fetches, so the pill cannot flip between two equal spans.
     val longest = record.windows.maxByOrNull { windowSpanHours(it.name) }
     val percent = longest?.percent
-        ?: if (recordState == UsageThresholdState.Exceeded) EXCEEDED_PERCENT else return null
+        ?: if (recordState == UsageThresholdStateDisplay.Exceeded) EXCEEDED_PERCENT else return null
 
     return GlanceCandidate(
         percent = percent,
@@ -291,8 +289,8 @@ private fun focusedCandidate(
         // green dot over "Claude 38%" would say the opposite. Otherwise the
         // dot describes the number next to it — an amber dot over a 38% that
         // is nowhere near its own limit is just as misleading in reverse.
-        state = if (recordState == UsageThresholdState.Exceeded) {
-            UsageThresholdState.Exceeded
+        state = if (recordState == UsageThresholdStateDisplay.Exceeded) {
+            UsageThresholdStateDisplay.Exceeded
         } else {
             thresholdOf(percent, warnPercent)
         },
@@ -304,23 +302,23 @@ private fun focusedCandidate(
 }
 
 /**
- * [UsageProviderRecord.thresholdState]'s bands applied to ONE percent.
+ * [UsageProviderRecordDisplay.thresholdState]'s bands applied to ONE percent.
  *
  * The record's own method always thresholds its most-constrained window, which
  * is the wrong window here — the focused pill displays the LONGEST one.
  */
-private fun thresholdOf(percent: Double, warnPercent: Double): UsageThresholdState = when {
-    percent >= UsageProviderRecord.EXCEEDED_PERCENT -> UsageThresholdState.Exceeded
-    percent >= UsageProviderRecord.CRITICAL_PERCENT -> UsageThresholdState.Critical
-    percent >= warnPercent -> UsageThresholdState.Approaching
-    else -> UsageThresholdState.Ok
+private fun thresholdOf(percent: Double, warnPercent: Double): UsageThresholdStateDisplay = when {
+    percent >= UsageProviderRecordDisplay.EXCEEDED_PERCENT -> UsageThresholdStateDisplay.Exceeded
+    percent >= UsageProviderRecordDisplay.CRITICAL_PERCENT -> UsageThresholdStateDisplay.Critical
+    percent >= warnPercent -> UsageThresholdStateDisplay.Approaching
+    else -> UsageThresholdStateDisplay.Ok
 }
 
 private const val EXCEEDED_PERCENT = 100.0
 
 private data class GlanceCandidate(
     val percent: Double,
-    val state: UsageThresholdState,
+    val state: UsageThresholdStateDisplay,
     val fetchedAt: Instant,
     val provider: String,
     val window: String?,
@@ -332,9 +330,9 @@ private data class GlanceCandidate(
             provider = provider,
             window = window,
             kind = when (state) {
-                UsageThresholdState.Exceeded, UsageThresholdState.Critical -> PillKind.Blocked
-                UsageThresholdState.Approaching -> PillKind.Warn
-                UsageThresholdState.Ok -> PillKind.Ok
+                UsageThresholdStateDisplay.Exceeded, UsageThresholdStateDisplay.Critical -> PillKind.Blocked
+                UsageThresholdStateDisplay.Approaching -> PillKind.Warn
+                UsageThresholdStateDisplay.Ok -> PillKind.Ok
             },
             stale = Duration.between(fetchedAt, now) > staleAfter,
             fetchedClock = formatClock(fetchedAt, zoneId),
