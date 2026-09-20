@@ -527,6 +527,82 @@ Two things to expect when reading such a run:
   blind — a device that wedges on every attempt is a lane capacity problem
   (see the contended-box section above), not a flake.
 
+### …and the real ANR wears a focused window (issue #2838)
+
+Run 35462083590 was the first REAL launcher ANR after #2830 landed, and all
+three pieces of that instrumentation underperformed at once — `tests=96
+skipped=5 executed=91 failures=19` across 12 classes, with **zero** outage
+skips (the 5 skips are the standing D36 quarantine a HEALTHY run also
+reports), `--report-primary-cause` printing `no device-wedge evidence …
+nothing to report`, and `DeviceFocusOutageReproTest` itself contributing two
+of the 19. One mis-classification caused all three:
+
+```
+mCurrentFocus=Window{a491573 u0 Application Not Responding: com.google.android.apps.nexuslauncher}
+```
+
+The launcher ANR'd and the platform put up its "isn't responding" dialog — and
+that dialog **is a focused window**. `mCurrentFocus` was not null, #2830's
+`verdict == NO_FOCUSED_WINDOW` test said "product", so nothing was recorded,
+nobody skipped, and `INFRA: device window-focus outage` appeared in no
+artifact for the triage step to find (`grep -c` over the run's 16 MB
+`logcat.txt` and its `gradle.log`: zero). The failures did name the dialog,
+19 times, in the vocabulary of a product defect.
+
+Two facts from that run's own artifacts, both load-bearing:
+
+- **The dialog is durable, the banner is not.** Two dialogs (`a491573`, then
+  `ec8e38c`) held focus across 25 minutes and 12 classes — nothing in an
+  unattended instrumentation run dismisses an ANR dialog. That same
+  `logcat.txt` carried **zero** `ANR in ` lines: the launcher ANR'd during the
+  install/boot churn, *before* the suite's own `adb logcat -c` destroyed the
+  evidence. So "no ANR banner in the log" is not evidence of a healthy device,
+  and a wedge detector that needs the banner will miss the common case.
+- **Whose ANR it is decides the verdict.** A dialog for the LAUNCHER (or any
+  package that is not the app under test) is the environment. A dialog naming
+  the app under test means OUR app stopped responding — a product defect this
+  lane exists to catch, and calling it infra would launder it into a rerun.
+  `DeviceFocusState.appUnderTest` is what keeps the two apart.
+
+Since #2838 the classifier has a second outage verdict
+(`ANR_DIALOG_HOLDS_FOCUS`) and callers ask `DeviceFocusState.isOutage` rather
+than comparing against one enum constant — #2830 shipped two hand-written
+`verdict == NO_FOCUSED_WINDOW` comparisons, and growing the classifier had to
+find both. `scripts/ci-app2-journey-suite.sh` now snapshots the pre-existing
+ANR evidence *before* `logcat -c`
+(`artifacts/app2-journey/logcat-pre-suite.txt`), counts the dialog title as
+wedge evidence in its own right, and scans `logcat.txt` for the marker —
+`DeviceFocusOutage.record` echoes the report (with its pid, so "did the record
+carry across classes?" is answerable from the artifacts) under the
+`DeviceFocusOutage` tag.
+
+A third of run 35462083590's failures were not `awaitWindowFocus` calls at
+all, and fixing the classifier alone would not have moved them: they are
+classes whose OWN preconditions presume a device where focus is obtainable —
+`assertTrue(view.hasWindowFocus())` as a fixture check, or an assertion on the
+TEXT of a product-shaped focus failure. Those oracles are not wrong about the
+product; they are inapplicable. `assumeNoRecordedDeviceFocusOutage(<what>)` is
+the `@Before` for them: it stands the class aside against a report that
+ALREADY exists and never creates one, so the first discovery stays a failure
+and the run cannot end green-with-skips. A `runCatching` around a focus oracle
+must hand `DeviceWindowFocusOutageException` and `AssumptionViolatedException`
+straight back for the same reason.
+
+Reading a future wedged run: the primary-cause block should name the dialog
+even with no banner, the XML should carry ONE
+`DeviceWindowFocusOutageException` and many skips rather than N identical
+assertion errors, and `logcat.txt` should hold exactly one
+`E DeviceFocusOutage:` line. Any of those missing is a regression in this
+chain, not a new wedge class.
+
+Measured on a live `com.android.systemui` ANR during #2838's own validation
+(emulator-5554, same three classes, same tree but for the classifier branch):
+**11 failures / 0 skips** with the branch deleted — the 35462083590 shape,
+including its two verbatim signatures `expected:<NO_FOCUSED_WINDOW> but
+was:<FOCUSED_ELSEWHERE>` and `expected:<DeviceWindowFocusOutageException> but
+was:<java.lang.AssertionError>` — against **1 failure / 8 skips** with it, the
+one failure being the diagnosis itself.
+
 ## A wedged RENDER reads as a coroutine failure in an unrelated test class
 
 `:shared:ui-kit:recordRoborazziDebug` was red on clean `main` (#2834) with a

@@ -135,7 +135,19 @@ run_suite() {
   return 0
 }
 
+# Snapshots the ANR evidence the buffer ALREADY holds, then clears and starts
+# streaming. `echo $!` stays the only thing this writes to stdout — the caller
+# captures it as the streamer's pid.
+#
+# The snapshot exists because run 35462083590 proved the `ANR in …` banner can
+# PREDATE the suite: the emulator's launcher ANR'd during the install/boot
+# churn, its "isn't responding" dialog then held the device's focus for 25
+# minutes across 12 classes, and the 16 MB logcat.txt this function goes on to
+# write carried ZERO `ANR in ` lines. The `logcat -c` below is what made that
+# evidence unrecoverable, so take it first (issue #2838).
 start_logcat() {
+  timeout 60 "$ADB" logcat -d -t 20000 2>/dev/null |
+    grep -aE "$ANR_EVIDENCE_RE" > "$ARTIFACT_DIR/logcat-pre-suite.txt" 2>/dev/null || true
   "$ADB" logcat -c >/dev/null 2>&1 || true
   "$ADB" logcat -v threadtime > "$ARTIFACT_DIR/logcat.txt" 2>&1 &
   echo $!
@@ -148,11 +160,32 @@ start_logcat() {
 # The `ANR in …` banner plus the lines that explain it. `Reason:` says whether
 # input dispatch timed out, `Load:`/`avg10=` say whether the runner was starved
 # — the two facts that turn "an ANR happened" into a retry decision.
+#
+# `Application Not Responding: ` is the platform's ANR DIALOG window title, and
+# it is here because it is the half that SURVIVES: the dialog outlives the
+# banner (which can predate `logcat -c` entirely, run 35462083590), and it is
+# what `dumpsys window` reports as `mCurrentFocus` for as long as the device
+# stays wedged. Issue #2838.
+#
+# `Load: ` carries a digit class because a bare `Load: ` also matches
+# `JNI_OnLoad: `, which put a BluetoothServiceJni line in a real primary-cause
+# block during this issue's own validation.
+ANR_EVIDENCE_RE='ANR in |Reason: Input dispatching timed out|Load: [0-9]|avg10=|Application Not Responding: '
+
+# The two evidence shapes that make this a WEDGE rather than a busy runner: an
+# ANR happened (`ANR in `), or its dialog is/was up (`Application Not
+# Responding: `). A `Load:` line on its own is context, not a verdict.
+ANR_WEDGE_RE='ANR in |Application Not Responding: '
+
 anr_evidence() {
-  local logcat="$ARTIFACT_DIR/logcat.txt"
-  [[ -r "$logcat" ]] || return 0
-  grep -aE 'ANR in |Reason: Input dispatching timed out|Load: |avg10=' "$logcat" 2>/dev/null |
-    head -n 20
+  local logcat
+  for logcat in "$ARTIFACT_DIR/logcat-pre-suite.txt" "$ARTIFACT_DIR/logcat.txt"; do
+    [[ -r "$logcat" ]] || continue
+    # The dialog also shows up inside the harness's own multi-line failure
+    # messages, which are hundreds of characters wide; truncate so the
+    # primary-cause block stays readable.
+    grep -aE "$ANR_EVIDENCE_RE" "$logcat" 2>/dev/null | cut -c1-240
+  done | head -n 20
 }
 
 # The harness's own verdict, from wherever it surfaced: gradle's console echo of
@@ -165,6 +198,12 @@ outage_verdict() {
   if [[ -z "$hits" && -d "$RESULTS_DIR" ]]; then
     hits="$(grep -arhF "$OUTAGE_MARKER" "$RESULTS_DIR" 2>/dev/null | head -n 3)"
   fi
+  # ...and the device log, which `DeviceFocusOutage.record` echoes the report
+  # into. The last resort that survives a truncated gradle.log and an unwritten
+  # result XML — a lane that dies mid-run still leaves this (issue #2838).
+  if [[ -z "$hits" && -r "$ARTIFACT_DIR/logcat.txt" ]]; then
+    hits="$(grep -aF "$OUTAGE_MARKER" "$ARTIFACT_DIR/logcat.txt" 2>/dev/null | cut -c1-240 | head -n 3)"
+  fi
   printf '%s' "$hits"
 }
 
@@ -174,8 +213,9 @@ detect_primary_cause() {
   local anr verdict
   anr="$(anr_evidence)"
   verdict="$(outage_verdict)"
-  # An `ANR in ` banner, not merely a Load: line, is what makes this a wedge.
-  if ! printf '%s' "$anr" | grep -q 'ANR in '; then
+  # An ANR banner or its dialog, not merely a Load: line, is what makes this a
+  # wedge.
+  if ! printf '%s' "$anr" | grep -qE "$ANR_WEDGE_RE"; then
     anr=""
   fi
   if [[ -z "$anr" && -z "$verdict" ]]; then
@@ -200,7 +240,7 @@ detect_primary_cause() {
       echo
     fi
     if [[ -n "$anr" ]]; then
-      echo "### ANR on this device during the run (artifacts/app2-journey/logcat.txt)"
+      echo "### ANR on this device (artifacts/app2-journey/logcat{,-pre-suite}.txt)"
       echo
       echo '```'
       printf '%s\n' "$anr"
@@ -373,6 +413,9 @@ STUB
 # Stands in for `adb logcat -v threadtime`, which main redirects into logcat.txt.
 if [[ "${1:-}" == "logcat" && "${2:-}" == "-v" ]]; then
   cat "$REPLAY_LOGCAT"
+elif [[ "${1:-}" == "logcat" && "${2:-}" == "-d" ]]; then
+  # The pre-suite snapshot start_logcat takes before `logcat -c` (issue #2838).
+  cat "${REPLAY_PRE_LOGCAT:-/dev/null}"
 fi
 exit 0
 STUB
@@ -408,6 +451,16 @@ LOGCAT
   cat > "$tmp/quiet-logcat.txt" <<'LOGCAT'
 09-19 11:24:11.100  1234  1250 I ActivityManager: Start proc for com.pocketshell.app
 09-19 11:24:31.900  1234  1250 I ActivityManager: Displayed com.pocketshell.app/.MainActivity
+LOGCAT
+
+  # Run 35462083590's own bytes: an ANR DIALOG holding focus, with NO `ANR in `
+  # banner anywhere — the launcher ANR'd before the suite cleared the buffer, so
+  # the only trace left in-run is the dialog (issue #2838).
+  cat > "$tmp/dialog-logcat.txt" <<'LOGCAT'
+09-19 18:55:21.163  3923  3958 E TestRunner: java.lang.AssertionError: the window never took focus for the hosts list after launch within 60000ms — the focus-settle signal stayed false. This is NOT a device-wide focus outage: the device's focused window is Window{a491573 u0 Application Not Responding: com.google.android.apps.nexuslauncher} (issue #2830)
+09-19 18:58:18.668   557   581 D CoreBackPreview: Window{a491573 u0 Application Not Responding: com.google.android.apps.nexuslauncher}: Setting back callback null
+09-19 18:59:29.282  3923  3958 I ActivityManager: Displayed com.pocketshell.app/.MainActivity
+09-19 18:50:53.133   980   980 I BluetoothServiceJni: com_android_bluetooth_btservice_AdapterService.cpp:2291 JNI_OnLoad: Set stack default log level to 'INFO'
 LOGCAT
 
   RESULTS_DIR="$tmp/no-results"
@@ -486,6 +539,70 @@ LOGCAT
   ARTIFACT_DIR="$tmp/never-ran"
   GITHUB_STEP_SUMMARY="$summary" report_primary_cause >/dev/null 2>&1
   check "--report-primary-cause exits 0 with no artifacts at all" "$?" "0"
+
+  # 8e. THE 35462083590 SHAPE (issue #2838). The wedge whose `ANR in ` banner
+  #     never reaches this run's log: the launcher ANR'd before `logcat -c`, and
+  #     all that is left in-run is its DIALOG — in `dumpsys window` as
+  #     `mCurrentFocus`, and in logcat inside the harness's own failure text.
+  #     Pre-#2838 this run reported "nothing to report as a primary cause"
+  #     while every one of its 19 failures named the dialog.
+  ARTIFACT_DIR="$tmp/cause-dialog"
+  REPLAY_LOGCAT="$tmp/dialog-logcat.txt" WAIT_FOR_LOGCAT="$ARTIFACT_DIR/logcat.txt" \
+    GRADLE_CMD="$tmp/gradle-42-wait" main >/dev/null 2>&1
+  local dialog_block="$tmp/cause-dialog/primary-cause.md"
+  local dialog_reported=no
+  [[ -r "$dialog_block" ]] && dialog_reported=yes
+  check "an ANR-dialog run with no banner still reports a primary cause" "$dialog_reported" "yes"
+  local dialog_named=no
+  grep -q 'Application Not Responding: com.google.android.apps.nexuslauncher' \
+    "$dialog_block" 2>/dev/null && dialog_named=yes
+  check "the block quotes the ANR dialog" "$dialog_named" "yes"
+  # ...and the fixture really lacks the banner, so the check above cannot be
+  # passing through the old `ANR in ` path.
+  local fixture_has_banner=no
+  grep -q 'ANR in ' "$tmp/dialog-logcat.txt" && fixture_has_banner=yes
+  check "the ANR-dialog fixture carries no banner" "$fixture_has_banner" "no"
+  # ...and `Load: ` must not swallow `JNI_OnLoad: `: a bare `Load: ` put a
+  # BluetoothServiceJni line in a real block during #2838's own validation.
+  local quotes_jni=no
+  grep -q 'JNI_OnLoad' "$dialog_block" 2>/dev/null && quotes_jni=yes
+  check "a JNI_OnLoad line is not mistaken for a Load average" "$quotes_jni" "no"
+
+  # 8f. THE PRE-SUITE SNAPSHOT (issue #2838). `start_logcat` clears the buffer;
+  #     an ANR that happened during install/boot is destroyed by that clear
+  #     unless it is read first. In-run log deliberately QUIET, so only the
+  #     snapshot can supply the evidence.
+  ARTIFACT_DIR="$tmp/cause-pre"
+  REPLAY_LOGCAT="$tmp/quiet-logcat.txt" REPLAY_PRE_LOGCAT="$tmp/anr-logcat.txt" \
+    WAIT_FOR_LOGCAT="$ARTIFACT_DIR/logcat.txt" \
+    GRADLE_CMD="$tmp/gradle-42-wait" main >/dev/null 2>&1
+  local pre_snapshot=no
+  grep -q 'ANR in com.google.android.apps.nexuslauncher' \
+    "$tmp/cause-pre/logcat-pre-suite.txt" 2>/dev/null && pre_snapshot=yes
+  check "start_logcat snapshots the pre-suite ANR before clearing" "$pre_snapshot" "yes"
+  local pre_reported=no
+  grep -q 'ANR in com.google.android.apps.nexuslauncher' \
+    "$tmp/cause-pre/primary-cause.md" 2>/dev/null && pre_reported=yes
+  check "a pre-suite ANR is reported as the primary cause" "$pre_reported" "yes"
+  # ...not vacuous: 8b ran the same quiet in-run log with no snapshot and wrote
+  # no block at all. Assert the snapshot is what carried it.
+  local run_log_quiet=no
+  grep -q 'ANR in ' "$tmp/cause-pre/logcat.txt" 2>/dev/null || run_log_quiet=yes
+  check "the in-run log for 8f really is quiet" "$run_log_quiet" "yes"
+
+  # 8g. THE LOGCAT ECHO (issue #2838). `DeviceFocusOutage.record` writes the
+  #     marker to the device log, which is the artifact that survives a
+  #     truncated gradle.log and an unwritten result XML. Neither of the other
+  #     two sources exists here.
+  ARTIFACT_DIR="$tmp/cause-echo"
+  mkdir -p "$ARTIFACT_DIR"
+  printf '09-19 18:55:21.163  3923  3958 E DeviceFocusOutage: pid=3923 %s — the DEVICE never granted window focus\n' \
+    "$OUTAGE_MARKER" > "$ARTIFACT_DIR/logcat.txt"
+  detect_primary_cause
+  check "the logcat echo of the marker alone is a primary cause" "$?" "0"
+  local echo_named=no
+  grep -q 'diagnosed it in-test' "$ARTIFACT_DIR/primary-cause.md" 2>/dev/null && echo_named=yes
+  check "the block names the harness verdict from logcat" "$echo_named" "yes"
 
   # 9. THE MARKER IS DUPLICATED (issue #2833, follow-up 2). `$OUTAGE_MARKER`
   #    above and `DEVICE_FOCUS_OUTAGE_MARKER` in DeviceFocus.kt are two copies

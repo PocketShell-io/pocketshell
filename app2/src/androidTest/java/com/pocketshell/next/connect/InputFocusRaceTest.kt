@@ -20,6 +20,8 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.AssumptionViolatedException
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -111,6 +113,23 @@ class InputFocusRaceTest {
     private var popup: PopupWindow? = null
 
     /**
+     * Every case here assumes a device on which window focus is OBTAINABLE —
+     * the fixtures take it away and give it back on purpose — so a device-wide
+     * outage makes all four oracles wrong rather than failing (issue #2838).
+     *
+     * Run 35462083590 proved the cost: this class contributed 4 of that run's
+     * 19 failures, every one of them `the window never took focus … the
+     * focus-settle signal stayed false` raised by a precondition, none having
+     * reached the #2789 behaviour the class exists to pin. It stands aside
+     * against a report that already exists and never creates one, so the run
+     * still carries exactly one outage FAILURE and the diagnosis with it.
+     */
+    @Before
+    fun standAsideOnADeviceFocusOutage() {
+        assumeNoRecordedDeviceFocusOutage("InputFocusRaceTest")
+    }
+
+    /**
      * A popup left up by a failing case would take window focus away from the
      * NEXT test class in the unfiltered suite (#2474 runs them all in one
      * process). Best effort: if it is already gone there is nothing to dismiss.
@@ -140,6 +159,12 @@ class InputFocusRaceTest {
                 "would prove nothing",
             readOnMain { it.hasFocus() },
         )
+        // Through the real oracle, not a bare read: on a healthy device it
+        // returns as soon as the window has focus (which it does — the probe
+        // is the only window up), and on a wedged one it names the device
+        // instead of reporting "the window half was not satisfied" as though
+        // this fixture had failed to arrange it (issue #2838).
+        compose.awaitWindowFocus("the probe's window before isolating the view half", TIMEOUT_MS)
         assertTrue(
             "the WINDOW half must be satisfied here, so this case isolates the " +
                 "view half",
@@ -220,8 +245,24 @@ class InputFocusRaceTest {
         }
 
         val elapsed = SystemClock.uptimeMillis() - started
+        // `runCatching` catches the two device-wedge shapes as readily as the
+        // failure this case pins, and asserting on their TEXT is how run
+        // 35462083590 turned a wedge into `the failure must name the settle
+        // point and the observed state, got: …`. Neither is this case's
+        // subject, and each already means the right thing where it is raised —
+        // so hand them straight back (issue #2838):
+        //
+        //  - [DeviceWindowFocusOutageException] is the FIRST discovery of the
+        //    wedge, and it must stay a FAILURE. A run that skipped its own
+        //    diagnosis would end green-with-skips, i.e. blind.
+        //  - [AssumptionViolatedException] is a later waiter skipping against
+        //    that one report, and JUnit reports it as a skip on the way out.
+        val raised = result.exceptionOrNull()
+        if (raised is DeviceWindowFocusOutageException || raised is AssumptionViolatedException) {
+            throw raised
+        }
         assertTrue("a view that never takes focus must fail", result.isFailure)
-        val message = result.exceptionOrNull()?.message.orEmpty()
+        val message = raised?.message.orEmpty()
         assertTrue(
             "the failure must name the settle point and the observed state, got: $message",
             message.contains("never took input focus") && message.contains("hasFocus=false"),

@@ -87,6 +87,13 @@ const val SETTLE_POLL_MS = 250L
  *    and every later waiter in the process SKIPS against that one report
  *    instead of restating it. Run 35435668085 turned this state into 14
  *    identical product-looking assertion errors across 8 classes.
+ *  - **A foreign app's ANR dialog holds the focus** (`mCurrentFocus=Window{…
+ *    Application Not Responding: com.google.android.apps.nexuslauncher}`).
+ *    The same environment wedge wearing a focused window, and the shape run
+ *    35462083590 actually produced: 19 failures over 12 classes, zero skips,
+ *    because the #2830 test was `verdict == NO_FOCUSED_WINDOW` and this state
+ *    is not that (issue #2838). Both branches now ask [DeviceFocusState.isOutage],
+ *    so a third outage shape only has to be added to the verdict.
  *  - **Focus exists and this screen does not have it** (or the probe could not
  *    be read). Fails exactly as before — #2781's message, unchanged in its
  *    leading sentence — with the device's focused window named so the reader
@@ -110,7 +117,7 @@ fun AndroidComposeTestRule<*, *>.awaitWindowFocus(what: String, timeoutMs: Long)
             return
         }
         val stillWedged = readDeviceFocusState()
-        if (stillWedged.verdict == DeviceFocusVerdict.NO_FOCUSED_WINDOW) {
+        if (stillWedged.isOutage) {
             throw AssumptionViolatedException(
                 "$DEVICE_FOCUS_OUTAGE_MARKER already reported in this instrumentation run, and " +
                     "the device was re-probed just now: ${stillWedged.describe()}. Skipping the " +
@@ -124,7 +131,7 @@ fun AndroidComposeTestRule<*, *>.awaitWindowFocus(what: String, timeoutMs: Long)
     if (pollForWindowFocus(what, timeoutMs)) return
 
     val deviceFocus = readDeviceFocusState()
-    if (deviceFocus.verdict == DeviceFocusVerdict.NO_FOCUSED_WINDOW) {
+    if (deviceFocus.isOutage) {
         val message = deviceFocusOutageMessage(what, timeoutMs, deviceFocus, readSystemAnrLines()) +
             idleWedgeNote()
         DeviceFocusOutage.record(message)

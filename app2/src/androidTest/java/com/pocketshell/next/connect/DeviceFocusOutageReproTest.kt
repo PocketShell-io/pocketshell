@@ -1,5 +1,6 @@
 package com.pocketshell.next.connect
 
+import android.app.Dialog
 import android.content.Context
 import android.os.SystemClock
 import android.view.View
@@ -49,6 +50,18 @@ import org.junit.runner.RunWith
  *    instead of restating it, and does so fast rather than burning its own
  *    budget. Against the pre-fix oracle both waiters raise the same bare
  *    `AssertionError`, which is the 14-identical-failures shape.
+ *  - [anAnrDialogHoldingTheDevicesFocusIsReportedOnceAsAnEnvironmentOutage] —
+ *    the SECOND wedge shape, and the one a real ANR actually produces
+ *    (issue #2838). Run 35462083590's launcher ANR'd and the platform put its
+ *    "isn't responding" dialog up; that dialog holds focus, so `mCurrentFocus`
+ *    was NOT null and #2830's `verdict == NO_FOCUSED_WINDOW` test said
+ *    "product". 19 failures over 12 classes, zero outage skips, and no marker
+ *    in any artifact for `--report-primary-cause` to find. The fixture here is
+ *    a real [Dialog] whose WindowManager title is the platform's own
+ *    (`Application Not Responding: <process>` — `Dialog.setTitle` writes the
+ *    LayoutParams title, which is the string `dumpsys window` prints), so the
+ *    whole chain runs on the real path: real window manager, real `dumpsys`,
+ *    real classifier, real record, real skip.
  *  - [aWindowFocusedElsewhereIsAProductFailureNotAnOutage] — the arm that
  *    keeps the fix honest. Focus is taken by a focusable [PopupWindow], so the
  *    device HAS a focused window and this screen simply does not have it. That
@@ -56,6 +69,10 @@ import org.junit.runner.RunWith
  *    every focus timeout as infra would launder
  *    `J06BackgroundGraceReturnJourney`'s own return-from-background bug into a
  *    retry.
+ *  - [anAnrDialogForTheAppUnderTestIsAProductFailureNotAnOutage] — the same
+ *    honesty test for the new verdict: an ANR dialog naming OUR package means
+ *    OUR app stopped responding, which is a product defect the lane exists to
+ *    catch and must not be laundered into "rerun the lane".
  *
  * ## Why not a product screen
  *
@@ -90,6 +107,8 @@ class DeviceFocusOutageReproTest {
 
     private var popup: PopupWindow? = null
 
+    private var anrDialog: Dialog? = null
+
     private var preexistingOutage: String? = null
 
     /**
@@ -108,6 +127,19 @@ class DeviceFocusOutageReproTest {
      * The device half goes through [awaitDeviceFocusGrantedToSomebody], not a
      * bare probe: a skip is only worth having if it cannot fire on a device
      * that was about to be fine.
+     *
+     * ## Why it did not fire on the real ANR (issue #2838)
+     *
+     * On run 35462083590 this class produced two of the run's 19 failures —
+     * `the fixture must leave the device with no focused window, got: … Window{
+     * a491573 u0 Application Not Responding: com.google.android.apps.nexuslauncher}`
+     * and `expected:<DeviceWindowFocusOutageException> but was:<AssertionError>`
+     * — i.e. the oracle misfired on precisely the wedge it exists to report.
+     * Both halves of the precondition were satisfied by a genuinely wedged
+     * device: nothing had recorded an outage (the classifier never called it
+     * one), and the ANR dialog was "SOMEBODY" holding focus. The test is now
+     * [DeviceFocusState.isOutage], which covers both wedge shapes, so this
+     * class stands aside on a real ANR instead of adding noise to it.
      */
     @Before
     fun captureOutage() {
@@ -120,10 +152,9 @@ class DeviceFocusOutageReproTest {
         )
         val entryState = awaitDeviceFocusGrantedToSomebody()
         assumeTrue(
-            "this class must start on a device that grants focus to SOMEBODY — it manufactures " +
-                "the no-focused-window state itself — but the device already reads as: " +
-                entryState.describe(),
-            entryState.verdict != DeviceFocusVerdict.NO_FOCUSED_WINDOW,
+            "this class must start on a device that is not already wedged — it manufactures " +
+                "the wedge itself — but the device already reads as: " + entryState.describe(),
+            !entryState.isOutage,
         )
     }
 
@@ -146,8 +177,11 @@ class DeviceFocusOutageReproTest {
             InstrumentationRegistry.getInstrumentation().runOnMainSync { popup?.dismiss() }
         }
         popup = null
-        DeviceFocusOutage.clear()
-        preexistingOutage?.let { DeviceFocusOutage.record(it) }
+        runCatching {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync { anrDialog?.dismiss() }
+        }
+        anrDialog = null
+        DeviceFocusOutage.restore(preexistingOutage)
     }
 
     /**
@@ -222,6 +256,116 @@ class DeviceFocusOutageReproTest {
         restoreDeviceWideFocus()
         compose.awaitWindowFocus("the recovered screen", LATER_WAIT_MS)
         assertNull("a recovered device drops the record", DeviceFocusOutage.recorded())
+    }
+
+    /**
+     * Issue #2838's incident, end to end: an ANR dialog holding the device's
+     * focus is the environment, reported once, skipped by everybody after it.
+     *
+     * The same three-act shape as the `mCurrentFocus=null` arm above, against
+     * the wedge a REAL launcher ANR produces. Against the pre-#2838 classifier
+     * act 1 raises a bare `AssertionError` saying "This is NOT a device-wide
+     * focus outage" and act 2 spends its whole budget and raises another — the
+     * 19-failures-over-12-classes shape of run 35462083590.
+     */
+    @Test
+    fun anAnrDialogHoldingTheDevicesFocusIsReportedOnceAsAnEnvironmentOutage() {
+        standUpAnrDialogFor(WEDGED_FOREIGN_PROCESS)
+
+        val wedged = awaitDeviceFocus(DeviceFocusVerdict.ANR_DIALOG_HOLDS_FOCUS)
+        assertEquals(
+            "the fixture must leave a foreign ANR dialog holding the device's focus, got: " +
+                wedged.describe(),
+            DeviceFocusVerdict.ANR_DIALOG_HOLDS_FOCUS,
+            wedged.verdict,
+        )
+        assertEquals(listOf(WEDGED_FOREIGN_PROCESS), wedged.foreignAnrDialogs)
+        assertFalse(
+            "and this activity's window must really be unfocused",
+            compose.runOnUiThread { compose.activity.window.decorView.hasWindowFocus() },
+        )
+        assertNull("no outage is on record before the first waiter", DeviceFocusOutage.recorded())
+
+        // 1. The FIRST waiter calls it what it is.
+        val outage = assertThrows(DeviceWindowFocusOutageException::class.java) {
+            compose.awaitWindowFocus("the first window-sensitive journey", FIRST_WAIT_MS)
+        }
+        val reported = outage.message.orEmpty()
+        assertTrue(reported, reported.startsWith(DEVICE_FOCUS_OUTAGE_MARKER))
+        assertTrue(reported, reported.contains("system ANR dialog"))
+        assertTrue(reported, reported.contains(WEDGED_FOREIGN_PROCESS))
+        assertFalse(
+            "the pre-#2838 wording is the defect: $reported",
+            reported.contains("This is NOT a device-wide focus outage"),
+        )
+        assertNotNull("the outage is recorded for the rest of the process", DeviceFocusOutage.recorded())
+
+        // 2. The NEXT waiter — the next class of the unfiltered suite — skips,
+        //    and does it inside the skip path's own bounds rather than burning
+        //    a per-class budget. Twelve classes did burn one on 35462083590.
+        val startedAt = SystemClock.elapsedRealtime()
+        val skip = assertThrows(AssumptionViolatedException::class.java) {
+            compose.awaitWindowFocus("the next window-sensitive journey", SKIP_BUDGET_MS)
+        }
+        val elapsed = SystemClock.elapsedRealtime() - startedAt
+        assertTrue(skip.message.orEmpty(), skip.message.orEmpty().contains(DEVICE_FOCUS_OUTAGE_MARKER))
+        assertTrue(
+            "a known outage must abort within ${SKIP_CEILING_MS}ms, not spend the caller's " +
+                "${SKIP_BUDGET_MS}ms budget — took ${elapsed}ms",
+            elapsed < SKIP_CEILING_MS,
+        )
+
+        // 3. Dismiss the dialog and the run carries on, as a rerun would.
+        dismissAnrDialog()
+        compose.awaitWindowFocus("the recovered screen", LATER_WAIT_MS)
+        assertNull("a recovered device drops the record", DeviceFocusOutage.recorded())
+    }
+
+    /**
+     * The honesty arm for the new verdict: an ANR dialog naming the APP UNDER
+     * TEST is OUR app failing to respond — a product defect, not an
+     * environment wedge, and never a licence to rerun the lane.
+     */
+    @Test
+    fun anAnrDialogForTheAppUnderTestIsAProductFailureNotAnOutage() {
+        val ourProcess = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+        standUpAnrDialogFor(ourProcess)
+
+        // Waited for by TITLE, not by verdict: FOCUSED_ELSEWHERE is also what
+        // the activity's own window reads as, so a verdict-shaped wait would
+        // be satisfied before the fixture was even up and the arm would prove
+        // nothing.
+        val ourDialog = ANR_DIALOG_WINDOW_TITLE_PREFIX + ourProcess
+        val focused = awaitDeviceFocusOn(ourDialog)
+        assertTrue(
+            "the fixture must leave OUR ANR dialog holding focus, got: ${focused.describe()}",
+            focused.focusedWindows.any { it.contains(ourDialog) },
+        )
+        assertEquals(
+            "our own ANR dialog must read as an ordinary focused window, got: " +
+                focused.describe(),
+            DeviceFocusVerdict.FOCUSED_ELSEWHERE,
+            focused.verdict,
+        )
+        assertFalse("…and must not be an outage", focused.isOutage)
+        assertFalse(
+            "and this activity's window must really be unfocused",
+            compose.runOnUiThread { compose.activity.window.decorView.hasWindowFocus() },
+        )
+
+        val failure = assertThrows(AssertionError::class.java) {
+            compose.awaitWindowFocus("a screen behind our own ANR dialog", FIRST_WAIT_MS)
+        }
+        assertEquals(
+            "our own app going unresponsive is a product failure",
+            AssertionError::class.java,
+            failure.javaClass,
+        )
+        assertTrue(
+            failure.message.orEmpty(),
+            failure.message.orEmpty().contains("This is NOT a device-wide focus outage"),
+        )
+        assertNull("no outage may be recorded for a product failure", DeviceFocusOutage.recorded())
     }
 
     /**
@@ -336,6 +480,53 @@ class DeviceFocusOutageReproTest {
         }
     }
 
+    /**
+     * Stands up a window shaped EXACTLY like the platform's ANR dialog, for
+     * [process].
+     *
+     * `AppNotRespondingDialog` is a [Dialog] whose WindowManager title is
+     * `"Application Not Responding: " + processName`, and that title is the
+     * string `dumpsys window` prints inside `Window{…}` — which is the only
+     * thing the classifier reads. `Dialog.setTitle` writes BOTH the decor title
+     * and `getAttributes().setTitle(…)`, so a plain dialog reproduces the
+     * incident's `mCurrentFocus` byte for byte:
+     *
+     * ```
+     * mCurrentFocus=Window{a491573 u0 Application Not Responding: com.google.android.apps.nexuslauncher}
+     * ```
+     *
+     * The real thing cannot be summoned on demand — it needs a starved runner
+     * and a system app that stops answering input — and D33 forbids skipping
+     * the assertion instead of injecting the state. This injects the state the
+     * classifier is defined over, through the real window manager, and every
+     * hop after it is the production path.
+     */
+    private fun standUpAnrDialogFor(process: String) {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            anrDialog = Dialog(compose.activity).apply {
+                setTitle(ANR_DIALOG_WINDOW_TITLE_PREFIX + process)
+                // A non-zero content size, so the window really is laid out and
+                // really is a focus candidate — a zero-size window would make
+                // this fixture prove nothing.
+                setContentView(
+                    View(compose.activity).apply {
+                        minimumWidth = FIXTURE_WINDOW_PX
+                        minimumHeight = FIXTURE_WINDOW_PX
+                    },
+                )
+                setCancelable(false)
+                show()
+            }
+        }
+        compose.awaitIdle("standing up an ANR-shaped dialog for $process")
+    }
+
+    private fun dismissAnrDialog() {
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { anrDialog?.dismiss() }
+        anrDialog = null
+        compose.awaitIdle("dismissing the ANR-shaped dialog")
+    }
+
     /** Takes window focus away from the activity without taking it off the device. */
     private fun takeFocusWithAPopup() {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
@@ -365,7 +556,25 @@ class DeviceFocusOutageReproTest {
     private fun awaitDeviceFocusGrantedToSomebody(): DeviceFocusState {
         val deadline = SystemClock.elapsedRealtime() + FIXTURE_SETTLE_MS
         var state = readDeviceFocusState()
-        while (state.verdict == DeviceFocusVerdict.NO_FOCUSED_WINDOW &&
+        while (state.isOutage && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(SETTLE_POLL_MS)
+            state = readDeviceFocusState()
+        }
+        return state
+    }
+
+    /**
+     * Polls the real probe until the window whose description contains [needle]
+     * holds the device's focus, or gives up and returns the last reading.
+     *
+     * The verdict-shaped [awaitDeviceFocus] cannot express "OUR ANR dialog is
+     * up": that state's verdict is [DeviceFocusVerdict.FOCUSED_ELSEWHERE],
+     * which the activity's own focused window already satisfies.
+     */
+    private fun awaitDeviceFocusOn(needle: String): DeviceFocusState {
+        val deadline = SystemClock.elapsedRealtime() + FIXTURE_SETTLE_MS
+        var state = readDeviceFocusState()
+        while (state.focusedWindows.none { it.contains(needle) } &&
             SystemClock.elapsedRealtime() < deadline
         ) {
             SystemClock.sleep(SETTLE_POLL_MS)
@@ -444,5 +653,15 @@ class DeviceFocusOutageReproTest {
 
         /** How long the window manager gets to publish the fixture's focus change. */
         const val FIXTURE_SETTLE_MS = 10_000L
+
+        /**
+         * The process run 35462083590's ANR dialog named — the emulator's own
+         * launcher, i.e. a package that is definitionally not the app under
+         * test on any device this lane runs on.
+         */
+        const val WEDGED_FOREIGN_PROCESS = "com.google.android.apps.nexuslauncher"
+
+        /** Big enough that the ANR-shaped fixture window is really laid out. */
+        const val FIXTURE_WINDOW_PX = 200
     }
 }
