@@ -63,6 +63,13 @@ import kotlinx.coroutines.flow.asStateFlow
  * #2526): [com.pocketshell.next.composer.ComposerViewModel] reads it per send
  * off this snapshot, not once at Hilt graph construction, so a slider change
  * is the next Send rather than the next process.
+ *
+ * [AppSettings.lastWorkspacePath] / [AppSettings.lastSessionId] are the #2814
+ * N-4 launch resume, written by [setLastSession] and read once by
+ * `MainActivity`'s cold-start handoff. They extend this store rather than
+ * reviving the deleted `LastSessionStore`: the host half of the same answer
+ * ([AppSettings.defaultHostId]) already lives here, and splitting them across
+ * two stores is what let the old pair drift apart.
  */
 @Singleton
 class SettingsRepository @Inject constructor(
@@ -81,13 +88,64 @@ class SettingsRepository @Inject constructor(
     val settings: StateFlow<AppSettings>
         get() = _settings.asStateFlow()
 
-    /** Remembers the host whose workspace list should be resumed next launch. */
+    /**
+     * Remembers the host whose workspace list should be resumed next launch.
+     *
+     * Changing it also forgets the remembered session (#2814 N-4): a session
+     * id is issued BY a host, so carrying one across a host switch would aim
+     * the launch resume at a workspace/session that host never had. Clearing
+     * here rather than at the read keeps "what is stored" and "what is
+     * resumable" the same question.
+     */
     fun setDefaultHostId(hostId: Long?) {
         if (_settings.value.defaultHostId == hostId) return
         write {
             if (hostId == null) remove(KEY_DEFAULT_HOST_ID) else putLong(KEY_DEFAULT_HOST_ID, hostId)
+            remove(KEY_LAST_WORKSPACE_PATH)
+            remove(KEY_LAST_SESSION_ID)
         }
-        _settings.value = _settings.value.copy(defaultHostId = hostId)
+        _settings.value = _settings.value.copy(
+            defaultHostId = hostId,
+            lastWorkspacePath = null,
+            lastSessionId = null,
+        )
+    }
+
+    /**
+     * Remembers the session that should be resumed next launch (#2814 N-4).
+     *
+     * Written from the same seam that writes [setDefaultHostId] — the
+     * navigation graph's single "open a session" funnel — so the host and the
+     * work inside it can never be remembered from two different moments. A
+     * session the route could not identify (no host-issued id, or no
+     * workspace) stores null: an unresumable pair is worse than none, because
+     * the launch handoff would spend a dial resolving it and still land on the
+     * workspace list.
+     */
+    fun setLastSession(workspacePath: String?, sessionId: String?) {
+        val path = workspacePath?.takeIf { it.isNotBlank() }
+        val id = sessionId?.takeIf { it.isNotBlank() }
+        val resumable = path != null && id != null
+        val storedPath = path.takeIf { resumable }
+        val storedId = id.takeIf { resumable }
+        if (
+            _settings.value.lastWorkspacePath == storedPath &&
+            _settings.value.lastSessionId == storedId
+        ) {
+            return
+        }
+        write {
+            if (storedPath == null) {
+                remove(KEY_LAST_WORKSPACE_PATH)
+            } else {
+                putString(KEY_LAST_WORKSPACE_PATH, storedPath)
+            }
+            if (storedId == null) remove(KEY_LAST_SESSION_ID) else putString(KEY_LAST_SESSION_ID, storedId)
+        }
+        _settings.value = _settings.value.copy(
+            lastWorkspacePath = storedPath,
+            lastSessionId = storedId,
+        )
     }
 
     /** Terminal glyph size in raw device pixels, snapped to the slider grid. */
@@ -205,6 +263,8 @@ class SettingsRepository @Inject constructor(
      */
     private fun readSnapshot(prefs: SharedPreferences): AppSettings = AppSettings(
         defaultHostId = prefs.safeLongOrNull(KEY_DEFAULT_HOST_ID),
+        lastWorkspacePath = prefs.safeStringOrNull(KEY_LAST_WORKSPACE_PATH),
+        lastSessionId = prefs.safeStringOrNull(KEY_LAST_SESSION_ID),
         terminalTextSizePx = snapTerminalTextSize(
             prefs.safeInt(KEY_TERMINAL_TEXT_SIZE_PX, AppSettings.DEFAULT_TERMINAL_TEXT_SIZE_PX),
         ),
@@ -352,6 +412,10 @@ class SettingsRepository @Inject constructor(
     private fun SharedPreferences.safeString(key: String, default: String): String =
         runCatching { getString(key, default) ?: default }.getOrElse { drop(key); default }
 
+    private fun SharedPreferences.safeStringOrNull(key: String): String? =
+        runCatching { getString(key, null)?.takeIf { it.isNotBlank() } }
+            .getOrElse { drop(key); null }
+
     private fun SharedPreferences.safeBoolean(key: String, default: Boolean): Boolean =
         runCatching { getBoolean(key, default) }.getOrElse { drop(key); default }
 
@@ -376,6 +440,8 @@ class SettingsRepository @Inject constructor(
         const val KEY_BACKGROUND_GRACE_MILLIS = "background_grace_millis"
         const val KEY_AGENT_SUBMIT_ENTER_DELAY_MS = "agent_submit_enter_delay_ms"
         const val KEY_DEFAULT_HOST_ID = "default_host_id"
+        const val KEY_LAST_WORKSPACE_PATH = "last_workspace_path"
+        const val KEY_LAST_SESSION_ID = "last_session_id"
         const val KEY_SHOW_COMMON_KEYS = "show_common_keys"
         const val KEY_RECONNECT_WHEN_RETURN = "reconnect_when_return"
     }

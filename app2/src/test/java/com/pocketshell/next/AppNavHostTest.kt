@@ -14,6 +14,7 @@ import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.nav.Destination
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.After
 import org.junit.Rule
 import org.junit.Test
@@ -47,6 +48,8 @@ class AppNavHostTest {
     private val stack = TestConnectStack()
     private var openSession: ((SessionRow) -> Unit)? = null
     private var switchSession: ((SessionRow) -> Unit)? = null
+    private var openSettingsFromWorkspaces: (() -> Unit)? = null
+    private var openSettingsFromSession: (() -> Unit)? = null
 
     @After
     fun tearDown() {
@@ -68,7 +71,7 @@ class AppNavHostTest {
                 startupHostExists = { false },
                 hostsScreen = { Text("Hosts") },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _ -> Text("Tree") },
             )
         }
         composeRule.waitForIdle()
@@ -93,7 +96,7 @@ class AppNavHostTest {
                     }
                 },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { _, _, _, _, _, _, _, _, _ -> Text("Tree") },
+                workspacesScreen = { _, _, _ -> Text("Tree") },
             )
         }
 
@@ -181,9 +184,7 @@ class AppNavHostTest {
         assertNavigatesTo(nav, Destination.DiagnosticReport.route("report 1"), "DiagnosticReport(id=report 1)")
         assertNavigatesTo(nav, Destination.TerminalSettings.route(), "TerminalSettings")
         assertNavigatesTo(nav, Destination.VoiceSettings.route(), "VoiceSettings")
-        assertNavigatesTo(nav, Destination.VoiceLanguage.route(), "VoiceLanguage")
         assertNavigatesTo(nav, Destination.ConnectionSettings.route(), "ConnectionSettings")
-        assertNavigatesTo(nav, Destination.GraceSettings.route(), "GraceSettings")
         assertNavigatesTo(nav, Destination.AdvancedSettings.route(), "AdvancedSettings")
         assertNavigatesTo(nav, Destination.About.route(), "About")
         assertNavigatesTo(nav, Destination.Update.route(), "Update")
@@ -226,6 +227,8 @@ class AppNavHostTest {
     private fun setContentWithNav(): NavHostController {
         openSession = null
         switchSession = null
+        openSettingsFromWorkspaces = null
+        openSettingsFromSession = null
         lateinit var controller: NavHostController
         composeRule.setContent {
             controller = rememberNavController()
@@ -253,10 +256,8 @@ class AppNavHostTest {
                 // `NavHost` accepts both patterns and decodes the host id.
                 settingsScreen = { _ -> Text("Settings") },
                 terminalSettingsScreen = { Text("TerminalSettings") },
-                voiceSettingsScreen = { _, _ -> Text("VoiceSettings") },
-                languageSettingsScreen = { Text("VoiceLanguage") },
-                connectionSettingsScreen = { _, _, _ -> Text("ConnectionSettings") },
-                graceSettingsScreen = { Text("GraceSettings") },
+                voiceSettingsScreen = { Text("VoiceSettings") },
+                connectionSettingsScreen = { _, _ -> Text("ConnectionSettings") },
                 advancedSettingsScreen = { Text("AdvancedSettings") },
                 diagnosticsScreen = { _, _ -> Text("Diagnostics") },
                 diagnosticReportScreen = { reportId, _ -> Text("DiagnosticReport(id=$reportId)") },
@@ -268,8 +269,9 @@ class AppNavHostTest {
                 // resolves its ViewModel through `hiltViewModel()`. The
                 // stand-in echoes the argument the route actually delivered, so
                 // this suite still pins the Tree pattern's Long argument.
-                workspacesScreen = { hostId, _, onOpenSession, _, _, _, _, _, _ ->
-                    openSession = onOpenSession
+                workspacesScreen = { hostId, actions, _ ->
+                    openSession = actions.onOpenSession
+                    openSettingsFromWorkspaces = actions.onOpenSettings
                     Text("Tree(hostId=$hostId)")
                 },
                 // Same rationale again for U-4's terminal: the real screen
@@ -277,8 +279,9 @@ class AppNavHostTest {
                 // dials a host. The stand-in echoes both route arguments, which
                 // is what this suite is pinning — that a session name with a
                 // space and a `:` survives the encode/decode round trip.
-                sessionScreen = { hostId, sessionName, _, _, _, _, _, onOpenSession, _ ->
-                    switchSession = onOpenSession
+                sessionScreen = { hostId, sessionName, _, _, actions ->
+                    switchSession = actions.onOpenSession
+                    openSettingsFromSession = actions.onOpenSettings
                     Text("Session(hostId=$hostId, name=$sessionName)")
                 },
                 // Same rationale again: the P-4 port-forward route resolves its
@@ -315,6 +318,177 @@ class AppNavHostTest {
         composeRule.runOnUiThread { nav.navigate(route) }
         composeRule.waitForIdle()
         composeRule.onNodeWithText(expectedLabel).assertExists("route '$route' did not render '$expectedLabel'")
+    }
+
+    /**
+     * Issue #2814 N-2, at the layer the screen tests cannot reach. Those pin
+     * that each sheet HAS a Settings row and that the row fires its lambda;
+     * this pins that the graph turns that lambda into `Destination.Settings` —
+     * from the workspace list AND from a live session, the two places the
+     * issue says cost back → back → back → tap.
+     */
+    @Test
+    fun `settings is one navigation from the workspace list and from a session`() {
+        val nav = setContentWithNav()
+
+        composeRule.runOnUiThread { nav.navigate(Destination.Workspaces.route(hostId = 7)) }
+        composeRule.waitForIdle()
+        composeRule.runOnUiThread { requireNotNull(openSettingsFromWorkspaces)() }
+        composeRule.waitForIdle()
+        assertEquals(Destination.Settings.pattern, nav.currentBackStackEntry?.destination?.route)
+
+        // Back returns to the workspace list it was opened from — Settings is
+        // an overlay on the work, not a trip out of it.
+        composeRule.runOnUiThread { nav.popBackStack() }
+        composeRule.waitForIdle()
+        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
+
+        composeRule.runOnUiThread {
+            nav.navigate(Destination.Session.route(hostId = 7, sessionName = "alpha"))
+        }
+        composeRule.waitForIdle()
+        composeRule.runOnUiThread { requireNotNull(openSettingsFromSession)() }
+        composeRule.waitForIdle()
+        assertEquals(Destination.Settings.pattern, nav.currentBackStackEntry?.destination?.route)
+
+        composeRule.runOnUiThread { nav.popBackStack() }
+        composeRule.waitForIdle()
+        assertEquals(Destination.Session.pattern, nav.currentBackStackEntry?.destination?.route)
+    }
+
+    /**
+     * Issue #2814 N-3's hard cut (D22), asserted through the GRAPH rather than
+     * through `Destination`: a leaf route that were still `composable(...)`d
+     * would keep answering a hand-written navigate, and the deleted page would
+     * stay reachable by deep link while looking deleted in the source.
+     */
+    @Test
+    fun `the deleted one-choice-group settings routes no longer resolve`() {
+        val nav = setContentWithNav()
+
+        for (route in listOf("settings/voice/language", "settings/connections/grace")) {
+            val failure = runCatching {
+                composeRule.runOnUiThread { nav.navigate(route) }
+                composeRule.waitForIdle()
+            }.exceptionOrNull()
+            assertNotNull("route '$route' still resolves; it must be deleted, not dark", failure)
+        }
+        // The parents are still there, so the routes did not "stop resolving"
+        // because the whole settings branch broke.
+        assertNavigatesTo(nav, Destination.VoiceSettings.route(), "VoiceSettings")
+        assertNavigatesTo(nav, Destination.ConnectionSettings.route(), "ConnectionSettings")
+    }
+
+    /**
+     * Issue #2814 N-4, happy path: a remembered pair whose session the host
+     * still reports lands on the terminal, with the workspace list under it so
+     * Back is not an empty stack.
+     */
+    @Test
+    fun `a resolvable last session resumes into its terminal above the workspace list`() {
+        val resolved = session("alpha", "/home/alexey/git/alpha").copy(id = "sess-1")
+        var resolveCalls = 0
+        val nav = setContentWithResume(
+            startupSessionId = "sess-1",
+            resolve = { _, id ->
+                resolveCalls += 1
+                resolved.takeIf { id == "sess-1" }
+            },
+        )
+        // Wait on the host having been ASKED, not on where we landed — the
+        // landing is what this test asserts.
+        composeRule.waitUntil(timeoutMillis = 5_000) { resolveCalls == 1 }
+        composeRule.waitForIdle()
+
+        assertEquals(1, resolveCalls)
+        assertEquals(Destination.Session.pattern, nav.currentBackStackEntry?.destination?.route)
+        assertEquals(
+            "alpha",
+            nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_SESSION_NAME),
+        )
+        assertEquals(
+            "/home/alexey/git/alpha",
+            nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_WORKSPACE_PATH),
+        )
+        assertEquals(
+            "sess-1",
+            nav.currentBackStackEntry?.arguments?.getString(Destination.ARG_SESSION_ID),
+        )
+
+        composeRule.runOnUiThread { nav.popBackStack() }
+        composeRule.waitForIdle()
+        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
+    }
+
+    /**
+     * Issue #2814 N-4, the fallback the maintainer's "a wrong-guess resume is
+     * more annoying than two taps" note is about: the host no longer has the
+     * remembered session, so the launch stops at the workspace list — no
+     * terminal, and no error state either.
+     */
+    @Test
+    fun `a stale last session id falls back to the workspace list with no error`() {
+        var resolveCalls = 0
+        val nav = setContentWithResume(
+            startupSessionId = "gone",
+            resolve = { _, _ -> resolveCalls += 1; null },
+        )
+        composeRule.waitUntil(timeoutMillis = 5_000) { resolveCalls == 1 }
+        composeRule.waitForIdle()
+
+        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
+        check(composeRule.onAllNodesWithText("Session(hostId=7, name=alpha)")
+            .fetchSemanticsNodes().isEmpty()) {
+            "a stale resume id must not open a terminal"
+        }
+    }
+
+    /** No remembered pair at all is the pre-#2814 behaviour: workspace list. */
+    @Test
+    fun `a launch with nothing remembered never asks the host to resolve a session`() {
+        var resolveCalls = 0
+        val nav = setContentWithResume(
+            startupSessionId = null,
+            resolve = { _, _ -> resolveCalls += 1; null },
+        )
+
+        assertEquals(0, resolveCalls)
+        assertEquals(Destination.Workspaces.pattern, nav.currentBackStackEntry?.destination?.route)
+    }
+
+    /**
+     * The startup dial, driven through the real [com.pocketshell.next.connect.ConnectGate]
+     * against [TestConnectStack]'s seeded host — the same path production takes
+     * when `defaultHostId` is set.
+     */
+    private fun setContentWithResume(
+        startupSessionId: String?,
+        resolve: suspend (Long, String) -> SessionRow?,
+    ): NavHostController {
+        val hostId = stack.seedHost()
+        lateinit var controller: NavHostController
+        composeRule.setContent {
+            controller = rememberNavController()
+            AppNavHost(
+                navController = controller,
+                startupHostId = hostId,
+                startupWorkspacePath = "/home/alexey/git/alpha",
+                startupSessionId = startupSessionId,
+                resolveStartupSession = resolve,
+                hostsScreen = { Text("Hosts") },
+                connectViewModel = { stack.viewModel },
+                workspacesScreen = { id, _, _ -> Text("Tree(hostId=$id)") },
+                sessionScreen = { id, name, _, _, _ -> Text("Session(hostId=$id, name=$name)") },
+            )
+        }
+        composeRule.waitForIdle()
+        // The cold-start handoff crosses a frame boundary and a real dial, so
+        // "composition is idle" is not yet "the launch has landed".
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            controller.currentBackStackEntry?.destination?.route != Destination.Hosts.pattern
+        }
+        composeRule.waitForIdle()
+        return controller
     }
 
     private fun session(name: String, workspace: String): SessionRow = SessionRow(

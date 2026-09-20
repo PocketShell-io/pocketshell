@@ -130,6 +130,8 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(TERMINAL_ACTIONS_SESSIONS_TAG).assertExists()
         composeRule.onNodeWithTag(TERMINAL_ACTIONS_FILES_TAG).assertExists()
         composeRule.onNodeWithTag(TERMINAL_ACTIONS_COPY_TAG).assertExists()
+        // Issue #2814 N-2 added exactly one row to this set.
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SETTINGS_TAG).assertExists()
         composeRule.onNodeWithTag(TERMINAL_ACTIONS_DETACH_TAG).assertExists()
         composeRule.onNodeWithTag(STOP_SESSION_ITEM_TAG).assertExists()
         // The only "Usage" text on screen is the header fallback button; the
@@ -799,6 +801,31 @@ class SessionScreenTest {
         activityEpoch = null,
     )
 
+    /**
+     * Issue #2814 N-2: from a live session, Settings used to cost back → back
+     * → back → tap, because the only entry point was a row on the Hosts
+     * landing screen. It is now one row in the sheet this screen already has.
+     *
+     * The tap is asserted, not the row's presence: a row wired to nothing
+     * renders identically to one wired correctly.
+     */
+    @Test
+    fun `terminal actions sheet reaches Settings without leaving the session`() {
+        var openedSettings = 0
+        setContent(SessionUiState.Connecting, onOpenSettings = { openedSettings += 1 })
+
+        composeRule.onNodeWithTag(SESSION_HEADER_KEBAB_TAG).performClick()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SHEET_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SETTINGS_TAG)
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+
+        assertEquals(1, openedSettings)
+        // The sheet closes behind the navigation, like every other row here.
+        composeRule.onNodeWithTag(TERMINAL_ACTIONS_SHEET_TAG).assertDoesNotExist()
+    }
+
     private fun setContent(
         state: SessionUiState,
         composerState: ComposerUiState = ComposerUiState(),
@@ -811,6 +838,7 @@ class SessionScreenTest {
         onOpenUsage: () -> Unit = {},
         onDraftChange: (String) -> Unit = {},
         onDismissNotice: () -> Unit = {},
+        onOpenSettings: () -> Unit = {},
         onSend: () -> Boolean = { true },
         onInsert: () -> Unit = {},
         initiallyShowComposer: Boolean = false,
@@ -828,6 +856,7 @@ class SessionScreenTest {
                     onBack = onBack,
                     usagePillState = usagePillState,
                     onOpenUsage = onOpenUsage,
+                    onOpenSettings = onOpenSettings,
                     onResized = onResized,
                     onRetry = onRetry,
                     onStopSession = onStopSession,

@@ -76,20 +76,24 @@ class SettingsScreenTest {
         assertEquals(1, backCount)
     }
 
+    /**
+     * #2814 N-3 moved this group inline under the Voice page's Language row;
+     * the radio grammar it is asserting did not change with it. The render
+     * seam opens the group so the suite keeps testing the ROWS rather than the
+     * disclosure toggle — that is [SettingsPagesTest]'s job.
+     */
     @Test
     fun `language choices are one full-row radio target and write the selected code`() {
         var changedTo: String? = null
         composeRule.setContent {
-            LanguageSettingsScreen(
+            VoiceSettingsScreen(
                 settings = AppSettings(),
                 onBack = {},
                 onVoiceLanguageChange = { changedTo = it },
+                initiallyExpanded = true,
             )
         }
 
-        composeRule.onNodeWithTag(voiceLanguageOptionTag("ru"))
-            .performClick()
-        assertEquals("ru", changedTo)
         assertEquals(
             Role.RadioButton,
             composeRule.onNodeWithTag(voiceLanguageOptionTag("ru"))
@@ -97,16 +101,26 @@ class SettingsScreenTest {
                 .config[SemanticsProperties.Role],
         )
         composeRule.onNodeWithTag(voiceLanguageOptionTag("auto")).performScrollTo().assertIsDisplayed()
+        // Last: picking closes the group (#2814 N-3's "Done" replacement), so
+        // the row is gone after this and nothing may be asserted on it.
+        composeRule.onNodeWithTag(voiceLanguageOptionTag("ru"))
+            .performScrollTo()
+            .performClick()
+        assertEquals("ru", changedTo)
     }
 
+    /** Same move, same reason, for the grace group (#2814 N-3). */
     @Test
     fun `grace choices are sourced from the real settings options`() {
         var changedTo: Long? = null
         composeRule.setContent {
-            GraceSettingsScreen(
+            ConnectionSettingsScreen(
                 settings = AppSettings(backgroundGraceMillis = AppSettings.BACKGROUND_GRACE_30_SECONDS_MS),
+                hosts = emptyList(),
                 onBack = {},
                 onBackgroundGraceChange = { changedTo = it },
+                onOpenWorkspaceRoots = {},
+                initiallyExpanded = true,
             )
         }
 
@@ -128,7 +142,7 @@ class SettingsScreenTest {
                 settings = AppSettings(),
                 hosts = listOf(SettingsHostRow(9, "hetzner", "alexey@10.0.0.1:22")),
                 onBack = {},
-                onOpenGrace = {},
+                onBackgroundGraceChange = {},
                 onOpenWorkspaceRoots = { openedHost = it },
             )
         }

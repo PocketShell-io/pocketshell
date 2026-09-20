@@ -28,6 +28,13 @@ import java.nio.charset.StandardCharsets
  * task P-6 adds ([HostForm], [SshKeys]), plus the categorized
  * Settings/support routes from issue #2610. A new screen is a new object here,
  * never an ad-hoc string at a call site.
+ *
+ * Issue #2814 N-3 removed two of those categorized routes —
+ * `settings/voice/language` and `settings/connections/grace`. Each was a full
+ * destination, scaffold and header for ONE choice group; the groups now expand
+ * in place inside [VoiceSettings] and [ConnectionSettings]. Hard cut (D22):
+ * the patterns are gone, not left dark, so a stale `navigate()` fails loudly
+ * instead of opening a page nothing reaches any more.
  */
 sealed class Destination(val pattern: String) {
 
@@ -51,18 +58,8 @@ sealed class Destination(val pattern: String) {
         fun route(): String = pattern
     }
 
-    /** Focused dictation-language choice page. */
-    data object VoiceLanguage : Destination("settings/voice/language") {
-        fun route(): String = pattern
-    }
-
     /** App-switching and connection-lifetime settings. */
     data object ConnectionSettings : Destination("settings/connections") {
-        fun route(): String = pattern
-    }
-
-    /** Focused background-grace choice page. */
-    data object GraceSettings : Destination("settings/connections/grace") {
         fun route(): String = pattern
     }
 
@@ -337,8 +334,8 @@ sealed class Destination(val pattern: String) {
         val all: List<Destination>
             get() = listOf(
                 Hosts, Workspaces, Workspace, Session, Files, FileViewer, Ports, Settings,
-                TerminalSettings, VoiceSettings, VoiceLanguage, ConnectionSettings,
-                GraceSettings, AdvancedSettings, AccountSync, Diagnostics, DiagnosticReport,
+                TerminalSettings, VoiceSettings, ConnectionSettings,
+                AdvancedSettings, AccountSync, Diagnostics, DiagnosticReport,
                 About, Update, Usage, HostUsage, TunnelDetail, AddTunnel,
                 HostForm, SshKeys, WorkspaceRoots, AddWorkspaceRoot,
                 WorkspaceStart, ReorderWorkspaces, WorkspaceRootAction,

@@ -44,9 +44,36 @@ class DestinationsTest {
         // The aggregate includes both Quiet workspace routes and the
         // categorized Settings/support plus Services routes. Deprecated aliases
         // (Tree and CrashReports) intentionally do not add duplicate patterns.
-        assertEquals(30, patterns.size)
+        // 28 since #2814 N-3 deleted the two one-choice-group leaf pages.
+        assertEquals(28, patterns.size)
         assertEquals(patterns.size, patterns.toSet().size)
         assertTrue(patterns.none { it.isBlank() })
+    }
+
+    /**
+     * Issue #2814 N-3 deleted `settings/voice/language` and
+     * `settings/connections/grace`; both choice groups now expand in place on
+     * their parent page. Asserted by PATTERN STRING rather than by the absence
+     * of a Kotlin symbol, because the symbol going away is what the compiler
+     * already proves — what this pins is that neither route can come back as a
+     * second way to reach the same six or five rows (D22 hard cut), and that
+     * the parent pages survived the deletion.
+     */
+    @Test
+    fun `the one-choice-group leaf settings routes are gone`() {
+        Destination.Files.route(hostId = 1)
+
+        val patterns = Destination.all.map { it.pattern }
+        assertTrue(
+            "settings/voice/language must not be a destination any more, got $patterns",
+            "settings/voice/language" !in patterns,
+        )
+        assertTrue(
+            "settings/connections/grace must not be a destination any more, got $patterns",
+            "settings/connections/grace" !in patterns,
+        )
+        assertTrue("the Voice page must survive", "settings/voice" in patterns)
+        assertTrue("the Connections page must survive", "settings/connections" in patterns)
     }
 
     @Test
@@ -93,9 +120,7 @@ class DestinationsTest {
         )
         assertMatchesPattern(Destination.TerminalSettings.pattern, Destination.TerminalSettings.route())
         assertMatchesPattern(Destination.VoiceSettings.pattern, Destination.VoiceSettings.route())
-        assertMatchesPattern(Destination.VoiceLanguage.pattern, Destination.VoiceLanguage.route())
         assertMatchesPattern(Destination.ConnectionSettings.pattern, Destination.ConnectionSettings.route())
-        assertMatchesPattern(Destination.GraceSettings.pattern, Destination.GraceSettings.route())
         assertMatchesPattern(Destination.AdvancedSettings.pattern, Destination.AdvancedSettings.route())
         assertMatchesPattern(Destination.Diagnostics.pattern, Destination.Diagnostics.route())
         assertMatchesPattern(

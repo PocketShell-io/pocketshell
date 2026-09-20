@@ -8,12 +8,14 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.hasClickAction
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.height
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -492,6 +494,43 @@ class QuietWorkspaceScreenTest {
         composeRule.onNodeWithText("Browse host files").assertDoesNotExist()
     }
 
+    /**
+     * Issue #2814 N-2: Settings used to have exactly one entry point, the row
+     * on the Hosts landing screen, so a connected user had to back out of the
+     * host to change a setting. The host tools sheet now carries it.
+     *
+     * The tap is asserted, not just the row's presence: a row wired to the
+     * wrong lambda (or to nothing, which is what a default `{}` parameter
+     * silently gives you) renders identically.
+     */
+    @Test
+    fun `host tools sheet reaches Settings without leaving the host`() {
+        var openedSettings = 0
+        setHostContent(
+            state = HostWorkspacesUiState(
+                hostId = 7,
+                hostLabel = "hetzner",
+                loaded = true,
+            ),
+            onOpenSettings = { openedSettings += 1 },
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_HOST_TOOLS_TAG).assertIsDisplayed()
+        // The sheet is a LazyColumn and Settings sits near its end, so the row
+        // has to be scrolled INTO composition before it can be tapped.
+        composeRule.onNodeWithTag(HOST_WORKSPACES_HOST_TOOLS_TAG)
+            .performScrollToNode(hasTestTag(HOST_WORKSPACES_SETTINGS_TAG))
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SETTINGS_TAG)
+            .assertIsDisplayed()
+            .performClick()
+
+        assertEquals(1, openedSettings)
+        // The sheet closes behind the navigation; leaving it up would stack a
+        // modal over the Settings page the caller is about to push.
+        composeRule.onNodeWithTag(HOST_WORKSPACES_HOST_TOOLS_TAG).assertDoesNotExist()
+    }
+
     // Issue #2798: the workspace row's subtitle across all three
     // cardinalities. The empty case is the fix; 1 and 2 are pinned next to it
     // so restoring an empty-case label cannot slip through on the strength of
@@ -719,6 +758,7 @@ class QuietWorkspaceScreenTest {
         state: HostWorkspacesUiState,
         onOpenWorkspace: (String) -> Unit = {},
         onOpenSession: (SessionRow) -> Unit = {},
+        onOpenSettings: () -> Unit = {},
     ) {
         composeRule.setContent {
             PocketShellTheme {
@@ -727,6 +767,7 @@ class QuietWorkspaceScreenTest {
                     onRefresh = {},
                     onOpenWorkspace = onOpenWorkspace,
                     onOpenSession = onOpenSession,
+                    onOpenSettings = onOpenSettings,
                 )
             }
         }

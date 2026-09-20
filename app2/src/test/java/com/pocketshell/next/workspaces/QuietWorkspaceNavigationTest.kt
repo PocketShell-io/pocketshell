@@ -85,15 +85,15 @@ class QuietWorkspaceNavigationTest {
                     navController = controller,
                     hostsScreen = { Text("Hosts") },
                     connectViewModel = { stack.viewModel },
-                    workspacesScreen = { hostId, onOpenWorkspace, _, _, _, _, onBack, _, _ ->
+                    workspacesScreen = { hostId, actions, _ ->
                         Column {
                             Text("Workspaces $hostId")
                             Button(
-                                onClick = { onOpenWorkspace(path) },
+                                onClick = { actions.onOpenWorkspace(path) },
                                 modifier = Modifier.testTag("quiet-open-workspace"),
                             ) { Text("Open workspace") }
                             Button(
-                                onClick = onBack,
+                                onClick = actions.onBack,
                                 modifier = Modifier.testTag("quiet-back-from-workspaces"),
                             ) { Text("Back") }
                         }
@@ -111,10 +111,10 @@ class QuietWorkspaceNavigationTest {
                             ) { Text("Back to workspaces") }
                         }
                     },
-                    sessionScreen = { _, _, _, _, onBack, _, _, _, _ ->
+                    sessionScreen = { _, _, _, _, actions ->
                         Column {
                             Button(
-                                onClick = onBack,
+                                onClick = actions.onBack,
                                 modifier = Modifier.testTag("quiet-back-to-workspace"),
                             ) { Text("Back to workspace") }
                         }

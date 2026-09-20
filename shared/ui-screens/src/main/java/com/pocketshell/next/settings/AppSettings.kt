@@ -8,7 +8,7 @@ package com.pocketshell.next.settings
  * state (no repository, no `Context`, no disk), so the move is verbatim. The
  * persistence mapping (`SettingsRepository`) stays in app2.
  *
- * ## Nine fields, not sixteen
+ * ## Eleven fields, not sixteen
  *
  * The old client's `AppSettings` carried sixteen. Most of them configured
  * machinery the rewrite deleted, so porting them would have shipped a settings
@@ -27,6 +27,12 @@ package com.pocketshell.next.settings
  * | `defaultHostId` | The last host workspace list to resume on launch. Null keeps the Hosts landing screen. |
  * | `voiceTranscriptionProvider` | Whisper-vs-Android picker. Composer mic is Android `SpeechRecognizer` only (#2529). |
  *
+ * Issue #2814 N-4 added [lastWorkspacePath] and [lastSessionId] alongside the
+ * already-shipped [defaultHostId], so a cold launch can resume the WORK and not
+ * only the host. They extend this class deliberately rather than reviving a
+ * `LastSessionStore`: one persisted settings snapshot, one repository, one
+ * observable flow.
+ *
  * `agentSubmitEnterDelayMs` was on that drop list (P-6: "agent surfaces are
  * cut") and is back: the composer is still the send path into those agents,
  * and concatenating body+Enter into one PTY write is the race issue #2526
@@ -41,6 +47,28 @@ package com.pocketshell.next.settings
 data class AppSettings(
     /** Last host the user opened; null means launch on the Hosts list. */
     val defaultHostId: Long? = null,
+    /**
+     * Canonical remote path of the workspace whose session was open last, or
+     * null when the last thing opened was a host-root session (issue #2814
+     * N-4).
+     *
+     * Paired with [lastSessionId]: the launch handoff resumes a session only
+     * when BOTH are present and the id is still live on the host, so a stale
+     * pair degrades to the workspace list rather than to a wrong terminal.
+     * [SettingsRepository.setDefaultHostId] clears both when the resumed host
+     * changes — a session id is only meaningful against the host that issued
+     * it.
+     */
+    val lastWorkspacePath: String? = null,
+    /**
+     * Host-issued id (the aplexer record UUID, the same identity
+     * `Destination.Session` carries since #2572) of the session that was open
+     * last; null when nothing resumable is remembered.
+     *
+     * The ID, not the name: a renamed session must still resume, and a NEW
+     * session wearing a recycled name must not.
+     */
+    val lastSessionId: String? = null,
     /**
      * Terminal glyph size in RAW DEVICE PIXELS.
      *

@@ -147,6 +147,7 @@ fun SessionRoute(
     onOpenFiles: () -> Unit = {},
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     workspacePath: String? = null,
     modifier: Modifier = Modifier,
     viewModel: SessionViewModel = hiltViewModel(),
@@ -267,6 +268,7 @@ fun SessionRoute(
         onOpenFiles = onOpenFiles,
         onOpenSession = onOpenSession,
         onOpenNewSession = onOpenNewSession,
+        onOpenSettings = onOpenSettings,
         sessionSwitcherState = sessionSwitcherState,
         workspacePath = workspacePath,
         showCommonKeys = appSettings.showCommonKeys,
@@ -331,6 +333,8 @@ fun SessionScreen(
     onOpenSession: (SessionRow) -> Unit = {},
     onOpenNewSession: () -> Unit = {},
     onOpenFiles: () -> Unit = {},
+    /** Issue #2814 N-2: Settings, one tap from the terminal actions sheet. */
+    onOpenSettings: () -> Unit = {},
     onResized: (cols: Int, rows: Int) -> Unit,
     usagePillState: UsageGlancePillState? = null,
     onOpenUsage: () -> Unit = {},
@@ -763,6 +767,10 @@ fun SessionScreen(
             onEndSession = {
                 terminalActionsOpen = false
                 pendingStop = true
+            },
+            onOpenSettings = {
+                terminalActionsOpen = false
+                onOpenSettings()
             },
             onDismiss = { terminalActionsOpen = false },
         )

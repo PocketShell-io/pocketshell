@@ -58,6 +58,59 @@ class SettingsRepositoryTest {
         assertEquals(85, repo.settings.value.usageWarnThresholdPercent)
     }
 
+    /**
+     * Issue #2814 N-4. Both halves matter: the pair has to survive a new
+     * repository instance (that is the whole point — it is read at cold
+     * launch), and it has to be FORGOTTEN when the resumed host changes,
+     * because a session id issued by one host means nothing on another.
+     */
+    @Test
+    fun `the last session survives a new repository instance`() {
+        repository().setLastSession("/home/alexey/git/alpha", "sess-1")
+
+        val reopened = repository().settings.value
+        assertEquals("/home/alexey/git/alpha", reopened.lastWorkspacePath)
+        assertEquals("sess-1", reopened.lastSessionId)
+    }
+
+    @Test
+    fun `switching the resumed host forgets the session it belonged to`() {
+        val repo = repository()
+        repo.setDefaultHostId(7L)
+        repo.setLastSession("/home/alexey/git/alpha", "sess-1")
+
+        repo.setDefaultHostId(9L)
+
+        assertEquals(null, repo.settings.value.lastWorkspacePath)
+        assertEquals(null, repo.settings.value.lastSessionId)
+        // And the forget is durable, not just in-memory.
+        assertEquals(null, repository().settings.value.lastSessionId)
+    }
+
+    /**
+     * An unresumable half-pair is stored as nothing at all. A workspace with
+     * no id cannot be resolved against the host, and an id with no workspace
+     * cannot build a `Destination.Session` route — keeping either would make
+     * the launch handoff spend a resolution to reach the same workspace list.
+     */
+    @Test
+    fun `a session the route could not identify is not remembered`() {
+        val repo = repository()
+        repo.setLastSession("/home/alexey/git/alpha", "sess-1")
+
+        repo.setLastSession("/home/alexey/git/beta", null)
+        assertEquals(null, repo.settings.value.lastSessionId)
+        assertEquals(null, repo.settings.value.lastWorkspacePath)
+
+        repo.setLastSession(null, "sess-2")
+        assertEquals(null, repo.settings.value.lastSessionId)
+        assertEquals(null, repo.settings.value.lastWorkspacePath)
+
+        repo.setLastSession("  ", "  ")
+        assertEquals(null, repo.settings.value.lastSessionId)
+        assertEquals(null, repo.settings.value.lastWorkspacePath)
+    }
+
     @Test
     fun `an unsupported voice language falls back to auto`() {
         val repo = repository()

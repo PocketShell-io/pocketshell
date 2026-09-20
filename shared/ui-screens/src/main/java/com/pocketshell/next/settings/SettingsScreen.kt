@@ -37,6 +37,17 @@ const val SETTINGS_VOICE_SILENCE_VALUE_TAG: String = "settings-voice-silence-val
 const val SETTINGS_VOICE_REVIEW_TAG: String = "settings-voice-review"
 const val SETTINGS_VOICE_RECOGNITION_TAG: String = "settings-voice-recognition"
 const val SETTINGS_CONNECTION_RECONNECT_TAG: String = "settings-connection-reconnect"
+
+/**
+ * The two expand-in-place choice-group rows and their disclosed groups
+ * (#2814 N-3). The row tags are the literals the pages already carried when
+ * they were drill-in rows, kept byte-identical so an existing journey oracle
+ * keeps pointing at the same control.
+ */
+const val SETTINGS_VOICE_LANGUAGE_TAG: String = "settings-voice-language"
+const val SETTINGS_VOICE_LANGUAGE_GROUP_TAG: String = "settings-voice-language-group"
+const val SETTINGS_CONNECTION_GRACE_TAG: String = "settings-connection-grace"
+const val SETTINGS_CONNECTION_GRACE_GROUP_TAG: String = "settings-connection-grace-group"
 const val SETTINGS_RESET_ADVANCED_TAG: String = "settings-reset-advanced"
 const val SETTINGS_WORKSPACE_EMPTY_TAG: String = "settings-workspace-empty"
 const val SETTINGS_CRASH_REPORTS_TAG: String = "settings-crash-reports"
@@ -47,9 +58,7 @@ const val SETTINGS_UPDATE_CHECK_DETAIL_TAG: String = "settings-update-check-deta
 
 const val SETTINGS_TERMINAL_PAGE_TAG: String = "settings-terminal-page"
 const val SETTINGS_VOICE_PAGE_TAG: String = "settings-voice-page"
-const val SETTINGS_LANGUAGE_PAGE_TAG: String = "settings-language-page"
 const val SETTINGS_CONNECTIONS_PAGE_TAG: String = "settings-connections-page"
-const val SETTINGS_GRACE_PAGE_TAG: String = "settings-grace-page"
 const val SETTINGS_ADVANCED_PAGE_TAG: String = "settings-advanced-page"
 const val SETTINGS_ABOUT_PAGE_TAG: String = "settings-about-page"
 const val SETTINGS_UPDATE_PAGE_TAG: String = "settings-update-page"

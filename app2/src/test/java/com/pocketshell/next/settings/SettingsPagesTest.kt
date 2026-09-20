@@ -1,6 +1,7 @@
 package com.pocketshell.next.settings
 
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -55,20 +56,41 @@ class SettingsPagesTest {
         assertEquals(40, terminalTextSizePxFromSp(16f, density))
     }
 
+    /**
+     * Issue #2814 N-3: the language group expands under its own row instead of
+     * pushing `settings/voice/language`. Asserted here are the three things
+     * the deleted page did — offer every option, report the pick, show what is
+     * currently selected — plus the two only the inline shape can get wrong:
+     * the group is absent until the row is tapped, and picking an option
+     * closes it. That collapse IS the deleted "Done" button's replacement, so
+     * a version that leaves the group hanging open fails here.
+     */
     @Test
-    fun `voice page routes language through a focused page`() {
-        var opened = 0
+    fun `voice page opens the language group in place and a pick closes it`() {
+        var changedTo: String? = null
         composeRule.setContent {
             VoiceSettingsScreen(
                 settings = AppSettings(voiceLanguage = "de"),
                 onBack = {},
-                onOpenLanguage = { opened++ },
+                onVoiceLanguageChange = { changedTo = it },
             )
         }
 
         composeRule.onNodeWithText("German").assertIsDisplayed()
-        composeRule.onNodeWithText("Language").performClick()
-        assertEquals(1, opened)
+        composeRule.onNodeWithTag(SETTINGS_VOICE_LANGUAGE_GROUP_TAG).assertDoesNotExist()
+
+        composeRule.onNodeWithTag(SETTINGS_VOICE_LANGUAGE_TAG).performClick()
+        composeRule.onNodeWithTag(SETTINGS_VOICE_LANGUAGE_GROUP_TAG).assertIsDisplayed()
+        AppSettings.VOICE_LANGUAGE_OPTIONS.forEach { option ->
+            composeRule.onNodeWithTag(voiceLanguageOptionTag(option.code))
+                .performScrollTo()
+                .assertIsDisplayed()
+        }
+        composeRule.onNodeWithTag(voiceLanguageOptionTag("de")).assertIsSelected()
+
+        composeRule.onNodeWithTag(voiceLanguageOptionTag("ru")).performScrollTo().performClick()
+        assertEquals("ru", changedTo)
+        composeRule.onNodeWithTag(SETTINGS_VOICE_LANGUAGE_GROUP_TAG).assertDoesNotExist()
         composeRule.onNodeWithTag(SETTINGS_VOICE_REVIEW_TAG).assertIsDisplayed()
         composeRule.onNodeWithTag(SETTINGS_VOICE_RECOGNITION_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("PocketShell asks for microphone access when you start dictating.")
@@ -100,15 +122,16 @@ class SettingsPagesTest {
         composeRule.onNodeWithText("Reset advanced defaults").assertIsDisplayed()
     }
 
+    /** The grace group's half of #2814 N-3 — same shape as the language one. */
     @Test
-    fun `connections explain reconnect behavior through the real grace control`() {
-        var openedGrace = 0
+    fun `connections explain reconnect behavior through the inline grace control`() {
+        var changedTo: Long? = null
         composeRule.setContent {
             ConnectionSettingsScreen(
                 settings = AppSettings(),
                 hosts = emptyList(),
                 onBack = {},
-                onOpenGrace = { openedGrace++ },
+                onBackgroundGraceChange = { changedTo = it },
                 onOpenWorkspaceRoots = {},
             )
         }
@@ -118,9 +141,19 @@ class SettingsPagesTest {
             "This controls the phone’s connection. Remote sessions are not deliberately ended " +
                 "when the app leaves the foreground.",
         ).assertIsDisplayed()
-        composeRule.onNodeWithTag("settings-connection-grace").performClick()
+        composeRule.onNodeWithTag(SETTINGS_CONNECTION_GRACE_GROUP_TAG).assertDoesNotExist()
 
-        assertEquals(1, openedGrace)
+        composeRule.onNodeWithTag(SETTINGS_CONNECTION_GRACE_TAG).performClick()
+        composeRule.onNodeWithTag(SETTINGS_CONNECTION_GRACE_GROUP_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(
+            backgroundGraceOptionTag(AppSettings.DEFAULT_BACKGROUND_GRACE_MILLIS),
+        ).assertIsSelected()
+
+        composeRule.onNodeWithTag(backgroundGraceOptionTag(AppSettings.BACKGROUND_GRACE_5_MINUTES_MS))
+            .performScrollTo()
+            .performClick()
+        assertEquals(AppSettings.BACKGROUND_GRACE_5_MINUTES_MS, changedTo)
+        composeRule.onNodeWithTag(SETTINGS_CONNECTION_GRACE_GROUP_TAG).assertDoesNotExist()
     }
 
     @Test

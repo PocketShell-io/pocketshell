@@ -2,9 +2,7 @@ package com.pocketshell.next.settings
 
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -41,19 +39,6 @@ class SettingsRowGrammarTest {
     val composeRule = createComposeRule()
 
     @Test
-    fun settingsDescriptionSupportingLineIsTheMetadataRungOnTextMuted() {
-        composeRule.setContent {
-            GraceSettingsScreen(
-                settings = AppSettings(),
-                onBack = {},
-                onBackgroundGraceChange = {},
-            )
-        }
-
-        assertSupportingLineGrammar(GRACE_DESCRIPTION)
-    }
-
-    @Test
     fun settingsSliderSupportingLineIsTheMetadataRungOnTextMuted() {
         composeRule.setContent {
             AdvancedSettingsScreen(
@@ -66,22 +51,6 @@ class SettingsRowGrammarTest {
         }
 
         assertSupportingLineGrammar(SLIDER_DESCRIPTION)
-    }
-
-    @Test
-    fun gracePageChoiceRowsKeepTheirTagsAfterTheListRowRebuild() {
-        composeRule.setContent {
-            GraceSettingsScreen(
-                settings = AppSettings(),
-                onBack = {},
-                onBackgroundGraceChange = {},
-            )
-        }
-
-        AppSettings.BACKGROUND_GRACE_OPTIONS.forEach { option ->
-            composeRule.onNodeWithTag(backgroundGraceOptionTag(option.millis))
-                .assertIsDisplayed()
-        }
     }
 
     private fun assertSupportingLineGrammar(text: String) {
@@ -111,8 +80,6 @@ class SettingsRowGrammarTest {
     }
 
     private companion object {
-        const val GRACE_DESCRIPTION =
-            "This controls the phone’s connection. Remote sessions are not ended by this setting."
         const val SLIDER_DESCRIPTION =
             "Pause after pasted input before sending Enter. Change only if input is left unsubmitted."
     }

@@ -109,31 +109,34 @@ class J16SettingsSupportJourney {
         awaitTag(SETTINGS_LIST_TAG)
         capture("01-settings-index")
 
+        // Issue #2814 N-3: both pickers expand in place. The page tag is
+        // re-asserted AFTER the pick, which is what proves no route was
+        // pushed — the old flow needed a Back here to get this far.
         compose.onNodeWithTag(settingsCategoryTag("voice")).performClick()
         awaitTag(SETTINGS_VOICE_PAGE_TAG)
-        compose.onNodeWithTag("settings-voice-language").performClick()
-        awaitTag(SETTINGS_LANGUAGE_PAGE_TAG)
+        compose.onNodeWithTag(SETTINGS_VOICE_LANGUAGE_TAG).performClick()
+        awaitTag(SETTINGS_VOICE_LANGUAGE_GROUP_TAG)
+        capture("02-language")
         compose.onNodeWithTag(voiceLanguageOptionTag("ru")).performClick()
         assertEquals("ru", appGraph().settingsRepository().settings.value.voiceLanguage)
-        capture("02-language")
-        compose.onNodeWithTag(SETTINGS_BACK_TAG).performClick()
-        awaitTag(SETTINGS_VOICE_PAGE_TAG)
+        awaitTagGone(SETTINGS_VOICE_LANGUAGE_GROUP_TAG)
+        compose.onNodeWithTag(SETTINGS_VOICE_PAGE_TAG).assertIsDisplayed()
         compose.onNodeWithTag(SETTINGS_BACK_TAG).performClick()
         awaitTag(SETTINGS_LIST_TAG)
 
         compose.onNodeWithTag(settingsCategoryTag("connections")).performClick()
         awaitTag(SETTINGS_CONNECTIONS_PAGE_TAG)
-        compose.onNodeWithTag("settings-connection-grace").performClick()
-        awaitTag(SETTINGS_GRACE_PAGE_TAG)
+        compose.onNodeWithTag(SETTINGS_CONNECTION_GRACE_TAG).performClick()
+        awaitTag(SETTINGS_CONNECTION_GRACE_GROUP_TAG)
+        capture("03-grace")
         compose.onNodeWithTag(backgroundGraceOptionTag(AppSettings.BACKGROUND_GRACE_5_MINUTES_MS))
             .performClick()
         assertEquals(
             AppSettings.BACKGROUND_GRACE_5_MINUTES_MS,
             appGraph().settingsRepository().settings.value.backgroundGraceMillis,
         )
-        capture("03-grace")
-        compose.onNodeWithTag(SETTINGS_BACK_TAG).performClick()
-        awaitTag(SETTINGS_CONNECTIONS_PAGE_TAG)
+        awaitTagGone(SETTINGS_CONNECTION_GRACE_GROUP_TAG)
+        compose.onNodeWithTag(SETTINGS_CONNECTIONS_PAGE_TAG).assertIsDisplayed()
         compose.onNodeWithTag(SETTINGS_BACK_TAG).performClick()
         awaitTag(SETTINGS_LIST_TAG)
 
@@ -174,6 +177,13 @@ class J16SettingsSupportJourney {
             compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithTag(tag).assertIsDisplayed()
+    }
+
+    /** The disclosed group's exit transition has to finish before it is "closed". */
+    private fun awaitTagGone(tag: String) {
+        compose.waitUntil(timeoutMillis = 10_000) {
+            compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isEmpty()
+        }
     }
 
     /** Preserve real-window evidence after the connected-test app is removed. */

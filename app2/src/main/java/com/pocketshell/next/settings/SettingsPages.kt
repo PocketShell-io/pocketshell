@@ -21,6 +21,12 @@ import com.pocketshell.next.release.launchUpdateUrl
  * scaffold and slider) lives in the shared presentation module (#2636 D6);
  * these routes stay in app2 because they own the Hilt view-model wiring, the
  * Android build-info read and the update-check URL hand-off.
+ *
+ * Issue #2814 N-3 deleted `LanguageSettingsRoute` and `GraceSettingsRoute`:
+ * both carried one choice group each, which now expands in place inside
+ * [VoiceSettingsRoute] and [ConnectionSettingsRoute]. Their setter hand-offs
+ * (`setVoiceLanguage`, `setBackgroundGraceMillis`) moved up here with them, so
+ * the same `SettingsViewModel` method still owns the write.
  */
 
 @Composable
@@ -42,27 +48,11 @@ internal fun TerminalSettingsRoute(
 @Composable
 internal fun VoiceSettingsRoute(
     onBack: () -> Unit,
-    onOpenLanguage: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val settings by viewModel.state.collectAsStateWithLifecycle()
     VoiceSettingsScreen(
-        settings = settings,
-        onBack = onBack,
-        onOpenLanguage = onOpenLanguage,
-        modifier = modifier,
-    )
-}
-
-@Composable
-internal fun LanguageSettingsRoute(
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: SettingsViewModel = hiltViewModel(),
-) {
-    val settings by viewModel.state.collectAsStateWithLifecycle()
-    LanguageSettingsScreen(
         settings = settings,
         onBack = onBack,
         onVoiceLanguageChange = viewModel::setVoiceLanguage,
@@ -73,7 +63,6 @@ internal fun LanguageSettingsRoute(
 @Composable
 internal fun ConnectionSettingsRoute(
     onBack: () -> Unit,
-    onOpenGrace: () -> Unit,
     onOpenWorkspaceRoots: (Long) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -84,24 +73,9 @@ internal fun ConnectionSettingsRoute(
         settings = settings,
         hosts = hosts,
         onBack = onBack,
-        onOpenGrace = onOpenGrace,
+        onBackgroundGraceChange = viewModel::setBackgroundGraceMillis,
         onReconnectWhenReturnChange = viewModel::setReconnectWhenReturn,
         onOpenWorkspaceRoots = onOpenWorkspaceRoots,
-        modifier = modifier,
-    )
-}
-
-@Composable
-internal fun GraceSettingsRoute(
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: SettingsViewModel = hiltViewModel(),
-) {
-    val settings by viewModel.state.collectAsStateWithLifecycle()
-    GraceSettingsScreen(
-        settings = settings,
-        onBack = onBack,
-        onBackgroundGraceChange = viewModel::setBackgroundGraceMillis,
         modifier = modifier,
     )
 }

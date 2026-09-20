@@ -271,6 +271,7 @@ fun TerminalActionsSheet(
     onCopySelection: () -> Unit,
     onDetach: () -> Unit,
     onEndSession: () -> Unit,
+    onOpenSettings: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(
@@ -286,6 +287,7 @@ fun TerminalActionsSheet(
             onCopySelection = onCopySelection,
             onDetach = onDetach,
             onEndSession = onEndSession,
+            onOpenSettings = onOpenSettings,
             onDismiss = onDismiss,
         )
     }
@@ -295,6 +297,11 @@ fun TerminalActionsSheet(
  * The terminal actions sheet without the modal container — the same split as
  * [HostToolsSheetContent], so design renders and host-JVM tests can compose
  * the real rows without Robolectric's modal window.
+ *
+ * [onOpenSettings] is issue #2814 N-2: Settings used to have exactly ONE entry
+ * point, the row on the Hosts landing screen, so reaching it from a live
+ * session cost back → back → back → tap. This row makes it one tap from here
+ * and from the host tools sheet, with no new route.
  */
 @Composable
 internal fun TerminalActionsSheetContent(
@@ -303,6 +310,7 @@ internal fun TerminalActionsSheetContent(
     onCopySelection: () -> Unit,
     onDetach: () -> Unit,
     onEndSession: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     onDismiss: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
@@ -322,6 +330,7 @@ internal fun TerminalActionsSheetContent(
             item { TerminalActionRow("Sessions in workspace", onSessions, TERMINAL_ACTIONS_SESSIONS_TAG) }
             item { TerminalActionRow("Browse files", onBrowseFiles, TERMINAL_ACTIONS_FILES_TAG) }
             item { TerminalActionRow("Copy selection", onCopySelection, TERMINAL_ACTIONS_COPY_TAG) }
+            item { TerminalActionRow("Settings", onOpenSettings, TERMINAL_ACTIONS_SETTINGS_TAG) }
             item { TerminalActionRow("Detach and keep running", onDetach, TERMINAL_ACTIONS_DETACH_TAG) }
             item { TerminalActionRow(STOP_SESSION_ITEM_LABEL, onEndSession, STOP_SESSION_ITEM_TAG) }
         }
@@ -338,3 +347,4 @@ const val TERMINAL_ACTIONS_SESSIONS_TAG: String = "terminal-actions-sessions"
 const val TERMINAL_ACTIONS_FILES_TAG: String = "terminal-actions-files"
 const val TERMINAL_ACTIONS_COPY_TAG: String = "terminal-actions-copy"
 const val TERMINAL_ACTIONS_DETACH_TAG: String = "terminal-actions-detach"
+const val TERMINAL_ACTIONS_SETTINGS_TAG: String = "terminal-actions-settings"

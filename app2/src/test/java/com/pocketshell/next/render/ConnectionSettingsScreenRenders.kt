@@ -60,7 +60,7 @@ class ConnectionSettingsScreenRenders {
                 SettingsHostRow(2L, "lab-box", "10.0.0.7 · 2 workspaces"),
             ),
             onBack = {},
-            onOpenGrace = {},
+            onBackgroundGraceChange = {},
             onOpenWorkspaceRoots = {},
         )
     }
@@ -71,7 +71,7 @@ class ConnectionSettingsScreenRenders {
             settings = AppSettings(),
             hosts = emptyList(),
             onBack = {},
-            onOpenGrace = {},
+            onBackgroundGraceChange = {},
             onOpenWorkspaceRoots = {},
         )
     }

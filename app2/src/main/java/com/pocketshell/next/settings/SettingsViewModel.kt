@@ -67,6 +67,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setDefaultHostId(hostId: Long?) = repository.setDefaultHostId(hostId)
 
+    /** Issue #2814 N-4: the work inside the host, remembered for next launch. */
+    fun setLastSession(workspacePath: String?, sessionId: String?) =
+        repository.setLastSession(workspacePath, sessionId)
+
     fun resetAdvancedDefaults() = repository.resetAdvancedDefaults()
 
     private companion object {

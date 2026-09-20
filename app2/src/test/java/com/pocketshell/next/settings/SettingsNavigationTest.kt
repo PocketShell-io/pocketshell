@@ -224,12 +224,11 @@ class SettingsNavigationTest {
                 navController = controller,
                 hostsScreen = { Text("Hosts") },
                 connectViewModel = { stack.viewModel },
-                workspacesScreen = { hostId, _, _, _, _, _, _, _, _ -> Text("Tree(hostId=$hostId)") },
+                workspacesScreen = { hostId, _, _ -> Text("Tree(hostId=$hostId)") },
                 settingsScreen = { navigation -> SettingsRoute(navigation = navigation) },
-                connectionSettingsScreen = { onBack, onOpenGrace, onOpenWorkspaceRoots ->
+                connectionSettingsScreen = { onBack, onOpenWorkspaceRoots ->
                     ConnectionSettingsRoute(
                         onBack = onBack,
-                        onOpenGrace = onOpenGrace,
                         onOpenWorkspaceRoots = onOpenWorkspaceRoots,
                         viewModel = SettingsViewModel(
                             SettingsRepository(ApplicationProvider.getApplicationContext()),

@@ -99,6 +99,7 @@ const val HOST_WORKSPACES_PROJECT_ROOTS_TAG: String = "host-workspaces-project-r
 const val HOST_WORKSPACES_CONNECTION_DETAILS_TAG: String = "host-workspaces-connection-details"
 const val HOST_WORKSPACES_REFRESH_TAG: String = "host-workspaces-refresh"
 const val HOST_WORKSPACES_DISCONNECT_TAG: String = "host-workspaces-disconnect"
+const val HOST_WORKSPACES_SETTINGS_TAG: String = "host-workspaces-settings"
 const val HOST_WORKSPACES_WARNINGS_TAG: String = "host-workspaces-warnings"
 const val HOST_WORKSPACES_WARNINGS_CLEAR_TAG: String = "host-workspaces-warnings-clear"
 const val HOST_WORKSPACES_WARNINGS_CLEAR_CONFIRM_TAG: String = "host-workspaces-warnings-clear-confirm"
@@ -166,6 +167,7 @@ fun HostWorkspacesRoute(
     onOpenUsage: () -> Unit,
     onOpenProjectRoots: () -> Unit = {},
     onOpenConnectionDetails: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onDisconnect: () -> Unit = {},
     initialRootPath: String? = null,
     initialRootAction: String? = null,
@@ -199,6 +201,7 @@ fun HostWorkspacesRoute(
         onOpenUsage = onOpenUsage,
         onOpenProjectRoots = onOpenProjectRoots,
         onOpenConnectionDetails = onOpenConnectionDetails,
+        onOpenSettings = onOpenSettings,
         onDisconnect = onDisconnect,
         onOpenAddWorkspace = viewModel::openAddWorkspace,
         onSearchQueryChange = viewModel::setSearchQuery,
@@ -237,6 +240,7 @@ fun HostWorkspacesScreen(
     onOpenUsage: () -> Unit = {},
     onOpenProjectRoots: () -> Unit = {},
     onOpenConnectionDetails: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onDisconnect: () -> Unit = {},
     onOpenAddWorkspace: (String) -> Unit = {},
     onSearchQueryChange: (String) -> Unit = {},
@@ -542,6 +546,10 @@ fun HostWorkspacesScreen(
             onOpenConnectionDetails = {
                 hostToolsVisible = false
                 connectionDetailsVisible = true
+            },
+            onOpenSettings = {
+                hostToolsVisible = false
+                onOpenSettings()
             },
             onRefresh = {
                 hostToolsVisible = false
@@ -1380,6 +1388,7 @@ private fun HostToolsSheet(
     onOpenUsage: () -> Unit,
     onOpenProjectRoots: () -> Unit,
     onOpenConnectionDetails: () -> Unit,
+    onOpenSettings: () -> Unit,
     onRefresh: () -> Unit,
     onReorder: () -> Unit,
     onDisconnect: () -> Unit,
@@ -1400,6 +1409,7 @@ private fun HostToolsSheet(
             onOpenUsage = onOpenUsage,
             onOpenProjectRoots = onOpenProjectRoots,
             onOpenConnectionDetails = onOpenConnectionDetails,
+            onOpenSettings = onOpenSettings,
             onRefresh = onRefresh,
             onReorder = onReorder,
             onDisconnect = onDisconnect,
@@ -1415,6 +1425,12 @@ private fun HostToolsSheet(
  * carried for signature parity with [HostToolsSheet]; no row currently uses it.
  * [showFindWorkspace] adds the #2808 "Find a workspace" row, which the host
  * screen passes when it is not painting the search field itself.
+ *
+ * [onOpenSettings] is issue #2814 N-2: Settings used to have exactly ONE entry
+ * point, the row on the Hosts landing screen, so reaching it from a connected
+ * host cost backing out of the host first. This row makes it one tap from the
+ * workspace list, with no new route — the same row the terminal actions sheet
+ * grew for the same reason.
  */
 @Composable
 internal fun HostToolsSheetContent(
@@ -1426,6 +1442,7 @@ internal fun HostToolsSheetContent(
     onOpenUsage: () -> Unit = {},
     onOpenProjectRoots: () -> Unit = {},
     onOpenConnectionDetails: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onRefresh: () -> Unit = {},
     onReorder: () -> Unit = {},
     onDisconnect: () -> Unit = {},
@@ -1465,6 +1482,7 @@ internal fun HostToolsSheetContent(
         item { HostToolRow("Project roots", PocketShellIcons.Folder, onOpenProjectRoots, HOST_WORKSPACES_PROJECT_ROOTS_TAG) }
         item { HostToolRow("Refresh workspaces", PocketShellIcons.Refresh, onRefresh, HOST_WORKSPACES_REFRESH_TAG) }
         item { HostToolRow("Connection details", PocketShellIcons.Info, onOpenConnectionDetails, HOST_WORKSPACES_CONNECTION_DETAILS_TAG) }
+        item { HostToolRow("Settings", PocketShellIcons.Settings, onOpenSettings, HOST_WORKSPACES_SETTINGS_TAG) }
         item { HostToolRow("Disconnect", PocketShellIcons.Close, onDisconnect, HOST_WORKSPACES_DISCONNECT_TAG) }
     }
 }
