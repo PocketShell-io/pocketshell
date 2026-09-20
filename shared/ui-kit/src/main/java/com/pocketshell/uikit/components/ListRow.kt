@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.Text
 import androidx.compose.material3.HorizontalDivider
@@ -42,8 +43,11 @@ import com.pocketshell.uikit.theme.PocketShellType
  * Slots (every visual region is a caller-supplied lambda so screens compose
  * their own status dot / avatar / badge / kebab without re-encoding the row):
  *
- * - **[leading]** (optional) — status dot ([StatusDot]) / avatar / icon. Pass
- *   `null` for a flush-left title (e.g. settings rows).
+ * - **[leading]** (optional) — status dot ([StatusDot]) / avatar / icon,
+ *   centred in a slot at least [PocketShellDensity.icon] wide so every row in
+ *   a list shares one title gutter whatever the glyph measures (#2796). Pass
+ *   `null` for a flush-left title (e.g. settings rows) — a row without the
+ *   lambda gets no slot and no gutter at all.
  * - **title** — the primary scan target, [PocketShellType.body] (14sp) on the
  *   bright text token.
  * - **[subtitle]** (optional) — paths / IDs / `user@host`, rendered
@@ -103,10 +107,23 @@ fun ListRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
         if (leading != null) {
-            // A fixed-width leading box keeps every row's title left edge
-            // aligned regardless of whether the leading slot is an 8dp dot or a
-            // wider glyph, so a stacked list reads as a clean column.
-            Box(contentAlignment = Alignment.Center) {
+            // The leading slot is centred in a box at least one
+            // [PocketShellDensity.icon] wide, so an 8dp status dot, an 18dp
+            // session-kind mark and a 24dp glyph all put the title's left edge
+            // at the same x and a stacked list reads as a clean column. Before
+            // #2796 this box took its content's width and the comment here
+            // described a fix that was never applied.
+            //
+            // A floor, not a clamp: leading content that is legitimately wider
+            // than the icon box - a padded glyph, or an interactive control
+            // carrying its own [PocketShellDensity.tapTargetMin] hit area -
+            // keeps its own width instead of being squeezed under it. Nothing
+            // in a shared row primitive may shrink a caller's glyph or drop a
+            // hit target below the 48dp floor (see [PocketShellDensity]).
+            Box(
+                modifier = Modifier.widthIn(min = PocketShellDensity.icon),
+                contentAlignment = Alignment.Center,
+            ) {
                 leading()
             }
             Spacer(modifier = Modifier.width(PocketShellSpacing.md))
