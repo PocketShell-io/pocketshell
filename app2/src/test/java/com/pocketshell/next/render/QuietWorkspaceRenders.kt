@@ -86,6 +86,23 @@ class QuietWorkspaceRenders {
         )
     }
 
+    /**
+     * Issue #2808 D-4: the same screen on a host big enough to earn the search
+     * field. The four-workspace captures above show the gated-off state; this
+     * one is the other side of WORKSPACE_SEARCH_MIN_WORKSPACES, so the pair
+     * can be looked at together.
+     */
+    @Test
+    @Config(qualifiers = "w412dp-h915dp-night-xxhdpi")
+    fun hostWorkspaces412Searchable() = render("i2808-host-workspaces-412-searchable") {
+        HostWorkspacesScreen(
+            state = manyWorkspacesState(),
+            onRefresh = {},
+            onOpenWorkspace = {},
+            onOpenSession = {},
+        )
+    }
+
     @Test
     fun emptyWorkspaceDetail() = render("i2607-empty-workspace-detail") {
         WorkspaceScreen(state = workspaceState("/home/alexey/git/empty"), onRefresh = {}, onOpenSession = { _, _ -> })
@@ -145,6 +162,23 @@ class QuietWorkspaceRenders {
                 RegisteredWorkspaceRoot("/home/alexey/git", "Git", 1L),
                 RegisteredWorkspaceRoot("/home/alexey/work", "Work", 2L),
             ),
+        )
+        return HostWorkspacesUiState(
+            hostId = 7,
+            hostLabel = "hetzner",
+            loaded = true,
+            roots = roots,
+        )
+    }
+
+    /** A host at [com.pocketshell.next.workspaces.WORKSPACE_SEARCH_MIN_WORKSPACES]. */
+    private fun manyWorkspacesState(): HostWorkspacesUiState {
+        val roots = projectWorkspaceRoots(
+            sessions = emptyList(),
+            memberships = (1..8).map { index ->
+                WorkspaceMembership("/home/alexey/git/project-$index", "~/git/project-$index")
+            },
+            registeredRoots = listOf(RegisteredWorkspaceRoot("/home/alexey/git", "Git", 1L)),
         )
         return HostWorkspacesUiState(
             hostId = 7,

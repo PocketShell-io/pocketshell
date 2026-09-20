@@ -126,7 +126,7 @@ class J17HostToolsJourney {
         capture("05-ssh-key-imported")
 
         pressBackToHosts()
-        awaitScrollableTag(HOST_LIST_ADD_TAG)
+        awaitTag(HOST_LIST_ADD_TAG)
         compose.onNodeWithTag(HOST_LIST_ADD_TAG).performClick()
         awaitTag(HOST_LIST_ADD_METHODS_TAG)
         capture("06-host-add-methods")
@@ -149,7 +149,7 @@ class J17HostToolsJourney {
             }
         }
         pressBack()
-        awaitScrollableTag(HOST_LIST_ADD_TAG)
+        awaitTag(HOST_LIST_ADD_TAG)
     }
 
     private fun pressBack() {

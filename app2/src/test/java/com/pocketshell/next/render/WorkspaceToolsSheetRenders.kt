@@ -58,6 +58,18 @@ class WorkspaceToolsSheetRenders {
         )
     }
 
+    /**
+     * Issue #2808 D-4: the same sheet on a host too small to pin the search
+     * field, where it grows the "Find a workspace" row that replaces it.
+     */
+    @Test
+    fun workspaceToolsSheetWithFind() = render("i2808-workspace-tools-sheet-find") {
+        HostToolsSheetContent(
+            hostLabel = "hetzner",
+            showFindWorkspace = true,
+        )
+    }
+
     private fun render(name: String, content: @Composable () -> Unit) {
         composeRule.captureFrozenRender("build/renders/$name.png") {
             PocketShellTheme {

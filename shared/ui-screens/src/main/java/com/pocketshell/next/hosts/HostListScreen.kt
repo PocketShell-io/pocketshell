@@ -8,9 +8,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,7 +35,9 @@ import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.components.SectionHeader
 import com.pocketshell.uikit.components.SheetHeader
+import com.pocketshell.uikit.icons.PocketShellIcons
 import com.pocketshell.uikit.theme.PocketShellColors
+import com.pocketshell.uikit.theme.PocketShellDensity
 import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellSpacing
 
@@ -53,7 +58,6 @@ const val HOST_LIST_KEYS_TAG: String = "host-list-ssh-keys"
 // Keep the pre-Quiet journey tag as the canonical semantics tag. The longer
 // name remains a source-compatible alias for host-list tests and callers.
 const val HOST_LIST_SETTINGS_ROW_TAG: String = HOST_LIST_SETTINGS_TAG
-const val HOST_LIST_ADD_FOOTER_TAG: String = HOST_LIST_ADD_TAG
 const val HOST_LIST_ADD_METHODS_TAG: String = "host-list-add-methods"
 const val HOST_LIST_ADD_DETAILS_TAG: String = "host-list-add-details"
 
@@ -80,9 +84,12 @@ sealed interface HostListUpdateNotice {
  * What P-6 adds is the *management* surface it was missing — a fresh install had
  * literally no way to get a host into the table:
  *
- * - The empty state has one **Add host** action that opens the setup sheet.
- *   Populated Hosts keeps setup in a full-width footer and puts **SSH
- *   keys** and **Settings** in a separate tools section.
+ * - The empty state has one big accent **Add host** action that opens the
+ *   setup sheet — there it is the screen's whole purpose. The populated list
+ *   carries the same action as a `+` in the header's trailing slot (#2808
+ *   D-5: a full-width footer button spent a permanent 56 dp row on it, the
+ *   same foot button the desktop client deleted), and puts **SSH keys** and
+ *   **Settings** in a separate tools section.
  * - A per-row [Kebab] with Edit / Delete. It sits in the trailing slot the
  *   navigation chevron used to occupy: the row's own tap still dials the host,
  *   and a menu tap does not (an inner clickable consumes it).
@@ -113,8 +120,32 @@ fun HostListScreen(
     var pendingDelete by remember { mutableStateOf<HostRow?>(null) }
     var showAddHostMethods by remember { mutableStateOf(false) }
 
+    // #2808 D-5: the `+` belongs to the POPULATED list only. The empty state
+    // leads with the big accent button, and two nodes wearing HOST_LIST_ADD_TAG
+    // at once would make every `onNodeWithTag` on it ambiguous.
+    val headerAdd: (@Composable () -> Unit)? =
+        if (state.loaded && state.hosts.isNotEmpty()) {
+            {
+                IconButton(
+                    onClick = { showAddHostMethods = true },
+                    modifier = Modifier
+                        .size(PocketShellDensity.tapTargetMin)
+                        .testTag(HOST_LIST_ADD_TAG),
+                ) {
+                    Icon(
+                        imageVector = PocketShellIcons.Plus,
+                        contentDescription = "Add host",
+                        tint = PocketShellColors.TextSecondary,
+                        modifier = Modifier.size(PocketShellDensity.icon),
+                    )
+                }
+            }
+        } else {
+            null
+        }
+
     Column(modifier = modifier.fillMaxSize()) {
-        ScreenHeader(title = "Hosts")
+        ScreenHeader(title = "Hosts", trailing = headerAdd)
 
         when (val notice = updateNotice) {
             is HostListUpdateNotice.Available -> UpdateAvailableBanner(
@@ -144,7 +175,7 @@ fun HostListScreen(
                     PocketShellButton(
                         text = "Add host",
                         onClick = { showAddHostMethods = true },
-                        modifier = Modifier.testTag(HOST_LIST_ADD_FOOTER_TAG),
+                        modifier = Modifier.testTag(HOST_LIST_ADD_TAG),
                     )
                 },
             )
@@ -189,16 +220,6 @@ fun HostListScreen(
                             subtitle = "Connection and app preferences",
                             onClick = onOpenSettings,
                             modifier = Modifier.testTag(HOST_LIST_SETTINGS_ROW_TAG),
-                        )
-                    }
-                    item {
-                        PocketShellButton(
-                            text = "Add host",
-                            onClick = { showAddHostMethods = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = PocketShellSpacing.lg, vertical = PocketShellSpacing.md)
-                                .testTag(HOST_LIST_ADD_FOOTER_TAG),
                         )
                     }
                 }

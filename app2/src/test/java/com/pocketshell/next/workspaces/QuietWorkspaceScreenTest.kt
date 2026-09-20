@@ -25,6 +25,7 @@ import com.pocketshell.next.tree.SessionTreeUiState
 import com.pocketshell.next.tree.sessionRowMenuTag
 import com.pocketshell.next.tree.sessionRowTag
 import com.pocketshell.uikit.theme.PocketShellDensity
+import com.pocketshell.uikit.theme.PocketShellSpacing
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -596,6 +597,123 @@ class QuietWorkspaceScreenTest {
             ),
         ),
     )
+
+    // ---------------------------------------------------------------------
+    // Issue #2808 (audit D-4): the search field is gated on how many
+    // workspaces the host actually has. Below the threshold it is not
+    // rendered at all and "Find a workspace" moves into the host-tools
+    // sheet; at or above it, the field stays pinned as before.
+    //
+    // The whole class is pinned, not just the reported four-workspace
+    // instance: the boundary on both sides, the case where the list is
+    // already filtered, and both halves of the sheet handoff. The counts are
+    // written as WORKSPACE_SEARCH_MIN_WORKSPACES arithmetic, so moving the
+    // threshold moves the tests with it instead of silently passing.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `a small host does not spend a row on the search field`() {
+        setHostContent(state = hostWithWorkspaces(4))
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertDoesNotExist()
+        // The rows it would have filtered are all on screen instead.
+        composeRule.onNodeWithTag(workspaceRowTag(searchFixtureWorkspacePath(0)))
+            .assertIsDisplayed()
+    }
+
+    @Test
+    fun `one workspace short of the threshold still hides the field`() {
+        setHostContent(state = hostWithWorkspaces(WORKSPACE_SEARCH_MIN_WORKSPACES - 1))
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertDoesNotExist()
+    }
+
+    @Test
+    fun `the field appears exactly at the threshold`() {
+        setHostContent(state = hostWithWorkspaces(WORKSPACE_SEARCH_MIN_WORKSPACES))
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * The field's own height comes from the token, not a hand-copied `56.dp`
+     * (the second half of D-4). Asserted against [PocketShellDensity.fieldMin]
+     * plus the bottom gutter the modifier chain adds after it, so moving the
+     * token moves this expectation and a re-introduced literal goes red.
+     */
+    @Test
+    fun `the search field stands on the field-minimum token`() {
+        setHostContent(state = hostWithWorkspaces(WORKSPACE_SEARCH_MIN_WORKSPACES))
+
+        assertEquals(
+            PocketShellDensity.fieldMin + PocketShellSpacing.md,
+            composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG)
+                .getUnclippedBoundsInRoot()
+                .height,
+        )
+    }
+
+    /**
+     * A filtered list always keeps its field. Hiding it here would leave an
+     * invisible filter over the rows with no visible control to clear it —
+     * the one way a count-based gate can strand the user.
+     */
+    @Test
+    fun `an active query keeps the field even on a small host`() {
+        setHostContent(
+            state = hostWithWorkspaces(2).copy(searchQuery = "ws-0"),
+        )
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+    }
+
+    @Test
+    fun `host tools offers Find a workspace and reveals the field`() {
+        setHostContent(state = hostWithWorkspaces(4))
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_FIND_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_FIND_TAG).performClick()
+        composeRule.waitForIdle()
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
+    }
+
+    @Test
+    fun `host tools has no Find row when the field is already on screen`() {
+        setHostContent(state = hostWithWorkspaces(WORKSPACE_SEARCH_MIN_WORKSPACES))
+
+        composeRule.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        composeRule.onNodeWithTag(HOST_WORKSPACES_FIND_TAG).assertDoesNotExist()
+        composeRule.onAllNodesWithTag(HOST_WORKSPACES_SEARCH_TAG).assertCountEquals(1)
+    }
+
+    /** One root holding [count] workspaces — the shape the gate counts. */
+    private fun hostWithWorkspaces(count: Int) = HostWorkspacesUiState(
+        hostId = 7,
+        hostLabel = "hetzner",
+        loaded = true,
+        roots = listOf(
+            WorkspaceRootProjection(
+                key = "/home/alexey/git",
+                label = "Git",
+                displayPath = "~/git",
+                path = "/home/alexey/git",
+                workspaces = (0 until count).map { index ->
+                    WorkspaceProjection(
+                        path = searchFixtureWorkspacePath(index),
+                        label = "ws-$index",
+                        displayPath = "~/git/ws-$index",
+                        sessions = emptyList(),
+                        durable = true,
+                    )
+                },
+                rootSessions = emptyList(),
+            ),
+        ),
+    )
+
+    private fun searchFixtureWorkspacePath(index: Int) = "/home/alexey/git/ws-$index"
 
     private fun setHostContent(
         state: HostWorkspacesUiState,

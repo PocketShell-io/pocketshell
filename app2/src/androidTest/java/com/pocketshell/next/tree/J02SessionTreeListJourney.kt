@@ -38,6 +38,7 @@ import com.pocketshell.next.terminal.SESSION_TITLE_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ADD_PATH_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_BACK_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_EMPTY_TAG
+import com.pocketshell.next.workspaces.HOST_WORKSPACES_FIND_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_LIST_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_PARTIAL_BANNER_TAG
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ROOT_START_SESSION_TAG
@@ -334,6 +335,19 @@ class J02SessionTreeListJourney {
     @Test
     fun searchingAndAddingAWorkspaceUsesTheProductionQuietControls() {
         openWorkspaces()
+
+        // #2808 D-4: this fixture's host has two workspaces, well under
+        // WORKSPACE_SEARCH_MIN_WORKSPACES, so the screen deliberately does not
+        // pin a search field. The on-device contract is that search is still
+        // REACHABLE — through the host-tools sheet — and that the field it
+        // reveals is the real one that filters the real rows.
+        compose.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertDoesNotExist()
+        compose.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
+        awaitTag(HOST_WORKSPACES_FIND_TAG)
+        JourneyScreenshots.capture("05a-host-tools-find-workspace", JOURNEY)
+        compose.onNodeWithTag(HOST_WORKSPACES_FIND_TAG).performClick()
+        awaitTag(HOST_WORKSPACES_SEARCH_TAG)
+        compose.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG).assertIsDisplayed()
 
         compose.onNodeWithTag(HOST_WORKSPACES_SEARCH_TAG)
             .performTextReplacement("aplexer")

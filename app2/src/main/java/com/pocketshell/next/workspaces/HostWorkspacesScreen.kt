@@ -77,6 +77,7 @@ const val HOST_WORKSPACES_ACTIONS_TAG: String = "host-workspaces-actions"
 const val HOST_WORKSPACES_REORDER_TAG: String = "host-workspaces-reorder"
 const val HOST_WORKSPACES_ADD_TAG: String = "host-workspaces-add"
 const val HOST_WORKSPACES_SEARCH_TAG: String = "host-workspaces-search"
+const val HOST_WORKSPACES_FIND_TAG: String = "host-workspaces-find"
 const val HOST_WORKSPACES_ADD_PATH_TAG: String = "host-workspaces-add-path"
 const val HOST_WORKSPACES_ADD_CONFIRM_TAG: String = "host-workspaces-add-confirm"
 const val HOST_WORKSPACES_ADD_BROWSE_TAG: String = "host-workspaces-add-browse"
@@ -102,6 +103,39 @@ const val HOST_WORKSPACES_WARNINGS_TAG: String = "host-workspaces-warnings"
 const val HOST_WORKSPACES_WARNINGS_CLEAR_TAG: String = "host-workspaces-warnings-clear"
 const val HOST_WORKSPACES_WARNINGS_CLEAR_CONFIRM_TAG: String = "host-workspaces-warnings-clear-confirm"
 const val HOST_WORKSPACES_ACK_FAILURE_TAG: String = "host-workspaces-ack-failure"
+
+/**
+ * Issue #2808 (audit D-4): how many workspaces a host needs before the search
+ * field earns its permanent 56 dp + 12 dp of chrome.
+ *
+ * Below this the list fits on one screen and the eye is faster than the
+ * keyboard — the desktop client shows no field at 11 folders
+ * (`pocketshell-electron/docs/SESSIONLIST.md` §1), so a phone showing one at
+ * four was pure overhead. When the field is hidden, "Find a workspace" moves
+ * into the host-tools sheet, so search is never unreachable — only unpinned.
+ */
+internal const val WORKSPACE_SEARCH_MIN_WORKSPACES: Int = 8
+
+/**
+ * Whether the host screen paints its search field.
+ *
+ * Three ways in, in order of how load-bearing they are:
+ *  - [revealed] — the user asked for it from the host-tools sheet.
+ *  - a non-blank [HostWorkspacesUiState.searchQuery] — a query is already
+ *    filtering the list, so the control that clears it MUST stay on screen. A
+ *    hidden field over a filtered list is an invisible filter with no way out.
+ *  - the host carries at least [WORKSPACE_SEARCH_MIN_WORKSPACES] workspaces.
+ *
+ * The count is over ALL workspaces, not the filtered ones, so typing can never
+ * shrink the list far enough to pull the field out from under the cursor.
+ */
+internal fun workspaceSearchFieldVisible(
+    state: HostWorkspacesUiState,
+    revealed: Boolean,
+): Boolean =
+    revealed ||
+        state.searchQuery.isNotBlank() ||
+        state.roots.sumOf { root -> root.workspaces.size } >= WORKSPACE_SEARCH_MIN_WORKSPACES
 
 fun workspaceRowTag(path: String): String = "workspace-row-$path"
 
@@ -227,6 +261,11 @@ fun HostWorkspacesScreen(
     var rootPendingRemoval by remember { mutableStateOf<WorkspaceRootProjection?>(null) }
     var warningsPendingClear by remember { mutableStateOf(false) }
     var hostToolsVisible by remember { mutableStateOf(false) }
+    // #2808 D-4: the sheet's "Find a workspace" pins the field for this
+    // visit. It is screen state, not host state, so it lives here rather
+    // than in the ViewModel's projection.
+    var searchRevealed by remember { mutableStateOf(false) }
+    val searchFieldVisible = workspaceSearchFieldVisible(state, searchRevealed)
     var connectionDetailsVisible by remember { mutableStateOf(false) }
 
     // These are full navigation surfaces in the Android handoff. They are
@@ -292,37 +331,39 @@ fun HostWorkspacesScreen(
             },
         )
 
-        OutlinedTextField(
-            value = state.searchQuery,
-            onValueChange = onSearchQueryChange,
-            placeholder = { Text("Find a workspace") },
-            leadingIcon = {
-                Icon(
-                    imageVector = PocketShellIcons.Search,
-                    contentDescription = null,
-                )
-            },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = PocketShellDensity.fieldMin)
-                .padding(
-                    start = PocketShellSpacing.xl,
-                    end = PocketShellSpacing.xl,
-                    bottom = PocketShellSpacing.md,
-                )
-                .testTag(HOST_WORKSPACES_SEARCH_TAG),
-            shape = PocketShellShapes.medium,
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = PocketShellColors.Surface,
-                unfocusedContainerColor = PocketShellColors.Surface,
-                focusedTextColor = PocketShellColors.Text,
-                unfocusedTextColor = PocketShellColors.Text,
-                focusedBorderColor = PocketShellColors.Accent,
-                unfocusedBorderColor = PocketShellColors.Border,
-                cursorColor = PocketShellColors.Accent,
-            ),
-        )
+        if (searchFieldVisible) {
+            OutlinedTextField(
+                value = state.searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = { Text("Find a workspace") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = PocketShellIcons.Search,
+                        contentDescription = null,
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = PocketShellDensity.fieldMin)
+                    .padding(
+                        start = PocketShellSpacing.xl,
+                        end = PocketShellSpacing.xl,
+                        bottom = PocketShellSpacing.md,
+                    )
+                    .testTag(HOST_WORKSPACES_SEARCH_TAG),
+                shape = PocketShellShapes.medium,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedContainerColor = PocketShellColors.Surface,
+                    unfocusedContainerColor = PocketShellColors.Surface,
+                    focusedTextColor = PocketShellColors.Text,
+                    unfocusedTextColor = PocketShellColors.Text,
+                    focusedBorderColor = PocketShellColors.Accent,
+                    unfocusedBorderColor = PocketShellColors.Border,
+                    cursorColor = PocketShellColors.Accent,
+                ),
+            )
+        }
 
         if (state.errors.isNotEmpty()) {
             Banner(
@@ -477,6 +518,11 @@ fun HostWorkspacesScreen(
     if (hostToolsVisible) {
         HostToolsSheet(
             hostLabel = state.hostLabel,
+            showFindWorkspace = !searchFieldVisible,
+            onFindWorkspace = {
+                hostToolsVisible = false
+                searchRevealed = true
+            },
             onOpenFiles = {
                 hostToolsVisible = false
                 onOpenFiles()
@@ -1327,6 +1373,8 @@ private fun RootActionRow(
 @Composable
 private fun HostToolsSheet(
     hostLabel: String,
+    showFindWorkspace: Boolean,
+    onFindWorkspace: () -> Unit,
     onOpenFiles: () -> Unit,
     onOpenPorts: () -> Unit,
     onOpenUsage: () -> Unit,
@@ -1345,6 +1393,8 @@ private fun HostToolsSheet(
     ) {
         HostToolsSheetContent(
             hostLabel = hostLabel,
+            showFindWorkspace = showFindWorkspace,
+            onFindWorkspace = onFindWorkspace,
             onOpenFiles = onOpenFiles,
             onOpenPorts = onOpenPorts,
             onOpenUsage = onOpenUsage,
@@ -1363,10 +1413,14 @@ private fun HostToolsSheet(
  * [RootActionsSheetContent] above, so design renders and host-JVM tests can
  * compose the real rows without Robolectric's modal window. [onReorder] is
  * carried for signature parity with [HostToolsSheet]; no row currently uses it.
+ * [showFindWorkspace] adds the #2808 "Find a workspace" row, which the host
+ * screen passes when it is not painting the search field itself.
  */
 @Composable
 internal fun HostToolsSheetContent(
     hostLabel: String,
+    showFindWorkspace: Boolean = false,
+    onFindWorkspace: () -> Unit = {},
     onOpenFiles: () -> Unit = {},
     onOpenPorts: () -> Unit = {},
     onOpenUsage: () -> Unit = {},
@@ -1391,6 +1445,19 @@ internal fun HostToolsSheetContent(
                 onClose = onDismiss,
                 modifier = Modifier.padding(horizontal = PocketShellSpacing.lg),
             )
+        }
+        // #2808 D-4: only when the field is not on the screen behind this
+        // sheet — two "Find a workspace" affordances at once would be a
+        // second way to do the same thing, not a fallback.
+        if (showFindWorkspace) {
+            item {
+                HostToolRow(
+                    "Find a workspace",
+                    PocketShellIcons.Search,
+                    onFindWorkspace,
+                    HOST_WORKSPACES_FIND_TAG,
+                )
+            }
         }
         item { HostToolRow("Browse files", PocketShellIcons.File, onOpenFiles, SESSION_TREE_FILES_TAG) }
         item { HostToolRow("Services & tunnels", PocketShellIcons.Ports, onOpenPorts, SESSION_TREE_PORTS_TAG) }

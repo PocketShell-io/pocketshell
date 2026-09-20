@@ -24,7 +24,8 @@ These describe **where** persistent UI elements live within a screen, so that mo
 2. **More / kebab menu — always top-right of the breadcrumb row.**
    Rationale: secondary actions live opposite the primary back affordance; the row reads left-to-right as "go back ↔ peek at extras". Applies to: `SessionScreen` overflow menu, host-list overflow menu, and session-tree actions.
 3. **Primary action — full-width footer button, not a FAB.**
-   Rationale: one obvious, thumb-reachable primary action docked at the bottom of the screen; no floating-action-button chrome. Applies to: `HostListScreen` `+` host action, shipped as a full-width `PocketShellButton` in the populated list footer and as the empty-state action. The mic is a `MicButton` inside the composer bar, not a screen-level FAB.
+   Rationale: one obvious, thumb-reachable primary action docked at the bottom of the screen; no floating-action-button chrome. Applies to: empty-state primary actions. The mic is a `MicButton` inside the composer bar, not a screen-level FAB.
+   Exception (#2808): `HostListScreen`'s `+` host action lives in the list header's trailing slot (`KebabTrigger` treatment, `TextSecondary` tint), not a footer button — with the workspace search field gated by the 8-workspace threshold, a docked footer duplicated chrome on populated lists. The empty state keeps the full-width accent button.
 4. **Status / connection line — directly below the breadcrumb, above any tab row.**
    Rationale: status is a property of the current destination, so it must sit attached to the destination header, not floating above main content. Applies to: `SessionScreen` connection line, host-list usage strip, and agent-detection chip.
 5. **Tab row — immediately below status, spans full width.**

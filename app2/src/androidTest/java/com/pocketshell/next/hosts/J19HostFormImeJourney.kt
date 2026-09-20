@@ -124,7 +124,7 @@ class J19HostFormImeJourney {
     fun addHostActionsStayReachableUnderTheRealIme() {
         awaitScrollableTag(hostRowTag(HOST_ID))
 
-        compose.onNodeWithTag(HOST_LIST_ADD_TAG).performScrollTo().performClick()
+        compose.onNodeWithTag(HOST_LIST_ADD_TAG).performClick()
         awaitTag(HOST_LIST_ADD_METHODS_TAG)
         compose.onNodeWithTag(HOST_LIST_ADD_DETAILS_TAG).performClick()
         awaitTag(HOST_FORM_CONTENT_TAG)
