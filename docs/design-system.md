@@ -50,7 +50,7 @@ maintainer decision.
 | Spacing | [`Spacing.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Spacing.kt) mirrors the `space` block of `tokens.json`: `xs` 4dp through `xxl` 24dp (the 32dp `section` rung was retired in #2717 — sections separate with `PocketShellDensity.sectionGap`, 24dp). | Enforced since #2812: `TokenLiteralGuardTest` fails on any off-grid `.dp` literal in `app2/src/main`, `shared/ui-kit/src/main` or `shared/ui-screens/src/main` that is not allowlisted with a written reason. The surviving exceptions are hairlines, radii (the `radius` ladder's job), component geometry (strokes, glyph boxes, drawn instruments, key-cap boxes), and the two chip-paint tokens. | Keep the base spacing scale small. Add component-specific geometry tokens only when a pattern repeats across surfaces — and add the `TokenLiteralGuardTest` row that says why it is not spacing. |
 | Density | `PocketShellDensity` mirrors the whole `size` block of `tokens.json`: `rowMinHeight` 56dp, `workspaceRowMinHeight` 64dp, `tapTargetMin` 48dp, `fieldMin` 56dp input/field floor per #2747, `buttonMin` 56dp, `icon` 24dp, `metadataIcon` 18dp and `screenGutter` 20dp (the last four bound in #2800), plus component geometry (`rowPadV` 16dp, `chipPadV` 6dp and `chipPadH` 10dp — documented off-grid chip-paint exceptions per #2812, `sectionGap` 24dp, `treeIndent` 16dp). The Density defaults table below is pinned to the object by `QuietThemeTokenTest` (#2829), so a new rung cannot land undocumented. | Some compact rows draw below the visual density target, and some touch areas depend on surrounding layout rather than explicit `sizeIn`. | Visual density can be compact; touch targets stay at least 48dp. |
 | Shape | [`Shape.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/theme/Shape.kt) maps the `radius` ladder of `tokens.json` into M3 shape slots: field/button corners (12dp) to `small`/`medium`, sheet corners (24dp) to `large`. The full ladder is `{4 badge, 8 chip, 12 field/button/card, 24 sheet}`. | Screens still create local `RoundedCornerShape` values for micro badges, key slots, cards, and sheets. Some are legitimate component geometry; repeated values should move into shared components. | 4dp badge, 8dp chip, 12dp field/button/card, 24dp sheet. Avoid new radii; `scripts/check-design-tokens.sh` allows exactly the ladder. |
-| Elevation | No standalone elevation token. Components mostly use borders; [`MicButton.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components/MicButton.kt) is the visible exception. | Local surfaces sometimes simulate card hierarchy by adding nested panels. | Hairline borders separate surfaces. FAB/mic is the only normal chrome with shadow. |
+| Elevation | No standalone elevation token. Components mostly use borders; [`MicButton.kt`](../shared/ui-kit/src/main/java/com/pocketshell/uikit/components/MicButton.kt) is the visible exception, and since #2802 only in its `Recording` state. | Local surfaces sometimes simulate card hierarchy by adding nested panels. | Hairline borders separate surfaces. The recording mic is the only normal chrome with shadow — an elevation cue is accent weight, so it goes where the accent fill goes. |
 | Motion | No `Motion.kt` exists on current `origin/main`. Motion is local and ad hoc, for example `MicButton` uses a recording pulse. | Older docs called `MotionDurations` codified; that is stale. `animate*` / `tween` values cannot be audited centrally today. | Define motion values in this spec now; add code tokens only in a later runtime slice. |
 
 ### Shared UI Kit
@@ -67,7 +67,7 @@ The current reusable catalog lives under
 | `StatusDot` | Connection/status dot using `ConnectionStatus`. | Prefer this over local dot composables. Extend role mapping if needed. |
 | `Kebab` | Shared overflow trigger and menu item model. | Replace raw `DropdownMenu` blocks when menus have common section/destructive/status rows. A kebab opens actions; it must not directly perform or confirm an action. |
 | `SegmentedToggle` / `Tabs` | Compact mode/tab controls. | Use for mode switches and Terminal/Conversation tabs; avoid radio groups for view density. |
-| `MicButton` / `MicIcon` | Composer dictation FAB and icon. | Shared surface for #453; no second mic glyph or text-only dictate chip. |
+| `MicButton` / `MicIcon` | Composer dictation button and icon. `Recording` is accent-filled with the drop shadow; `Idle` wears the secondary outline (elevated fill, 1dp `Border`, primary-text glyph) that `InsertButton` and the ui-kit Secondary pills use; `Disabled` is the same fill with a muted glyph and no outline (#2802). | Shared surface for #453; no second mic glyph or text-only dictate chip. Exactly one mic state may carry the accent — the composer row has one filled primary, Send. |
 | `PocketShellButton` | Canonical button: `ButtonVariant.Primary` (filled accent CTA), `Secondary` (outlined accent), `Text` (muted Cancel/Retry), `Destructive` (red-text confirm). | Use for EVERY tappable button. Replaces all raw Material `Button`/`TextButton` and the per-screen `ButtonDefaults.buttonColors(Accent…)` block. Do not hand-declare button colours, shape, or weight. |
 | `LoadingIndicator` | Canonical **indeterminate** loading affordance: `Bar` (linear "in flight" strip) + `Spinner` (circular "something is happening", `SpinnerSize.Small`/`Medium`, optional label). | Use for ANY "busy, no known percentage" state. Replaces all raw Material `LinearProgressIndicator`/`CircularProgressIndicator`. Do not hand-pick a spinner diameter or bar height. |
 | `ProgressBar` | Usage/progress fill (**determinate**, `progress: Float`). | Use only when the percentage is KNOWN (usage quota, download). For unknown-duration work use `LoadingIndicator` instead. |
@@ -429,6 +429,21 @@ Standard sheet pattern:
 SemiBold title, optional muted dense subtitle, optional trailing slot, and an
 optional close affordance. The sheet body keeps owning its height, scrolling,
 and horizontal padding; the header owns only the title/subtitle/action grammar.
+
+Header grammar (#2802 C-5): **a sheet is titled after the noun it acts on**,
+never after what to do with it and never after the affordance that opened it.
+`SessionScreen` alone used to open four surfaces with three schemes — "Sessions"
+and "Terminal" (nouns), "Add to input" (an instruction, and one that stopped
+being true once the panel grew rows that added nothing), and "More keys" (the
+bar button's name, while the palette's own close button already said "Close
+terminal keys"). They are now "Sessions", "Terminal", "Input tools" and
+"Terminal keys". `SessionSheetTitlesTest` holds all SIX titled surfaces the
+screen opens to the rule — the four above plus `PromptComposerSheet` ("Prompt
+Composer" / "Input to <session>") and `MessageHistorySheet` ("Recent prompts"),
+which already followed it — and fails on any new title written in the
+instruction form, not just on the four the audit named. A `ConfirmDialog` is
+deliberately outside the rule: a confirm prompt asks a question, and dialogs
+have their own pattern below.
 
 Standard dialog pattern:
 

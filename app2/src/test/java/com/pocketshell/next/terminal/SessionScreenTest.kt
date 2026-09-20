@@ -33,6 +33,8 @@ import com.pocketshell.next.composer.COMPOSER_REVIEW_ACTION_TAG
 import com.pocketshell.next.composer.COMPOSER_REVIEW_TAG
 import com.pocketshell.next.composer.COMPOSER_SEND_TAG
 import com.pocketshell.next.composer.COMPOSER_TAG
+import com.pocketshell.next.composer.COMPOSER_TOOLS_TAG
+import com.pocketshell.next.composer.COMPOSER_TOOLS_TRIGGER_TAG
 import com.pocketshell.next.composer.COMPOSER_TITLE_TAG
 import com.pocketshell.next.composer.COMPOSER_UNDELIVERED_TAG
 import com.pocketshell.next.composer.ComposerNotice
@@ -665,6 +667,51 @@ class SessionScreenTest {
         composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).performClick()
 
         assertEquals(1, inserts)
+        composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * #2802 C-4: the palette keeps its ONE cheap door.
+     *
+     * The composer's "Terminal keys" row was a second route that cost two taps
+     * AND closed the composer, because `SessionScreen` makes the two surfaces
+     * mutually exclusive by construction (`onOpenComposer` clears
+     * `hotkeysOpen`, `onMoreKeys` clears `composerOpen`). Deleting it must not
+     * cost the bar's one-tap route, which is the only reason the deletion is
+     * safe.
+     */
+    @Test
+    fun `the hotkeys palette is one tap from the terminal bar`() {
+        setContent(SessionUiState.Live(createRemoteTerminalSession()))
+
+        composeRule.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG).assertDoesNotExist()
+
+        composeRule.onNodeWithTag(SESSION_BAR_MORE_KEYS_TAG).performClick()
+
+        composeRule.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG).assertIsDisplayed()
+        // ...and it did not have to close anything to get there.
+        composeRule.onNodeWithTag(SESSION_TERMINAL_BAR_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * #2802 C-4: the composer no longer offers a door to the palette at all —
+     * neither a row nor a callback the screen could re-wire to one.
+     */
+    @Test
+    fun `the open composer offers no route to the hotkeys palette`() {
+        setContent(
+            SessionUiState.Live(createRemoteTerminalSession()),
+            composerState = ComposerUiState(micAvailable = true),
+            initiallyShowComposer = true,
+            embedComposerInWindow = false,
+        )
+
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).performClick()
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TAG).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("composer-tools-hotkeys").assertDoesNotExist()
+        composeRule.onNodeWithTag(TERMINAL_HOTKEYS_PALETTE_TAG).assertDoesNotExist()
+        // The composer is still open — nothing was traded away for the cut.
         composeRule.onNodeWithTag(COMPOSER_TAG).assertIsDisplayed()
     }
 

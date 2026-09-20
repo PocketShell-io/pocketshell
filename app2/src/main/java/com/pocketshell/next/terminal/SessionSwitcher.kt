@@ -54,6 +54,16 @@ const val SESSION_SWITCHER_EMPTY_TAG: String = "session-switcher-empty"
 const val SESSION_SWITCHER_ERROR_TAG: String = "session-switcher-error"
 const val SESSION_SWITCHER_NEW_TAG: String = "session-switcher-new-session"
 
+/**
+ * Sheet headers name the noun the sheet acts on (#2802 C-5).
+ *
+ * Both of these already followed the rule; they are named constants now so the
+ * grammar is something `SessionSheetTitlesTest` can check across every surface
+ * `SessionScreen` opens, rather than a coincidence spread over two files.
+ */
+const val SESSION_SWITCHER_TITLE: String = "Sessions"
+const val TERMINAL_ACTIONS_TITLE: String = "Terminal"
+
 fun sessionSwitcherRowTag(name: String): String = "session-switcher-row-$name"
 
 data class SessionSwitcherUiState(
@@ -154,7 +164,7 @@ fun SessionSwitcherSheet(
         ) {
             item {
                 SheetHeader(
-                    title = "Sessions",
+                    title = SESSION_SWITCHER_TITLE,
                     subtitle = "Switch terminals in this workspace.",
                     onClose = onDismiss,
                 )
@@ -303,7 +313,7 @@ internal fun TerminalActionsSheetContent(
             .padding(bottom = PocketShellSpacing.lg)
             .testTag(TERMINAL_ACTIONS_SHEET_TAG),
     ) {
-        SheetHeader(title = "Terminal", onClose = onDismiss)
+        SheetHeader(title = TERMINAL_ACTIONS_TITLE, onClose = onDismiss)
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()

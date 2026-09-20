@@ -500,10 +500,154 @@ class ComposerBarTest {
         composeRule.onNodeWithText("Preview").assertDoesNotExist()
         composeRule.onNodeWithText("Clear").assertDoesNotExist()
         composeRule.onNodeWithTag(COMPOSER_PREVIEW_TAG).assertDoesNotExist()
-        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertDoesNotExist()
+        // #2802 C-3 moved Clear off the tools panel and into the draft field.
+        // It must still not be ON the control row — that is the two-row
+        // occupancy this test was written to reject.
+        assertNotOnControlsRow(COMPOSER_DISCARD_TAG)
 
         assertSameRow(COMPOSER_INSERT_TAG, COMPOSER_SEND_TAG, COMPOSER_MIC_TAG)
         assertSameRow(COMPOSER_TOOLS_TRIGGER_TAG, COMPOSER_INSERT_TAG, COMPOSER_SEND_TAG, COMPOSER_MIC_TAG)
+    }
+
+    // ---------------------------------------------------- #2802 composer vocabulary
+
+    /**
+     * #2802 C-3 reproduce-first: one action, four vocabularies — "Paste" on
+     * screen, "Paste without submitting" to TalkBack, `InsertButton` /
+     * `composer-insert` in the source, reached from a panel called "Add to
+     * input". This fails on the pre-#2802 tree, where the pill says "Paste".
+     */
+    @Test
+    fun `the insert control says insert on every surface`() {
+        setContent(ComposerUiState(draft = "hello"))
+
+        composeRule.onNodeWithTag(COMPOSER_INSERT_TAG).assertIsDisplayed()
+        composeRule.onNodeWithText(COMPOSER_INSERT_LABEL).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(COMPOSER_INSERT_DESCRIPTION).assertIsDisplayed()
+
+        composeRule.onNodeWithText("Paste").assertDoesNotExist()
+        composeRule.onNodeWithContentDescription("Paste without submitting").assertDoesNotExist()
+    }
+
+    /**
+     * #2802 C-3/C-5: the `+` the user taps and the sheet that opens are called
+     * the same thing, and that thing is the noun "Input tools" rather than the
+     * instruction "Add to input" (which stopped being true the moment the
+     * panel carried rows that add nothing to the input).
+     */
+    @Test
+    fun `the tools trigger and its sheet share one name`() {
+        setContent(ComposerUiState())
+
+        composeRule.onNodeWithContentDescription(COMPOSER_TOOLS_TITLE).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Add to input").assertDoesNotExist()
+
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).performClick()
+
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TAG).assertIsDisplayed()
+        composeRule.onNodeWithText(COMPOSER_TOOLS_TITLE).assertIsDisplayed()
+        composeRule.onNodeWithText("Add to input").assertDoesNotExist()
+    }
+
+    /**
+     * #2802 C-4 reproduce-first: the panel's "Terminal keys" row opened the
+     * hotkeys palette — 2 taps that ALSO closed the composer, against 1 tap
+     * from the terminal bar that closes nothing. There is no state in which it
+     * was the better path, so D22 says delete it, not flag it.
+     *
+     * This fails on the pre-#2802 tree, where `composer-tools-hotkeys` is in
+     * the panel.
+     */
+    @Test
+    fun `the tools panel has no second door to the hotkeys palette`() {
+        setContent(ComposerUiState())
+
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TRIGGER_TAG).performClick()
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TAG).assertIsDisplayed()
+
+        composeRule.onNodeWithTag("composer-tools-hotkeys").assertDoesNotExist()
+        composeRule.onNodeWithText("Terminal keys").assertDoesNotExist()
+        composeRule.onNodeWithText("Send special keys to the current terminal").assertDoesNotExist()
+
+        // The rows that really do add to the input are untouched.
+        composeRule.onNodeWithTag(COMPOSER_ATTACH_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_HISTORY_TAG).assertIsDisplayed()
+        composeRule.onNodeWithTag(COMPOSER_SLASH_TRIGGER_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * #2802 C-3 reproduce-first: "Clear draft" sat inside a panel titled "Add
+     * to input" — two taps behind a surface whose name promised the opposite
+     * of what the row did. It is now a `×` in the draft field, one tap, next
+     * to the text it clears.
+     *
+     * This fails on the pre-#2802 tree, where nothing carries
+     * `composer-discard` until the tools panel is opened.
+     */
+    @Test
+    fun `clearing the draft takes one tap and never opens the tools panel`() {
+        var discards = 0
+        setContent(ComposerUiState(draft = "something to lose"), onDiscard = { discards += 1 })
+
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription(COMPOSER_CLEAR_DRAFT_DESCRIPTION).assertIsDisplayed()
+
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).performClick()
+
+        assertEquals(1, discards)
+        // Still no panel: the action did not route through one.
+        composeRule.onNodeWithTag(COMPOSER_TOOLS_TAG).assertDoesNotExist()
+    }
+
+    /** The `×` is not a permanent ornament: an empty composer has nothing to clear. */
+    @Test
+    fun `an empty draft shows no clear affordance`() {
+        setContent(ComposerUiState())
+
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertDoesNotExist()
+    }
+
+    /** An attachment alone is a draft worth clearing, even with no text. */
+    @Test
+    fun `a staged attachment alone earns the clear affordance`() {
+        setContent(ComposerUiState(attachments = listOf(attachment())))
+
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertIsDisplayed()
+    }
+
+    /** The `×` tracks the editor, not the ViewModel's echo of it. */
+    @Test
+    fun `typing into an empty composer reveals the clear affordance`() {
+        setContent(ComposerUiState())
+
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertDoesNotExist()
+        composeRule.onNodeWithTag(COMPOSER_DRAFT_TAG).performTextInput("x")
+
+        composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).assertIsDisplayed()
+    }
+
+    /**
+     * The clear target keeps the 48dp floor and takes its width out of the
+     * field rather than floating over the text it removes — a `×` painted on
+     * top of the last line is the occlusion class `review-standards.md` calls
+     * out.
+     */
+    @Test
+    @Config(qualifiers = "w360dp-h800dp")
+    fun `the clear affordance sits beside the editor, not over it`() {
+        setContent(ComposerUiState(draft = "a draft long enough to reach the trailing edge of the field"))
+
+        val density = composeRule.density.density
+        val clear = composeRule.onNodeWithTag(COMPOSER_DISCARD_TAG).fetchSemanticsNode().boundsInRoot
+        val editor = composeRule.onNodeWithTag(COMPOSER_DRAFT_TAG).fetchSemanticsNode().boundsInRoot
+
+        assertEquals("the clear target keeps the touch floor", 48f, clear.width / density, 0.5f)
+        assertEquals(48f, clear.height / density, 0.5f)
+        assertTrue(
+            "the clear target must sit after the editor, not on top of it: clear=$clear editor=$editor",
+            clear.left >= editor.right - 0.5f,
+        )
     }
 
     /**
@@ -664,6 +808,7 @@ class ComposerBarTest {
         onToggleHistory: () -> Unit = {},
         onMicTap: () -> Unit = {},
         onCancelRecording: () -> Unit = {},
+        onDiscard: () -> Unit = {},
         deliveryEnabled: Boolean = true,
     ) {
         composeRule.setContent {
@@ -680,11 +825,28 @@ class ComposerBarTest {
                     onTogglePreview = {},
                     onRemoveAttachment = onRemoveAttachment,
                     onDismissNotice = {},
-                    onDiscard = {},
+                    onDiscard = onDiscard,
                     deliveryEnabled = deliveryEnabled,
                 )
             }
         }
+    }
+
+    /**
+     * The node exists, but outside the one idle control row — which is what
+     * #2529's "idle chrome is ONE control row" actually forbids. A plain
+     * `assertDoesNotExist` would now also be satisfied by the #2802 `×` simply
+     * being missing, so it cannot be the check any more.
+     */
+    private fun assertNotOnControlsRow(tag: String) {
+        val row = composeRule.onNodeWithTag(COMPOSER_CONTROLS_ROW_TAG)
+            .fetchSemanticsNode().boundsInRoot
+        val node = composeRule.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot
+        assertTrue(
+            "$tag (top=${node.top} bottom=${node.bottom}) must not sit on the control row " +
+                "(top=${row.top} bottom=${row.bottom})",
+            node.bottom <= row.top + 0.5f || node.top >= row.bottom - 0.5f,
+        )
     }
 
     /**

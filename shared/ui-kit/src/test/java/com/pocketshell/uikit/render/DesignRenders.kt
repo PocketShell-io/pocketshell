@@ -42,6 +42,7 @@ import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ComposerDiscardButton
 import com.pocketshell.uikit.components.ComposerSendButton
 import com.pocketshell.uikit.components.ComposerStopRecordingButton
+import com.pocketshell.uikit.components.MicButton
 import com.pocketshell.uikit.components.ConfirmDialog
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.ListRow
@@ -58,6 +59,7 @@ import com.pocketshell.uikit.components.SheetHeader
 import com.pocketshell.uikit.components.StatusDot
 import com.pocketshell.uikit.components.TerminalHotkeysPage
 import com.pocketshell.uikit.model.ConnectionStatus
+import com.pocketshell.uikit.model.MicButtonState
 import com.pocketshell.uikit.model.PillKind
 import com.pocketshell.uikit.model.ProgressKind
 import com.pocketshell.uikit.theme.PocketShellColors
@@ -1124,6 +1126,52 @@ class DesignRenders {
                     onClick = {},
                     contentDescription = "Stop dictating and keep the text",
                 )
+            }
+        }
+    }
+
+    /**
+     * Issue #2802 C-2: the REAL [MicButton] in all three states, so "the idle
+     * mic is outlined and the recording mic is accent-filled" is something you
+     * can see rather than something a table asserts.
+     *
+     * The idle mic is rendered beside the real [ComposerSendButton] and the
+     * outlined [ComposerDiscardButton], which is the comparison that matters:
+     * before #2802 the mic matched Send (two filled accent primaries with an
+     * outline between them); it now matches the outline family, leaving Send
+     * as the row's one filled primary. The recording row below shows the mic
+     * keeping the accent for the one state that is genuinely active.
+     */
+    @Test
+    fun micButtonStates() = render("mic-button-states") {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(PocketShellColors.Surface)
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            // Idle beside the primary it used to be confused with.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Spacer(Modifier.weight(1f))
+                ComposerDiscardButton(onClick = {}, label = "Insert")
+                ComposerSendButton(onClick = {}, enabled = true)
+                MicButton(state = MicButtonState.Idle, onClick = {})
+            }
+            // The three states side by side: outlined / accent / muted.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Spacer(Modifier.weight(1f))
+                MicButton(state = MicButtonState.Idle, onClick = {})
+                MicButton(state = MicButtonState.Recording, onClick = {})
+                MicButton(state = MicButtonState.Disabled, onClick = {})
             }
         }
     }

@@ -19,6 +19,15 @@ const val COMPOSER_TITLE_TAG: String = "composer-title"
 const val COMPOSER_CLOSE_TAG: String = "composer-close"
 const val COMPOSER_SHEET_TITLE: String = "Prompt Composer"
 
+/**
+ * The targeted form of [COMPOSER_SHEET_TITLE] (#2802 C-5).
+ *
+ * Still the noun the sheet acts on — the input — with the session it is
+ * bound to appended, so the header grammar `SessionSheetTitlesTest` pins is
+ * checkable on this sheet too rather than hiding inside an interpolation.
+ */
+const val COMPOSER_SHEET_TITLE_PREFIX: String = "Input to "
+
 /** What a mic tap does, given the current permission and recording state. */
 enum class MicTapAction {
     /** Already recording, or RECORD_AUDIO is granted: start or stop dictation. */
@@ -77,7 +86,6 @@ fun PromptComposerSheet(
     hasRecordAudioPermission: (() -> Boolean)? = null,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
     val context = LocalContext.current
@@ -131,7 +139,6 @@ fun PromptComposerSheet(
             onDiscard = onDiscard,
             deliveryEnabled = deliveryEnabled,
             deliveryDisabledMessage = deliveryDisabledMessage,
-            onOpenHotkeys = onOpenHotkeys,
             availableSlashCommands = availableSlashCommands,
         )
     }
@@ -161,10 +168,9 @@ fun PromptComposerContent(
     imeVisible: Boolean = false,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
-    val title = targetLabel.trim().takeIf { it.isNotEmpty() }?.let { "Input to $it" }
+    val title = targetLabel.trim().takeIf { it.isNotEmpty() }?.let { COMPOSER_SHEET_TITLE_PREFIX + it }
         ?: COMPOSER_SHEET_TITLE
     Column(modifier = modifier.navigationBarsPadding()) {
         SheetHeader(
@@ -189,7 +195,6 @@ fun PromptComposerContent(
             onDiscard = onDiscard,
             deliveryEnabled = deliveryEnabled,
             deliveryDisabledMessage = deliveryDisabledMessage,
-            onOpenHotkeys = onOpenHotkeys,
             availableSlashCommands = availableSlashCommands,
         )
     }

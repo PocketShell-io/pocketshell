@@ -95,6 +95,13 @@ const val TERMINAL_HOTKEYS_PALETTE_HANDLE_TAG: String = "terminal:hotkeys-palett
 const val TERMINAL_HOTKEYS_CTRL_FLOW_TAG: String = "terminal:hotkeys-ctrl-flow"
 
 /**
+ * The palette's own name (#2802 C-5) — the noun it acts on, matching the
+ * header grammar of every other surface `SessionScreen` opens, and matching
+ * the close button's existing "Close terminal keys".
+ */
+const val TERMINAL_HOTKEYS_PALETTE_TITLE: String = "Terminal keys"
+
+/**
  * Test-readable overflow signal. Compose otherwise clips a label while its
  * semantics bounds still appear contained.
  */
@@ -347,8 +354,14 @@ private fun PaletteHeader(
                     )
                 }
             }
+            // #2802 C-5: one header grammar across everything `SessionScreen`
+            // opens — the noun the surface acts on ("Sessions", "Terminal",
+            // "Input tools"). "More keys" named the bar affordance that opens
+            // this, not the thing it is; the close button next to it already
+            // said "Close terminal keys" and the bar's own accessible name is
+            // "More terminal keys", so the title was the odd one out.
             Text(
-                text = if (page == TerminalHotkeysPage.Ctrl) "Ctrl + …" else "More keys",
+                text = if (page == TerminalHotkeysPage.Ctrl) "Ctrl + …" else TERMINAL_HOTKEYS_PALETTE_TITLE,
                 color = PocketShellColors.Text,
                 fontSize = PocketShellType.title.fontSize,
                 fontWeight = FontWeight.SemiBold,

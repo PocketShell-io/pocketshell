@@ -26,6 +26,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * The noun this sheet acts on (#2802 C-5).
+ *
+ * Named so `SessionSheetTitlesTest` can hold EVERY sheet SessionScreen opens to
+ * the one header grammar, not only the four the audit happened to list.
+ */
+const val MESSAGE_HISTORY_TITLE: String = "Recent prompts"
+
 /** Test tags for the sent-message history. */
 const val COMPOSER_HISTORY_SHEET_TAG: String = "composer-history-sheet"
 const val COMPOSER_HISTORY_EMPTY_TAG: String = "composer-history-empty"
@@ -71,7 +79,7 @@ fun MessageHistorySheet(
                 .testTag(COMPOSER_HISTORY_SHEET_TAG),
         ) {
             SheetHeader(
-                title = "Recent prompts",
+                title = MESSAGE_HISTORY_TITLE,
                 subtitle = "Tap one to put it back in the composer.",
                 onClose = onDismiss,
             )

@@ -117,6 +117,39 @@ const val COMPOSER_DELIVERY_UNCERTAIN_TEXT: String =
  */
 const val COMPOSER_STOP_RECORDING_DESCRIPTION: String = "Stop dictating and keep the text"
 
+/**
+ * One verb for the insert action (#2802 C-3).
+ *
+ * Before this issue the same control was "Paste" on screen, "Paste without
+ * submitting" to TalkBack, `InsertButton`/`composer-insert` in the source, and
+ * the panel that reached it was "Add to input" — four vocabularies for one
+ * idea, so no two people describing it used the same word. The composable name
+ * and the test tag already said *insert*, so the visible strings move to meet
+ * them and every surface is spelled from the constants below.
+ */
+const val COMPOSER_INSERT_LABEL: String = "Insert"
+const val COMPOSER_INSERT_DESCRIPTION: String = "Insert into the terminal without sending"
+
+/**
+ * The secondary-action panel's one name (#2802 C-3/C-5): the `+` trigger's
+ * accessible name AND the sheet's title, so the thing the user tapped and the
+ * thing that opened are called the same. It is also a noun, which is the
+ * header grammar the other `SessionScreen` sheets already use ("Sessions",
+ * "Terminal") — "Add to input" was an instruction, and an instruction that
+ * stopped being true the moment the panel grew rows that add nothing.
+ */
+const val COMPOSER_TOOLS_TITLE: String = "Input tools"
+
+/**
+ * The draft field's clear affordance (#2802 C-3).
+ *
+ * "Clear draft" used to be a row inside the "Add to input" panel — two taps
+ * behind a surface whose title promised the opposite of what the row did. It
+ * is now a trailing `×` in the draft field itself, next to the text it
+ * clears, and shows only when there is something to clear.
+ */
+const val COMPOSER_CLEAR_DRAFT_DESCRIPTION: String = "Clear draft"
+
 /** Shown when RECORD_AUDIO is denied; dictation is not started. */
 const val COMPOSER_RECORD_AUDIO_DENIED_TEXT: String =
     "Microphone permission denied. You can still type."
@@ -157,7 +190,6 @@ fun ComposerBar(
     modifier: Modifier = Modifier,
     deliveryEnabled: Boolean = true,
     deliveryDisabledMessage: String? = null,
-    onOpenHotkeys: () -> Unit = {},
     availableSlashCommands: List<SlashCommand> = SlashCommandAutocomplete.CATALOG,
 ) {
     var field by remember { mutableStateOf(TextFieldValue(state.draft, TextRange(state.draft.length))) }
@@ -264,6 +296,12 @@ fun ComposerBar(
                         field = updated
                         onDraftChange(updated.text)
                     },
+                    // #2802 C-3: the `×` appears only when there is something
+                    // to clear. It reads the EDITOR's text, not `state.draft`,
+                    // so it tracks what is actually on screen even before the
+                    // ViewModel has echoed the keystroke back.
+                    canClear = field.text.isNotEmpty() || state.attachments.isNotEmpty(),
+                    onClear = onDiscard,
                 )
             }
         }
@@ -287,7 +325,6 @@ fun ComposerBar(
             shape = PocketShellShapes.large,
         ) {
             ComposerToolsPanel(
-                state = state,
                 slashCommandsAvailable = availableSlashCommands.isNotEmpty(),
                 onDismiss = { toolsOpen = false },
                 onAttach = {
@@ -305,14 +342,6 @@ fun ComposerBar(
                     field = seeded
                     onDraftChange(seeded.text)
                     slashSheetOpen = true
-                },
-                onHotkeys = {
-                    toolsOpen = false
-                    onOpenHotkeys()
-                },
-                onClear = {
-                    toolsOpen = false
-                    onDiscard()
                 },
             )
         }
@@ -486,22 +515,32 @@ private fun NoticeRow(notice: ComposerNotice?, onDismiss: () -> Unit) {
 }
 
 /**
- * The draft editor.
+ * The draft editor, with the trailing clear `×` (#2802 C-3).
  *
  * `heightIn` is on the EDITOR, not the surrounding box, so a one-line draft
  * wraps to one line instead of inflating toward the maximum and centring the
  * text in a void — and a long draft self-scrolls to the caret, which a bounded
  * `BasicTextField` does natively and an external `verticalScroll` would break.
+ *
+ * The editor and the `×` sit in a `Row` with the editor on `weight(1f)`, so
+ * the clear target takes its 48dp out of the field's width rather than
+ * floating over the text it is meant to remove. It is top-aligned: on a long
+ * multi-line draft the caret is what moves, and the affordance should not.
  */
 @Composable
-private fun DraftField(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit) {
-    Box(
+private fun DraftField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    canClear: Boolean,
+    onClear: () -> Unit,
+) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(color = PocketShellColors.SurfaceElev, shape = DRAFT_SHAPE)
             .border(width = 1.dp, color = PocketShellColors.Border, shape = DRAFT_SHAPE)
             .padding(horizontal = PocketShellSpacing.md, vertical = PocketShellSpacing.sm),
-        contentAlignment = Alignment.TopStart,
+        verticalAlignment = Alignment.Top,
     ) {
         BasicTextField(
             value = value,
@@ -509,7 +548,7 @@ private fun DraftField(value: TextFieldValue, onValueChange: (TextFieldValue) ->
             textStyle = TextStyle(color = PocketShellColors.Text, fontSize = ComposerDraftFontSize),
             cursorBrush = SolidColor(PocketShellColors.Accent),
             modifier = Modifier
-                .fillMaxWidth()
+                .weight(1f)
                 .heightIn(min = DRAFT_MIN_HEIGHT, max = DRAFT_MAX_HEIGHT)
                 .testTag(COMPOSER_DRAFT_TAG),
             decorationBox = { inner ->
@@ -523,6 +562,15 @@ private fun DraftField(value: TextFieldValue, onValueChange: (TextFieldValue) ->
                 inner()
             },
         )
+        if (canClear) {
+            ToolGlyphButton(
+                icon = PocketShellIcons.Close,
+                contentDescription = COMPOSER_CLEAR_DRAFT_DESCRIPTION,
+                onClick = onClear,
+                enabled = true,
+                modifier = Modifier.testTag(COMPOSER_DISCARD_TAG),
+            )
+        }
     }
 }
 
@@ -626,23 +674,32 @@ private fun ComposerToolsTrigger(
 ) {
     ToolGlyphButton(
         icon = PocketShellIcons.Plus,
-        contentDescription = "Add to input",
+        contentDescription = COMPOSER_TOOLS_TITLE,
         onClick = onClick,
         enabled = enabled,
         modifier = Modifier.testTag(COMPOSER_TOOLS_TRIGGER_TAG),
     )
 }
 
+/**
+ * The composer's secondary actions: every row here puts something INTO the
+ * draft, which is what [COMPOSER_TOOLS_TITLE] promises.
+ *
+ * #2802 removed the two rows that broke that promise. "Terminal keys" (C-4)
+ * opened the hotkeys palette — but the palette and the composer are mutually
+ * exclusive by construction (`SessionScreen` closes one to open the other), so
+ * this route cost two taps AND closed the composer against one tap from the
+ * terminal bar, with no state in which it was the better path. "Clear draft"
+ * (C-3) adds nothing to the input; it now lives as a `×` in the draft field
+ * itself. Both are D22 hard cuts — no flag, no fallback row.
+ */
 @Composable
 private fun ComposerToolsPanel(
-    state: ComposerUiState,
     slashCommandsAvailable: Boolean,
     onDismiss: () -> Unit,
     onAttach: () -> Unit,
     onHistory: () -> Unit,
     onSlash: () -> Unit,
-    onHotkeys: () -> Unit,
-    onClear: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -654,7 +711,7 @@ private fun ComposerToolsPanel(
             .testTag(COMPOSER_TOOLS_TAG),
     ) {
         SheetHeader(
-            title = "Add to input",
+            title = COMPOSER_TOOLS_TITLE,
             onClose = onDismiss,
             closeContentDescription = "Close input tools",
         )
@@ -680,24 +737,6 @@ private fun ComposerToolsPanel(
                 testTag = COMPOSER_SLASH_TRIGGER_TAG,
             )
         }
-        ComposerToolRow(
-            title = "Terminal keys",
-            subtitle = "Send special keys to the current terminal",
-            icon = PocketShellIcons.Keyboard,
-            onClick = onHotkeys,
-            testTag = "composer-tools-hotkeys",
-        )
-        ComposerToolRow(
-            title = "Clear draft",
-            subtitle = if (state.draft.isBlank() && state.attachments.isEmpty()) {
-                "Nothing to clear"
-            } else {
-                "Remove the current text and attachments"
-            },
-            icon = PocketShellIcons.Close,
-            onClick = onClear,
-            testTag = COMPOSER_DISCARD_TAG,
-        )
     }
 }
 
@@ -757,10 +796,16 @@ private fun ToolGlyphButton(
 // picks the state permutation and carries the journey test tags.
 
 /**
- * Paste-without-submitting pill. It is NOT part of the shared ui-kit pill
+ * Insert-without-sending pill. It is NOT part of the shared ui-kit pill
  * family (#2763) — it has no recording/idle colour demotion, only the shared
  * outline — but it wears the same token geometry: the quiet 12dp field/button
  * corner (`PocketShellShapes.medium`) and the 48dp touch floor.
+ *
+ * #2802 C-3: the visible label and the accessible name are
+ * [COMPOSER_INSERT_LABEL] / [COMPOSER_INSERT_DESCRIPTION], so they cannot
+ * drift from the `composer-insert` tag and this composable's own name again.
+ * Its outline is also the treatment the idle mic now borrows (#2802 C-2) —
+ * both are secondary to the one filled Send.
  */
 @Composable
 private fun InsertButton(
@@ -775,12 +820,12 @@ private fun InsertButton(
             .background(PocketShellColors.SurfaceElev, PocketShellShapes.medium)
             .border(1.dp, PocketShellColors.Border, PocketShellShapes.medium)
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .semantics { contentDescription = "Paste without submitting" }
+            .semantics { contentDescription = COMPOSER_INSERT_DESCRIPTION }
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "Paste",
+            text = COMPOSER_INSERT_LABEL,
             color = if (enabled) PocketShellColors.Text else PocketShellColors.TextMuted,
             fontSize = PocketShellType.button.fontSize,
             fontWeight = FontWeight.SemiBold,

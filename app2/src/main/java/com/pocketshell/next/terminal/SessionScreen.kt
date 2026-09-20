@@ -630,9 +630,11 @@ fun SessionScreen(
 
             // #2612: the hotkeys palette floats INSIDE the terminal slot, so
             // opening it never resizes the cell grid, never dims the
-            // terminal, and never blocks touches that miss the card. It is
-            // driven by the bottom bar's More keys affordance (and by the
-            // composer sheet's hotkeys entry point).
+            // terminal, and never blocks touches that miss the card. The
+            // bottom bar's More keys affordance is its ONE entry point —
+            // #2802 C-4 hard-cut the composer sheet's second door, which cost
+            // two taps and closed the composer to get to a palette the bar
+            // opens in one tap without closing anything.
             if (hotkeysOpen) {
                 TerminalHotkeysPaletteOverlay(
                     mainSections = HOTKEY_PALETTE_MAIN_SECTIONS,
@@ -712,10 +714,6 @@ fun SessionScreen(
                 onPermissionDenied = onPermissionDenied,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
-                onOpenHotkeys = {
-                    composerOpen = false
-                    hotkeysOpen = true
-                },
                 availableSlashCommands = availableSlashCommands,
             )
         } else {
@@ -739,10 +737,6 @@ fun SessionScreen(
                 onDiscard = onDiscardDraft,
                 deliveryEnabled = state is SessionUiState.Live,
                 deliveryDisabledMessage = reconnectingComposerMessage(state),
-                onOpenHotkeys = {
-                    composerOpen = false
-                    hotkeysOpen = true
-                },
                 availableSlashCommands = availableSlashCommands,
             )
         }
