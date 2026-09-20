@@ -493,6 +493,20 @@ jobs:
           scripts/check-release-gate-execution-profile.sh --self-test
           scripts/check-release-gate-execution-profile.sh
 
+      # Issue #2836: the scheduled release gate failed a PASSING app2 suite
+      # ("did not report an 'OK (N tests)' summary") because it decided that
+      # branch through `printf "$output" | grep -q`, and once $output passed the
+      # 64 KiB pipe buffer the writer died of SIGPIPE, pipefail propagated 141,
+      # and the leading `!` inverted the verdict. This guard scans for the shape
+      # and then PROVES the decision on the gate's own emitted step, both ways.
+      # Rationale and the exact properties live in the script header; don't
+      # restate them here.
+      - name: "Release-gate pipe-buffer race guard (issue #2836)"
+        run: |
+          chmod +x scripts/check-gate-pipe-buffer-race.sh
+          scripts/check-gate-pipe-buffer-race.sh --self-test
+          scripts/check-gate-pipe-buffer-race.sh
+
       # Issue #2379 / decision D37: the nightly fault-injection release gate has
       # no off switch — not the deleted names (C1/C2/C3), and nothing injectable
       # through the environment on the release path (C4). Waiving it was routine
