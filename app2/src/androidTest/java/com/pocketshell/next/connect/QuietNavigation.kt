@@ -36,7 +36,20 @@ import androidx.test.runner.lifecycle.Stage
  */
 fun ComposeTestRule.openQuietHost(hostId: Long, timeoutMillis: Long = 60_000L) {
     returnToHostListIfNeeded(hostId, timeoutMillis)
-    clickQuietTag(hostRowTag(hostId), timeoutMillis)
+    clickQuietTag(
+        tag = hostRowTag(hostId),
+        timeoutMillis = timeoutMillis,
+        recover = {
+            backOutOfRouteBelow(
+                hereTag = HOST_LIST_TAG,
+                belowTags = arrayOf(
+                    HOST_WORKSPACES_TAG,
+                    WORKSPACE_SCREEN_TAG,
+                    SESSION_SCREEN_TAG,
+                ),
+            )
+        },
+    )
     awaitQuietTag(HOST_WORKSPACES_TAG, timeoutMillis)
     waitUntil(timeoutMillis) {
         listOf(
@@ -57,7 +70,7 @@ fun ComposeTestRule.openQuietHost(hostId: Long, timeoutMillis: Long = 60_000L) {
  */
 private fun ComposeTestRule.returnToHostListIfNeeded(hostId: Long, timeoutMillis: Long) {
     val rowTag = hostRowTag(hostId)
-    fun has(tag: String): Boolean = onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+    fun has(tag: String): Boolean = hasQuietTag(tag)
 
     runCatching {
         waitUntil(minOf(timeoutMillis, 1_000L)) { has(rowTag) || has(HOST_LIST_TAG) }
@@ -65,15 +78,7 @@ private fun ComposeTestRule.returnToHostListIfNeeded(hostId: Long, timeoutMillis
     if (has(rowTag) || has(HOST_LIST_TAG)) return
 
     repeat(6) {
-        InstrumentationRegistry.getInstrumentation().runOnMainSync {
-            val resumed = ActivityLifecycleMonitorRegistry.getInstance()
-                .getActivitiesInStage(Stage.RESUMED)
-                .firstOrNull()
-            (resumed as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
-                ?: resumed?.onBackPressed()
-        }
-        waitForIdle()
-        SystemClock.sleep(100)
+        pressBackOnce()
         if (has(rowTag) || has(HOST_LIST_TAG)) return
     }
 }
@@ -131,7 +136,16 @@ fun ComposeTestRule.openQuietSession(
     } else {
         onNodeWithTag(workspaceTag).performClick()
         awaitQuietTag(WORKSPACE_SCREEN_TAG, timeoutMillis)
-        clickQuietTag(sessionRowTag(sessionName), timeoutMillis)
+        clickQuietTag(
+            tag = sessionRowTag(sessionName),
+            timeoutMillis = timeoutMillis,
+            recover = {
+                backOutOfRouteBelow(
+                    hereTag = WORKSPACE_SCREEN_TAG,
+                    belowTags = arrayOf(SESSION_SCREEN_TAG),
+                )
+            },
+        )
     }
     awaitQuietTag(SESSION_SCREEN_TAG, timeoutMillis)
 }
@@ -143,7 +157,11 @@ fun ComposeTestRule.awaitQuietTag(tag: String, timeoutMillis: Long = 60_000L) {
 }
 
 /**
- * Awaits [tag] and clicks it, re-resolving the node on every attempt.
+ * Awaits [tag] and clicks it, re-resolving the node on every attempt, and
+ * running [recover] between attempts so a route that moved under the helper can
+ * be walked back to instead of stared at.
+ *
+ * ## The await/click gap (#2783, fixed in 121e6eb95)
  *
  * [awaitQuietTag] proves the node existed at the moment the wait returned; it
  * does not promise the node is still there one statement later. Between the two
@@ -151,34 +169,159 @@ fun ComposeTestRule.awaitQuietTag(tag: String, timeoutMillis: Long = 60_000L) {
  * methods, a `LazyColumn` re-emitting when its backing flow settles — and the
  * click then fails with
  * `Failed to inject touch input ... could not find any node that satisfies`
- * while the wait that just preceded it succeeded. That await/click gap is what
- * reddened `J12UsagePanelJourney` on Release Emulator Validation run
- * 35383053367 (`QuietNavigation.kt:39` awaited `host-row-9801`,
- * `QuietNavigation.kt:40` could not find it) while the SAME commit's unfiltered
- * app2 run 35374191870 attempt 2 was green — issue #2783.
+ * while the wait that just preceded it succeeded. That gap reddened
+ * `J12UsagePanelJourney` on Release Emulator Validation run 35383053367
+ * (`QuietNavigation.kt:39` awaited `host-row-9801`, `:40` could not find it)
+ * while the SAME commit's unfiltered app2 run 35374191870 attempt 2 was green.
+ * Retrying closes it without weakening the check.
  *
- * Retrying closes the gap without weakening the check: a node that vanished for
- * a recomposition is awaited and clicked again, and a node that genuinely never
- * arrives still fails at [timeoutMillis] carrying the real assertion error
- * rather than a synthesised one. Nothing here waits unbounded — every attempt's
- * await is capped by the time left, so the helper always returns control at its
- * own deadline (the property `BoundedWaitTest` exists to protect).
+ * ## The route that never comes back (#2783 item 3, on-call w17b)
+ *
+ * Retrying alone is not enough, and one retry loop staring at a tag that cannot
+ * return is WORSE than one failed click: it burns the caller's whole budget
+ * before anyone sees a diagnosis. app2 run 35437700722 attempt 1 (journey job
+ * 105885154988, `5371d3b05`) reddened the non-quarantined sibling
+ * `theGlancePillOpensThePanelAndExpandsACardOnCompactRowTap` with
+ *
+ * ```
+ * androidx.compose.ui.test.ComposeTimeoutException: Condition still not satisfied after 60000 ms
+ *   at …QuietNavigationKt.awaitQuietTag(QuietNavigation.kt:140)
+ *   at …QuietNavigationKt.clickQuietTag(QuietNavigation.kt:173)
+ *   at …QuietNavigationKt.openQuietHost(QuietNavigation.kt:39)
+ * ```
+ *
+ * — the FULL 60 s, on the first attempt's await (the loop's own arithmetic can
+ * only report `60000` on iteration one), spent waiting for `host-row-9801` on a
+ * screen that structurally could not show it. Its per-method logcat has the
+ * host connecting and navigating five seconds before the wait even started:
+ *
+ * ```
+ * 11:15:55.617 PocketShell.Connect: connect requested host=9801
+ * 11:15:56.130 PocketShell.Connect: connect result host=9801 connected; navigation queued
+ * 11:15:56.148 PocketShell.Connect: navigation effect host=9801
+ * 11:15:56.149 PocketShell.Connect: Hosts route hiding during navigation handoff host=9801
+ *                                   … 60 s of nothing …
+ * 11:16:56.632 TestRunner: failed: theGlancePillOpensThePanelAndExpandsACardOnCompactRowTap
+ * ```
+ *
+ * Nothing in the journey asked for that connect. `MainActivity` resumes the
+ * last host the user opened (`MainActivity.kt:922-950` hands the validated
+ * `appSettings.defaultHostId` to `ConnectGate`, which dials it in
+ * `ConnectGate.kt:87-92`), and a journey class writes exactly that preference
+ * the moment one of its earlier methods taps a host row. `createAndroidComposeRule`
+ * launches a FRESH Activity per test method and the seed rule re-inserts the
+ * same host id, so from a class's second method onward every launch races the
+ * journey's own click against the app's cold-start dial to the same host —
+ * usually the click wins, which is why this is a flake and not a break.
+ *
+ * That last line is not a metaphor. `ConnectGate` (app2 `ConnectGate.kt:117-122`)
+ * replaces the whole Hosts route with a transparent `Box` while a navigation is
+ * in flight, so during the handoff the tree carries NEITHER [HOST_LIST_TAG] nor
+ * any `host-row-*`, and the flag that restores them is cleared by an
+ * `ON_START` lifecycle event — i.e. by going BACK. A helper that only re-awaits
+ * a tag cannot reach that state: nothing it does can make the row return.
+ * [recover] is the escape, and pressing back is the only thing that is.
+ *
+ * ## Shape
+ *
+ * Each attempt awaits at most [ATTEMPT_AWAIT_SLICE_MS] rather than the whole
+ * remaining budget, so the loop gets its recovery chances INSIDE the caller's
+ * deadline instead of spending the deadline on one wait. Slicing does not
+ * shorten the helper: a row that honestly takes 20 s to seed is still awaited
+ * across slices until [timeoutMillis]. Nothing here waits unbounded — every
+ * attempt's await is capped by the time left, so the helper always returns
+ * control at its own deadline (the property `BoundedWaitTest` exists to
+ * protect) — and a node that genuinely never arrives still fails, carrying the
+ * real assertion error as its cause plus how many attempts and recoveries were
+ * spent on it.
  */
-internal fun ComposeTestRule.clickQuietTag(tag: String, timeoutMillis: Long = 60_000L) {
+internal fun ComposeTestRule.clickQuietTag(
+    tag: String,
+    timeoutMillis: Long = 60_000L,
+    recover: () -> Boolean = { false },
+) {
     val deadline = SystemClock.uptimeMillis() + timeoutMillis
     var lastError: Throwable? = null
+    var attempts = 0
+    var recoveries = 0
     do {
         val remaining = (deadline - SystemClock.uptimeMillis()).coerceAtLeast(1L)
+        attempts++
         val attempt = runCatching {
-            awaitQuietTag(tag, remaining)
+            awaitQuietTag(tag, minOf(remaining, ATTEMPT_AWAIT_SLICE_MS))
             onNodeWithTag(tag).performClick()
         }
         if (attempt.isSuccess) return
         lastError = attempt.exceptionOrNull()
+        // Best-effort by contract: a recovery that cannot run must not replace
+        // the click's own diagnosis with its own, and only a recovery that
+        // actually DID something may be counted as one.
+        if (runCatching { recover() }.getOrDefault(false)) recoveries++
         SystemClock.sleep(CLICK_RETRY_BACKOFF_MS)
     } while (SystemClock.uptimeMillis() < deadline)
-    throw lastError
-        ?: AssertionError("clickQuietTag($tag) gave up after ${timeoutMillis}ms")
+    val last = lastError
+    throw AssertionError(
+        "clickQuietTag($tag) gave up after ${timeoutMillis}ms " +
+            "($attempts attempts, $recoveries recoveries); last error: $last",
+        last,
+    )
+}
+
+/**
+ * Presses Back once when the tree is on a route BELOW the one [hereTag]'s row
+ * lives on, so [clickQuietTag] can restore the precondition its click needs.
+ *
+ * Both guards matter and both are conservative:
+ *
+ *  - [hereTag] present ⇒ do nothing. We are already on the route that owns the
+ *    row; the row is simply not there yet (a seed that has not landed, a list
+ *    still loading), and Back would walk AWAY from it — or, on the host list,
+ *    out of the app entirely, ending the journey's Activity mid-method.
+ *  - none of [belowTags] present ⇒ do nothing. Without a positive signal that
+ *    we are somewhere downstream there is nothing to back out OF, and a blind
+ *    Back is the same activity-exit risk.
+ *
+ * The transparent-handoff state from the KDoc above satisfies both: no
+ * [HOST_LIST_TAG], no row, and the destination already composed underneath
+ * ([HOST_WORKSPACES_TAG]) because `ConnectGate` keeps its own route
+ * transparent rather than removing it. Backing out of it fires the `ON_START`
+ * that clears `navigationInFlight`, the host list re-renders with its rows, and
+ * the next attempt clicks the row the journey actually asked for — rather than
+ * ASSUMING the destination we can see belongs to the host we were asked to
+ * open, which for a route-level tag shared by every host would pass the
+ * journey on the wrong screen.
+ *
+ * @return true when a Back was actually dispatched, for the caller's counters.
+ */
+internal fun ComposeTestRule.backOutOfRouteBelow(
+    hereTag: String,
+    belowTags: Array<String>,
+): Boolean {
+    if (hasQuietTag(hereTag)) return false
+    if (belowTags.none { hasQuietTag(it) }) return false
+    pressBackOnce()
+    return true
+}
+
+/** Whether the semantics tree currently carries at least one [tag] node. */
+internal fun ComposeTestRule.hasQuietTag(tag: String): Boolean =
+    onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()
+
+/**
+ * One real Back through the Activity's own dispatcher — the same press the user
+ * makes, so route-scoped `BackHandler`s and lifecycle effects run — followed by
+ * a settle, because the caller's next decision reads the semantics tree.
+ */
+private fun ComposeTestRule.pressBackOnce() {
+    InstrumentationRegistry.getInstrumentation().runOnMainSync {
+        val resumed = ActivityLifecycleMonitorRegistry.getInstance()
+            .getActivitiesInStage(Stage.RESUMED)
+            .firstOrNull()
+        (resumed as? ComponentActivity)?.onBackPressedDispatcher?.onBackPressed()
+            ?: resumed?.onBackPressed()
+    }
+    waitForIdle()
+    SystemClock.sleep(BACK_SETTLE_MS)
 }
 
 /**
@@ -187,3 +330,18 @@ internal fun ComposeTestRule.clickQuietTag(tag: String, timeoutMillis: Long = 60
  * thousands of times before its deadline.
  */
 private const val CLICK_RETRY_BACKOFF_MS = 50L
+
+/**
+ * The most one attempt may spend waiting before the loop gets to recover.
+ *
+ * Long enough that the ordinary late arrival — a host row seeded between
+ * journey methods, a workspace listing still in flight — is awaited inside a
+ * single slice and costs no recovery at all; short enough that the default
+ * 60 s budget still holds a dozen chances to walk back out of a route that
+ * cannot produce the tag. It bounds an ATTEMPT, never the helper: the caller's
+ * [clickQuietTag] deadline is what ends the loop.
+ */
+private const val ATTEMPT_AWAIT_SLICE_MS = 5_000L
+
+/** Matches the settle the pre-#2783 back-press loop used. */
+private const val BACK_SETTLE_MS = 100L

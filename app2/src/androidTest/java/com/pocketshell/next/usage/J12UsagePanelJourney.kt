@@ -32,7 +32,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -239,7 +238,6 @@ class J12UsagePanelJourney {
      * aplexer process-tree signal and to the exact app-facing schema-3 listing.
      */
     @Test
-    @Ignore("quarantined: #2783, expires 2026-10-03 — openQuietHost await/click race: awaitQuietTag('host-row-9801') returned at QuietNavigation.kt:39 and performClick found no node at :40 ('Failed to inject touch input'), Release Emulator Validation run 35383053367 on d093a9a78; same-commit app2 run 35374191870 attempt 2 green on the identical unfiltered suite — G5 flake, helper hardened in this change, row held for a green observation window")
     fun theSessionPillFocusesTheSessionsDetectedAgentAndDropsTheWindowToken() {
         val sessionName = startRealAplexerSessionRunningClaude()
         try {
