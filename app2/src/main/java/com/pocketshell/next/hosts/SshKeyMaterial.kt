@@ -28,7 +28,11 @@ import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
 import org.bouncycastle.asn1.x509.AlgorithmIdentifier
 import org.bouncycastle.crypto.PBEParametersGenerator
 import org.bouncycastle.crypto.digests.SHA256Digest
+import org.bouncycastle.crypto.generators.Ed25519KeyPairGenerator
 import org.bouncycastle.crypto.generators.PKCS5S2ParametersGenerator
+import org.bouncycastle.crypto.params.Ed25519KeyGenerationParameters
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.params.KeyParameter
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 
@@ -158,34 +162,43 @@ object SshKeyMaterial {
         passphrase: CharArray? = null,
     ): String {
         ensureBouncyCastle()
-        val generator = KeyPairGenerator.getInstance(
-            type.javaAlgorithm,
-            BouncyCastleProvider.PROVIDER_NAME,
-        )
-        if (type == SshKeyGenerationType.RSA) {
-            // 3072 bits matches the compatibility option shown in the dialog.
-            generator.initialize(RSA_KEY_BITS)
-        }
-        val keyPair = generator.generateKeyPair()
-        val privateKey = keyPair.private
-        val publicKey = keyPair.public
         val protectedPassphrase = passphrase
             ?.takeIf { it.isNotEmpty() }
             ?.copyOf()
         return try {
-            if (type == SshKeyGenerationType.ED25519) {
-                generateOpenSshEd25519PrivateKeyPem(
-                    privateKey = privateKey.encoded,
-                    publicKey = publicKey.encoded,
-                    passphrase = protectedPassphrase,
-                )
-            } else if (protectedPassphrase == null) {
-                pemEncode("PRIVATE KEY", privateKey.encoded)
-            } else {
-                pemEncode(
-                    "ENCRYPTED PRIVATE KEY",
-                    encryptPkcs8(privateKey.encoded, protectedPassphrase),
-                )
+            when (type) {
+                SshKeyGenerationType.ED25519 -> {
+                    // Generated through BC's low-level API, not JCA: the JCA
+                    // Ed25519 private key's PKCS#8 encoding carries the public
+                    // half in a trailing RFC 5958 [1] field, so the seed cannot
+                    // be recovered by slicing `private.encoded` — taking the
+                    // last 32 bytes yields the PUBLIC key, which is how #2842's
+                    // keys ended up with a private section of public||public.
+                    val raw = generateEd25519KeyPair()
+                    generateOpenSshEd25519PrivateKeyPem(
+                        seed = raw.first,
+                        public = raw.second,
+                        passphrase = protectedPassphrase,
+                    )
+                }
+
+                SshKeyGenerationType.RSA -> {
+                    val generator = KeyPairGenerator.getInstance(
+                        type.javaAlgorithm,
+                        BouncyCastleProvider.PROVIDER_NAME,
+                    )
+                    // 3072 bits matches the compatibility option shown in the dialog.
+                    generator.initialize(RSA_KEY_BITS)
+                    val privateKey = generator.generateKeyPair().private
+                    if (protectedPassphrase == null) {
+                        pemEncode("PRIVATE KEY", privateKey.encoded)
+                    } else {
+                        pemEncode(
+                            "ENCRYPTED PRIVATE KEY",
+                            encryptPkcs8(privateKey.encoded, protectedPassphrase),
+                        )
+                    }
+                }
             }
         } finally {
             protectedPassphrase?.fill('\u0000')
@@ -247,14 +260,21 @@ object SshKeyMaterial {
      * recognise the Ed25519 OID emitted by the BC provider. Keep the modern key
      * in the format sshj itself uses for this algorithm. The encrypted branch
      * follows OpenSSH's bcrypt + AES-256-CTR container format.
+     *
+     * [seed] and [public] are the raw 32-byte halves; [public] is re-derived
+     * from [seed] and compared, so an inconsistent pair fails generation loudly
+     * instead of persisting a keypair sshd will reject (#2842).
      */
     private fun generateOpenSshEd25519PrivateKeyPem(
-        privateKey: ByteArray,
-        publicKey: ByteArray,
+        seed: ByteArray,
+        public: ByteArray,
         passphrase: CharArray?,
     ): String {
-        val seed = privateKey.takeLast(ED25519_KEY_BYTES).toByteArray()
-        val public = publicKey.takeLast(ED25519_KEY_BYTES).toByteArray()
+        require(seed.size == ED25519_KEY_BYTES) { "Ed25519 seed must be $ED25519_KEY_BYTES bytes" }
+        require(public.size == ED25519_KEY_BYTES) { "Ed25519 public key must be $ED25519_KEY_BYTES bytes" }
+        require(
+            Ed25519PrivateKeyParameters(seed).generatePublicKey().encoded.contentEquals(public),
+        ) { "Ed25519 public half does not match the private seed" }
         val publicBlob = sshBlob(
             sshString("ssh-ed25519".toByteArray(Charsets.US_ASCII)),
             sshString(public),
@@ -298,6 +318,25 @@ object SshKeyMaterial {
             write(sshString(privatePayload))
         }
         return pemEncode("OPENSSH PRIVATE KEY", outer.toByteArray())
+    }
+
+    /**
+     * Raw (seed, public) Ed25519 halves from BC's low-level generator.
+     *
+     * This bypasses JCA on purpose. The JCA path would hand back a
+     * `PrivateKey` whose PKCS#8 encoding is a PrivateKeyInfo whose trailing
+     * RFC 5958 `[1]` field holds the PUBLIC key, so "the last 32 bytes of the
+     * encoded private key" is the public half, not the seed — the extraction
+     * that produced #2842's self-inconsistent keypairs. Here both halves are
+     * explicit byte arrays and their agreement is enforced by the caller.
+     */
+    private fun generateEd25519KeyPair(): Pair<ByteArray, ByteArray> {
+        val generator = Ed25519KeyPairGenerator()
+        generator.init(Ed25519KeyGenerationParameters(SecureRandom()))
+        val pair = generator.generateKeyPair()
+        val seed = (pair.private as Ed25519PrivateKeyParameters).encoded
+        val public = (pair.public as Ed25519PublicKeyParameters).encoded
+        return seed to public
     }
 
     private fun encryptOpenSshPrivateBody(
@@ -415,7 +454,7 @@ object SshKeyMaterial {
     }
 
     private fun validateOpenSshContainer(decoded: ByteArray) {
-        val magic = "openssh-key-v1 ".toByteArray(Charsets.US_ASCII)
+        val magic = "openssh-key-v1\u0000".toByteArray(Charsets.US_ASCII)
         require(decoded.size >= magic.size && decoded.copyOfRange(0, magic.size).contentEquals(magic))
         var offset = magic.size
         val cipher = decoded.readOpenSshBytes(offset).also { offset = it.nextOffset }

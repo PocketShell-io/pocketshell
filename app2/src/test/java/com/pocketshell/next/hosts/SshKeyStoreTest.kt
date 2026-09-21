@@ -99,6 +99,36 @@ class SshKeyStoreTest {
         assertEquals(key.id, db.sshKeyDao().getByFingerprint(key.fingerprint)?.id)
     }
 
+    /**
+     * #2842 regression, through the real storage path: the bytes the store
+     * writes are what the connect flow hands to sshj at dial time, so those
+     * exact bytes must form a keypair that authenticates — seed signs, the
+     * container's own public half verifies, and the derived public line parses.
+     */
+    @Test
+    fun `the stored bytes of a generated key form a keypair that authenticates`() = runTest {
+        val key = store.generateKey("roundtrip")
+        val pemFromDisk = requireNotNull(store.readPem(key))
+
+        val container = parseOpenSshEd25519Container(pemFromDisk)
+        assertFalse(
+            "the stored seed must not be the public half (#2842 corruption shape)",
+            container.seed.contentEquals(container.embeddedPublic),
+        )
+        assertTrue(
+            "a signature from the stored seed must verify against the stored public half",
+            signatureVerifiesAgainstStoredPublic(container.seed, container.embeddedPublic),
+        )
+
+        val publicLine = requireNotNull(store.readPublicKey(key))
+        assertTrue(publicLine.startsWith("ssh-ed25519 "))
+        val blob = java.util.Base64.getDecoder().decode(publicLine.trim().split(Regex("\\s+"))[1])
+        assertTrue(
+            "the derived public line must match the stored private half",
+            blob.copyOfRange(blob.size - 32, blob.size).contentEquals(container.embeddedPublic),
+        )
+    }
+
     @Test
     fun `the unencrypted agents fixture reads its embedded public key`() = runTest {
         val fixtureDir = File("../tests/docker")
