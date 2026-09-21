@@ -46,7 +46,16 @@ import com.pocketshell.next.files.TransfersUiState
 import com.pocketshell.next.files.formatSize
 import com.pocketshell.next.files.normalizeUrl
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.hosts.HostFormState
+import com.pocketshell.next.hosts.HOST_FORM_CONTENT_TAG
 import com.pocketshell.next.hosts.SSH_KEYS_UNLOCK_BUTTON_TAG
+import com.pocketshell.next.hosts.SSH_KEYS_LIST_TAG
+import com.pocketshell.next.hosts.SshKeyGenerationDisplayRequest
+import com.pocketshell.next.hosts.SshKeyGenerationTypeDisplay
+import com.pocketshell.next.hosts.SshKeyImportCandidate
+import com.pocketshell.next.hosts.SshKeyProtectionDisplay
+import com.pocketshell.next.hosts.SshKeysUiState
+import com.pocketshell.next.hosts.sshKeyRowTag
 import com.pocketshell.next.hosts.sshKeyFallbackRowTag
 import com.pocketshell.next.ports.FORWARDING_TOGGLE_TAG
 import com.pocketshell.next.ports.PORT_TABLE_TAG
@@ -201,7 +210,16 @@ import java.io.File
  * attachment and recording surfaces, send-order seam, history and slash sheets
  * now live here with the pure sheet body. Android permission launch, IME
  * coroutine chrome, ViewModel/storage/transport and speech recognition stay
- * app2-side. The platform-import scan above locks that split. *
+ * app2-side. The platform-import scan above locks that split.
+ *
+ * The #2636 D13 slice completed the hosts presentation family: the add/edit
+ * form and SSH-key manager moved here while their Hilt/Room/navigation,
+ * Android clipboard/file picker/device-auth and cryptographic PEM inspection
+ * stayed in app2's `*Route.kt` files. The generation type/protection/request
+ * crossing that seam are pure display mirrors with exhaustive app-side
+ * adapters, matching D10/D11; the form state and key row were already shared
+ * by D1 and were reused rather than duplicated.
+ *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
  * test), and they feed the test-area manifest's import-derived dependency
@@ -320,6 +338,7 @@ class UiScreensDependencyBoundaryTest {
             // The D1 family — imported so the manifest's dependency index keeps
             // this guard selected on hosts-side changes too.
             HostRow::class to "data class HostRow",
+            HostFormState::class to "data class HostFormState",
             // The D4 family — same role: share-side changes keep this guard
             // selected through these imports (invariant I11).
             ShareUiState::class to "data class ShareUiState",
@@ -390,6 +409,13 @@ class UiScreensDependencyBoundaryTest {
             // ingestion point, matching D10/D11.
             CrashReportDisplay::class to "data class CrashReportDisplay",
             CrashReportsLoadState::class to "sealed interface CrashReportsLoadState",
+            // The D13 hosts remainder: state painted by the SSH-key manager
+            // plus display mirrors for the app-owned generation models.
+            SshKeysUiState::class to "data class SshKeysUiState",
+            SshKeyGenerationTypeDisplay::class to "enum class SshKeyGenerationTypeDisplay",
+            SshKeyProtectionDisplay::class to "enum class SshKeyProtectionDisplay",
+            SshKeyGenerationDisplayRequest::class to "class SshKeyGenerationDisplayRequest",
+            SshKeyImportCandidate::class to "data class SshKeyImportCandidate",
         )
 
         /**
@@ -467,6 +493,10 @@ class UiScreensDependencyBoundaryTest {
             DIAGNOSTIC_REPORT_PAGE_TAG to "const val DIAGNOSTIC_REPORT_PAGE_TAG",
             ::diagnosticReportRowTag to "fun diagnosticReportRowTag",
             ::crashReportShareSubject to "fun crashReportShareSubject",
+            // The D13 hosts screens' representative tags/helpers.
+            HOST_FORM_CONTENT_TAG to "const val HOST_FORM_CONTENT_TAG",
+            SSH_KEYS_LIST_TAG to "const val SSH_KEYS_LIST_TAG",
+            ::sshKeyRowTag to "fun sshKeyRowTag",
         )
 
         private val movedDeclarations: List<String> =

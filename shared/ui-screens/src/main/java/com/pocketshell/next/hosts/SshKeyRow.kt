@@ -2,7 +2,7 @@ package com.pocketshell.next.hosts
 
 /**
  * One rendered SSH-key row — the picker row of [AddEditHostScreen] and the
- * list row of app2's SshKeys screen.
+ * list row of the shared [SshKeysScreen].
  *
  * Presentation-only by construction (#2636 C1/D1): the Room entity
  * (`SshKeyEntity`, core-storage) stops at app2's route/ViewModel boundary and

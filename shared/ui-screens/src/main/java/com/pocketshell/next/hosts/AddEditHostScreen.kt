@@ -21,7 +21,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,7 +33,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.hilt.navigation.compose.hiltViewModel
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -59,64 +57,6 @@ const val HOST_FORM_TEST_TAG: String = "host-form-test"
 const val HOST_FORM_SAVE_TAG: String = "host-form-save"
 const val HOST_FORM_CONTENT_TAG: String = "host-form-content"
 const val HOST_FORM_ACTIONS_TAG: String = "host-form-actions"
-
-/**
- * Route-level entry point for the add/edit host form.
- *
- * [hostId] comes from the route; `null` means Add. It is handed to
- * [AddEditHostViewModel.bind] unconditionally on every change of the value —
- * including to `null` — which is the navigation half of the F1 fix documented
- * on the ViewModel: entering Add must actively clear the previous target, not
- * merely fail to set a new one.
- */
-@Composable
-fun AddEditHostRoute(
-    hostId: Long?,
-    onDone: () -> Unit,
-    onAddKey: () -> Unit,
-    onTestConnection: (Long) -> Unit = {},
-    modifier: Modifier = Modifier,
-    viewModel: AddEditHostViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    val keys by viewModel.sshKeys.collectAsState()
-    val selectedKeyResult by viewModel.selectedKeyResult.collectAsState()
-
-    LaunchedEffect(hostId) { viewModel.bind(hostId) }
-    LaunchedEffect(selectedKeyResult) {
-        selectedKeyResult?.let { keyId ->
-            viewModel.selectKey(keyId)
-            viewModel.consumeSelectedKeyResult()
-        }
-    }
-    LaunchedEffect(state.saved) {
-        if (state.saved) {
-            viewModel.consumeSaved()
-            onDone()
-        }
-    }
-    LaunchedEffect(state.testConnectionHostId) {
-        val connectionHostId = state.testConnectionHostId ?: return@LaunchedEffect
-        viewModel.consumeTestConnection()
-        onTestConnection(connectionHostId)
-    }
-
-    AddEditHostScreen(
-        state = state,
-        // Project Room rows to the picker's UI-level row type here, at the
-        // route boundary — see #2636 C1: the screen and its fixtures stay
-        // free of storage entities.
-        keys = keys.map {
-            SshKeyRow(id = it.id, name = it.name, fingerprint = it.fingerprint)
-        },
-        onChange = viewModel::update,
-        onSave = viewModel::save,
-        onTestConnection = viewModel::testConnection,
-        onCancel = onDone,
-        onAddKey = onAddKey,
-        modifier = modifier,
-    )
-}
 
 /**
  * The add/edit host form (rewrite task P-6) — app2's only hand-entry path for a

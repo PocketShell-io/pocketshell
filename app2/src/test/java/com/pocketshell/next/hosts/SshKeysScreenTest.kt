@@ -49,7 +49,7 @@ class SshKeysScreenTest {
 
     @Test
     fun `generate flow is a page with persistent labels and local back`() {
-        val generated = AtomicReference<SshKeyGenerationRequest?>()
+        val generated = AtomicReference<SshKeyGenerationDisplayRequest?>()
         var routeBacks = 0
         composeRule.setContent {
             SshKeysScreen(
@@ -70,7 +70,7 @@ class SshKeysScreenTest {
             .performClick()
         composeRule.waitForIdle()
 
-        assertEquals(SshKeyGenerationType.ED25519, generated.get()?.type)
+        assertEquals(SshKeyGenerationTypeDisplay.ED25519, generated.get()?.type)
         assertEquals(0, routeBacks)
 
         composeRule.onNodeWithTag(SSH_KEYS_GENERATE_TAG).performClick()
@@ -92,6 +92,7 @@ class SshKeysScreenTest {
                 onPickFile = {},
                 onDelete = {},
                 onDismissMessage = {},
+                validateImportPem = ::validateSshKeyImportPem,
             )
         }
 

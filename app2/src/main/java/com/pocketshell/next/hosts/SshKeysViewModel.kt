@@ -15,16 +15,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/** What [SshKeysScreen] renders. */
-data class SshKeysUiState(
-    val keys: List<SshKeyRow> = emptyList(),
-    val loaded: Boolean = false,
-    /** In-flight generate; the button shows progress and cannot be double-tapped. */
-    val generating: Boolean = false,
-    /** Last user-facing message (an error, or a confirmation of what was added). */
-    val message: String? = null,
-)
-
 /**
  * Backs [SshKeysScreen] — generate a key, or import an existing one (rewrite
  * task P-6).

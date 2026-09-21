@@ -45,6 +45,7 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
     implementation(libs.compose.material3)
+    implementation(libs.activity.compose)
 
     // Theme + shared visual primitives. `implementation` (not `api`): no
     // ui-kit type appears in this module's public signatures yet.

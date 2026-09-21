@@ -1,11 +1,6 @@
 package com.pocketshell.next.hosts
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -34,23 +29,18 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.hilt.navigation.compose.hiltViewModel
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -110,146 +100,9 @@ private enum class SshKeysPage {
     DETAIL,
 }
 
-/**
- * Route-level entry point for the key manager.
- *
- * The one thing that cannot live in the ViewModel is reading a file the user
- * picked, which needs a `ContentResolver`. It is read here and handed over as
- * text, so [SshKeysViewModel] stays Android-free.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SshKeysRoute(
-    onBack: () -> Unit,
-    onUseKey: ((Long) -> Unit)? = null,
-    modifier: Modifier = Modifier,
-    viewModel: SshKeysViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    val context = LocalContext.current
-    val deviceUnlockAvailable = remember(context) { isSshKeyUnlockRequired(context) }
-    val protectedKeys = state.keys.filter { it.hasPassphrase }
-    var unlocked by remember(context) {
-        mutableStateOf(!deviceUnlockAvailable && protectedKeys.isEmpty())
-    }
-    var unlockError by remember { mutableStateOf<String?>(null) }
-    var unlockInFlight by remember { mutableStateOf(false) }
-    var fallbackKeyId by remember { mutableStateOf<Long?>(null) }
-    var fallbackPassphrase by remember { mutableStateOf("") }
-    var fallbackInFlight by remember { mutableStateOf(false) }
-    var fallbackError by remember { mutableStateOf<String?>(null) }
-    var fileImportCandidate by remember { mutableStateOf<SshKeyImportCandidate?>(null) }
-    val unlockGate = remember { SshKeyUnlockInFlightGate() }
-
-    LaunchedEffect(deviceUnlockAvailable, state.loaded, protectedKeys.map { it.id }) {
-        if (!deviceUnlockAvailable && state.loaded) {
-            unlocked = protectedKeys.isEmpty()
-        }
-        if (fallbackKeyId !in protectedKeys.map { it.id }) {
-            fallbackKeyId = protectedKeys.firstOrNull()?.id
-        }
-    }
-
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val name = uri.lastPathSegment?.substringAfterLast('/').orEmpty()
-        val text = runCatching {
-            context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
-        }.getOrNull()
-        fileImportCandidate = SshKeyImportCandidate(name = name, pem = text.orEmpty())
-    }
-
-    if (!unlocked) {
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .background(PocketShellColors.Background),
-        ) {
-            ScreenHeader(
-                title = "SSH keys",
-                onBack = onBack,
-            )
-        }
-        SshKeysUnlockSheet(
-            error = fallbackError ?: unlockError,
-            inFlight = unlockInFlight,
-            deviceUnlockAvailable = deviceUnlockAvailable,
-            protectedKeys = protectedKeys,
-            selectedKeyId = fallbackKeyId,
-            fallbackPassphrase = fallbackPassphrase,
-            fallbackInFlight = fallbackInFlight,
-            onUnlock = {
-                if (unlockGate.tryMarkInFlight()) {
-                    unlockInFlight = true
-                    unlockError = null
-                    launchSshKeyUnlock(
-                        activity = context as? androidx.fragment.app.FragmentActivity,
-                        onSuccess = {
-                            unlockGate.clear()
-                            unlockInFlight = false
-                            unlocked = true
-                        },
-                        onError = {
-                            unlockGate.clear()
-                            unlockInFlight = false
-                            unlockError = it
-                        },
-                        onFailure = {
-                            unlockGate.clear()
-                            unlockInFlight = false
-                            unlockError = it
-                        },
-                    )
-                }
-            },
-            onSelectKey = {
-                fallbackKeyId = it
-                fallbackError = null
-            },
-            onPassphraseChange = {
-                fallbackPassphrase = it
-                fallbackError = null
-            },
-            onUnlockWithPassphrase = {
-                fallbackKeyId?.let { keyId ->
-                    val chars = fallbackPassphrase.toCharArray()
-                    fallbackPassphrase = ""
-                    fallbackError = null
-                    fallbackInFlight = true
-                    viewModel.unlockWithPassphrase(keyId, chars) { success, error ->
-                        fallbackInFlight = false
-                        if (success) {
-                            unlockError = null
-                            unlocked = true
-                        } else {
-                            fallbackError = error
-                        }
-                    }
-                }
-            },
-            onDismiss = onBack,
-        )
-    } else {
-        SshKeysScreen(
-            state = state,
-            onBack = onBack,
-            onUseKey = onUseKey,
-            onGenerate = viewModel::generate,
-            onImportPasted = viewModel::import,
-            onPickFile = { filePicker.launch("*/*") },
-            onDelete = { keyId -> viewModel.delete(keyId) },
-            onLoadPublicKey = viewModel::loadPublicKey,
-            onDismissMessage = viewModel::clearMessage,
-            initialImportCandidate = fileImportCandidate,
-            onInitialImportConsumed = { fileImportCandidate = null },
-            modifier = modifier,
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SshKeysUnlockSheet(
+fun SshKeysUnlockSheet(
     error: String?,
     inFlight: Boolean,
     deviceUnlockAvailable: Boolean,
@@ -388,37 +241,26 @@ fun SshKeysScreen(
     state: SshKeysUiState,
     onBack: () -> Unit,
     onUseKey: ((Long) -> Unit)? = null,
-    onGenerate: (SshKeyGenerationRequest) -> Unit,
+    onGenerate: (SshKeyGenerationDisplayRequest) -> Unit,
     onImportPasted: (name: String, pem: String) -> Unit,
     onPickFile: () -> Unit,
     onDelete: (Long) -> Unit,
     onLoadPublicKey: (Long, CharArray?) -> Unit = { _, _ -> },
     onDismissMessage: () -> Unit,
-    onCopyPublicKey: ((String) -> Unit)? = null,
-    onCopyFingerprint: ((String) -> Unit)? = null,
+    onCopyPublicKey: (String) -> Unit = {},
+    onCopyFingerprint: (String) -> Unit = {},
+    validateImportPem: (String) -> String? = { null },
+    isImportProtected: (String) -> Boolean = { false },
     initialImportCandidate: SshKeyImportCandidate? = null,
     onInitialImportConsumed: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
-    val clipboard = LocalContext.current.applicationContext
-        .getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-    val composeClipboard = LocalClipboardManager.current
-    val copyPublicKey: (String) -> Unit = { value ->
-        clipboard?.setPrimaryClip(ClipData.newPlainText("SSH public key", value))
-        runCatching { composeClipboard.setText(AnnotatedString(value)) }
-    }
-    val copyFingerprint: (String) -> Unit = { value ->
-        clipboard?.setPrimaryClip(ClipData.newPlainText("SSH key fingerprint", value))
-        runCatching { composeClipboard.setText(AnnotatedString(value)) }
-    }
-    val copyPublicKeyAction = onCopyPublicKey ?: copyPublicKey
-    val copyFingerprintAction = onCopyFingerprint ?: copyFingerprint
     var copiedKeyId by remember { mutableStateOf<Long?>(null) }
     var copiedFingerprintKeyId by remember { mutableStateOf<Long?>(null) }
     var page by remember { mutableStateOf(SshKeysPage.LIST) }
     var generateName by remember { mutableStateOf("") }
-    var generateType by remember { mutableStateOf(SshKeyGenerationType.ED25519) }
-    var generateProtection by remember { mutableStateOf(SshKeyProtection.NONE) }
+    var generateType by remember { mutableStateOf(SshKeyGenerationTypeDisplay.ED25519) }
+    var generateProtection by remember { mutableStateOf(SshKeyProtectionDisplay.NONE) }
     var generatePassphrase by remember { mutableStateOf("") }
     var generateConfirmation by remember { mutableStateOf("") }
     var importName by remember { mutableStateOf("") }
@@ -489,7 +331,7 @@ fun SshKeysScreen(
             protection = generateProtection,
             onProtectionChange = {
                 generateProtection = it
-                if (it == SshKeyProtection.NONE) {
+                if (it == SshKeyProtectionDisplay.NONE) {
                     generatePassphrase = ""
                     generateConfirmation = ""
                 }
@@ -501,12 +343,12 @@ fun SshKeysScreen(
             generating = state.generating,
             onBack = { page = SshKeysPage.LIST },
             onConfirm = {
-                val request = SshKeyGenerationRequest(
+                val request = SshKeyGenerationDisplayRequest(
                     name = generateName,
                     type = generateType,
                     protection = generateProtection,
                     passphrase = generatePassphrase
-                        .takeIf { generateProtection == SshKeyProtection.PASSPHRASE }
+                        .takeIf { generateProtection == SshKeyProtectionDisplay.PASSPHRASE }
                         ?.toCharArray(),
                 )
                 generateName = ""
@@ -531,6 +373,7 @@ fun SshKeysScreen(
                 page = SshKeysPage.LIST
             },
             onPickFile = onPickFile,
+            validatePem = validateImportPem,
             onReview = {
                 pendingImport = SshKeyImportCandidate(name = importName, pem = importPem)
                 page = SshKeysPage.IMPORT_REVIEW
@@ -541,6 +384,7 @@ fun SshKeysScreen(
         SshKeysPage.IMPORT_REVIEW -> pendingImport?.let { candidate ->
             SshKeysImportReviewPage(
                 candidate = candidate,
+                isProtected = isImportProtected(candidate.pem),
                 onBack = { page = SshKeysPage.IMPORT },
                 onConfirm = {
                     pendingImport = null
@@ -565,11 +409,11 @@ fun SshKeysScreen(
                 },
                 onCopyPublicKey = { value ->
                     copiedKeyId = key.id
-                    copyPublicKeyAction(value)
+                    onCopyPublicKey(value)
                 },
                 onCopyFingerprint = { value ->
                     copiedFingerprintKeyId = key.id
-                    copyFingerprintAction(value)
+                    onCopyFingerprint(value)
                 },
                 onLoadPublicKey = onLoadPublicKey,
                 onUseKey = onUseKey?.let { useKey ->
@@ -680,8 +524,7 @@ private fun SshKeysListPage(
                         ListRow(
                             title = key.name,
                             subtitle = listOfNotNull(
-                                key.algorithm ?: key.publicKey?.let(SshKeyMaterial::keyAlgorithmLabel)
-                                    ?: "SSH key",
+                                key.algorithm ?: "SSH key",
                                 key.dependentHostNames.takeIf { it.isNotEmpty() }?.let { hosts ->
                                     "Used by ${hosts.joinToString() }"
                                 } ?: "Not assigned",
@@ -812,10 +655,10 @@ private fun Modifier.sshKeysFieldDescription(label: String): Modifier = semantic
 private fun SshKeysGeneratePage(
     name: String,
     onNameChange: (String) -> Unit,
-    type: SshKeyGenerationType,
-    onTypeChange: (SshKeyGenerationType) -> Unit,
-    protection: SshKeyProtection,
-    onProtectionChange: (SshKeyProtection) -> Unit,
+    type: SshKeyGenerationTypeDisplay,
+    onTypeChange: (SshKeyGenerationTypeDisplay) -> Unit,
+    protection: SshKeyProtectionDisplay,
+    onProtectionChange: (SshKeyProtectionDisplay) -> Unit,
     passphrase: String,
     onPassphraseChange: (String) -> Unit,
     confirmation: String,
@@ -825,7 +668,7 @@ private fun SshKeysGeneratePage(
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val protectionValid = protection == SshKeyProtection.NONE ||
+    val protectionValid = protection == SshKeyProtectionDisplay.NONE ||
         (passphrase.isNotEmpty() && passphrase == confirmation)
     val submit = {
         if (protectionValid && !generating) onConfirm()
@@ -862,20 +705,20 @@ private fun SshKeysGeneratePage(
             SshKeysFieldLabel("Key type")
         }
         QuietChoiceRow(
-            title = SshKeyGenerationType.ED25519.label,
-            subtitle = SshKeyGenerationType.ED25519.description,
-            selected = type == SshKeyGenerationType.ED25519,
-            onClick = { onTypeChange(SshKeyGenerationType.ED25519) },
+            title = SshKeyGenerationTypeDisplay.ED25519.label,
+            subtitle = SshKeyGenerationTypeDisplay.ED25519.description,
+            selected = type == SshKeyGenerationTypeDisplay.ED25519,
+            onClick = { onTypeChange(SshKeyGenerationTypeDisplay.ED25519) },
             // The generate page is a gapped form (SshKeysPageInset blocks
             // at 8dp), so its choices drop the divider (#2804).
             showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_ED25519_TAG),
         )
         QuietChoiceRow(
-            title = SshKeyGenerationType.RSA.label,
-            subtitle = SshKeyGenerationType.RSA.description,
-            selected = type == SshKeyGenerationType.RSA,
-            onClick = { onTypeChange(SshKeyGenerationType.RSA) },
+            title = SshKeyGenerationTypeDisplay.RSA.label,
+            subtitle = SshKeyGenerationTypeDisplay.RSA.description,
+            selected = type == SshKeyGenerationTypeDisplay.RSA,
+            onClick = { onTypeChange(SshKeyGenerationTypeDisplay.RSA) },
             // The generate page is a gapped form (SshKeysPageInset blocks
             // at 8dp), so its choices drop the divider (#2804).
             showDivider = false,
@@ -885,26 +728,26 @@ private fun SshKeysGeneratePage(
             SshKeysFieldLabel("Protection")
         }
         QuietChoiceRow(
-            title = SshKeyProtection.NONE.label,
-            subtitle = SshKeyProtection.NONE.description,
-            selected = protection == SshKeyProtection.NONE,
-            onClick = { onProtectionChange(SshKeyProtection.NONE) },
+            title = SshKeyProtectionDisplay.NONE.label,
+            subtitle = SshKeyProtectionDisplay.NONE.description,
+            selected = protection == SshKeyProtectionDisplay.NONE,
+            onClick = { onProtectionChange(SshKeyProtectionDisplay.NONE) },
             // The generate page is a gapped form (SshKeysPageInset blocks
             // at 8dp), so its choices drop the divider (#2804).
             showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_NO_PASSPHRASE_TAG),
         )
         QuietChoiceRow(
-            title = SshKeyProtection.PASSPHRASE.label,
-            subtitle = SshKeyProtection.PASSPHRASE.description,
-            selected = protection == SshKeyProtection.PASSPHRASE,
-            onClick = { onProtectionChange(SshKeyProtection.PASSPHRASE) },
+            title = SshKeyProtectionDisplay.PASSPHRASE.label,
+            subtitle = SshKeyProtectionDisplay.PASSPHRASE.description,
+            selected = protection == SshKeyProtectionDisplay.PASSPHRASE,
+            onClick = { onProtectionChange(SshKeyProtectionDisplay.PASSPHRASE) },
             // The generate page is a gapped form (SshKeysPageInset blocks
             // at 8dp), so its choices drop the divider (#2804).
             showDivider = false,
             modifier = Modifier.testTag(SSH_KEYS_GENERATE_PASSPHRASE_TAG),
         )
-        if (protection == SshKeyProtection.PASSPHRASE) {
+        if (protection == SshKeyProtectionDisplay.PASSPHRASE) {
             SshKeysPageInset {
                 SshKeysFieldLabel("Passphrase")
                 OutlinedTextField(
@@ -955,18 +798,11 @@ private fun SshKeysImportPage(
     onToggleRevealed: () -> Unit,
     onBack: () -> Unit,
     onPickFile: () -> Unit,
+    validatePem: (String) -> String?,
     onReview: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val parseError = remember(pem) {
-        when {
-            pem.isBlank() -> null
-            !SshKeyMaterial.looksLikePrivateKey(pem) -> "Enter a complete private key."
-            else -> runCatching { SshKeyMaterial.validatePrivateKey(pem) }
-                .exceptionOrNull()
-                ?.let { "This key could not be parsed on this device." }
-        }
-    }
+    val parseError = remember(pem) { validatePem(pem) }
     val reviewEnabled = pem.isNotBlank() && parseError == null
     SshKeysPageLayout(
         title = "Import key",
@@ -1047,12 +883,13 @@ private fun SshKeysImportPage(
 @Composable
 private fun SshKeysImportReviewPage(
     candidate: SshKeyImportCandidate,
+    isProtected: Boolean,
     onBack: () -> Unit,
     onConfirm: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val name = candidate.name.trim().ifEmpty { "imported-key" }
-    val protection = if (SshKeyMaterial.isEncrypted(candidate.pem)) {
+    val protection = if (isProtected) {
         "Passphrase protected"
     } else {
         "No passphrase"
@@ -1129,7 +966,7 @@ private fun SshKeyDetailPage(
  * container animation in host-side tests.
  */
 @Composable
-internal fun SshKeyDetailContent(
+fun SshKeyDetailContent(
     key: SshKeyRow,
     copiedKeyId: Long? = null,
     copiedFingerprintKeyId: Long? = null,
@@ -1168,11 +1005,7 @@ internal fun SshKeyDetailContent(
             SheetHeader(title = key.name, onClose = onClose)
         }
         val keyAlgorithm = key.algorithm
-            ?: key.publicKey?.let(SshKeyMaterial::keyAlgorithmLabel)
         val publicFingerprint = key.publicFingerprint
-            ?: key.publicKey?.let { publicKey ->
-                runCatching { SshKeyMaterial.publicKeyFingerprint(publicKey) }.getOrNull()
-            }
         // The detail sheet is a gapped block of metadata rows interleaved with
         // copy buttons and prose, so the rows drop their dividers (#2804).
         ListRow(
