@@ -489,7 +489,7 @@ class TokenLiteralGuardTest {
                     "as a stroke width, not a layout gap.",
             ),
             LiteralException(
-                "app2/src/main/java/com/pocketshell/next/ports/PortForwardScreen.kt",
+                "shared/ui-screens/src/main/java/com/pocketshell/next/ports/PortForwardScreen.kt",
                 "2",
                 1,
                 "Optical leading between a title and its subtitle inside ONE text block — line " +
