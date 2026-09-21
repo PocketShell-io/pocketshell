@@ -297,6 +297,9 @@ src    shared/ui-screens/src/main/java/com/pocketshell/next/connect/*      conne
 src    shared/ui-screens/src/main/java/com/pocketshell/next/files/*        files                full
 src    shared/ui-screens/src/main/java/com/pocketshell/next/ports/*        portfwd              full
 src    shared/ui-screens/src/main/java/com/pocketshell/next/usage/*        usage-costs          full
+# The #2636 D12 crash/diagnostics-display family moved here from app2's
+# crash/ package; it keeps its diagnostics-crash ownership on the shared side.
+src    shared/ui-screens/src/main/java/com/pocketshell/next/crash/*        diagnostics-crash    full
 src    shared/ui-screens/src/main/java/com/pocketshell/next/workspaces/*   projects-tree        full
 src    shared/ui-screens/*           hosts-settings       full
 

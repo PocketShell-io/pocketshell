@@ -45,7 +45,7 @@ class CrashReportsScreenTest {
 
         composeRule.setContent {
             PocketShellTheme {
-                DiagnosticsScreen(
+                DiagnosticsRoute(
                     onBack = {},
                     onOpenReport = { openedReport = it },
                     viewModel = vm,
@@ -76,7 +76,7 @@ class CrashReportsScreenTest {
 
         composeRule.setContent {
             PocketShellTheme {
-                DiagnosticReportScreen(
+                DiagnosticReportRoute(
                     reportId = report.id,
                     onBack = {},
                     viewModel = vm,

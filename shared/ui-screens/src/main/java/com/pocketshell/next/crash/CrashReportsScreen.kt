@@ -1,6 +1,5 @@
 package com.pocketshell.next.crash
 
-import android.content.Intent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -14,19 +13,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -48,40 +42,47 @@ import com.pocketshell.uikit.theme.PocketShellType
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-internal const val CRASH_REPORTS_SHARE_ALL_TAG = "crash:shareAll"
-internal const val CRASH_REPORTS_DELETE_ALL_TAG = "crash:deleteAll"
-internal const val CRASH_REPORTS_DELETE_ALL_CONFIRM_TAG = "crash:deleteAll:confirm"
-internal const val CRASH_REPORTS_DELETE_ALL_CANCEL_TAG = "crash:deleteAll:cancel"
-internal const val CRASH_REPORTS_BACK_TAG = "crash:back"
-internal const val CRASH_REPORT_SHARE_TAG = "crash:share"
-internal const val CRASH_REPORTS_EXPORT_LATEST_TAG = "crash:exportLatest"
-internal const val CRASH_REPORTS_CLEAR_TAG = CRASH_REPORTS_DELETE_ALL_TAG
-internal const val CRASH_REPORTS_CLEAR_CONFIRM_TAG = CRASH_REPORTS_DELETE_ALL_CONFIRM_TAG
-internal const val CRASH_REPORTS_CLEAR_CANCEL_TAG = CRASH_REPORTS_DELETE_ALL_CANCEL_TAG
-internal const val CRASH_REPORT_TECHNICAL_DETAILS_TAG = "crash:technicalDetails"
-internal const val CRASH_REPORT_PRIVACY_TAG = "crash:privacy"
-internal const val DIAGNOSTICS_PAGE_TAG = "diagnostics-page"
-internal const val DIAGNOSTIC_REPORT_PAGE_TAG = "diagnostic-report-page"
+const val CRASH_REPORTS_DELETE_ALL_TAG = "crash:deleteAll"
+const val CRASH_REPORTS_DELETE_ALL_CONFIRM_TAG = "crash:deleteAll:confirm"
+const val CRASH_REPORTS_DELETE_ALL_CANCEL_TAG = "crash:deleteAll:cancel"
+const val CRASH_REPORTS_BACK_TAG = "crash:back"
+const val CRASH_REPORT_SHARE_TAG = "crash:share"
+const val CRASH_REPORTS_EXPORT_LATEST_TAG = "crash:exportLatest"
+const val CRASH_REPORTS_CLEAR_TAG = CRASH_REPORTS_DELETE_ALL_TAG
+const val CRASH_REPORTS_CLEAR_CONFIRM_TAG = CRASH_REPORTS_DELETE_ALL_CONFIRM_TAG
+const val CRASH_REPORTS_CLEAR_CANCEL_TAG = CRASH_REPORTS_DELETE_ALL_CANCEL_TAG
+const val CRASH_REPORT_TECHNICAL_DETAILS_TAG = "crash:technicalDetails"
+const val CRASH_REPORT_PRIVACY_TAG = "crash:privacy"
+const val DIAGNOSTICS_PAGE_TAG = "diagnostics-page"
+const val DIAGNOSTIC_REPORT_PAGE_TAG = "diagnostic-report-page"
 
 fun diagnosticReportRowTag(reportId: String): String = "diagnostics-report-$reportId"
 
 /**
- * Production Diagnostics route. It reads the installation's actual
- * [CrashReportStore] through [CrashReportsViewModel]; the screen never invents
+ * The Diagnostics list screen. Lives in the shared presentation module
+ * (#2636 D12): the composable, its helpers and its test tags moved here from
+ * app2's `CrashReportsScreen.kt`, painting the pure [CrashReportDisplay]
+ * mirror and plain state + lambdas. The route stays in app2
+ * (`DiagnosticsRoute` in app2's `CrashReportsRoute.kt`) with the Hilt view
+ * model, the reload-on-entry trigger and the core → display mapping — the D3
+ * `SettingsRoute` seam at family scale. The file keeps its original name: a
+ * same-named route file on the app2 side would collide on the
+ * `CrashReportsScreenKt` JVM facade (the D10 rule).
+ *
+ * Reads the store through the route-supplied state; the screen never invents
  * reports or provider data.
  */
 @Composable
-internal fun DiagnosticsScreen(
+fun DiagnosticsScreen(
+    reports: List<CrashReportDisplay>,
+    loadState: CrashReportsLoadState,
     onBack: () -> Unit,
     onOpenReport: (String) -> Unit,
+    onReload: () -> Unit,
+    onDeleteAll: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: CrashReportsViewModel = hiltViewModel(),
 ) {
-    val reports by viewModel.reports.collectAsStateWithLifecycle()
-    val loadState by viewModel.loadState.collectAsStateWithLifecycle()
     var confirmDeleteAll by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) { viewModel.reload() }
 
     Column(
         modifier = modifier
@@ -125,7 +126,7 @@ internal fun DiagnosticsScreen(
                     item {
                         PocketShellButton(
                             text = "Retry loading reports",
-                            onClick = viewModel::reload,
+                            onClick = onReload,
                             variant = ButtonVariant.Primary,
                             modifier = Modifier.padding(
                                 horizontal = PocketShellDensity.screenGutter,
@@ -221,7 +222,7 @@ internal fun DiagnosticsScreen(
             confirmTestTag = CRASH_REPORTS_DELETE_ALL_CONFIRM_TAG,
             dismissTestTag = CRASH_REPORTS_DELETE_ALL_CANCEL_TAG,
             onConfirm = {
-                viewModel.deleteAll()
+                onDeleteAll()
                 confirmDeleteAll = false
             },
             onDismiss = { confirmDeleteAll = false },
@@ -229,37 +230,18 @@ internal fun DiagnosticsScreen(
     }
 }
 
-/** Compatibility wrapper for tests and callers that still use the old name. */
 @Composable
-internal fun CrashReportsScreen(
+fun DiagnosticReportScreen(
+    report: CrashReportDisplay?,
+    body: String,
+    loadState: CrashReportsLoadState,
     onBack: () -> Unit,
+    onShare: () -> Unit,
+    onDeleteReport: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: CrashReportsViewModel = hiltViewModel(),
 ) {
-    DiagnosticsScreen(
-        onBack = onBack,
-        onOpenReport = {},
-        modifier = modifier,
-        viewModel = viewModel,
-    )
-}
-
-@Composable
-internal fun DiagnosticReportScreen(
-    reportId: String,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: CrashReportsViewModel = hiltViewModel(),
-) {
-    val context = LocalContext.current
-    val reports by viewModel.reports.collectAsStateWithLifecycle()
-    val loadState by viewModel.loadState.collectAsStateWithLifecycle()
-    var confirmDelete by remember { mutableStateOf(false) }
-    var technicalDetailsOpen by remember(reportId) { mutableStateOf(false) }
-    val report = reports.firstOrNull { it.id == reportId }
-    val body = remember(report) { report?.let(viewModel::read).orEmpty() }
-
-    LaunchedEffect(reportId) { viewModel.reload() }
+    var confirmDelete by remember(report?.id) { mutableStateOf(false) }
+    var technicalDetailsOpen by remember(report?.id) { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -290,7 +272,7 @@ internal fun DiagnosticReportScreen(
 
                 loadState is CrashReportsLoadState.Failed -> item {
                     Banner(
-                        text = (loadState as CrashReportsLoadState.Failed).message,
+                        text = loadState.message,
                         role = BannerRole.Error,
                         leadingIcon = PocketShellIcons.Warning,
                         modifier = Modifier.padding(
@@ -367,13 +349,7 @@ internal fun DiagnosticReportScreen(
                         ) {
                             PocketShellButton(
                                 text = "Share report",
-                                onClick = {
-                                    shareReport(
-                                        context,
-                                        report,
-                                        CrashReportFormatter.redactForSharing(body),
-                                    )
-                                },
+                                onClick = onShare,
                                 variant = ButtonVariant.Primary,
                                 modifier = Modifier.testTag(CRASH_REPORT_SHARE_TAG),
                             )
@@ -397,7 +373,7 @@ internal fun DiagnosticReportScreen(
             confirmLabel = "Delete",
             destructive = true,
             onConfirm = {
-                viewModel.deleteOne(report)
+                onDeleteReport()
                 confirmDelete = false
                 onBack()
             },
@@ -445,7 +421,7 @@ private fun DiagnosticsIntro(reportCount: Int) {
 }
 
 @Composable
-private fun ReportSummaryRows(report: CrashReport) {
+private fun ReportSummaryRows(report: CrashReportDisplay) {
     // Three shared rows and nothing else: the one rhythm is divider with zero
     // gap, so this block drops the 4dp `verticalArrangement` it used to add on
     // top of each row's own hairline (#2804).
@@ -487,39 +463,26 @@ private fun ReportSummaryRows(report: CrashReport) {
     }
 }
 
-private fun diagnosticReportListSubtitle(report: CrashReport): String =
+private fun diagnosticReportListSubtitle(report: CrashReportDisplay): String =
     listOf(
         crashReportTimestamp(report),
         report.summary,
     ).joinToString(" · ")
 
-private fun shareReport(
-    context: android.content.Context,
-    report: CrashReport,
-    body: String,
-) {
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "text/plain"
-        putExtra(Intent.EXTRA_SUBJECT, crashReportShareSubject(report))
-        putExtra(Intent.EXTRA_TEXT, body)
-    }
-    context.startActivity(Intent.createChooser(intent, "Share diagnostic report"))
-}
-
 private val ReportTimeFormatter: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z")
 
 internal fun crashReportTimestamp(
-    report: CrashReport,
+    report: CrashReportDisplay,
     zoneId: ZoneId = ZoneId.systemDefault(),
 ): String = ReportTimeFormatter.format(report.timestamp.atZone(zoneId))
 
 internal fun crashReportRowTitle(
-    report: CrashReport,
+    report: CrashReportDisplay,
     zoneId: ZoneId = ZoneId.systemDefault(),
 ): String = "${crashReportTimestamp(report, zoneId)} · ${report.summary}"
 
-internal fun crashReportRowSubtitle(report: CrashReport): String =
+internal fun crashReportRowSubtitle(report: CrashReportDisplay): String =
     listOfNotNull(
         report.contextSummary.takeIf { it.isNotBlank() },
         report.appVersion?.takeIf { it.isNotBlank() }?.let { "app=$it" },
@@ -527,8 +490,12 @@ internal fun crashReportRowSubtitle(report: CrashReport): String =
     ).joinToString(" · ")
         .ifBlank { "Context unavailable" }
 
-internal fun crashReportShareSubject(
-    report: CrashReport,
+/**
+ * Public because app2's share path (the `DiagnosticReportRoute` seam) builds
+ * the share sheet's subject from the same display report the screen paints.
+ */
+fun crashReportShareSubject(
+    report: CrashReportDisplay,
     zoneId: ZoneId = ZoneId.systemDefault(),
 ): String =
     "PocketShell crash report - " +
@@ -538,36 +505,10 @@ internal fun crashReportShareSubject(
             report.summary.takeIf { it.isNotBlank() },
         ).joinToString(" - ")
 
-private fun crashReportDetailMetadata(report: CrashReport): String =
-    listOfNotNull(
-        report.appVersion?.takeIf { it.isNotBlank() }?.let { "App version · $it" },
-        report.topFrame?.takeIf { it.isNotBlank() }?.let { "Top frame · ${it.toCrashReportTopFrameLabel()}" },
-    ).joinToString(" · ")
-        .ifBlank { "Metadata unavailable" }
-
 private fun String.toCrashReportTopFrameLabel(): String {
     val sourceLocation = substringAfterLast('(', missingDelimiterValue = "")
         .removeSuffix(")")
         .takeIf { it.isNotBlank() }
     if (sourceLocation != null) return sourceLocation
     return substringAfterLast('.').takeIf { it.isNotBlank() } ?: this
-}
-
-private fun shareReportsArchive(context: android.content.Context, archive: java.io.File) {
-    val uri = FileProvider.getUriForFile(
-        context,
-        context.packageName + ".fileprovider",
-        archive,
-    )
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = "application/zip"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        putExtra(Intent.EXTRA_SUBJECT, archive.name)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    context.startActivity(
-        Intent.createChooser(intent, "Share diagnostic reports").apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        },
-    )
 }

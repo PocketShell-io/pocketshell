@@ -11,7 +11,7 @@ import com.pocketshell.next.crash.CrashReportContext
 import com.pocketshell.next.crash.CrashReportMetadata
 import com.pocketshell.next.crash.CrashReporter
 import com.pocketshell.next.crash.CrashReportsViewModel
-import com.pocketshell.next.crash.DiagnosticsScreen
+import com.pocketshell.next.crash.DiagnosticsRoute
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -60,7 +60,7 @@ class DiagnosticsScreenRenders {
 
     @Test
     fun diagnosticsNoReports() = render("i2762-diagnostics-no-reports") {
-        DiagnosticsScreen(
+        DiagnosticsRoute(
             onBack = {},
             onOpenReport = {},
             viewModel = CrashReportsViewModel(appContext()),
@@ -90,7 +90,7 @@ class DiagnosticsScreenRenders {
             metadata = metadata(),
             context = CrashReportContext(screen = "HostForm"),
         )
-        DiagnosticsScreen(
+        DiagnosticsRoute(
             onBack = {},
             onOpenReport = {},
             viewModel = CrashReportsViewModel(context),

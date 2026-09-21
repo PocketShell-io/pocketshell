@@ -22,7 +22,7 @@ import com.pocketshell.next.crash.CRASH_REPORTS_EXPORT_LATEST_TAG
 import com.pocketshell.next.crash.CrashReportMetadata
 import com.pocketshell.next.crash.CrashReporter
 import com.pocketshell.next.crash.CrashReportsViewModel
-import com.pocketshell.next.crash.DiagnosticsScreen
+import com.pocketshell.next.crash.DiagnosticsRoute
 import com.pocketshell.core.hostapi.HostCliClient
 import com.pocketshell.next.hostcli.HostCliClientFactory
 import com.pocketshell.next.hostcli.asRemoteExec
@@ -243,7 +243,7 @@ class SettingsNavigationTest {
                 // string resolves to a stand-in. Only the ViewModel is built by
                 // hand, for the same Hilt reason as every other screen here.
                 diagnosticsScreen = { onBack, onOpenReport ->
-                    DiagnosticsScreen(
+                    DiagnosticsRoute(
                         onBack = onBack,
                         onOpenReport = onOpenReport,
                         viewModel = CrashReportsViewModel(

@@ -33,9 +33,15 @@ private const val REPORT_ARCHIVE_RETENTION_MS = 24L * 60L * 60L * 1000L
  *   works even before a host is configured.
  * - **Delete all**: clear every local report file. Surfaced behind an
  *   explicit confirm in the UI; the ViewModel only ever deletes when asked.
+ *
+ * Publishes the pure [CrashReportDisplay] mirrors (#2636 D12) — the shared
+ * screens paint the display rows, and this view model is the family's single
+ * ingestion point, resolving read/delete against the private core list by
+ * report id (the D11 ports-seam rule; the core `CrashReport`'s `file` never
+ * crosses into `shared:ui-screens`).
  */
 @HiltViewModel
-internal class CrashReportsViewModel @Inject constructor(
+class CrashReportsViewModel @Inject constructor(
     @ApplicationContext private val applicationContext: Context,
 ) : ViewModel() {
 
@@ -45,8 +51,11 @@ internal class CrashReportsViewModel @Inject constructor(
     @androidx.annotation.VisibleForTesting
     internal var clock: Clock = Clock.systemUTC()
 
-    private val _reports = MutableStateFlow<List<CrashReport>>(emptyList())
-    val reports: StateFlow<List<CrashReport>> = _reports.asStateFlow()
+    /** The core reports behind the published display rows; id → file resolution. */
+    private var coreReports: List<CrashReport> = emptyList()
+
+    private val _reports = MutableStateFlow<List<CrashReportDisplay>>(emptyList())
+    val reports: StateFlow<List<CrashReportDisplay>> = _reports.asStateFlow()
 
     private val _loadState = MutableStateFlow<CrashReportsLoadState>(CrashReportsLoadState.Loading)
     val loadState: StateFlow<CrashReportsLoadState> = _loadState.asStateFlow()
@@ -62,10 +71,12 @@ internal class CrashReportsViewModel @Inject constructor(
         _loadState.value = CrashReportsLoadState.Loading
         runCatching { store.list() }
             .onSuccess { reports ->
-                _reports.value = reports
+                coreReports = reports
+                _reports.value = reports.map { it.toDisplay() }
                 _loadState.value = CrashReportsLoadState.Ready
             }
             .onFailure { error ->
+                coreReports = emptyList()
                 _reports.value = emptyList()
                 _loadState.value = CrashReportsLoadState.Failed(
                     error.message ?: "Could not read local diagnostic reports.",
@@ -73,16 +84,20 @@ internal class CrashReportsViewModel @Inject constructor(
             }
     }
 
-    fun read(report: CrashReport): String = store.read(report)
+    /** Reads the report body for [reportId]; empty when the id has no live file. */
+    fun read(reportId: String): String =
+        coreReports.firstOrNull { it.id == reportId }
+            ?.let { store.read(it) }
+            .orEmpty()
 
-    fun deleteOne(report: CrashReport) {
-        store.delete(report)
+    fun deleteOne(reportId: String) {
+        coreReports.firstOrNull { it.id == reportId }?.let { store.delete(it) }
         reload()
     }
 
     /** Confirmed "Delete all": clear every local report file. */
     fun deleteAll() {
-        _reports.value.forEach { store.delete(it) }
+        coreReports.forEach { store.delete(it) }
         reload()
     }
 
@@ -95,7 +110,7 @@ internal class CrashReportsViewModel @Inject constructor(
     fun shareAll(onPrepared: (File) -> Unit = {}) {
         if (_reports.value.isEmpty()) return
         if (_shareAllState.value is ShareAllState.Preparing) return
-        val reportFiles = _reports.value.map { it.file }.filter { it.isFile }
+        val reportFiles = coreReports.map { it.file }.filter { it.isFile }
         if (reportFiles.isEmpty()) {
             _shareAllState.value = ShareAllState.Failed("No reports to share.")
             return
@@ -158,15 +173,8 @@ internal class CrashReportsViewModel @Inject constructor(
             .ifBlank { "device" }
 }
 
-/** Real local-store states surfaced by the Diagnostics screen. */
-internal sealed interface CrashReportsLoadState {
-    data object Loading : CrashReportsLoadState
-    data object Ready : CrashReportsLoadState
-    data class Failed(val message: String) : CrashReportsLoadState
-}
-
 /** State machine for the Share-all action. */
-internal sealed interface ShareAllState {
+sealed interface ShareAllState {
     data object Idle : ShareAllState
 
     /** Packing the zip in cache. */

@@ -20,6 +20,12 @@ import com.pocketshell.next.composer.StagingProgress
 import com.pocketshell.next.composer.updateComposerPreImeExpanded
 import com.pocketshell.next.connect.TRUST_SHEET_TAG
 import com.pocketshell.next.connect.TrustPromptState
+import com.pocketshell.next.crash.DIAGNOSTIC_REPORT_PAGE_TAG
+import com.pocketshell.next.crash.DIAGNOSTICS_PAGE_TAG
+import com.pocketshell.next.crash.CrashReportDisplay
+import com.pocketshell.next.crash.CrashReportsLoadState
+import com.pocketshell.next.crash.crashReportShareSubject
+import com.pocketshell.next.crash.diagnosticReportRowTag
 import com.pocketshell.next.files.FileTransferRecord
 import com.pocketshell.next.files.FileTransferStatus
 import com.pocketshell.next.files.InlineSpan
@@ -167,6 +173,21 @@ import java.io.File
  * `TunnelDetail`'s former inline `Dispatchers`/`launch`/`withContext`, since
  * this module declares no coroutines dependency — so the `core-*` scan below
  * keeps the mirrors the only record shape this module sees.
+ *
+ * The #2636 D12 slice added the crash/diagnostics-display family the same
+ * way: the Diagnostics list + Connection-report screens (`DiagnosticsScreen`,
+ * `DiagnosticReportScreen`, the row/summary/share-subject helpers and the
+ * `crash:*`/`diagnostics*` tags moved out of app2's `CrashReportsScreen.kt`)
+ * painting a pure mirror of app2's own `CrashReport` model — an app2 type
+ * rather than a `core-*` type, but the same rule applies via the `app2`
+ * classpath ban. The mirror drops the core row's `file: File` (never
+ * painted; the app2 view model resolves read/delete by id), and
+ * `CrashReportsLoadState` moved whole — it was already pure. The routes, the
+ * Hilt view model, the reload-on-entry `LaunchedEffect`s, the
+ * `Intent`/`FileProvider` share handoff and the
+ * `CrashReport.toDisplay()` mapping stay app2-side
+ * (`CrashReportsRoute.kt`), so the platform scan below keeps the mirrors the
+ * only report shape this module sees.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -348,6 +369,12 @@ class UiScreensDependencyBoundaryTest {
             ConnectionStateDisplay::class to "enum class ConnectionStateDisplay",
             TunnelStatusDisplay::class to "enum class TunnelStatusDisplay",
             TunnelDisplay::class to "data class TunnelDisplay",
+            // The D12 family — the crash/diagnostics-display screens: the
+            // pure CrashReport mirror plus the load state that moved whole
+            // (already pure), mapped app-side at the view model's single
+            // ingestion point, matching D10/D11.
+            CrashReportDisplay::class to "data class CrashReportDisplay",
+            CrashReportsLoadState::class to "sealed interface CrashReportsLoadState",
         )
 
         /**
@@ -411,6 +438,13 @@ class UiScreensDependencyBoundaryTest {
             FORWARDING_TOGGLE_TAG to "const val FORWARDING_TOGGLE_TAG",
             SERVICES_SCREEN_TAG to "const val SERVICES_SCREEN_TAG",
             ::portRowTag to "fun portRowTag",
+            // The D12 family's representative tags and pure helpers (the full
+            // tag set moved with its screens; these pin the family the way
+            // D5-D11's single rows do).
+            DIAGNOSTICS_PAGE_TAG to "const val DIAGNOSTICS_PAGE_TAG",
+            DIAGNOSTIC_REPORT_PAGE_TAG to "const val DIAGNOSTIC_REPORT_PAGE_TAG",
+            ::diagnosticReportRowTag to "fun diagnosticReportRowTag",
+            ::crashReportShareSubject to "fun crashReportShareSubject",
         )
 
         private val movedDeclarations: List<String> =

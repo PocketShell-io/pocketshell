@@ -93,7 +93,7 @@ class CrashReportsViewModelTest {
         val vm = newVm()
         advanceUntilIdle()
 
-        vm.reports.value.forEach { it.file.delete() }
+        vm.reports.value.forEach { reportsDir().resolve("${it.id}.txt").delete() }
         vm.shareAll()
         advanceUntilIdle()
 
@@ -184,8 +184,10 @@ class CrashReportsViewModelTest {
     }
 
     private fun clearReportsDir() {
-        File(context.filesDir, "crash-reports").deleteRecursively()
+        reportsDir().deleteRecursively()
     }
+
+    private fun reportsDir(): File = File(context.filesDir, "crash-reports")
 
     private fun clearArchivesDir() {
         archivesDir().deleteRecursively()

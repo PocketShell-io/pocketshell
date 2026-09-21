@@ -38,8 +38,8 @@ import androidx.navigation.navArgument
 import com.pocketshell.next.connect.ConnectGate
 import com.pocketshell.next.connect.ConnectionsRegistry
 import com.pocketshell.next.connect.ConnectViewModel
-import com.pocketshell.next.crash.DiagnosticReportScreen
-import com.pocketshell.next.crash.DiagnosticsScreen
+import com.pocketshell.next.crash.DiagnosticReportRoute
+import com.pocketshell.next.crash.DiagnosticsRoute
 import com.pocketshell.next.files.FileExplorerRoute
 import com.pocketshell.next.files.ViewerRoute
 import com.pocketshell.next.hosts.AddEditHostRoute
@@ -510,11 +510,11 @@ fun AppNavHost(
         onBack: () -> Unit,
         onOpenReport: (String) -> Unit,
     ) -> Unit = { onBack, onOpenReport ->
-        DiagnosticsScreen(onBack = onBack, onOpenReport = onOpenReport)
+        DiagnosticsRoute(onBack = onBack, onOpenReport = onOpenReport)
     },
     diagnosticReportScreen: @Composable (reportId: String, onBack: () -> Unit) -> Unit =
         { reportId, onBack ->
-            DiagnosticReportScreen(reportId = reportId, onBack = onBack)
+            DiagnosticReportRoute(reportId = reportId, onBack = onBack)
         },
     aboutScreen: @Composable (onBack: () -> Unit, onOpenUpdate: () -> Unit) -> Unit =
         { onBack, onOpenUpdate ->
