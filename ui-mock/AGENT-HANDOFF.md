@@ -17,7 +17,14 @@ ui-mock (independent development app, distinct applicationId)
 
 The mock's **runtime dependency graph** must not contain app2, transport, storage, voice or live-service implementations. Do not satisfy this by importing all app sources into a second APK, binding fake services to an otherwise unchanged production graph, copying screens into React, or generating alternate Kotlin layouts.
 
-The browser renderer supplied here is useful before/during extraction. It does not by itself establish the module boundary.
+The browser renderer supplied here is useful before/during extraction. AC3 now
+also establishes a standalone `com.android.library` module at `:ui-mock`: its
+only project dependencies are `:shared:ui-kit` and `:shared:ui-screens`, and it
+owns the deterministic state/reducer/data previously under app2 tests. This is
+the dependency boundary and state foundation, not yet the independent
+application shown above: there is no Activity/applicationId or interactive
+shell, and the browser renderer still invokes app2 fixtures. See README's
+28-destination ledger for the exact covered/gap inventory.
 
 ## Verified source starting points (main inspected 2026-09-10)
 
@@ -35,7 +42,13 @@ The browser renderer supplied here is useful before/during extraction. It does n
 1. Inventory **current production navigation destinations**, plus dialogs/sheets and screen states, from current app navigation and MainActivity. Commit a coverage table linking each destination to its shared composable and mock scenarios. Mark every missing row explicitly.
 2. Extract pure screen models and stateless screen components. Preserve fully-qualified names where appropriate to minimize churn, but explicitly fix `internal` visibility, package-resource references, tests and all production call sites. Do not leave duplicate definitions or add compatibility copies.
 3. Use view-model-to-UI mapping at production routes. Introduce an injected composable slot/platform adapter for terminal content, camera preview, file/permission pickers and any Android service boundary. Visual placeholder mode must be labeled; real platform behavior remains separately tested.
-4. Create the independent `ui-mock` app with local state-only handlers. Typing edits mock draft state, toggles/navigation/sheets really work locally, and buttons switch deterministic loading/error/success states rather than quietly launching SSH, a microphone or browser/network intents. Provide reset and state selection.
+4. Extend the existing standalone `:ui-mock` library into an independently
+   runnable mock application (or add a thin application host that depends on
+   it) with local state-only handlers. Typing edits mock draft state,
+   toggles/navigation/sheets really work locally, and buttons switch
+   deterministic loading/error/success states rather than quietly launching
+   SSH, a microphone or browser/network intents. Provide reset and state
+   selection.
 5. Reuse the same fixtures for mock navigation and Roborazzi renders. Feed the browser renderer from the extracted module's test tasks rather than `app2` once the boundary is real. Replace the hardcoded catalog roots/module allowlist together; keep unsupported-case and freshness tests.
 6. For optional interactive browser access, run the small mock APK in a **dedicated** Android emulator, stream/control it through a loopback-only service and SSH. Do not touch a pre-existing emulator or real app. This is a separate mode from static JVM rendering. A CLI-only native Compose change still needs incremental compilation/deployment unless an actually supported hot-reload path is added and verified.
 7. Wire tests into the repository's running gates. Prove the production app compiles against the shared presentation module, mock runtime dependencies exclude live backend implementations, shipped debug APKs exclude the mock entry point, and each production destination has mock coverage.

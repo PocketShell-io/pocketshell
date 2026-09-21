@@ -50,6 +50,11 @@ include(":shared:ui-kit")
 // app2's ViewModels and routes keep the VM→UI mapping on the app side.
 include(":shared:ui-screens")
 
+// #2636 AC3: standalone mock-state/application seam. This is an Android
+// library so it can consume the real shared presentation modules, while its
+// dependency graph deliberately excludes app2 and every core implementation.
+include(":ui-mock")
+
 // Test-only support module (issue #1048): the ONE audited shared de-flake
 // settle-pump, consumed via `testImplementation` only — never ships in the APK.
 include(":shared:test-support")

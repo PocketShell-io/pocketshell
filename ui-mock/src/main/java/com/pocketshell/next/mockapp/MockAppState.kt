@@ -3,18 +3,15 @@ package com.pocketshell.next.mockapp
 import com.pocketshell.next.hosts.HostFormState
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.ports.PortForwardDisplayState
-import com.pocketshell.next.terminal.SessionUiState
-import com.pocketshell.next.workspaces.HostWorkspacesUiState
 
 /**
  * One immutable snapshot of the whole mock app (issue #2636 phase 1).
  *
- * This is the embryonic presentation boundary the issue asks for: a single
- * state value the shell renders and the reducer replaces — no ViewModel, no
- * Room, no SSH, no clock. Screens never see [MockAppState] directly; the
- * `to...UiState()` functions here project it into the production screens'
- * existing state types, which is the same mapping shape the extracted
- * presentation module will own permanently (AGENT-HANDOFF step 2/3).
+ * This is the state foundation for the presentation boundary: a single value
+ * the future shell renders and the reducer replaces — no ViewModel, Room, SSH,
+ * terminal implementation, or clock. Projections use shared display types
+ * where extraction is complete and explicit mock-local mirrors where it is
+ * not; README lists those seams and does not claim a runnable shell.
  *
  * Pure Kotlin: everything here constructs without Robolectric, so the
  * reducer and these projections unit-test on the plain JVM in milliseconds.
@@ -63,25 +60,25 @@ data class MockAppState(
     /** The session screen's session label (the workspace row's entry session). */
     val sessionName: String get() = MockData.SESSION_NAME
 
-    // ── Projections into the production screens' state types ─────────────────
+    // ── Projections into shared or explicitly mock-local display types ───────
 
     fun toHostListUiState() = com.pocketshell.next.hosts.HostListUiState(
         hosts = hosts,
         loaded = hostsLoaded,
     )
 
-    fun toSshKeysUiState() = com.pocketshell.next.hosts.SshKeysUiState(
+    fun toSshKeysUiState() = MockSshKeysUiState(
         loaded = sshKeysLoaded,
         message = sshKeyMessage,
     )
 
-    fun toWorkspaceUiState(): HostWorkspacesUiState {
-        val roots = com.pocketshell.next.workspaces.projectWorkspaceRoots(
+    fun toWorkspaceUiState(): MockHostWorkspacesUiState {
+        val roots = projectMockWorkspaceRoots(
             sessions = MockData.rootSessions,
             memberships = MockData.memberships,
             registeredRoots = MockData.registeredRoots,
         )
-        return HostWorkspacesUiState(
+        return MockHostWorkspacesUiState(
             hostId = HOST_ID,
             hostLabel = HOST_LABEL,
             loaded = true,
@@ -90,7 +87,7 @@ data class MockAppState(
         )
     }
 
-    fun toWorkspaceStartUiState() = com.pocketshell.next.tree.SessionTreeUiState(
+    fun toWorkspaceStartUiState() = MockWorkspaceStartUiState(
         hostId = HOST_ID,
         hostLabel = HOST_LABEL,
         loaded = true,
@@ -98,18 +95,16 @@ data class MockAppState(
     )
 
     /**
-     * [SessionUiState] for the session screen. `Live`/`Reconnecting` need the
-     * vendored `com.termux.terminal.TerminalSession`; the shell builds it at
-     * the composition boundary and hands it in here, so this state class stays
-     * Robolectric-free.
+     * Mock-local session display state. The real Termux-backed state remains an
+     * app-side route concern until its pure display seam is extracted.
      */
-    fun toSessionUiState(terminal: SessionUiState.Live): SessionUiState =
+    fun toSessionUiState(terminal: MockSessionUiState.Live): MockSessionUiState =
         when (sessionPhase) {
-            MockSessionPhase.CONNECTING -> SessionUiState.Connecting
+            MockSessionPhase.CONNECTING -> MockSessionUiState.Connecting
             MockSessionPhase.LIVE -> terminal
             MockSessionPhase.RECONNECTING ->
-                SessionUiState.Reconnecting(reconnectAttempt, reconnectRetryInMs, terminal.terminal)
-            MockSessionPhase.FAILED -> SessionUiState.Failed(sessionMessage)
+                MockSessionUiState.Reconnecting(reconnectAttempt, reconnectRetryInMs, terminal.terminal)
+            MockSessionPhase.FAILED -> MockSessionUiState.Failed(sessionMessage)
         }
 
     fun toServicesUiState() = PortForwardDisplayState(
@@ -147,7 +142,7 @@ data class MockAppState(
     }
 }
 
-/** How far the mock session is, mirroring [SessionUiState]'s four shapes. */
+/** How far the mock session is, mirroring [MockSessionUiState]'s four shapes. */
 enum class MockSessionPhase {
     CONNECTING,
     LIVE,

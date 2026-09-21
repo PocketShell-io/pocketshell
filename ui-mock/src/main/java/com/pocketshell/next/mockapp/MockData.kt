@@ -1,7 +1,5 @@
 package com.pocketshell.next.mockapp
 
-import com.pocketshell.core.hostapi.SessionRow
-import com.pocketshell.core.hostapi.WorkspaceMembership
 import com.pocketshell.next.ports.TunnelDisplay
 import com.pocketshell.next.ports.TunnelStatusDisplay
 import com.pocketshell.next.hosts.HostRow
@@ -11,19 +9,16 @@ import com.pocketshell.next.usage.UsageResetCreditDisplay
 import com.pocketshell.next.usage.UsageResetCreditsDisplay
 import com.pocketshell.next.usage.UsageStatusDisplay
 import com.pocketshell.next.usage.UsageWindowDisplay
-import com.pocketshell.next.workspaces.RegisteredWorkspaceRoot
 import java.time.Instant
 
 /**
  * The mock app's single data source (issue #2636 phase 1).
  *
  * Every deterministic host, key, workspace, session, tunnel and usage value
- * the mock harness renders lives HERE, not in the fixtures: a fixture picks a
- * scenario of [MockAppState], and [MockAppState] projects [MockData] values
- * into the production screens' UI states. Editing a value in this file and
- * saving re-renders every scenario that shows it through the ui-mock loop —
- * that is the "one mock data layer" the issue asks for, ahead of the module
- * extraction that will move it behind the presentation boundary.
+ * for the standalone mock state lives here. [MockAppState] projects these
+ * values into shared display types or named mock-local mirrors. The browser
+ * fixtures are not wired to this data yet; README records that remaining step
+ * rather than claiming the state library is already an interactive renderer.
  *
  * Values mirror the maintainer's real dev-box shape (hetzner + a builder
  * box) so long names, mono paths and multi-provider quotas read true.
@@ -49,22 +44,22 @@ object MockData {
 
     // ── Workspaces / sessions (host 1 = hetzner) ─────────────────────────────
 
-    val memberships: List<WorkspaceMembership> = listOf(
-        WorkspaceMembership(path = "/home/alexey/git/pocketshell", displayPath = "~/git/pocketshell"),
-        WorkspaceMembership(path = "/home/alexey/git/aplexer", displayPath = "~/git/aplexer"),
-        WorkspaceMembership(path = "/home/alexey/work/mobile", displayPath = "~/work/mobile"),
+    val memberships: List<MockWorkspaceMembership> = listOf(
+        MockWorkspaceMembership(path = "/home/alexey/git/pocketshell", displayPath = "~/git/pocketshell"),
+        MockWorkspaceMembership(path = "/home/alexey/git/aplexer", displayPath = "~/git/aplexer"),
+        MockWorkspaceMembership(path = "/home/alexey/work/mobile", displayPath = "~/work/mobile"),
     )
 
     // Named args per the D2 review: `1L`/`2L` bind to createdAt (and through it
     // sortOrder), NOT id — id stays at its 0L default, which is behaviour-neutral
     // because projectWorkspaceRoots reads only .path.
-    val registeredRoots: List<RegisteredWorkspaceRoot> = listOf(
-        RegisteredWorkspaceRoot(path = "/home/alexey/git", label = "Git", createdAt = 1L),
-        RegisteredWorkspaceRoot(path = "/home/alexey/work", label = "Work", createdAt = 2L),
+    val registeredRoots: List<MockRegisteredWorkspaceRoot> = listOf(
+        MockRegisteredWorkspaceRoot(path = "/home/alexey/git", label = "Git", createdAt = 1L),
+        MockRegisteredWorkspaceRoot(path = "/home/alexey/work", label = "Work", createdAt = 2L),
     )
 
     /** A live root session that makes the Git root non-empty. */
-    fun session(name: String, workspace: String, attached: Boolean = true): SessionRow = SessionRow(
+    fun session(name: String, workspace: String, attached: Boolean = true): MockSessionRow = MockSessionRow(
         name = name,
         id = null,
         workspace = workspace,
@@ -79,7 +74,7 @@ object MockData {
         activityEpoch = null,
     )
 
-    val rootSessions: List<SessionRow> = listOf(
+    val rootSessions: List<MockSessionRow> = listOf(
         session("root-shell", "/home/alexey/git"),
     )
 

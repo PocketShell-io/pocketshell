@@ -3,15 +3,11 @@ package com.pocketshell.next.mockapp
 /**
  * The mock app's navigation state (issue #2636 phase 1).
  *
- * One value per destination the mock shell can actually render today, each
- * naming the production `com.pocketshell.next.nav.Destination` it stands in
- * for. This is deliberately a SUBSET: destinations the shell does not wire
- * yet (Files, FileViewer, Diagnostics, DiagnosticReport, About, Update,
- * HostUsage, TunnelDetail, AddTunnel, WorkspaceRoots, AddWorkspaceRoot,
- * ReorderWorkspaces, WorkspaceRootAction and the Settings sub-pages) are
- * absent BY DESIGN and stay listed as gaps in the ui-mock coverage panel —
- * never silently claimed (issue acceptance 2). Phase 2 widens this list as
- * screens' pure states are extracted.
+ * One value per destination the future mock shell can represent in its pure
+ * state seam, each naming the production navigation destination it stands in
+ * for. This is deliberately a subset (9/28): every absent destination stays
+ * listed in README's checked coverage ledger, never silently claimed. Adding
+ * a value here means reducer/state coverage, not runnable-screen coverage.
  */
 sealed class MockDestination {
 

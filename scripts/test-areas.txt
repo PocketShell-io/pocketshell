@@ -250,14 +250,14 @@ noop   docs/*                        planning docs and mockups
 noop   .claude/*                     agent role prompts
 noop   .gitignore                    ignore rules
 noop   LICENSE                       all-rights-reserved notice; prose, no test reads it (#2641)
-# ui-mock/* (issue #2636) is a standalone loopback browser tool over the
-# Roborazzi render fixtures: Python + static web; its unittest suite runs in
-# tests.yml's `ui-mock` job, but no Gradle test or journey reads it.
-# render.init.gradle still force-fulls via `full
-# *.gradle` (full rows evaluate first). Unlike the prose rows, this inertness
-# is NOT re-proven by the doc-read scan — if a selected test ever starts
-# reading ui-mock, replace this row with a src/test row instead of trusting it.
-noop   ui-mock/*                     standalone design tool; no selected test reads it (issue #2636)
+# The browser-loop half of ui-mock remains inert to Gradle tests. The Android
+# library source sets below are real code and have explicit src/test rows.
+# render.init.gradle and build.gradle.kts still force-full via `full *.gradle`.
+noop   ui-mock/*.py                  standalone browser design tool (issue #2636)
+noop   ui-mock/tests/*               Python-only browser-tool tests
+noop   ui-mock/web/*                 static browser client
+noop   ui-mock/*.md                  module/tool documentation
+noop   ui-mock/.gitignore            browser-tool generated-output ignores
 
 # ---------------------------------------------------------------------------
 # PRODUCTION PATHS -> AREA. Ordered specific-before-general.
@@ -273,6 +273,7 @@ src    shared/core-hostapi/*         bootstrap            full
 src    shared/core-voice/*           composer-voice       full
 src    shared/core-assistant/*       composer-voice       full
 src    shared/core-portfwd/*         portfwd              full
+src    ui-mock/src/main/*            app-shell            full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
 src    shared/ui-kit/*               ui-shell             ui
@@ -382,10 +383,12 @@ test   app2/src/*/java/com/pocketshell/next/crash/*        diagnostics-crash    
 # ui-kit primitives, so a ui-kit token change is what breaks them.
 test   app2/src/*/java/com/pocketshell/next/render/*       ui-shell             full
 test   app2/src/*/java/com/pocketshell/next/nav/*          app-shell            full
-# The #2636 mock-sandbox package: test-only fake of the app shell (pure
-# navigation/destination reducer + fixtures), no production counterpart, so
-# no `src` row. Same ownership as next/nav: the subject is app-level
-# navigation state.
+# The #2636 standalone mock-sandbox module: pure navigation/destination
+# reducer, deterministic fixtures, local platform mirrors and boundary guard.
+test   ui-mock/src/*/java/com/pocketshell/next/mockapp/*   app-shell            full
+# Keep the former app2 row additively while the move is uncommitted: the
+# manifest verifier reads the index, where the deleted source paths remain
+# tracked until the orchestrator lands the slice. It is inert after the move.
 test   app2/src/*/java/com/pocketshell/next/mockapp/*      app-shell            full
 # :app2 ROOT-level test classes (App / nav host / Robolectric side-effect guard).
 # `+([A-Za-z0-9_])` cannot cross `/`, so this row matches only files sitting

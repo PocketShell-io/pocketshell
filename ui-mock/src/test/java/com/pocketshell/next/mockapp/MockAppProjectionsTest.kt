@@ -1,8 +1,5 @@
 package com.pocketshell.next.mockapp
 
-import com.pocketshell.next.terminal.NoOpTerminalSessionClient
-import com.pocketshell.next.terminal.SessionUiState
-import com.termux.terminal.TerminalSession
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -11,29 +8,21 @@ import org.junit.Test
 
 /**
  * The state→screen seam of the mock app (issue #2636 acceptance 3):
- * `MockAppState.to...UiState()` is what the production screens actually read,
- * so the deterministic loading/error/long-content switches must be proven to
- * SURVIVE the projection, not just exist on the state.
+ * `MockAppState.to...UiState()` is the future shell's display seam, so the
+ * deterministic loading/error/long-content switches must survive projection,
+ * not merely exist on the aggregate state. Extracted families use their real
+ * shared display types; unextracted families use named mock-local mirrors.
  *
- * Everything here runs on the plain JVM: the vendored `TerminalSession` builds
- * its emulator with no PTY, no thread and no Android call, so a throwaway
- * terminal can stand in for the live one exactly as the shell hands one in at
- * the composition boundary. Same event fold always yields the same projection
- * (determinism is inherited from the reducer and pinned in [MockAppReducerTest]).
+ * Everything here runs on the plain JVM. The mock-local terminal is an opaque
+ * display identity, so this module never needs Termux/native code. Same event
+ * fold always yields the same projection (determinism is inherited from the
+ * reducer and pinned in [MockAppReducerTest]).
  */
 class MockAppProjectionsTest {
 
-    /** A JVM-safe stand-in for the terminal the shell builds at composition. */
-    private fun terminal(): TerminalSession = TerminalSession(
-        /* columns = */ 80,
-        /* rows = */ 24,
-        /* cellWidthPx = */ 8,
-        /* cellHeightPx = */ 16,
-        /* transcriptRows = */ 200,
-        /* client = */ NoOpTerminalSessionClient(),
-    )
+    private fun terminal(): MockTerminalSession = MockTerminalSession()
 
-    private fun live() = SessionUiState.Live(terminal())
+    private fun live() = MockSessionUiState.Live(terminal())
 
     // ── Host list: the loading switch + long-content fixture ─────────────────
 
@@ -64,7 +53,7 @@ class MockAppProjectionsTest {
     @Test
     fun `connecting projects the production connecting state`() {
         val state = MockAppState.populated().copy(sessionPhase = MockSessionPhase.CONNECTING)
-        assertSame(SessionUiState.Connecting, state.toSessionUiState(live()))
+        assertSame(MockSessionUiState.Connecting, state.toSessionUiState(live()))
     }
 
     @Test
@@ -82,9 +71,9 @@ class MockAppProjectionsTest {
             reconnectRetryInMs = 4500L,
         )
         val terminalSession = terminal()
-        val ui = state.toSessionUiState(SessionUiState.Live(terminalSession))
-        assertTrue("expected Reconnecting, was $ui", ui is SessionUiState.Reconnecting)
-        ui as SessionUiState.Reconnecting
+        val ui = state.toSessionUiState(MockSessionUiState.Live(terminalSession))
+        assertTrue("expected Reconnecting, was $ui", ui is MockSessionUiState.Reconnecting)
+        ui as MockSessionUiState.Reconnecting
         assertEquals(2, ui.attempt)
         assertEquals(4500L, ui.retryInMs)
         assertSame("reconnect must reuse the live emulator, never reseed", terminalSession, ui.terminal)
@@ -97,7 +86,7 @@ class MockAppProjectionsTest {
             sessionMessage = "Could not reach the session. Tap Retry to try again.",
         )
         val ui = state.toSessionUiState(live())
-        assertEquals(SessionUiState.Failed("Could not reach the session. Tap Retry to try again."), ui)
+        assertEquals(MockSessionUiState.Failed("Could not reach the session. Tap Retry to try again."), ui)
     }
 
     // ── Services: the enabled/loading gates gate the tunnel rows ──────────────

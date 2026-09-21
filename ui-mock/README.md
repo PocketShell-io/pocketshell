@@ -1,6 +1,6 @@
 # PocketShell UI Mock — terminal/browser visual loop
 
-**Status: implemented browser-renderer slice; Android execution not verified in the authoring session. This is NOT the complete UI extraction requested in issue #2636.**
+**Status: browser-renderer slice plus a standalone `:ui-mock` Android-library state seam. This is NOT yet a runnable mock application or the complete UI extraction requested in issue #2636.**
 
 This tool displays PocketShell's existing real-screen Roborazzi fixtures in a browser and rerenders the selected fixture after source changes. It does not create a second HTML/React implementation of the app. Edit the same Kotlin composables that production uses: there is no visual-code copy-back step.
 
@@ -17,7 +17,10 @@ What it does:
 What it **does not** do:
 
 - It is **not a clickable Android emulator** and not Vite-style hot module replacement. The browser shows PNGs. Select scenarios to inspect states; clicks inside an image do nothing.
-- It **does not yet extract all screens/models into an independent presentation module**. `app2` and its test compilation dependencies still participate. Its mock data are existing test fixtures, not a new independent application data layer.
+- The browser renderer still builds app2's Roborazzi fixtures. Separately, the
+  standalone `:ui-mock` Android library owns deterministic mock data and its
+  pure reducer without depending on app2, core modules, or Termux. It is a
+  compile/test boundary, not yet a runnable mock shell.
 - It does not guarantee complete destination/state coverage. Unsupported fixture shapes are reported under catalog warnings, not silently counted as supported. A fixture can intentionally render only a part of a screen.
 - It cannot validate real keyboard/IME policy, terminal behavior, Android permission flows or platform file pickers. Keep device/emulator acceptance for these.
 - It does not change production code, publish APKs, alter the release workflow, or bypass release gates.
@@ -114,6 +117,59 @@ Browser on Windows/Linux
 ```
 
 `render.init.gradle` opts **only the selected `testDebugUnitTest` task** out of cache/up-to-date reuse. Compilation/resource tasks remain incremental and cacheable. It does not use `--rerun-tasks`, `clean`, `--no-daemon` or `--no-build-cache`.
+
+## Standalone Android module coverage
+
+`:ui-mock` is a `com.android.library` module. Its only project dependencies are
+`:shared:ui-kit` and `:shared:ui-screens`; `UiMockDependencyBoundaryTest`
+rejects app2, `core-*`, and Termux leakage. The pure `MockAppState`, reducer,
+events, deterministic data, and tests moved here from app2. Remaining
+app-owned display inputs (`SessionRow`, `WorkspaceMembership`, terminal/session
+state, and workspace/SSH-key state) are explicit mock-local mirrors. They are
+not production implementations and perform no I/O.
+
+The two coverage columns below deliberately measure different things:
+
+- Browser fixture: a real production composable has at least one catalogued
+  Roborazzi case. This remains the fast visible loop.
+- Interactive state seam: `MockDestination` and the pure reducer can represent
+  navigation/state for that destination. It does not claim the screen is
+  runnable until a mock shell is added.
+
+| Production destination (28) | Browser fixture | Interactive state seam | Remaining work |
+|---|---:|---:|---|
+| Hosts | yes | yes | runnable shell wiring |
+| Workspaces | yes | yes | replace workspace-local mirror after shared extraction |
+| Workspace | yes | no | destination/reducer state |
+| Session | yes | yes | shared terminal display seam and shell wiring |
+| Files | yes | no | destination/reducer state |
+| FileViewer | yes | no | destination/reducer state |
+| Ports | yes | yes | runnable shell wiring |
+| Settings | yes | yes | runnable shell wiring |
+| TerminalSettings | yes | no | destination/reducer state |
+| VoiceSettings | yes | no | destination/reducer state |
+| ConnectionSettings | yes | no | destination/reducer state |
+| AdvancedSettings | yes | no | destination/reducer state |
+| AccountSync | yes | no | destination/reducer state |
+| Diagnostics | yes | no | destination/reducer state |
+| DiagnosticReport | GAP | no | fixture plus destination/reducer state |
+| About | GAP | no | fixture plus destination/reducer state |
+| Update | GAP | no | fixture plus destination/reducer state |
+| Usage | yes | yes | runnable shell wiring |
+| HostUsage | yes (same Usage screen) | no | host-scoped navigation state |
+| TunnelDetail | GAP | no | fixture plus destination/reducer state |
+| AddTunnel | GAP | no | fixture plus destination/reducer state |
+| HostForm | yes | yes | runnable shell wiring |
+| SshKeys | yes | yes | replace SSH-key-local state after shared extraction |
+| WorkspaceRoots | GAP | no | fixture plus destination/reducer state |
+| AddWorkspaceRoot | GAP | no | fixture plus destination/reducer state |
+| WorkspaceStart | GAP | yes | fixture, shared display state, shell wiring |
+| ReorderWorkspaces | GAP | no | fixture plus destination/reducer state |
+| WorkspaceRootAction | GAP | no | fixture plus destination/reducer state |
+
+Current totals: **18/28 browser-covered**, **9/28 represented by the interactive
+state seam**, and **0/28 claimed runnable in a standalone mock app**. The ten
+fixture gaps and nineteen interactive-state gaps are explicit by design.
 
 The existing `App.kt` has a Robolectric guard for its eager production side effects. This viewer relies on the existing fixture/test harness; it is not a proof that the complete production dependency graph or every initializer is absent. Full runtime/dependency isolation is the separate extraction task in [AGENT-HANDOFF.md](AGENT-HANDOFF.md).
 
