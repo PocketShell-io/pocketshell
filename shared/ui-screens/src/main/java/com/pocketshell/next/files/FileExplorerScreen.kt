@@ -2,10 +2,6 @@
 
 package com.pocketshell.next.files
 
-import android.net.Uri
-import android.provider.OpenableColumns
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -36,26 +32,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LifecycleEventEffect
-import com.pocketshell.core.transport.SftpEntry
 import com.pocketshell.uikit.components.Banner
 import com.pocketshell.uikit.components.BannerRole
 import com.pocketshell.uikit.components.ButtonVariant
@@ -77,13 +64,6 @@ import com.pocketshell.uikit.theme.PocketShellShapes
 import com.pocketshell.uikit.theme.PocketShellType
 import kotlinx.coroutines.flow.collect
 import java.util.concurrent.TimeUnit
-
-/** Header context shared by the file browser and its transfer history. */
-internal fun fileLocationSubtitle(hostName: String, path: String): String? {
-    val host = hostName.trim().takeIf { it.isNotEmpty() }
-    val location = com.pocketshell.next.workspaces.displayRemotePath(path)
-    return listOfNotNull(host, location).joinToString(" · ").takeIf { it.isNotEmpty() }
-}
 
 /** Stable test tags. Rows are keyed by the host's own file names. */
 const val FILE_EXPLORER_TAG: String = "file-explorer"
@@ -126,136 +106,6 @@ fun fileActionsTag(name: String): String = "file-actions-$name"
 fun crumbTag(path: String): String = "file-crumb-$path"
 
 /**
- * Route-level entry point: binds the Hilt-provided [FileExplorerViewModel] to
- * the stateless [FileExplorerScreen] and owns the two Storage Access Framework
- * launchers.
- *
- * ## Why SAF and not a file path
- *
- * app2 targets SDK 35, where an app has no general read/write access to shared
- * storage and `WRITE_EXTERNAL_STORAGE` does nothing. Both directions therefore
- * go through the system document picker: `GetContent` returns a readable
- * content URI for an upload, `CreateDocument` lets the user *name* the
- * destination for a download and returns a writable one. The app declares no
- * storage permission at all, works identically on API 26 and 35, and the user
- * sees the standard picker they already know. A `MediaStore` "save to Downloads"
- * path would need its own per-API-level branch and would not let the user choose
- * the destination.
- *
- * `ON_START` drives the refresh for the same reason the session tree does: it
- * covers first entry, coming back from the viewer, and returning from the
- * background, all with one trigger the ViewModel de-duplicates.
- */
-@Composable
-fun FileExplorerRoute(
-    onOpenFile: (String) -> Unit,
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: FileExplorerViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    val context = LocalContext.current
-
-    LifecycleEventEffect(Lifecycle.Event.ON_START) { viewModel.refresh() }
-
-    LaunchedEffect(state.newFilePathToOpen) {
-        state.newFilePathToOpen?.let { path ->
-            viewModel.consumeNewFilePath()
-            onOpenFile(path)
-        }
-    }
-
-    val uploadLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri: Uri? ->
-        if (uri != null) {
-            val resolver = context.contentResolver
-            val document = describeDocument(
-                queryColumns = { columns ->
-                    resolver.query(uri, null, null, null, null)?.use { cursor ->
-                        if (!cursor.moveToFirst()) return@use null
-                        columns.associateWith { column ->
-                            val index = cursor.getColumnIndex(column)
-                            if (index < 0 || cursor.isNull(index)) null else cursor.getString(index)
-                        }
-                    }
-                },
-                fallbackName = uri.lastPathSegment ?: "upload",
-            )
-            viewModel.upload(
-                displayName = document.name,
-                declaredSize = document.size,
-                openStream = { resolver.openInputStream(uri) },
-            )
-        }
-    }
-
-    // The picker names the destination; the entry it is FOR has to survive the
-    // round-trip through the system UI, so it is held here rather than inferred
-    // from the returned URI (which carries the user's chosen name, not the
-    // remote one).
-    var pendingDownload by remember { mutableStateOf<SftpEntry?>(null) }
-    val downloadLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/octet-stream"),
-    ) { uri: Uri? ->
-        val entry = pendingDownload
-        pendingDownload = null
-        if (uri != null && entry != null) {
-            viewModel.download(entry) { bytes ->
-                val stream = context.contentResolver.openOutputStream(uri)
-                    ?: throw java.io.IOException("could not open the chosen destination")
-                stream.use { it.write(bytes) }
-            }
-        }
-    }
-
-    FileExplorerScreen(
-        state = state,
-        onBack = onBack,
-        onUp = viewModel::goUp,
-        onOpenDirectory = viewModel::openDirectory,
-        onOpenFile = { entry -> onOpenFile(entry.path) },
-        onNavigateTo = viewModel::navigateTo,
-        onUpload = { uploadLauncher.launch("*/*") },
-        onDownload = { entry ->
-            pendingDownload = entry
-            downloadLauncher.launch(entry.name)
-        },
-        onCopyPath = { path ->
-            context.getSystemService(android.content.ClipboardManager::class.java)
-                ?.setPrimaryClip(android.content.ClipData.newPlainText("Remote path", path))
-            viewModel.dismissActions()
-        },
-        onDismissTransfer = viewModel::dismissTransfer,
-        onRetry = viewModel::refresh,
-        onOpenTools = viewModel::openTools,
-        onDismissTools = viewModel::dismissTools,
-        onOpenActions = viewModel::openActions,
-        onDismissActions = viewModel::dismissActions,
-        onOpenCreateFolder = viewModel::openCreateFolder,
-        onCreateFolderNameChange = viewModel::setCreateFolderName,
-        onCreateFolder = viewModel::createFolder,
-        onDismissCreateFolder = viewModel::dismissCreateFolder,
-        onOpenRename = viewModel::openRename,
-        onRenameNameChange = viewModel::setRenameName,
-        onRename = viewModel::renameFile,
-        onDismissRename = viewModel::dismissRename,
-        onRequestDelete = viewModel::requestDelete,
-        onConfirmDelete = viewModel::confirmDelete,
-        onDismissDelete = viewModel::dismissDelete,
-        onOpenTransfers = viewModel::openTransfers,
-        onDismissTransfers = viewModel::dismissTransfers,
-        onRetryTransfer = viewModel::retryTransfer,
-        onNewTextFile = viewModel::openNewTextFile,
-        onNewTextFileNameChange = viewModel::setNewTextFileName,
-        onCreateNewTextFile = viewModel::createNewTextFile,
-        onDismissNewTextFile = viewModel::dismissNewTextFile,
-        onDismissOperationMessage = viewModel::dismissOperationMessage,
-        modifier = modifier,
-    )
-}
-
-/**
  * The remote file explorer (rewrite task P-3a).
  *
  * Stateless: everything it paints comes from [state], so it renders identically
@@ -275,32 +125,32 @@ fun FileExplorerRoute(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FileExplorerScreen(
-    state: FileExplorerUiState,
+    state: FileExplorerDisplayState,
     onBack: () -> Unit,
     onUp: () -> Unit,
-    onOpenDirectory: (SftpEntry) -> Unit,
-    onOpenFile: (SftpEntry) -> Unit,
+    onOpenDirectory: (FileEntryDisplay) -> Unit,
+    onOpenFile: (FileEntryDisplay) -> Unit,
     onNavigateTo: (String) -> Unit,
     onUpload: () -> Unit,
-    onDownload: (SftpEntry) -> Unit,
+    onDownload: (FileEntryDisplay) -> Unit,
     onDismissTransfer: () -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier,
     nowMs: Long = System.currentTimeMillis(),
     onOpenTools: () -> Unit = {},
     onDismissTools: () -> Unit = {},
-    onOpenActions: (SftpEntry) -> Unit = {},
+    onOpenActions: (FileEntryDisplay) -> Unit = {},
     onDismissActions: () -> Unit = {},
     onCopyPath: (String) -> Unit = {},
     onOpenCreateFolder: () -> Unit = {},
     onCreateFolderNameChange: (String) -> Unit = {},
     onCreateFolder: () -> Unit = {},
     onDismissCreateFolder: () -> Unit = {},
-    onOpenRename: (SftpEntry) -> Unit = {},
+    onOpenRename: (FileEntryDisplay) -> Unit = {},
     onRenameNameChange: (String) -> Unit = {},
     onRename: () -> Unit = {},
     onDismissRename: () -> Unit = {},
-    onRequestDelete: (SftpEntry) -> Unit = {},
+    onRequestDelete: (FileEntryDisplay) -> Unit = {},
     onConfirmDelete: () -> Unit = {},
     onDismissDelete: () -> Unit = {},
     onOpenTransfers: () -> Unit = {},
@@ -329,7 +179,7 @@ fun FileExplorerScreen(
     }
     if (state.transfersVisible) {
         TransfersScreen(
-            state = state.toTransfersUiState(),
+            state = state.transfers,
             onBack = onDismissTransfers,
             onRetry = onRetryTransfer,
             modifier = modifier,
@@ -345,7 +195,7 @@ fun FileExplorerScreen(
     ) {
         ScreenHeader(
             title = "Files",
-            subtitle = fileLocationSubtitle(state.hostName, state.path),
+            subtitle = state.subtitle,
             onBack = onBack,
             trailing = {
                 KebabTrigger(
@@ -517,7 +367,7 @@ fun FileExplorerScreen(
     if (state.renameFile.visible) {
         RenameFileSheet(
             state = state.renameFile,
-            parent = state.renameFile.entry?.let { RemotePath.parent(it.path) }.orEmpty(),
+            parent = state.renameFile.entry?.let { fileDisplayParent(it.path) }.orEmpty(),
             onNameChange = onRenameNameChange,
             onRename = onRename,
             onDismiss = onDismissRename,
@@ -527,7 +377,7 @@ fun FileExplorerScreen(
     state.deleteFile.entry?.let { entry ->
         DeleteFileDialog(
             entry = entry,
-            parent = RemotePath.parent(entry.path),
+            parent = fileDisplayParent(entry.path),
             submitting = state.deleteFile.submitting,
             failure = state.deleteFile.failure,
             onConfirm = onConfirmDelete,
@@ -542,7 +392,7 @@ fun FileExplorerScreen(
  * reachable, and eliding the middle is exactly the part a developer taps.
  */
 @Composable
-private fun CrumbBar(crumbs: List<RemotePath.Crumb>, onNavigateTo: (String) -> Unit) {
+private fun CrumbBar(crumbs: List<FileCrumbDisplay>, onNavigateTo: (String) -> Unit) {
     if (crumbs.isEmpty()) return
     Row(
         modifier = Modifier
@@ -596,22 +446,22 @@ private fun CrumbBar(crumbs: List<RemotePath.Crumb>, onNavigateTo: (String) -> U
 }
 
 @Composable
-private fun TransferBanner(transfer: TransferState, onDismiss: () -> Unit) {
+private fun TransferBanner(transfer: FileTransferDisplayState, onDismiss: () -> Unit) {
     val (text, role) = when (transfer) {
-        TransferState.Idle -> return
-        is TransferState.Running ->
+        FileTransferDisplayState.Idle -> return
+        is FileTransferDisplayState.Running ->
             (if (transfer.uploading) "Uploading ${transfer.name}…" else "Downloading ${transfer.name}…") to
                 BannerRole.Info
 
-        is TransferState.Done -> transfer.message to BannerRole.Info
-        is TransferState.Failed -> transfer.message to BannerRole.Error
+        is FileTransferDisplayState.Done -> transfer.message to BannerRole.Info
+        is FileTransferDisplayState.Failed -> transfer.message to BannerRole.Error
     }
     Banner(
         text = text,
         role = role,
         maxLines = 4,
         trailingContent = {
-            if (transfer !is TransferState.Running) {
+            if (transfer !is FileTransferDisplayState.Running) {
                 PocketShellButton(
                     text = "Dismiss",
                     onClick = onDismiss,
@@ -629,7 +479,7 @@ private fun TransferBanner(transfer: TransferState, onDismiss: () -> Unit) {
 
 @Composable
 private fun FileRow(
-    entry: SftpEntry,
+    entry: FileEntryDisplay,
     nowMs: Long,
     transferring: Boolean,
     onOpen: () -> Unit,
@@ -681,7 +531,7 @@ private fun FileRow(
 /** The overflow sheet for the current directory (design-kit frame 53). */
 @Composable
 private fun FileToolsSheet(
-    state: FileExplorerUiState,
+    state: FileExplorerDisplayState,
     onUp: () -> Unit,
     onUpload: () -> Unit,
     onCreateFolder: () -> Unit,
@@ -699,7 +549,7 @@ private fun FileToolsSheet(
         FileToolsSheetContent(
             path = state.path,
             onUp = onUp,
-            canGoUp = state.path.isNotBlank() && state.path != RemotePath.ROOT,
+            canGoUp = state.path.isNotBlank() && state.path != "/",
             canUpload = state.loaded && !state.transferring,
             onUpload = onUpload,
             onCreateFolder = onCreateFolder,
@@ -712,10 +562,10 @@ private fun FileToolsSheet(
 
 /** Content-only version used by the host-JVM tests and design renders. */
 @Composable
-internal fun FileToolsSheetContent(
+fun FileToolsSheetContent(
     path: String,
     onUp: () -> Unit = {},
-    canGoUp: Boolean = path.isNotBlank() && path != RemotePath.ROOT,
+    canGoUp: Boolean = path.isNotBlank() && path != "/",
     canUpload: Boolean = true,
     onUpload: () -> Unit,
     onCreateFolder: () -> Unit,
@@ -826,7 +676,7 @@ private fun FileToolRow(
 /** Actions for one selected file or folder (design-kit frame 55). */
 @Composable
 private fun FileActionSheet(
-    entry: SftpEntry,
+    entry: FileEntryDisplay,
     onPreview: () -> Unit,
     onEdit: () -> Unit,
     onDownload: () -> Unit,
@@ -856,8 +706,8 @@ private fun FileActionSheet(
 }
 
 @Composable
-internal fun FileActionSheetContent(
-    entry: SftpEntry,
+fun FileActionSheetContent(
+    entry: FileEntryDisplay,
     onPreview: () -> Unit,
     onEdit: () -> Unit,
     onDownload: () -> Unit,
@@ -904,7 +754,7 @@ internal fun FileActionSheetContent(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CreateFolderSheet(
-    state: CreateFolderUiState,
+    state: CreateFolderDisplayState,
     parent: String,
     onNameChange: (String) -> Unit,
     onCreate: () -> Unit,
@@ -928,8 +778,8 @@ private fun CreateFolderSheet(
 }
 
 @Composable
-internal fun CreateFolderSheetContent(
-    state: CreateFolderUiState,
+fun CreateFolderSheetContent(
+    state: CreateFolderDisplayState,
     parent: String,
     onNameChange: (String) -> Unit,
     onCreate: () -> Unit,
@@ -971,7 +821,7 @@ internal fun CreateFolderSheetContent(
                 .testTag(FILE_EXPLORER_CREATE_FOLDER_NAME_TAG),
         )
         Text(
-            text = "Creates ${RemotePath.join(parent, state.name.ifBlank { "folder" })} on the host.",
+            text = "Creates ${fileDisplayJoin(parent, state.name.ifBlank { "folder" })} on the host.",
             color = PocketShellColors.TextSecondary,
             style = PocketShellType.metadata,
         )
@@ -1000,7 +850,7 @@ internal fun CreateFolderSheetContent(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun NewTextFileSheet(
-    state: NewTextFileUiState,
+    state: NewTextFileDisplayState,
     parent: String,
     onNameChange: (String) -> Unit,
     onCreate: () -> Unit,
@@ -1077,7 +927,7 @@ private fun NewTextFileSheet(
 /** Rename form (design-kit frame 61). */
 @Composable
 private fun RenameFileSheet(
-    state: RenameFileUiState,
+    state: RenameFileDisplayState,
     parent: String,
     onNameChange: (String) -> Unit,
     onRename: () -> Unit,
@@ -1101,8 +951,8 @@ private fun RenameFileSheet(
 }
 
 @Composable
-internal fun RenameFileSheetContent(
-    state: RenameFileUiState,
+fun RenameFileSheetContent(
+    state: RenameFileDisplayState,
     parent: String,
     onNameChange: (String) -> Unit,
     onRename: () -> Unit,
@@ -1172,7 +1022,7 @@ internal fun RenameFileSheetContent(
 /** Explicit destructive confirmation (design-kit frame 62). */
 @Composable
 private fun DeleteFileDialog(
-    entry: SftpEntry,
+    entry: FileEntryDisplay,
     parent: String,
     submitting: Boolean,
     failure: String?,
@@ -1197,16 +1047,25 @@ private fun DeleteFileDialog(
 }
 
 /** Known binary/image suffixes are hidden from the text editor action. */
-private fun isLikelyEditableFile(name: String): Boolean {
-    val extension = FileKindDetector.extensionOf(name)
+internal fun isLikelyEditableFile(name: String): Boolean {
+    val extension = fileExplorerExtensionOf(name)
     return extension !in setOf(
         "7z", "apk", "bin", "bmp", "class", "dmg", "gif", "gz", "ico", "iso",
         "jar", "jpeg", "jpg", "mp3", "mp4", "pdf", "png", "so", "tar", "wav", "webp", "zip",
     )
 }
 
+/** Lower-cased extension of the final path segment, or "" when there is none. */
+internal fun fileExplorerExtensionOf(path: String): String {
+    val name = path.substringAfterLast('/').substringAfterLast('\\')
+    val dot = name.lastIndexOf('.')
+    // No dot, a leading-dot dotfile (".bashrc"), or a trailing dot: no extension.
+    if (dot <= 0 || dot == name.lastIndex) return ""
+    return name.substring(dot + 1).lowercase()
+}
+
 /** Folders get the folder glyph; files route through ui-kit's shared name map. */
-internal fun iconClassFor(entry: SftpEntry): FileIconClass =
+fun iconClassFor(entry: FileEntryDisplay): FileIconClass =
     if (entry.isDirectory) FileIconClass.FOLDER else fileIconClassForName(entry.name)
 
 /**
@@ -1217,7 +1076,7 @@ internal fun iconClassFor(entry: SftpEntry): FileIconClass =
  * not the tree's — printing "4.0 KB" next to a folder holding a gigabyte is a
  * lie the old client also told.
  */
-internal fun rowSubtitle(entry: SftpEntry, nowMs: Long): String? {
+fun rowSubtitle(entry: FileEntryDisplay, nowMs: Long): String? {
     val parts = buildList {
         if (!entry.isDirectory) add(formatSize(entry.sizeBytes))
         relativeTime(entry.modifiedEpochMs, nowMs)?.let { add(it) }
@@ -1227,10 +1086,10 @@ internal fun rowSubtitle(entry: SftpEntry, nowMs: Long): String? {
 
 /**
  * "3m ago" / "2d ago" for [epochMs], or null when the server sent no mtime
- * (which [com.pocketshell.core.transport.SftpEntry] reports as 0) or when the
+ * (represented as 0 by [FileEntryDisplay]) or when the
  * timestamp is in the future — a clock-skewed host must not render "-4h ago".
  */
-internal fun relativeTime(epochMs: Long, nowMs: Long): String? {
+fun relativeTime(epochMs: Long, nowMs: Long): String? {
     if (epochMs <= 0L) return null
     val deltaMs = nowMs - epochMs
     if (deltaMs < 0L) return null
@@ -1244,27 +1103,4 @@ internal fun relativeTime(epochMs: Long, nowMs: Long): String? {
         days < 365 -> "${days}d ago"
         else -> "${days / 365}y ago"
     }
-}
-
-/** What the SAF picker told us about the chosen document. */
-internal data class PickedDocument(val name: String, val size: Long)
-
-/**
- * Reads the display name and size out of a document provider's cursor.
- *
- * Extracted from the launcher (which owns the `ContentResolver`) so the
- * "provider reported nothing / reported a path / reported no size" branches are
- * unit-testable without Android's content framework: [queryColumns] returns the
- * raw column values, so a test supplies them directly.
- */
-internal fun describeDocument(
-    queryColumns: (List<String>) -> Map<String, String?>?,
-    fallbackName: String,
-): PickedDocument {
-    val columns = runCatching {
-        queryColumns(listOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE))
-    }.getOrNull().orEmpty()
-    val name = columns[OpenableColumns.DISPLAY_NAME]?.takeIf { it.isNotBlank() } ?: fallbackName
-    val size = columns[OpenableColumns.SIZE]?.toLongOrNull() ?: -1L
-    return PickedDocument(name = sanitizeUploadName(name), size = size)
 }

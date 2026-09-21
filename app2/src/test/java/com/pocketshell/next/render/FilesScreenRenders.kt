@@ -5,9 +5,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.transport.SftpEntry
+import com.pocketshell.next.files.FileEntryDisplay
+import com.pocketshell.next.files.FileCrumbDisplay
 import com.pocketshell.next.files.FileExplorerScreen
-import com.pocketshell.next.files.FileExplorerUiState
+import com.pocketshell.next.files.FileExplorerDisplayState
 import com.pocketshell.next.files.FileToolsSheetContent
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
@@ -60,10 +61,11 @@ class FilesScreenRenders {
     @Test
     fun filesListingPopulated() = render("i2762-files-listing-populated") {
         FileExplorerScreen(
-            state = FileExplorerUiState(
-                hostName = "hetzner",
+            state = FileExplorerDisplayState(
+                subtitle = "hetzner · ~/projects/pocketshell",
                 path = "/home/alexey/projects/pocketshell",
                 entries = listing(),
+                crumbs = crumbs("/home/alexey/projects/pocketshell"),
                 loaded = true,
             ),
             onBack = {},
@@ -82,10 +84,11 @@ class FilesScreenRenders {
     @Test
     fun filesListingEmptyFolder() = render("i2762-files-listing-empty-folder") {
         FileExplorerScreen(
-            state = FileExplorerUiState(
-                hostName = "hetzner",
+            state = FileExplorerDisplayState(
+                subtitle = "hetzner · ~/inbox/empty-dir",
                 path = "/home/alexey/inbox/empty-dir",
                 entries = emptyList(),
+                crumbs = crumbs("/home/alexey/inbox/empty-dir"),
                 loaded = true,
             ),
             onBack = {},
@@ -104,10 +107,11 @@ class FilesScreenRenders {
     @Test
     fun filesListingFailedWithRetry() = render("i2762-files-listing-failed-retry") {
         FileExplorerScreen(
-            state = FileExplorerUiState(
-                hostName = "hetzner",
+            state = FileExplorerDisplayState(
+                subtitle = "hetzner · /var/log/collectd",
                 path = "/var/log/collectd",
                 entries = emptyList(),
+                crumbs = crumbs("/var/log/collectd"),
                 loaded = true,
                 failure = "SFTP read failed: permission denied",
             ),
@@ -136,38 +140,53 @@ class FilesScreenRenders {
         )
     }
 
-    private fun listing(): List<SftpEntry> = listOf(
-        SftpEntry(
+    private fun listing(): List<FileEntryDisplay> = listOf(
+        FileEntryDisplay(
             path = "/home/alexey/projects/pocketshell/app2",
+            name = "app2",
             isDirectory = true,
             sizeBytes = 4096,
             modifiedEpochMs = NOW_MS - 3L * 60L * 60L * 1000L,
         ),
-        SftpEntry(
+        FileEntryDisplay(
             path = "/home/alexey/projects/pocketshell/docs",
+            name = "docs",
             isDirectory = true,
             sizeBytes = 4096,
             modifiedEpochMs = NOW_MS - 2L * 24L * 60L * 60L * 1000L,
         ),
-        SftpEntry(
+        FileEntryDisplay(
             path = "/home/alexey/projects/pocketshell/README.md",
+            name = "README.md",
             isDirectory = false,
             sizeBytes = 48_213,
             modifiedEpochMs = NOW_MS - 26L * 60L * 60L * 1000L,
         ),
-        SftpEntry(
+        FileEntryDisplay(
             path = "/home/alexey/projects/pocketshell/deploy.sh",
+            name = "deploy.sh",
             isDirectory = false,
             sizeBytes = 1_204,
             modifiedEpochMs = NOW_MS - 5L * 24L * 60L * 60L * 1000L,
         ),
-        SftpEntry(
+        FileEntryDisplay(
             path = "/home/alexey/projects/pocketshell/session-trace.log",
+            name = "session-trace.log",
             isDirectory = false,
             sizeBytes = 912_884,
             modifiedEpochMs = NOW_MS - 40L * 60L * 1000L,
         ),
     )
+
+    private fun crumbs(path: String): List<FileCrumbDisplay> {
+        var current = ""
+        return listOf(FileCrumbDisplay("/", "/")) + path.split('/')
+            .filter(String::isNotEmpty)
+            .map { segment ->
+                current += "/$segment"
+                FileCrumbDisplay(segment, current)
+            }
+    }
 
     private fun render(name: String, content: @Composable () -> Unit) {
         composeRule.captureFrozenRender("build/renders/$name.png") {

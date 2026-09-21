@@ -63,20 +63,20 @@ class FileFormattingTest {
         val directory = SftpEntry("/w/src", isDirectory = true, sizeBytes = 4096, modifiedEpochMs = now)
         val file = SftpEntry("/w/a.txt", isDirectory = false, sizeBytes = 2048, modifiedEpochMs = now)
 
-        assertEquals("just now", rowSubtitle(directory, now))
-        assertEquals("2.0 KB · just now", rowSubtitle(file, now))
-        assertNull(rowSubtitle(directory.copy(modifiedEpochMs = 0), now))
+        assertEquals("just now", rowSubtitle(directory.toDisplay(), now))
+        assertEquals("2.0 KB · just now", rowSubtitle(file.toDisplay(), now))
+        assertNull(rowSubtitle(directory.copy(modifiedEpochMs = 0).toDisplay(), now))
     }
 
     @Test
     fun `icons come from the shared ui-kit map, with folders overriding the name`() {
         assertEquals(
             FileIconClass.FOLDER,
-            iconClassFor(SftpEntry("/w/images", isDirectory = true, sizeBytes = 0, modifiedEpochMs = 0)),
+            iconClassFor(SftpEntry("/w/images", isDirectory = true, sizeBytes = 0, modifiedEpochMs = 0).toDisplay()),
         )
         assertEquals(
             FileIconClass.IMAGE,
-            iconClassFor(SftpEntry("/w/a.png", isDirectory = false, sizeBytes = 0, modifiedEpochMs = 0)),
+            iconClassFor(SftpEntry("/w/a.png", isDirectory = false, sizeBytes = 0, modifiedEpochMs = 0).toDisplay()),
         )
     }
 

@@ -37,6 +37,11 @@ import com.pocketshell.next.crash.crashReportShareSubject
 import com.pocketshell.next.crash.diagnosticReportRowTag
 import com.pocketshell.next.files.FileTransferRecord
 import com.pocketshell.next.files.FileTransferStatus
+import com.pocketshell.next.files.FILE_EXPLORER_TAG
+import com.pocketshell.next.files.FILE_EXPLORER_LIST_TAG
+import com.pocketshell.next.files.FileEntryDisplay
+import com.pocketshell.next.files.FileExplorerDisplayState
+import com.pocketshell.next.files.FileTransferDisplayState
 import com.pocketshell.next.files.InlineSpan
 import com.pocketshell.next.files.MARKDOWN_VIEW_TAG
 import com.pocketshell.next.files.MarkdownBlock
@@ -44,6 +49,7 @@ import com.pocketshell.next.files.MarkdownParser
 import com.pocketshell.next.files.TRANSFERS_SCREEN_TAG
 import com.pocketshell.next.files.TransfersUiState
 import com.pocketshell.next.files.formatSize
+import com.pocketshell.next.files.fileRowTag
 import com.pocketshell.next.files.normalizeUrl
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.hosts.HostFormState
@@ -219,6 +225,11 @@ import java.io.File
  * crossing that seam are pure display mirrors with exhaustive app-side
  * adapters, matching D10/D11; the form state and key row were already shared
  * by D1 and were reused rather than duplicated.
+ * The #2636 D14 slice added the file explorer display family. `SftpEntry`,
+ * remote-path arithmetic, SAF/clipboard access, lifecycle/Hilt wiring and the
+ * mutable operation state stay app2-side; app2's exhaustive `toDisplay()` seam
+ * maps them onto [FileExplorerDisplayState], [FileEntryDisplay], breadcrumb,
+ * transfer and form mirrors consumed here.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -416,6 +427,11 @@ class UiScreensDependencyBoundaryTest {
             SshKeyProtectionDisplay::class to "enum class SshKeyProtectionDisplay",
             SshKeyGenerationDisplayRequest::class to "class SshKeyGenerationDisplayRequest",
             SshKeyImportCandidate::class to "data class SshKeyImportCandidate",
+            // The D14 files-family display mirrors. Core SFTP entries and
+            // route/platform wiring remain app2-side behind `toDisplay()`.
+            FileExplorerDisplayState::class to "data class FileExplorerDisplayState",
+            FileEntryDisplay::class to "data class FileEntryDisplay",
+            FileTransferDisplayState::class to "sealed interface FileTransferDisplayState",
         )
 
         /**
@@ -497,6 +513,10 @@ class UiScreensDependencyBoundaryTest {
             HOST_FORM_CONTENT_TAG to "const val HOST_FORM_CONTENT_TAG",
             SSH_KEYS_LIST_TAG to "const val SSH_KEYS_LIST_TAG",
             ::sshKeyRowTag to "fun sshKeyRowTag",
+            // The D14 explorer's representative screen tags and stable row key.
+            FILE_EXPLORER_TAG to "const val FILE_EXPLORER_TAG",
+            FILE_EXPLORER_LIST_TAG to "const val FILE_EXPLORER_LIST_TAG",
+            ::fileRowTag to "fun fileRowTag",
         )
 
         private val movedDeclarations: List<String> =

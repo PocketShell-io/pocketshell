@@ -242,7 +242,7 @@ class FileExplorerScreenTest {
         composeRule.setContent {
             PocketShellTheme {
                 FileActionSheetContent(
-                    entry = file("/w/archive.bin"),
+                    entry = file("/w/archive.bin").toDisplay(),
                     onPreview = { actions += "preview" },
                     onEdit = { actions += "edit" },
                     onDownload = { actions += "download" },
@@ -268,8 +268,8 @@ class FileExplorerScreenTest {
 
     private fun setContent(
         state: FileExplorerUiState,
-        onOpenDirectory: (SftpEntry) -> Unit = {},
-        onOpenFile: (SftpEntry) -> Unit = {},
+        onOpenDirectory: (FileEntryDisplay) -> Unit = {},
+        onOpenFile: (FileEntryDisplay) -> Unit = {},
         onNavigateTo: (String) -> Unit = {},
         onDismissTransfer: () -> Unit = {},
         onRetry: () -> Unit = {},
@@ -277,7 +277,7 @@ class FileExplorerScreenTest {
         composeRule.setContent {
             PocketShellTheme {
                 FileExplorerScreen(
-                    state = state,
+                    state = state.toDisplay(),
                     onBack = {},
                     onUp = {},
                     onOpenDirectory = onOpenDirectory,
