@@ -7,7 +7,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -70,11 +69,11 @@ class TunnelDetailScreenTest {
             PocketShellTheme {
                 TunnelDetailScreen(
                     hostName = "hetzner",
-                    tunnel = TunnelInfo(
+                    tunnel = TunnelDisplay(
                         remotePort = 22,
                         localPort = 7_432,
                         process = "sshd",
-                        status = TunnelInfo.Status.FORWARDING,
+                        status = TunnelStatusDisplay.FORWARDING,
                     ),
                     manual = manual,
                     onBack = {},

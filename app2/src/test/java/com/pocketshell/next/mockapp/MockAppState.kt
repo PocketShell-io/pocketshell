@@ -2,7 +2,7 @@ package com.pocketshell.next.mockapp
 
 import com.pocketshell.next.hosts.HostFormState
 import com.pocketshell.next.hosts.HostRow
-import com.pocketshell.next.ports.PortForwardUiState
+import com.pocketshell.next.ports.PortForwardDisplayState
 import com.pocketshell.next.terminal.SessionUiState
 import com.pocketshell.next.workspaces.HostWorkspacesUiState
 
@@ -112,8 +112,7 @@ data class MockAppState(
             MockSessionPhase.FAILED -> SessionUiState.Failed(sessionMessage)
         }
 
-    fun toServicesUiState() = PortForwardUiState(
-        hostId = HOST_ID,
+    fun toServicesUiState() = PortForwardDisplayState(
         hostName = HOST_LABEL,
         hostSubtitle = HOST_ADDRESS,
         enabled = servicesEnabled,

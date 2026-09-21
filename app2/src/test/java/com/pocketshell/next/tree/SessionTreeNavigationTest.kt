@@ -16,7 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.pocketshell.next.AppNavHost
 import com.pocketshell.next.connect.TestConnectStack
 import com.pocketshell.next.nav.Destination
-import com.pocketshell.next.ports.PortForwardUiState
+import com.pocketshell.next.ports.PortForwardDisplayState
 import com.pocketshell.next.ports.SERVICES_SCREEN_TAG
 import com.pocketshell.next.ports.SERVICES_BACK_TAG
 import com.pocketshell.next.ports.ServicesScreen
@@ -127,7 +127,7 @@ class SessionTreeNavigationTest {
                     },
                     servicesScreen = { onBack, _, _ ->
                         ServicesScreen(
-                            state = PortForwardUiState(hostId = 7, hostName = "rmthz"),
+                            state = PortForwardDisplayState(hostName = "rmthz"),
                             onSetDiscovery = {},
                             onOpenTunnel = {},
                             onAddTunnel = {},

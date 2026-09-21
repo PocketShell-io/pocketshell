@@ -20,22 +20,15 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.ListRow
 import com.pocketshell.uikit.components.LoadingIndicator
@@ -61,42 +54,15 @@ const val PORT_FORWARD_BACK_TAG: String = "port-forward-back"
 fun portRowTag(remotePort: Int): String = "port-row-$remotePort"
 
 /**
- * Route-level entry point: binds the Hilt-provided [PortForwardViewModel] to the
- * stateless [PortForwardScreen].
- *
- * The one thing that cannot live in the ViewModel is starting the foreground
- * service, which needs a `Context`. Doing it here — keyed on the enabled flag —
- * keeps the ViewModel Android-free and testable.
- *
- * Re-triggering `resume` for an already-enabled host is deliberate, not merely
- * harmless: the controller asks an already-mounted supervisor to retry now, and
- * arriving on this screen is exactly the recovery path for a host parked in the
- * terminal needs-attention state after its key was confirmed from the host list
- * (#2491). For a healthy host it changes nothing.
- */
-@Composable
-fun PortForwardRoute(
-    onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: PortForwardViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    val context = LocalContext.current
-    LaunchedEffect(state.enabled) {
-        if (state.enabled) ForwardService.resume(context)
-    }
-    PortForwardScreen(
-        state = state,
-        onSetEnabled = viewModel::setEnabled,
-        onTogglePort = viewModel::togglePort,
-        onSetShowAllPorts = viewModel::setShowAllPorts,
-        onBack = onBack,
-        modifier = modifier,
-    )
-}
-
-/**
  * The port-forward screen (rewrite task P-4).
+ *
+ * Moved to the shared presentation module (#2636 D11): stateless, it paints
+ * the pure [PortForwardDisplayState] and the `core.portfwd` display mirrors —
+ * the Hilt route that binds the view model and starts the foreground service
+ * stays in app2 (`app2/.../ports/PortForwardRoute.kt`), the D10 usage-seam
+ * shape with the route file named for the route it holds (a same-named
+ * `PortForwardScreen.kt` on both sides of the seam would collide on the
+ * `PortForwardScreenKt` JVM facade).
  *
  * Three controls and a table:
  * - An Off/On [SegmentedToggle] for the whole host. The old client used a small
@@ -110,7 +76,7 @@ fun PortForwardRoute(
  */
 @Composable
 fun PortForwardScreen(
-    state: PortForwardUiState,
+    state: PortForwardDisplayState,
     onSetEnabled: (Boolean) -> Unit,
     onTogglePort: (Int) -> Unit,
     onSetShowAllPorts: (Boolean) -> Unit,
@@ -124,7 +90,7 @@ fun PortForwardScreen(
     ) {
         ScreenHeader(
             title = state.hostName,
-            subtitle = state.hostSubtitle.ifBlank { state.connection.label },
+            subtitle = state.hostSubtitle.ifBlank { state.connection.headerLabel },
             onBack = onBack,
             backTestTag = PORT_FORWARD_BACK_TAG,
             trailing = { StatusDot(status = state.connection.toConnectionStatus(state.enabled)) },
@@ -147,7 +113,7 @@ fun PortForwardScreen(
                 modifier = Modifier.weight(1f),
             )
 
-            state.connection == ConnectionState.Lost -> CenteredMessage(
+            state.connection == ConnectionStateDisplay.Lost -> CenteredMessage(
                 text = pausedMessage(state.attention),
                 modifier = Modifier.weight(1f),
             )
@@ -194,7 +160,7 @@ fun PortForwardScreen(
  * occurrence counter, so it is stable across recompositions AND collision-free
  * whatever the data model produces.
  */
-internal fun tunnelRowKeys(tunnels: List<TunnelInfo>): List<String> {
+internal fun tunnelRowKeys(tunnels: List<TunnelDisplay>): List<String> {
     val seen = HashMap<String, Int>()
     return tunnels.map { tunnel ->
         val base = "${tunnel.remotePort}:${tunnel.localPort}:${tunnel.status}"
@@ -215,7 +181,7 @@ internal fun hiddenPortsMessage(hiddenCount: Int): String =
     if (hiddenCount == 1) "1 noisy port hidden." else "$hiddenCount noisy ports hidden."
 
 /**
- * What a host in the TERMINAL [ConnectionState.Lost] state says (#2491).
+ * What a host in the TERMINAL [ConnectionStateDisplay.Lost] state says (#2491).
  *
  * It must never claim a retry is coming: the supervisor has parked, and the
  * whole point of the state is that nothing will change until the user acts.
@@ -323,14 +289,14 @@ private fun ShowAllPortsRow(checked: Boolean, hiddenCount: Int, onCheckedChange:
 }
 
 @Composable
-private fun PortForwardRow(tunnel: TunnelInfo, onToggle: () -> Unit) {
-    val forwarding = tunnel.status == TunnelInfo.Status.FORWARDING
+private fun PortForwardRow(tunnel: TunnelDisplay, onToggle: () -> Unit) {
+    val forwarding = tunnel.status == TunnelStatusDisplay.FORWARDING
     val semantic = LocalPocketShellSemantic.current
     val statusColor: Color = when (tunnel.status) {
-        TunnelInfo.Status.FORWARDING -> semantic.statusActive
-        TunnelInfo.Status.AVAILABLE -> PocketShellColors.TextSecondary
-        TunnelInfo.Status.FAILED -> semantic.statusError
-        TunnelInfo.Status.STOPPED -> semantic.statusAttention
+        TunnelStatusDisplay.FORWARDING -> semantic.statusActive
+        TunnelStatusDisplay.AVAILABLE -> PocketShellColors.TextSecondary
+        TunnelStatusDisplay.FAILED -> semantic.statusError
+        TunnelStatusDisplay.STOPPED -> semantic.statusAttention
     }
     PortTableRow(
         onClick = onToggle,
@@ -368,7 +334,7 @@ private fun PortForwardRow(tunnel: TunnelInfo, onToggle: () -> Unit) {
             }
         }
         PortBodyCell(tunnel.process.ifBlank { "-" }, 0.28f)
-        PortBodyCell(tunnel.status.label, 0.18f, color = statusColor)
+        PortBodyCell(tunnel.status.statusLabel, 0.18f, color = statusColor)
         // Discovered/available rows have no traffic yet, so "0 B / 0 B/s" on
         // every row would be pure noise; the figures appear only where they mean
         // something.
@@ -421,29 +387,42 @@ private fun CenteredMessage(text: String, modifier: Modifier) {
     }
 }
 
-private fun ConnectionState.toConnectionStatus(enabled: Boolean): ConnectionStatus = when {
+/**
+ * The header's connection vocabulary ("Needs attention" is terminal wording;
+ * "Reconnecting" is not — #2491). Internal so the shared family test pins the
+ * exact strings; `label` in the old app2 file, renamed for its one caller
+ * (the ScreenHeader subtitle) now that the module carries a second, different
+ * connection-wording helper for Services (`quietLabel`).
+ */
+internal val ConnectionStateDisplay.headerLabel: String
+    get() = when (this) {
+        ConnectionStateDisplay.Idle -> "Idle"
+        ConnectionStateDisplay.Connecting -> "Connecting"
+        ConnectionStateDisplay.Connected -> "Connected"
+        ConnectionStateDisplay.Reconnecting -> "Reconnecting"
+        // Terminal, not "still trying": the supervisor has stopped dialling and
+        // only the user can change the outcome (#2491).
+        ConnectionStateDisplay.Lost -> "Needs attention"
+    }
+
+internal fun ConnectionStateDisplay.toConnectionStatus(enabled: Boolean): ConnectionStatus = when {
     !enabled -> ConnectionStatus.Idle
-    this == ConnectionState.Connected -> ConnectionStatus.Connected
-    this == ConnectionState.Lost -> ConnectionStatus.Error
-    this == ConnectionState.Idle -> ConnectionStatus.Idle
+    this == ConnectionStateDisplay.Connected -> ConnectionStatus.Connected
+    this == ConnectionStateDisplay.Lost -> ConnectionStatus.Error
+    this == ConnectionStateDisplay.Idle -> ConnectionStatus.Idle
     else -> ConnectionStatus.Connecting
 }
 
-private val ConnectionState.label: String
+/**
+ * The ports-table row vocabulary. Distinct from Services' list wording
+ * (`servicesStatusLabel` — "Not forwarded") and the detail page's
+ * (`detailStatusLabel`): all three render the same core enum, each surface
+ * with its own choice of word, exactly as before the move.
+ */
+internal val TunnelStatusDisplay.statusLabel: String
     get() = when (this) {
-        ConnectionState.Idle -> "Idle"
-        ConnectionState.Connecting -> "Connecting"
-        ConnectionState.Connected -> "Connected"
-        ConnectionState.Reconnecting -> "Reconnecting"
-        // Terminal, not "still trying": the supervisor has stopped dialling and
-        // only the user can change the outcome (#2491).
-        ConnectionState.Lost -> "Needs attention"
-    }
-
-private val TunnelInfo.Status.label: String
-    get() = when (this) {
-        TunnelInfo.Status.FORWARDING -> "Forwarding"
-        TunnelInfo.Status.AVAILABLE -> "Available"
-        TunnelInfo.Status.FAILED -> "Failed"
-        TunnelInfo.Status.STOPPED -> "Stopped"
+        TunnelStatusDisplay.FORWARDING -> "Forwarding"
+        TunnelStatusDisplay.AVAILABLE -> "Available"
+        TunnelStatusDisplay.FAILED -> "Failed"
+        TunnelStatusDisplay.STOPPED -> "Stopped"
     }

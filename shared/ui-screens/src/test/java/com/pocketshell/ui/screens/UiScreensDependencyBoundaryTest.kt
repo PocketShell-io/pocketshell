@@ -33,7 +33,15 @@ import com.pocketshell.next.files.normalizeUrl
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.hosts.SSH_KEYS_UNLOCK_BUTTON_TAG
 import com.pocketshell.next.hosts.sshKeyFallbackRowTag
+import com.pocketshell.next.ports.FORWARDING_TOGGLE_TAG
+import com.pocketshell.next.ports.PORT_TABLE_TAG
+import com.pocketshell.next.ports.PortForwardDisplayState
+import com.pocketshell.next.ports.ConnectionStateDisplay
 import com.pocketshell.next.ports.PortColumn
+import com.pocketshell.next.ports.SERVICES_SCREEN_TAG
+import com.pocketshell.next.ports.TunnelDisplay
+import com.pocketshell.next.ports.TunnelStatusDisplay
+import com.pocketshell.next.ports.portRowTag
 import com.pocketshell.next.settings.AppSettings
 import com.pocketshell.next.settings.SettingsHostRow
 import com.pocketshell.next.settings.terminalTextSizePxFromSp
@@ -147,6 +155,18 @@ import java.io.File
  * mapping stays app2-side at `UsageFetcher`'s single ingestion point — the D3
  * seam at family scale — so the `core-*` scan below keeps the mirrors the only
  * record shape this module sees.
+ *
+ * The #2636 D11 slice added the ports family the same way: the four screens
+ * (`PortForwardScreen`, `ServicesScreen`, `TunnelDetailScreen` and the
+ * verbatim-move `AddTunnelScreen`) plus the display state they paint, with
+ * pure mirrors of the two `core.portfwd` types the family reads
+ * (`AutoForwarderSupervisor.ConnectionState`, `TunnelInfo` + its `Status`).
+ * app2's view model is the family's single ingestion point (the
+ * `PortForwardDisplayMapping` adapters next to it); the routes, foreground
+ * service and clipboard/coroutine handoffs stay app2-side — including
+ * `TunnelDetail`'s former inline `Dispatchers`/`launch`/`withContext`, since
+ * this module declares no coroutines dependency — so the `core-*` scan below
+ * keeps the mirrors the only record shape this module sees.
  *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
@@ -320,6 +340,14 @@ class UiScreensDependencyBoundaryTest {
             UsageSnapshot::class to "sealed interface UsageSnapshot",
             UsageStatusDisplay::class to "enum class UsageStatusDisplay",
             UsageThresholdStateDisplay::class to "enum class UsageThresholdStateDisplay",
+            // The D11 family — the ports screens: the display state moved whole
+            // (minus the never-painted `hostId`) and the two core.portfwd types
+            // the family reads got pure mirrors, mapped app-side at the view
+            // model's single ingestion point, matching D10.
+            PortForwardDisplayState::class to "data class PortForwardDisplayState",
+            ConnectionStateDisplay::class to "enum class ConnectionStateDisplay",
+            TunnelStatusDisplay::class to "enum class TunnelStatusDisplay",
+            TunnelDisplay::class to "data class TunnelDisplay",
         )
 
         /**
@@ -376,6 +404,13 @@ class UiScreensDependencyBoundaryTest {
             ::usageProviderRowTag to "fun usageProviderRowTag",
             ::usageWindowRowTag to "fun usageWindowRowTag",
             ::usageSyncLabel to "fun usageSyncLabel",
+            // The D11 family's representative tags and pure helpers (the full
+            // tag sets moved with their screens; these pin the family the way
+            // D5-D10's single rows do).
+            PORT_TABLE_TAG to "const val PORT_TABLE_TAG",
+            FORWARDING_TOGGLE_TAG to "const val FORWARDING_TOGGLE_TAG",
+            SERVICES_SCREEN_TAG to "const val SERVICES_SCREEN_TAG",
+            ::portRowTag to "fun portRowTag",
         )
 
         private val movedDeclarations: List<String> =

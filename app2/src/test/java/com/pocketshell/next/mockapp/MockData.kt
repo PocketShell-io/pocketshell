@@ -2,7 +2,8 @@ package com.pocketshell.next.mockapp
 
 import com.pocketshell.core.hostapi.SessionRow
 import com.pocketshell.core.hostapi.WorkspaceMembership
-import com.pocketshell.core.portfwd.TunnelInfo
+import com.pocketshell.next.ports.TunnelDisplay
+import com.pocketshell.next.ports.TunnelStatusDisplay
 import com.pocketshell.next.hosts.HostRow
 import com.pocketshell.next.usage.UsageHostSnapshot
 import com.pocketshell.next.usage.UsageProviderRecordDisplay
@@ -87,20 +88,20 @@ object MockData {
 
     // ── Services & tunnels ───────────────────────────────────────────────────
 
-    val tunnels: List<TunnelInfo> = listOf(
-        TunnelInfo(
+    val tunnels: List<TunnelDisplay> = listOf(
+        TunnelDisplay(
             remotePort = 5173,
             localPort = 35173,
             process = "vite",
-            status = TunnelInfo.Status.FORWARDING,
+            status = TunnelStatusDisplay.FORWARDING,
         ),
-        TunnelInfo(
+        TunnelDisplay(
             remotePort = 8000,
             localPort = 38000,
             process = "python",
-            status = TunnelInfo.Status.AVAILABLE,
+            status = TunnelStatusDisplay.AVAILABLE,
         ),
-        TunnelInfo(remotePort = 22, localPort = 0, process = "sshd", status = TunnelInfo.Status.AVAILABLE),
+        TunnelDisplay(remotePort = 22, localPort = 0, process = "sshd", status = TunnelStatusDisplay.AVAILABLE),
     )
 
     // ── Usage ────────────────────────────────────────────────────────────────

@@ -1,7 +1,6 @@
 package com.pocketshell.next.ports
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -17,18 +16,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.hilt.navigation.compose.hiltViewModel
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.ListRow
@@ -54,43 +46,16 @@ const val SERVICES_AVAILABLE_TAG = "services_available"
 fun servicesRowTag(remotePort: Int): String = "service-row-$remotePort"
 fun serviceOpenTag(remotePort: Int): String = "service-open-$remotePort"
 
-/** The host-scoped Quiet entry point for forwarding and discovered services. */
-@Composable
-fun ServicesRoute(
-    onBack: () -> Unit,
-    onOpenTunnel: (Int) -> Unit = {},
-    onAddTunnel: (Int?) -> Unit = {},
-    modifier: Modifier = Modifier,
-    viewModel: PortForwardViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    val context = LocalContext.current
-    val discovered = state.discoveredRows.ifEmpty { state.rows }
-    val activeForVerification = discovered.filter { it.status == TunnelInfo.Status.FORWARDING }
-    // Keep the Quiet route on the same real foreground-service lifecycle as the
-    // original port-forward route. The Room-backed enabled flag is read again
-    // after process death, so reopening this destination remounts every enabled
-    // host through ForwardService.resume -> ForwardingController.resumeEnabled.
-    LaunchedEffect(state.enabled) {
-        if (state.enabled) ForwardService.resume(context)
-    }
-    LaunchedEffect(activeForVerification.map { it.remotePort to it.localPort }) {
-        viewModel.verifyHttpServices(activeForVerification)
-    }
-    ServicesScreen(
-        state = state,
-        onBack = onBack,
-        onSetDiscovery = viewModel::setEnabled,
-        onOpenTunnel = onOpenTunnel,
-        onAddTunnel = onAddTunnel,
-        verifiedHttpServices = state.verifiedHttpServices,
-        onOpenBrowser = { launchServiceUrl(context, it) },
-        modifier = modifier,
-    )
-}
-
 /**
  * A Quiet projection over the existing forwarding controller.
+ *
+ * Moved to the shared presentation module (#2636 D11): stateless, it paints
+ * the pure [PortForwardDisplayState] and the `core.portfwd` display mirrors —
+ * the Hilt route, the foreground-service resume and the HTTP-verification
+ * trigger stay in app2 (`app2/.../ports/ServicesRoute.kt`), the D10
+ * usage-seam shape with the route file named for the route it holds (a
+ * same-named `ServicesScreen.kt` on both sides of the seam would collide on
+ * the `ServicesScreenKt` JVM facade).
  *
  * Discovery and tunnel rows are deliberately rendered from [state] only. No
  * sample services are injected when the host has not answered, and the
@@ -99,7 +64,7 @@ fun ServicesRoute(
  */
 @Composable
 fun ServicesScreen(
-    state: PortForwardUiState,
+    state: PortForwardDisplayState,
     onBack: () -> Unit,
     onSetDiscovery: (Boolean) -> Unit,
     onOpenTunnel: (Int) -> Unit,
@@ -113,8 +78,8 @@ fun ServicesScreen(
     // (for example sshd:22). Older screen-only test fixtures populate rows but
     // not discoveredRows, hence the compatibility fallback.
     val discovered = state.discoveredRows.ifEmpty { state.rows }
-    val active = discovered.filter { it.status == TunnelInfo.Status.FORWARDING }
-    val available = discovered.filter { it.status != TunnelInfo.Status.FORWARDING }
+    val active = discovered.filter { it.status == TunnelStatusDisplay.FORWARDING }
+    val available = discovered.filter { it.status != TunnelStatusDisplay.FORWARDING }
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -150,16 +115,16 @@ fun ServicesScreen(
         }
 
         when {
-            (state.loading || (state.enabled && state.connection == ConnectionState.Idle) ||
-                state.connection == ConnectionState.Connecting ||
-                state.connection == ConnectionState.Reconnecting) -> Box(
+            (state.loading || (state.enabled && state.connection == ConnectionStateDisplay.Idle) ||
+                state.connection == ConnectionStateDisplay.Connecting ||
+                state.connection == ConnectionStateDisplay.Reconnecting) -> Box(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 contentAlignment = Alignment.Center,
             ) {
                 LoadingIndicator.Spinner(size = SpinnerSize.Medium, label = "Looking for services…")
             }
 
-            state.connection == ConnectionState.Lost -> EmptyState(
+            state.connection == ConnectionStateDisplay.Lost -> EmptyState(
                 title = "Connection needs attention",
                 description = state.attention ?: "Reconnect to discover services on this host.",
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -250,7 +215,7 @@ private fun DiscoveryRow(enabled: Boolean, onEnabledChange: (Boolean) -> Unit) {
 
 @Composable
 private fun ServiceRow(
-    tunnel: TunnelInfo,
+    tunnel: TunnelDisplay,
     active: Boolean,
     manual: Boolean,
     manualName: String?,
@@ -263,9 +228,9 @@ private fun ServiceRow(
     ListRow(
         title = title,
         subtitle = if (active) {
-            "127.0.0.1:${tunnel.localPort} · ${tunnel.status.label}"
+            "127.0.0.1:${tunnel.localPort} · ${tunnel.status.servicesStatusLabel}"
         } else {
-            "${tunnel.remotePort} · ${tunnel.status.label}"
+            "${tunnel.remotePort} · ${tunnel.status.servicesStatusLabel}"
         },
         leading = {
             Icon(
@@ -314,18 +279,28 @@ private fun ServicesFooter(onAddTunnel: () -> Unit) {
     }
 }
 
-private fun ConnectionState.quietLabel(enabled: Boolean): String = when {
+/**
+ * Services' connection vocabulary in the header ("Off" when discovery is
+ * off). Distinct from the port-forward header's (`headerLabel`) — same
+ * split as before the move, now between two internal helpers on the mirror.
+ */
+internal fun ConnectionStateDisplay.quietLabel(enabled: Boolean): String = when {
     !enabled -> "Off"
-    this == ConnectionState.Connected -> "Connected"
-    this == ConnectionState.Lost -> "Needs attention"
-    this == ConnectionState.Idle -> "Idle"
+    this == ConnectionStateDisplay.Connected -> "Connected"
+    this == ConnectionStateDisplay.Lost -> "Needs attention"
+    this == ConnectionStateDisplay.Idle -> "Idle"
     else -> "Connecting"
 }
 
-private val TunnelInfo.Status.label: String
+/**
+ * The Services list wording ("Not forwarded" — an AVAILABLE port reads as a
+ * service you could forward, not as one that is up). Distinct from the ports
+ * table's `statusLabel` and the detail page's `detailStatusLabel`.
+ */
+internal val TunnelStatusDisplay.servicesStatusLabel: String
     get() = when (this) {
-        TunnelInfo.Status.FORWARDING -> "Forwarding"
-        TunnelInfo.Status.AVAILABLE -> "Not forwarded"
-        TunnelInfo.Status.FAILED -> "Failed"
-        TunnelInfo.Status.STOPPED -> "Stopped"
+        TunnelStatusDisplay.FORWARDING -> "Forwarding"
+        TunnelStatusDisplay.AVAILABLE -> "Not forwarded"
+        TunnelStatusDisplay.FAILED -> "Failed"
+        TunnelStatusDisplay.STOPPED -> "Stopped"
     }

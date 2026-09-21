@@ -20,50 +20,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 /**
- * Everything the port-forward screen renders.
+ * The port-forward screen's state holder (rewrite task P-4).
  *
- * [rows] is already filtered and ordered — the screen paints what it is given and
- * makes no visibility decisions of its own, so "which ports are interesting" has
- * exactly one implementation ([InterestingPortFilter]) and one test.
- */
-data class PortForwardUiState(
-    val hostId: Long = 0,
-    val hostName: String = "",
-    val hostSubtitle: String = "",
-    /** The durable `hosts.enabled` intent, as last read/written. */
-    val enabled: Boolean = false,
-    val connection: ConnectionState = ConnectionState.Idle,
-    /**
-     * What the user has to DO when [connection] is terminal
-     * ([ConnectionState.Lost]) — an unconfirmed host key, a deleted host row.
-     * Null when the controller has no better explanation than "could not
-     * connect", and null whenever [connection] is NOT terminal: this is
-     * [ForwardingController.HostForwarding.terminalAttention], the same gated
-     * reason the notification renders (#2491).
-     */
-    val attention: String? = null,
-    val rows: List<TunnelInfo> = emptyList(),
-    /** All discovered ports for Services & tunnels, before the legacy noise filter. */
-    val discoveredRows: List<TunnelInfo> = emptyList(),
-    /** Remote ports with a durable user-selected remote-to-local mapping. */
-    val manualRemotePorts: Set<Int> = emptySet(),
-    /** Durable Quiet labels for manually added tunnels, keyed by remote port. */
-    val manualTunnelNames: Map<Int, String> = emptyMap(),
-    /** Remote port to a locally verified HTTP(S) URL, for the browser handoff. */
-    val verifiedHttpServices: Map<Int, String> = emptyMap(),
-    val showAllPorts: Boolean = false,
-    /** Rows the default filter is hiding right now. */
-    val hiddenCount: Int = 0,
-    /** True until the host row and the persisted checkbox have been read. */
-    val loading: Boolean = true,
-) {
-    /** Forwarding is on, but nothing has been discovered yet. */
-    val scanning: Boolean
-        get() = enabled && rows.isEmpty() && hiddenCount == 0 && connection != ConnectionState.Lost
-}
-
-/**
- * The port-forward screen for one host (rewrite task P-4).
+ * The state it publishes is the pure [PortForwardDisplayState] (#2636 D11):
+ * the display half of the former core-typed `PortForwardUiState` moved to
+ * `shared:ui-screens` with the screens that paint it, and this ViewModel is
+ * the family's single core → display ingestion point — the controller
+ * snapshot's `ConnectionState`/`TunnelInfo` values cross through the
+ * `toDisplay()` adapters in [PortForwardDisplayMapping] and nothing
+ * `com.pocketshell.core.portfwd` reaches the screens. (D10's usage seam,
+ * same shape: `UsageFetcher` maps, `UsageScreenState` is what flows.)
  *
  * It owns no forwarding state: [ForwardingController] does, because a forward has
  * to outlive this ViewModel — leaving the screen must not kill a tunnel the user
@@ -92,8 +58,8 @@ class PortForwardViewModel @Inject constructor(
         savedStateHandle.get<Long>(Destination.ARG_HOST_ID),
     ) { "PortForwardViewModel needs a ${Destination.ARG_HOST_ID} argument" }
 
-    private val _state = MutableStateFlow(PortForwardUiState(hostId = hostId))
-    val state: StateFlow<PortForwardUiState> = _state.asStateFlow()
+    private val _state = MutableStateFlow(PortForwardDisplayState())
+    val state: StateFlow<PortForwardDisplayState> = _state.asStateFlow()
 
     /**
      * The latest UNFILTERED snapshot for this host. Kept off the UI state so the
@@ -139,7 +105,7 @@ class PortForwardViewModel @Inject constructor(
                 allTunnels = host?.tunnels.orEmpty()
                 _state.value = _state.value
                     .copy(
-                        connection = host?.connection ?: ConnectionState.Idle,
+                        connection = (host?.connection ?: ConnectionState.Idle).toDisplay(),
                         // The gated reason, so the screen cannot paint a reason
                         // that belongs to a state the host has already left
                         // (#2491) — and cannot disagree with the notification,
@@ -195,10 +161,16 @@ class PortForwardViewModel @Inject constructor(
      * Verifies active local forwards before the UI offers an external browser
      * handoff. The result is deliberately ephemeral: it must be checked again
      * when the forward or its local port changes.
+     *
+     * Since #2636 D11 the routes see only display rows, so they name the
+     * tunnels to verify by remote port and the resolution back to the core
+     * rows happens HERE, against [allTunnels] — the same rows the published
+     * display state was mapped from, so a caller can never name a tunnel the
+     * snapshot does not carry.
      */
-    fun verifyHttpServices(tunnels: List<TunnelInfo>) {
-        val candidates = tunnels
-            .filter { it.status == TunnelInfo.Status.FORWARDING }
+    fun verifyHttpServices(remotePorts: Collection<Int>) {
+        val candidates = allTunnels
+            .filter { it.remotePort in remotePorts && it.status == TunnelInfo.Status.FORWARDING }
             .distinctBy { it.remotePort }
         val key = candidates.map { it.remotePort to it.localPort }
         if (key == verificationKey) return
@@ -217,13 +189,16 @@ class PortForwardViewModel @Inject constructor(
     }
 
     /**
-     * Re-derives [PortForwardUiState.rows] and [PortForwardUiState.hiddenCount]
-     * from [allTunnels]. One helper so a checkbox change and a fresh snapshot can
-     * never disagree about what is visible.
+     * Re-derives [PortForwardDisplayState.rows] and
+     * [PortForwardDisplayState.hiddenCount] from [allTunnels] — the family's
+     * single core → display crossing (#2636 D11): the core rows are filtered
+     * core-side, then mapped onto the display mirrors. One helper so a
+     * checkbox change and a fresh snapshot can never disagree about what is
+     * visible.
      */
-    private fun PortForwardUiState.reFiltered(): PortForwardUiState = copy(
-        rows = InterestingPortFilter.filter(allTunnels, showAllPorts),
-        discoveredRows = allTunnels,
+    private fun PortForwardDisplayState.reFiltered(): PortForwardDisplayState = copy(
+        rows = InterestingPortFilter.filter(allTunnels, showAllPorts).map { it.toDisplay() },
+        discoveredRows = allTunnels.map { it.toDisplay() },
         hiddenCount = InterestingPortFilter.hiddenCount(allTunnels),
     )
 }

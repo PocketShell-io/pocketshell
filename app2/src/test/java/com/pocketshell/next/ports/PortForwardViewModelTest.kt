@@ -2,8 +2,6 @@ package com.pocketshell.next.ports
 
 import androidx.lifecycle.SavedStateHandle
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.next.nav.Destination
 import com.pocketshell.testsupport.LeakGuard
 import kotlinx.coroutines.Dispatchers
@@ -115,7 +113,7 @@ class PortForwardViewModelTest {
         val state = viewModel.state.value
         assertTrue(state.enabled)
         assertEquals(listOf(7_431), state.rows.map { it.remotePort })
-        assertEquals(TunnelInfo.Status.FORWARDING, state.rows.single().status)
+        assertEquals(TunnelStatusDisplay.FORWARDING, state.rows.single().status)
     }
 
     @Test
@@ -132,7 +130,7 @@ class PortForwardViewModelTest {
 
         assertFalse(stack.isEnabled(hostId))
         assertFalse(viewModel.state.value.enabled)
-        assertEquals(emptyList<TunnelInfo>(), viewModel.state.value.rows)
+        assertEquals(emptyList<TunnelDisplay>(), viewModel.state.value.rows)
     }
 
     @Test
@@ -177,12 +175,12 @@ class PortForwardViewModelTest {
         viewModel.setEnabled(true)
         viewModel.setShowAllPorts(true)
         runCurrent()
-        assertEquals(TunnelInfo.Status.AVAILABLE, viewModel.state.value.rows.single().status)
+        assertEquals(TunnelStatusDisplay.AVAILABLE, viewModel.state.value.rows.single().status)
 
         viewModel.togglePort(22)
         runCurrent()
 
-        assertEquals(TunnelInfo.Status.FORWARDING, viewModel.state.value.rows.single().status)
+        assertEquals(TunnelStatusDisplay.FORWARDING, viewModel.state.value.rows.single().status)
     }
 
     @Test
@@ -232,7 +230,7 @@ class PortForwardViewModelTest {
         runCurrent()
 
         val state = viewModel.state.value
-        assertEquals(ConnectionState.Lost, state.connection)
+        assertEquals(ConnectionStateDisplay.Lost, state.connection)
         assertEquals(ForwardingController.NEEDS_TRUST_ATTENTION, state.attention)
         assertFalse("a parked host is not scanning", state.scanning)
     }
@@ -248,7 +246,7 @@ class PortForwardViewModelTest {
         val viewModel = viewModel(stack, hostId)
         viewModel.setEnabled(true)
         runCurrent()
-        assertEquals(ConnectionState.Lost, viewModel.state.value.connection)
+        assertEquals(ConnectionStateDisplay.Lost, viewModel.state.value.connection)
 
         stack.trustHostKey(hostId, "SHA256:rotated-key-nobody-confirmed")
         stack.factory.failWith = "network is unreachable"
@@ -258,7 +256,7 @@ class PortForwardViewModelTest {
         runCurrent()
 
         val state = viewModel.state.value
-        assertNotEquals("a blip is transient", ConnectionState.Lost, state.connection)
+        assertNotEquals("a blip is transient", ConnectionStateDisplay.Lost, state.connection)
         assertEquals(
             "the confirmed key must stop being the screen's explanation",
             null,

@@ -5,10 +5,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
+import com.pocketshell.next.ports.ConnectionStateDisplay
+import com.pocketshell.next.ports.PortForwardDisplayState
 import com.pocketshell.next.ports.PortForwardScreen
-import com.pocketshell.next.ports.PortForwardUiState
+import com.pocketshell.next.ports.TunnelDisplay
+import com.pocketshell.next.ports.TunnelStatusDisplay
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -72,7 +73,7 @@ class PortForwardScreenRenders {
     fun portForwardNeedsAttention() = render("i2491-port-forward-needs-attention") {
         PortForwardScreen(
             state = state(
-                connection = ConnectionState.Lost,
+                connection = ConnectionStateDisplay.Lost,
                 attention = NEEDS_TRUST_ATTENTION,
             ),
             onSetEnabled = {},
@@ -85,7 +86,7 @@ class PortForwardScreenRenders {
     @Test
     fun portForwardReconnecting() = render("i2491-port-forward-reconnecting") {
         PortForwardScreen(
-            state = state(connection = ConnectionState.Reconnecting),
+            state = state(connection = ConnectionStateDisplay.Reconnecting),
             onSetEnabled = {},
             onTogglePort = {},
             onSetShowAllPorts = {},
@@ -97,13 +98,13 @@ class PortForwardScreenRenders {
     fun portForwardConnected() = render("i2491-port-forward-connected") {
         PortForwardScreen(
             state = state(
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
-                    TunnelInfo(
+                    TunnelDisplay(
                         remotePort = 3_000,
                         localPort = 3_000,
                         process = "vite",
-                        status = TunnelInfo.Status.FORWARDING,
+                        status = TunnelStatusDisplay.FORWARDING,
                         bytesIn = 2_048,
                         bytesOut = 8_192,
                     ),
@@ -116,11 +117,10 @@ class PortForwardScreenRenders {
     }
 
     private fun state(
-        connection: ConnectionState,
+        connection: ConnectionStateDisplay,
         attention: String? = null,
-        rows: List<TunnelInfo> = emptyList(),
-    ) = PortForwardUiState(
-        hostId = 1L,
+        rows: List<TunnelDisplay> = emptyList(),
+    ) = PortForwardDisplayState(
         hostName = "rmthz",
         hostSubtitle = "alexey@135.181.114.209:22",
         enabled = true,

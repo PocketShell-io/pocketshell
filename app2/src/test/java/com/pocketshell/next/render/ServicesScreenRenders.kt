@@ -5,10 +5,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
-import com.pocketshell.next.ports.PortForwardUiState
+import com.pocketshell.next.ports.ConnectionStateDisplay
+import com.pocketshell.next.ports.PortForwardDisplayState
 import com.pocketshell.next.ports.ServicesScreen
+import com.pocketshell.next.ports.TunnelDisplay
+import com.pocketshell.next.ports.TunnelStatusDisplay
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellTheme
 import com.pocketshell.testsupport.LeakGuard
@@ -60,10 +61,10 @@ class ServicesScreenRenders {
         ServicesScreen(
             state = state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
-                    TunnelInfo(5173, 35173, "vite", TunnelInfo.Status.FORWARDING),
-                    TunnelInfo(8000, 8000, "python", TunnelInfo.Status.AVAILABLE),
+                    TunnelDisplay(5173, 35173, "vite", TunnelStatusDisplay.FORWARDING),
+                    TunnelDisplay(8000, 8000, "python", TunnelStatusDisplay.AVAILABLE),
                 ),
             ),
             onBack = {},
@@ -85,10 +86,9 @@ class ServicesScreenRenders {
 
     private fun state(
         enabled: Boolean,
-        connection: ConnectionState = ConnectionState.Idle,
-        rows: List<TunnelInfo> = emptyList(),
-    ) = PortForwardUiState(
-        hostId = 1,
+        connection: ConnectionStateDisplay = ConnectionStateDisplay.Idle,
+        rows: List<TunnelDisplay> = emptyList(),
+    ) = PortForwardDisplayState(
         hostName = "hetzner",
         hostSubtitle = "alexey@hetzner:22",
         enabled = enabled,

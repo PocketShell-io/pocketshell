@@ -10,18 +10,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
-import androidx.hilt.navigation.compose.hiltViewModel
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.components.ButtonVariant
 import com.pocketshell.uikit.components.EmptyState
 import com.pocketshell.uikit.components.ListRow
@@ -29,64 +19,29 @@ import com.pocketshell.uikit.components.PocketShellButton
 import com.pocketshell.uikit.components.ScreenHeader
 import com.pocketshell.uikit.theme.PocketShellColors
 import com.pocketshell.uikit.theme.PocketShellSpacing
-import com.pocketshell.uikit.theme.PocketShellType
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 const val TUNNEL_DETAIL_TAG = "tunnel_detail"
 const val TUNNEL_COPY_ADDRESS_TAG = "tunnel_copy_address"
 const val TUNNEL_STOP_TAG = "tunnel_stop"
 const val TUNNEL_OPEN_BROWSER_TAG = "tunnel_open_browser"
 
-@Composable
-fun TunnelDetailRoute(
-    remotePort: Int,
-    onBack: () -> Unit,
-    viewModel: PortForwardViewModel = hiltViewModel(),
-) {
-    val state by viewModel.state.collectAsState()
-    // Services deliberately exposes the complete discovery snapshot, including
-    // ports hidden by the legacy "interesting ports" filter used by the old
-    // port-forward screen. Resolve detail from that same source or a service
-    // such as sshd:22 would open a false "unavailable" state after navigation.
-    val discovered = state.discoveredRows.ifEmpty { state.rows }
-    val tunnel = discovered.firstOrNull { it.remotePort == remotePort }
-    val manualName = state.manualTunnelNames[remotePort]
-    val clipboard = LocalClipboardManager.current
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    LaunchedEffect(tunnel?.remotePort, tunnel?.localPort, tunnel?.status) {
-        viewModel.verifyHttpServices(listOfNotNull(tunnel))
-    }
-    TunnelDetailScreen(
-        hostName = state.hostName,
-        tunnel = tunnel,
-        manual = remotePort in state.manualRemotePorts,
-        manualName = manualName,
-        verifiedUrl = state.verifiedHttpServices[remotePort],
-        onBack = onBack,
-        onCopyAddress = { localPort -> clipboard.setText(AnnotatedString("127.0.0.1:$localPort")) },
-        onOpenBrowser = { launchServiceUrl(context, it) },
-        onStop = {
-            if (remotePort in state.manualRemotePorts) {
-                coroutineScope.launch {
-                    viewModel.removeManualTunnelNow(remotePort)
-                    ForwardService.resume(context)
-                    withContext(Dispatchers.Main.immediate) { onBack() }
-                }
-            } else {
-                viewModel.togglePort(remotePort)
-                onBack()
-            }
-        },
-    )
-}
-
+/**
+ * The tunnel detail page, moved to the shared presentation module (#2636 D11).
+ *
+ * Stateless: it paints a single [TunnelDisplay] mirror (null when the tunnel
+ * has disappeared from discovery). The route that resolves the tunnel from the
+ * view model state, owns the clipboard/Context handoff and stops or removes
+ * the tunnel stays in app2 (`app2/.../ports/TunnelDetailRoute.kt`) — the D10
+ * usage-seam shape with the route file named for the route it holds (a
+ * same-named `TunnelDetailScreen.kt` on both sides of the seam would collide
+ * on the `TunnelDetailScreenKt` JVM facade). The route's former inline
+ * `Dispatchers`/`launch`/`withContext` work stays with it: this module
+ * deliberately declares no coroutines dependency.
+ */
 @Composable
 fun TunnelDetailScreen(
     hostName: String,
-    tunnel: TunnelInfo?,
+    tunnel: TunnelDisplay?,
     manual: Boolean = false,
     manualName: String? = null,
     onBack: () -> Unit,
@@ -132,7 +87,7 @@ fun TunnelDetailScreen(
                 TunnelDetailRow("Name", manualName?.ifBlank { "Port ${tunnel.remotePort}" } ?: "Port ${tunnel.remotePort}")
                 TunnelDetailRow("Mode", "Manual tunnel")
             }
-            TunnelDetailRow("State", tunnel.status.detailLabel)
+            TunnelDetailRow("State", tunnel.status.detailStatusLabel)
             TunnelDetailRow("Traffic", "${formatBytes(tunnel.bytesIn + tunnel.bytesOut)} total")
             if (verifiedUrl != null) {
                 PocketShellButton(
@@ -173,10 +128,16 @@ private fun TunnelDetailRow(label: String, value: String) {
     )
 }
 
-private val TunnelInfo.Status.detailLabel: String
+/**
+ * The detail page wording (AVAILABLE reads plainly as "Available", unlike the
+ * Services list's "Not forwarded"). Distinct from `statusLabel` and
+ * `servicesStatusLabel` — the three render the same core enum, each surface
+ * with its own choice of word, exactly as before the move.
+ */
+internal val TunnelStatusDisplay.detailStatusLabel: String
     get() = when (this) {
-        TunnelInfo.Status.FORWARDING -> "Forwarding"
-        TunnelInfo.Status.AVAILABLE -> "Available"
-        TunnelInfo.Status.FAILED -> "Failed"
-        TunnelInfo.Status.STOPPED -> "Stopped"
+        TunnelStatusDisplay.FORWARDING -> "Forwarding"
+        TunnelStatusDisplay.AVAILABLE -> "Available"
+        TunnelStatusDisplay.FAILED -> "Failed"
+        TunnelStatusDisplay.STOPPED -> "Stopped"
     }

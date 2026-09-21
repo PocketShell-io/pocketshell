@@ -10,8 +10,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -21,6 +19,14 @@ import org.junit.runner.RunWith
 /**
  * The rendered port-forward screen on the host JVM (Robolectric), the same way
  * `:shared:ui-kit` tests its primitives.
+ *
+ * Since #2636 D11 the screen composable and its state live in
+ * `shared:ui-screens` painting the pure display mirrors — this test stays in
+ * app2 as the rendered-tree proof that the app-routed surface still paints
+ * every state, and the moved pure helpers' string/derivation assertions now
+ * run in the shared module's `PortForwardDisplayFamilyTest`, next to the code
+ * they pin. The core ↔ mirror equivalence itself is swept by
+ * [PortForwardDisplayMappingTest].
  *
  * Every assertion is on the RENDERED tree: which message appears for which state
  * (off vs unreachable vs scanning vs "all rows are hidden" are four DIFFERENT
@@ -38,7 +44,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
                     forwarding(remotePort = 3_000, localPort = 3_001, process = "vite", bytes = 2_048),
                 ),
@@ -59,7 +65,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(available(remotePort = 8_080)),
             ),
         )
@@ -85,7 +91,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
                     forwarding(remotePort = 3_000, localPort = 3_003, process = "vite", bytes = 0),
                 ),
@@ -103,7 +109,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
                     forwarding(remotePort = 3_000, localPort = 3_000, process = "vite", bytes = 0),
                 ),
@@ -120,7 +126,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(available(8_080), available(9_000)),
             ),
             onTogglePort = { toggled += it },
@@ -155,7 +161,7 @@ class PortForwardScreenTest {
 
     @Test
     fun `an unreachable host is distinguishable from an empty one`() {
-        setContent(state(enabled = true, connection = ConnectionState.Lost))
+        setContent(state(enabled = true, connection = ConnectionStateDisplay.Lost))
 
         composeRule
             .onNodeWithText("Forwarding paused. This host could not be reached.")
@@ -170,7 +176,7 @@ class PortForwardScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Lost,
+                connection = ConnectionStateDisplay.Lost,
                 attention = ForwardingController.NEEDS_TRUST_ATTENTION,
             ),
         )
@@ -191,7 +197,7 @@ class PortForwardScreenTest {
         // The other half of the distinction: a transient failure keeps the
         // spinner and never shows the terminal message, so the two states can
         // never read the same.
-        setContent(state(enabled = true, connection = ConnectionState.Reconnecting))
+        setContent(state(enabled = true, connection = ConnectionStateDisplay.Reconnecting))
 
         composeRule.onNodeWithText("Scanning ports…").assertIsDisplayed()
         composeRule.onNodeWithText("Forwarding paused.", substring = true).assertDoesNotExist()
@@ -202,25 +208,16 @@ class PortForwardScreenTest {
         // The header falls back to the connection label when the host has no
         // subtitle. "Needs attention" is terminal wording; "Reconnecting" is not.
         setContent(
-            state(enabled = true, connection = ConnectionState.Lost, hostSubtitle = ""),
+            state(enabled = true, connection = ConnectionStateDisplay.Lost, hostSubtitle = ""),
         )
         composeRule.onNodeWithText("Needs attention").assertIsDisplayed()
         composeRule.onNodeWithText("Reconnecting").assertDoesNotExist()
     }
 
     @Test
-    fun `the paused message falls back to a plain reason when none is known`() {
-        assertEquals(
-            "Forwarding paused. This host could not be reached.",
-            pausedMessage(null),
-        )
-        assertEquals("Forwarding paused. Fix the key.", pausedMessage("Fix the key."))
-    }
-
-    @Test
     fun `a table emptied purely by the filter says the rows are hidden`() {
         setContent(
-            state(enabled = true, connection = ConnectionState.Connected, rows = emptyList(), hiddenCount = 3),
+            state(enabled = true, connection = ConnectionStateDisplay.Connected, rows = emptyList(), hiddenCount = 3),
         )
 
         composeRule.onNodeWithText("3 noisy ports hidden.").assertIsDisplayed()
@@ -242,18 +239,16 @@ class PortForwardScreenTest {
     fun `two rows sharing a remote port render without a duplicate-key crash`() {
         // The old client crashed here (`Key "22" already used`): the same remote
         // port can legitimately appear twice — discovered on two interfaces, or a
-        // forwarded row beside its still-AVAILABLE twin.
+        // forwarded row beside its still-AVAILABLE twin. (The keys' uniqueness
+        // itself is asserted on the pure helper by the shared module's
+        // `PortForwardDisplayFamilyTest`; this test proves the rendered list
+        // survives the collision.)
         val duplicated = listOf(
             forwarding(remotePort = 3_000, localPort = 3_000, process = "vite", bytes = 0),
             available(remotePort = 3_000),
         )
-        assertEquals(
-            "keys must be unique for LazyColumn",
-            2,
-            tunnelRowKeys(duplicated).toSet().size,
-        )
 
-        setContent(state(enabled = true, connection = ConnectionState.Connected, rows = duplicated))
+        setContent(state(enabled = true, connection = ConnectionStateDisplay.Connected, rows = duplicated))
 
         composeRule.onNodeWithTag(PORT_TABLE_TAG).assertIsDisplayed()
         composeRule.onNodeWithText("Forwarding").assertIsDisplayed()
@@ -277,31 +272,10 @@ class PortForwardScreenTest {
         assertEquals(1, backs)
     }
 
-    @Test
-    fun `byte formatting steps through the units`() {
-        assertEquals("0 B", formatBytes(0))
-        assertEquals("512 B", formatBytes(512))
-        assertEquals("1.0 KB", formatBytes(1_024))
-        assertEquals("1.0 MB", formatBytes(1_024L * 1_024))
-        assertEquals("1.0 GB", formatBytes(1_024L * 1_024 * 1_024))
-    }
-
-    @Test
-    fun `the hidden-count label is only shown while rows are actually hidden`() {
-        assertEquals("Show hidden/noisy ports", showAllPortsLabel(checked = true, hiddenCount = 4))
-        assertEquals("Show hidden/noisy ports", showAllPortsLabel(checked = false, hiddenCount = 0))
-        assertEquals(
-            "Show hidden/noisy ports (4 hidden)",
-            showAllPortsLabel(checked = false, hiddenCount = 4),
-        )
-        assertEquals("1 noisy port hidden.", hiddenPortsMessage(1))
-        assertEquals("2 noisy ports hidden.", hiddenPortsMessage(2))
-    }
-
     // ------------------------------------------------------------------ helpers
 
     private fun setContent(
-        state: PortForwardUiState,
+        state: PortForwardDisplayState,
         onSetEnabled: (Boolean) -> Unit = {},
         onTogglePort: (Int) -> Unit = {},
         onSetShowAllPorts: (Boolean) -> Unit = {},
@@ -322,14 +296,13 @@ class PortForwardScreenTest {
 
     private fun state(
         enabled: Boolean = false,
-        connection: ConnectionState = ConnectionState.Idle,
+        connection: ConnectionStateDisplay = ConnectionStateDisplay.Idle,
         attention: String? = null,
-        rows: List<TunnelInfo> = emptyList(),
+        rows: List<TunnelDisplay> = emptyList(),
         hiddenCount: Int = 0,
         showAllPorts: Boolean = false,
         hostSubtitle: String = "alexey@rmthz:22",
-    ) = PortForwardUiState(
-        hostId = 1L,
+    ) = PortForwardDisplayState(
         hostName = "rmthz",
         hostSubtitle = hostSubtitle,
         enabled = enabled,
@@ -341,20 +314,20 @@ class PortForwardScreenTest {
         loading = false,
     )
 
-    private fun forwarding(remotePort: Int, localPort: Int, process: String, bytes: Long) = TunnelInfo(
+    private fun forwarding(remotePort: Int, localPort: Int, process: String, bytes: Long) = TunnelDisplay(
         remotePort = remotePort,
         localPort = localPort,
         process = process,
-        status = TunnelInfo.Status.FORWARDING,
+        status = TunnelStatusDisplay.FORWARDING,
         bytesIn = bytes,
         bytesOut = 0,
         speedBps = 0,
     )
 
-    private fun available(remotePort: Int) = TunnelInfo(
+    private fun available(remotePort: Int) = TunnelDisplay(
         remotePort = remotePort,
         localPort = remotePort,
         process = "sshd",
-        status = TunnelInfo.Status.AVAILABLE,
+        status = TunnelStatusDisplay.AVAILABLE,
     )
 }

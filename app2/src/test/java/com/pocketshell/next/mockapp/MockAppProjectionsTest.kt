@@ -109,7 +109,8 @@ class MockAppProjectionsTest {
         assertFalse(ui.loading)
         assertTrue(ui.rows.isEmpty())
         assertTrue(ui.discoveredRows.isEmpty())
-        assertEquals(MockAppState.HOST_ID, ui.hostId)
+        // `hostId` is the one field the D11 display state drops (never
+        // painted); the host identity the screens DO render is pinned below.
         assertEquals("hetzner", ui.hostName)
         assertEquals(MockAppState.HOST_ADDRESS, ui.hostSubtitle)
     }

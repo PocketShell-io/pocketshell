@@ -8,8 +8,6 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import com.pocketshell.core.portfwd.AutoForwarderSupervisor.ConnectionState
-import com.pocketshell.core.portfwd.TunnelInfo
 import com.pocketshell.uikit.theme.PocketShellTheme
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -38,10 +36,10 @@ class ServicesScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
-                    tunnel(5173, "vite", TunnelInfo.Status.FORWARDING, localPort = 35173),
-                    tunnel(8000, "python", TunnelInfo.Status.AVAILABLE, localPort = 8000),
+                    tunnel(5173, "vite", TunnelStatusDisplay.FORWARDING, localPort = 35173),
+                    tunnel(8000, "python", TunnelStatusDisplay.AVAILABLE, localPort = 8000),
                 ),
             ),
             onOpenTunnel = { opened += it },
@@ -72,8 +70,8 @@ class ServicesScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
-                discoveredRows = listOf(tunnel(22, "sshd", TunnelInfo.Status.AVAILABLE, localPort = 22)),
+                connection = ConnectionStateDisplay.Connected,
+                discoveredRows = listOf(tunnel(22, "sshd", TunnelStatusDisplay.AVAILABLE, localPort = 22)),
             ),
         )
 
@@ -86,8 +84,8 @@ class ServicesScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
-                discoveredRows = listOf(tunnel(22, "sshd", TunnelInfo.Status.AVAILABLE, localPort = 7_432)),
+                connection = ConnectionStateDisplay.Connected,
+                discoveredRows = listOf(tunnel(22, "sshd", TunnelStatusDisplay.AVAILABLE, localPort = 7_432)),
                 manualRemotePorts = setOf(22),
             ),
             onOpenTunnel = { opened += it },
@@ -104,10 +102,10 @@ class ServicesScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Connected,
+                connection = ConnectionStateDisplay.Connected,
                 rows = listOf(
-                    tunnel(5173, "vite", TunnelInfo.Status.FORWARDING, localPort = 35173),
-                    tunnel(8000, "python", TunnelInfo.Status.FORWARDING, localPort = 38000),
+                    tunnel(5173, "vite", TunnelStatusDisplay.FORWARDING, localPort = 35173),
+                    tunnel(8000, "python", TunnelStatusDisplay.FORWARDING, localPort = 38000),
                 ),
             ).copy(
                 verifiedHttpServices = mapOf(5173 to "http://127.0.0.1:35173"),
@@ -126,7 +124,7 @@ class ServicesScreenTest {
         setContent(
             state(
                 enabled = true,
-                connection = ConnectionState.Lost,
+                connection = ConnectionStateDisplay.Lost,
             ).copy(attention = "Confirm the host key"),
         )
 
@@ -135,7 +133,7 @@ class ServicesScreenTest {
     }
 
     private fun setContent(
-        state: PortForwardUiState,
+        state: PortForwardDisplayState,
         onSetDiscovery: (Boolean) -> Unit = {},
         onOpenTunnel: (Int) -> Unit = {},
         onAddTunnel: (Int?) -> Unit = {},
@@ -158,12 +156,11 @@ class ServicesScreenTest {
 
     private fun state(
         enabled: Boolean,
-        connection: ConnectionState = ConnectionState.Idle,
-        rows: List<TunnelInfo> = emptyList(),
-        discoveredRows: List<TunnelInfo> = emptyList(),
+        connection: ConnectionStateDisplay = ConnectionStateDisplay.Idle,
+        rows: List<TunnelDisplay> = emptyList(),
+        discoveredRows: List<TunnelDisplay> = emptyList(),
         manualRemotePorts: Set<Int> = emptySet(),
-    ) = PortForwardUiState(
-        hostId = 1,
+    ) = PortForwardDisplayState(
         hostName = "hetzner",
         hostSubtitle = "alexey@hetzner:22",
         enabled = enabled,
@@ -177,9 +174,9 @@ class ServicesScreenTest {
     private fun tunnel(
         remotePort: Int,
         process: String,
-        status: TunnelInfo.Status,
+        status: TunnelStatusDisplay,
         localPort: Int,
-    ) = TunnelInfo(
+    ) = TunnelDisplay(
         remotePort = remotePort,
         localPort = localPort,
         process = process,
