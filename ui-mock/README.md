@@ -155,26 +155,26 @@ The two coverage columns below deliberately measure different things:
 | AdvancedSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
 | AccountSync | yes | yes | shell wiring (state carries the shared AccountSyncUiState) |
 | Diagnostics | yes | yes | shell wiring (state carries the shared crash load state) |
-| DiagnosticReport | GAP | yes | fixture plus shell wiring |
-| About | GAP | yes | fixture plus shell wiring (shared build/update-check state) |
-| Update | GAP | yes | fixture plus shell wiring (shared update-check state) |
+| DiagnosticReport | yes | yes | shell wiring |
+| About | yes | yes | shell wiring (shared build/update-check state) |
+| Update | yes | yes | shell wiring (shared update-check state) |
 | Usage | yes | yes | runnable shell wiring |
 | HostUsage | yes (same Usage screen) | yes | runnable shell wiring |
-| TunnelDetail | GAP | yes | fixture plus shell wiring |
-| AddTunnel | GAP | yes | fixture plus shell wiring |
+| TunnelDetail | yes | yes | shell wiring |
+| AddTunnel | yes | yes | shell wiring |
 | HostForm | yes | yes | runnable shell wiring |
 | SshKeys | yes | yes | runnable shell wiring (mock mirror replaced by the shared SshKeysUiState) |
-| WorkspaceRoots | GAP | yes | fixture plus shell wiring |
-| AddWorkspaceRoot | GAP | yes | fixture plus shell wiring |
-| WorkspaceStart | GAP | yes | fixture, shared display state, shell wiring |
-| ReorderWorkspaces | GAP | yes | fixture plus shell wiring |
-| WorkspaceRootAction | GAP | yes | fixture plus shell wiring |
+| WorkspaceRoots | yes | yes | shell wiring |
+| AddWorkspaceRoot | yes | yes | shell wiring |
+| WorkspaceStart | yes | yes | shared display state, shell wiring |
+| ReorderWorkspaces | yes | yes | shell wiring |
+| WorkspaceRootAction | yes | yes | shell wiring |
 
-Current totals: **18/28 browser-covered**, **28/28 represented by the interactive
+Current totals: **28/28 browser-covered**, **28/28 represented by the interactive
 state seam** (closed by the D18 slice), and **0/28 claimed runnable in a
-standalone mock app**. The ten fixture gaps and the runnable-shell gap are
-explicit by design; the state seam carrying a destination still does not claim
-the screen is runnable.
+standalone mock app**. The browser-fixture column is complete (issue #2636 D17
+closed the last ten gaps). The runnable-shell gap remains explicit by design;
+a covered state seam or fixture still does not claim the screen is runnable.
 
 Mirror-vs-shared note: where a destination's display type already lives in
 `:shared:ui-screens`, the state carries or projects THAT type — AppSettings

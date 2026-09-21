@@ -41,9 +41,14 @@ class UiMockCoverageLedgerTest {
             production.toSet(),
             interactive,
         )
+        // D17 closed the browser-fixture gaps: every destination now has at
+        // least one catalogued production-composable fixture. Fixture and
+        // interactive-state coverage remain distinct columns — a "yes" seam
+        // never implies a fixture, and the GAP marker stays the mechanism for
+        // any future gap.
         assertTrue(
-            "the ledger must retain its explicit fixture gaps (the seam is not fixture coverage)",
-            ledger.any { (name, fixture, _) -> name == "DiagnosticReport" && fixture == "GAP" },
+            "the ledger must keep fixture coverage and the interactive-state seam as distinct columns, with every destination fixture-covered",
+            ledger.all { (_, fixture, _) -> fixture.startsWith("yes") },
         )
         assertTrue(
             "the ledger must keep stating that no destination is runnable in a standalone mock app yet",
