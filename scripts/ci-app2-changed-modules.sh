@@ -50,7 +50,8 @@
 #
 # APP2-ONLY DEPENDENCY EDGES (issue #2824)
 # app2 compiles against shared modules that no core lane owns — ui-kit,
-# ui-screens, core-storage, core-terminal, core-voice, core-usage. Until #2824
+# ui-screens, core-storage, core-terminal, core-voice, core-usage,
+# core-diagnostics. Until #2824
 # they appeared in neither list, so a commit touching only one of them selected
 # ZERO lanes: the app2-journey emulator lane (the D36 full-suite signal and the
 # D37 fault/release verdict) SKIPPED while the run still reported success. They
@@ -141,6 +142,7 @@ declare -a APP2_DEP_DIRS=(
   "shared/core-terminal"
   "shared/core-voice"
   "shared/core-usage"
+  "shared/core-diagnostics"
 )
 
 # True when <path> is at or under any of the remaining arguments (prefix list).
@@ -408,8 +410,9 @@ plan() {
   #   core-portfwd   -> app2         (task P-4: the ports package drives the
   #     forwarder and supervisor directly)
   #   shared/ui-kit, shared/ui-screens, shared/core-storage,
-  #   shared/core-terminal, shared/core-voice, shared/core-usage -> app2
-  #     (issue #2824: app2/build.gradle.kts compiles against all six; none of
+  #   shared/core-terminal, shared/core-voice, shared/core-usage,
+  #   shared/core-diagnostics -> app2
+  #     (issue #2824: app2/build.gradle.kts compiles against all seven; none of
   #     them reaches a core lane, so the edge lands on app2 only)
   #   core-hostapi -> app2           (issue #2824:
   #     app2/build.gradle.kts:468 `implementation(project(":shared:core-hostapi"))`,
@@ -500,11 +503,11 @@ self_test() {
   commit_file "app2/src/main/C.kt"
   check "app2 only" false false false true
 
-  # Issue #2824. These six arms used to be a single "unrelated module" case
+  # Issue #2824. These seven arms used to be a single "unrelated module" case
   # asserting that a shared/ui-kit commit selects NOTHING — the selector pinned
   # the under-selection as intended behaviour and proved it green on every run
-  # of the workflow's self-test step. app2 compiles against all six modules, so
-  # each one is an edge onto the app2 lane and onto no other.
+  # of the workflow's self-test step. app2 compiles against all seven modules,
+  # so each one is an edge onto the app2 lane and onto no other.
   git -C "$tmp" reset -q --hard "$base"
   commit_file "shared/ui-kit/src/main/D.kt"
   check "ui-kit pulls app2 in (#2824)" false false false true
@@ -533,6 +536,10 @@ self_test() {
   git -C "$tmp" reset -q --hard "$base"
   commit_file "shared/core-usage/src/main/U.kt"
   check "core-usage pulls app2 in (#2824)" false false false true
+
+  git -C "$tmp" reset -q --hard "$base"
+  commit_file "shared/core-diagnostics/src/main/Dg.kt"
+  check "core-diagnostics pulls app2 in (#2824, D19 module)" false false false true
 
   # ...and the app2 edge is an edge, not a blanket "anything under shared/".
   # core-assistant is in settings.gradle.kts but app2/build.gradle.kts declares
@@ -792,8 +799,8 @@ self_test() {
   # hard-failure cases). The core-hostapi arm was REPURPOSED, not added — it
   # already existed asserting app2=false, which is the defect it now pins shut —
   # so it moves no count.
-  if [[ $checks -ne 35 ]]; then
-    echo "FAIL: expected 35 checks, ran $checks" >&2
+  if [[ $checks -ne 36 ]]; then
+    echo "FAIL: expected 36 checks, ran $checks" >&2
     status=1
   fi
 
