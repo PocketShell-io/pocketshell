@@ -20,11 +20,15 @@ The mock's **runtime dependency graph** must not contain app2, transport, storag
 The browser renderer supplied here is useful before/during extraction. AC3 now
 also establishes a standalone `com.android.library` module at `:ui-mock`: its
 only project dependencies are `:shared:ui-kit` and `:shared:ui-screens`, and it
-owns the deterministic state/reducer/data previously under app2 tests. This is
-the dependency boundary and state foundation, not yet the independent
-application shown above: there is no Activity/applicationId or interactive
-shell, and the browser renderer still invokes app2 fixtures. See README's
-28-destination ledger for the exact covered/gap inventory.
+owns the deterministic state/reducer/data previously under app2 tests. Slice
+D16 (2026-09-21) added the runnable shell step of the diagram above:
+`:ui-mock-app`, an Android application module (applicationId
+`com.pocketshell.uimock`) whose declared project set is exactly `:ui-mock` +
+the two shared presentation modules, rendering the real shared screens for the
+destinations that have crossed the boundary (README's ledger: 6/28 runnable;
+Workspaces/WorkspaceStart/Session render labeled placeholders). Still missing
+for the full diagram: the remaining shared screen extractions, and the browser
+renderer being fed from the mock module instead of app2 fixtures.
 
 ## Verified source starting points (main inspected 2026-09-10)
 

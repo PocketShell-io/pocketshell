@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Platform-only launch theme: dark, no action bar, so the cold-start flash
+  matches the screens' PocketShellColors.Background before Compose draws.
+  The in-app look comes from PocketShellTheme (ui-kit), not from this style.
+-->
+<resources>
+    <style name="Theme.PocketShellUiMock" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#000000</item>
+    </style>
+</resources>

@@ -1,6 +1,6 @@
 # PocketShell UI Mock — terminal/browser visual loop
 
-**Status: browser-renderer slice plus a standalone `:ui-mock` Android-library state seam. This is NOT yet a runnable mock application or the complete UI extraction requested in issue #2636.**
+**Status: browser-renderer slice, a standalone `:ui-mock` Android-library state seam, and (issue #2636 slice D16) a runnable `:ui-mock-app` mock shell rendering the REAL shared screens for the wired destinations. The complete UI extraction of issue #2636 continues — the ledger below is the checked inventory of what is and is not covered.**
 
 This tool displays PocketShell's existing real-screen Roborazzi fixtures in a browser and rerenders the selected fixture after source changes. It does not create a second HTML/React implementation of the app. Edit the same Kotlin composables that production uses: there is no visual-code copy-back step.
 
@@ -16,11 +16,13 @@ What it does:
 
 What it **does not** do:
 
-- It is **not a clickable Android emulator** and not Vite-style hot module replacement. The browser shows PNGs. Select scenarios to inspect states; clicks inside an image do nothing.
+- It is **not a clickable Android emulator** and not Vite-style hot module replacement. The browser shows PNGs. Select scenarios to inspect states; clicks inside an image do nothing. (The interactive mock is the separate `:ui-mock-app` application module — see [Runnable mock shell](#runnable-mock-shell-uimock-app).)
 - The browser renderer still builds app2's Roborazzi fixtures. Separately, the
   standalone `:ui-mock` Android library owns deterministic mock data and its
-  pure reducer without depending on app2, core modules, or Termux. It is a
-  compile/test boundary, not yet a runnable mock shell.
+  pure reducer without depending on app2, core modules, or Termux. The
+  runnable `:ui-mock-app` shell consumes that seam plus the real shared
+  screens; destinations without a shared screen render a labeled placeholder,
+  never a lookalike.
 - It does not guarantee complete destination/state coverage. Unsupported fixture shapes are reported under catalog warnings, not silently counted as supported. A fixture can intentionally render only a part of a screen.
 - It cannot validate real keyboard/IME policy, terminal behavior, Android permission flows or platform file pickers. Keep device/emulator acceptance for these.
 - It does not change production code, publish APKs, alter the release workflow, or bypass release gates.
@@ -131,50 +133,59 @@ terminal/session state, the session tree, the file viewer, and the
 workspace-roots state) are explicit mock-local mirrors. They are
 not production implementations and perform no I/O.
 
-The two coverage columns below deliberately measure different things:
+The three coverage columns below deliberately measure different things:
 
 - Browser fixture: a real production composable has at least one catalogued
   Roborazzi case. This remains the fast visible loop.
 - Interactive state seam: `MockDestination` and the pure reducer can represent
-  navigation/state for that destination. It does not claim the screen is
-  runnable until a mock shell is added.
+  navigation/state for that destination. It alone does not claim the screen is
+  runnable.
+- Runnable shell: the real `:shared:ui-screens` screen renders inside
+  `:ui-mock-app`'s `MockMainActivity`, driven by the pure reducer, with the
+  wired callbacks (navigation/typing/toggles) actually mutating mock state.
+  Disclosed no-op callbacks and the remaining work are named in the last
+  column — the column counts a screen as runnable only where the real screen
+  is really wired, never where a placeholder stands in.
 
-| Production destination (28) | Browser fixture | Interactive state seam | Remaining work |
-|---|---:|---:|---|
-| Hosts | yes | yes | runnable shell wiring |
-| Workspaces | yes | yes | replace the mock workspace mirror after the app2-side extraction (no shared type yet) |
-| Workspace | yes | yes | shared SessionTreeUiState extraction and shell wiring |
-| Session | yes | yes | shared terminal display seam and shell wiring |
-| Files | yes | yes | shell wiring (state projects the shared FileExplorerDisplayState) |
-| FileViewer | yes | yes | shell wiring (mock-local viewer mirror until app2's ViewerUiState is shared) |
-| Ports | yes | yes | runnable shell wiring |
-| Settings | yes | yes | runnable shell wiring |
-| TerminalSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
-| VoiceSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
-| ConnectionSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
-| AdvancedSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
-| AccountSync | yes | yes | shell wiring (state carries the shared AccountSyncUiState) |
-| Diagnostics | yes | yes | shell wiring (state carries the shared crash load state) |
-| DiagnosticReport | yes | yes | shell wiring |
-| About | yes | yes | shell wiring (shared build/update-check state) |
-| Update | yes | yes | shell wiring (shared update-check state) |
-| Usage | yes | yes | runnable shell wiring |
-| HostUsage | yes (same Usage screen) | yes | runnable shell wiring |
-| TunnelDetail | yes | yes | shell wiring |
-| AddTunnel | yes | yes | shell wiring |
-| HostForm | yes | yes | runnable shell wiring |
-| SshKeys | yes | yes | runnable shell wiring (mock mirror replaced by the shared SshKeysUiState) |
-| WorkspaceRoots | yes | yes | shell wiring |
-| AddWorkspaceRoot | yes | yes | shell wiring |
-| WorkspaceStart | yes | yes | shared display state, shell wiring |
-| ReorderWorkspaces | yes | yes | shell wiring |
-| WorkspaceRootAction | yes | yes | shell wiring |
+| Production destination (28) | Browser fixture | Interactive state seam | Runnable shell | Remaining work |
+|---|---:|---:|---:|---|
+| Hosts | yes | yes | yes (open/add/edit/settings/ssh-keys) | delete stays inert (no reducer event yet) |
+| Workspaces | yes | yes | no | shared screen extraction, then shell wiring (placeholder labels the gap) |
+| Workspace | yes | yes | no | shared SessionTreeUiState extraction and shell wiring |
+| Session | yes | yes | no | shared terminal display seam and shell wiring (placeholder labels the gap) |
+| Files | yes | yes | no | shell wiring (state projects the shared FileExplorerDisplayState) |
+| FileViewer | yes | yes | no | shell wiring (mock-local viewer mirror until app2's ViewerUiState is shared) |
+| Ports | yes | yes | yes (discovery toggle) | per-port toggle/show-all inert (no reducer events); entry point lives on the unwired Session screen |
+| Settings | yes | yes | yes (landing + back) | category pages still need destination/reducer state |
+| TerminalSettings | yes | yes | no | shell wiring (state carries the shared AppSettings) |
+| VoiceSettings | yes | yes | no | shell wiring (state carries the shared AppSettings) |
+| ConnectionSettings | yes | yes | no | shell wiring (state carries the shared AppSettings) |
+| AdvancedSettings | yes | yes | no | shell wiring (state carries the shared AppSettings) |
+| AccountSync | yes | yes | no | shell wiring (state carries the shared AccountSyncUiState) |
+| Diagnostics | yes | yes | no | shell wiring (state carries the shared crash load state) |
+| DiagnosticReport | yes | yes | no | shell wiring |
+| About | yes | yes | no | shell wiring (shared build/update-check state) |
+| Update | yes | yes | no | shell wiring (shared update-check state) |
+| Usage | yes | yes | yes (refresh round-trip, pinned clock) | mock data only (no real `quse`); entry point lives on the unwired Session screen |
+| HostUsage | yes (same Usage screen) | yes | no | runnable shell wiring |
+| TunnelDetail | yes | yes | no | shell wiring |
+| AddTunnel | yes | yes | no | shell wiring |
+| HostForm | yes | yes | yes (typing + cancel/add-key) | save and test-connection stay inert (no reducer events yet) |
+| SshKeys | yes | yes | yes (list + message dismiss) | generate/import/delete inert until SSH-key state crosses the boundary |
+| WorkspaceRoots | yes | yes | no | shell wiring |
+| AddWorkspaceRoot | yes | yes | no | shell wiring |
+| WorkspaceStart | yes | yes | no | shared display state, shell wiring (placeholder labels the gap) |
+| ReorderWorkspaces | yes | yes | no | shell wiring |
+| WorkspaceRootAction | yes | yes | no | shell wiring |
 
 Current totals: **28/28 browser-covered**, **28/28 represented by the interactive
-state seam** (closed by the D18 slice), and **0/28 claimed runnable in a
-standalone mock app**. The browser-fixture column is complete (issue #2636 D17
-closed the last ten gaps). The runnable-shell gap remains explicit by design;
-a covered state seam or fixture still does not claim the screen is runnable.
+state seam** (closed by the D18 slice), and **6/28 rendered by the runnable
+standalone mock shell** (`:ui-mock-app`, slice D16). The browser-fixture column
+is complete (issue #2636 D17 closed the last ten gaps). The twenty-two
+not-yet-runnable destinations are explicit by design — three of them
+(Workspaces, WorkspaceStart, Session) render a labeled placeholder in the
+shell naming their remaining work; a covered state seam or fixture still does
+not claim the screen is runnable.
 
 Mirror-vs-shared note: where a destination's display type already lives in
 `:shared:ui-screens`, the state carries or projects THAT type — AppSettings
@@ -187,6 +198,46 @@ the file viewer (`ViewerUiState`), the workspace-roots manager, the terminal
 session stand-in, and the host workspaces list.
 
 The existing `App.kt` has a Robolectric guard for its eager production side effects. This viewer relies on the existing fixture/test harness; it is not a proof that the complete production dependency graph or every initializer is absent. Full runtime/dependency isolation is the separate extraction task in [AGENT-HANDOFF.md](AGENT-HANDOFF.md).
+
+## Runnable mock shell (:ui-mock-app)
+
+Issue #2636 slice D16 added `:ui-mock-app`, an Android **application** module
+that makes the state seam interactive:
+
+- applicationId `com.pocketshell.uimock` (never collides with the shipping
+  `com.pocketshell.app` client), and app2 declares no `:ui-mock*` project edge,
+  so the shipped debug APK stays mock-free — both pinned by
+  `UiMockAppDependencyBoundaryTest`.
+- Its complete declared project-dependency set is exactly `:ui-mock` +
+  `:shared:ui-kit` + `:shared:ui-screens` — the same hard presentation
+  boundary AC3 established for `:ui-mock`. No app2, no `core-*`, no Termux.
+- `MockMainActivity` holds one `MockAppState` in Compose state and folds
+  `MockAppEvent`s through the pure reducer; each wired destination renders the
+  real shared screen with the state the reducer produced. No permission, no
+  service, no I/O: nothing dials SSH, touches a store, or opens an intent.
+- Destinations whose production screen has not crossed the presentation
+  boundary (Workspaces, WorkspaceStart, Session) render a labeled placeholder
+  naming the remaining work, per the ledger above.
+- Reachability from the launcher flow today: Hosts → (+ opens HostForm, a host
+  row opens the Workspaces placeholder, the Tools rows open SSH keys and
+  Settings). Ports and Usage are wired screens — they render whenever the
+  reducer navigates there — but their production entry points live on the
+  not-yet-wired Session/Workspaces screens, so no tap reaches them yet; the
+  ledger's Remaining-work cells say the same.
+
+Build, install and launch on a device/emulator you own:
+
+```bash
+./gradlew :ui-mock-app:assembleDebug
+./gradlew :ui-mock-app:installDebug
+adb shell am start -n com.pocketshell.uimock/.MockMainActivity
+```
+
+Module unit tests (plain JVM, no emulator):
+
+```bash
+./gradlew :ui-mock-app:testDebugUnitTest
+```
 
 ## Validation
 

@@ -50,9 +50,35 @@ class UiMockCoverageLedgerTest {
             "the ledger must keep fixture coverage and the interactive-state seam as distinct columns, with every destination fixture-covered",
             ledger.all { (_, fixture, _) -> fixture.startsWith("yes") },
         )
+        // D16 landed the runnable `:ui-mock-app` shell: the ledger must keep
+        // stating the runnable count honestly (6/28 wired; the rest stay
+        // explicit gaps, three as labeled placeholders). The exact wired set
+        // is pinned by the runnable-column test below.
         assertTrue(
-            "the ledger must keep stating that no destination is runnable in a standalone mock app yet",
-            File(root, "ui-mock/README.md").readText().contains("0/28 claimed runnable"),
+            "the ledger must keep stating the runnable-shell count honestly",
+            File(root, "ui-mock/README.md").readText().contains("6/28 rendered by the runnable"),
+        )
+    }
+
+    /**
+     * Slice D16 added the fourth, "Runnable shell" column (#2636). Parsed
+     * additively here so sibling lanes can keep editing the fixture/seam
+     * columns; a merge-time union of both columns' edits is expected and safe.
+     */
+    @Test
+    fun `runnable shell column names exactly the destinations the mock app really wires`() {
+        val ledger = File(root, "ui-mock/README.md").readLines()
+            .mapNotNull { line ->
+                Regex("^\\| ([A-Z]\\w*) \\| (?:yes(?: \\([^|]+\\))?|GAP) \\| (?:yes|no) \\| (yes|no)(?: \\([^|]+\\))? \\|")
+                    .find(line)
+                    ?.let { it.groupValues[1] to it.groupValues[2] }
+            }
+
+        assertEquals("runnable column must cover all 28 rows", 28, ledger.size)
+        assertEquals(
+            "runnable shell set drifted from what :ui-mock-app actually wires",
+            setOf("Hosts", "Ports", "Settings", "Usage", "HostForm", "SshKeys"),
+            ledger.filter { it.second == "yes" }.map { it.first }.toSet(),
         )
     }
 }

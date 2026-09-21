@@ -274,6 +274,10 @@ src    shared/core-voice/*           composer-voice       full
 src    shared/core-assistant/*       composer-voice       full
 src    shared/core-portfwd/*         portfwd              full
 src    ui-mock/src/main/*            app-shell            full
+# #2636 D16: the runnable mock shell (Android application module). Same
+# app-shell family as :ui-mock — the shell renders the real shared screens
+# driven by the pure mock reducer, so anything shell-side selects app-shell.
+src    ui-mock-app/src/main/*        app-shell            full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
 # #2636 D19: the diagnostics instrumentation core (event bus / JSONL store /
@@ -392,6 +396,9 @@ test   app2/src/*/java/com/pocketshell/next/nav/*          app-shell            
 # The #2636 standalone mock-sandbox module: pure navigation/destination
 # reducer, deterministic fixtures, local platform mirrors and boundary guard.
 test   ui-mock/src/*/java/com/pocketshell/next/mockapp/*   app-shell            full
+# #2636 D16: the runnable mock shell's tests — routing/projection seam and
+# the module boundary guard (declared deps, app2 no-edge, classpath purity).
+test   ui-mock-app/src/*/java/com/pocketshell/uimock/*     app-shell            full
 # Keep the former app2 row additively while the move is uncommitted: the
 # manifest verifier reads the index, where the deleted source paths remain
 # tracked until the orchestrator lands the slice. It is inert after the move.

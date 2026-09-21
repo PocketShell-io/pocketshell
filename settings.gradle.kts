@@ -60,6 +60,14 @@ include(":shared:ui-screens")
 // dependency graph deliberately excludes app2 and every core implementation.
 include(":ui-mock")
 
+// #2636 slice D16: the independently runnable mock shell — an Android
+// APPLICATION with a distinct applicationId (`com.pocketshell.uimock`) whose
+// complete declared project-dependency set is exactly :ui-mock +
+// :shared:ui-kit + :shared:ui-screens (the same hard presentation boundary as
+// :ui-mock). app2 must never consume either mock module (AC5: the shipped
+// debug APK stays mock-free) — pinned by UiMockAppDependencyBoundaryTest.
+include(":ui-mock-app")
+
 // Test-only support module (issue #1048): the ONE audited shared de-flake
 // settle-pump, consumed via `testImplementation` only — never ships in the APK.
 include(":shared:test-support")
