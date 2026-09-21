@@ -2,6 +2,7 @@ package com.pocketshell.next.mockapp
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -171,5 +172,187 @@ class MockAppProjectionsTest {
     @Test
     fun `the session label mirrors the mock data`() {
         assertEquals(MockData.SESSION_NAME, MockAppState.populated().sessionName)
+    }
+
+    // ── D18: mirror-vs-shared-reuse seams are pinned by type ──────────────────
+
+    @Test
+    fun `ssh keys project the SHARED SshKeysUiState with rows generating and message`() {
+        val ui: Any = MockAppState.populated().toSshKeysUiState()
+        assertTrue(
+            "the D13 shared type must be reused, not a mock mirror",
+            ui is com.pocketshell.next.hosts.SshKeysUiState,
+        )
+        val shared = ui as com.pocketshell.next.hosts.SshKeysUiState
+        assertTrue(shared.loaded)
+        assertEquals(MockData.sshKeys, shared.keys)
+        assertFalse(shared.generating)
+        assertNull(shared.message)
+        val generating = MockAppState.populated().copy(sshKeysGenerating = true, sshKeyMessage = "Generated key")
+        assertTrue(generating.toSshKeysUiState().generating)
+        assertEquals("Generated key", generating.toSshKeysUiState().message)
+    }
+
+    @Test
+    fun `cold ssh keys project unloaded with no rows`() {
+        val ui = MockAppState.boot().toSshKeysUiState()
+        assertFalse(ui.loaded)
+        assertTrue(ui.keys.isEmpty())
+    }
+
+    @Test
+    fun `files project the SHARED FileExplorerDisplayState with entries crumbs and switches`() {
+        val ui: Any = MockAppState.populated()
+            .copy(filesLoaded = true, filesPath = MockData.FILES_ROOT_PATH)
+            .toFileExplorerUiState()
+        assertTrue(
+            "the D14 shared type must be reused, not a mock mirror",
+            ui is com.pocketshell.next.files.FileExplorerDisplayState,
+        )
+        val shared = ui as com.pocketshell.next.files.FileExplorerDisplayState
+        assertTrue(shared.loaded)
+        assertFalse(shared.loading)
+        assertNull(shared.failure)
+        assertEquals(MockData.FILES_ROOT_PATH, shared.path)
+        assertEquals(MockData.fileEntries, shared.entries)
+        assertEquals("hetzner", shared.subtitle)
+        assertTrue(
+            "the long file name must reach the screen verbatim",
+            shared.entries.any { it.name.startsWith("a-deliberately-long-file-name") },
+        )
+    }
+
+    @Test
+    fun `files loading and failure switches flow into the shared projection`() {
+        val loading = MockAppState.populated().copy(filesLoading = true).toFileExplorerUiState()
+        assertTrue(loading.loading)
+        val failed = MockAppState.populated()
+            .copy(filesLoaded = true, filesFailure = "host unreachable")
+            .toFileExplorerUiState()
+        assertEquals("host unreachable", failed.failure)
+        assertFalse("a failed read is not a healthy empty state", failed.isEmptyAndHealthy)
+    }
+
+    @Test
+    fun `file crumbs project the host crumb then one crumb per segment below the root`() {
+        val crumbs = projectFileCrumbs(
+            hostLabel = "hetzner",
+            root = "/home/alexey/git",
+            path = "/home/alexey/git/pocketshell/docs",
+        )
+        assertEquals(
+            listOf(
+                "hetzner" to "/home/alexey/git",
+                "pocketshell" to "/home/alexey/git/pocketshell",
+                "docs" to "/home/alexey/git/pocketshell/docs",
+            ),
+            crumbs.map { it.label to it.path },
+        )
+        assertEquals(
+            "the root itself projects exactly the host crumb",
+            listOf("hetzner" to "/home/alexey/git"),
+            projectFileCrumbs("hetzner", "/home/alexey/git", "/home/alexey/git").map { it.label to it.path },
+        )
+        assertEquals(
+            "a path outside the root degrades to a single self-named crumb",
+            listOf("/etc" to "/etc"),
+            projectFileCrumbs("hetzner", "/home/alexey/git", "/etc").map { it.label to it.path },
+        )
+        assertTrue(projectFileCrumbs("hetzner", "/home/alexey/git", "").isEmpty())
+    }
+
+    @Test
+    fun `viewer projection carries the long content and host identity`() {
+        val viewer = MockViewerUiState(loaded = true, content = MockData.LONG_FILE_CONTENT, path = MockData.VIEWER_PATH)
+        val ui = MockAppState.populated().copy(viewer = viewer).toViewerUiState()
+        assertEquals(MockAppState.HOST_ID, ui.hostId)
+        assertEquals("hetzner", ui.hostName)
+        assertEquals(MockData.VIEWER_PATH, ui.path)
+        assertTrue("long content must survive projection", ui.content.length > 1_000)
+        val editing = ui.copy(editing = true, draft = "typed")
+        assertEquals("typed", editing.draft)
+    }
+
+    @Test
+    fun `workspace screen projection fills host identity and default sessions`() {
+        var state = reduce(MockAppState.populated(), MockAppEvent.Navigate(MockDestination.Workspace))
+        val ui = state.toWorkspaceScreenUiState()
+        assertTrue(ui.loaded)
+        assertEquals(MockAppState.HOST_ID, ui.hostId)
+        assertEquals("hetzner", ui.hostLabel)
+        assertEquals(MockData.START_WORKSPACE_PATH, ui.workspacePath)
+        assertTrue("sessions default from the mock data", ui.sessions.isNotEmpty())
+        state = reduce(state, MockAppEvent.WorkspaceRefreshFailed("listing failed"))
+        assertEquals("listing failed", state.toWorkspaceScreenUiState().failure)
+    }
+
+    @Test
+    fun `workspace roots projection fills host identity over the root rows`() {
+        val navigated = reduce(MockAppState.populated(), MockAppEvent.Navigate(MockDestination.WorkspaceRoots))
+        val ui = navigated.toWorkspaceRootsUiState()
+        assertEquals(MockAppState.HOST_ID, ui.hostId)
+        assertEquals("hetzner", ui.hostName)
+        assertTrue(ui.loaded)
+        assertEquals(listOf("Git", "Work"), ui.roots.map { it.label })
+        val failed = reduce(navigated, MockAppEvent.WorkspaceRootsLoadFailed("host unreachable"))
+        assertEquals("host unreachable", failed.toWorkspaceRootsUiState().failure)
+    }
+
+    @Test
+    fun `account sync state IS the shared AccountSyncUiState`() {
+        val state = reduce(MockAppState.populated(), MockAppEvent.AccountSyncSignInStart)
+        val ui: Any = state.toAccountSyncUiState()
+        assertTrue(
+            "the D7 shared type must be reused, not a mock mirror",
+            ui is com.pocketshell.next.sync.AccountSyncUiState,
+        )
+        assertTrue(state.accountSync.clientConfigured)
+    }
+
+    @Test
+    fun `settings update check and build info are the shared types`() {
+        val state = reduce(MockAppState.populated(), MockAppEvent.UpdateCheckUpdateAvailable)
+        assertTrue(
+            "SettingsUpdateCheckState is the shared D3 type",
+            state.updateCheck is com.pocketshell.next.settings.SettingsUpdateCheckState.UpdateAvailable,
+        )
+        assertEquals("1.2.0", state.buildInfo.versionName)
+        assertEquals(312L, state.buildInfo.versionCode)
+    }
+
+    @Test
+    fun `tunnel detail projects the known row and flags manual tunnels`() {
+        val discovered = reduce(MockAppState.populated(), MockAppEvent.OpenTunnel(8000))
+        assertEquals("python", discovered.tunnelDetailTunnel()?.process)
+        assertFalse(discovered.tunnelDetailManual)
+        assertEquals(8000, discovered.tunnelDetailPort)
+        val unknown = reduce(MockAppState.populated(), MockAppEvent.OpenTunnel(9999))
+        assertNull("an unknown port is the detail screen's empty state", unknown.tunnelDetailTunnel())
+    }
+
+    @Test
+    fun `add tunnel validity and collision derive from the known local ports`() {
+        val blank = MockAppState.populated()
+        assertFalse(blank.addTunnelValid)
+        assertNull(blank.addTunnelCollision())
+        val clash = blank.copy(
+            addTunnelForm = MockAddTunnelFormState(name = "clash", remotePort = "9999", localPort = "35173"),
+        )
+        assertFalse(clash.addTunnelValid)
+        assertEquals("Local port 35173 is already forwarding vite.", clash.addTunnelCollision())
+        val free = clash.copy(addTunnelForm = clash.addTunnelForm.copy(localPort = "45173"))
+        assertTrue(free.addTunnelValid)
+        assertNull(free.addTunnelCollision())
+    }
+
+    @Test
+    fun `usage failure projects into the shared failedHosts list`() {
+        val failed = MockAppState.populated().copy(usageFailure = "quota read failed")
+        val ui = failed.toUsageUiState()
+        assertEquals(1, ui.failedHosts.size)
+        assertEquals(MockAppState.HOST_ID, ui.failedHosts.single().hostId)
+        assertEquals("hetzner", ui.failedHosts.single().hostName)
+        assertEquals("quota read failed", ui.failedHosts.single().reason)
+        assertTrue("the healthy projection has no failed hosts", MockAppState.populated().toUsageUiState().failedHosts.isEmpty())
     }
 }

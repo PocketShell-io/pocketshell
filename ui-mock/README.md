@@ -123,9 +123,12 @@ Browser on Windows/Linux
 `:ui-mock` is a `com.android.library` module. Its only project dependencies are
 `:shared:ui-kit` and `:shared:ui-screens`; `UiMockDependencyBoundaryTest`
 rejects app2, `core-*`, and Termux leakage. The pure `MockAppState`, reducer,
-events, deterministic data, and tests moved here from app2. Remaining
-app-owned display inputs (`SessionRow`, `WorkspaceMembership`, terminal/session
-state, and workspace/SSH-key state) are explicit mock-local mirrors. They are
+events, deterministic data, and tests moved here from app2; the D18 slice
+extended the state machine to all 28 destinations (loading, error, typing and
+long-content cases where each real screen has them) with no new dependencies.
+Remaining app-owned display inputs (`SessionRow`, `WorkspaceMembership`,
+terminal/session state, the session tree, the file viewer, and the
+workspace-roots state) are explicit mock-local mirrors. They are
 not production implementations and perform no I/O.
 
 The two coverage columns below deliberately measure different things:
@@ -139,37 +142,49 @@ The two coverage columns below deliberately measure different things:
 | Production destination (28) | Browser fixture | Interactive state seam | Remaining work |
 |---|---:|---:|---|
 | Hosts | yes | yes | runnable shell wiring |
-| Workspaces | yes | yes | replace workspace-local mirror after shared extraction |
-| Workspace | yes | no | destination/reducer state |
+| Workspaces | yes | yes | replace the mock workspace mirror after the app2-side extraction (no shared type yet) |
+| Workspace | yes | yes | shared SessionTreeUiState extraction and shell wiring |
 | Session | yes | yes | shared terminal display seam and shell wiring |
-| Files | yes | no | destination/reducer state |
-| FileViewer | yes | no | destination/reducer state |
+| Files | yes | yes | shell wiring (state projects the shared FileExplorerDisplayState) |
+| FileViewer | yes | yes | shell wiring (mock-local viewer mirror until app2's ViewerUiState is shared) |
 | Ports | yes | yes | runnable shell wiring |
 | Settings | yes | yes | runnable shell wiring |
-| TerminalSettings | yes | no | destination/reducer state |
-| VoiceSettings | yes | no | destination/reducer state |
-| ConnectionSettings | yes | no | destination/reducer state |
-| AdvancedSettings | yes | no | destination/reducer state |
-| AccountSync | yes | no | destination/reducer state |
-| Diagnostics | yes | no | destination/reducer state |
-| DiagnosticReport | GAP | no | fixture plus destination/reducer state |
-| About | GAP | no | fixture plus destination/reducer state |
-| Update | GAP | no | fixture plus destination/reducer state |
+| TerminalSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
+| VoiceSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
+| ConnectionSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
+| AdvancedSettings | yes | yes | shell wiring (state carries the shared AppSettings) |
+| AccountSync | yes | yes | shell wiring (state carries the shared AccountSyncUiState) |
+| Diagnostics | yes | yes | shell wiring (state carries the shared crash load state) |
+| DiagnosticReport | GAP | yes | fixture plus shell wiring |
+| About | GAP | yes | fixture plus shell wiring (shared build/update-check state) |
+| Update | GAP | yes | fixture plus shell wiring (shared update-check state) |
 | Usage | yes | yes | runnable shell wiring |
-| HostUsage | yes (same Usage screen) | no | host-scoped navigation state |
-| TunnelDetail | GAP | no | fixture plus destination/reducer state |
-| AddTunnel | GAP | no | fixture plus destination/reducer state |
+| HostUsage | yes (same Usage screen) | yes | runnable shell wiring |
+| TunnelDetail | GAP | yes | fixture plus shell wiring |
+| AddTunnel | GAP | yes | fixture plus shell wiring |
 | HostForm | yes | yes | runnable shell wiring |
-| SshKeys | yes | yes | replace SSH-key-local state after shared extraction |
-| WorkspaceRoots | GAP | no | fixture plus destination/reducer state |
-| AddWorkspaceRoot | GAP | no | fixture plus destination/reducer state |
+| SshKeys | yes | yes | runnable shell wiring (mock mirror replaced by the shared SshKeysUiState) |
+| WorkspaceRoots | GAP | yes | fixture plus shell wiring |
+| AddWorkspaceRoot | GAP | yes | fixture plus shell wiring |
 | WorkspaceStart | GAP | yes | fixture, shared display state, shell wiring |
-| ReorderWorkspaces | GAP | no | fixture plus destination/reducer state |
-| WorkspaceRootAction | GAP | no | fixture plus destination/reducer state |
+| ReorderWorkspaces | GAP | yes | fixture plus shell wiring |
+| WorkspaceRootAction | GAP | yes | fixture plus shell wiring |
 
-Current totals: **18/28 browser-covered**, **9/28 represented by the interactive
-state seam**, and **0/28 claimed runnable in a standalone mock app**. The ten
-fixture gaps and nineteen interactive-state gaps are explicit by design.
+Current totals: **18/28 browser-covered**, **28/28 represented by the interactive
+state seam** (closed by the D18 slice), and **0/28 claimed runnable in a
+standalone mock app**. The ten fixture gaps and the runnable-shell gap are
+explicit by design; the state seam carrying a destination still does not claim
+the screen is runnable.
+
+Mirror-vs-shared note: where a destination's display type already lives in
+`:shared:ui-screens`, the state carries or projects THAT type — AppSettings
+(D6), the update-check state (D3), AccountSyncUiState (D7), the crash load
+state and report rows (D12), SshKeysUiState (D13, which replaced and deleted
+the former `MockSshKeysUiState` mirror), FileExplorerDisplayState (D14), and
+the usage/ports/hosts display types (D1/D11). The remaining mock-local mirrors
+are exactly the families still app-side: the session tree (`SessionTreeUiState`),
+the file viewer (`ViewerUiState`), the workspace-roots manager, the terminal
+session stand-in, and the host workspaces list.
 
 The existing `App.kt` has a Robolectric guard for its eager production side effects. This viewer relies on the existing fixture/test harness; it is not a proof that the complete production dependency graph or every initializer is absent. Full runtime/dependency isolation is the separate extraction task in [AGENT-HANDOFF.md](AGENT-HANDOFF.md).
 

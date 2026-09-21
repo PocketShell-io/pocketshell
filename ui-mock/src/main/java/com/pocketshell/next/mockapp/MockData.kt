@@ -1,8 +1,13 @@
 package com.pocketshell.next.mockapp
 
+import com.pocketshell.next.crash.CrashReportDisplay
+import com.pocketshell.next.files.FileEntryDisplay
 import com.pocketshell.next.ports.TunnelDisplay
 import com.pocketshell.next.ports.TunnelStatusDisplay
 import com.pocketshell.next.hosts.HostRow
+import com.pocketshell.next.hosts.SshKeyRow
+import com.pocketshell.next.settings.AppBuildInfo
+import com.pocketshell.next.settings.ReleaseUpdateDisplay
 import com.pocketshell.next.usage.UsageHostSnapshot
 import com.pocketshell.next.usage.UsageProviderRecordDisplay
 import com.pocketshell.next.usage.UsageResetCreditDisplay
@@ -153,6 +158,109 @@ object MockData {
 
     fun window(name: String, percent: Double, resetAt: Instant?): UsageWindowDisplay =
         UsageWindowDisplay(name = name, percent = percent, resetAt = resetAt)
+
+    // ── SSH keys (shared SshKeysUiState rows, D13 seam) ──────────────────────
+
+    /** One row with a deliberately long authorized-keys line (long content). */
+    val sshKeys: List<SshKeyRow> = listOf(
+        SshKeyRow(
+            id = 1,
+            name = "hetzner-deploy",
+            fingerprint = "SHA256:0vAbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhI",
+            hasPassphrase = true,
+            publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJDvAbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd " +
+                "pocketshell-maintainer@RMTHZ-" + "x".repeat(96),
+            algorithm = "ED25519",
+            publicFingerprint = "SHA256:0vAbCdEfGhIjKlMnOpQrStUvWxYz0123456789AbCdEfGhI",
+        ),
+        SshKeyRow(
+            id = 2,
+            name = "builder-root",
+            fingerprint = "SHA256:1zYxWvUtSrQpOnMlKjIhGfEdCbA9876543210zYxWvUtSrQpO",
+        ),
+    )
+
+    // ── Files / file viewer ──────────────────────────────────────────────────
+
+    /** The directory the mock Files destination opens at. */
+    const val FILES_ROOT_PATH: String = "/home/alexey/git/pocketshell"
+
+    /** The file the mock FileViewer destination opens. */
+    const val VIEWER_PATH: String = "/home/alexey/git/pocketshell/docs/architecture.md"
+
+    val fileEntries: List<FileEntryDisplay> = listOf(
+        FileEntryDisplay(
+            path = "/home/alexey/git/pocketshell/docs",
+            name = "docs",
+            isDirectory = true,
+            sizeBytes = 4_096L,
+            modifiedEpochMs = NOW.minusSeconds(3_600).toEpochMilli(),
+        ),
+        FileEntryDisplay(
+            path = "/home/alexey/git/pocketshell/build.gradle.kts",
+            name = "build.gradle.kts",
+            isDirectory = false,
+            sizeBytes = 1_842L,
+            modifiedEpochMs = NOW.minusSeconds(86_400).toEpochMilli(),
+        ),
+        FileEntryDisplay(
+            path = "/home/alexey/git/pocketshell/" +
+                "a-deliberately-long-file-name-that-must-truncate-or-wrap-not-overflow-the-row.kts",
+            name = "a-deliberately-long-file-name-that-must-truncate-or-wrap-not-overflow-the-row.kts",
+            isDirectory = false,
+            sizeBytes = 137L,
+            modifiedEpochMs = NOW.minusSeconds(120).toEpochMilli(),
+        ),
+    )
+
+    /** Long multi-line content the mock viewer/editor opens — long-content case. */
+    val LONG_FILE_CONTENT: String = buildList {
+        repeat(24) { paragraph ->
+            add(
+                "## Section ${paragraph + 1}\n" +
+                    "The module map keeps core-transport/sshj behind the session layer so the " +
+                    "terminal never blocks the UI thread, and every paragraph here is long " +
+                    "enough to exercise wrapping, scrolling and editor drafts without any " +
+                    "randomness — paragraph $paragraph of the pinned deterministic fixture.",
+            )
+        }
+    }.joinToString(separator = "\n\n")
+
+    // ── Diagnostics (shared crash display seam, D12) ─────────────────────────
+
+    val crashReports: List<CrashReportDisplay> = listOf(
+        CrashReportDisplay(
+            id = "report-2026-0920-0814",
+            timestamp = NOW.minusSeconds(2 * 86_400),
+            summary = "SSH connect timed out after 15s on hetzner",
+            contextSummary = "Foreground session attach; wifi RTT 240ms",
+            appVersion = "1.2.0 (312)",
+            topFrame = "at com.pocketshell.core.transport.SshjConnector.connect(SshjConnector.kt:214)",
+        ),
+        CrashReportDisplay(
+            id = "report-2026-0918-2243",
+            timestamp = NOW.minusSeconds(4 * 86_400),
+            summary = "Terminal view crashed on IME commit with a 12k-char insert",
+            contextSummary = "Background; composer paste long content",
+            appVersion = "1.1.9 (311)",
+            topFrame = "at com.pocketshell.next.terminal.TerminalHostView.commitText(TerminalHostView.kt:88)",
+        ),
+    )
+
+    // ── About / update ───────────────────────────────────────────────────────
+
+    val buildInfo: AppBuildInfo = AppBuildInfo(versionName = "1.2.0", versionCode = 312L)
+
+    val updateRelease: ReleaseUpdateDisplay = ReleaseUpdateDisplay(
+        tagName = "v1.3.0",
+        htmlUrl = "https://github.com/PocketShell-io/pocketshell/releases/tag/v1.3.0",
+        apkUrl = "https://github.com/PocketShell-io/pocketshell/releases/download/v1.3.0/app2-debug.apk",
+        publishedDateLabel = "20 Sep 2026",
+    )
+
+    // ── Account sync ─────────────────────────────────────────────────────────
+
+    const val ACCOUNT_EMAIL: String = "alexey@example.com"
 
     // ── Composer ─────────────────────────────────────────────────────────────
 

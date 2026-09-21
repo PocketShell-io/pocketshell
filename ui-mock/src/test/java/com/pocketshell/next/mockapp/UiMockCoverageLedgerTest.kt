@@ -24,22 +24,30 @@ class UiMockCoverageLedgerTest {
 
         val ledger = File(root, "ui-mock/README.md").readLines()
             .mapNotNull { line ->
-                Regex("^\\| ([A-Z]\\w*) \\| (?:yes(?: \\([^|]+\\))?|GAP) \\| (yes|no) \\|")
+                Regex("^\\| ([A-Z]\\w*) \\| (yes(?: \\([^|]+\\))?|GAP) \\| (yes|no) \\|")
                     .find(line)
-                    ?.let { it.groupValues[1] to it.groupValues[2] }
+                    ?.let { Triple(it.groupValues[1], it.groupValues[2], it.groupValues[3]) }
             }
 
         assertEquals("production destination count changed; update the AC2 ledger", 28, production.size)
         assertEquals("coverage ledger must preserve production graph order", production, ledger.map { it.first })
         assertEquals("coverage ledger contains duplicate destinations", ledger.size, ledger.map { it.first }.toSet().size)
 
-        val interactive = ledger.filter { it.second == "yes" }.map { it.first }.toSet()
+        // D18 closed the interactive-state seam: every destination is now
+        // representable in MockDestination + the pure reducer.
+        val interactive = ledger.filter { it.third == "yes" }.map { it.first }.toSet()
         assertEquals(
-            setOf("Hosts", "Workspaces", "Session", "Ports", "Settings", "Usage", "HostForm", "SshKeys", "WorkspaceStart"),
+            "every production destination must stay interactive-state representable",
+            production.toSet(),
             interactive,
         )
-        assertTrue("ledger must retain explicit gaps", ledger.any { (name, interactiveState) ->
-            name == "DiagnosticReport" && interactiveState == "no"
-        })
+        assertTrue(
+            "the ledger must retain its explicit fixture gaps (the seam is not fixture coverage)",
+            ledger.any { (name, fixture, _) -> name == "DiagnosticReport" && fixture == "GAP" },
+        )
+        assertTrue(
+            "the ledger must keep stating that no destination is runnable in a standalone mock app yet",
+            File(root, "ui-mock/README.md").readText().contains("0/28 claimed runnable"),
+        )
     }
 }
