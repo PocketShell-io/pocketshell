@@ -8,7 +8,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The `/`-command dropdown's three pure decisions (rewrite task P-1).
+ * The shared `/`-command dropdown's three pure decisions (rewrite task P-1).
  *
  * Includes the scope-amendment guard: the catalog must stay generic. An
  * engine-specific command sneaking back in is exactly the surface the

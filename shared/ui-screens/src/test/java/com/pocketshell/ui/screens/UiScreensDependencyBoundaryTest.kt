@@ -2,11 +2,14 @@ package com.pocketshell.ui.screens
 
 import com.pocketshell.next.composer.COMPOSER_SLASH_TAG
 import com.pocketshell.next.composer.COMPOSER_SLASH_TRIGGER_TAG
+import com.pocketshell.next.composer.COMPOSER_TAG
+import com.pocketshell.next.composer.COMPOSER_HISTORY_SHEET_TAG
 import com.pocketshell.next.composer.ComposerImeAnchorAction
 import com.pocketshell.next.composer.ComposerImeAnchorSnapshot
 import com.pocketshell.next.composer.ComposerImeExpansionOutcome
 import com.pocketshell.next.composer.ComposerModalSurfaceGeometry
 import com.pocketshell.next.composer.ComposerNotice
+import com.pocketshell.next.composer.ComposerSendStep
 import com.pocketshell.next.composer.ComposerText
 import com.pocketshell.next.composer.ComposerUiState
 import com.pocketshell.next.composer.composerImeOwnsExpansionAfter
@@ -17,7 +20,13 @@ import com.pocketshell.next.composer.RecordingState
 import com.pocketshell.next.composer.SentMessage
 import com.pocketshell.next.composer.StagedAttachment
 import com.pocketshell.next.composer.StagingProgress
+import com.pocketshell.next.composer.SlashCommand
+import com.pocketshell.next.composer.commitComposerSend
+import com.pocketshell.next.composer.composerAttachmentTileTag
+import com.pocketshell.next.composer.extensionLabel
+import com.pocketshell.next.composer.formatSentAt
 import com.pocketshell.next.composer.updateComposerPreImeExpanded
+import com.pocketshell.next.composer.waveformPhaseOffset
 import com.pocketshell.next.connect.TRUST_SHEET_TAG
 import com.pocketshell.next.connect.TrustPromptState
 import com.pocketshell.next.crash.DIAGNOSTIC_REPORT_PAGE_TAG
@@ -188,7 +197,11 @@ import java.io.File
  * `CrashReport.toDisplay()` mapping stay app2-side
  * (`CrashReportsRoute.kt`), so the platform scan below keeps the mirrors the
  * only report shape this module sees.
- *
+ * The #2636 D15 slice completed the composer display family: the composer bar,
+ * attachment and recording surfaces, send-order seam, history and slash sheets
+ * now live here with the pure sheet body. Android permission launch, IME
+ * coroutine chrome, ViewModel/storage/transport and speech recognition stay
+ * app2-side. The platform-import scan above locks that split. *
  * The imports above are load-bearing twice over: they are referenced by
  * [movedTypeMarkers] (so a deleted declaration fails the BUILD, not just this
  * test), and they feed the test-area manifest's import-derived dependency
@@ -302,6 +315,8 @@ class UiScreensDependencyBoundaryTest {
             StagedAttachment::class to "data class StagedAttachment",
             RecordingState::class to "enum class RecordingState",
             ComposerText::class to "object ComposerText",
+            ComposerSendStep::class to "enum class ComposerSendStep",
+            SlashCommand::class to "data class SlashCommand",
             // The D1 family — imported so the manifest's dependency index keeps
             // this guard selected on hosts-side changes too.
             HostRow::class to "data class HostRow",
@@ -396,6 +411,13 @@ class UiScreensDependencyBoundaryTest {
             COMPOSER_SLASH_TAG to "const val COMPOSER_SLASH_TAG",
             COMPOSER_SLASH_TRIGGER_TAG to "const val COMPOSER_SLASH_TRIGGER_TAG",
             ::composerSlashRowTag to "fun composerSlashRowTag",
+            COMPOSER_TAG to "const val COMPOSER_TAG",
+            COMPOSER_HISTORY_SHEET_TAG to "const val COMPOSER_HISTORY_SHEET_TAG",
+            ::composerAttachmentTileTag to "fun composerAttachmentTileTag",
+            ::extensionLabel to "fun extensionLabel",
+            ::commitComposerSend to "fun commitComposerSend",
+            ::formatSentAt to "fun formatSentAt",
+            ::waveformPhaseOffset to "fun waveformPhaseOffset",
             ::composerImeOwnsExpansionAfter to "fun composerImeOwnsExpansionAfter",
             ::updateComposerPreImeExpanded to "fun updateComposerPreImeExpanded",
             ::composerModalSurfaceOverlapsIme to "fun composerModalSurfaceOverlapsIme",

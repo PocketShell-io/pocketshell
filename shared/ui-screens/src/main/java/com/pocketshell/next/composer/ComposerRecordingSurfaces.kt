@@ -1,6 +1,5 @@
 package com.pocketshell.next.composer
 
-import android.os.SystemClock
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -143,8 +142,10 @@ internal fun TranscribingSurface(modifier: Modifier = Modifier) {
  * `delay()` loop (those never go idle under `waitForIdle`).
  */
 @Composable
-internal fun recordingElapsedLabel(): String {
-    val startedAt = remember { SystemClock.elapsedRealtime() }
+internal fun recordingElapsedLabel(
+    monotonicTimeMs: () -> Long = { System.nanoTime() / 1_000_000L },
+): String {
+    val startedAt = remember { monotonicTimeMs() }
     val transition = rememberInfiniteTransition(label = "composer-timer")
     val tick by transition.animateFloat(
         initialValue = 0f,
@@ -156,7 +157,7 @@ internal fun recordingElapsedLabel(): String {
         label = "composer-timer-tick",
     )
     val seconds = remember(tick) {
-        ((SystemClock.elapsedRealtime() - startedAt) / 1_000L).toInt()
+        ((monotonicTimeMs() - startedAt) / 1_000L).toInt()
     }
     return "%02d:%02d".format(seconds / 60, seconds % 60)
 }

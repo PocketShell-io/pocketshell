@@ -428,7 +428,7 @@ class TokenLiteralGuardTest {
          */
         val OFF_TOKEN_SIZE_ALLOWLIST: List<LiteralException> = listOf(
             LiteralException(
-                "app2/src/main/java/com/pocketshell/next/composer/ComposerAttachmentTiles.kt",
+                "shared/ui-screens/src/main/java/com/pocketshell/next/composer/ComposerAttachmentTiles.kt",
                 "64",
                 1,
                 "TILE_SIZE — the attachment thumbnail's own square. It shares a number with " +
@@ -466,7 +466,7 @@ class TokenLiteralGuardTest {
 
         val OFF_GRID_DP_ALLOWLIST: List<LiteralException> = listOf(
             LiteralException(
-                "app2/src/main/java/com/pocketshell/next/composer/ComposerAttachmentTiles.kt",
+                "shared/ui-screens/src/main/java/com/pocketshell/next/composer/ComposerAttachmentTiles.kt",
                 "22",
                 1,
                 "REMOVE_SIZE — the circular remove badge drawn in an attachment tile's corner. A " +
@@ -474,14 +474,14 @@ class TokenLiteralGuardTest {
                     "extension label, and the 48dp touch target is the separate outer Box.",
             ),
             LiteralException(
-                "app2/src/main/java/com/pocketshell/next/composer/ComposerRecordingSurfaces.kt",
+                "shared/ui-screens/src/main/java/com/pocketshell/next/composer/ComposerRecordingSurfaces.kt",
                 "2",
                 1,
                 "ComposerWaveformBarRadius — the fully-rounded cap of a 3dp waveform bar (radius = " +
                     "half the bar's width). Drawing geometry of one painted object.",
             ),
             LiteralException(
-                "app2/src/main/java/com/pocketshell/next/composer/ComposerRecordingSurfaces.kt",
+                "shared/ui-screens/src/main/java/com/pocketshell/next/composer/ComposerRecordingSurfaces.kt",
                 "3",
                 2,
                 "The dictation waveform's bar width and inter-bar gap. Thirty bars drawn as one " +

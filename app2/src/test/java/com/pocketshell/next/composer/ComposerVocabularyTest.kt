@@ -59,7 +59,7 @@ class ComposerVocabularyTest {
         )
         assertEquals(
             "the insert pill is spelled `InsertButton` in exactly one place",
-            listOf("app2/src/main/java/com/pocketshell/next/composer/ComposerBar.kt"),
+            listOf("shared/ui-screens/src/main/java/com/pocketshell/next/composer/ComposerBar.kt"),
             occurrencesOf("private fun InsertButton").map { it.first }.distinct(),
         )
     }

@@ -48,7 +48,7 @@ data class SlashCommand(
 )
 
 /**
- * The `/`-triggered inline command autocomplete (rewrite task P-1, ported from
+ * Shared `/`-triggered inline command autocomplete (rewrite task P-1, ported from
  * the old client's `SlashCommandAutocomplete`).
  *
  * The selected session supplies the command catalog. Unknown and shell-only

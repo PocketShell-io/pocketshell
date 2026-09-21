@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * #682 reproduce-first: hide/clearFocus must run BEFORE dispatch.
+ * #682 reproduce-first, now owned by shared presentation: hide/clearFocus must run BEFORE dispatch.
  *
  * A Send that dispatches first (or never hides) is the "Send opens the
  * keyboard" regression. This seam is what [ComposerBar] calls on the
