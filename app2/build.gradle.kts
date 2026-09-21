@@ -478,6 +478,11 @@ dependencies {
     // parser. Reused as-is (plan: "shared/core-usage is UNCHANGED") — this is
     // its first app2 consumer.
     implementation(project(":shared:core-usage"))
+    // #2636 D19: the diagnostics instrumentation core (event bus, JSONL
+    // ring-buffer store, off-main recorder) moved out of app2's next/
+    // diagnostics package into its core home. `App.onCreate` (sink install)
+    // and `AppModule` (the provider) are the only consumers.
+    implementation(project(":shared:core-diagnostics"))
 
     // SshKeyMaterial derives the public half through sshj and registers the
     // same full provider used by core-transport on real Android devices.

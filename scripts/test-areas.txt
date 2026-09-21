@@ -276,6 +276,10 @@ src    shared/core-portfwd/*         portfwd              full
 src    ui-mock/src/main/*            app-shell            full
 src    shared/core-storage/*         hosts-settings       full
 src    shared/core-usage/*           usage-costs          full
+# #2636 D19: the diagnostics instrumentation core (event bus / JSONL store /
+# recorder) moved here from app2's next/diagnostics package; it keeps its
+# diagnostics-crash ownership on the shared side.
+src    shared/core-diagnostics/*     diagnostics-crash    full
 src    shared/ui-kit/*               ui-shell             ui
 # #2636 D1/D2/D4/D7/D8/D9: the presentation-boundary module carries one screen
 # family per package, and each package maps to its own family's area — the
@@ -321,7 +325,6 @@ src    app2/src/main/java/com/pocketshell/next/release/*      hosts-settings    
 src    app2/src/main/java/com/pocketshell/next/share/*        share                full
 src    app2/src/main/java/com/pocketshell/next/usage/*        usage-costs          full
 src    app2/src/main/java/com/pocketshell/next/hostcli/*      bootstrap            full
-src    app2/src/main/java/com/pocketshell/next/diagnostics/*  diagnostics-crash    full
 src    app2/src/main/java/com/pocketshell/next/crash/*        diagnostics-crash    full
 
 # -- host CLI --
@@ -357,6 +360,7 @@ test   shared/core-assistant/*       composer-voice       full
 test   shared/core-portfwd/*         portfwd              full
 test   shared/core-storage/*         hosts-settings       full
 test   shared/core-usage/*           usage-costs          full
+test   shared/core-diagnostics/*     diagnostics-crash    full
 test   shared/ui-kit/*               ui-shell             ui
 # #2636 D1: UiScreensDependencyBoundaryTest (the module's classpath + source
 # guard). D2 gave it imports from both screen families, so a composer-side
@@ -380,7 +384,6 @@ test   app2/src/*/java/com/pocketshell/next/sync/*         hosts-settings       
 test   app2/src/*/java/com/pocketshell/next/release/*      hosts-settings       full
 test   app2/src/*/java/com/pocketshell/next/share/*        share                full
 test   app2/src/*/java/com/pocketshell/next/usage/*        usage-costs          full
-test   app2/src/*/java/com/pocketshell/next/diagnostics/*  diagnostics-crash    full
 test   app2/src/*/java/com/pocketshell/next/crash/*        diagnostics-crash    full
 # The app2 design-render suites (P-6) render app2 composables built from the
 # ui-kit primitives, so a ui-kit token change is what breaks them.

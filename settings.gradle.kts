@@ -42,6 +42,11 @@ include(":shared:core-usage")
 include(":shared:core-storage")
 include(":shared:core-voice")
 include(":shared:core-assistant")
+// #2636 slice D19: the diagnostics instrumentation core (process-wide event
+// bus, bounded JSONL ring-buffer store, off-main coroutine recorder), moved
+// verbatim from app2's next/diagnostics package. app2 is the only consumer;
+// the module must never depend on app2 or any UI module.
+include(":shared:core-diagnostics")
 include(":shared:ui-kit")
 
 // #2636 slice D1: the shared presentation boundary. Stateless screen

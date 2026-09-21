@@ -14,6 +14,7 @@ shared/core-terminal/      vendored Termux terminal emulator and terminal view
 shared/core-portfwd/       port discovery and tunnel supervision
 shared/core-storage/       Room entities, DAOs, and migrations
 shared/core-usage/         usage and quota models
+shared/core-diagnostics/   diagnostic event bus, JSONL event store, recorder
 shared/core-voice/         Whisper and Android speech input plumbing
 shared/core-assistant/     assistant clients and encrypted configuration
 shared/ui-kit/              shared visual primitives and theme
