@@ -37,6 +37,7 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -154,6 +155,7 @@ class J04CreateSessionJourney {
      * in the new session, which the HOST agrees exists in the typed folder.
      */
     @Test
+    @Ignore("quarantined: #2830, expires 2026-10-06 — hosted-emulator device-wedge family: create-flow keyboard-up assertion FAILED on app2 runs 35575686181, 35576360998 and 35701244946 (attempt 1 each, journey-only reds whose other jobs stayed green and whose failures rotate across attempts of identical bytes), each with the harness verdict 'PRIMARY CAUSE: the device wedged, not the product'; third strike of the J04 pair")
     fun creatingASessionFromTheTreeLandsOnItAndItAppearsOnTheTree() {
         openWorkspace()
         assertTrue(
@@ -214,6 +216,7 @@ class J04CreateSessionJourney {
      * an error, it opens the session that is already there.
      */
     @Test
+    @Ignore("quarantined: #2830, expires 2026-10-06 — hosted-emulator device-wedge family: idempotency-journey keyboard-up assertion FAILED on app2 runs 35575686181, 35576360998 and 35701244946 (attempt 1 each, journey-only reds whose other jobs stayed green and whose failures rotate across attempts of identical bytes), each with the harness verdict 'PRIMARY CAUSE: the device wedged, not the product'; third strike of the J04 pair")
     fun creatingTheSameNameTwiceOpensTheExistingSessionWithoutAnError() {
         openWorkspace()
 

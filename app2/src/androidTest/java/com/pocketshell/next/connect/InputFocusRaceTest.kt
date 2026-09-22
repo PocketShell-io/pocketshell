@@ -22,6 +22,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.AssumptionViolatedException
 import org.junit.Before
+import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -149,6 +150,7 @@ class InputFocusRaceTest {
      * the platform will not deliver to.
      */
     @Test
+    @Ignore("quarantined: #2830, expires 2026-10-06 — hosted-emulator device-wedge family: FAILED on app2 runs 35576360998 and 35701244946 (attempt 1 each, commit 2fd666a6c, journey-only reds whose failures rotate across attempts of identical bytes), each with the harness verdict 'PRIMARY CAUSE: the device wedged, not the product'; the view-half case is the one that needs the platform to hold focus steady, the same outage this class already stands aside on per #2838")
     fun keysDispatchedAtAViewThatNeverGotFocusAreLostAndTheOracleWaitsForIt() {
         showProbe(focusable = false)
 
