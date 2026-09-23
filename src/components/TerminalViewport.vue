@@ -121,8 +121,21 @@ function focus() {
   terminal?.focus();
 }
 
-function fit() {
-  fitTerminal();
+function fit(): Promise<{ cols: number; rows: number } | null> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      if (!terminal || !fitAddon) {
+        resolve(null);
+        return;
+      }
+      try {
+        fitAddon.fit();
+        resolve({ cols: terminal.cols, rows: terminal.rows });
+      } catch {
+        resolve(null);
+      }
+    });
+  });
 }
 
 function scrollToBottom() {

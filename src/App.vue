@@ -44,7 +44,7 @@ interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
-  fit(): void;
+  fit(): Promise<{ cols: number; rows: number } | null>;
   scrollToBottom(): void;
 }
 
@@ -104,6 +104,8 @@ const terminalInputFailureCount = ref(0);
 const terminalResizePending = ref(0);
 const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
+// Resize callbacks can finish after the user has selected a different PTY.
+let terminalAttachEpoch = 0;
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -367,6 +369,7 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
+  terminalAttachEpoch += 1;
   terminal.value?.clear();
   const result = await active.switchSession(session).catch((error: unknown) => {
     recordFailure('ssh-bridge-failed', 'attach-session', error);
@@ -380,7 +383,10 @@ async function attachSession(session: SessionRow) {
   else if (result?.ok) {
     navigateHomeSurface('session-attached');
     await nextTick();
-    terminal.value?.fit();
+    // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
+    // have identical geometry. Explicitly resize each newly attached PTY.
+    const size = await terminal.value?.fit();
+    if (size) await resizeTerminal(size);
     terminal.value?.focus();
   }
 }
@@ -388,9 +394,11 @@ async function attachSession(session: SessionRow) {
 async function sendTerminalInput(data: string) {
   const active = controller;
   if (!active || !isLive.value) return;
+  const attachEpoch = terminalAttachEpoch;
   terminalInputPending.value += 1;
   try {
     const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
+    if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
       recordOperationFailure('send-terminal-input');
@@ -399,6 +407,7 @@ async function sendTerminalInput(data: string) {
       terminalInputAckCount.value += 1;
     }
   } catch (error: unknown) {
+    if (attachEpoch !== terminalAttachEpoch) return;
     terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
@@ -416,8 +425,9 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
 }
 
 async function resizeTerminal(size: { cols: number; rows: number }) {
-  terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
+  const attachEpoch = terminalAttachEpoch;
+  terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
     const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
@@ -425,6 +435,7 @@ async function resizeTerminal(size: { cols: number; rows: number }) {
       connectionMessage.value = error instanceof Error ? error.message : String(error);
       return null;
     });
+    if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
@@ -622,6 +633,7 @@ watchEffect(() => {
   }, 'ui-monospace, monospace');
   for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
 });
+
 
 onBeforeUnmount(() => {
   removeKeyboardViewportListeners?.();
