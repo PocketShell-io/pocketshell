@@ -128,6 +128,18 @@
       "tests": [
         "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
       ]
+    },
+    "tests/unit/snippetBar.test.ts": {
+      "suite": "per-host snippet bar policy and UI",
+      "tests": [
+        "shows only the active host in saved order and preserves each legacy-compatible row",
+        "uses core insertion policy and returns literal draft text without submit or newline",
+        "renders an accessible keyboard-down chip row and host manage toggle",
+        "does not render the chip row while the keyboard is visible",
+        "builds host-bound edit/delete requests without reshaping imported rows",
+        "moves only within the selected host collection and disables moves at group boundaries",
+        "emits host-bound selection and management payloads from mounted controls"
+      ]
     }
   }
 }
