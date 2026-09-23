@@ -76,7 +76,7 @@ public final class LegacyInstalledDataReaderTest {
     }
 
     @Test
-    public void corruptExistingKeysetsDoNotRewriteTheirXmlOrKeystoreAlias() throws Exception {
+    public void corruptExistingKeysetsAreUnavailableWithoutRewritingXmlOrKeystoreAlias() throws Exception {
         KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
         keyStore.load(null);
         boolean hadMasterKey = keyStore.containsAlias(MasterKey.DEFAULT_MASTER_KEY_ALIAS);
@@ -101,10 +101,12 @@ public final class LegacyInstalledDataReaderTest {
         LegacyInstalledDataReader reader = new LegacyInstalledDataReader(context,
             new ConcurrentHashMap<String, InstalledDataMigrationPlugin.AssetDescriptor>(),
             new String[] {fixturePreferencesName});
-        LegacyInstalledDataReader.MigrationReadException failure = assertThrows(
-            LegacyInstalledDataReader.MigrationReadException.class, reader::read);
-
-        assertTrue(failure.getMessage().contains("unreadable keyset"));
+        JSObject snapshot = reader.read();
+        JSONObject encryptedStore = snapshot.getJSONObject("encryptedPreferences")
+            .getJSONObject(fixturePreferencesName);
+        assertEquals("unavailable", encryptedStore.getString("status"));
+        assertTrue(encryptedStore.getString("error").contains("unreadable keyset"));
+        assertEquals(0, encryptedStore.getJSONArray("keys").length());
         assertArrayEquals("the malformed encrypted preference source must remain byte-for-byte unchanged",
             originalXml, Files.readAllBytes(keysetFile.toPath()));
         assertArrayEquals("the failed read must not create, remove, or replace Keystore aliases",

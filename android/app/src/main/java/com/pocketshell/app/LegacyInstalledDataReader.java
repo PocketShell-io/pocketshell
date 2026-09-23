@@ -475,6 +475,7 @@ final class LegacyInstalledDataReader {
                 result.put(name, store);
                 continue;
             }
+            store.put("keys", new JSONArray());
             String originalXmlHash = sha256(file);
             try {
                 preflightEncryptedPreferences(file, name);
@@ -506,12 +507,14 @@ final class LegacyInstalledDataReader {
                 if (!originalXmlHash.equals(sha256(file))) {
                     throw invalid("Encrypted preferences " + name + " changed while being inspected; the import was stopped.");
                 }
-                throw error;
+                store.put("status", "unavailable");
+                store.put("error", error.getMessage());
             } catch (Exception error) {
                 if (!originalXmlHash.equals(sha256(file))) {
                     throw invalid("Encrypted preferences " + name + " changed while being inspected; the import was stopped.");
                 }
-                throw invalid("Encrypted preferences " + name + " could not be decrypted. Its source and Keystore entries were left untouched.");
+                store.put("status", "unavailable");
+                store.put("error", "Encrypted preferences " + name + " could not be decrypted. Its source and Keystore entries were left untouched.");
             }
             result.put(name, store);
         }

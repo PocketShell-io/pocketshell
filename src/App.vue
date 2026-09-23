@@ -16,6 +16,13 @@ import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
 import { uiSourceRevision } from './uiSourceInfo';
+import {
+  installedDataMigrationState,
+  SETTINGS_RELOAD_SESSION_KEY,
+  retryInstalledDataMigration,
+  runInstalledDataMigration,
+  shouldReloadForImportedSettings,
+} from './migration/installedDataMigration';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
@@ -77,6 +84,7 @@ const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
 const connectionMessage = ref('');
+const settingsReloading = ref(false);
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
@@ -100,6 +108,9 @@ let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
+const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
+  || installedDataMigrationState.status === 'pending'
+  || settingsReloading.value);
 const isLive = computed(() => currentPhase.value === 'live');
 const keyboardComposerMode = computed(() =>
   keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
@@ -231,6 +242,7 @@ function makeHostTarget(): SshHostTarget | null {
 }
 
 async function connectHost() {
+  if (migrationBlocksConnection.value) return;
   const host = makeHostTarget();
   if (!host) return;
   await closeController();
@@ -411,6 +423,24 @@ async function rejectHostKey() {
   await disconnectHost();
 }
 
+function retryDataImport() {
+  void retryInstalledDataMigration().then(reloadAfterSettingsImport);
+}
+
+function reloadAfterSettingsImport(settingsWritten: boolean) {
+  if (!settingsWritten) {
+    try {
+      window.sessionStorage.removeItem(SETTINGS_RELOAD_SESSION_KEY);
+    } catch {
+      // A later launch can still use the imported value from local storage.
+    }
+    return;
+  }
+  if (!shouldReloadForImportedSettings(settingsWritten)) return;
+  settingsReloading.value = true;
+  window.location.reload();
+}
+
 onMounted(() => {
   diagnostics.record('app-started', 'startup', 'OK');
   const updateKeyboardViewport = () => {
@@ -454,6 +484,7 @@ onMounted(() => {
     });
   }
 
+  void runInstalledDataMigration().then(reloadAfterSettingsImport);
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
@@ -555,6 +586,7 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    :data-migration-status="installedDataMigrationState.status"
   >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.home()">
@@ -591,6 +623,27 @@ onBeforeUnmount(() => {
       <span>{{ buildStatus }}</span>
       <span class="build-strip__detail">core {{ coreShort }} · ui {{ uiShort }} · assets {{ bundleShort }}</span>
     </div>
+
+    <section
+      v-if="installedDataMigrationState.status === 'failed'"
+      class="migration-error"
+      role="alert"
+      data-testid="installed-data-migration-error"
+    >
+      <div class="migration-error__copy">
+        <strong>Installed data needs attention</strong>
+        <p>{{ installedDataMigrationState.error }} Your original Android data remains in place.</p>
+      </div>
+      <button
+        class="small-action"
+        type="button"
+        data-testid="retry-installed-data-migration"
+        :disabled="installedDataMigrationState.retrying"
+        @click="retryDataImport"
+      >
+        {{ installedDataMigrationState.retrying ? 'Retrying…' : 'Retry import' }}
+      </button>
+    </section>
 
     <main v-if="navigation.route === 'home'" class="screen-content home-screen">
       <section class="panel host-panel" aria-labelledby="hosts-title">
@@ -631,7 +684,7 @@ onBeforeUnmount(() => {
           </label>
         </div>
         <div class="host-actions">
-          <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting" @click="connectHost">
+          <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting || migrationBlocksConnection" @click="connectHost">
             {{ isConnecting ? 'Connecting…' : 'Connect' }}
           </button>
           <button v-if="connectionSnapshot" class="action-button action-button--secondary" type="button" data-testid="ssh-disconnect" @click="disconnectHost">
