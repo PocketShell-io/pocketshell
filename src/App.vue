@@ -2,13 +2,30 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
-import { formatBytes } from '@pocketshell/core';
-import { AppIcon, ComposerControls } from '@pocketshell/ui';
+import {
+  fromAndroidTrustedHostKeySha256,
+  formatBytes,
+  type ConnectionSnapshot,
+  type HostKeyTrustPin,
+  type HostKeyTrustStore,
+  type SessionRow,
+  type SshHostTarget,
+  type SshResourceSnapshot,
+} from '@pocketshell/core';
+import { AppIcon } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
 import { uiSourceRevision } from './uiSourceInfo';
 import { useNavigationStore } from './stores/navigation';
-import TerminalPreview from './components/TerminalPreview.vue';
+import { ConnectionController } from './session/connectionController';
+import { sshCapability } from './native/sshCapability';
+import TerminalViewport from './components/TerminalViewport.vue';
+
+interface TerminalViewportHandle {
+  write(bytes: Uint8Array): void;
+  clear(): void;
+  focus(): void;
+}
 
 const navigation = useNavigationStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
@@ -30,20 +47,212 @@ const bundleShort = computed(() =>
 );
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
+const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
+const sessionName = ref('mobile-session');
+const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
+const connectionMessage = ref('');
+const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
+const terminalResizeStatus = ref('waiting for a live PTY');
+const terminal = ref<TerminalViewportHandle | null>(null);
 
+let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
+let removeAppState: (() => Promise<void>) | undefined;
+let removeControllerSnapshot: (() => void) | undefined;
+let removeTerminalOutput: (() => void) | undefined;
+
+const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
+const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
+const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
+const isLive = computed(() => currentPhase.value === 'live');
+const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
+const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
+
+function pinStoreKey(hostId: string): string {
+  return `pocketshell.ssh.host-key.${hostId}`;
+}
+
+function readStoredPin(hostId: string): HostKeyTrustPin | null {
+  const stored = localStorage.getItem(pinStoreKey(hostId));
+  if (stored == null) return null;
+  try {
+    const parsed: unknown = JSON.parse(stored);
+    if (typeof parsed === 'string') return fromAndroidTrustedHostKeySha256(parsed);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const pin = parsed as Record<string, unknown>;
+    if (pin.kind === 'sha256-fingerprint' && typeof pin.fingerprintSha256 === 'string') {
+      return { kind: 'sha256-fingerprint', fingerprintSha256: pin.fingerprintSha256 };
+    }
+    if (pin.kind === 'wire-key'
+      && typeof pin.fingerprintSha256 === 'string'
+      && typeof pin.keyType === 'string'
+      && typeof pin.keyB64 === 'string') {
+      return {
+        kind: 'wire-key',
+        fingerprintSha256: pin.fingerprintSha256,
+        keyType: pin.keyType,
+        keyB64: pin.keyB64,
+      };
+    }
+    return null;
+  } catch {
+    // Older Android host rows store the SHA256 fingerprint as a bare string.
+    return fromAndroidTrustedHostKeySha256(stored);
+  }
+}
+
+const trustStore: HostKeyTrustStore = {
+  async get(hostId) {
+    return readStoredPin(hostId);
+  },
+  async record(hostId, pin) {
+    localStorage.setItem(pinStoreKey(hostId), JSON.stringify(pin));
+  },
+};
+
+function bindController(next: ConnectionController) {
+  controller = next;
+  removeControllerSnapshot = next.subscribe((snapshot) => {
+    connectionSnapshot.value = snapshot;
+  });
+  removeTerminalOutput = next.subscribeTerminalOutput((_session, bytes) => {
+    terminal.value?.write(bytes);
+  });
+}
+
+function makeHostTarget(): SshHostTarget | null {
+  const hostname = hostDraft.value.hostname.trim();
+  const username = hostDraft.value.username.trim();
+  const port = Number(hostDraft.value.port);
+  const privateKeyPem = hostDraft.value.privateKeyPem.trim();
+  if (!hostname || !username || !privateKeyPem || !Number.isInteger(port) || port < 1 || port > 65535) {
+    connectionMessage.value = 'Enter a host, port, user, and private key to connect.';
+    return null;
+  }
+  return {
+    hostId: `${username}@${hostname}:${port}`,
+    hostname,
+    port,
+    username,
+    credential: { kind: 'private-key', privateKeyPem },
+  };
+}
+
+async function connectHost() {
+  const host = makeHostTarget();
+  if (!host) return;
+  await closeController();
+  resourceSnapshot.value = null;
+  connectionMessage.value = '';
+  terminal.value?.clear();
+  const next = new ConnectionController({ trustStore });
+  bindController(next);
+  const result = await next.connect(host);
+  if (result.ok) await refreshSessions();
+  else if (next.getSnapshot().phase !== 'awaiting-trust') connectionMessage.value = result.message;
+}
+
+async function acceptHostKey() {
+  const active = controller;
+  if (!active) return;
+  connectionMessage.value = '';
+  const result = await active.acceptPresentedHostKey();
+  if (result.ok) await refreshSessions();
+  else if (active.getSnapshot().phase !== 'awaiting-trust') connectionMessage.value = result.message;
+}
+
+async function refreshSessions() {
+  const active = controller;
+  if (!active) return;
+  connectionMessage.value = '';
+  const result = await active.refreshSessions();
+  if (!result.ok) connectionMessage.value = result.message;
+}
+
+async function createSession() {
+  const active = controller;
+  const name = sessionName.value.trim();
+  if (!active || !name) return;
+  connectionMessage.value = '';
+  const result = await active.createSession(name);
+  if (result.ok) await refreshSessions();
+  else connectionMessage.value = result.message;
+}
+
+async function attachSession(session: SessionRow) {
+  const active = controller;
+  if (!active) return;
+  terminal.value?.clear();
+  const result = await active.switchSession(session);
+  if (!result.ok) connectionMessage.value = result.message;
+  else terminal.value?.focus();
+}
+
+async function sendTerminalInput(data: string) {
+  if (!controller || !isLive.value) return;
+  const result = await controller.writeTerminalBytes(new TextEncoder().encode(data));
+  if (!result.ok) connectionMessage.value = result.message;
+}
+
+async function resizeTerminal(size: { cols: number; rows: number }) {
+  terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
+  if (!controller || !isLive.value) return;
+  const result = await controller.resizeTerminal(size.cols, size.rows);
+  terminalResizeStatus.value = result.ok
+    ? `${size.cols} × ${size.rows} accepted by SSH`
+    : `resize failed: ${result.message}`;
+}
+
+async function closeController() {
+  const active = controller;
+  removeControllerSnapshot?.();
+  removeControllerSnapshot = undefined;
+  removeTerminalOutput?.();
+  removeTerminalOutput = undefined;
+  controller = null;
+  if (active) await active.close().catch(() => undefined);
+  connectionSnapshot.value = null;
+}
+
+async function disconnectHost() {
+  await closeController();
+  try {
+    resourceSnapshot.value = await sshCapability.resourceSnapshot(`ui-close-${Date.now()}`);
+  } catch (error) {
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+async function rejectHostKey() {
+  connectionMessage.value = 'Host key was not trusted. No SSH connection remains open.';
+  await disconnectHost();
+}
 
 onMounted(() => {
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
       if (navigation.route === 'settings') navigation.back();
-      else void CapacitorApp.exitApp();
+      else void disconnectHost();
     }).then((listener) => {
       removeBackButton = () => listener.remove();
       backButtonReady.value = true;
     }).catch((error: unknown) => {
       console.error('Could not register the Android Back handler.', error);
+    });
+    void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      const active = controller;
+      if (!active) return;
+      if (isActive) void active.returnToForeground().catch((error: unknown) => {
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+      });
+      else void active.enterBackground(30_000).catch((error: unknown) => {
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+      });
+    }).then((listener) => {
+      removeAppState = () => listener.remove();
+    }).catch((error: unknown) => {
+      console.error('Could not register the app background handler.', error);
     });
   }
 
@@ -54,6 +263,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   void removeBackButton?.();
+  void removeAppState?.();
+  void closeController();
 });
 </script>
 
@@ -63,6 +274,7 @@ onBeforeUnmount(() => {
     :data-route="navigation.route"
     :data-back-button-ready="backButtonReady"
     :data-back-button-events="backButtonEvents"
+    :data-ssh-phase="currentPhase"
   >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
@@ -105,117 +317,160 @@ onBeforeUnmount(() => {
         <div class="panel-heading">
           <div>
             <p class="eyebrow">CONNECTION</p>
-            <h1 id="hosts-title">Hosts</h1>
+            <h1 id="hosts-title">SSH host</h1>
           </div>
-          <span class="state-tag state-tag--muted">EMPTY</span>
+          <span class="state-tag" :class="isConnected ? 'state-tag--success' : 'state-tag--muted'">
+            {{ isLive ? 'LIVE' : isConnected ? 'CONNECTED' : isConnecting ? 'CONNECTING' : currentPhase.toUpperCase() }}
+          </span>
         </div>
-        <div class="empty-state">
-          <AppIcon name="terminal" />
-          <div>
-            <h2>No host configured</h2>
-            <p>Host setup and SSH transport are planned for later rewrite slices.</p>
+
+        <div class="host-fields">
+          <label class="form-field host-field-name">
+            <span>Host name or IP</span>
+            <input v-model="hostDraft.hostname" data-testid="ssh-host" autocomplete="off" autocapitalize="none" placeholder="dev.example.com" />
+          </label>
+          <label class="form-field host-field-port">
+            <span>Port</span>
+            <input v-model="hostDraft.port" data-testid="ssh-port" type="number" inputmode="numeric" min="1" max="65535" />
+          </label>
+          <label class="form-field host-field-name">
+            <span>User</span>
+            <input v-model="hostDraft.username" data-testid="ssh-username" autocomplete="username" autocapitalize="none" placeholder="alexey" />
+          </label>
+          <label class="form-field host-field-key">
+            <span>Private key · kept in memory for this run</span>
+            <textarea
+              v-model="hostDraft.privateKeyPem"
+              data-testid="ssh-private-key"
+              rows="4"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              placeholder="Paste an OpenSSH private key"
+            />
+          </label>
+        </div>
+        <div class="host-actions">
+          <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting" @click="connectHost">
+            {{ isConnecting ? 'Connecting…' : 'Connect' }}
+          </button>
+          <button v-if="connectionSnapshot" class="action-button action-button--secondary" type="button" data-testid="ssh-disconnect" @click="disconnectHost">
+            Disconnect
+          </button>
+        </div>
+
+        <div v-if="trustDecision" class="trust-prompt" role="alert" data-testid="host-key-decision">
+          <strong>{{ trustDecision.reason === 'mismatch' ? 'Host key changed' : 'Verify this host key' }}</strong>
+          <p>{{ trustDecision.hostLabel }} presented:</p>
+          <code data-testid="host-key-fingerprint">{{ trustDecision.presented.fingerprintSha256 }}</code>
+          <div class="host-actions">
+            <button class="action-button" type="button" data-testid="trust-host-key" @click="acceptHostKey">Trust key and connect</button>
+            <button class="action-button action-button--secondary" type="button" data-testid="reject-host-key" @click="rejectHostKey">Reject</button>
           </div>
         </div>
-        <button class="action-button" type="button" disabled>Connect to host</button>
+        <p v-if="connectionMessage || connectionSnapshot?.error" class="connection-message" role="alert" data-testid="ssh-message">
+          {{ connectionMessage || connectionSnapshot?.error }}
+        </p>
+        <p class="panel-footnote">SSH host-key pins are saved locally. The private key is not stored by this preview.</p>
       </section>
 
-      <section class="panel workspace-panel" aria-labelledby="workspace-title">
+      <section class="panel workspace-panel" aria-labelledby="sessions-title">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">WORKSPACE</p>
-            <h2 id="workspace-title">No workspace selected</h2>
+            <p class="eyebrow">REMOTE SESSIONS</p>
+            <h2 id="sessions-title">Sessions</h2>
           </div>
-          <span class="state-tag state-tag--muted">NO HOST</span>
+          <button v-if="isConnected" class="small-action" type="button" data-testid="refresh-sessions" @click="refreshSessions">Refresh</button>
         </div>
-        <div class="workspace-placeholder">
-          <div class="workspace-placeholder__icon" aria-hidden="true">
-            <AppIcon name="folder" />
+        <div v-if="!isConnected" class="workspace-placeholder">
+          <div class="workspace-placeholder__icon" aria-hidden="true"><AppIcon name="folder" /></div>
+          <p>Connect to list or create sessions on the host.</p>
+        </div>
+        <template v-else>
+          <div class="create-session-row">
+            <label class="sr-only" for="session-name">New session name</label>
+            <input id="session-name" v-model="sessionName" data-testid="new-session-name" placeholder="New session name" />
+            <button class="small-action" type="button" data-testid="create-session" :disabled="!sessionName.trim()" @click="createSession">Create</button>
           </div>
-          <p>Workspace and session lists will appear here after a host is connected.</p>
-        </div>
+          <ul v-if="sessions.length" class="session-list" data-testid="session-list">
+            <li v-for="session in sessions" :key="session.id ?? session.name">
+              <button
+                class="session-row"
+                type="button"
+                :data-session-name="session.name"
+                :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
+                @click="attachSession(session)"
+              >
+                <span class="session-name">{{ session.name }}</span>
+                <span class="session-meta">{{ session.workspace || session.engine || 'remote session' }}</span>
+                <span class="session-attach">{{ connectionSnapshot?.selectedSession?.name === session.name && isLive ? 'Attached' : 'Attach' }}</span>
+              </button>
+            </li>
+          </ul>
+          <p v-else class="empty-sessions" data-testid="empty-sessions">No sessions on this host yet.</p>
+        </template>
+        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation">
+          {{ connectionSnapshot.uncertainMutation.kind }} “{{ connectionSnapshot.uncertainMutation.target }}” may have completed. Refresh sessions before retrying.
+        </p>
       </section>
 
       <section class="panel terminal-panel" aria-labelledby="terminal-title">
         <div class="panel-heading panel-heading--terminal">
           <div>
             <p class="eyebrow">TERMINAL</p>
-            <h2 id="terminal-title">Session preview</h2>
+            <h2 id="terminal-title">{{ connectionSnapshot?.selectedSession?.name || 'Live terminal' }}</h2>
           </div>
-          <span class="state-tag state-tag--warning">OFFLINE MOCK</span>
+          <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
         </div>
-        <TerminalPreview />
-        <p class="panel-footnote">Read-only preview output. No SSH connection is open.</p>
-      </section>
-
-      <section class="panel composer-panel" aria-labelledby="composer-title">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">COMPOSER</p>
-            <h2 id="composer-title">Input preview</h2>
-          </div>
-          <span class="state-tag state-tag--muted">LOCAL ONLY</span>
-        </div>
-        <label class="sr-only" for="preview-input">Rewrite preview input</label>
-        <input
-          id="preview-input"
-          class="preview-input"
-          type="text"
-          autocomplete="off"
-          enterkeyhint="send"
-          placeholder="Tap to check the Android keyboard"
+        <TerminalViewport
+          ref="terminal"
+          :enabled="isLive"
+          @input="sendTerminalInput"
+          @resize="resizeTerminal"
         />
-        <fieldset class="preview-control-boundary" disabled aria-label="Preview composer controls">
-          <ComposerControls
-            :uploading-count="0"
-            :can-send="false"
-            :send-in-flight="false"
-            :draft-length="0"
-            :attachment-count="0"
-            :discard-armed="false"
-          />
-        </fieldset>
-        <p class="panel-footnote">The input and shared controls are a local preview. Text is not sent or saved.</p>
+        <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
       </section>
 
       <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
         <div class="panel-heading">
           <div>
+            <p class="eyebrow">TRANSPORT</p>
+            <h2 id="diagnostics-title">SSH resource status</h2>
+          </div>
+          <span class="state-tag state-tag--muted">{{ currentPhase.toUpperCase() }}</span>
+        </div>
+        <dl class="resource-list" data-testid="ssh-resources">
+          <div><dt>Connections</dt><dd>{{ resourceSnapshot ? resourceSnapshot.connections : connectionSnapshot?.connectionId ? 1 : 0 }}</dd></div>
+          <div><dt>PTY channels</dt><dd>{{ resourceSnapshot?.ptys ?? (isLive ? 1 : 0) }}</dd></div>
+          <div><dt>SFTP clients</dt><dd>{{ resourceSnapshot?.sftpClients ?? 0 }}</dd></div>
+          <div><dt>Port forwards</dt><dd>{{ resourceSnapshot?.forwards ?? 0 }}</dd></div>
+        </dl>
+        <p class="panel-footnote">A disconnected resource snapshot is captured after closing the SSH generation.</p>
+      </section>
+
+      <section class="panel diagnostics-panel" aria-labelledby="build-diagnostics-title">
+        <div class="panel-heading">
+          <div>
             <p class="eyebrow">BUILD</p>
-            <h2 id="diagnostics-title">Source and asset diagnostics</h2>
+            <h2 id="build-diagnostics-title">Source and asset diagnostics</h2>
           </div>
           <span class="state-tag" :class="buildStatusTone === 'error' ? 'state-tag--error' : 'state-tag--success'">
             {{ buildStatusTone === 'error' ? 'CHECK FAILED' : buildStatusTone === 'checking' ? 'CHECKING' : 'VERIFIED' }}
           </span>
         </div>
         <dl class="diagnostic-list">
-          <div>
-            <dt>pocketshell-core revision</dt>
-            <dd data-testid="core-revision">{{ coreSourceRevision }}</dd>
-          </div>
-          <div>
-            <dt>pocketshell-desktop shared UI revision</dt>
-            <dd data-testid="ui-revision">{{ uiSourceRevision }}</dd>
-          </div>
+          <div><dt>pocketshell-core revision</dt><dd data-testid="core-revision">{{ coreSourceRevision }}</dd></div>
+          <div><dt>pocketshell-desktop shared UI revision</dt><dd data-testid="ui-revision">{{ uiSourceRevision }}</dd></div>
           <div>
             <dt>Bundled asset SHA-256</dt>
-            <dd data-testid="bundle-asset-hash">
-              {{ !('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Pending verification' }}
-            </dd>
+            <dd data-testid="bundle-asset-hash">{{ !('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Pending verification' }}</dd>
           </div>
-          <div>
-            <dt>Core source function</dt>
-            <dd>formatBytes(1536) → {{ coreSample }}</dd>
-          </div>
+          <div><dt>Core formatter</dt><dd>formatBytes(1536) → {{ coreSample }}</dd></div>
         </dl>
         <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">
           {{ buildVerification.reason }}
         </p>
-        <p v-else class="panel-footnote">
-          Missing or mismatched source and asset bytes stop the shell from presenting a verified state.
-        </p>
       </section>
-
-      <p class="rewrite-note">Unfinished rewrite preview · host, session and input data are mock/empty states.</p>
     </main>
 
     <main v-else class="screen-content settings-screen">
@@ -223,19 +478,10 @@ onBeforeUnmount(() => {
         <p class="eyebrow">POCKETSHELL</p>
         <h1 id="settings-title">Settings</h1>
         <p class="settings-copy">This is the JS-first Android shell. Product settings will arrive with their replacement issues.</p>
-        <div class="settings-row">
-          <span>Theme reference</span>
-          <strong>Desktop dark · GitHub palette</strong>
-        </div>
-        <div class="settings-row">
-          <span>Core formatter</span>
-          <strong>{{ coreSample }}</strong>
-        </div>
-        <button class="action-button action-button--secondary" type="button" @click="navigation.back()">
-          Back to hosts
-        </button>
+        <div class="settings-row"><span>Theme reference</span><strong>Desktop dark · GitHub palette</strong></div>
+        <div class="settings-row"><span>Core formatter</span><strong>{{ coreSample }}</strong></div>
+        <button class="action-button action-button--secondary" type="button" @click="navigation.back()">Back to hosts</button>
       </section>
-      <p class="rewrite-note">Android Back returns to Hosts from this screen.</p>
     </main>
   </div>
 </template>
