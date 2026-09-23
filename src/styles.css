@@ -208,6 +208,7 @@ button { color: inherit; }
 .trust-prompt .action-button { min-height: 40px; font-size: var(--fs-200); }
 .connection-message { overflow-wrap: anywhere; margin: 11px 0 0; border-left: 3px solid var(--error); padding: 5px 9px; color: var(--error); font-size: var(--fs-200); line-height: 1.45; }
 .small-action { min-height: 38px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); padding: 0 12px; color: var(--fg); font-size: var(--fs-200); font-weight: 600; }
+.small-action.files-open-button { min-height: 48px; }
 .small-action:disabled { opacity: 0.5; }
 .create-session-row { display: flex; gap: 8px; }
 .create-session-row input { min-height: 42px; font-size: 14px; }
