@@ -19,13 +19,23 @@ import { uiSourceRevision } from './uiSourceInfo';
 import { useNavigationStore } from './stores/navigation';
 import { ConnectionController } from './session/connectionController';
 import { readSshError, sshCapability } from './native/sshCapability';
+import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
+import PromptComposer from './components/PromptComposer.vue';
+import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
 }
+
+type ComposerSmokeEvidenceWindow = Window & {
+  __ps2857CaptureTerminalEvidence?: boolean;
+  __ps2857AppTerminalDeliveryCount?: number;
+  __ps2857AppTerminalLastChunk?: string;
+  __ps2857AppTerminalMissingRefCount?: number;
+};
 
 const navigation = useNavigationStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
@@ -47,6 +57,8 @@ const bundleShort = computed(() =>
 );
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
+const keyboardVisible = ref(false);
+const promptComposerHasFocus = ref(false);
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
@@ -59,18 +71,53 @@ const terminal = ref<TerminalViewportHandle | null>(null);
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
 let removeAppState: (() => Promise<void>) | undefined;
+let removeKeyboardInsetsListener: (() => Promise<void>) | undefined;
 let removeControllerSnapshot: (() => void) | undefined;
 let removeTerminalOutput: (() => void) | undefined;
-
+let removeKeyboardViewportListeners: (() => void) | undefined;
+let keyboardInsetsEvents = 0;
+let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
 const isLive = computed(() => currentPhase.value === 'live');
+const keyboardComposerMode = computed(() =>
+  keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
+);
+const composerTargetKey = computed(() => {
+  const session = connectionSnapshot.value?.selectedSession;
+  const hostname = hostDraft.value.hostname.trim();
+  const username = hostDraft.value.username.trim();
+  if (!session || !hostname || !username) return '';
+  return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
+});
+const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
+  if (!connectionSnapshot.value?.selectedSession) return 'closed';
+  if (currentPhase.value === 'live') return 'connected';
+  if (['connecting', 'reconnecting', 'attaching', 'background', 'error'].includes(currentPhase.value)) return 'lost';
+  return 'closed';
+});
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
 
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
+}
+
+function isPromptComposerElement(target: Element | null): boolean {
+  return target !== null && target.closest('[data-testid="prompt-composer"]') !== null;
+}
+
+function recordFocusedElement(event: FocusEvent) {
+  promptComposerHasFocus.value = event.target instanceof Element
+    && isPromptComposerElement(event.target);
+}
+
+function recordFocusAfterBlur() {
+  queueMicrotask(() => {
+    promptComposerHasFocus.value = document.activeElement instanceof Element
+      && isPromptComposerElement(document.activeElement);
+  });
 }
 
 function readStoredPin(hostId: string): HostKeyTrustPin | null {
@@ -117,7 +164,15 @@ function bindController(next: ConnectionController) {
     connectionSnapshot.value = snapshot;
   });
   removeTerminalOutput = next.subscribeTerminalOutput((_session, bytes) => {
-    terminal.value?.write(bytes);
+    const smokeEvidence = window as ComposerSmokeEvidenceWindow;
+    const target = terminal.value;
+    // Instrumentation opts in before connection setup; keep terminal output private in normal sessions.
+    if (smokeEvidence.__ps2857CaptureTerminalEvidence) {
+      smokeEvidence.__ps2857AppTerminalDeliveryCount = (smokeEvidence.__ps2857AppTerminalDeliveryCount ?? 0) + 1;
+      smokeEvidence.__ps2857AppTerminalLastChunk = new TextDecoder().decode(bytes).slice(-4000);
+      if (!target) smokeEvidence.__ps2857AppTerminalMissingRefCount = (smokeEvidence.__ps2857AppTerminalMissingRefCount ?? 0) + 1;
+    }
+    target?.write(bytes);
   });
 }
 
@@ -196,6 +251,13 @@ async function sendTerminalInput(data: string) {
   if (!result.ok) connectionMessage.value = result.message;
 }
 
+async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
+  const active = controller;
+  if (!active) return { ok: false, message: 'No active PTY.' };
+  const result = await active.writeTerminalBytes(bytes);
+  return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
 async function resizeTerminal(size: { cols: number; rows: number }) {
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
@@ -238,6 +300,47 @@ async function rejectHostKey() {
 }
 
 onMounted(() => {
+  const updateKeyboardViewport = () => {
+    if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const screenHeight = window.screen.height;
+    keyboardVisible.value = screenHeight - viewportHeight > 150;
+  };
+  const applyKeyboardInsets = (state: KeyboardInsetsState) => {
+    if (!state.supported || !Number.isFinite(state.safeBottomDp) || state.safeBottomDp < 0) {
+      nativeKeyboardInsetsSupported = false;
+      updateKeyboardViewport();
+      return;
+    }
+    nativeKeyboardInsetsSupported = true;
+    keyboardVisible.value = state.imeVisible;
+    document.documentElement.style.setProperty(
+      '--safe-area-inset-bottom',
+      `${state.imeVisible ? 0 : state.safeBottomDp}px`,
+    );
+  };
+  updateKeyboardViewport();
+  window.visualViewport?.addEventListener('resize', updateKeyboardViewport);
+  window.addEventListener('resize', updateKeyboardViewport);
+  removeKeyboardViewportListeners = () => {
+    window.visualViewport?.removeEventListener('resize', updateKeyboardViewport);
+    window.removeEventListener('resize', updateKeyboardViewport);
+  };
+
+  if (Capacitor.getPlatform() === 'android') {
+    void keyboardInsets.addListener('imeInsetsChanged', (state) => {
+      keyboardInsetsEvents += 1;
+      applyKeyboardInsets(state);
+    }).then(async (listener) => {
+      removeKeyboardInsetsListener = () => listener.remove();
+      const eventsBeforeRead = keyboardInsetsEvents;
+      const initialState = await keyboardInsets.getState();
+      if (eventsBeforeRead === keyboardInsetsEvents) applyKeyboardInsets(initialState);
+    }).catch((error: unknown) => {
+      console.error('Could not register the Android IME inset listener.', error);
+    });
+  }
+
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
@@ -271,6 +374,8 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  removeKeyboardViewportListeners?.();
+  void removeKeyboardInsetsListener?.();
   void removeBackButton?.();
   void removeAppState?.();
   void closeController();
@@ -283,7 +388,12 @@ onBeforeUnmount(() => {
     :data-route="navigation.route"
     :data-back-button-ready="backButtonReady"
     :data-back-button-events="backButtonEvents"
+    :data-native-platform="Capacitor.getPlatform()"
+    :data-keyboard-visible="keyboardVisible"
+    :data-keyboard-composer-mode="keyboardComposerMode"
     :data-ssh-phase="currentPhase"
+    @focusin="recordFocusedElement"
+    @focusout="recordFocusAfterBlur"
   >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
@@ -436,6 +546,13 @@ onBeforeUnmount(() => {
           :enabled="isLive"
           @input="sendTerminalInput"
           @resize="resizeTerminal"
+        />
+        <PromptComposer
+          v-if="connectionSnapshot?.selectedSession"
+          :target-key="composerTargetKey"
+          :target-label="connectionSnapshot.selectedSession.name"
+          :transport-state="composerTransportState"
+          :write-pty="writeComposerPty"
         />
         <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
       </section>

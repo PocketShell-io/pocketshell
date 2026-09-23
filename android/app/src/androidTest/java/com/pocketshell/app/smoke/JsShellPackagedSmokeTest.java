@@ -132,18 +132,32 @@ public final class JsShellPackagedSmokeTest {
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"
                 + "const shellStyle = getComputedStyle(shell);"
-                + "const input = document.querySelector('[data-testid=ssh-host]').getBoundingClientRect();"
+                + "const inputElement = document.querySelector('[data-testid=ssh-host]');"
+                + "const input = inputElement.getBoundingClientRect();"
+                + "const hostPanelVisible = getComputedStyle(document.querySelector('.host-panel')).display !== 'none';"
                 + "return JSON.stringify({"
                 + "safeTop: parseFloat(root.getPropertyValue('--safe-area-inset-top')),"
                 + "safeBottom: parseFloat(root.getPropertyValue('--safe-area-inset-bottom')),"
                 + "paddingTop: parseFloat(shellStyle.paddingTop),"
                 + "paddingBottom: parseFloat(shellStyle.paddingBottom),"
                 + "inputTop: input.top,inputBottom: input.bottom,"
-                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight"
+                + "inputFocused: document.activeElement === inputElement,"
+                + "hostPanelVisible,"
+                + "keyboardVisible: shell.dataset.keyboardVisible === 'true',"
+                + "keyboardComposerMode: shell.dataset.keyboardComposerMode === 'true',"
+                + "screenHeight: window.screen.height,"
+                + "innerHeight: window.innerHeight,"
+                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight,"
+                + "viewportScale: window.visualViewport ? window.visualViewport.scale : 1"
                 + "});})()");
+        android.util.Log.i("JsShellPackagedSmokeTest", "IME_SAFE_AREA dom=" + duringIme + "; android=" + nativeImeState());
         assertEquals("top system bar clearance must persist while the IME is open", expectedSafeTop, duringIme.getDouble("safeTop"), 1.0);
         assertEquals("IME inset must replace the navigation safe-area padding", 0.0, duringIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe-area padding must remain clear of the IME", 0.0, duringIme.getDouble("paddingBottom"), 1.0);
+        assertTrue("JS keyboard mode must follow native IME visibility", duringIme.getBoolean("keyboardVisible"));
+        assertTrue("host entry must remain visible while its focused field owns the IME", duringIme.getBoolean("hostPanelVisible"));
+        assertTrue("host input must keep focus while its keyboard is open", duringIme.getBoolean("inputFocused"));
+        assertTrue("compact composer layout must stay off during host entry", !duringIme.getBoolean("keyboardComposerMode"));
         assertTrue("the SSH host input must be above the visual viewport bottom",
                 duringIme.getDouble("inputBottom") <= duringIme.getDouble("viewportHeight") + 1.0);
 
@@ -365,6 +379,7 @@ public final class JsShellPackagedSmokeTest {
     private void awaitImeVisible(boolean visible) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         boolean last = !visible;
+        int stableSamples = 0;
         while (SystemClock.uptimeMillis() < deadline) {
             AtomicReference<Boolean> state = new AtomicReference<>(false);
             scenario.onActivity(activity -> {
@@ -372,7 +387,12 @@ public final class JsShellPackagedSmokeTest {
                 state.set(insets != null && Build.VERSION.SDK_INT >= 30 && insets.isVisible(WindowInsets.Type.ime()));
             });
             last = state.get();
-            if (last == visible) return;
+            if (last == visible) {
+                stableSamples++;
+                if (stableSamples >= 3) return;
+            } else {
+                stableSamples = 0;
+            }
             Thread.sleep(100);
         }
         throw new AssertionError("IME visibility did not become " + visible + " (last=" + last
@@ -380,11 +400,9 @@ public final class JsShellPackagedSmokeTest {
     }
 
     /**
-     * Native IME visibility arrives before Capacitor's SystemBars plugin has
-     * injected the replacement CSS inset and WebView has recalculated the
-     * descendant padding. Wait for the actual CSS consumer to settle at zero;
-     * the assertions in the test still fail if the phone keeps navigation-bar
-     * padding while the keyboard covers it.
+     * Native IME visibility drives the JS safe-area override. Wait for the
+     * root CSS value, keyboard state, and actual shell padding to settle;
+     * assertions still fail if navigation-bar padding remains under the IME.
      */
     private void awaitImeSafeAreaSettled(float expectedSafeTop) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
@@ -394,7 +412,8 @@ public final class JsShellPackagedSmokeTest {
         while (SystemClock.uptimeMillis() < deadline) {
             boolean correctInsets = closeTo(latest.optDouble("safeTop"), expectedSafeTop, 1.0)
                     && closeTo(latest.optDouble("safeBottom"), 0.0, 0.5)
-                    && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5);
+                    && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5)
+                    && latest.optBoolean("keyboardVisible");
             boolean stable = previous != null
                     && closeTo(latest.optDouble("safeTop"), previous.optDouble("safeTop"), 0.5)
                     && closeTo(latest.optDouble("safeBottom"), previous.optDouble("safeBottom"), 0.5)
@@ -410,7 +429,8 @@ public final class JsShellPackagedSmokeTest {
             Thread.sleep(100);
             latest = imeSafeAreaDomState();
         }
-        throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: " + latest);
+        throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: DOM=" + latest
+                + "; Android=" + nativeImeState());
     }
 
     private JSONObject imeSafeAreaDomState() throws Exception {
@@ -421,7 +441,11 @@ public final class JsShellPackagedSmokeTest {
                 + "safeTop: parseFloat(root.getPropertyValue('--safe-area-inset-top')),"
                 + "safeBottom: parseFloat(root.getPropertyValue('--safe-area-inset-bottom')),"
                 + "paddingBottom: parseFloat(shellStyle.paddingBottom),"
-                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight"
+                + "keyboardVisible: document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true',"
+                + "screenHeight: window.screen.height,"
+                + "innerHeight: window.innerHeight,"
+                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight,"
+                + "viewportScale: window.visualViewport ? window.visualViewport.scale : 1"
                 + "});})()");
     }
 

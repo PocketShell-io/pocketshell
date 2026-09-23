@@ -35,6 +35,24 @@ The remaining Gradle commands and connected journey guidance in this file
 describe `main`/`stable` while their D36/D37 gates remain active. They are not
 available on this branch after the Kotlin product modules are removed.
 
+The focused JS composer slice has its own packaged Docker journey. Start one
+unclaimed `agents` pool lane, then run the packaged API 35+ journey:
+
+```bash
+scripts/agents-pool.sh up 2245
+scripts/connected-js-composer-docker.sh --port 2245
+```
+
+The runner uses the shared Gradle-output and AVD locks, builds the suffixed APK
+and androidTest APK, and checks the exact result method before accepting the
+run. Its host-side oracle checks UTF-8 command bytes, the bracketed multiline
+wire bytes, Insert without execution, and no execution after an uncertain
+write. It captures the real keyboard-up screenshot and computed viewport bounds
+before the visibility assertion, reconstructs both from same-run logcat chunks,
+and verifies their SHA-256 values. This preserves the WebView evidence after
+Gradle removes the suffixed app. The runner saves the screenshot under `/tmp`
+and does not create or tear down Docker state.
+
 For a session-runtime change, also run the focused fixture contract checks:
 
 ```bash
