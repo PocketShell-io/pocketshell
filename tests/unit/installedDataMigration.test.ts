@@ -4,6 +4,7 @@ import {
   IMPORT_RECORD_ID,
   installedDataMigrationState,
   prepareLocalStorageWrites,
+  readImportedLegacyHosts,
   runInstalledDataMigration,
   shouldReloadForImportedSettings,
   type ImportPersistence,
@@ -42,10 +43,20 @@ function legacySnapshot(): NativeLegacySnapshot {
       tables: {
         hosts: [{
           id: 41,
+          name: 'devbox',
+          hostname: 'dev.example.test',
+          port: 22,
+          username: 'alex',
+          keyId: 7,
           trustedHostKeyAlgorithm: 'SHA256',
           trustedHostKeySha256: TRUST_FINGERPRINT,
         }],
-        ssh_keys: [{ id: 7, name: 'main key', privateKeyPath: '/private/app/files/ssh-keys/main.pem' }],
+        ssh_keys: [{
+          id: 7,
+          name: 'main key',
+          privateKeyPath: '/private/app/files/ssh-keys/main.pem',
+          hasPassphrase: false,
+        }],
       },
     },
     preferences: {
@@ -86,6 +97,7 @@ function legacySnapshot(): NativeLegacySnapshot {
       byteLength: 1536,
       lastModified: 1_700_000_000_000,
       keyId: 7,
+      sha256: 'a'.repeat(64),
     }],
   };
 }
@@ -101,9 +113,9 @@ function memoryPersistence(initialRecord?: ImportRecord) {
       currentRecord = stagedRecord;
       stagedAssets = assets;
     }),
-    markComplete: vi.fn(async () => {
+    markComplete: vi.fn(async (status = 'complete') => {
       if (!currentRecord) throw new Error('nothing staged');
-      currentRecord = { ...currentRecord, status: currentRecord.snapshot.database.present ? 'complete' : 'empty' };
+      currentRecord = { ...currentRecord, status: currentRecord.snapshot.database.present ? status : 'empty' };
     }),
   };
   return {
@@ -300,7 +312,7 @@ describe('installed Android data migration', () => {
     expect(storage.values.size).toBe(0);
   });
 
-  it('stages unrelated data but stays visibly incomplete when an encrypted store is unavailable', async () => {
+  it('imports unrelated data as partial and visibly retains an unavailable encrypted store', async () => {
     const snapshot = legacySnapshot();
     snapshot.encryptedPreferences['pocketshell-voice-secrets'] = {
       present: true,
@@ -322,14 +334,54 @@ describe('installed Android data migration', () => {
       pixelRatio: () => 2,
     });
 
-    expect(installedDataMigrationState.status).toBe('failed');
+    expect(installedDataMigrationState.status).toBe('partial');
     expect(installedDataMigrationState.error).toContain('unreadable keyset');
     expect(persistence.persistence.stage).toHaveBeenCalledOnce();
     expect(persistence.stagedRecord?.status).toBe('staged');
-    expect(persistence.stagedRecord?.warnings).toContain(snapshot.encryptedPreferences['pocketshell-voice-secrets'].error);
-    expect(persistence.persistence.markComplete).not.toHaveBeenCalled();
-    expect(storage.getItem('pocketshell.js.settings.v1')).toBeNull();
-    expect(storage.getItem('pocketshell.ssh.host-key.41')).toBeNull();
+    expect(persistence.stagedRecord?.warnings.some((warning) =>
+      warning.includes(snapshot.encryptedPreferences['pocketshell-voice-secrets'].error ?? ''))).toBe(true);
+    expect(persistence.persistence.markComplete).toHaveBeenCalledWith('partial');
+    expect(storage.getItem('pocketshell.js.settings.v1')).toContain('terminalFontSize');
+    expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
+  });
+
+  it('marks decrypted native-only credentials partial and offers only opaque legacy host key references', async () => {
+    const snapshot = legacySnapshot();
+    snapshot.encryptedPreferences['pocketshell-sync-auth'] = {
+      present: true,
+      status: 'decrypted-native-retained',
+      keys: ['google_sync_auth'],
+    };
+    const persistence = memoryPersistence();
+    const storage = new MemoryStorage();
+    installedDataMigrationState.status = 'pending';
+    installedDataMigrationState.error = '';
+
+    await runInstalledDataMigration({
+      native: nativePlugin(snapshot),
+      persistence: persistence.persistence,
+      storage,
+      nativePlatform: true,
+      now: () => 123,
+      pixelRatio: () => 2,
+    });
+
+    expect(installedDataMigrationState.status).toBe('partial');
+    expect(installedDataMigrationState.error).toContain('not available to the JS app yet');
+    expect(persistence.persistence.markComplete).toHaveBeenCalledWith('partial');
+    const importedHosts = await readImportedLegacyHosts(persistence.persistence);
+    expect(importedHosts).toEqual([{
+      id: 41,
+      name: 'devbox',
+      hostname: 'dev.example.test',
+      port: 22,
+      username: 'alex',
+      keyId: 7,
+      keyName: 'main key',
+      keyHasPassphrase: false,
+      keySha256: 'a'.repeat(64),
+    }]);
+    expect(JSON.stringify(importedHosts)).not.toContain('privateKeyPath');
   });
 
   it('does not mark complete or write settings when an imported asset hash differs', async () => {

@@ -43,7 +43,7 @@ export interface ImportedAsset {
 
 export interface ImportRecord {
   id: typeof IMPORT_RECORD_ID;
-  status: 'staged' | 'complete' | 'empty';
+  status: 'staged' | 'complete' | 'partial' | 'empty';
   importedAt: number;
   snapshot: NativeLegacySnapshot;
   warnings: string[];
@@ -52,7 +52,7 @@ export interface ImportRecord {
 export interface ImportPersistence {
   readRecord(): Promise<ImportRecord | undefined>;
   stage(record: ImportRecord, assets: ImportedAsset[]): Promise<void>;
-  markComplete(): Promise<void>;
+  markComplete(status?: 'complete' | 'partial'): Promise<void>;
 }
 
 export interface MigrationDependencies {
@@ -62,10 +62,23 @@ export interface MigrationDependencies {
   nativePlatform: boolean;
   now: () => number;
   pixelRatio: () => number;
+  refreshPartial?: boolean;
+}
+
+export interface ImportedLegacyHost {
+  id: number;
+  name: string;
+  hostname: string;
+  port: number;
+  username: string;
+  keyId: number;
+  keyName: string;
+  keyHasPassphrase: boolean;
+  keySha256: string;
 }
 
 export const installedDataMigrationState = reactive({
-  status: 'pending' as 'pending' | 'complete' | 'failed',
+  status: 'pending' as 'pending' | 'complete' | 'partial' | 'failed',
   error: '',
   retrying: false,
 });
@@ -347,7 +360,116 @@ function validateSnapshot(snapshot: NativeLegacySnapshot): void {
       throw new InstalledDataMigrationError('An encrypted credential store could not be verified.');
     }
   }
+  validateLegacyKeyReferences(snapshot);
   validateLegacyPreferences(snapshot);
+}
+
+function validateLegacyKeyReferences(snapshot: NativeLegacySnapshot): void {
+  const tables = snapshot.database.tables;
+  if (!snapshot.database.present) return;
+  const hosts = tables.hosts;
+  const keys = tables.ssh_keys;
+  if (!Array.isArray(hosts) || !Array.isArray(keys)) {
+    throw new InstalledDataMigrationError('The installed database is missing its saved hosts or SSH key rows.');
+  }
+
+  const keyIds = new Set<number>();
+  for (const value of keys) {
+    if (!isRecord(value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id < 1 ||
+      typeof value.name !== 'string' || typeof value.privateKeyPath !== 'string' ||
+      typeof value.hasPassphrase !== 'boolean') {
+      throw new InstalledDataMigrationError('A saved SSH key row is malformed.');
+    }
+    keyIds.add(value.id);
+  }
+
+  const indexedFiles = new Set<number>();
+  for (const value of snapshot.nativeFiles) {
+    if (!isRecord(value) || typeof value.category !== 'string' || typeof value.relativePath !== 'string' ||
+      !Number.isSafeInteger(value.byteLength) || (value.byteLength as number) < 0 ||
+      !Number.isSafeInteger(value.lastModified)) {
+      throw new InstalledDataMigrationError('A native private-file reference is malformed.');
+    }
+    if (value.category === 'ssh-private-key') {
+      if (typeof value.keyId !== 'number' || !Number.isSafeInteger(value.keyId) ||
+        !keyIds.has(value.keyId) || indexedFiles.has(value.keyId) ||
+        typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)) {
+        throw new InstalledDataMigrationError('A saved SSH key file has an invalid or duplicate native reference.');
+      }
+      indexedFiles.add(value.keyId);
+    }
+  }
+  if (indexedFiles.size !== keyIds.size) {
+    throw new InstalledDataMigrationError('A saved SSH key file is missing its native reference.');
+  }
+
+  const hostIds = new Set<number>();
+  for (const value of hosts) {
+    if (!isRecord(value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id < 1 ||
+      hostIds.has(value.id) || typeof value.name !== 'string' || typeof value.hostname !== 'string' ||
+      typeof value.username !== 'string' || typeof value.port !== 'number' || !Number.isSafeInteger(value.port) ||
+      value.port < 1 || value.port > 65_535 || typeof value.keyId !== 'number' ||
+      !Number.isSafeInteger(value.keyId) || !keyIds.has(value.keyId)) {
+      throw new InstalledDataMigrationError('A saved host has an invalid SSH key or connection identity.');
+    }
+    hostIds.add(value.id);
+  }
+}
+
+export async function readImportedLegacyHosts(
+  persistence: ImportPersistence = createImportPersistence(),
+): Promise<ImportedLegacyHost[]> {
+  const record = await persistence.readRecord();
+  if (!record || (record.status !== 'complete' && record.status !== 'partial')) return [];
+  validateSnapshot(record.snapshot);
+  const filesByKeyId = new Map<number, string>();
+  for (const file of record.snapshot.nativeFiles) {
+    if (file.category === 'ssh-private-key' && Number.isSafeInteger(file.keyId) && typeof file.sha256 === 'string') {
+      filesByKeyId.set(file.keyId as number, file.sha256);
+    }
+  }
+  const keysById = new Map<number, Record<string, unknown>>();
+  for (const row of record.snapshot.database.tables.ssh_keys ?? []) {
+    if (isRecord(row) && typeof row.id === 'number') keysById.set(row.id, row);
+  }
+  const result: ImportedLegacyHost[] = [];
+  for (const candidate of record.snapshot.database.tables.hosts ?? []) {
+    if (!isRecord(candidate) || typeof candidate.keyId !== 'number' || !filesByKeyId.has(candidate.keyId)) continue;
+    const key = keysById.get(candidate.keyId);
+    const keySha256 = filesByKeyId.get(candidate.keyId);
+    if (!key || typeof candidate.id !== 'number' || typeof candidate.name !== 'string' ||
+      typeof candidate.hostname !== 'string' || typeof candidate.username !== 'string' ||
+      typeof candidate.port !== 'number' || typeof key.name !== 'string' ||
+      typeof key.hasPassphrase !== 'boolean' || !keySha256) continue;
+    result.push({
+      id: candidate.id,
+      name: candidate.name,
+      hostname: candidate.hostname,
+      port: candidate.port,
+      username: candidate.username,
+      keyId: candidate.keyId,
+      keyName: key.name,
+      keyHasPassphrase: key.hasPassphrase,
+      keySha256,
+    });
+  }
+  return result;
+}
+
+function encryptedCredentialWarnings(snapshot: NativeLegacySnapshot): string[] {
+  return Object.entries(snapshot.encryptedPreferences)
+    .filter(([, store]) => store.present)
+    .map(([name, store]) => store.status === 'unavailable'
+      ? `Encrypted credential store ${name} remains unchanged but could not be opened: ${store.error ?? 'the native reader reported unavailable.'}`
+      : `Encrypted credential store ${name} remains in Android secure storage and is not available to the JS app yet.`);
+}
+
+function unresolvedCredentialWarnings(snapshot: NativeLegacySnapshot): string[] {
+  const warnings = encryptedCredentialWarnings(snapshot);
+  if (snapshot.nativeFiles.some((file) => file.category === 'ssh-private-key-unindexed')) {
+    warnings.push('An unindexed SSH private key remains in Android private storage and is not linked to a saved host.');
+  }
+  return warnings;
 }
 
 function hasLegacyData(snapshot: NativeLegacySnapshot): boolean {
@@ -464,7 +586,7 @@ export function createImportPersistence(factory: IDBFactory = indexedDB): Import
         database.close();
       }
     },
-    async markComplete() {
+    async markComplete(requestedStatus = 'complete') {
       const database = await open();
       try {
         const transaction = database.transaction(IMPORT_STATUS_KEY, 'readwrite');
@@ -476,7 +598,10 @@ export function createImportPersistence(factory: IDBFactory = indexedDB): Import
           await done.catch(() => undefined);
           throw new InstalledDataMigrationError('Installed data import could not be committed. Retry the import.');
         }
-        store.put({ ...record, status: record.snapshot.database.present || hasLegacyData(record.snapshot) ? 'complete' : 'empty' });
+        const status = record.snapshot.database.present || hasLegacyData(record.snapshot)
+          ? requestedStatus
+          : 'empty';
+        store.put({ ...record, status });
         await done;
       } finally {
         database.close();
@@ -521,12 +646,19 @@ export async function runInstalledDataMigration(
   installedDataMigrationState.retrying = true;
   try {
     const priorRecord = await dependencies.persistence.readRecord();
-    if (priorRecord?.status === 'complete' || priorRecord?.status === 'empty') {
-      validateSnapshot(priorRecord.snapshot);
-      const writes = applyLocalStorageWrites(priorRecord.snapshot, dependencies.storage, dependencies.pixelRatio());
-      installedDataMigrationState.status = 'complete';
-      installedDataMigrationState.error = '';
-      return writes.settings !== undefined;
+    if (priorRecord?.status === 'complete' || priorRecord?.status === 'partial' || priorRecord?.status === 'empty') {
+      if (priorRecord.status === 'partial' && dependencies.refreshPartial) {
+        // An explicit retry rechecks encrypted storage and source files. Normal
+        // launches repair from the durable record without rereading large files.
+      } else {
+        validateSnapshot(priorRecord.snapshot);
+        const writes = applyLocalStorageWrites(priorRecord.snapshot, dependencies.storage, dependencies.pixelRatio());
+        installedDataMigrationState.status = priorRecord.status === 'partial' ? 'partial' : 'complete';
+        installedDataMigrationState.error = priorRecord.status === 'partial'
+          ? priorRecord.warnings.join(' ')
+          : '';
+        return writes.settings !== undefined;
+      }
     }
     const snapshot = await dependencies.native.readLegacyInstalledData();
     validateSnapshot(snapshot);
@@ -540,27 +672,17 @@ export async function runInstalledDataMigration(
       snapshot,
       warnings: [
         ...writes.warnings,
-        ...Object.entries(snapshot.encryptedPreferences)
-          .filter(([, store]) => store.present && store.status === 'unavailable')
-          .map(([, store]) => store.error ?? 'An encrypted preference store could not be verified.'),
+        ...unresolvedCredentialWarnings(snapshot),
       ],
     };
     await dependencies.persistence.stage(record, assets);
     // Re-read local settings after asynchronous asset staging so a setting
     // created or changed during this migration attempt always wins.
-    const unavailableStores = Object.values(snapshot.encryptedPreferences)
-      .filter((store) => store.present && store.status === 'unavailable');
-    if (unavailableStores.length > 0) {
-      installedDataMigrationState.status = 'failed';
-      installedDataMigrationState.error = unavailableStores
-        .map((store) => store.error ?? 'An encrypted preference store could not be verified.')
-        .join(' ');
-      return false;
-    }
-    await dependencies.persistence.markComplete();
+    const warnings = unresolvedCredentialWarnings(snapshot);
+    await dependencies.persistence.markComplete(warnings.length > 0 ? 'partial' : 'complete');
     writes = applyLocalStorageWrites(snapshot, dependencies.storage, dependencies.pixelRatio());
-    installedDataMigrationState.status = 'complete';
-    installedDataMigrationState.error = '';
+    installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
+    installedDataMigrationState.error = warnings.join(' ');
     return writes.settings !== undefined;
   } catch (error) {
     installedDataMigrationState.status = 'failed';
@@ -574,5 +696,5 @@ export async function runInstalledDataMigration(
 }
 
 export function retryInstalledDataMigration(): Promise<boolean> {
-  return runInstalledDataMigration();
+  return runInstalledDataMigration({ refreshPartial: true });
 }

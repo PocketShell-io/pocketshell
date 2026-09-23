@@ -34,6 +34,7 @@ export interface NativeLegacySnapshot {
     byteLength: number;
     lastModified: number;
     keyId?: number;
+    sha256?: string;
   }>;
 }
 

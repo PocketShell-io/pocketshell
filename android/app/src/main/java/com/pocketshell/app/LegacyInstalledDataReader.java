@@ -701,11 +701,13 @@ final class LegacyInstalledDataReader {
             throw invalid("A legacy SSH key file is missing or unreadable.");
         }
         if (canonical.length() > MAX_KEY_FILE_BYTES) throw invalid("A legacy SSH key file exceeds the supported size.");
-        return new JSObject()
+        JSObject result = new JSObject()
             .put("category", category)
             .put("relativePath", canonicalFilesDir.toPath().relativize(canonical.toPath()).toString().replace(File.separatorChar, '/'))
             .put("byteLength", canonical.length())
             .put("lastModified", canonical.lastModified());
+        if ("ssh-private-key".equals(category)) result.put("sha256", sha256(canonical));
+        return result;
     }
 
     private File checkedKeyFile(String path, File keyRoot) throws Exception {
