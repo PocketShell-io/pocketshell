@@ -323,7 +323,17 @@ final class LegacyInstalledDataReader {
                             if (number > 9_007_199_254_740_991L || number < -9_007_199_254_740_991L) {
                                 throw invalid("The installed database contains an integer outside the exact JavaScript range.");
                             }
-                            row.put(column, number);
+                            // Room stores SQLite booleans as INTEGER 0/1. Preserve
+                            // their semantic type across the native-to-JS boundary
+                            // instead of exporting a Number the importer rejects.
+                            if ("ssh_keys".equals(table) && "hasPassphrase".equals(column)) {
+                                if (number != 0 && number != 1) {
+                                    throw invalid("An installed SSH key has an invalid passphrase flag.");
+                                }
+                                row.put(column, number != 0);
+                            } else {
+                                row.put(column, number);
+                            }
                             break;
                         case Cursor.FIELD_TYPE_FLOAT:
                             double decimal = cursor.getDouble(index);

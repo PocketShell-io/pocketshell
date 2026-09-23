@@ -196,8 +196,12 @@ public final class LegacyInstalledDataReaderTest {
         JSObject snapshot = new LegacyInstalledDataReader(context,
             new ConcurrentHashMap<String, InstalledDataMigrationPlugin.AssetDescriptor>()).read();
         JSONArray nativeFiles = snapshot.getJSONArray("nativeFiles");
+        JSONObject keyRow = snapshot.getJSONObject("database").getJSONObject("tables")
+            .getJSONArray("ssh_keys").getJSONObject(0);
 
         assertEquals(1, nativeFiles.length());
+        assertFalse("Room INTEGER 0 must cross the native boundary as boolean false",
+            keyRow.getBoolean("hasPassphrase"));
         JSONObject nativeKey = nativeFiles.getJSONObject(0);
         assertEquals("ssh-private-key", nativeKey.getString("category"));
         assertEquals(7, nativeKey.getLong("keyId"));
@@ -208,6 +212,37 @@ public final class LegacyInstalledDataReaderTest {
             sourceBytes, Files.readAllBytes(key.toPath()));
         assertArrayEquals("the Room snapshot must remain byte-for-byte unchanged",
             databaseBytes, Files.readAllBytes(databaseFile.toPath()));
+    }
+
+    @Test
+    public void roomPassphraseBooleanOneIsNormalizedAndOtherIntegersFailReadOnly() throws Exception {
+        File key = new File(new File(fixtureRoot, "files/ssh-keys"), "legacy-key.pem");
+        assertTrue(key.getParentFile().mkdirs());
+        Files.write(key.toPath(), SYNTHETIC_PRIVATE_KEY.getBytes(StandardCharsets.UTF_8));
+        File databaseFile = createRoom22Fixture(key, 1L);
+        MigrationContext context = new MigrationContext(targetContext, fixtureRoot, fixturePreferencesName);
+        LegacyInstalledDataReader reader = new LegacyInstalledDataReader(context,
+            new ConcurrentHashMap<String, InstalledDataMigrationPlugin.AssetDescriptor>());
+
+        JSObject snapshot = reader.read();
+        JSONObject keyRow = snapshot.getJSONObject("database").getJSONObject("tables")
+            .getJSONArray("ssh_keys").getJSONObject(0);
+        assertTrue("Room INTEGER 1 must cross the native boundary as boolean true",
+            keyRow.getBoolean("hasPassphrase"));
+
+        SQLiteDatabase database = SQLiteDatabase.openDatabase(
+            databaseFile.getAbsolutePath(), null, SQLiteDatabase.OPEN_READWRITE);
+        database.execSQL("UPDATE ssh_keys SET hasPassphrase = 2 WHERE id = 7");
+        database.close();
+        byte[] malformedDatabase = Files.readAllBytes(databaseFile.toPath());
+
+        LegacyInstalledDataReader.MigrationReadException failure = assertThrows(
+            LegacyInstalledDataReader.MigrationReadException.class, reader::read);
+        assertTrue(failure.getMessage().contains("passphrase flag"));
+        assertArrayEquals("invalid Room boolean values must remain untouched",
+            malformedDatabase, Files.readAllBytes(databaseFile.toPath()));
+        assertFalse(new File(databaseFile.getPath() + "-wal").exists());
+        assertFalse(new File(databaseFile.getPath() + "-shm").exists());
     }
 
     @Test
@@ -260,6 +295,10 @@ public final class LegacyInstalledDataReaderTest {
     }
 
     private File createRoom22Fixture(File key) throws Exception {
+        return createRoom22Fixture(key, 0L);
+    }
+
+    private File createRoom22Fixture(File key, long hasPassphrase) throws Exception {
         File databaseFile = new File(new File(fixtureRoot, "databases"), "pocketshell.db");
         assertTrue(databaseFile.getParentFile().mkdirs());
         SQLiteDatabase database = SQLiteDatabase.openOrCreateDatabase(databaseFile, null);
@@ -282,7 +321,7 @@ public final class LegacyInstalledDataReaderTest {
         database.execSQL("CREATE TABLE command_templates (id INTEGER, hostId INTEGER, label TEXT, commands TEXT)");
         database.execSQL("CREATE TABLE sent_messages (id INTEGER, sessionKey TEXT, body TEXT, sentAtMs INTEGER, delivered INTEGER)");
         database.execSQL("INSERT INTO ssh_keys (id, name, privateKeyPath, fingerprint, hasPassphrase, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
-            new Object[] {7L, "Synthetic test key", key.getAbsolutePath(), "fixture", 0, 1L});
+            new Object[] {7L, "Synthetic test key", key.getAbsolutePath(), "fixture", hasPassphrase, 1L});
         database.execSQL("INSERT INTO hosts (id, name, hostname, port, username, keyId) VALUES (?, ?, ?, ?, ?, ?)",
             new Object[] {41L, "Synthetic host", "example.test", 22, "fixture", 7L});
         database.close();
