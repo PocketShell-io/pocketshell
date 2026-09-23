@@ -461,7 +461,10 @@ public final class JsComposerDockerJourneyTest {
     private void awaitImeVisible(boolean visible) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         while (SystemClock.uptimeMillis() < deadline) {
-            if (isImeVisible() == visible) return;
+            if (isImeVisible() == visible) {
+                Thread.sleep(120);
+                if (isImeVisible() == visible) return;
+            }
             Thread.sleep(100);
         }
         throw new AssertionError("Android IME visibility did not become " + visible);
