@@ -19,6 +19,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    // Keep server-only unit helpers in Node while compiling this SFC as a
+    // client render function so its actual template event bindings are tested.
+    testTransformMode: { web: ['**/tests/unit/mobileHotkeys.test.ts'] },
     include: ['tests/unit/**/*.test.ts'],
   },
 });
