@@ -1,4 +1,0 @@
-{
-  "schema": 3,
-  "error": "pocketshell: could not resolve the bundled `a` (aplexer) binary; sessions create requires aplexer. Reinstall the pocketshell CLI."
-}

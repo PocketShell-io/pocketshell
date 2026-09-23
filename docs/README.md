@@ -6,8 +6,11 @@ context; the README and current feature docs track released behavior.
 | File | What it covers |
 |---|---|
 | [vision.md](vision.md) | Historical product brief — the original goals and UX vocabulary |
-| [architecture.md](architecture.md) | Post-rewrite module map, tech stack, three load-bearing decisions, connect/session/terminal/grace design |
+| [architecture.md](architecture.md) | Previous Android module map and session design; describes the existing app2 line while JS parity is built |
 | [js-first-rewrite-plan.md](js-first-rewrite-plan.md) | Planned 0.6.0 JS-first Android rewrite, shared desktop design, native boundary and test gates |
+| [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md) | Pre-deletion map of Android destinations, journeys, stored data, replacement issues and Docker baseline |
+| [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md) | JS/Capacitor Android shell, pinned source dependency, build diagnostics and preserved Docker test setup |
+| [migration/room-schemas/](migration/room-schemas/) | Immutable Room schema exports retained for the installed-data reader in #2860 |
 | [input-methods.md](input-methods.md) | Voice, key bar, snippets, and composer behaviour — the alternative-to-typing strategy |
 | [agent-awareness.md](agent-awareness.md) | Live agent identity from an aplexer workload and host logs |
 | [usage-panel.md](usage-panel.md) | Provider quota / usage tracking via server-side `pocketshell usage` over SSH — zero credentials on the phone |
@@ -23,7 +26,7 @@ context; the README and current feature docs track released behavior.
 | [aplexer-integration.md](aplexer-integration.md) | Aplexer integration record: current runtime status and historical transition notes |
 | [decisions.md](decisions.md) | Log of what's locked, what's still open |
 | [release.md](release.md) | How we cut candidate, stabilize, fast-forward the exact SHA to main, push main, and tag from main (release-owner agent) |
-| [testing.md](testing.md) | Android emulator + Docker remote-server test environment |
+| [testing.md](testing.md) | Main/stable Android emulator + Docker gates and the JS-first branch checks |
 | [docker-emulator-runbook.md](docker-emulator-runbook.md) | Docker fixture targets, ports, emulator commands, connected-test runbook |
 | [screenshots/](screenshots/) | Curated README screenshot assets captured from the visual-audit workflow |
 | [tmux-socket-recovery.md](tmux-socket-recovery.md) | Operational runner-only tmux socket recovery and namespace guardrails |

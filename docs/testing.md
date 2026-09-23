@@ -1,5 +1,13 @@
 # Testing and QA
 
+On `rewrite/js-first-0.6.0`, the product is the Vue/Capacitor shell. Run its
+checks with `pnpm test:unit`, `scripts/assemble-debug.sh`, and
+`scripts/test-agents-fixture-aplexer.sh --docker`. The sections below describe
+the existing app2/Gradle emulator gates retained on `main` and `stable`; their
+journey runners are not part of this JS-first branch. The temporary branch CI
+boundary and #2863 replacement work are documented in
+[js-first-rewrite-foundation.md](js-first-rewrite-foundation.md).
+
 PocketShell has two end-to-end surfaces:
 
 1. the Android emulator, which runs the app and validates visible UI behavior;
@@ -12,18 +20,20 @@ that attach, input, or stop works for a user.
 
 ## Fast local checks
 
-Run these from the repository root:
+Run these from the repository root on `rewrite/js-first-0.6.0`:
 
 ```bash
-scripts/full-jvm-gate.py
+pnpm test:unit
 scripts/assemble-debug.sh
 git diff --check
 ```
 
-The JVM gate runs every unit test with one Gradle worker and no build cache. The
-Python command covers the published host helper. `assemble-debug.sh` is the
-local APK path; it does not run the release-gate profile or build connected
-tests.
+`pnpm test:unit` runs the JS unit tests. `assemble-debug.sh` builds the JS app,
+syncs Capacitor, and assembles a debug APK; it does not build connected tests.
+
+The remaining Gradle commands and connected journey guidance in this file
+describe `main`/`stable` while their D36/D37 gates remain active. They are not
+available on this branch after the Kotlin product modules are removed.
 
 For a session-runtime change, also run the focused fixture contract checks:
 

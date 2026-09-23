@@ -1,0 +1,116 @@
+name: JS-first rewrite
+
+on:
+  push:
+    branches: [rewrite/js-first-0.6.0]
+  pull_request:
+    branches: [rewrite/js-first-0.6.0]
+
+concurrency:
+  group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  web-and-android:
+    name: JS checks and Android debug APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout with pinned core source
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.5.1 --activate
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install locked JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check exact JavaScript unit gate
+        run: |
+          scripts/check-js-unit-results.py --self-test
+          scripts/run-js-unit-gate.sh
+
+      - name: Build Android debug APK
+        run: pnpm build:android:debug
+
+      - name: Prepare packaged JS smoke APKs
+        run: scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Free disk space for API 35 emulator
+        run: scripts/ci-emulator-free-disk.sh
+
+      - name: Repair Android cmdline-tools and accept licenses
+        run: scripts/ci-emulator-repair-sdk-tools.sh
+
+      - name: Check emulator action pin
+        run: scripts/check-emulator-action-pin.sh
+
+      - name: Run packaged JS smoke suite on API 35
+        id: packaged-smoke
+        timeout-minutes: 45
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          script: scripts/connected-js-smoke.sh --suffix i2855ci --test-only
+
+      - name: Upload packaged APK and connected smoke results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-first-debug-smoke
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+            android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
+          if-no-files-found: warn
+
+  docker-agents-fixture:
+    name: Docker agents fixture contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Exercise pinned CLI/aplexer fixture
+        run: scripts/test-agents-fixture-aplexer.sh --docker

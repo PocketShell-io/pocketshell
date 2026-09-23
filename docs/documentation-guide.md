@@ -28,6 +28,7 @@ Everything else lives under `docs/` (or `.claude/agents/` for role prompts) and 
 | Working on the usage/quota panel | [usage-panel.md](usage-panel.md) |
 | Working on the server-side `pocketshell` CLI setup | [server-setup.md](server-setup.md) |
 | Recovering a split-brained tmux socket | [tmux-socket-recovery.md](tmux-socket-recovery.md) |
+| Replacing the Android product with the JS-first 0.6.0 shell | [js-first-rewrite-plan.md](js-first-rewrite-plan.md), [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md), [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md), [Room schema archive](migration/room-schemas/) |
 | Need the module/architecture map | [architecture.md](architecture.md) |
 | Need the original product brief or phased roadmap | [vision.md](vision.md), [roadmap.md](roadmap.md) |
 
