@@ -87,8 +87,11 @@ results="$repo/android/app/build/outputs/androidTest-results/connected/debug"
 mkdir -p "$results"
 cat > "$results/TEST-smoke.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="3" failures="0" errors="0" skipped="0">
+<testsuite name="smoke" tests="6" failures="0" errors="0" skipped="0">
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedMultipleShareReadsStandardStreamListWithoutClipData" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea" />
 </testsuite>
@@ -396,10 +399,10 @@ same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
     || fail 'first worktree did not pass its unique package suffix to Gradle'
   grep -Fq -- '-PpocketshellAppIdSuffix=i2863b' "$SANDBOX/device-state/args-i2863b" \
     || fail 'second worktree did not pass its unique package suffix to Gradle'
-  grep -Fq 'PASS: packaged JS smoke results contain 3 executed tests, 3 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
     "$SANDBOX/i2863a.out" \
     || fail 'first run did not validate its own exact JUnit report'
-  grep -Fq 'PASS: packaged JS smoke results contain 3 executed tests, 3 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
     "$SANDBOX/i2863b.out" \
     || fail 'second run did not validate its own exact JUnit report'
   [[ ! -e "$SANDBOX/device-state/overlap" ]] \
