@@ -1,0 +1,268 @@
+package com.pocketshell.app.migration;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.os.SystemClock;
+import android.view.View;
+import android.view.ViewGroup;
+import android.webkit.WebView;
+
+import androidx.test.core.app.ActivityScenario;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.pocketshell.app.MainActivity;
+
+import org.json.JSONObject;
+import org.json.JSONTokener;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.io.File;
+import java.nio.file.Files;
+import java.security.MessageDigest;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+/** Opt-in real-WebView import check for the signed-upgrade fixture. */
+@RunWith(AndroidJUnit4.class)
+public final class InstalledDataMigrationJourneyTest {
+    private static final long JS_TIMEOUT_SECONDS = 15;
+    private static final long MIGRATION_TIMEOUT_MILLIS = 30_000;
+    private static final String FIXTURE_OPT_IN = "installedDataMigrationFixture";
+    private static final String CONNECT_OPT_IN = "installedDataMigrationConnect";
+    private static final String MALFORMED_ENCRYPTED_OPT_IN = "installedDataMigrationMalformedEncryptedFixture";
+    private static final String MALFORMED_ENCRYPTED_PREFS = "pocketshell-voice-secrets";
+    private static final String KEY_KEYSET = "__androidx_security_crypto_encrypted_prefs_key_keyset__";
+    private static final String VALUE_KEYSET = "__androidx_security_crypto_encrypted_prefs_value_keyset__";
+    private static final String EXPECTED_HOST_KEY_ARGUMENT = "installedDataMigrationExpectedHostKey";
+    private static final String DEFAULT_EXPECTED_HOST_KEY =
+        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    private Context targetContext;
+    private ActivityScenario<MainActivity> scenario;
+    private Map<String, String> sourceHashes;
+    private File createdMalformedPreferences;
+
+    @Before
+    public void requireAndSnapshotFixture() throws Exception {
+        boolean requested = "true".equals(
+            InstrumentationRegistry.getArguments().getString(FIXTURE_OPT_IN));
+        org.junit.Assume.assumeTrue(
+            "run only with the preserved synthetic 0.5.6 upgrade fixture and -e " + FIXTURE_OPT_IN + " true",
+            requested);
+        targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        if (malformedEncryptedFixtureRequested()) {
+            File source = new File(new File(targetContext.getApplicationInfo().dataDir, "shared_prefs"),
+                MALFORMED_ENCRYPTED_PREFS + ".xml");
+            assertTrue("the malformed test must not replace existing encrypted preferences", !source.exists());
+            SharedPreferences preferences = targetContext.getSharedPreferences(
+                MALFORMED_ENCRYPTED_PREFS, Context.MODE_PRIVATE);
+            assertTrue("could not create the synthetic malformed encrypted source",
+                preferences.edit().putString(KEY_KEYSET, "00").putString(VALUE_KEYSET, "00").commit());
+            createdMalformedPreferences = source;
+        }
+        sourceHashes = snapshotSourceHashes();
+    }
+
+    @After
+    public void closeShell() {
+        if (scenario != null) scenario.close();
+        if (createdMalformedPreferences != null) {
+            targetContext.getSharedPreferences(MALFORMED_ENCRYPTED_PREFS, Context.MODE_PRIVATE)
+                .edit().clear().commit();
+            assertTrue("could not remove synthetic malformed preferences", createdMalformedPreferences.delete());
+        }
+    }
+
+    @Test
+    public void startupStagesLegacyDataAndLeavesOriginalFilesUntouched() throws Exception {
+        org.junit.Assume.assumeFalse(malformedEncryptedFixtureRequested());
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'complete'");
+        awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
+
+        evalRaw("(() => {"
+            + "window.__installedDataMigrationProbe = 'pending';"
+            + "const open = indexedDB.open('pocketshell-installed-data-v1');"
+            + "open.onerror = () => window.__installedDataMigrationProbe = 'open-error';"
+            + "open.onsuccess = () => {"
+            + "const db = open.result;"
+            + "if (!db.objectStoreNames.contains('records')) { window.__installedDataMigrationProbe = 'missing-store'; return; }"
+            + "const read = db.transaction('records', 'readonly').objectStore('records').get('legacy-import-v1');"
+            + "read.onerror = () => window.__installedDataMigrationProbe = 'read-error';"
+            + "read.onsuccess = () => {"
+            + "const snapshot = read.result?.snapshot;"
+            + "window.__installedDataMigrationProbe = JSON.stringify({"
+            + "status: read.result?.status,"
+            + "hostId: snapshot?.database?.tables?.hosts?.find(row => row.id === 41)?.id,"
+            + "host: (() => {const row = snapshot?.database?.tables?.hosts?.find(item => item.id === 41); return row ? {id: row.id, name: row.name, hostname: row.hostname, port: row.port, username: row.username} : null;})(),"
+            + "snippet: snapshot?.database?.tables?.snippets?.find(row => row.id === 1)?.body,"
+            + "draft: snapshot?.preferences?.composer_drafts?.entries?.['host-41']?.value,"
+            + "syncUnknown: snapshot?.preferences?.next_sync_selection?.entries?.sync_future_field?.value,"
+            + "legacyTerminalSize: snapshot?.preferences?.next_settings?.entries?.terminal_text_size_px?.value,"
+            + "legacyGrace: snapshot?.preferences?.next_settings?.entries?.background_grace_millis?.value,"
+            + "platform: window.Capacitor?.getPlatform?.()"
+            + "});"
+            + "};"
+            + "};"
+            + "return 'started';"
+            + "})()");
+        awaitJsTrue("typeof window.__installedDataMigrationProbe === 'string' && window.__installedDataMigrationProbe !== 'pending'");
+        JSONObject imported = new JSONObject(evalString("window.__installedDataMigrationProbe"));
+        assertEquals("complete", imported.getString("status"));
+        assertEquals(41, imported.getInt("hostId"));
+        assertEquals("echo preserved-snippet", imported.getString("snippet"));
+        assertEquals("Draft kept after update", imported.getString("draft"));
+        assertEquals("unknown value retained", imported.getString("syncUnknown"));
+        assertEquals(32, imported.getInt("legacyTerminalSize"));
+        assertEquals("90000", imported.getString("legacyGrace"));
+
+        JSONObject legacyHost = imported.getJSONObject("host");
+        assertEquals(41, legacyHost.getInt("id"));
+        awaitJsTrue("document.querySelector('[data-testid=legacy-host-select] option[value=\"41\"]')?.textContent.trim().length > 0");
+        evalRaw("(() => {const select = document.querySelector('[data-testid=legacy-host-select]');"
+            + "select.value = '41'; select.dispatchEvent(new Event('change', {bubbles: true})); return 'selected';})()");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-host]')?.value === "
+            + JSONObject.quote(legacyHost.getString("hostname"))
+            + " && document.querySelector('[data-testid=ssh-username]')?.value === "
+            + JSONObject.quote(legacyHost.getString("username")));
+        assertEquals(String.valueOf(legacyHost.getInt("port")), evalString("document.querySelector('[data-testid=ssh-port]')?.value ?? ''"));
+        assertEquals("private key bytes must not be exposed by the host selection UI", "hidden",
+            evalString("document.querySelector('[data-testid=ssh-private-key]') ? 'visible' : 'hidden'"));
+
+        JSONObject settings = evalJson("localStorage.getItem('pocketshell.js.settings.v1') || '{}'");
+        assertTrue("legacy terminal size must be mapped into JS settings: " + settings + " / import=" + imported,
+            settings.optInt("terminalFontSize", -1) >= 8 && settings.optInt("terminalFontSize", -1) <= 32);
+        assertEquals(90_000, settings.getInt("backgroundGraceMs"));
+
+        JSONObject pin = evalJson("localStorage.getItem('pocketshell.ssh.host-key.41') || '{}'");
+        String expectedHostKey = InstrumentationRegistry.getArguments()
+            .getString(EXPECTED_HOST_KEY_ARGUMENT, DEFAULT_EXPECTED_HOST_KEY);
+        assertEquals(expectedHostKey, pin.getString("fingerprintSha256"));
+
+        if ("true".equals(InstrumentationRegistry.getArguments().getString(CONNECT_OPT_IN))) {
+            evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
+            awaitJsTrue("['CONNECTED', 'LIVE'].includes(document.querySelector(" +
+                "'section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim())");
+            awaitJsTrue("document.querySelector('[data-testid=session-list], [data-testid=empty-sessions]') !== null");
+            assertEquals("CONNECTED", evalString(
+                "document.querySelector('section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim()"));
+            evalRaw("document.querySelector('[data-testid=ssh-disconnect]')?.click(); 'disconnect-clicked'");
+            awaitJsTrue("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState === 'verified'");
+            assertEquals("the native resolver connection must close cleanly", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-connections]')?.textContent.trim()"));
+        }
+
+        assertEquals("the migration must not alter any original installed source file",
+            sourceHashes, snapshotSourceHashes());
+    }
+
+    @Test
+    public void malformedEncryptedPreferencesAppearInPackagedWebView() throws Exception {
+        org.junit.Assume.assumeTrue(malformedEncryptedFixtureRequested());
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
+        awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
+        String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
+        assertTrue("the partial import must identify the unreadable encrypted source: " + warning,
+            warning.contains("Encrypted preferences") && warning.contains("pocketshell-voice-secrets"));
+        assertEquals("the packaged partial import must not change any source file",
+            sourceHashes, snapshotSourceHashes());
+    }
+
+    private boolean malformedEncryptedFixtureRequested() {
+        return "true".equals(InstrumentationRegistry.getArguments().getString(MALFORMED_ENCRYPTED_OPT_IN));
+    }
+
+    private Map<String, String> snapshotSourceHashes() throws Exception {
+        File root = new File(targetContext.getApplicationInfo().dataDir);
+        Map<String, String> hashes = new LinkedHashMap<>();
+        String[] relativePaths = {
+            "databases/pocketshell.db",
+            "shared_prefs/next_settings.xml",
+            "shared_prefs/composer_drafts.xml",
+            "shared_prefs/next_sync_selection.xml",
+            "shared_prefs/workspace_order.xml",
+            "files/ssh-keys/fixture.pem",
+        };
+        for (String relativePath : relativePaths) {
+            File file = new File(root, relativePath);
+            assertTrue("fixture source file is missing: " + relativePath, file.isFile());
+            hashes.put(relativePath, sha256(file));
+        }
+        if (malformedEncryptedFixtureRequested()) {
+            String relativePath = "shared_prefs/" + MALFORMED_ENCRYPTED_PREFS + ".xml";
+            File file = new File(root, relativePath);
+            assertTrue("the malformed encrypted fixture source is missing", file.isFile());
+            hashes.put(relativePath, sha256(file));
+        }
+        return hashes;
+    }
+
+    private static String sha256(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] bytes = Files.readAllBytes(file.toPath());
+        byte[] value = digest.digest(bytes);
+        StringBuilder result = new StringBuilder();
+        for (byte item : value) result.append(String.format("%02x", item));
+        return result.toString();
+    }
+
+    private void awaitJsTrue(String expression) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + MIGRATION_TIMEOUT_MILLIS;
+        String latest = "<not evaluated>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            latest = evalRaw(expression);
+            if ("true".equals(latest)) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("WebView condition did not become true: " + expression
+            + " (last result: " + latest + "; page=" + evalString("document.body.innerText") + ")");
+    }
+
+    private String evalString(String expression) throws Exception {
+        Object decoded = new JSONTokener(evalRaw(expression)).nextValue();
+        return decoded == null ? null : decoded.toString();
+    }
+
+    private JSONObject evalJson(String expression) throws Exception {
+        return new JSONObject(evalString(expression));
+    }
+
+    private String evalRaw(String expression) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("the packaged activity must contain its Capacitor WebView", webView);
+            webView.evaluateJavascript(expression, value -> {
+                result.set(value);
+                latch.countDown();
+            });
+        });
+        assertTrue("timed out evaluating packaged WebView JavaScript",
+            latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        return result.get();
+    }
+
+    private static WebView findWebView(View root) {
+        if (root instanceof WebView) return (WebView) root;
+        if (!(root instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) root;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            WebView nested = findWebView(group.getChildAt(index));
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+}

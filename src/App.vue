@@ -16,6 +16,16 @@ import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
 import { uiSourceRevision } from './uiSourceInfo';
+import {
+  readImportedLegacyHosts,
+  installedDataMigrationState,
+  SETTINGS_RELOAD_SESSION_KEY,
+  retryInstalledDataMigration,
+  runInstalledDataMigration,
+  shouldReloadForImportedSettings,
+  type ImportedLegacyHost,
+} from './migration/installedDataMigration';
+import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
@@ -74,9 +84,13 @@ const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const promptComposerHasFocus = ref(false);
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
+const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
+const selectedLegacyHostId = ref('');
+const legacyKeyPassphrase = ref('');
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
 const connectionMessage = ref('');
+const settingsReloading = ref(false);
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
@@ -100,6 +114,9 @@ let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
+const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
+  || installedDataMigrationState.status === 'pending'
+  || settingsReloading.value);
 const isLive = computed(() => currentPhase.value === 'live');
 const keyboardComposerMode = computed(() =>
   keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
@@ -119,6 +136,9 @@ const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
 });
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
+const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
+  (host) => String(host.id) === selectedLegacyHostId.value,
+) ?? null);
 
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
@@ -217,9 +237,13 @@ function makeHostTarget(): SshHostTarget | null {
   const username = hostDraft.value.username.trim();
   const port = Number(hostDraft.value.port);
   const privateKeyPem = hostDraft.value.privateKeyPem.trim();
-  if (!hostname || !username || !privateKeyPem || !Number.isInteger(port) || port < 1 || port > 65535) {
-    connectionMessage.value = 'Enter a host, port, user, and private key to connect.';
+  const legacyHost = selectedLegacyHost.value;
+  if (!hostname || !username || (!privateKeyPem && !legacyHost) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    connectionMessage.value = 'Enter a host, port, user, and private key or choose a saved host.';
     return null;
+  }
+  if (legacyHost) {
+    return makeLegacySshHostTarget(legacyHost, legacyKeyPassphrase.value) as unknown as SshHostTarget;
   }
   return {
     hostId: `${username}@${hostname}:${port}`,
@@ -230,7 +254,25 @@ function makeHostTarget(): SshHostTarget | null {
   };
 }
 
+function selectLegacyHost(): void {
+  const host = selectedLegacyHost.value;
+  legacyKeyPassphrase.value = '';
+  if (!host) return;
+  hostDraft.value = {
+    hostname: host.hostname,
+    port: String(host.port),
+    username: host.username,
+    privateKeyPem: '',
+  };
+}
+
+function clearLegacyHostSelection(): void {
+  selectedLegacyHostId.value = '';
+  legacyKeyPassphrase.value = '';
+}
+
 async function connectHost() {
+  if (migrationBlocksConnection.value) return;
   const host = makeHostTarget();
   if (!host) return;
   await closeController();
@@ -411,6 +453,38 @@ async function rejectHostKey() {
   await disconnectHost();
 }
 
+function retryDataImport() {
+  void retryInstalledDataMigration().then((settingsWritten) => {
+    reloadAfterSettingsImport(settingsWritten);
+    void loadImportedLegacyHosts();
+  });
+}
+
+async function loadImportedLegacyHosts(): Promise<void> {
+  try {
+    importedLegacyHosts.value = await readImportedLegacyHosts();
+  } catch (error) {
+    installedDataMigrationState.status = 'failed';
+    installedDataMigrationState.error = error instanceof Error
+      ? error.message
+      : 'Saved hosts could not be loaded from the migration record.';
+  }
+}
+
+function reloadAfterSettingsImport(settingsWritten: boolean) {
+  if (!settingsWritten) {
+    try {
+      window.sessionStorage.removeItem(SETTINGS_RELOAD_SESSION_KEY);
+    } catch {
+      // A later launch can still use the imported value from local storage.
+    }
+    return;
+  }
+  if (!shouldReloadForImportedSettings(settingsWritten)) return;
+  settingsReloading.value = true;
+  window.location.reload();
+}
+
 onMounted(() => {
   diagnostics.record('app-started', 'startup', 'OK');
   const updateKeyboardViewport = () => {
@@ -454,6 +528,10 @@ onMounted(() => {
     });
   }
 
+  void runInstalledDataMigration().then((settingsWritten) => {
+    reloadAfterSettingsImport(settingsWritten);
+    void loadImportedLegacyHosts();
+  });
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
@@ -555,6 +633,7 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    :data-migration-status="installedDataMigrationState.status"
   >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.home()">
@@ -592,6 +671,28 @@ onBeforeUnmount(() => {
       <span class="build-strip__detail">core {{ coreShort }} · ui {{ uiShort }} · assets {{ bundleShort }}</span>
     </div>
 
+    <section
+      v-if="installedDataMigrationState.status === 'failed' || installedDataMigrationState.status === 'partial'"
+      class="migration-error"
+      role="alert"
+      data-testid="installed-data-migration-error"
+    >
+      <div class="migration-error__copy">
+        <strong>{{ installedDataMigrationState.status === 'partial' ? 'Some installed data needs attention' : 'Installed data needs attention' }}</strong>
+        <p>{{ installedDataMigrationState.error }} Your original Android data remains in place.</p>
+      </div>
+      <button
+        v-if="installedDataMigrationState.status === 'failed' || installedDataMigrationState.status === 'partial'"
+        class="small-action"
+        type="button"
+        data-testid="retry-installed-data-migration"
+        :disabled="installedDataMigrationState.retrying"
+        @click="retryDataImport"
+      >
+        {{ installedDataMigrationState.retrying ? 'Checking…' : installedDataMigrationState.status === 'partial' ? 'Check installed data again' : 'Retry import' }}
+      </button>
+    </section>
+
     <main v-if="navigation.route === 'home'" class="screen-content home-screen">
       <section class="panel host-panel" aria-labelledby="hosts-title">
         <div class="panel-heading">
@@ -605,19 +706,32 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="host-fields">
+          <label v-if="importedLegacyHosts.length > 0" class="form-field host-field-name">
+            <span>Saved host from your previous install</span>
+            <select v-model="selectedLegacyHostId" data-testid="legacy-host-select" @change="selectLegacyHost">
+              <option value="">Choose a saved host</option>
+              <option v-for="host in importedLegacyHosts" :key="host.id" :value="String(host.id)">
+                {{ host.name || host.hostname }} · {{ host.username }}@{{ host.hostname }}:{{ host.port }} · {{ host.keyName }}
+              </option>
+            </select>
+          </label>
           <label class="form-field host-field-name">
             <span>Host name or IP</span>
-            <input v-model="hostDraft.hostname" data-testid="ssh-host" autocomplete="off" autocapitalize="none" placeholder="dev.example.com" />
+            <input v-model="hostDraft.hostname" data-testid="ssh-host" autocomplete="off" autocapitalize="none" placeholder="dev.example.com" @input="clearLegacyHostSelection" />
           </label>
           <label class="form-field host-field-port">
             <span>Port</span>
-            <input v-model="hostDraft.port" data-testid="ssh-port" type="number" inputmode="numeric" min="1" max="65535" />
+            <input v-model="hostDraft.port" data-testid="ssh-port" type="number" inputmode="numeric" min="1" max="65535" @input="clearLegacyHostSelection" />
           </label>
           <label class="form-field host-field-name">
             <span>User</span>
-            <input v-model="hostDraft.username" data-testid="ssh-username" autocomplete="username" autocapitalize="none" placeholder="alexey" />
+            <input v-model="hostDraft.username" data-testid="ssh-username" autocomplete="username" autocapitalize="none" placeholder="alexey" @input="clearLegacyHostSelection" />
           </label>
-          <label class="form-field host-field-key">
+          <label v-if="selectedLegacyHost?.keyHasPassphrase" class="form-field host-field-key">
+            <span>Saved SSH key passphrase · kept in memory for this run</span>
+            <input v-model="legacyKeyPassphrase" data-testid="legacy-key-passphrase" type="password" autocomplete="off" />
+          </label>
+          <label v-if="!selectedLegacyHost" class="form-field host-field-key">
             <span>Private key · kept in memory for this run</span>
             <textarea
               v-model="hostDraft.privateKeyPem"
@@ -631,7 +745,7 @@ onBeforeUnmount(() => {
           </label>
         </div>
         <div class="host-actions">
-          <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting" @click="connectHost">
+          <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting || migrationBlocksConnection" @click="connectHost">
             {{ isConnecting ? 'Connecting…' : 'Connect' }}
           </button>
           <button v-if="connectionSnapshot" class="action-button action-button--secondary" type="button" data-testid="ssh-disconnect" @click="disconnectHost">
@@ -651,7 +765,7 @@ onBeforeUnmount(() => {
         <p v-if="connectionMessage || connectionSnapshot?.error" class="connection-message" role="alert" data-testid="ssh-message">
           {{ connectionMessage || connectionSnapshot?.error }}
         </p>
-        <p class="panel-footnote">SSH host-key pins are saved locally. The private key is not stored by this preview.</p>
+        <p class="panel-footnote">SSH host-key pins are saved locally. Imported private keys stay in Android private storage and are read by native SSH only.</p>
       </section>
 
       <section class="panel workspace-panel" aria-labelledby="sessions-title">
