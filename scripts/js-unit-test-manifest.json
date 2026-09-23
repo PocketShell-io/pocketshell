@@ -78,6 +78,28 @@
         "clears the selected event when opening the whole-log export preview",
         "does not push the current destination a second time"
       ]
+    },
+    "tests/unit/filesWorkspace.test.ts": {
+      "suite": "SFTP file workspace policy and byte-I/O adapter",
+      "tests": [
+        "resolves paths under the configured remote root and rejects traversal and NUL",
+        "lists valid children with shared directory-first ordering and name classification",
+        "rejects unsafe names returned by native SFTP listing",
+        "rejects duplicate child names instead of selecting an ambiguous remote path",
+        "reads bounded bytes and combines filename and magic classification",
+        "rejects oversized files before reading and detects a size change during bounded reads",
+        "loads UTF-8 text and refuses to save after the remote metadata changes",
+        "saves UTF-8 edits only when the captured metadata still matches",
+        "fails closed on a symlink entry before reading or writing",
+        "does not offer binary magic content to the text editor",
+        "uploads bytes through a resolved path and prevents implicit overwrite",
+        "stages sanitized attachment names, preserves partial success, and returns retention candidates",
+        "does not return completed uploads as attachments after cancellation",
+        "leaves the remote tree untouched for an empty attachment batch",
+        "rejects files above the native transfer limit before issuing a write",
+        "rejects stale generations before requests and after in-flight responses",
+        "rejects native responses with an unrelated request ID"
+      ]
     }
   }
 }
