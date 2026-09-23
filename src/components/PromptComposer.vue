@@ -5,6 +5,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 import { ComposerControls } from '@pocketshell/ui';
 import type { ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
+import { createDictationStartCancellation } from '../session/dictationStartCancellation';
 import { platformInput, type DictationEvent } from '../session/platformInput';
 import { useComposerDrafts } from '../stores/composerDrafts';
 
@@ -25,7 +26,7 @@ const dictationStarting = ref(false);
 const dictationActive = ref(false);
 let dictationSession: { requestId: string; stop: () => Promise<void> } | null = null;
 let dictationTargetKey = '';
-let cancelDictationOnStart = false;
+const dictationStartCancellation = createDictationStartCancellation();
 let dictationBaseDraft = '';
 let completedTranscript = '';
 let partialTranscript = '';
@@ -60,8 +61,7 @@ watch(() => props.writePty, () => {
 });
 watch(() => props.targetKey, () => {
   if (dictationTargetKey && dictationTargetKey !== props.targetKey) {
-    if (dictationSession) void stopDictation();
-    else if (dictationStarting.value) cancelDictationOnStart = true;
+    requestDictationStop();
   }
   // Invalidate an in-flight paste before installing a controller for another
   // PTY. Otherwise its next bracketed-paste chunk could land in the new shell.
@@ -79,12 +79,12 @@ watch(() => props.targetKey, () => {
 onBeforeUnmount(() => {
   composerUnmounting = true;
   void appStateListener?.remove();
-  void stopDictation();
+  requestDictationStop();
 });
 
 onMounted(() => {
   void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-    if (!isActive) void stopDictation();
+    if (!isActive) requestDictationStop();
   }).then((listener) => {
     if (composerUnmounting) void listener.remove();
     else appStateListener = listener;
@@ -139,7 +139,7 @@ function handleDictationEvent(targetKey: string, event: DictationEvent) {
     dictationSession = null;
     dictationActive.value = false;
     dictationStarting.value = false;
-    cancelDictationOnStart = false;
+    dictationStartCancellation.clear();
     if (isCurrentTarget && statusTone.value !== 'error') {
       statusTone.value = 'quiet';
       statusText.value = 'Dictation stopped. Review the draft before sending.';
@@ -161,7 +161,7 @@ async function toggleDictation() {
   completedTranscript = '';
   partialTranscript = '';
   dictationStarting.value = true;
-  cancelDictationOnStart = false;
+  dictationStartCancellation.begin();
   statusTone.value = 'quiet';
   statusText.value = 'Requesting microphone access…';
 
@@ -173,15 +173,20 @@ async function toggleDictation() {
     dictationStarting.value = false;
     dictationActive.value = true;
     statusText.value = 'Listening. Tap Stop dictation when you are done.';
-    if (cancelDictationOnStart || targetKey !== props.targetKey) await stopDictation();
+    if (dictationStartCancellation.takeStopRequest() || targetKey !== props.targetKey) await stopDictation();
   } catch (error) {
     dictationTargetKey = '';
     dictationStarting.value = false;
     dictationActive.value = false;
-    cancelDictationOnStart = false;
+    dictationStartCancellation.clear();
     statusTone.value = 'warning';
     statusText.value = `Dictation could not start: ${errorMessage(error)}`;
   }
+}
+
+function requestDictationStop() {
+  if (dictationSession) void stopDictation();
+  else if (dictationStarting.value) dictationStartCancellation.requestStop();
 }
 
 async function stopDictation() {
