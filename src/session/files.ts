@@ -23,6 +23,7 @@ import {
   type RemoteFileMetadata,
 } from '@pocketshell/core';
 import type {
+  NativeSshCapabilityPlugin,
   SshCapabilityPlugin,
   SshConnectionRef,
   SshSftpEntry,
@@ -139,9 +140,11 @@ export class FileWorkspaceError extends Error {
 
 /**
  * Bind portable file policy to the native SFTP byte-I/O capability. Paths are
- * normalized and confined lexically under rootDirectory. This cannot resolve
- * remote symlinks; the native adapter must add lstat/realpath checks before a
- * complete server-side path-safety claim is possible.
+ * normalized and confined lexically under rootDirectory. The native adapter
+ * also canonicalizes every operation under the configured root and rejects
+ * symbolic links and special files. SFTP has no portable no-follow open or
+ * metadata compare-and-swap; this cannot coordinate an external process that
+ * mutates the same inode after the native handle check.
  */
 export function createFileWorkspaceService(
   capability: SshCapabilityPlugin,
@@ -156,6 +159,8 @@ export function createFileWorkspaceService(
   const rootPath = normalizeRemotePath(rootDirectory);
   if (rootPath == null) throw new FileWorkspaceError('invalid-path', 'The file workspace root is invalid.');
   const normalizedRoot: string = rootPath;
+  const fileCapability = capability as SshCapabilityPlugin &
+    Pick<NativeSshCapabilityPlugin, 'sftpWriteIfUnchanged'>;
   currentDirectory = resolvePath(configuration.initialDirectory ?? normalizedRoot, normalizedRoot);
 
   function assertCurrent(): void {
@@ -193,7 +198,7 @@ export function createFileWorkspaceService(
   }
 
   function requestOptions(path: string) {
-    return { ...configuration.connection, requestId: nextRequestId(), path };
+    return { ...configuration.connection, requestId: nextRequestId(), rootPath: normalizedRoot, path };
   }
 
   async function checkedResponse<T extends { requestId: string }>(
@@ -209,8 +214,6 @@ export function createFileWorkspaceService(
   }
 
   function entryType(entry: SshSftpEntry): FileWorkspaceEntryType {
-    // A later native bridge can supply a richer type. The current bridge only
-    // reports isDirectory, so it cannot positively identify a symlink.
     const richer = entry as SshSftpEntry & {
       type?: unknown;
       isSymlink?: unknown;
@@ -225,9 +228,7 @@ export function createFileWorkspaceService(
     }
     if (richer.type === 'file') return entry.isDirectory === false ? 'file' : 'other';
     if (richer.type != null) return 'other';
-    if (typeof entry.isDirectory !== 'boolean') return 'other';
-    if (entry.isDirectory) return 'directory';
-    return 'file';
+    return 'other';
   }
 
   function entrySize(entry: SshSftpEntry): number {
@@ -351,9 +352,9 @@ export function createFileWorkspaceService(
     }
   }
 
-  async function writeBytes(path: string, bytes: Uint8Array): Promise<FileUploadResult> {
+  async function writeBytes(path: string, bytes: Uint8Array, createOnly = true): Promise<FileUploadResult> {
     checkByteLimit(bytes);
-    const options = { ...requestOptions(path), dataBase64: encodeBase64(bytes) };
+    const options = { ...requestOptions(path), createOnly, dataBase64: encodeBase64(bytes) };
     const response = await checkedResponse(capability.sftpWrite(options), options.requestId);
     if (!Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
       throw new FileWorkspaceError('invalid-response', 'The native SFTP write byte count did not match the uploaded content.');
@@ -562,19 +563,34 @@ export function createFileWorkspaceService(
     loadTextForEdit,
     async saveText(snapshot: FileEditSnapshot, text: string): Promise<FileEditSaveResult> {
       const parts = fileParts(snapshot.path);
-      const current = await entryAt(parts.path);
-      if (current == null) return { status: 'conflict', path: parts.path, verdict: 'missing' };
-      assertNotSymlink(current);
-      if (current.type !== 'file') {
+      if (snapshot.metadata.isDirectory || snapshot.metadata.modifiedEpochMs <= 0) {
         return { status: 'conflict', path: parts.path, verdict: 'changed' };
       }
-      const verdict = evaluateFileEditSave(snapshot.metadata, metadataOf(current));
-      if (verdict !== 'unchanged') return { status: 'conflict', path: parts.path, verdict };
-
       const bytes = new TextEncoder().encode(text);
       checkByteLimit(bytes);
-      const uploaded = await writeBytes(parts.path, bytes);
-      return { status: 'saved', path: uploaded.path, bytesWritten: uploaded.bytesWritten };
+      const options = {
+        ...requestOptions(parts.path),
+        expectedMetadata: {
+          isDirectory: false as const,
+          sizeBytes: snapshot.metadata.sizeBytes,
+          modifiedEpochMs: snapshot.metadata.modifiedEpochMs,
+        },
+        dataBase64: encodeBase64(bytes),
+      };
+      const response = await checkedResponse(
+        fileCapability.sftpWriteIfUnchanged(options),
+        options.requestId,
+      );
+      if (response.status === 'conflict') {
+        if (response.verdict !== 'missing' && response.verdict !== 'changed') {
+          throw new FileWorkspaceError('invalid-response', 'The native SFTP conflict response was invalid.');
+        }
+        return { status: 'conflict', path: parts.path, verdict: response.verdict };
+      }
+      if (response.status !== 'written' || !Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
+        throw new FileWorkspaceError('invalid-response', 'The native SFTP conditional write response was invalid.');
+      }
+      return { status: 'saved', path: parts.path, bytesWritten: response.bytesWritten };
     },
     async writeFile(path: string, bytes: Uint8Array, overwrite = false): Promise<FileUploadResult> {
       const parts = fileParts(path);
@@ -584,7 +600,7 @@ export function createFileWorkspaceService(
         if (existing.type !== 'file') throw new FileWorkspaceError('not-file', 'The upload target is not a regular file.');
         if (!overwrite) throw new FileWorkspaceError('file-exists', 'The remote upload target already exists.');
       }
-      return writeBytes(parts.path, bytes);
+      return writeBytes(parts.path, bytes, !overwrite);
     },
     stageAttachments: uploadAttachmentBatch,
     planAttachmentRetention: planRetention,

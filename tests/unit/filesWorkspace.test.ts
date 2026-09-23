@@ -16,10 +16,17 @@ interface MockSftp {
   capability: SshCapabilityPlugin;
   files: Map<string, MockFile>;
   directories: Set<string>;
+  atomicWrite: (options: {
+    requestId: string;
+    path: string;
+    expectedMetadata: { isDirectory: false; sizeBytes: number; modifiedEpochMs: number };
+    dataBase64: string;
+  }) => Promise<{ requestId: string; status: 'written' | 'conflict'; verdict?: 'missing' | 'changed'; bytesWritten?: number }>;
   calls: {
     list: ReturnType<typeof vi.fn>;
     read: ReturnType<typeof vi.fn>;
     write: ReturnType<typeof vi.fn>;
+    conditionalWrite: ReturnType<typeof vi.fn>;
     mkdir: ReturnType<typeof vi.fn>;
     rename: ReturnType<typeof vi.fn>;
     remove: ReturnType<typeof vi.fn>;
@@ -66,7 +73,14 @@ function createMockSftp(seed?: {
     }
     for (const directory of directories) {
       if (directory !== options.path && parent(directory) === options.path) {
-        entries.push({ path: directory, name: basename(directory), isDirectory: true, sizeBytes: 0, modifiedEpochMs: 1 });
+        entries.push({
+          path: directory,
+          name: basename(directory),
+          type: 'directory',
+          isDirectory: true,
+          sizeBytes: 0,
+          modifiedEpochMs: 1,
+        });
       }
     }
     for (const [path, file] of files) {
@@ -74,10 +88,10 @@ function createMockSftp(seed?: {
       entries.push({
         path,
         name: basename(path),
+        type: file.symlink ? 'symlink' : 'file',
         isDirectory: false,
         sizeBytes: file.bytes.byteLength,
         modifiedEpochMs: file.modifiedEpochMs,
-        ...(file.symlink ? { type: 'symlink' } : {}),
       });
     }
     return { requestId: options.requestId, entries };
@@ -87,11 +101,33 @@ function createMockSftp(seed?: {
     if (!file) throw new Error(`No such file: ${options.path}`);
     return { requestId: options.requestId, dataBase64: bytesToBase64(file.bytes.subarray(0, options.maxBytes)) };
   });
-  const write = vi.fn(async (options: { requestId: string; path: string; dataBase64: string }) => {
+  const write = vi.fn(async (options: { requestId: string; path: string; dataBase64: string; createOnly?: boolean }) => {
+    if (options.createOnly && files.has(options.path)) throw new Error(`Already exists: ${options.path}`);
     const content = base64ToBytes(options.dataBase64);
     files.set(options.path, { bytes: content, modifiedEpochMs: 2_000 });
     return { requestId: options.requestId, bytesWritten: content.byteLength };
   });
+  const atomicWrite = async (options: {
+    requestId: string;
+    path: string;
+    expectedMetadata: { isDirectory: false; sizeBytes: number; modifiedEpochMs: number };
+    dataBase64: string;
+  }) => {
+    const file = files.get(options.path);
+    if (file == null) return { requestId: options.requestId, status: 'conflict' as const, verdict: 'missing' as const };
+    if (file.symlink) throw new Error('Symlinks are rejected by the native SFTP adapter.');
+    if (
+      options.expectedMetadata.isDirectory
+      || options.expectedMetadata.sizeBytes !== file.bytes.byteLength
+      || options.expectedMetadata.modifiedEpochMs !== file.modifiedEpochMs
+    ) {
+      return { requestId: options.requestId, status: 'conflict' as const, verdict: 'changed' as const };
+    }
+    const content = base64ToBytes(options.dataBase64);
+    files.set(options.path, { bytes: content, modifiedEpochMs: 2_000 });
+    return { requestId: options.requestId, status: 'written' as const, bytesWritten: content.byteLength };
+  };
+  const conditionalWrite = vi.fn(atomicWrite);
   const mkdir = vi.fn(async (options: { requestId: string; path: string }) => {
     directories.add(options.path);
     return { requestId: options.requestId };
@@ -114,6 +150,7 @@ function createMockSftp(seed?: {
     sftpList: list,
     sftpRead: read,
     sftpWrite: write,
+    sftpWriteIfUnchanged: conditionalWrite,
     sftpMkdir: mkdir,
     sftpRename: rename,
     sftpDelete: remove,
@@ -122,7 +159,8 @@ function createMockSftp(seed?: {
     capability,
     files,
     directories,
-    calls: { list, read, write, mkdir, rename, remove },
+    atomicWrite,
+    calls: { list, read, write, conditionalWrite, mkdir, rename, remove },
   };
 }
 
@@ -236,7 +274,7 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
     await expect(service.readFile('raced.dat', 32)).rejects.toMatchObject({ code: 'file-changed' });
   });
 
-  it('loads UTF-8 text and refuses to save after the remote metadata changes', async () => {
+  it('refuses to save when metadata changes immediately before the native conditional write', async () => {
     const mock = createMockSftp({
       files: { '/home/alex/project/readme.md': { bytes: new TextEncoder().encode('before'), modifiedEpochMs: 10 } },
     });
@@ -244,17 +282,25 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
     const snapshot = await service.loadTextForEdit('readme.md');
     expect(snapshot.text).toBe('before');
 
-    mock.files.set('/home/alex/project/readme.md', {
-      bytes: new TextEncoder().encode('different length'),
-      modifiedEpochMs: 20,
+    const checkAndWrite = mock.calls.conditionalWrite.getMockImplementation();
+    expect(checkAndWrite).toBeDefined();
+    mock.calls.conditionalWrite.mockImplementationOnce(async (options) => {
+      // Model a server-side edit after the caller captured metadata but before
+      // the native adapter compares it and writes.
+      mock.files.set('/home/alex/project/readme.md', {
+        bytes: new TextEncoder().encode('different length'),
+        modifiedEpochMs: 20,
+      });
+      return checkAndWrite!(options);
     });
     const result = await service.saveText(snapshot, 'after');
 
     expect(result).toEqual({ status: 'conflict', path: '/home/alex/project/readme.md', verdict: 'changed' });
+    expect(mock.calls.conditionalWrite).toHaveBeenCalledTimes(1);
     expect(mock.calls.write).not.toHaveBeenCalled();
   });
 
-  it('saves UTF-8 edits only when the captured metadata still matches', async () => {
+  it('saves UTF-8 edits only through the native conditional write when metadata still matches', async () => {
     const mock = createMockSftp({
       files: { '/home/alex/project/readme.md': { bytes: new TextEncoder().encode('before'), modifiedEpochMs: 10 } },
     });
@@ -264,6 +310,13 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
 
     expect(result).toEqual({ status: 'saved', path: '/home/alex/project/readme.md', bytesWritten: new TextEncoder().encode('café 🧪').length });
     expect(mock.files.get(snapshot.path)?.bytes).toEqual(new TextEncoder().encode('café 🧪'));
+    expect(mock.calls.conditionalWrite).toHaveBeenCalledWith(expect.objectContaining({
+      path: snapshot.path,
+      rootPath: '/home/alex/project',
+      expectedMetadata: snapshot.metadata,
+      dataBase64: bytesToBase64(new TextEncoder().encode('café 🧪')),
+    }));
+    expect(mock.calls.write).not.toHaveBeenCalled();
   });
 
   it('fails closed on a symlink entry before reading or writing', async () => {
@@ -277,6 +330,22 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
       .rejects.toMatchObject({ code: 'symlink-unsupported' });
     expect(mock.calls.read).not.toHaveBeenCalled();
     expect(mock.calls.write).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the native listing omits a regular-file type', async () => {
+    const mock = createMockSftp({
+      files: { '/home/alex/project/untyped.txt': { bytes: new TextEncoder().encode('text'), modifiedEpochMs: 10 } },
+    });
+    mock.calls.list.mockImplementation(async (options) => ({
+      requestId: options.requestId,
+      entries: [{ path: options.path, name: 'untyped.txt', isDirectory: false, sizeBytes: 4, modifiedEpochMs: 10 }],
+    }));
+
+    const listing = await serviceFor(mock).listDirectory();
+
+    expect(listing.entries[0]?.type).toBe('other');
+    await expect(serviceFor(mock).readFile('untyped.txt')).rejects.toMatchObject({ code: 'not-file' });
+    expect(mock.calls.read).not.toHaveBeenCalled();
   });
 
   it('does not offer binary magic content to the text editor', async () => {
