@@ -135,6 +135,32 @@ def has_confident_screenshot_marker(
     return False, None
 
 
+def validate_screenshot_marker_evidence(
+    words: list[dict[str, Any]], marker: str, marker_bounds: tuple[int, int, int, int],
+    accent_color: Any, accent_pixels: Any,
+) -> dict[str, Any]:
+    expected_accent = _screenshot_marker_accent_rgb(marker)
+    if accent_color != expected_accent:
+        raise EvidenceFailure("screenshot lacks the expected terminal-output accent color")
+    if not isinstance(accent_pixels, int) or accent_pixels < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+        raise EvidenceFailure("screenshot lacks enough current marker-row accent pixels")
+    found, match = has_confident_screenshot_marker(words, marker, marker_bounds)
+    if not found or match is None:
+        raise EvidenceFailure(
+            f"screenshot lacks the standalone marker {marker!r} inside its measured terminal row "
+            f"at confidence >= {MIN_SCREENSHOT_OCR_CONFIDENCE:g}"
+        )
+    return {
+        "marker": marker,
+        "recognized": match["text"],
+        "confidence": round(match["confidence"], 1),
+        "pixelBounds": list(marker_bounds),
+        "recognizedBounds": [match["left"], match["top"], match["left"] + match["width"], match["top"] + match["height"]],
+        "accentColor": accent_color,
+        "accentPixels": accent_pixels,
+    }
+
+
 def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) -> tuple[int, int, int, int]:
     dpr = viewport.get("devicePixelRatio")
     keys = ("left", "top", "right", "bottom")
@@ -153,7 +179,10 @@ def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) 
     return bounds
 
 
-def _screenshot_marker_ocr(path: Path, marker: str, marker_bounds: tuple[int, int, int, int]) -> dict[str, Any]:
+def _screenshot_marker_ocr(
+    path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
+    accent_color: Any, accent_pixels: Any,
+) -> dict[str, Any]:
     if shutil.which("tesseract") is None:
         raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
     try:
@@ -184,25 +213,17 @@ def _screenshot_marker_ocr(path: Path, marker: str, marker_bounds: tuple[int, in
             })
     except (ValueError, csv.Error) as error:
         raise EvidenceFailure(f"Tesseract returned malformed TSV for {path}: {error}") from error
-    found, match = has_confident_screenshot_marker(words, marker, marker_bounds)
-    if not found or match is None:
+    try:
+        return validate_screenshot_marker_evidence(
+            words, marker, marker_bounds, accent_color, accent_pixels
+        )
+    except EvidenceFailure as error:
         recognized = [
             {"text": word["text"], "confidence": round(word["confidence"], 1),
              "left": word["left"], "top": word["top"], "width": word["width"], "height": word["height"]}
             for word in words if word["confidence"] >= 0
         ]
-        raise EvidenceFailure(
-            f"screenshot {path.name} does not OCR the standalone marker {marker!r} "
-            f"inside its measured terminal row at confidence >= {MIN_SCREENSHOT_OCR_CONFIDENCE:g}; "
-            f"recognized={recognized[:20]}"
-        )
-    return {
-        "marker": marker,
-        "recognized": match["text"],
-        "confidence": round(match["confidence"], 1),
-        "pixelBounds": list(marker_bounds),
-        "recognizedBounds": [match["left"], match["top"], match["left"] + match["width"], match["top"] + match["height"]],
-    }
+        raise EvidenceFailure(f"screenshot {path.name}: {error}; recognized={recognized[:20]}") from error
 
 
 def normalized_terminal_lines(text: str) -> list[str]:
@@ -395,6 +416,27 @@ def _self_test() -> int:
             print(f"FAIL: screenshot OCR mutation probe {index}: {label}", file=sys.stderr)
             return 1
         print(f"ok [screenshot {index}/{len(screenshot_probes)}] {label}")
+
+    expected_accent = _screenshot_marker_accent_rgb(screenshot_marker)
+    combined_screenshot_probes = [
+        ("accent plus exact standalone marker accepted", screenshot_probes[0][1], expected_accent, 96, True),
+        ("blank accent rectangle rejected without OCR text", [], expected_accent, 96, False),
+        ("stale session-list OCR rejected despite accent pixels", screenshot_probes[1][1], expected_accent, 96, False),
+        ("exact marker OCR rejected without enough accent pixels", screenshot_probes[0][1], expected_accent, 12, False),
+        ("split printf echo rejected despite accent pixels", screenshot_probes[4][1], expected_accent, 96, False),
+    ]
+    for index, (label, words, accent_color, accent_pixels, expected) in enumerate(combined_screenshot_probes, 1):
+        try:
+            validate_screenshot_marker_evidence(
+                words, screenshot_marker, marker_bounds, accent_color, accent_pixels
+            )
+            actual = True
+        except EvidenceFailure:
+            actual = False
+        if actual != expected:
+            print(f"FAIL: combined screenshot evidence mutation probe {index}: {label}", file=sys.stderr)
+            return 1
+        print(f"ok [combined screenshot {index}/{len(combined_screenshot_probes)}] {label}")
 
     history_markers = {"REMOTE_OUTPUT_JS2861FIX0923_AS", "REMOTE_OUTPUT_JS2861FIX0923_AR"}
     try:
@@ -1290,8 +1332,6 @@ def _validate_checkpoint(
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: PNG dimensions do not match the selected terminal viewport at DPR")
     if pixels.get("cropWidth") != image_width or pixels.get("cropHeight") != image_height:
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot crop metadata disagrees with the PNG")
-    if not isinstance(pixels.get("markerBrightPixels"), int) or pixels["markerBrightPixels"] < 8:
-        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot does not prove rendered marker text")
     if not (
         marker_rect.get("left", float("inf")) >= viewport.get("left", float("-inf"))
         and marker_rect.get("top", float("inf")) >= viewport.get("top", float("-inf"))
@@ -1300,14 +1340,13 @@ def _validate_checkpoint(
     ):
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: marker row lies outside the captured terminal viewport")
     marker_bounds = _marker_pixel_bounds(viewport, marker_rect)
-    ocr_evidence = _screenshot_marker_ocr(png_path, marker, marker_bounds)
-    if pixels.get("markerAccentColor") != _screenshot_marker_accent_rgb(marker):
-        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot lacks the expected terminal-output accent color")
-    if (
-        not isinstance(pixels.get("markerAccentPixels"), int)
-        or pixels["markerAccentPixels"] < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS
-    ):
-        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot lacks the current marker-row accent pixels")
+    try:
+        ocr_evidence = _screenshot_marker_ocr(
+            png_path, marker, marker_bounds,
+            pixels.get("markerAccentColor"), pixels.get("markerAccentPixels"),
+        )
+    except EvidenceFailure as error:
+        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: {error}") from error
     return ocr_evidence
 
 

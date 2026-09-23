@@ -658,8 +658,6 @@ public final class SshPtyDockerJourneyTest {
                 markerLeft, markerTop, markerRight, markerBottom, checkpoint, markerAccent);
         assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
                 && crop[2] <= full.getWidth() && crop[3] <= full.getHeight() && crop[2] > crop[0] && crop[3] > crop[1]);
-        int brightTextPixels = countBrightPixels(full, markerLeft, markerTop, markerRight, markerBottom);
-        assertTrue("captured marker row must contain rendered terminal text pixels", brightTextPixels >= 8);
         int markerAccentPixels = countPixelsNearColor(full, markerLeft, markerTop, markerRight, markerBottom,
                 markerAccent, 24);
         assertTrue("captured marker row must contain the ANSI accent painted by current terminal output",
@@ -675,7 +673,6 @@ public final class SshPtyDockerJourneyTest {
                 .put("devicePixelRatio", rect.optDouble("devicePixelRatio"))
                 .put("cropWidth", crop[2] - crop[0])
                 .put("cropHeight", crop[3] - crop[1])
-                .put("markerBrightPixels", brightTextPixels)
                 .put("markerAccentColor", colorString(markerAccent))
                 .put("markerAccentPixels", markerAccentPixels)
                 .put("backgroundRgb", colorString(backgroundPixel));
@@ -730,17 +727,6 @@ public final class SshPtyDockerJourneyTest {
         });
         assertTrue("WebView did not reach a bounded presentation frame", frameReady.await(5, TimeUnit.SECONDS));
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-    }
-
-    private int countBrightPixels(Bitmap bitmap, int left, int top, int right, int bottom) {
-        int count = 0;
-        for (int y = top; y < bottom; y += 1) {
-            for (int x = left; x < right; x += 1) {
-                int pixel = bitmap.getPixel(x, y);
-                if (Color.red(pixel) > 155 && Color.green(pixel) > 155 && Color.blue(pixel) > 155) count += 1;
-            }
-        }
-        return count;
     }
 
     private int countPixelsNearColor(Bitmap bitmap, int left, int top, int right, int bottom, int expected, int tolerance) {
