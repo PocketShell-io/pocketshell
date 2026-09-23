@@ -8,6 +8,8 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SshCapabilityPlugin.class);
         registerPlugin(KeyboardInsetsPlugin.class);
         registerPlugin(InstalledDataMigrationPlugin.class);
+        registerPlugin(DocumentContentPlugin.class);
+        registerPlugin(SpeechRecognitionPlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

@@ -5,10 +5,14 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.content.ClipData;
+import android.content.Intent;
 import android.graphics.Insets;
+import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Base64;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -20,6 +24,7 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.core.content.FileProvider;
 
 import com.pocketshell.app.MainActivity;
 
@@ -32,6 +37,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -81,6 +88,58 @@ public final class JsShellPackagedSmokeTest {
                 + "return JSON.stringify({top: rect.top, bottom: rect.bottom, height: innerHeight});})()");
         assertTrue("verified status and short build identity must be on screen",
                 statusBounds.getDouble("top") >= 0 && statusBounds.getDouble("bottom") <= statusBounds.getDouble("height"));
+    }
+
+    @Test
+    public void packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes() throws Exception {
+        scenario.close();
+
+        byte[] sharedBytes = "packed café 🧪".getBytes(StandardCharsets.UTF_8);
+        File sharedFile = new File(targetContext().getCacheDir(), "platform-input-share.txt");
+        try (FileOutputStream output = new FileOutputStream(sharedFile)) {
+            output.write(sharedBytes);
+        }
+        Uri sharedUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", sharedFile);
+        Intent share = new Intent(Intent.ACTION_SEND)
+                .setClass(targetContext(), MainActivity.class)
+                .setType("text/plain")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(Intent.EXTRA_SUBJECT, "Packaged share subject")
+                .putExtra(Intent.EXTRA_TEXT, "Packaged share body")
+                .putExtra(Intent.EXTRA_STREAM, sharedUri);
+        share.setClipData(ClipData.newUri(targetContext().getContentResolver(), "shared file", sharedUri));
+        scenario = ActivityScenario.launch(share);
+
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+        awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
+                + "plugin.addListener('shareReceived',(event)=>window.__ps2857SharedContent=event); return true;})()");
+        awaitJsTrue("window.__ps2857SharedContent?.text === 'Packaged share body'"
+                + " && window.__ps2857SharedContent?.subject === 'Packaged share subject'"
+                + " && window.__ps2857SharedContent?.files?.length === 1");
+
+        JSONObject sharedMetadata = evalJson("(() => {const file=window.__ps2857SharedContent.files[0];"
+                + "return JSON.stringify({name:file.name,sizeBytes:file.sizeBytes,mimeType:file.mimeType});})()");
+        assertEquals(sharedFile.getName(), sharedMetadata.getString("name"));
+        assertEquals(sharedBytes.length, sharedMetadata.getInt("sizeBytes"));
+
+        String expectedBase64 = Base64.encodeToString(sharedBytes, Base64.NO_WRAP);
+        evalRaw("(() => {const plugin=window.Capacitor.Plugins.DocumentContent;"
+                + "const fileId=window.__ps2857SharedContent.files[0].fileId;"
+                + "plugin.readPickedFileChunk({fileId,offset:0,maxBytes:65536}).then(async (chunk)=>{"
+                + "window.__ps2857SharedChunk=chunk.base64; await plugin.releasePickedFile({fileId});});})()");
+        awaitJsTrue("window.__ps2857SharedChunk === " + JSONObject.quote(expectedBase64));
+
+        evalRaw("window.Capacitor.Plugins.SpeechRecognition.getCapabilities().then((value)=>window.__ps2857SpeechCapabilities=value)");
+        awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
+                + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
+
+        evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
+                + ".then((value)=>window.__ps2857PickerResult=value)");
+        Thread.sleep(700);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("window.__ps2857PickerResult?.cancelled === true && window.__ps2857PickerResult?.files?.length === 0");
+        assertTrue("the packaged share fixture should be removed", sharedFile.delete());
     }
 
     @Test
