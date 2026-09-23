@@ -119,8 +119,9 @@ keysets after an open failure; do not call those paths during import.
 | `pocketshell-voice-secrets` | `openai_api_key` | Preserve/read through a native secure-secret adapter; plaintext is never part of the migration JSON. |
 | `pocketshell-assistant-secrets` | `assistant_provider`; provider keys `openai_api_key`, `anthropic_api_key`, `zai_api_key`; provider settings `openai_base_url`/`openai_model`, `anthropic_base_url`/`anthropic_model`, `zai_base_url`/`zai_model` | Keep secrets in secure native storage. Non-secret provider selection/settings can be surfaced separately after a successful decrypt and validation. |
 
-The three files have independent encrypted preference contents, although
-AndroidX stores keysets under shared reserved preference names. A failure to
+The three files have independent encrypted preference contents. Each file also
+contains AndroidX keyset entries under the same two reserved preference names;
+the entries are inside that file, not separate shared preference files. A failure to
 read one credential store must not trigger cleanup or prevent import of
 unrelated categories. If the runtime cannot open a store without deleting its
 keysets, leave it untouched and report that category as unavailable for
