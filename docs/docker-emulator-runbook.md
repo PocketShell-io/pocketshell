@@ -39,6 +39,28 @@ scripts/agents-pool.sh down 2243 2244
 Do not assign port 2222 to a pool lane. It is the legacy single-lane identity
 used by the default connected-test path.
 
+## JS-first rewrite branch
+
+On `rewrite/js-first-0.6.0`, use the explicit packaged lane through
+`scripts/connected-test.sh`. Every run needs a worktree-specific package suffix;
+Docker lanes also take the exact fixture port, and lifecycle takes the
+container name:
+
+```bash
+scripts/connected-test.sh smoke --suffix i2863
+scripts/connected-test.sh lifecycle --suffix i2863 --port 2222 \
+  --container pocketshell-test-agents --run-id js2863-local
+scripts/agents-pool.sh up 2245
+scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
+  --session-prefix js2863-local
+```
+
+The smoke, lifecycle, and composer runners use `android/gradlew`, own the
+Gradle output and emulator locks, and check their exact same-run JUnit reports.
+Lifecycle and composer verify app behavior against the independent Docker host.
+These current journeys do not replace the mapped feature suite or scheduled
+D36/D37 release verdicts; those remain release blockers in #2863.
+
 ## Build and inspect the real agents fixture
 
 The `agents`, `agents-old-cli`, and `agents-daemon` images are glibc-based
@@ -82,7 +104,7 @@ Never kill an emulator owned by another lane. If `/dev/kvm` is unavailable,
 `AVD_HOLD=1` lets the local starter retain the booted device for the connected
 run. Install the debug APK with `scripts/assemble-debug.sh --install`.
 
-## Connected journeys
+## Legacy app2 connected journeys on main/stable
 
 Start the default fixture and run the unfiltered app2 suite:
 
