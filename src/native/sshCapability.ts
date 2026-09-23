@@ -35,12 +35,38 @@ export type {
 } from '@pocketshell/core';
 export { SshCapabilityError } from '@pocketshell/core';
 
+export interface NativeSftpExpectedMetadata {
+  isDirectory: false;
+  sizeBytes: number;
+  modifiedEpochMs: number;
+}
+
+export interface NativeSftpWriteIfUnchangedOptions {
+  requestId: string;
+  connectionId: string;
+  generationId: string;
+  rootPath: string;
+  path: string;
+  expectedMetadata: NativeSftpExpectedMetadata;
+  dataBase64: string;
+}
+
+export interface NativeSftpWriteIfUnchangedResult {
+  requestId: string;
+  status: 'written' | 'conflict';
+  verdict?: 'missing' | 'changed';
+  bytesWritten?: number;
+}
+
 /** Capacitor registration for the platform-neutral core effects contract. */
 export type SshCapabilityPlugin = Plugin & SshCapability;
 
 /** Capacitor plugin method arguments must be objects; the core contract uses a request ID. */
 export type NativeSshCapabilityPlugin = Plugin & {
   resourceSnapshot(options: { requestId: string }): Promise<unknown>;
+  sftpWriteIfUnchanged(
+    options: NativeSftpWriteIfUnchangedOptions,
+  ): Promise<NativeSftpWriteIfUnchangedResult>;
 };
 
 function isResourceSnapshot(value: unknown, requestId: string): value is SshResourceSnapshot {

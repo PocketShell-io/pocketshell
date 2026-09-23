@@ -30,6 +30,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -48,6 +49,8 @@ import net.schmizz.sshj.sftp.FileAttributes;
 import net.schmizz.sshj.sftp.OpenMode;
 import net.schmizz.sshj.sftp.RemoteFile;
 import net.schmizz.sshj.sftp.RemoteResourceInfo;
+import net.schmizz.sshj.sftp.Response;
+import net.schmizz.sshj.sftp.SFTPException;
 import net.schmizz.sshj.sftp.SFTPClient;
 import net.schmizz.sshj.transport.verification.HostKeyVerifier;
 import net.schmizz.sshj.userauth.password.PasswordUtils;
@@ -545,20 +548,29 @@ public final class SshCapabilityPlugin extends Plugin {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
+            String rootPath = optionalString(options, "rootPath");
             SFTPClient client = requireSftp(connection);
             JSObject result = new JSObject().put("requestId", requestId);
             org.json.JSONArray entries = new org.json.JSONArray();
             synchronized (connection.sftpLock) {
                 try {
-                    List<RemoteResourceInfo> listing = client.ls(path);
+                    String listingPath = path;
+                    if (rootPath != null) {
+                        ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, false);
+                        requireSftpType(resolved.attributes, net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY, "SFTP path is not a directory.");
+                        listingPath = resolved.path;
+                    }
+                    List<RemoteResourceInfo> listing = client.ls(listingPath);
                     int count = Math.min(MAX_SFTP_ENTRIES, listing.size());
                     for (int index = 0; index < count; index++) {
                         RemoteResourceInfo info = listing.get(index);
                         FileAttributes attributes = info.getAttributes();
+                        String type = sftpEntryType(attributes.getType());
                         entries.put(new JSObject()
                             .put("path", info.getPath())
                             .put("name", info.getName())
-                            .put("isDirectory", info.isDirectory())
+                            .put("type", type)
+                            .put("isDirectory", attributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY)
                             .put("sizeBytes", attributes.getSize())
                             .put("modifiedEpochMs", attributes.getMtime() * 1000L));
                     }
@@ -576,19 +588,28 @@ public final class SshCapabilityPlugin extends Plugin {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
+            String rootPath = optionalString(options, "rootPath");
             int maxBytes = boundedInt(options, "maxBytes", 0, MAX_SFTP_TRANSFER_BYTES, MAX_SFTP_TRANSFER_BYTES);
             SFTPClient client = requireSftp(connection);
             ByteArrayOutputStream bytes = new ByteArrayOutputStream(Math.min(maxBytes, 8192));
             synchronized (connection.sftpLock) {
-                try (RemoteFile file = client.open(path, Collections.singleton(OpenMode.READ))) {
-                    byte[] block = new byte[Math.min(8192, Math.max(1, maxBytes))];
-                    long offset = 0;
-                    while (bytes.size() < maxBytes) {
-                        int limit = Math.min(block.length, maxBytes - bytes.size());
-                        int count = file.read(offset, block, 0, limit);
-                        if (count <= 0) break;
-                        bytes.write(block, 0, count);
-                        offset += count;
+                try {
+                    String readPath = path;
+                    if (rootPath != null) {
+                        ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, false);
+                        requireSftpType(resolved.attributes, net.schmizz.sshj.sftp.FileMode.Type.REGULAR, "SFTP path is not a regular file.");
+                        readPath = resolved.path;
+                    }
+                    try (RemoteFile file = client.open(readPath, Collections.singleton(OpenMode.READ))) {
+                        byte[] block = new byte[Math.min(8192, Math.max(1, maxBytes))];
+                        long offset = 0;
+                        while (bytes.size() < maxBytes) {
+                            int limit = Math.min(block.length, maxBytes - bytes.size());
+                            int count = file.read(offset, block, 0, limit);
+                            if (count <= 0) break;
+                            bytes.write(block, 0, count);
+                            offset += count;
+                        }
                     }
                 } catch (Exception error) {
                     throw failureFor(error);
@@ -606,6 +627,8 @@ public final class SshCapabilityPlugin extends Plugin {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
             String path = requiredString(options, "path");
+            String rootPath = optionalString(options, "rootPath");
+            boolean createOnly = Boolean.TRUE.equals(options.getBool("createOnly"));
             String encoded = requiredString(options, "dataBase64");
             byte[] bytes;
             try {
@@ -616,8 +639,21 @@ public final class SshCapabilityPlugin extends Plugin {
             if (bytes.length > MAX_SFTP_TRANSFER_BYTES) throw new PluginFailure("INVALID_ARGUMENT", "SFTP write exceeds 512 KiB.");
             SFTPClient client = requireSftp(connection);
             synchronized (connection.sftpLock) {
-                try (RemoteFile file = client.open(path, new HashSet<>(Arrays.asList(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)))) {
-                    file.write(0, bytes, 0, bytes.length);
+                try {
+                    String writePath = path;
+                    if (rootPath != null) {
+                        ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, true);
+                        if (resolved.exists) {
+                            requireSftpType(resolved.attributes, net.schmizz.sshj.sftp.FileMode.Type.REGULAR, "SFTP write target is not a regular file.");
+                            if (createOnly) throw new PluginFailure("SFTP_FILE_EXISTS", "SFTP write target already exists.");
+                        }
+                        writePath = resolved.path;
+                    }
+                    Set<OpenMode> modes = new HashSet<>(Arrays.asList(OpenMode.WRITE, OpenMode.CREAT));
+                    modes.add(createOnly ? OpenMode.EXCL : OpenMode.TRUNC);
+                    try (RemoteFile file = client.open(writePath, modes)) {
+                        file.write(0, bytes, 0, bytes.length);
+                    }
                 } catch (Exception error) {
                     throw failureFor(error);
                 }
@@ -627,14 +663,82 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void sftpWriteIfUnchanged(PluginCall call) {
+        run(call, options -> {
+            String requestId = requiredString(options, "requestId");
+            SshConnection connection = requireConnection(options);
+            String path = requiredString(options, "path");
+            String rootPath = requiredString(options, "rootPath");
+            JSObject expected = options.getJSObject("expectedMetadata");
+            if (expected == null || !Boolean.FALSE.equals(expected.getBool("isDirectory"))) {
+                throw new PluginFailure("INVALID_ARGUMENT", "Expected file metadata is missing or invalid.");
+            }
+            long expectedSize = requiredLong(expected, "sizeBytes");
+            long expectedMtime = requiredLong(expected, "modifiedEpochMs");
+            if (expectedSize < 0 || expectedMtime <= 0) {
+                throw new PluginFailure("INVALID_ARGUMENT", "Expected file metadata is outside its supported range.");
+            }
+            String encoded = requiredString(options, "dataBase64");
+            byte[] bytes;
+            try {
+                bytes = Base64.decode(encoded, Base64.DEFAULT);
+            } catch (IllegalArgumentException error) {
+                throw new PluginFailure("INVALID_ARGUMENT", "SFTP content is not valid base64.", error);
+            }
+            if (bytes.length > MAX_SFTP_TRANSFER_BYTES) throw new PluginFailure("INVALID_ARGUMENT", "SFTP write exceeds 512 KiB.");
+            SFTPClient client = requireSftp(connection);
+            synchronized (connection.sftpLock) {
+                try {
+                    ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, true);
+                    if (!resolved.exists) return sftpWriteConflict(requestId, "missing");
+                    FileAttributes current = resolved.attributes;
+                    if (current.getType() == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK) {
+                        throw new PluginFailure("SFTP_SYMLINK", "SFTP file operations do not follow symbolic links.");
+                    }
+                    if (current.getType() != net.schmizz.sshj.sftp.FileMode.Type.REGULAR) {
+                        return sftpWriteConflict(requestId, "changed");
+                    }
+                    // All PocketShell SFTP operations on this connection share this lock. Open
+                    // without truncating, validate the opened inode, then check and mutate
+                    // through the same native file handle in this one bridge call.
+                    try (RemoteFile file = client.open(resolved.path, new HashSet<>(Arrays.asList(OpenMode.READ, OpenMode.WRITE)))) {
+                        FileAttributes opened = file.fetchAttributes();
+                        if (opened.getType() != net.schmizz.sshj.sftp.FileMode.Type.REGULAR
+                            || opened.getSize() != expectedSize
+                            || opened.getMtime() * 1000L != expectedMtime) {
+                            return sftpWriteConflict(requestId, "changed");
+                        }
+                        file.setLength(0);
+                        file.write(0, bytes, 0, bytes.length);
+                    }
+                } catch (Exception error) {
+                    throw failureFor(error);
+                }
+            }
+            return new JSObject()
+                .put("requestId", requestId)
+                .put("status", "written")
+                .put("bytesWritten", bytes.length);
+        });
+    }
+
+    @PluginMethod
     public void sftpMkdir(PluginCall call) {
         run(call, options -> {
             String requestId = requiredString(options, "requestId");
             SshConnection connection = requireConnection(options);
+            String path = requiredString(options, "path");
+            String rootPath = optionalString(options, "rootPath");
             SFTPClient client = requireSftp(connection);
             synchronized (connection.sftpLock) {
                 try {
-                    client.mkdir(requiredString(options, "path"));
+                    String directoryPath = path;
+                    if (rootPath != null) {
+                        ResolvedSftpPath resolved = resolveSftpPath(client, rootPath, path, true);
+                        if (resolved.exists) throw new PluginFailure("SFTP_FILE_EXISTS", "SFTP directory path already exists.");
+                        directoryPath = resolved.path;
+                    }
+                    client.mkdir(directoryPath);
                 } catch (Exception error) {
                     throw failureFor(error);
                 }
@@ -681,6 +785,135 @@ public final class SshCapabilityPlugin extends Plugin {
             }
             return ack(requestId);
         });
+    }
+
+    private static JSObject sftpWriteConflict(String requestId, String verdict) {
+        return new JSObject()
+            .put("requestId", requestId)
+            .put("status", "conflict")
+            .put("verdict", verdict);
+    }
+
+    private static String optionalString(JSObject options, String name) throws PluginFailure {
+        String value = options.getString(name);
+        if (value == null) return null;
+        if (value.isBlank()) throw new PluginFailure("INVALID_ARGUMENT", name + " must not be blank.");
+        return value;
+    }
+
+    /** Resolve a file-workspace path beneath its server-resolved root. */
+    private static ResolvedSftpPath resolveSftpPath(
+        SFTPClient client,
+        String rootPath,
+        String path,
+        boolean allowMissingLeaf
+    ) throws Exception {
+        validateAbsoluteSftpPath(rootPath, "rootPath");
+        validateAbsoluteSftpPath(path, "path");
+        String canonicalRoot = normalizeCanonicalSftpPath(client.canonicalize(rootPath));
+        FileAttributes rootAttributes = client.lstat(canonicalRoot);
+        if (rootAttributes.getType() != net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY) {
+            throw new PluginFailure("SFTP_NOT_DIRECTORY", "The configured SFTP workspace root is not a directory.");
+        }
+
+        FileAttributes attributes = lstatOrNull(client, path);
+        if (attributes != null) {
+            if (attributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK) {
+                throw new PluginFailure("SFTP_SYMLINK", "SFTP file operations do not follow symbolic links.");
+            }
+            String canonicalPath = normalizeCanonicalSftpPath(client.canonicalize(path));
+            requireSftpPathWithinRoot(canonicalRoot, canonicalPath);
+            return new ResolvedSftpPath(canonicalPath, attributes, true);
+        }
+
+        if (!allowMissingLeaf) {
+            throw new PluginFailure("SFTP_NOT_FOUND", "The SFTP path does not exist.");
+        }
+        int slash = path.lastIndexOf('/');
+        String name = slash < 0 ? "" : path.substring(slash + 1);
+        String parent = slash <= 0 ? "/" : path.substring(0, slash);
+        if (name.isEmpty() || name.equals(".") || name.equals("..")) {
+            throw new PluginFailure("INVALID_ARGUMENT", "An SFTP write path must name a child entry.");
+        }
+        FileAttributes parentAttributes = lstatOrNull(client, parent);
+        if (parentAttributes == null) {
+            throw new PluginFailure("SFTP_NOT_FOUND", "The SFTP parent directory does not exist.");
+        }
+        if (parentAttributes.getType() == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK) {
+            throw new PluginFailure("SFTP_SYMLINK", "SFTP file operations do not follow symbolic links.");
+        }
+        if (parentAttributes.getType() != net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY) {
+            throw new PluginFailure("SFTP_NOT_DIRECTORY", "The SFTP parent path is not a directory.");
+        }
+        String canonicalParent = normalizeCanonicalSftpPath(client.canonicalize(parent));
+        requireSftpPathWithinRoot(canonicalRoot, canonicalParent);
+        String canonicalPath = canonicalParent.equals("/") ? "/" + name : canonicalParent + "/" + name;
+        requireSftpPathWithinRoot(canonicalRoot, canonicalPath);
+        return new ResolvedSftpPath(canonicalPath, null, false);
+    }
+
+    private static FileAttributes lstatOrNull(SFTPClient client, String path) throws IOException {
+        try {
+            return client.lstat(path);
+        } catch (SFTPException error) {
+            Response.StatusCode status = error.getStatusCode();
+            if (status == Response.StatusCode.NO_SUCH_FILE || status == Response.StatusCode.NO_SUCH_PATH) return null;
+            throw error;
+        }
+    }
+
+    private static void validateAbsoluteSftpPath(String path, String name) throws PluginFailure {
+        if (path == null || path.isBlank() || !path.startsWith("/") || path.indexOf('\0') >= 0) {
+            throw new PluginFailure("INVALID_ARGUMENT", name + " must be an absolute remote path.");
+        }
+        for (String segment : path.split("/")) {
+            if (segment.equals(".") || segment.equals("..")) {
+                throw new PluginFailure("INVALID_ARGUMENT", name + " must not contain dot path segments.");
+            }
+        }
+    }
+
+    private static String normalizeCanonicalSftpPath(String path) throws PluginFailure {
+        validateAbsoluteSftpPath(path, "canonical path");
+        String normalized = path.replaceAll("/{2,}", "/");
+        while (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static void requireSftpPathWithinRoot(String rootPath, String path) throws PluginFailure {
+        boolean within = rootPath.equals("/")
+            ? path.startsWith("/")
+            : path.equals(rootPath) || path.startsWith(rootPath + "/");
+        if (!within) {
+            throw new PluginFailure("SFTP_OUTSIDE_ROOT", "The resolved SFTP path is outside the configured workspace root.");
+        }
+    }
+
+    private static void requireSftpType(
+        FileAttributes attributes,
+        net.schmizz.sshj.sftp.FileMode.Type expected,
+        String message
+    ) throws PluginFailure {
+        if (attributes == null) throw new PluginFailure("SFTP_NOT_FOUND", "The SFTP path does not exist.");
+        net.schmizz.sshj.sftp.FileMode.Type type = attributes.getType();
+        if (type == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK) {
+            throw new PluginFailure("SFTP_SYMLINK", "SFTP file operations do not follow symbolic links.");
+        }
+        if (type != expected) {
+            String code = expected == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY
+                ? "SFTP_NOT_DIRECTORY"
+                : "SFTP_NOT_FILE";
+            throw new PluginFailure(code, message);
+        }
+    }
+
+    private static String sftpEntryType(net.schmizz.sshj.sftp.FileMode.Type type) {
+        if (type == net.schmizz.sshj.sftp.FileMode.Type.DIRECTORY) return "directory";
+        if (type == net.schmizz.sshj.sftp.FileMode.Type.REGULAR) return "file";
+        if (type == net.schmizz.sshj.sftp.FileMode.Type.SYMLINK) return "symlink";
+        return "other";
     }
 
     @PluginMethod
@@ -1275,6 +1508,18 @@ public final class SshCapabilityPlugin extends Plugin {
             super(message, cause);
             this.code = code;
             this.data = data;
+        }
+    }
+
+    private static final class ResolvedSftpPath {
+        final String path;
+        final FileAttributes attributes;
+        final boolean exists;
+
+        ResolvedSftpPath(String path, FileAttributes attributes, boolean exists) {
+            this.path = path;
+            this.attributes = attributes;
+            this.exists = exists;
         }
     }
 
