@@ -9,6 +9,7 @@ import android.graphics.Insets;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
@@ -88,6 +89,7 @@ public final class JsComposerDockerJourneyTest {
         createSession(bytesSession);
         createSession(uncertainSession);
         attachSession(bytesSession);
+        verifyNestedAndroidBackKeepsLiveSession();
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
@@ -160,6 +162,22 @@ public final class JsComposerDockerJourneyTest {
         if ("true".equals(evalRaw("!!document.querySelector('[data-testid=host-key-decision]')"))) {
             click("[data-testid=trust-host-key]");
         }
+    }
+
+    private void verifyNestedAndroidBackKeepsLiveSession() throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        click("button[aria-label='Settings']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        click("[data-testid=open-terminal-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
+        int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && !!document.querySelector('[data-testid=prompt-composer]')");
     }
 
     private void createSession(String name) throws Exception {
