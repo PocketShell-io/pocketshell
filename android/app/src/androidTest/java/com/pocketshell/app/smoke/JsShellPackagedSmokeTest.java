@@ -126,6 +126,7 @@ public final class JsShellPackagedSmokeTest {
         tapDomCenter("#preview-input");
         awaitComposerFocused();
         awaitImeVisible(true);
+        awaitImeSafeAreaSettled(expectedSafeTop);
 
         JSONObject duringIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
@@ -376,6 +377,56 @@ public final class JsShellPackagedSmokeTest {
         }
         throw new AssertionError("IME visibility did not become " + visible + " (last=" + last
                 + "; DOM=" + composerDomState() + "; Android=" + nativeImeState() + ")");
+    }
+
+    /**
+     * Native IME visibility arrives before Capacitor's SystemBars plugin has
+     * injected the replacement CSS inset and WebView has recalculated the
+     * descendant padding. Wait for the actual CSS consumer to settle at zero;
+     * the assertions in the test still fail if the phone keeps navigation-bar
+     * padding while the keyboard covers it.
+     */
+    private void awaitImeSafeAreaSettled(float expectedSafeTop) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject previous = null;
+        JSONObject latest = imeSafeAreaDomState();
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            boolean correctInsets = closeTo(latest.optDouble("safeTop"), expectedSafeTop, 1.0)
+                    && closeTo(latest.optDouble("safeBottom"), 0.0, 0.5)
+                    && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5);
+            boolean stable = previous != null
+                    && closeTo(latest.optDouble("safeTop"), previous.optDouble("safeTop"), 0.5)
+                    && closeTo(latest.optDouble("safeBottom"), previous.optDouble("safeBottom"), 0.5)
+                    && closeTo(latest.optDouble("paddingBottom"), previous.optDouble("paddingBottom"), 0.5)
+                    && closeTo(latest.optDouble("viewportHeight"), previous.optDouble("viewportHeight"), 0.5);
+            if (correctInsets && stable) {
+                stableSamples++;
+                if (stableSamples >= 2) return;
+            } else {
+                stableSamples = 0;
+            }
+            previous = latest;
+            Thread.sleep(100);
+            latest = imeSafeAreaDomState();
+        }
+        throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: " + latest);
+    }
+
+    private JSONObject imeSafeAreaDomState() throws Exception {
+        return evalJson("(() => {"
+                + "const root = getComputedStyle(document.documentElement);"
+                + "const shellStyle = getComputedStyle(document.querySelector('.app-shell'));"
+                + "return JSON.stringify({"
+                + "safeTop: parseFloat(root.getPropertyValue('--safe-area-inset-top')),"
+                + "safeBottom: parseFloat(root.getPropertyValue('--safe-area-inset-bottom')),"
+                + "paddingBottom: parseFloat(shellStyle.paddingBottom),"
+                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight"
+                + "});})()");
+    }
+
+    private static boolean closeTo(double actual, double expected, double tolerance) {
+        return !Double.isNaN(actual) && Math.abs(actual - expected) <= tolerance;
     }
 
     private Insets readRootInsets(int typeMask) throws Exception {
