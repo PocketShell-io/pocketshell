@@ -25,15 +25,15 @@ describe('local diagnostics', () => {
 
     expect(readDiagnosticEvents(storage)).toHaveLength(MAX_DIAGNOSTIC_EVENTS);
     expect(parseDiagnosticEvents([{
-      id: 'safe-id',
+      id: '/home/alexey/secret-key.pem',
       at: 1,
       kind: 'ssh-bridge-failed',
       operation: '/home/alexey/secret-key.pem',
-      code: '10.0.0.1',
+      code: 'SECRET_HOSTNAME',
       host: 'dev.example',
       message: '-----BEGIN OPENSSH PRIVATE KEY-----',
     }])).toEqual([{
-      id: 'safe-id',
+      id: 'event-1',
       at: 1,
       kind: 'ssh-bridge-failed',
       operation: 'lifecycle',

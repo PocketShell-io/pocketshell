@@ -38,6 +38,17 @@ describe('mobile route stack', () => {
     expect(navigation.selectedReportId).toBeNull();
   });
 
+  it('clears the selected event when opening the whole-log export preview', () => {
+    const navigation = useNavigationStore();
+    navigation.open('diagnostics');
+    navigation.openReport('event-1');
+    navigation.back();
+    navigation.openDiagnosticsExport();
+
+    expect(navigation.route).toBe('diagnostics-report');
+    expect(navigation.selectedReportId).toBeNull();
+  });
+
   it('does not push the current destination a second time', () => {
     const navigation = useNavigationStore();
     navigation.openSettings();

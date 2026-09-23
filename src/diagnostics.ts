@@ -36,7 +36,15 @@ const OPERATIONS = new Set([
   'attach-session', 'send-terminal-input', 'resize-terminal', 'resource-snapshot', 'lifecycle',
 ]);
 const KINDS = new Set<string>(DIAGNOSTIC_KINDS);
-const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,31}$/;
+const ERROR_CODES = new Set([
+  'OK', 'UNAVAILABLE', 'OPERATION_FAILED', 'VERIFY_FAILED', 'CONNECTION_FAILED',
+  'INVALID_ARGUMENT', 'CONNECTION_LOST', 'CANCELLED', 'HOST_KEY_REJECTED',
+  'SCHEDULE_FAILED', 'OUTPUT_LIMIT', 'STALE_SEQUENCE', 'CHANNEL_CLOSED',
+  'FORWARD_LIMIT', 'CRYPTO_UNAVAILABLE', 'DUPLICATE_REQUEST', 'CONNECTION_CLOSED',
+  'STALE_GENERATION', 'CHANNEL_LIMIT', 'SSH_IO', 'AUTH_FAILED', 'SSH_ERROR',
+  'OPERATION_UNCERTAIN',
+]);
+const SAFE_EVENT_ID = /^[a-z0-9-]{1,48}$/;
 
 function browserStorage(): DiagnosticStorage | null {
   try {
@@ -55,7 +63,11 @@ function safeOperation(value: unknown): string {
 }
 
 function safeCode(value: unknown): string {
-  return typeof value === 'string' && ERROR_CODE.test(value) ? value : 'UNAVAILABLE';
+  return typeof value === 'string' && ERROR_CODES.has(value) ? value : 'UNAVAILABLE';
+}
+
+function safeId(value: unknown, at: number): string {
+  return typeof value === 'string' && SAFE_EVENT_ID.test(value) ? value : `event-${at.toString(36)}`;
 }
 
 export function parseDiagnosticEvents(raw: unknown): DiagnosticEvent[] {
@@ -65,9 +77,8 @@ export function parseDiagnosticEvents(raw: unknown): DiagnosticEvent[] {
     if (typeof item !== 'object' || item === null) continue;
     const entry = item as Record<string, unknown>;
     if (typeof entry.at !== 'number' || !Number.isFinite(entry.at)) continue;
-    if (typeof entry.id !== 'string' || entry.id.length > 48) continue;
     events.push({
-      id: entry.id,
+      id: safeId(entry.id, entry.at),
       at: entry.at,
       kind: safeKind(entry.kind),
       operation: safeOperation(entry.operation),

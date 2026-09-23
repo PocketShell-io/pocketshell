@@ -41,6 +41,10 @@ export const useNavigationStore = defineStore('navigation', {
       this.selectedReportId = reportId;
       this.open('diagnostics-report');
     },
+    openDiagnosticsExport() {
+      this.selectedReportId = null;
+      this.open('diagnostics-report');
+    },
     back() {
       if (this.canGoBack) this.stack.pop();
     },
