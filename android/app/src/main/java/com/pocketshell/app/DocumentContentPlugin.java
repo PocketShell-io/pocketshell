@@ -75,12 +75,12 @@ public final class DocumentContentPlugin extends Plugin {
     @PluginMethod
     public void readPickedFileChunk(PluginCall call) {
         try {
-            String fileId = call.getString("fileId");
-            Long offset = call.getLong("offset");
-            Integer requestedBytes = call.getInt("maxBytes");
+            JSObject request = call.getData();
+            String fileId = request.getString("fileId");
+            long offset = request.getLong("offset");
+            int requestedBytes = request.getInt("maxBytes");
             if (fileId == null || fileId.isEmpty()) throw new IOException("Picked document reference is missing.");
-            if (offset == null || offset < 0 || requestedBytes == null
-                    || requestedBytes < 1 || requestedBytes > MAX_CHUNK_BYTES) {
+            if (offset < 0 || requestedBytes < 1 || requestedBytes > MAX_CHUNK_BYTES) {
                 throw new IOException("Document chunk request is outside the supported range.");
             }
 
