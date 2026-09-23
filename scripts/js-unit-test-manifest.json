@@ -67,6 +67,12 @@
         "states which prior settings/support surfaces have working routes in this slice"
       ]
     },
+    "tests/unit/dictationStartCancellation.test.ts": {
+      "suite": "pending dictation start cancellation",
+      "tests": [
+        "stops a pending start once when the mounted composer backgrounds"
+      ]
+    },
     "tests/unit/diagnostics.test.ts": {
       "suite": "local diagnostics",
       "tests": [
