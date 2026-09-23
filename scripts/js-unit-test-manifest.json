@@ -140,6 +140,17 @@
         "moves only within the selected host collection and disables moves at group boundaries",
         "emits host-bound selection and management payloads from mounted controls"
       ]
+    },
+    "tests/unit/hostSnippets.test.ts": {
+      "suite": "per-host snippet and command-template persistence",
+      "tests": [
+        "imports strict legacy rows with their identities and order, isolates hosts, and is idempotent",
+        "retries a failed legacy import even when the same rows are already in memory",
+        "round-trips literal content and saves host-scoped edits and ordering",
+        "rejects malformed Room rows without partially importing valid rows",
+        "keeps malformed stored rows recoverable after a successful write and restart",
+        "keeps current-session additions when storage writes fail and persists them on a later retry"
+      ]
     }
   }
 }
