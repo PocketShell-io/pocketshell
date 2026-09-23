@@ -15,8 +15,9 @@ dependencies, and build the debug APK:
 git clone --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
 cd pocketshell
 pnpm install --frozen-lockfile
-pnpm test:unit
+scripts/run-js-unit-gate.sh
 pnpm build:android:debug
+scripts/connected-js-smoke.sh --suffix i2855
 ```
 
 The shell imports TypeScript directly from `vendor/pocketshell-core`, a git
@@ -35,7 +36,9 @@ a visible failed build status with the reason, rather than a verified status.
 Capacitor generates `android/` and copies `dist/` into the Android asset bundle.
 `pnpm build:android:debug` runs the source check, type check, web bundle,
 Capacitor sync, and the Gradle debug APK build. Run `pnpm test:unit` separately
-for the core formatter and build-manifest diagnostics tests.
+for the core formatter and build-manifest diagnostics tests. The canonical
+rewrite-branch unit command is `scripts/run-js-unit-gate.sh`; it requires the
+complete registered Vitest suite and checks its result count and titles.
 Gradle preserves `applicationId = com.pocketshell.app`, the committed
 `debug.keystore`, and the release signing inputs documented in
 [release.md](release.md). Version code and name continue to come from
@@ -70,15 +73,21 @@ should use the extracted shared desktop components tracked by
 
 `.github/workflows/js-first-rewrite.yml` runs on pushes and pull requests to
 `rewrite/js-first-0.6.0`. It installs the locked JS dependencies, runs unit
-tests, builds a debug APK, and runs the pinned Docker agents fixture. It does
-not yet run parity journeys in an emulator, create a signed release artifact,
-or establish a nightly release verdict. The existing `app2.yml` and `tests.yml`
-D36/D37 lanes remain attached to `main` and `stable`; they are not copied onto
-this branch because their Kotlin modules are being removed. Pull requests into
-those branches must wait for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863),
-which owns nonvacuous JS CI, scheduled test, and release-gate migration. Do not
-manually dispatch a legacy Gradle workflow against this branch; its old build
-graph is intentionally absent.
+`rewrite/js-first-0.6.0`. It requires the exact registered JS unit suite,
+packages the debug APK, runs a packaged API 35 Android smoke suite, and runs
+the pinned Docker agents fixture. The smoke suite executes exactly three tests:
+the installed shell must show the verified core revision and asset hash, a
+Settings tap and Android Back must return to Hosts, and the focused composer
+must remain above the real IME while Capacitor safe-area insets are applied.
+This is shell coverage, not feature parity. It does not cover the SSH/session
+journeys, create a signed release artifact, or establish a nightly release
+verdict. The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached
+to `main` and `stable`; they are not copied onto this branch because their
+Kotlin modules are being removed. Pull requests into those branches must wait
+for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863), which
+owns the broader scheduled test and release-gate migration. Do not manually
+dispatch a legacy Gradle workflow against this branch; its old build graph is
+intentionally absent.
 
 The legacy `scripts/check-unit-gate-wiring.sh` is not part of the rewrite CI.
 On this branch it exits 123 with no output: its C9 scan treats the retained

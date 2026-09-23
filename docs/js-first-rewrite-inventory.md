@@ -79,12 +79,15 @@ The phone shell keeps desktop colors, wording, icon family, type hierarchy, spac
 
 ## CI and release-gate boundary
 
-The temporary `rewrite/js-first-0.6.0` CI runs JS unit checks, packages the
-Android debug APK, and exercises the unchanged Docker fixture. It does not yet
-cover emulator journeys, scheduled parity, or signed release packaging. The
-existing D36/D37 Gradle workflows remain on `main`/`stable`; #2863 owns their
-replacement and validation before integration. Do not manually dispatch a
-legacy Gradle workflow against the rewrite branch.
+The temporary `rewrite/js-first-0.6.0` CI requires the exact JS unit suite,
+packages the Android debug APK, runs the three-test packaged API 35 shell smoke
+suite, and exercises the unchanged Docker fixture. The smoke test checks
+visible core/asset identity, Android Back from Settings, and composer placement
+above the real IME with safe-area insets. It does not cover feature parity,
+scheduled test verdicts, or signed release packaging. The existing D36/D37
+Gradle workflows remain on `main`/`stable`; #2863 owns their replacement and
+validation before integration. Do not manually dispatch a legacy Gradle
+workflow against the rewrite branch.
 
 ## Product-code hard cut
 

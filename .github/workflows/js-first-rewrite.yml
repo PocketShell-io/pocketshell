@@ -17,7 +17,7 @@ jobs:
   web-and-android:
     name: JS checks and Android debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout with pinned core source
         uses: actions/checkout@v6
@@ -49,18 +49,56 @@ jobs:
       - name: Install locked JS dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run unit tests
-        run: pnpm test:unit
+      - name: Check exact JavaScript unit gate
+        run: |
+          scripts/check-js-unit-results.py --self-test
+          scripts/run-js-unit-gate.sh
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
 
-      - name: Upload debug APK
+      - name: Prepare packaged JS smoke APKs
+        run: scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Free disk space for API 35 emulator
+        run: scripts/ci-emulator-free-disk.sh
+
+      - name: Repair Android cmdline-tools and accept licenses
+        run: scripts/ci-emulator-repair-sdk-tools.sh
+
+      - name: Check emulator action pin
+        run: scripts/check-emulator-action-pin.sh
+
+      - name: Run packaged JS smoke suite on API 35
+        id: packaged-smoke
+        timeout-minutes: 45
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          script: scripts/connected-js-smoke.sh --suffix i2855ci --test-only
+
+      - name: Upload packaged APK and connected smoke results
+        if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: pocketshell-js-first-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          name: pocketshell-js-first-debug-smoke
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+          if-no-files-found: warn
 
   docker-agents-fixture:
     name: Docker agents fixture contract
