@@ -34,6 +34,11 @@ def require_contract(source: str) -> None:
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
         ("artifact uploader", "uses: actions/upload-artifact@v6"),
         ("JUnit upload", "android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml"),
+        ("runtime preflight step", "- name: Capture and verify emulator JS runtime"),
+        ("captured node path", 'node_path="$(command -v node)"'),
+        ("captured pnpm path", 'pnpm_path="$(command -v pnpm)"'),
+        ("emulator PATH forwarding", "PATH: ${{ steps.emulator-js-runtime.outputs.path }}"),
+        ("emulator pnpm forwarding", "PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}"),
     )
     for label, needle in required:
         if needle not in source:
@@ -59,6 +64,62 @@ def require_contract(source: str) -> None:
 
 
 require_contract(workflow)
+
+runtime_step = workflow.index("- name: Capture and verify emulator JS runtime")
+fixture_step = workflow.index("- name: Start version-matched Docker agents fixture")
+emulator_step = workflow.index("uses: reactivecircus/android-emulator-runner@")
+if not runtime_step < fixture_step < emulator_step:
+    raise AssertionError("the Node/pnpm runtime preflight must fail before Docker fixture and emulator work")
+
+runtime_section = workflow[runtime_step:fixture_step]
+runtime_lines = runtime_section.splitlines()
+runtime_run_index = next(
+    index for index, line in enumerate(runtime_lines)
+    if re.match(r"\s+run:\s*\|\s*$", line)
+)
+runtime_run_indent = len(runtime_lines[runtime_run_index]) - len(runtime_lines[runtime_run_index].lstrip())
+runtime_script_lines = []
+for line in runtime_lines[runtime_run_index + 1:]:
+    if line.strip() and len(line) - len(line.lstrip()) <= runtime_run_indent:
+        break
+    runtime_script_lines.append(
+        line[runtime_run_indent + 2:]
+        if line.startswith(" " * (runtime_run_indent + 2)) else ""
+    )
+subprocess.run(
+    ["bash", "-n"],
+    input="\n".join(runtime_script_lines),
+    text=True,
+    check=True,
+)
+
+for needle in (
+    '[[ "$node_path" == /* && -x "$node_path" ]] ||',
+    '[[ "$pnpm_path" == /* && -x "$pnpm_path" ]] ||',
+    'printf \'path=%s\\n\' "$PATH" >> "$GITHUB_OUTPUT"',
+    'printf \'pnpm=%s\\n\' "$pnpm_path" >> "$GITHUB_OUTPUT"',
+):
+    if needle not in workflow:
+        raise AssertionError(f"emulator JavaScript runtime preflight is missing: {needle}")
+
+for label, damaged in (
+    ("emulator PATH forwarding", workflow.replace(
+        "          PATH: ${{ steps.emulator-js-runtime.outputs.path }}\n",
+        "",
+        1,
+    )),
+    ("early runtime preflight", workflow.replace(
+        "- name: Capture and verify emulator JS runtime",
+        "- name: Capture runtime without verification",
+        1,
+    )),
+):
+    try:
+        require_contract(damaged)
+    except (AssertionError, ValueError):
+        print(f"PASS: missing {label} fails the rewrite composer workflow contract")
+    else:
+        raise AssertionError(f"workflow contract missed removed {label}")
 
 for label, damaged in (
     ("composer invocation", workflow.replace(

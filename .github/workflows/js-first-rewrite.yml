@@ -96,6 +96,19 @@ jobs:
       - name: Prepare packaged JS smoke APKs
         run: scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
 
+      - name: Capture and verify emulator JS runtime
+        id: emulator-js-runtime
+        shell: bash
+        run: |
+          node_path="$(command -v node)"
+          pnpm_path="$(command -v pnpm)"
+          [[ "$node_path" == /* && -x "$node_path" ]] || { echo 'FAIL: node is unavailable before emulator work' >&2; exit 1; }
+          [[ "$pnpm_path" == /* && -x "$pnpm_path" ]] || { echo 'FAIL: pnpm is unavailable before emulator work' >&2; exit 1; }
+          "$node_path" --version
+          "$pnpm_path" --version
+          printf 'path=%s\n' "$PATH" >> "$GITHUB_OUTPUT"
+          printf 'pnpm=%s\n' "$pnpm_path" >> "$GITHUB_OUTPUT"
+
       - name: Start version-matched Docker agents fixture
         run: |
           source scripts/lib/agents-fixture-version.sh
@@ -127,6 +140,9 @@ jobs:
         id: packaged-smoke
         timeout-minutes: 45
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        env:
+          PATH: ${{ steps.emulator-js-runtime.outputs.path }}
+          PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}
         with:
           api-level: 35
           target: google_apis
