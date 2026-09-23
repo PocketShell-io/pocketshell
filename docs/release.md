@@ -7,15 +7,22 @@ This is how PocketShell ships a version.
 The JS rewrite branch has a foundation workflow for the JS unit suite, debug
 APK identity/version, three packaged shell smoke tests, and the existing
 Docker fixture. The tag-triggered `Build` workflow packages the JS debug and
-release APKs and checks package, version, and signer identity; it does not
-replace the release validation gate. The 24 replacement feature journey
-classes are registered in `scripts/js-journey-class-manifest.json`;
-`scripts/check-js-journey-results.py --json` emits their fail-closed
-qualification result. At the current foundation state it reports all 24
-journeys missing. The JS branch has no scheduled full-suite D36 verdict or
-exact-commit D37 fault verdict. Do not merge this branch to `main` or tag
-0.6.0 until those journeys and both blocking release signals are migrated and
-reviewer-validated.
+release APKs and checks package, version, and signer identity. Before creating
+a GitHub Release it also requires the tag commit to be the exact fetched
+`origin/main` head and verifies an exact-SHA summary artifact from a successful
+`release-emulator-validation.yml` Actions run, including that run's D37 PASS.
+This blocks direct tag pushes that bypass `scripts/push-release-tag.sh`; a tag
+annotation or local summary path is not accepted as evidence.
+
+This publication check does not create the missing JS release verdict. The 24
+replacement feature journey classes are registered in
+`scripts/js-journey-class-manifest.json`; `scripts/check-js-journey-results.py
+--json` emits their fail-closed qualification result. The current packaged
+smoke XML has 3 tests and reports all 24 required journeys missing. The JS
+branch has no scheduled full-suite D36 verdict or exact-commit D37 fault
+verdict, so no 0.6.0 tag can pass the Build publication check. Do not merge
+this branch to `main` or tag 0.6.0 until those journeys and both blocking
+release signals are migrated and reviewer-validated.
 
 `main` keeps moving; other people merge there. We don't freeze `main` and
 don't tag whatever `origin/main` happens to be after a long stabilize fight,
