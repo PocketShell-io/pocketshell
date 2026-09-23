@@ -36,6 +36,7 @@ import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInset
 import TerminalViewport from './components/TerminalViewport.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
+import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './terminalGeometry';
 import SettingsScreen from './components/SettingsScreen.vue';
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
@@ -44,7 +45,7 @@ interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
-  fit(): Promise<{ cols: number; rows: number } | null>;
+  fit(): Promise<TerminalResizeRequest | null>;
   scrollToBottom(): void;
 }
 
@@ -104,6 +105,7 @@ const terminalInputFailureCount = ref(0);
 const terminalResizePending = ref(0);
 const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
+const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 // Resize callbacks can finish after the user has selected a different PTY.
 let terminalAttachEpoch = 0;
 
@@ -424,8 +426,9 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
 
-async function resizeTerminal(size: { cols: number; rows: number }) {
+async function resizeTerminal(size: TerminalResizeRequest) {
   if (!controller || !isLive.value) return;
+  const requestId = size.requestId ?? allocateTerminalResizeRequestId();
   const attachEpoch = terminalAttachEpoch;
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
@@ -441,6 +444,7 @@ async function resizeTerminal(size: { cols: number; rows: number }) {
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
     if (result?.ok) terminalResizeAckCount.value += 1;
     else {
+      terminalResizeFailure.value = { ...size, requestId };
       terminalResizeFailureCount.value += 1;
       if (result) recordOperationFailure('resize-terminal');
     }
@@ -956,6 +960,7 @@ onBeforeUnmount(() => {
         <TerminalViewport
           ref="terminal"
           :enabled="isLive"
+          :resize-failure="terminalResizeFailure"
           :theme="activeTheme.terminal"
           :font-family="terminalFontFamily"
           :font-size="appSettings.terminalFontSize"

@@ -112,6 +112,22 @@
         "rejects stale generations before requests and after in-flight responses",
         "rejects native responses with an unrelated request ID"
       ]
+    },
+    "tests/unit/terminal-geometry.test.ts": {
+      "suite": "terminal geometry resize reporting",
+      "tests": [
+        "coalesces repeated unchanged fits while retaining the first usable grid",
+        "reports changed geometry, including when returning to a previous size",
+        "releases a rejected unchanged live grid so a later fit can retry it",
+        "does not let an old failure reopen a newer geometry request",
+        "does not report unmeasurable geometry"
+      ]
+    },
+    "tests/unit/terminal-viewport-resize.test.ts": {
+      "suite": "TerminalViewport resize failure across a route remount",
+      "tests": [
+        "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
+      ]
     }
   }
 }
