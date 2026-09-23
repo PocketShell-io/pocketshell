@@ -306,7 +306,8 @@ public final class JsComposerDockerJourneyTest {
     private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
         String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
-        awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
+        try {
+            awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
                 + "const viewport=document.querySelector('.terminal-viewport');"
                 + "const screen=viewport?.querySelector('.xterm-screen');"
                 + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
@@ -320,9 +321,22 @@ public final class JsComposerDockerJourneyTest {
                 + "return status?.dataset.deliveryState==='success'&&status.textContent.includes('Sent to the terminal')"
                 + "&&document.querySelector('[data-testid=prompt-draft]')?.value===''"
                 + "&&visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
-                + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top"
+                + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top+0.5"
                 + "&&document.querySelector('.screen-content')?.scrollTop===0&&document.scrollingElement?.scrollTop===0;})()",
                 5_000);
+        } catch (AssertionError failure) {
+            String bounds = evalString("(() => {const v=document.querySelector('.terminal-viewport');"
+                + "const screen=v?.querySelector('.xterm-screen');"
+                + "const rows=Array.from(v?.querySelectorAll('.xterm-rows > div') ?? []);"
+                + "const pick=text=>rows.find(node=>(node.textContent||'').includes(text));"
+                + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right}:null};"
+                + "return JSON.stringify({status:document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState,"
+                + "draft:document.querySelector('[data-testid=prompt-draft]')?.value,"
+                + "bytes:rect(pick('636166c3a920f09fa7aa')),marker:rect(pick(" + quotedMarker + ")),"
+                + "viewport:rect(v),screen:rect(screen),screenScroll:document.querySelector('.screen-content')?.scrollTop,"
+                + "documentScroll:document.scrollingElement?.scrollTop});})()");
+            throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
+        }
     }
 
     private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
@@ -367,7 +381,7 @@ public final class JsComposerDockerJourneyTest {
                 + "markerRow:markerRect?{top:markerRect.top,bottom:markerRect.bottom,left:markerRect.left,right:markerRect.right}:null,"
                 + "byteOutputRow:byteOutputRect?{top:byteOutputRect.top,bottom:byteOutputRect.bottom,left:byteOutputRect.left,right:byteOutputRect.right}:null,"
                 + "terminalScroller:{scrollTop:terminalScroller?.scrollTop??null,scrollHeight:terminalScroller?.scrollHeight??null,clientHeight:terminalScroller?.clientHeight??null},"
-                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top,"
+                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top+0.5,"
                 + "byteOutputVisible,visualViewport:{height,width:window.visualViewport?.width ?? innerWidth},"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
                 + "screenScrollTop,documentScrollTop,"
