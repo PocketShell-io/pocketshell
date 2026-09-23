@@ -1,3 +1,6 @@
 [submodule "vendor/pocketshell-core"]
 	path = vendor/pocketshell-core
 	url = https://github.com/PocketShell-io/pocketshell-core.git
+[submodule "vendor/pocketshell-desktop"]
+	path = vendor/pocketshell-desktop
+	url = https://github.com/PocketShell-io/pocketshell-desktop.git
