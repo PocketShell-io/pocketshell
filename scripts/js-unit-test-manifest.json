@@ -22,6 +22,14 @@
         "rejects a negative counter instead of accepting an unverified snapshot",
         "propagates a native bridge rejection"
       ]
+    },
+    "tests/unit/composerDelivery.test.ts": {
+      "suite": "composer delivery adapter and per-target drafts",
+      "tests": [
+        "retains an ambiguous draft and does not replay it after reconnect",
+        "treats an acknowledgement that arrives after transport loss as uncertain and stops the paste",
+        "keeps one session draft separate from another and clears only after acknowledged delivery"
+      ]
     }
   }
 }
