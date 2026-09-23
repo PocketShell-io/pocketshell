@@ -4,13 +4,24 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
+import android.app.Activity;
+import android.app.Instrumentation;
+import android.content.ContentValues;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
+import android.os.Environment;
 import android.os.SystemClock;
+import android.provider.MediaStore;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
+import androidx.test.espresso.intent.Intents;
+import androidx.test.espresso.intent.matcher.IntentMatchers;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+
+import androidx.core.content.FileProvider;
 
 import com.pocketshell.app.MainActivity;
 
@@ -25,7 +36,10 @@ import org.junit.runner.RunWith;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -37,15 +51,22 @@ public final class J10FilesBrowseEditJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
     private ActivityScenario<MainActivity> scenario;
+    private File downloadedFixture;
+    private File uploadFixture;
+    private String screenshotRunId;
 
     @Before
     public void launchPackagedShell() {
+        Intents.init();
         scenario = ActivityScenario.launch(MainActivity.class);
     }
 
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        Intents.release();
+        if (downloadedFixture != null) downloadedFixture.delete();
+        if (uploadFixture != null) uploadFixture.delete();
     }
 
     @Test
@@ -60,9 +81,13 @@ public final class J10FilesBrowseEditJourneyTest {
         assertTrue("the test-only SSH key is required", encodedKey != null && !encodedKey.isEmpty());
         assertTrue("the host must seed a run-scoped remote folder", fixtureRoot != null
                 && fixtureRoot.matches("/home/testuser/\\.ps2858-files-[A-Za-z0-9_-]+"));
+        String requestedScreenshotRunId = arguments.getString("screenshotRunId");
+        assertTrue("the host must provide a safe screenshot collection folder", requestedScreenshotRunId != null
+                && requestedScreenshotRunId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
+        screenshotRunId = requestedScreenshotRunId;
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         String remoteHome = "/home/testuser";
-        File artifacts = new File(targetContext().getFilesDir(), "js2858-files/" + fixtureRoot.substring(fixtureRoot.lastIndexOf('/') + 1));
+        File artifacts = new File(targetContext().getFilesDir(), "js2858-files/" + screenshotRunId);
         assertTrue("run-scoped screenshot directory must be new", artifacts.mkdirs());
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
@@ -81,19 +106,22 @@ public final class J10FilesBrowseEditJourneyTest {
         assertTrue("Files must remain an Android touch target at least 48 CSS pixels high: " + fileButtonBounds,
                 fileButtonBounds.getDouble("height") >= 48.0);
         click("[data-testid=open-files]");
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'files' && !!document.querySelector('[data-testid=file-list]')");
-        assertTouchTargetsMeetPhoneMinimum();
-        captureScreenshot(artifacts, "files-home.png");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'files'"
+                + " && !!document.querySelector('[data-testid=file-list]')"
+                + " && document.querySelector('[data-testid=file-loading]') === null"
+                + " && document.querySelectorAll('.files-row').length > 0");
 
         setValue("[data-testid=file-path]", "/etc/passwd");
         click(".files-goto button[type=submit]");
-        awaitJsTrue("document.querySelector('[data-testid=file-error]')?.textContent.includes('outside the configured file workspace root')");
+        awaitJsTrue("document.querySelector('[data-testid=file-error]')?.textContent.includes('outside the configured file workspace root') === true");
 
         String fixtureName = fixtureRoot.substring(fixtureRoot.lastIndexOf('/') + 1);
         click("[data-file-name='" + fixtureName + "'] .files-row-open");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === 'editable.txt')");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === 'binary.bin')");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileType === 'symlink')");
+        assertTouchTargetsMeetPhoneMinimum();
+        captureScreenshot(artifacts, "files-home.png");
 
         click("[data-file-name='editable.txt'] .files-row-open");
         awaitJsTrue("document.querySelector('[data-testid=file-editor]')?.value === 'before-edit\\n'");
@@ -107,31 +135,61 @@ public final class J10FilesBrowseEditJourneyTest {
         captureScreenshot(artifacts, "files-edit-conflict.png");
         click("[data-testid=file-discard]");
 
+        click("[data-file-name='save-success.txt'] .files-row-open");
+        awaitJsTrue("document.querySelector('[data-testid=file-editor]')?.value === 'before-save\\n'");
+        setValue("[data-testid=file-editor]", "saved-through-ui\n");
+        click("[data-testid=file-save]");
+        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Saved') === true");
+        captureScreenshot(artifacts, "files-saved.png");
+
         click("[data-file-name='link.txt'] .files-row-open");
-        awaitJsTrue("document.querySelector('[data-testid=file-open-error]')?.textContent.includes('Symbolic links cannot be opened safely')");
+        awaitJsTrue("document.querySelector('[data-testid=file-open-error]')?.textContent.includes('Symbolic links cannot be opened safely') === true");
         click("[data-file-name='large.bin'] .files-row-open");
         awaitJsTrue("!!document.querySelector('[data-testid=file-too-large]')");
         assertEquals("opening the next file clears the previous symlink error", "true",
                 evalRaw("document.querySelector('[data-testid=file-error]') === null"));
         String largeMessage = evalString("document.querySelector('[data-testid=file-too-large]')?.innerText ?? ''");
-        assertTrue("oversized files must explain the bridge limit and state that bytes were not read", largeMessage.contains("512 KiB") && largeMessage.contains("No file contents were read"));
+        assertTrue("oversized files must explain the bridge limit and state that bytes were not read", largeMessage.contains("512.0 KB") && largeMessage.contains("No file contents were read"));
 
         click("[data-file-name='binary.bin'] .files-row-open");
         awaitJsTrue("!!document.querySelector('[data-testid=file-binary-viewer]')");
-        armDownloadProbe();
-        click("[data-testid=file-download]");
-        awaitJsTrue("window.__ps2858FileDownload?.done === true");
-        JSONObject download = new JSONObject(evalString("JSON.stringify(window.__ps2858FileDownload)"));
-        assertEquals("binary download must use the remote basename", "binary.bin", download.getString("name"));
-        assertEquals("download bytes must remain binary and byte-exact", "AP9CSU5BUlk=", download.getString("base64"));
 
-        dispatchUpload("upload-from-packaged-ui");
-        awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === 'uploaded.txt')");
-        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Uploaded uploaded.txt')");
+        File downloadedFile = new File(targetContext().getCacheDir(), "js2858-download-result.bin");
+        downloadedFixture = downloadedFile;
+        assertTrue("download result fixture must be new", !downloadedFile.exists());
+        Uri downloadUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", createFile(downloadedFile, new byte[0]));
+        // The chooser result is a real packaged content URI, so the same native
+        // SAF writer and ContentResolver path used by Android document providers is exercised.
+        Intent createResult = new Intent().setData(downloadUri)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        Intents.intending(IntentMatchers.hasAction(Intent.ACTION_CREATE_DOCUMENT))
+                .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, createResult));
+        click("[data-testid=file-download]");
+        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Saved') === true");
+        byte[] expectedBinary = new byte[] {0, (byte) 0xff, 'B', 'I', 'N', 'A', 'R', 'Y'};
+        assertTrue("the SAF content URI must receive the exact remote binary bytes",
+                Arrays.equals(expectedBinary, readAllBytes(downloadedFile)));
+        captureScreenshot(artifacts, "files-downloaded.png");
+
+        File uploadSource = new File(targetContext().getCacheDir(), "uploaded.bin");
+        uploadFixture = uploadSource;
+        byte[] uploadBytes = new byte[] {'u', 'p', 'l', 'o', 'a', 'd', 0, 'f', 'r', 'o', 'm', ' ', 'U', 'I', (byte) 0xff};
+        Uri uploadUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", createFile(uploadSource, uploadBytes));
+        // The picker result points at a packaged content URI rather than a
+        // fabricated Web File or a synthetic input change event.
+        Intent openResult = new Intent().setData(uploadUri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        Intents.intending(IntentMatchers.hasAction(Intent.ACTION_OPEN_DOCUMENT))
+                .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, openResult));
+        click("[data-testid=file-upload]");
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === 'uploaded.bin')");
+        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Uploaded uploaded.bin') === true");
         captureScreenshot(artifacts, "files-uploaded.png");
         System.out.println("J10_FILES_EVIDENCE root=" + fixtureRoot + " listCount="
                 + evalString("document.querySelectorAll('[data-file-name]').length")
-                + " download=" + download + " screenshots=" + artifacts.getAbsolutePath());
+                + " downloadedBytes=" + expectedBinary.length + " uploadedBytes=" + uploadBytes.length
+                + " screenshots=" + artifacts.getAbsolutePath());
     }
 
     private void awaitTrustOrConnected() throws Exception {
@@ -158,33 +216,28 @@ public final class J10FilesBrowseEditJourneyTest {
                 outcome.contains("bytesWritten"));
     }
 
-    private void armDownloadProbe() throws Exception {
-        String expression = "(() => {window.__ps2858FileDownload=null;"
-                + "document.addEventListener('click',event=>{const node=event.target;"
-                + "const anchor=node instanceof HTMLAnchorElement?node:node?.closest?.('a[download]');"
-                + "if(!anchor||!anchor.download)return;const name=anchor.download;const href=anchor.href;"
-                + "window.__ps2858FileDownload={name,done:false};"
-                + "fetch(href).then(response=>response.arrayBuffer()).then(buffer=>{"
-                + "const bytes=new Uint8Array(buffer);let binary='';for(const value of bytes)binary+=String.fromCharCode(value);"
-                + "window.__ps2858FileDownload={name,base64:btoa(binary),done:true};"
-                + "}).catch(error=>window.__ps2858FileDownload={name,error:String(error),done:true});},true);return 'armed';})()";
-        assertEquals("download observation must be armed", "armed", evalString(expression));
+    private File createFile(File file, byte[] bytes) throws Exception {
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(bytes);
+        }
+        return file;
     }
 
-    private void dispatchUpload(String content) throws Exception {
-        String expression = "(() => {const input=document.querySelector('[data-testid=file-upload-input]');"
-                + "if(!input)throw new Error('missing file upload input');"
-                + "const file=new File([" + JSONObject.quote(content) + "],'uploaded.txt',{type:'text/plain'});"
-                + "Object.defineProperty(input,'files',{configurable:true,value:[file]});"
-                + "input.dispatchEvent(new Event('change',{bubbles:true}));return 'sent';})()";
-        assertEquals("the packaged browser upload input must accept a selected document", "sent", evalString(expression));
+    private byte[] readAllBytes(File file) throws Exception {
+        try (FileInputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
+            return output.toByteArray();
+        }
     }
 
     private void assertTouchTargetsMeetPhoneMinimum() throws Exception {
         String result = evalString("(() => {const selectors=['.files-icon-button','.files-primary-button','.files-secondary-button',"
                 + "'.files-row-open','.files-row-download','.files-crumb'];const bad=[];"
                 + "for(const selector of selectors){for(const node of document.querySelectorAll(selector)){"
-                + "if(getComputedStyle(node).display==='none')continue;const rect=node.getBoundingClientRect();"
+                + "const style=getComputedStyle(node);const rect=node.getBoundingClientRect();"
+                + "if(style.display==='none'||style.visibility==='hidden'||rect.width===0||rect.height===0)continue;"
                 + "if(rect.width<48||rect.height<48)bad.push({selector,width:rect.width,height:rect.height});}}"
                 + "return JSON.stringify({bad});})()");
         JSONObject report = new JSONObject(result);
@@ -192,6 +245,28 @@ public final class J10FilesBrowseEditJourneyTest {
     }
 
     private void captureScreenshot(File directory, String name) throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=file-loading]') === null"
+                + " && !Array.from(document.querySelectorAll('button')).some(button =>"
+                + " ['Saving…','Uploading…'].includes(button.textContent.trim()))");
+        evalString("(() => {window.__ps2858ScreenshotFrameReady=false;"
+                + "requestAnimationFrame(() => requestAnimationFrame(() => {window.__ps2858ScreenshotFrameReady=true;}));"
+                + "return 'waiting';})()");
+        awaitJsTrue("window.__ps2858ScreenshotFrameReady === true", 5_000);
+        CountDownLatch rendered = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            if (webView == null) throw new AssertionError("packaged Capacitor activity has no WebView");
+            webView.postVisualStateCallback(SystemClock.uptimeMillis(), new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long requestId) {
+                    rendered.countDown();
+                }
+            });
+        });
+        assertTrue("the WebView must render the requested file state before its screenshot is captured",
+                rendered.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        Thread.sleep(200);
+
         AtomicReference<byte[]> png = new AtomicReference<>();
         scenario.onActivity(activity -> {
             Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
@@ -205,6 +280,25 @@ public final class J10FilesBrowseEditJourneyTest {
         try (FileOutputStream output = new FileOutputStream(new File(directory, name))) {
             output.write(bytes);
         }
+
+        ContentValues media = new ContentValues();
+        media.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+        media.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+        media.put(MediaStore.Images.Media.RELATIVE_PATH,
+                Environment.DIRECTORY_PICTURES + "/PocketShell/J10/" + screenshotRunId);
+        media.put(MediaStore.Images.Media.IS_PENDING, 1);
+        Uri sharedScreenshot = targetContext().getContentResolver()
+                .insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, media);
+        assertTrue("the packaged journey must export screenshots outside its uninstallable app sandbox", sharedScreenshot != null);
+        OutputStream screenshotOutput = targetContext().getContentResolver().openOutputStream(sharedScreenshot);
+        assertTrue("the screenshot export URI must be writable", screenshotOutput != null);
+        try (OutputStream output = screenshotOutput) {
+            output.write(bytes);
+        }
+        media.clear();
+        media.put(MediaStore.Images.Media.IS_PENDING, 0);
+        assertTrue("the packaged screenshot must become visible to the host artifact collector",
+                targetContext().getContentResolver().update(sharedScreenshot, media, null, null) == 1);
     }
 
     private android.content.Context targetContext() {

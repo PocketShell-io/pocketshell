@@ -125,7 +125,9 @@ ssh_remote() { ssh -q "${ssh_opts[@]}" "testuser@127.0.0.1" "$1"; }
 ssh_remote "test ! -e '$REMOTE_ROOT'" || fail "run-scoped remote fixture already exists: $REMOTE_ROOT"
 ssh_remote "mkdir -m 700 '$REMOTE_ROOT' \
   && printf 'before-edit\\n' > '$REMOTE_ROOT/editable.txt' \
+  && printf 'before-save\\n' > '$REMOTE_ROOT/save-success.txt' \
   && printf '\\000\\377BINARY' > '$REMOTE_ROOT/binary.bin' \
+  && printf 'upload\\000from UI\\377' > '$REMOTE_ROOT/expected-upload.bin' \
   && head -c 524289 /dev/zero > '$REMOTE_ROOT/large.bin' \
   && ln -s /etc/passwd '$REMOTE_ROOT/link.txt'"
 printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
@@ -139,6 +141,7 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
     "-Pandroid.testInstrumentationRunnerArguments.fileFixtureRoot=$REMOTE_ROOT" \
+    "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
     --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
   :
 else
@@ -173,19 +176,36 @@ PY
 
 [[ "$(ssh_remote "cat '$REMOTE_ROOT/editable.txt'")" == 'changed-remotely' ]] \
   || fail 'edit conflict handling overwrote the remote contents'
-[[ "$(ssh_remote "cat '$REMOTE_ROOT/uploaded.txt'")" == 'upload-from-packaged-ui' ]] \
-  || fail 'the Android upload did not persist exact bytes on the Docker host'
-printf 'PASS: Docker host retained the concurrent edit and uploaded file bytes\n'
+[[ "$(ssh_remote "cat '$REMOTE_ROOT/save-success.txt'")" == 'saved-through-ui' ]] \
+  || fail 'the Android file editor did not save exact text bytes on the Docker host'
+ssh_remote "cmp -s '$REMOTE_ROOT/uploaded.bin' '$REMOTE_ROOT/expected-upload.bin'" \
+  || fail 'the Android document-provider upload did not persist exact binary bytes on the Docker host'
+printf 'PASS: Docker host retained the concurrent edit, successful editor save, and exact uploaded binary bytes\n'
 
-PACKAGE="com.pocketshell.app.$SUFFIX"
-DEVICE_ARTIFACTS="files/js2858-files/${REMOTE_ROOT##*/}"
+SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/J10/$RUN_ID"
 mkdir -p "$ARTIFACTS_DIR/device-screenshots"
-for screenshot in files-home.png files-edit-conflict.png files-uploaded.png; do
-  "$ADB" -s "$ANDROID_SERIAL" exec-out run-as "$PACKAGE" cat "$DEVICE_ARTIFACTS/$screenshot" \
-    > "$ARTIFACTS_DIR/device-screenshots/$screenshot" \
+for screenshot in files-home.png files-edit-conflict.png files-saved.png files-downloaded.png files-uploaded.png; do
+  "$ADB" -s "$ANDROID_SERIAL" pull "$SCREENSHOT_DIR/$screenshot" \
+    "$ARTIFACTS_DIR/device-screenshots/$screenshot" >/dev/null \
     || fail "could not retrieve packaged Android screenshot: $screenshot"
   [[ -s "$ARTIFACTS_DIR/device-screenshots/$screenshot" ]] || fail "missing packaged screenshot: $screenshot"
+  screenshot_magic="$(od -An -tx1 -N8 "$ARTIFACTS_DIR/device-screenshots/$screenshot" | tr -d '[:space:]')"
+  [[ "$screenshot_magic" == '89504e470d0a1a0a' ]] || fail "packaged screenshot is not a valid PNG: $screenshot"
 done
+
+relative_screenshot_dir="Pictures/PocketShell/J10/$RUN_ID/"
+delete_screenshots="$($ADB -s "$ANDROID_SERIAL" shell \
+  "content delete --uri content://media/external/images/media --where \"relative_path='$relative_screenshot_dir'\"" 2>&1)" \
+  || fail 'could not remove temporary screenshots from the emulator MediaStore'
+[[ "$delete_screenshots" != *'Error while accessing provider'* ]] \
+  || fail "could not remove temporary screenshots from the emulator MediaStore: $delete_screenshots"
+remaining_screenshots="$($ADB -s "$ANDROID_SERIAL" shell \
+  "content query --uri content://media/external/images/media --projection _id --where \"relative_path='$relative_screenshot_dir'\"" 2>&1)" \
+  || fail 'could not verify temporary screenshot cleanup in the emulator MediaStore'
+[[ "$remaining_screenshots" != *'Error while accessing provider'* && "$remaining_screenshots" != *'Row:'* ]] \
+  || fail "temporary screenshots remain in the emulator MediaStore: $remaining_screenshots"
+"$ADB" -s "$ANDROID_SERIAL" shell "find '$SCREENSHOT_DIR' -depth -delete" >/dev/null \
+  || fail 'could not remove the temporary screenshot directory from the emulator'
 
 ssh_remote "find '$REMOTE_ROOT' -depth -delete" >/dev/null
 printf 'PASS: packaged J10 Docker journey completed. Artifacts: %s\n' "$ARTIFACTS_DIR"
