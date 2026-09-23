@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild and validate keyboard-up composer artifacts from Android logcat."""
+"""Rebuild and validate same-run composer screenshots and terminal evidence from Android logcat."""
 
 from __future__ import annotations
 
@@ -14,7 +14,13 @@ from pathlib import Path
 
 
 TAG = "PS2857Asset:"
-EXPECTED_NAMES = {"composer-keyboard.png", "composer-keyboard-geometry.json"}
+EXPECTED_NAMES = {
+    "composer-keyboard.png",
+    "composer-keyboard-geometry.json",
+    "composer-post-send.png",
+    "composer-post-send-terminal.json",
+}
+REQUIRED_NAMES = EXPECTED_NAMES
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
@@ -22,7 +28,8 @@ class ExtractionFailure(ValueError):
     pass
 
 
-def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True) -> dict[str, bytes]:
+def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
+                 expected_terminal_marker: str | None = None) -> dict[str, bytes]:
     assets: dict[str, dict[str, object]] = {}
     for line in log_text.splitlines():
         if TAG not in line:
@@ -63,7 +70,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True) ->
         else:
             raise ExtractionFailure(f"unknown artifact record {kind!r} for {name}")
 
-    required_names = EXPECTED_NAMES if validate_layout else {"composer-keyboard.png"}
+    required_names = REQUIRED_NAMES if validate_layout else {"composer-keyboard.png"}
     if not required_names.issubset(assets) or set(assets) - EXPECTED_NAMES:
         raise ExtractionFailure(f"expected at least {sorted(required_names)} without extras, found {sorted(assets)}")
 
@@ -84,6 +91,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True) ->
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
+    for name in ("composer-keyboard.png", "composer-post-send.png"):
+        screenshot = decoded.get(name)
+        if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
+            raise ExtractionFailure(f"{name} is not a non-empty PNG")
     screenshot = decoded["composer-keyboard.png"]
     if not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024:
         raise ExtractionFailure("keyboard screenshot is not a non-empty PNG")
@@ -158,15 +169,73 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True) ->
             raise ExtractionFailure("keyboard layout hides the terminal context instead of preserving a useful viewport")
         if float(actions["top"]) < float(draft["bottom"]):
             raise ExtractionFailure("composer action container overlaps the draft")
+
+        post_send_bytes = decoded.get("composer-post-send-terminal.json")
+        if post_send_bytes is None or "composer-post-send.png" not in decoded:
+            raise ExtractionFailure("same-run post-send screenshot and terminal record are required")
+        try:
+            post_send = json.loads(post_send_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"post-send terminal JSON is invalid: {error}") from error
+        if not isinstance(post_send, dict) or post_send.get("stage") != "after-send":
+            raise ExtractionFailure("post-send terminal record does not identify an after-send capture")
+        if post_send.get("captureEnabled") is not True:
+            raise ExtractionFailure("post-send terminal capture was not explicitly enabled by instrumentation")
+        if post_send.get("terminalEvidenceSource") != "xterm-active-buffer-after-render":
+            raise ExtractionFailure("post-send terminal text was not captured from the rendered xterm buffer")
+        if post_send.get("sentMarkerAbsentFromSubmittedCommand") is not True:
+            raise ExtractionFailure("post-send marker may be a command echo rather than terminal output")
+        recorded_marker = post_send.get("expectedMarker")
+        if not isinstance(recorded_marker, str) or not recorded_marker:
+            raise ExtractionFailure("post-send terminal record is missing its expected marker")
+        if expected_terminal_marker is None or recorded_marker != expected_terminal_marker:
+            raise ExtractionFailure("post-send terminal marker does not match this packaged journey")
+        visible_text = post_send.get("visibleTerminalText")
+        if not isinstance(visible_text, str) or recorded_marker not in visible_text:
+            raise ExtractionFailure("post-send terminal text does not contain the executed command marker")
+        dom_text = post_send.get("terminalDomText")
+        if not isinstance(dom_text, str) or recorded_marker not in dom_text:
+            raise ExtractionFailure("post-send rendered terminal DOM does not contain the executed command marker")
+        try:
+            delivery_count = int(post_send["appTerminalDeliveryCount"])
+            missing_ref_count = int(post_send["appTerminalMissingRefCount"])
+            write_count = int(post_send["terminalWriteCount"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("post-send app-to-terminal delivery counters are invalid") from error
+        if delivery_count < 1 or missing_ref_count != 0 or write_count < 1:
+            raise ExtractionFailure("post-send PTY output did not reach the mounted terminal component")
+        if not isinstance(post_send.get("deliveryStatus"), str) or "Sent to the terminal" not in post_send["deliveryStatus"]:
+            raise ExtractionFailure("post-send terminal record does not prove successful Send status")
+        terminal_rect = post_send.get("terminalViewport")
+        post_viewport = post_send.get("visualViewport")
+        if not isinstance(terminal_rect, dict) or not isinstance(post_viewport, dict):
+            raise ExtractionFailure("post-send terminal record is missing viewport bounds")
+        try:
+            terminal_top = float(terminal_rect["top"])
+            terminal_bottom = float(terminal_rect["bottom"])
+            terminal_left = float(terminal_rect["left"])
+            terminal_right = float(terminal_rect["right"])
+            terminal_height = float(terminal_rect["height"])
+            post_height = float(post_viewport["height"])
+            post_width = float(post_viewport["width"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("post-send terminal viewport bounds are invalid") from error
+        if (terminal_top < 0 or terminal_bottom > post_height + 0.5
+                or terminal_left < 0 or terminal_right > post_width + 0.5 or terminal_height < 48):
+            raise ExtractionFailure("post-send terminal viewport is clipped or too small")
+        if post_send.get("keyboardVisible") is not False:
+            raise ExtractionFailure("post-send terminal screenshot was not captured after the Android keyboard closed")
     return decoded
 
 
-def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = True) -> list[str]:
+def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = True,
+            expected_terminal_marker: str | None = None) -> list[str]:
     try:
         log_text = logcat.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         raise ExtractionFailure(f"could not read Android logcat {logcat}: {error}") from error
-    artifacts = parse_assets(log_text, run_id, validate_layout=validate_layout)
+    artifacts = parse_assets(log_text, run_id, validate_layout=validate_layout,
+                             expected_terminal_marker=expected_terminal_marker)
     output.mkdir(parents=True, exist_ok=True)
     for name, payload in artifacts.items():
         (output / name).write_bytes(payload)
@@ -175,7 +244,31 @@ def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = 
 
 def self_test() -> None:
     run_id = "js2857-self-test"
+    marker = "PS2857_SENT_js2857-self-test"
     png = b"\x89PNG\r\n\x1a\n" + b"fixture" * 200
+    post_send = json.dumps({
+        "stage": "after-send",
+        "captureEnabled": True,
+        "terminalEvidenceSource": "xterm-active-buffer-after-render",
+        "expectedMarker": marker,
+        "visibleTerminalText": f"command output\n{marker}",
+        "terminalDomText": f"command output\n{marker}",
+        "sentMarkerAbsentFromSubmittedCommand": True,
+        "appTerminalDeliveryCount": 1,
+        "appTerminalMissingRefCount": 0,
+        "terminalWriteCount": 1,
+        "terminalViewport": {"top": 20.0, "bottom": 100.0, "left": 10.0, "right": 390.0, "height": 80.0},
+        "visualViewport": {"height": 200.0, "width": 400.0},
+        "keyboardVisible": False,
+        "deliveryStatus": "Sent to the terminal.",
+    }).encode()
+    clipped_post_send_value = json.loads(post_send)
+    clipped_post_send_value["terminalViewport"]["top"] = 220.0
+    clipped_post_send_value["terminalViewport"]["bottom"] = 300.0
+    clipped_post_send = json.dumps(clipped_post_send_value).encode()
+    keyboard_up_post_send_value = json.loads(post_send)
+    keyboard_up_post_send_value["keyboardVisible"] = True
+    keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
                          send_bottom: float = 198.0, terminal_height: float = 60.0) -> bytes:
         return json.dumps({
@@ -197,8 +290,13 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
-    def make_lines(geometry_bytes: bytes = geometry) -> list[str]:
-        source = [("composer-keyboard.png", png), ("composer-keyboard-geometry.json", geometry_bytes)]
+    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send) -> list[str]:
+        source = [
+            ("composer-keyboard.png", png),
+            ("composer-keyboard-geometry.json", geometry_bytes),
+            ("composer-post-send.png", png),
+            ("composer-post-send-terminal.json", post_send_bytes),
+        ]
         lines: list[str] = []
         for name, payload in source:
             encoded = base64.b64encode(payload).decode()
@@ -210,8 +308,8 @@ def self_test() -> None:
         return lines
 
     lines = make_lines()
-    assert parse_assets("\n".join(lines), run_id)["composer-keyboard.png"] == png
-    print("PASS: screenshot and geometry artifacts extract with complete chunks and matching SHA-256")
+    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-keyboard.png"] == png
+    print("PASS: keyboard and post-send artifacts extract with complete chunks and matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -221,9 +319,16 @@ def self_test() -> None:
         ("send button clipped by viewport", make_lines(geometry_payload(send_bottom=201))),
         ("status bar overlap", make_lines(geometry_payload(app_bar_top=0))),
         ("terminal context hidden", make_lines(geometry_payload(terminal_height=30))),
+        ("post-send marker missing from rendered terminal", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"wrong-marker"))),
+        ("post-send screenshot missing", [line for line in lines if "composer-post-send.png" not in line]),
+        ("post-send terminal record missing", [line for line in lines if "composer-post-send-terminal.json" not in line]),
+        ("post-send marker belongs to another journey", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"PS2857_SENT_other"))),
+        ("post-send text source is not the rendered xterm buffer", make_lines(post_send_bytes=post_send.replace(b"xterm-active-buffer-after-render", b"unverified-dom-text"))),
+        ("post-send terminal scrolled below the viewport", make_lines(post_send_bytes=clipped_post_send)),
+        ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
     ):
         try:
-            parse_assets("\n".join(altered), run_id)
+            parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)
         except ExtractionFailure:
             print(f"PASS: {label} fails closed")
         else:
@@ -240,6 +345,7 @@ def main() -> int:
     parser.add_argument("--run-id")
     parser.add_argument("--logcat", type=Path)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--expected-terminal-marker")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--preserve-on-failure", action="store_true",
                         help="extract complete hash-checked artifacts without accepting IME bounds")
@@ -253,9 +359,12 @@ def main() -> int:
         return 0
     if not args.run_id or not args.logcat or not args.output_dir:
         parser.error("--run-id, --logcat, and --output-dir are required unless --self-test is used")
+    if not args.preserve_on_failure and not args.expected_terminal_marker:
+        parser.error("--expected-terminal-marker is required for accepted evidence")
     try:
         names = extract(args.run_id, args.logcat, args.output_dir,
-                        validate_layout=not args.preserve_on_failure)
+                        validate_layout=not args.preserve_on_failure,
+                        expected_terminal_marker=args.expected_terminal_marker)
     except ExtractionFailure as error:
         print(f"FAIL: composer artifact extraction: {error}", file=sys.stderr)
         return 1

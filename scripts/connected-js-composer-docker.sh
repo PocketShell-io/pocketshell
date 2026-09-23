@@ -179,8 +179,10 @@ stop_asset_logcat
 "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --results-dir "$RESULTS_DIR"
 
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" \
-  --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir"
+  --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir" \
+  --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
 sha256sum "$evidence_dir/composer-keyboard.png"
+sha256sum "$evidence_dir/composer-post-send.png"
 
 ssh_remote() {
   ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
@@ -197,12 +199,18 @@ multiline_hex="$(ssh_remote "od -An -tx1 /tmp/$bytes_session-multiline.raw | tr 
 printf 'PASS: remote Unicode PTY bytes %s\n' "$unicode_hex"
 printf 'PASS: remote multiline PTY bytes %s\n' "$multiline_hex"
 
+sent_marker="PS2857_SENT_$SESSION_BASE"
+sent_output_marker="$(ssh_remote "cat /tmp/$bytes_session-sent-output.marker | tr -d '\\n'")"
+[[ "$sent_output_marker" == "$sent_marker" ]] \
+  || fail "remote sent-output marker mismatch: expected $sent_marker, got ${sent_output_marker:-<empty>}"
+printf 'PASS: host PTY output contained %s\n' "$sent_output_marker"
+
 insert_marker="PS2857_INSERT_$SESSION_BASE"
-insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --screen --plain")"
-[[ "$insert_capture" == *"$insert_marker"* ]] || fail 'Insert line was not left visible in the session screen capture'
+insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$insert_capture" == *"$insert_marker"* ]] || fail 'remote PTY history did not contain the inserted prompt line'
 insert_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-insert.marker; then printf present; else printf absent; fi")"
 [[ "$insert_file_state" == absent ]] || fail 'Insert executed the command instead of leaving it at the prompt'
-printf 'PASS: Insert left %s at the prompt; marker file is absent\n' "$insert_marker"
+printf 'PASS: app Xterm and remote PTY history contain the inserted %s prompt line; marker file is absent\n' "$insert_marker"
 
 uncertain_marker="PS2857_UNCERTAIN_$SESSION_BASE"
 uncertain_file_state="$(ssh_remote "if test -e /tmp/$uncertain_session-uncertain.marker; then printf present; else printf absent; fi")"
