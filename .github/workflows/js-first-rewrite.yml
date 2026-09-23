@@ -75,8 +75,26 @@ jobs:
           tests/scripts/connected-test-js-runner-test.sh
           tests/scripts/connected-test-root-guard-test.sh
 
+      - name: Prepare the Android project for JVM tests
+        run: |
+          pnpm build:web
+          pnpm cap:sync
+
+      - name: Check fail-closed speech policy JUnit guard
+        run: scripts/check-speech-policy-junit.py --self-test
+
+      - name: Run Android speech policy unit tests
+        run: |
+          rm -rf android/app/build/test-results/testDebugUnitTest
+          mkdir -p android/app/build/test-results
+          touch android/app/build/test-results/.speech-policy-test-started
+          ./android/gradlew -p android :app:testDebugUnitTest --no-daemon --max-workers=2 --rerun-tasks
+          scripts/check-speech-policy-junit.py \
+            --results-dir android/app/build/test-results/testDebugUnitTest \
+            --started-at android/app/build/test-results/.speech-policy-test-started
+
       - name: Build Android debug APK
-        run: pnpm build:android:debug
+        run: ./android/gradlew -p android assembleDebug --no-daemon --max-workers=2
 
       - name: Validate packaged Android identity and derived version
         run: |
