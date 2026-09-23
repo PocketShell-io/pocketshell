@@ -2,6 +2,20 @@
 
 This is how PocketShell ships a version.
 
+## JS-first 0.6.0 release blocker
+
+The rewrite foundation workflow is not the 0.6.0 release gate. It checks the
+JS unit suite, debug APK identity and derived version, three packaged shell
+smoke tests, and the existing Docker fixture. The 24 replacement feature
+journey classes are registered in `scripts/js-journey-class-manifest.json`;
+`scripts/check-js-journey-results.py --json` emits their fail-closed
+qualification result. At the current foundation state it reports all 24
+journeys missing. The JS branch has no scheduled full-suite D36 verdict or
+exact-commit D37 fault verdict. Do not merge this branch to `main` or tag
+0.6.0 until those journeys and both blocking release signals are migrated and
+reviewer-validated. The legacy Gradle release workflow is not a substitute
+and must not be dispatched against the rewrite tree.
+
 `main` keeps moving; other people merge there. We don't freeze `main` and
 don't tag whatever `origin/main` happens to be after a long stabilize fight,
 and the root checkout never switches off `main` to do this work (locked,

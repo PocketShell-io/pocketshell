@@ -23,6 +23,10 @@ jobs:
         uses: actions/checkout@v6
         with:
           submodules: recursive
+          # versionCode is derived from reachable release tags; a shallow
+          # checkout would build the placeholder version while the APK still
+          # appeared internally consistent.
+          fetch-depth: 0
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v5
@@ -57,8 +61,25 @@ jobs:
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
 
+      - name: Check fail-closed feature journey qualification guard
+        run: scripts/check-js-journey-results.py --self-test
+
       - name: Build Android debug APK
         run: pnpm build:android:debug
+
+      - name: Validate packaged Android identity and derived version
+        run: |
+          scripts/check-js-apk-metadata.py --self-test
+          scripts/derive-version.sh --self-test
+          version_code="$(scripts/derive-version.sh version-code)"
+          version_name="$(scripts/derive-version.sh version-name)"
+          apk="android/app/build/outputs/apk/debug/app-debug.apk"
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant debug \
+            --expected-version-code "$version_code" \
+            --expected-version-name "$version_name"
+          scripts/check-apk-signing.sh --variant debug --js-first --apk "$apk"
 
       - name: Prepare packaged JS smoke APKs
         run: scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only

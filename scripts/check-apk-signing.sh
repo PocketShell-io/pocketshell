@@ -18,6 +18,10 @@ set -euo pipefail
 #     the daily-driver install identity did not move when release signing
 #     landed.
 #
+# The generated Capacitor debug manifest labels the launcher "PocketShell".
+# Pass --js-first for that build; package id and debug signer checks remain
+# identical, while the default continues to enforce the legacy label.
+#
 # Neither check can be done from source alone: the point is what actually got
 # packaged and signed, so this runs against APK files. Side-by-side coinstall
 # evidence on a device is the reviewer's emulator pass (docs/review-standards.md).
@@ -25,6 +29,7 @@ set -euo pipefail
 # Usage:
 #   scripts/check-apk-signing.sh --variant release --apk <path-to-apk>
 #   scripts/check-apk-signing.sh --variant debug  --apk <path-to-apk>
+#   scripts/check-apk-signing.sh --variant debug --js-first --apk <path-to-apk>
 #
 # The debug variant expects the PLAIN com.pocketshell.app build; a worktree
 # build made with -PpocketshellAppIdSuffix=<token> has a different package by
@@ -49,6 +54,7 @@ usage() {
 
 VARIANT=""
 APK=""
+JS_FIRST=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --variant)
@@ -61,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       APK="$2"
       shift 2
       ;;
+    --js-first)
+      JS_FIRST=1
+      shift
+      ;;
     --help|-h)
       usage
       ;;
@@ -71,6 +81,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$VARIANT" == "release" || "$VARIANT" == "debug" ]] || usage
+[[ "$JS_FIRST" == 0 || "$VARIANT" == "debug" ]] || fail "--js-first is valid only for the debug variant"
 [[ -n "$APK" ]] || usage
 [[ -f "$APK" ]] || fail "APK not found: $APK"
 
@@ -210,9 +221,15 @@ else
     fail "debug APK packageName is '$PACKAGE_NAME', expected com.pocketshell.app"
   pass "packageName == com.pocketshell.app"
 
-  [[ "$LABEL" == "PocketShell Debug" ]] ||
-    fail "debug APK launcher label is '$LABEL', expected 'PocketShell Debug'"
-  pass "launcher label is 'PocketShell Debug'"
+  if [[ "$JS_FIRST" == 1 ]]; then
+    [[ "$LABEL" == "PocketShell" ]] ||
+      fail "JS-first debug APK launcher label is '$LABEL', expected 'PocketShell'"
+    pass "JS-first launcher label is 'PocketShell'"
+  else
+    [[ "$LABEL" == "PocketShell Debug" ]] ||
+      fail "debug APK launcher label is '$LABEL', expected 'PocketShell Debug'"
+    pass "launcher label is 'PocketShell Debug'"
+  fi
 
   [[ "$SIGNER_SHA" == "$DEBUG_CERT_SHA" ]] ||
     fail "debug APK signer ($SIGNER_SHA) is not the committed debug.keystore cert ($DEBUG_CERT_SHA)"
