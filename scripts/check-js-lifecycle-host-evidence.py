@@ -14,6 +14,7 @@ import struct
 import subprocess
 import sys
 import shutil
+import tempfile
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -79,7 +80,9 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
 
 
 def _canonical_ocr_token(text: str) -> str:
-    token = re.sub(r"[^A-Z0-9_]", "", unicodedata.normalize("NFKC", text).upper())
+    token = unicodedata.normalize("NFKC", text).upper()
+    if not re.fullmatch(r"[A-Z0-9_]+", token):
+        return ""
     # Tesseract commonly reads the zero in this uppercase monospace output as O.
     return token.replace("O", "0")
 
@@ -193,25 +196,81 @@ def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) 
     return bounds
 
 
+def _marker_text_pixel_bounds(
+    viewport: dict[str, Any], marker_row: dict[str, Any], marker: str, terminal_columns: Any,
+) -> tuple[int, int, int, int]:
+    if (
+        not isinstance(terminal_columns, int) or isinstance(terminal_columns, bool)
+        or terminal_columns <= 0 or len(marker) > terminal_columns
+    ):
+        raise EvidenceFailure("screenshot marker crop needs positive xterm columns and a one-row marker")
+    row_left = marker_row.get("left")
+    row_top = marker_row.get("top")
+    row_bottom = marker_row.get("bottom")
+    row_width = marker_row.get("width")
+    if (
+        not isinstance(row_width, (int, float)) or isinstance(row_width, bool) or row_width <= 0
+        or not isinstance(row_left, (int, float)) or isinstance(row_left, bool)
+        or not isinstance(row_top, (int, float)) or isinstance(row_top, bool)
+        or not isinstance(row_bottom, (int, float)) or isinstance(row_bottom, bool)
+    ):
+        raise EvidenceFailure("screenshot marker crop needs the measured xterm row width")
+    cell_width = row_width / terminal_columns
+    text_width = cell_width * len(marker)
+    if not 0 < text_width <= row_width:
+        raise EvidenceFailure("screenshot marker text width is outside its measured xterm row")
+    text_rect = {
+        "left": row_left,
+        "top": row_top,
+        "right": row_left + text_width,
+        "bottom": row_bottom,
+    }
+    return _marker_pixel_bounds(viewport, text_rect)
+
+
 def _screenshot_marker_ocr(
     path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
     accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
 ) -> dict[str, Any]:
     if shutil.which("tesseract") is None:
         raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
-    try:
-        result = subprocess.run(
-            [
-                "tesseract", str(path), "stdout", "--psm", "6", "tsv",
-                "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
-            ],
-            check=True,
-            text=True,
-            capture_output=True,
-            timeout=20,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        raise EvidenceFailure(f"could not OCR screenshot {path}: {error}") from error
+    convert = shutil.which("convert")
+    if convert is None:
+        raise EvidenceFailure("ImageMagick convert is required to crop the measured xterm marker text run for OCR")
+    image_width, image_height = _png_dimensions(path)
+    padding = 2
+    crop_left = max(0, marker_bounds[0] - padding)
+    crop_top = max(0, marker_bounds[1] - padding)
+    crop_right = min(image_width, marker_bounds[2] + padding)
+    crop_bottom = min(image_height, marker_bounds[3] + padding)
+    crop_width = crop_right - crop_left
+    crop_height = crop_bottom - crop_top
+    if crop_width <= 0 or crop_height <= 0 or marker_bounds[0] < crop_left or marker_bounds[1] < crop_top:
+        raise EvidenceFailure("measured xterm marker crop is outside the viewport PNG")
+    with tempfile.TemporaryDirectory(prefix="pocketshell-marker-ocr-") as temporary_directory:
+        crop_path = Path(temporary_directory) / "marker.png"
+        try:
+            subprocess.run(
+                [convert, str(path), "-crop", f"{crop_width}x{crop_height}+{crop_left}+{crop_top}", "+repage", str(crop_path)],
+                check=True, text=True, capture_output=True, timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise EvidenceFailure(f"could not crop measured marker text from screenshot {path}: {error}") from error
+        if not crop_path.is_file():
+            raise EvidenceFailure(f"ImageMagick did not produce the marker OCR crop for {path}")
+        try:
+            result = subprocess.run(
+                [
+                    "tesseract", str(crop_path), "stdout", "--psm", "7", "tsv",
+                    "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+                ],
+                check=True,
+                text=True,
+                capture_output=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            raise EvidenceFailure(f"could not OCR screenshot {path}: {error}") from error
     words: list[dict[str, Any]] = []
     try:
         for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t"):
@@ -220,8 +279,8 @@ def _screenshot_marker_ocr(
             words.append({
                 "text": row["text"],
                 "confidence": float(row.get("conf", "-1")),
-                "left": int(row["left"]),
-                "top": int(row["top"]),
+                "left": int(row["left"]) + crop_left,
+                "top": int(row["top"]) + crop_top,
                 "width": int(row["width"]),
                 "height": int(row["height"]),
             })
@@ -385,7 +444,7 @@ def _self_test() -> int:
         print(f"ok [{index}/{len(probes)}] {label}")
 
     screenshot_marker = "REMOTE_OUTPUT_0CA60FF4FA_AS"
-    marker_bounds = (10, 20, 900, 80)
+    marker_bounds = (10, 20, 703, 80)
     screenshot_probes = [
         ("exact standalone screenshot marker accepted", [
             {"text": "REMOTE_OUTPUT_OCA60FF4FA_AS", "confidence": 91.0,
@@ -413,6 +472,32 @@ def _self_test() -> int:
             {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_EXTRA", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
+        ("arbitrary trailing underscore rejected", [
+            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("punctuation attached to marker rejected", [
+            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS.", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("wrong lifecycle phase rejected", [
+            {"text": "REMOTE_OUTPUT_0CA60FF4FA_BS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("trailing cursor recognized as extra token rejected", [
+            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+            {"text": "I", "confidence": 84.0,
+             "left": 704, "top": 31, "width": 7, "height": 37},
+        ], False),
+        ("edge artifact on marker rejected", [
+            {"text": "BREMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 681, "height": 37},
+        ], False),
+        ("recognized glyph outside measured crop rejected", [
+            {"text": screenshot_marker, "confidence": 91.0,
+             "left": 26, "top": 31, "width": 681, "height": 37},
+        ], False),
         ("wrap-split marker rejected", [
             {"text": "REMOTE_OUTPUT_0CA", "confidence": 91.0,
              "left": 26, "top": 31, "width": 300, "height": 37},
@@ -430,6 +515,22 @@ def _self_test() -> int:
             print(f"FAIL: screenshot OCR mutation probe {index}: {label}", file=sys.stderr)
             return 1
         print(f"ok [screenshot {index}/{len(screenshot_probes)}] {label}")
+
+    try:
+        measured_crop = _marker_text_pixel_bounds(
+            {"left": 30.0, "top": 150.0, "right": 381.0, "bottom": 483.0, "devicePixelRatio": 2.625},
+            {"left": 39.5, "top": 233.5, "right": 375.5, "bottom": 257.1, "width": 336.0},
+            "REMOTE_OUTPUT_3286295467_AS",
+            35,
+        )
+    except EvidenceFailure as error:
+        print(f"FAIL: marker text crop geometry self-test: {error}", file=sys.stderr)
+        return 1
+    expected_crop = (25, 219, 705, 281)
+    if measured_crop != expected_crop:
+        print(f"FAIL: marker crop was not derived from xterm columns/marker length: {measured_crop}", file=sys.stderr)
+        return 1
+    print("ok [marker crop] text-only bounds derive from captured xterm row, columns, and marker length")
 
     expected_accent = _screenshot_marker_accent_rgb(screenshot_marker)
     expected_accent_rgb = tuple(int(channel) for channel in expected_accent.split(","))
@@ -1368,7 +1469,9 @@ def _validate_checkpoint(
         and marker_rect.get("bottom", float("-inf")) <= viewport.get("bottom", float("inf"))
     ):
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: marker row lies outside the captured terminal viewport")
-    marker_bounds = _marker_pixel_bounds(viewport, marker_rect)
+    marker_bounds = _marker_text_pixel_bounds(
+        viewport, marker_rect, marker, checkpoint.get("terminalColumns")
+    )
     try:
         ocr_evidence = _screenshot_marker_ocr(
             png_path, marker, marker_bounds,
