@@ -60,6 +60,14 @@
         "registers before starting speech, filters foreign events, and stops the matching request"
       ]
     },
+    "tests/unit/speechRecognition.test.ts": {
+      "suite": "Android speech option boundary",
+      "tests": [
+        "uses the 4-second silence default and preserves the explicit auto sentinel",
+        "rounds and clamps the silence window to the supported 2-to-60-second range",
+        "keeps a trimmed BCP-47 hint and defaults malformed untyped values safely"
+      ]
+    },
     "tests/unit/destinationInventory.test.ts": {
       "suite": "pre-rewrite destination inventory",
       "tests": [
