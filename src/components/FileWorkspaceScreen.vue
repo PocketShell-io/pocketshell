@@ -24,6 +24,8 @@ import {
   type FileWorkspaceListing,
 } from '../session/files';
 import type { SshCapabilityPlugin } from '../native/sshCapability';
+import { documentContent } from '../native/documentContent';
+import { createDocumentTransferService } from '../session/documentTransfers';
 
 const props = defineProps<{
   connection: SshConnectionRef | null;
@@ -35,6 +37,7 @@ type Workspace = ReturnType<typeof createFileWorkspaceService>;
 interface Breadcrumb { label: string; path: string; current: boolean }
 
 const workspace = shallowRef<Workspace | null>(null);
+const documentTransfers = createDocumentTransferService(documentContent);
 const listing = shallowRef<FileWorkspaceListing | null>(null);
 const activeRoot = ref('');
 const rootDraft = ref(props.initialRootDirectory);
@@ -52,7 +55,6 @@ const uploading = ref(false);
 const errorMessage = ref('');
 const statusMessage = ref('');
 const conflictMessage = ref('');
-const fileInput = ref<HTMLInputElement | null>(null);
 const viewer = ref<HTMLElement | null>(null);
 let workspaceGeneration = 0;
 let boundConnectionKey = '';
@@ -342,21 +344,6 @@ async function saveEdits(): Promise<void> {
   }
 }
 
-function launchDownload(name: string, bytes: Uint8Array, mime: string | null): void {
-  const blob = new Blob([bytes], { type: mime ?? 'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = renderSanitizedFilename(sanitizeFilename(name));
-  anchor.rel = 'noopener';
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  // WebView hands downloads to Android after the click has returned.
-  window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  statusMessage.value = `Prepared ${anchor.download} for download.`;
-}
-
 async function downloadFile(entry = openedEntry.value): Promise<void> {
   if (!entry || entry.type !== 'file') return;
   if (entry.sizeBytes > MAX_SFTP_FILE_BYTES) {
@@ -372,7 +359,14 @@ async function downloadFile(entry = openedEntry.value): Promise<void> {
   errorMessage.value = '';
   try {
     const loaded = loadedFile.value?.path === entry.path ? loadedFile.value : await active.readFile(entry.path);
-    launchDownload(entry.name, loaded.bytes, loaded.classification.mime);
+    const result = await documentTransfers.saveAs(
+      renderSanitizedFilename(sanitizeFilename(entry.name)),
+      loaded.classification.mime,
+      loaded.bytes,
+    );
+    statusMessage.value = result.cancelled
+      ? 'Download cancelled.'
+      : `Saved ${formatBytes(result.bytesWritten)} to ${result.name}.`;
   } catch (error) {
     errorMessage.value = messageOf(error);
   } finally {
@@ -380,32 +374,28 @@ async function downloadFile(entry = openedEntry.value): Promise<void> {
   }
 }
 
-async function uploadSelectedFile(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement;
-  const source = input.files?.[0];
-  input.value = '';
-  if (!source) return;
-  if (source.size > MAX_SFTP_FILE_BYTES) {
-    errorMessage.value = `Choose a file no larger than ${formatBytes(MAX_SFTP_FILE_BYTES)}.`;
-    return;
-  }
+async function uploadFile(): Promise<void> {
   const active = workspace.value;
   if (!active || !connected.value || !listing.value) {
     errorMessage.value = 'Connect to an SSH host before uploading files.';
-    return;
-  }
-  const name = renderSanitizedFilename(sanitizeFilename(source.name));
-  const target = joinRemoteChildPath(listing.value.path, name);
-  if (!target.ok || !isRemotePathWithin(active.rootDirectory, target.path)) {
-    errorMessage.value = 'This filename cannot be used safely in the current folder.';
     return;
   }
   uploading.value = true;
   errorMessage.value = '';
   statusMessage.value = '';
   try {
-    const bytes = new Uint8Array(await source.arrayBuffer());
-    const result = await active.writeFile(target.path, bytes);
+    const picked = await documentTransfers.pickUploadFile();
+    if (picked.cancelled) {
+      statusMessage.value = 'Upload cancelled.';
+      return;
+    }
+    const name = renderSanitizedFilename(sanitizeFilename(picked.document.name));
+    const target = joinRemoteChildPath(listing.value.path, name);
+    if (!target.ok || !isRemotePathWithin(active.rootDirectory, target.path)) {
+      errorMessage.value = 'This filename cannot be used safely in the current folder.';
+      return;
+    }
+    const result = await active.writeFile(target.path, picked.bytes);
     listing.value = await active.navigate(active.currentDirectory);
     statusMessage.value = `Uploaded ${name} (${formatBytes(result.bytesWritten)}).`;
   } catch (error) {
@@ -417,7 +407,7 @@ async function uploadSelectedFile(event: Event): Promise<void> {
 
 function openUploadPicker(): void {
   if (!connected.value || uploading.value || loading.value) return;
-  fileInput.value?.click();
+  void uploadFile();
 }
 
 function entryKind(entry: FileWorkspaceEntry): string {
@@ -486,7 +476,6 @@ function sizeLabel(entry: FileWorkspaceEntry): string {
       <div class="files-toolbar">
         <span class="files-count">{{ listing ? `${listing.entries.length} items` : 'No folder open' }}</span>
         <span class="files-toolbar-spacer" />
-        <input ref="fileInput" class="sr-only" data-testid="file-upload-input" type="file" @change="uploadSelectedFile" />
         <button class="files-primary-button" type="button" data-testid="file-upload" :disabled="!connected || uploading || loading || !listing" @click="openUploadPicker">
           <AppIcon name="plus" />
           {{ uploading ? 'Uploading…' : 'Upload' }}
