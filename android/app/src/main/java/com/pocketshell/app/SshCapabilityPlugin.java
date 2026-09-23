@@ -118,6 +118,20 @@ public final class SshCapabilityPlugin extends Plugin {
             JSObject credential = options.getJSObject("credential");
             if (credential == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH credential is missing.");
             String credentialKind = requiredString(credential, "kind");
+            String pem = null;
+            if ("private-key".equals(credentialKind)) {
+                pem = requiredString(credential, "privateKeyPem");
+            } else if ("legacy-private-key".equals(credentialKind)) {
+                long keyId = requiredLong(credential, "keyId");
+                String keySha256 = requiredString(credential, "sha256");
+                try {
+                    pem = LegacyPrivateKeyResolver.readPrivateKey(getContext(), keyId, keySha256);
+                } catch (IOException error) {
+                    throw new PluginFailure("INVALID_ARGUMENT", error.getMessage(), error);
+                }
+            } else if (!"password".equals(credentialKind)) {
+                throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
+            }
             HostKeyPinExpectation expectedHostKey = parseExpectedHostKey(options.getJSObject("expectedHostKey"));
 
             ensureSshCryptoProvider();
@@ -142,8 +156,7 @@ public final class SshCapabilityPlugin extends Plugin {
                     } finally {
                         PasswordUtils.blankOut(secret);
                     }
-                } else if ("private-key".equals(credentialKind)) {
-                    String pem = requiredString(credential, "privateKeyPem");
+                } else if ("private-key".equals(credentialKind) || "legacy-private-key".equals(credentialKind)) {
                     String passphrase = credential.getString("passphrase", "");
                     char[] secret = passphrase == null ? new char[0] : passphrase.toCharArray();
                     try {

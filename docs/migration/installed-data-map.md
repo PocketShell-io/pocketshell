@@ -38,7 +38,7 @@ and their bytes are checked by that directory's `SHA256SUMS`.
 | Table | Schema 22 columns | Import notes |
 |---|---|---|
 | `hosts` | `id`, `name`, `hostname`, `port`, `username`, `keyId`, `maxAutoPort`, `skipPortsBelow`, `scanIntervalSec`, `enabled`, `createdAt`, `lastConnectedAt`, `lastBootstrapAt`, `pocketshellInstalled`, `pocketshellLastDetectedAt`, `pocketshellCliVersion`, `pocketshellExpectedCliVersion`, `pocketshellVersionCompatible`, `pocketshellDaemonRunning`, `pocketshellDaemonEnabled`, `usageCommandOverride`, `treeIdentity`, `trustedHostKeyAlgorithm`, `trustedHostKeySha256` | Preserve ID, `treeIdentity`, and both trust fields exactly. `keyId` references `ssh_keys.id` with delete cascade. Nullable detection/connection fields stay nullable. |
-| `ssh_keys` | `id`, `name`, `privateKeyPath`, `fingerprint`, `hasPassphrase`, `createdAt` | Preserve every metadata row and ID. Resolve and copy the referenced private file separately; `hasPassphrase` does not contain the passphrase. |
+| `ssh_keys` | `id`, `name`, `privateKeyPath`, `fingerprint`, `hasPassphrase`, `createdAt` | Preserve every metadata row and ID. Keep the referenced private file in place and give JS only the key ID and source hash; `hasPassphrase` does not contain the passphrase. |
 | `port_remappings` | `id`, `hostId`, `remotePort`, `localPort`, `name` | Preserve row IDs, host association and the unique `(hostId, remotePort)` mapping. |
 | `port_usage` | `hostId`, `remotePort`, `clickCount`, `totalBytes`, `lastUsedAt` | Composite primary key `(hostId, remotePort)`; preserve counts and last-use time. |
 | `project_roots` | `id`, `hostId`, `label`, `path`, `createdAt`, `sortOrder` | Preserve row IDs and order. `sortOrder` was added in v22 and backfilled from `createdAt`. |
@@ -72,7 +72,7 @@ unsupported database is an error.
 
 | Location | Contents and rules |
 |---|---|
-| `files/ssh-keys/` | SSH private-key material named by `ssh_keys.privateKeyPath`. Preserve bytes and path-to-row association. Some PEM files require a passphrase that was never stored; do not log or place bytes in JS JSON. A missing referenced key blocks that key's import visibly. |
+| `files/ssh-keys/` | SSH private-key material named by `ssh_keys.privateKeyPath`. Keep bytes at the original app-private path. JS stores only the Room key ID and a SHA-256 change check; the native SSH capability resolves that ID back to the exact Room row, validates the canonical key path and content hash, and reads the bytes into the native sshj authentication path. A missing, changed, or unsafe path fails the connection visibly. Some PEM files require a passphrase that was never stored; request it for the connection and never persist or log it. |
 | `files/voice-pending/<uuid>.wav` | Audio for `pending_transcriptions`. Copy as bytes and validate each row/file pair. Do not let startup cleanup delete unmatched source files before import has completed. |
 | `files/voice-exports/` | User-created audio exports. Preserve them as files if this location is still present; no Room row describes them. |
 | `files/crash-reports/` | User-visible crash reports. Preserve readable reports; malformed individual reports must not block unrelated data. |
@@ -115,24 +115,25 @@ keysets after an open failure; do not call those paths during import.
 
 | Encrypted preferences file | Entry and payload | Handling |
 |---|---|---|
-| `pocketshell-sync-auth` | `google_sync_auth`, JSON fields `sub`, `email`, `idToken`, `refreshToken`, `obtainedAtMs`, `expiresInS` | Continue only if the original Keystore key decrypts it. Never place token strings in general JS storage or logs. |
-| `pocketshell-voice-secrets` | `openai_api_key` | Preserve/read through a native secure-secret adapter; plaintext is never part of the migration JSON. |
-| `pocketshell-assistant-secrets` | `assistant_provider`; provider keys `openai_api_key`, `anthropic_api_key`, `zai_api_key`; provider settings `openai_base_url`/`openai_model`, `anthropic_base_url`/`anthropic_model`, `zai_base_url`/`zai_model` | Keep secrets in secure native storage. Non-secret provider selection/settings can be surfaced separately after a successful decrypt and validation. |
+| `pocketshell-sync-auth` | `google_sync_auth`, JSON fields `sub`, `email`, `idToken`, `refreshToken`, `obtainedAtMs`, `expiresInS` | Check decryptability with the original Keystore key. Keep the file unchanged and plaintext out of JS storage/logs. The rewrite has no native consumer yet, so a present file keeps migration status `partial`. |
+| `pocketshell-voice-secrets` | `openai_api_key` | Keep the file unchanged and plaintext out of JS storage/logs. The rewrite has no native consumer yet, so a present file keeps migration status `partial`. |
+| `pocketshell-assistant-secrets` | `assistant_provider`; provider keys `openai_api_key`, `anthropic_api_key`, `zai_api_key`; provider settings `openai_base_url`/`openai_model`, `anthropic_base_url`/`anthropic_model`, `zai_base_url`/`zai_model` | Keep the file unchanged and plaintext out of JS storage/logs. Provider values are not surfaced until a native secure-secret contract exists; a present file keeps migration status `partial`. |
 
 The three files have independent encrypted preference contents. Each file also
 contains AndroidX keyset entries under the same two reserved preference names;
 the entries are inside that file, not separate shared preference files. A failure to
 read one credential store must not trigger cleanup or prevent import of
-unrelated categories. If the runtime cannot open a store without deleting its
-keysets, leave it untouched and report that category as unavailable for
-continuity.
+unrelated categories. Present encrypted stores remain untouched. The importer
+records the other data and marks the overall result `partial`, whether the
+encrypted values were readable or unavailable. A successful decrypt proves the
+legacy value remains readable; it does not prove the JS app can use it.
 
 ## Explicitly outside this inventory
 
 The `update_check` file is bookkeeping. Remote hosts, live aplexer sessions,
 server-side agent logs, and remote files are not installed private data. The
-reader must not infer or fabricate them from a host list. The exact behavior
-and target representation for encrypted credentials, crash/diagnostic files,
-audio exports, and legacy settings not present in #2861 remain follow-up
-contracts; until mapped and verified, retain their source unchanged and report
-their migration status visibly.
+reader must not infer or fabricate them from a host list. The target
+representation for encrypted credentials, crash/diagnostic files, audio
+exports, and legacy settings not present in #2861 remains a follow-up contract;
+until a destination owner uses them, retain their source unchanged and report
+their status visibly.
