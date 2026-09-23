@@ -172,6 +172,8 @@ button { color: inherit; }
 .panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 .host-panel, .workspace-panel, .terminal-panel, .composer-panel, .diagnostics-panel, .settings-panel { padding: 16px; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: 14px; }
+.workspace-panel-actions { display: flex; align-items: center; gap: var(--sp-2); }
+.files-open-button { min-width: 64px; min-height: 48px; }
 .panel-heading h1, .panel-heading h2, .settings-panel h1 { margin: 0; color: var(--fg); font-size: var(--fs-500); font-weight: 600; line-height: 1.25; }
 .eyebrow { margin: 0 0 5px; color: var(--fg-muted); font-size: var(--fs-100); font-weight: 600; letter-spacing: 0.08em; }
 .state-tag { flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--r-sm); padding: 3px 6px; color: var(--fg-secondary); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; line-height: 1.4; }
