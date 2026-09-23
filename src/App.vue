@@ -511,6 +511,13 @@ onBeforeUnmount(() => {
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
     :data-ssh-phase="currentPhase"
+    :data-ssh-connection-id="connectionSnapshot?.connectionId ?? ''"
+    :data-ssh-generation-id="connectionSnapshot?.generationId ?? ''"
+    :data-ssh-selected-session="connectionSnapshot?.selectedSession?.name ?? ''"
+    :data-ssh-selected-session-id="connectionSnapshot?.selectedSession?.id ?? ''"
+    :data-ssh-selected-workspace="connectionSnapshot?.selectedSession?.workspace ?? ''"
+    :data-ssh-selected-tag="connectionSnapshot?.selectedSession?.tag ?? ''"
+    :data-ssh-retry-attempt="connectionSnapshot?.retryAttempt ?? 0"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
   >
@@ -636,6 +643,9 @@ onBeforeUnmount(() => {
                 class="session-row"
                 type="button"
                 :data-session-name="session.name"
+                :data-session-id="session.id ?? ''"
+                :data-session-workspace="session.workspace ?? ''"
+                :data-session-tag="session.tag ?? ''"
                 :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
                 @click="attachSession(session)"
               >
