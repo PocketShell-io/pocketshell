@@ -1,0 +1,180 @@
+import java.util.concurrent.TimeUnit
+
+apply plugin: 'com.android.application'
+
+def repositoryRoot = rootProject.projectDir.parentFile
+
+// Keep the Android package version tied to PocketShell's existing release
+// derivation. A source checkout without tags or the script still produces the
+// documented safe development value.
+def derivePocketShellVersion = {
+    def fallback = [code: 1, name: '0.0.0-dev']
+    def script = new File(repositoryRoot, 'scripts/derive-version.sh')
+    if (!script.isFile()) return fallback
+
+    try {
+        def process = new ProcessBuilder('bash', script.absolutePath, 'both')
+            .directory(repositoryRoot)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        if (!process.waitFor(15, TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return fallback
+        }
+        if (process.exitValue() != 0) return fallback
+
+        def values = [:]
+        process.inputStream.getText('UTF-8').readLines().each { line ->
+            def pair = line.split('=', 2)
+            if (pair.length == 2) values[pair[0]] = pair[1].trim()
+        }
+        def code = values.VERSION_CODE?.toInteger()
+        def name = values.VERSION_NAME
+        if (code == null || code < 1 || !name) return fallback
+        return [code: code, name: name]
+    } catch (Exception ignored) {
+        return fallback
+    }
+}
+
+def pocketShellVersion = derivePocketShellVersion()
+
+// Release material resolves from the same two places documented by
+// docs/release.md: a root keystore.properties file or the four CI variables.
+// Release APK packaging fails closed if neither source is present.
+def resolveReleaseSigning = {
+    def propertiesFile = new File(repositoryRoot, 'keystore.properties')
+    if (propertiesFile.isFile()) {
+        def properties = new Properties()
+        propertiesFile.withInputStream { properties.load(it) }
+        def required = { key ->
+            def value = properties.getProperty(key)?.trim()
+            if (!value) {
+                throw new GradleException("keystore.properties is missing '${key}'. Expected storeFile / storePassword / keyAlias / keyPassword (docs/release.md, Signing).")
+            }
+            value
+        }
+        def store = new File(repositoryRoot, required('storeFile'))
+        if (!store.isFile()) {
+            throw new GradleException("keystore.properties points at a missing keystore file: ${store}. Fix storeFile or remove keystore.properties.")
+        }
+        return [
+            storeFile: store,
+            storePassword: required('storePassword'),
+            keyAlias: required('keyAlias'),
+            keyPassword: required('keyPassword'),
+        ]
+    }
+
+    def names = [
+        'ANDROID_RELEASE_KEYSTORE_BASE64',
+        'ANDROID_RELEASE_STORE_PASSWORD',
+        'ANDROID_RELEASE_KEY_ALIAS',
+        'ANDROID_RELEASE_KEY_PASSWORD',
+    ]
+    def values = names.collectEntries { [(it): System.getenv(it)] }
+    if (values.values().every { !it }) return null
+    def missing = values.findAll { key, value -> !value?.trim() }.keySet()
+    if (!missing.isEmpty()) {
+        throw new GradleException("Release signing environment is partial; missing ${missing}. Set all four ANDROID_RELEASE_* variables or none.")
+    }
+
+    def keystore = new File(project.layout.buildDirectory.get().asFile, 'release-signing/pocketshell-release.keystore')
+    keystore.parentFile.mkdirs()
+    keystore.bytes = values['ANDROID_RELEASE_KEYSTORE_BASE64'].decodeBase64()
+    return [
+        storeFile: keystore,
+        storePassword: values['ANDROID_RELEASE_STORE_PASSWORD'].trim(),
+        keyAlias: values['ANDROID_RELEASE_KEY_ALIAS'].trim(),
+        keyPassword: values['ANDROID_RELEASE_KEY_PASSWORD'].trim(),
+    ]
+}
+
+def releaseSigning = resolveReleaseSigning()
+
+android {
+    namespace = 'com.pocketshell.app'
+    compileSdk = rootProject.ext.compileSdkVersion
+
+    signingConfigs {
+        debugKeystore {
+            storeFile = new File(repositoryRoot, 'debug.keystore')
+            storePassword = 'android'
+            keyAlias = 'androiddebugkey'
+            keyPassword = 'android'
+        }
+        if (releaseSigning != null) {
+            releaseKeystore {
+                storeFile = releaseSigning.storeFile
+                storePassword = releaseSigning.storePassword
+                keyAlias = releaseSigning.keyAlias
+                keyPassword = releaseSigning.keyPassword
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId = 'com.pocketshell.app'
+        minSdk = 26
+        targetSdk = 35
+        versionCode = pocketShellVersion.code
+        versionName = pocketShellVersion.name
+    }
+
+    buildTypes {
+        debug {
+            signingConfig = signingConfigs.debugKeystore
+            def suffix = (project.findProperty('pocketshellAppIdSuffix') ?: '').toString().trim()
+            if (suffix) {
+                if (!(suffix ==~ /[A-Za-z0-9._]+/)) {
+                    throw new GradleException('pocketshellAppIdSuffix must match [A-Za-z0-9._]+')
+                }
+                applicationIdSuffix = ".${suffix}"
+            }
+        }
+        release {
+            applicationIdSuffix = '.release'
+            if (releaseSigning != null) {
+                signingConfig = signingConfigs.releaseKeystore
+            }
+        }
+    }
+}
+
+if (releaseSigning == null) {
+    def requireReleaseSigning = tasks.register('requireReleaseSigningMaterial') {
+        group = 'verification'
+        description = 'Fails unless release signing material is available.'
+        doLast {
+            throw new GradleException('Cannot build a release APK without signing material. Provide root keystore.properties or all four ANDROID_RELEASE_* variables. See docs/release.md, Signing. Refusing to produce an unsigned release APK.')
+        }
+    }
+    tasks.matching { it.name == 'packageRelease' || it.name == 'bundleRelease' }.configureEach {
+        dependsOn(requireReleaseSigning)
+    }
+}
+
+repositories {
+    flatDir { dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs' }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation project(':capacitor-cordova-android-plugins')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) apply plugin: 'com.google.gms.google-services'
+} catch (Exception ignored) {
+    logger.info('google-services.json not found; Google services plugin not applied')
+}

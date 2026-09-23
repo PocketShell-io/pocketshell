@@ -1,0 +1,3 @@
+[submodule "vendor/pocketshell-core"]
+	path = vendor/pocketshell-core
+	url = https://github.com/PocketShell-io/pocketshell-core.git

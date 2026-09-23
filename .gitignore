@@ -1,5 +1,10 @@
 # Android / Gradle / IDE ignores — mirrors ssh-auto-forward-android.
 
+node_modules/
+dist/
+android/.gradle/
+android/build/
+
 *.iml
 .gradle
 /local.properties

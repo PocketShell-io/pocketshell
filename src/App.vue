@@ -1,0 +1,214 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { App as CapacitorApp } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
+import { formatBytes } from '@pocketshell/core';
+import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
+import { coreSourceRevision } from './coreSourceInfo';
+import { useNavigationStore } from './stores/navigation';
+import TerminalPreview from './components/TerminalPreview.vue';
+
+const navigation = useNavigationStore();
+const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
+const coreSample = formatBytes(1536);
+const coreShort = coreSourceRevision.slice(0, 12);
+const buildStatus = computed(() => {
+  if ('checking' in buildVerification.value) return 'Checking bundled assets';
+  return buildVerification.value.ok ? 'Build verified' : 'Build verification failed';
+});
+const buildStatusTone = computed(() => {
+  if ('checking' in buildVerification.value) return 'checking';
+  return buildVerification.value.ok ? 'verified' : 'error';
+});
+const bundleShort = computed(() =>
+  !('checking' in buildVerification.value) && buildVerification.value.ok
+    ? buildVerification.value.bundleAssetHash.slice(0, 12)
+    : 'not verified',
+);
+
+let removeBackButton: (() => Promise<void>) | undefined;
+
+onMounted(async () => {
+  buildVerification.value = await verifyCurrentBuild(coreSourceRevision);
+  if (Capacitor.isNativePlatform()) {
+    const listener = await CapacitorApp.addListener('backButton', () => {
+      if (navigation.route === 'settings') navigation.back();
+      else void CapacitorApp.exitApp();
+    });
+    removeBackButton = () => listener.remove();
+  }
+});
+
+onBeforeUnmount(() => {
+  void removeBackButton?.();
+});
+</script>
+
+<template>
+  <div class="app-shell" :data-route="navigation.route">
+    <header class="app-bar">
+      <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 17l6-6-6-6M12 19h8" />
+        </svg>
+        <span class="wordmark">PocketShell</span>
+      </button>
+      <div class="app-bar-actions">
+        <span class="rewrite-chip">0.6.0 · rewrite preview</span>
+        <button
+          v-if="navigation.route === 'home'"
+          class="icon-button"
+          type="button"
+          aria-label="Settings"
+          title="Settings"
+          @click="navigation.openSettings()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+            <path d="m19.4 15 .1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.4 1.7 1.7 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .4-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.4-1.8l-.1-.1A2 2 0 1 1 7 4.5l.1.1a1.7 1.7 0 0 0 1.8.4 1.7 1.7 0 0 0 1-1.5v-.2a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.4 1.8 1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1 1.7 1.7 0 0 0 .3 1.8Z" />
+          </svg>
+        </button>
+        <button
+          v-else
+          class="icon-button back-button"
+          type="button"
+          aria-label="Back to hosts"
+          title="Back to hosts"
+          @click="navigation.back()"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
+      <span class="status-dot" aria-hidden="true" />
+      <span>{{ buildStatus }}</span>
+      <span class="build-strip__detail">core {{ coreShort }} · assets {{ bundleShort }}</span>
+    </div>
+
+    <main v-if="navigation.route === 'home'" class="screen-content home-screen">
+      <section class="panel host-panel" aria-labelledby="hosts-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">CONNECTION</p>
+            <h1 id="hosts-title">Hosts</h1>
+          </div>
+          <span class="state-tag state-tag--muted">EMPTY</span>
+        </div>
+        <div class="empty-state">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM9 9h.01M12 9h.01M15 9h.01M9 13h6M9 16h6" /></svg>
+          <div>
+            <h2>No host configured</h2>
+            <p>Host setup and SSH transport are planned for later rewrite slices.</p>
+          </div>
+        </div>
+        <button class="action-button" type="button" disabled>Connect to host</button>
+      </section>
+
+      <section class="panel workspace-panel" aria-labelledby="workspace-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">WORKSPACE</p>
+            <h2 id="workspace-title">No workspace selected</h2>
+          </div>
+          <span class="state-tag state-tag--muted">NO HOST</span>
+        </div>
+        <div class="workspace-placeholder">
+          <div class="workspace-placeholder__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2" /></svg>
+          </div>
+          <p>Workspace and session lists will appear here after a host is connected.</p>
+        </div>
+      </section>
+
+      <section class="panel terminal-panel" aria-labelledby="terminal-title">
+        <div class="panel-heading panel-heading--terminal">
+          <div>
+            <p class="eyebrow">TERMINAL</p>
+            <h2 id="terminal-title">Session preview</h2>
+          </div>
+          <span class="state-tag state-tag--warning">OFFLINE MOCK</span>
+        </div>
+        <TerminalPreview />
+        <p class="panel-footnote">Read-only preview output. No SSH connection is open.</p>
+      </section>
+
+      <section class="panel composer-panel" aria-labelledby="composer-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">COMPOSER</p>
+            <h2 id="composer-title">Input preview</h2>
+          </div>
+          <span class="state-tag state-tag--muted">LOCAL ONLY</span>
+        </div>
+        <label class="sr-only" for="preview-input">Rewrite preview input</label>
+        <input
+          id="preview-input"
+          class="preview-input"
+          type="text"
+          autocomplete="off"
+          enterkeyhint="send"
+          placeholder="Tap to check the Android keyboard"
+        />
+        <p class="panel-footnote">This field does not send or save text. It is present for initial IME layout checks.</p>
+      </section>
+
+      <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">BUILD</p>
+            <h2 id="diagnostics-title">Source and asset diagnostics</h2>
+          </div>
+          <span class="state-tag" :class="buildStatusTone === 'error' ? 'state-tag--error' : 'state-tag--success'">
+            {{ buildStatusTone === 'error' ? 'CHECK FAILED' : buildStatusTone === 'checking' ? 'CHECKING' : 'VERIFIED' }}
+          </span>
+        </div>
+        <dl class="diagnostic-list">
+          <div>
+            <dt>pocketshell-core revision</dt>
+            <dd data-testid="core-revision">{{ coreSourceRevision }}</dd>
+          </div>
+          <div>
+            <dt>Bundled asset SHA-256</dt>
+            <dd data-testid="bundle-asset-hash">
+              {{ !('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Pending verification' }}
+            </dd>
+          </div>
+          <div>
+            <dt>Core source function</dt>
+            <dd>formatBytes(1536) → {{ coreSample }}</dd>
+          </div>
+        </dl>
+        <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">
+          {{ buildVerification.reason }}
+        </p>
+        <p v-else class="panel-footnote">
+          Missing or mismatched source and asset bytes stop the shell from presenting a verified state.
+        </p>
+      </section>
+
+      <p class="rewrite-note">Unfinished rewrite preview · host, session and input data are mock/empty states.</p>
+    </main>
+
+    <main v-else class="screen-content settings-screen">
+      <section class="panel settings-panel" aria-labelledby="settings-title">
+        <p class="eyebrow">POCKETSHELL</p>
+        <h1 id="settings-title">Settings</h1>
+        <p class="settings-copy">This is the JS-first Android shell. Product settings will arrive with their replacement issues.</p>
+        <div class="settings-row">
+          <span>Theme reference</span>
+          <strong>Desktop dark · GitHub palette</strong>
+        </div>
+        <div class="settings-row">
+          <span>Core formatter</span>
+          <strong>{{ coreSample }}</strong>
+        </div>
+        <button class="action-button action-button--secondary" type="button" @click="navigation.back()">
+          Back to hosts
+        </button>
+      </section>
+      <p class="rewrite-note">Android Back returns to Hosts from this screen.</p>
+    </main>
+  </div>
+</template>
