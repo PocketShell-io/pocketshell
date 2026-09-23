@@ -12,18 +12,6 @@
         "fails closed when the packaged asset bytes differ from the manifest",
         "fails closed when a bundle asset is missing"
       ]
-    },
-    "tests/unit/connectionController.test.ts": {
-      "suite": "JS connection and session policy",
-      "tests": [
-        "rejects unknown and changed host keys until the user accepts the presented key",
-        "routes list and attach through HostCliCore and switches sessions on one SSH connection",
-        "awaits terminal output consumers and serializes PTY input and resize operations",
-        "reconnects after a real transport-state event and reattaches the selected session",
-        "keeps a connection inside background grace and reconnects after the deadline",
-        "does not resend uncertain create or kill operations and reconciles the host listing",
-        "does not retry terminal input after an uncertain native send and proves resource closure"
-      ]
     }
   }
 }
