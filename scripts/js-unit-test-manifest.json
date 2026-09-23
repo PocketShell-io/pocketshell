@@ -1,6 +1,14 @@
 {
   "schema": 1,
   "testFiles": {
+    "tests/unit/appSettings.test.ts": {
+      "suite": "mobile app settings",
+      "tests": [
+        "reads and persists only shared theme/font policy and supported background grace values",
+        "degrades malformed or unsupported saved values to safe defaults",
+        "clamps terminal size using the pinned desktop font-size policy"
+      ]
+    },
     "tests/unit/buildDiagnostics.test.ts": {
       "suite": "packaged build diagnostics",
       "tests": [
@@ -29,6 +37,29 @@
         "retains an ambiguous draft and does not replay it after reconnect",
         "treats an acknowledgement that arrives after transport loss as uncertain and stops the paste",
         "keeps one session draft separate from another and clears only after acknowledged delivery"
+      ]
+    },
+    "tests/unit/destinationInventory.test.ts": {
+      "suite": "pre-rewrite destination inventory",
+      "tests": [
+        "maps each shipped destination to a replacement route, owning issue, and implementation status",
+        "states which prior settings/support surfaces have working routes in this slice"
+      ]
+    },
+    "tests/unit/diagnostics.test.ts": {
+      "suite": "local diagnostics",
+      "tests": [
+        "stores a bounded event log and normalizes untrusted event metadata",
+        "exports only reviewed, normalized diagnostic fields"
+      ]
+    },
+    "tests/unit/navigation.test.ts": {
+      "suite": "mobile route stack",
+      "tests": [
+        "keeps nested settings and support routes reachable through Back",
+        "retains a selected report ID and resets the stack when returning home",
+        "clears the selected event when opening the whole-log export preview",
+        "does not push the current destination a second time"
       ]
     }
   }
