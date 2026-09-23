@@ -5,10 +5,11 @@
 # multi-worker) and must not silently pick up the release-gate
 # --no-daemon/--no-build-cache/--max-workers=1 flags. Cheap, no Gradle.
 #
-# Issue #2515: the tag-triggered Build workflow must rename/upload/release the
-# app2 APK (`app2/build/outputs/apk/debug/app2-debug.apk`), not the deleted
-# `app` module output. v0.5.0's Build died on `mv app-debug.apk`. Cheap grep
-# of .github/workflows/build.yml, no Gradle.
+# Issue #2515: the tag-triggered Build workflow must rename/upload the app2
+# APK (`app2/build/outputs/apk/debug/app2-debug.apk`), not the deleted `app`
+# module output. v0.5.0's Build died on `mv app-debug.apk`. #2870 additionally
+# keeps this legacy workflow artifact-only and exercises the protected
+# default-branch publisher's authorization wiring below.
 #
 # Issue #2570: no module may declare a native build again. #2566 deleted the
 # last `externalNativeBuild` (core-terminal's vendored local-pty JNI), so #2570
@@ -30,11 +31,16 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 chmod +x scripts/assemble-debug.sh scripts/test-assemble-debug.sh \
-  scripts/test-build-workflow-apk-path.sh scripts/check-no-native-build.sh
+  scripts/test-build-workflow-apk-path.sh scripts/check-no-native-build.sh \
+  scripts/check-tag-release-authorization.py scripts/check-release-absence.py \
+  scripts/check-apk-metadata.py
 
 scripts/test-assemble-debug.sh
 scripts/test-build-workflow-apk-path.sh --self-test
 scripts/test-build-workflow-apk-path.sh
+scripts/check-tag-release-authorization.py --self-test
+scripts/check-release-absence.py --self-test
+scripts/check-apk-metadata.py --self-test
 scripts/check-no-native-build.sh --self-test
 scripts/check-no-native-build.sh
 

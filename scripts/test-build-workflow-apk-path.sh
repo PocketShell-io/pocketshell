@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Issue #2515: the tag-triggered Build workflow must ship the app2 APK.
+# Issue #2515 / #2870: the legacy tag-triggered Build workflow must package
+# the app2 APK but remain artifact-only. Release publication lives in the
+# default-branch-only Publish release workflow.
 #
 # v0.5.0's Build (run 33955651890) assembled successfully, then "Rename APK"
 # died on `app/build/outputs/apk/debug/app-debug.apk` — the deleted `app`
 # module. The shipping APK is `app2/build/outputs/apk/debug/app2-debug.apk`.
 # This guard fails closed if the old path or `:app:assembleDebug` returns, and
-# requires the app2 path plus the `pocketshell-${VERSION}-debug.apk` filename.
+# requires the app2 path plus the `pocketshell-${VERSION}-debug.apk` filename,
+# and rejects any release-publication action or write permission.
 #
 # Cheap, JVM-free. Wired through scripts/ci-build-profile-guards.sh (the
 # tests.yml `guards-ci-harness` job).
@@ -51,15 +54,17 @@ check_workflow() {
     failures=$((failures + 1))
   fi
   if ! grep -Fq "$NEW_GLOB" "$wf"; then
-    fail "$wf upload-artifact / action-gh-release must glob $NEW_GLOB"
+    fail "$wf upload-artifact must glob $NEW_GLOB"
     failures=$((failures + 1))
   fi
   if ! grep -Fq "$RENAME_NAME" "$wf"; then
     fail "$wf rename dest must stay $RENAME_NAME"
     failures=$((failures + 1))
   fi
-  if grep -Eq '^[[:space:]]*draft:[[:space:]]*true[[:space:]]*$' "$wf"; then
-    fail "$wf Create Release must not set draft: true"
+  if grep -Fq 'uses: softprops/action-gh-release@' "$wf" \
+    || grep -Eq '^[[:space:]]*gh[[:space:]]+release[[:space:]]+(create|upload)([[:space:]]|$)' "$wf" \
+    || grep -Eq '^[[:space:]]*contents:[[:space:]]*write[[:space:]]*$' "$wf"; then
+    fail "$wf must remain artifact-only; release publishing belongs in publish-release.yml"
     failures=$((failures + 1))
   fi
 
@@ -93,11 +98,6 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           path: app2/build/outputs/apk/debug/*.apk
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            app2/build/outputs/apk/debug/*.apk
 YAML
 
   write_fixture "$tmp/red.yml" <<'YAML'
@@ -191,13 +191,13 @@ YAML
     failures=$((failures + 1))
   fi
 
-  printf '== self-test: draft: true (expect FAIL) ==\n'
+  printf '== self-test: legacy Build publishing action (expect FAIL) ==\n'
   draft_out="$tmp/draft.out"
   if check_workflow "$tmp/draft.yml" >"$draft_out" 2>&1; then
-    printf '   -> UNEXPECTED PASS on draft: true\n' >&2
+    printf '   -> UNEXPECTED PASS on GitHub Release action\n' >&2
     cat "$draft_out" >&2
     failures=$((failures + 1))
-  elif grep -Fq 'draft: true' "$draft_out"; then
+  elif grep -Fq 'must remain artifact-only' "$draft_out"; then
     printf '   -> FAIL as expected\n'
   else
     printf '   -> FAIL used the wrong diagnostic\n' >&2
@@ -223,6 +223,7 @@ Usage: scripts/test-build-workflow-apk-path.sh [WORKFLOW]
 
 Fails if the Build workflow still names the deleted app module APK or
 :app:assembleDebug, and requires app2-debug.apk plus pocketshell-${VERSION}-debug.apk.
+Also rejects release publishing permissions/actions in the legacy Build workflow.
 USAGE
     ;;
   *)

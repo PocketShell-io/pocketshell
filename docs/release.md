@@ -15,7 +15,8 @@ branch's SHA has reached `main`, never before.
 
 ## Signing (issue #2638)
 
-Two APKs ship from the tag-triggered Build workflow, each with its own
+Two APKs ship from the default-branch-only `Publish release` workflow after it
+validates the pushed tag and exact-SHA release evidence. Each APK has its own
 signing identity:
 
 | | debug APK | release APK |
@@ -26,6 +27,13 @@ signing identity:
 
 Different signatures cannot replace each other under one applicationId, so
 the two install and run side by side on one device.
+
+Before publishing, the workflow verifies repository access and checks the
+exact tag's GitHub Release endpoint. Only its JSON `404 Not Found` response
+means the release is absent; an existing release or any inconclusive response
+stops publication. It then uses `gh release create --verify-tag`, which creates
+a release and fails if one already exists, so a release created after the
+preflight check is not updated by this workflow.
 
 The release keystore is NOT in the repo. It lives on this box at
 `/home/alexey/.pocketshell/keys/pocketshell-release.keystore` (PKCS12, alias
@@ -44,7 +52,7 @@ in this order by `app2/build.gradle.kts` (no debug-keystore fallback, D22):
 2. **CI**: the four GitHub secrets `ANDROID_RELEASE_KEYSTORE_BASE64` (the
    PKCS12 keystore, base64-encoded), `ANDROID_RELEASE_STORE_PASSWORD`,
    `ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_KEY_PASSWORD`, exported by
-   `.github/workflows/build.yml` around `assembleRelease`.
+   `.github/workflows/publish-release.yml` around `assembleRelease`.
 
 A checkout with neither still configures and builds `assembleDebug` (and the
 confidence gate's release-compile lanes) fine; any task that would package a
@@ -346,9 +354,22 @@ re-stabilize.
 
 ### 5. Tag the release
 
-The GitHub Release APK comes from the tag-triggered Build workflow. From the
-root checkout, now that `HEAD` equals `origin/main` at the merged candidate
-SHA:
+The legacy tag-triggered `Build` workflow (GitHub workflow ID `280774562`) is
+artifact-only in current commits and **must remain disabled**. Historical tag
+commits contain the old publisher definition, and GitHub runs the workflow
+version associated with the pushed tag ref; re-enabling that workflow could
+restore the bypass. See [GitHub's workflow versioning
+rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+
+The separate `Publish release` workflow has only a `workflow_dispatch`
+trigger. It accepts work only when dispatched on `main`; it checks that the
+existing tag resolves to the exact current `origin/main` SHA and that the
+successful release-validation run and D37 verdict cover that SHA. It repeats
+those checks after building and immediately before creating the GitHub
+Release. A tag push by itself never publishes.
+
+From the root checkout, after the validated candidate is on `main` and
+`HEAD` equals `origin/main`:
 
 ```bash
 git fetch origin
@@ -358,6 +379,13 @@ scripts/push-release-tag.sh --visual-audit-inspected v0.4.45 \
   build/release-emulator-validation/<run-id>/summary.md
 ```
 
+Then dispatch `Publish release` from `main` with the tag already pushed by the
+helper:
+
+```bash
+gh workflow run publish-release.yml --ref main -f release_tag=v0.4.45
+```
+
 The summary must contain:
 
 ```
@@ -365,9 +393,9 @@ Commit SHA: <the now-merged candidate SHA, matching HEAD>
 Automated status: PASS
 ```
 
-Watch Build. Confirm `gh release view v0.4.45` is not a draft and has a
-downloadable APK. Don't retag an older version or publish a
-`workflow_dispatch` APK as the release.
+Watch `Publish release`. Confirm `gh release view v0.4.45` is not a draft and
+has both downloadable APKs. Do not re-enable the legacy Build workflow, retag
+an older version, or dispatch the publisher from another ref.
 
 ### 6. Remove the worktree
 
