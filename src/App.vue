@@ -30,7 +30,7 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
-import { transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
+import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
@@ -565,13 +565,15 @@ onMounted(() => {
         (activeElement as HTMLElement).blur();
         return;
       }
-      if (navigation.route === 'settings') navigation.back();
-      else if (homeSurface.value === 'live' && connectionSnapshot.value) navigateHomeSurface('back');
-      else if (homeSurface.value === 'sessions' && connectionSnapshot.value) navigateHomeSurface('back');
-      else if (navigation.canGoBack) navigation.back();
-      else void CapacitorApp.minimizeApp().catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-      });
+      switch (resolveAndroidBackDestination(navigation.canGoBack, homeSurface.value, !!connectionSnapshot.value)) {
+        case 'navigation': navigation.back(); break;
+        case 'workspace': navigateHomeSurface('back'); break;
+        case 'minimize':
+          void CapacitorApp.minimizeApp().catch((error: unknown) => {
+            recordFailure('ssh-bridge-failed', 'lifecycle', error);
+          });
+          break;
+      }
     }).then((listener) => {
       removeBackButton = () => listener.remove();
       backButtonReady.value = true;

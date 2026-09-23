@@ -9,6 +9,19 @@ export type HomeSurfaceAction =
   | 'disconnected'
   | 'back';
 
+export type AndroidBackDestination = 'navigation' | 'workspace' | 'minimize';
+
+/** Route overlays always close before the connected workspace steps backward. */
+export function resolveAndroidBackDestination(
+  canNavigateBack: boolean,
+  homeSurface: HomeSurface,
+  hasConnection: boolean,
+): AndroidBackDestination {
+  if (canNavigateBack) return 'navigation';
+  if (hasConnection && homeSurface !== 'connection') return 'workspace';
+  return 'minimize';
+}
+
 /** Keep setup and session management out of the live terminal viewport. */
 export function transitionHomeSurface(
   current: HomeSurface,

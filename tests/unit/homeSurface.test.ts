@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { transitionHomeSurface, type HomeSurface } from '../../src/session/homeSurface';
+import { createPinia, setActivePinia } from 'pinia';
+import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface } from '../../src/session/homeSurface';
+import { useNavigationStore, type ShellRoute } from '../../src/stores/navigation';
 
 describe('phone workspace destinations', () => {
   it('starts at connection setup and opens sessions after a connection is ready', () => {
@@ -24,5 +26,20 @@ describe('phone workspace destinations', () => {
 
   it('returns to connection setup when disconnected', () => {
     expect(transitionHomeSurface('live', 'disconnected')).toBe('connection');
+  });
+
+  it('closes nested routes before stepping back through a connected workspace', () => {
+    setActivePinia(createPinia());
+    const navigation = useNavigationStore();
+    for (const route of ['settings-terminal', 'diagnostics-report', 'about-update'] as ShellRoute[]) {
+      navigation.home();
+      navigation.open(route);
+      expect(resolveAndroidBackDestination(navigation.canGoBack, 'live', true)).toBe('navigation');
+      navigation.back();
+      expect(navigation.route).toBe('home');
+    }
+    expect(resolveAndroidBackDestination(navigation.canGoBack, 'live', true)).toBe('workspace');
+    expect(resolveAndroidBackDestination(navigation.canGoBack, 'sessions', true)).toBe('workspace');
+    expect(resolveAndroidBackDestination(navigation.canGoBack, 'connection', true)).toBe('minimize');
   });
 });

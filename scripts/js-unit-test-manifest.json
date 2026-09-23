@@ -16,7 +16,8 @@
         "returns to the live terminal after a session is attached",
         "keeps host setup and session selection reachable from the live terminal",
         "backs from the terminal to sessions, then to connection details",
-        "returns to connection setup when disconnected"
+        "returns to connection setup when disconnected",
+        "closes nested routes before stepping back through a connected workspace"
       ]
     },
     "tests/unit/buildDiagnostics.test.ts": {
