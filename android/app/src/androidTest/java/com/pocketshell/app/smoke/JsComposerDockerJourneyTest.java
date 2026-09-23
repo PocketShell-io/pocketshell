@@ -1,0 +1,442 @@
+package com.pocketshell.app.smoke;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+
+import android.graphics.Bitmap;
+import android.graphics.Insets;
+import android.os.Build;
+import android.os.SystemClock;
+import android.util.Log;
+import android.view.InputDevice;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.WindowInsets;
+import android.webkit.WebView;
+
+import androidx.test.core.app.ActivityScenario;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.pocketshell.app.MainActivity;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.json.JSONTokener;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+
+import java.io.File;
+import java.io.ByteArrayOutputStream;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.Base64;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+/** Packaged composer journey against the real agents/aplexer Docker fixture. */
+@RunWith(AndroidJUnit4.class)
+public final class JsComposerDockerJourneyTest {
+    private static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    private static final long JS_TIMEOUT_SECONDS = 15;
+
+    private ActivityScenario<MainActivity> scenario;
+    private String bytesSession;
+    private String uncertainSession;
+
+    @Before
+    public void launchPackagedShell() {
+        scenario = ActivityScenario.launch(MainActivity.class);
+    }
+
+    @After
+    public void closeShell() {
+        if (scenario != null) scenario.close();
+    }
+
+    @Test
+    public void composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop() throws Exception {
+        assertTrue("safe-area and keyboard assertions require API 35+", Build.VERSION.SDK_INT >= 35);
+        var arguments = InstrumentationRegistry.getArguments();
+        String host = arguments.getString("sshHost", "10.0.2.2");
+        String port = arguments.getString("sshPort");
+        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String nameBase = arguments.getString("sshSessionName");
+        String artifactRunId = arguments.getString("artifactRunId", nameBase);
+        assertNotNull("pass the Docker fixture port with sshPort", port);
+        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
+        assertNotNull("pass unique composer session names with sshSessionName", nameBase);
+        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
+        bytesSession = nameBase + "-bytes";
+        uncertainSession = nameBase + "-uncertain";
+
+        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        setValue("[data-testid=ssh-host]", host);
+        setValue("[data-testid=ssh-port]", port);
+        setValue("[data-testid=ssh-username]", "testuser");
+        setValue("[data-testid=ssh-private-key]", privateKey);
+        click("[data-testid=ssh-connect]");
+        awaitTrustOrConnected();
+        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+
+        createSession(bytesSession);
+        createSession(uncertainSession);
+        attachSession(bytesSession);
+
+        String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' > /tmp/" + bytesSession + "-unicode.hex";
+        setComposerDraft(unicodeCommand);
+        showKeyboardAndCapture(artifactRunId);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
+        awaitImeVisible(false);
+        click(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+
+        String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
+        setComposerDraft("cat > " + multilineFile);
+        click(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+        SystemClock.sleep(500);
+
+        String multilinePayload = "alpha\nβeta\n🙂";
+        setComposerDraft(multilinePayload);
+        click("[data-testid=composer-insert]");
+        awaitInsertedAndCleared();
+        setComposerDraft("\u0004\u0004");
+        click("[data-testid=composer-insert]");
+        awaitInsertedAndCleared();
+
+        String insertMarker = "PS2857_INSERT_" + nameBase;
+        String insertCommand = "printf '%s' '" + insertMarker + "' > /tmp/" + bytesSession + "-insert.marker";
+        setComposerDraft(insertCommand);
+        click("[data-testid=composer-insert]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''");
+
+        attachSession(uncertainSession);
+        String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
+        String uncertainCommand = "printf '%s' '" + uncertainMarker + "' > /tmp/" + uncertainSession + "-uncertain.marker\n"
+                + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
+        setComposerDraft(uncertainCommand);
+        armDisconnectAfterFirstAcknowledgement();
+        click(".composer-shared-controls .send");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'", 30_000);
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
+
+        click("[data-testid=ssh-connect]");
+        awaitTrustOrConnected();
+        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+        attachSession(uncertainSession);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand));
+        assertEquals("uncertain delivery must keep the exact draft after reattach", uncertainCommand,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+    }
+
+    private void awaitTrustOrConnected() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')"
+                + " || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+        if ("true".equals(evalRaw("!!document.querySelector('[data-testid=host-key-decision]')"))) {
+            click("[data-testid=trust-host-key]");
+        }
+    }
+
+    private void createSession(String name) throws Exception {
+        setValue("[data-testid=new-session-name]", name);
+        click("[data-testid=create-session]");
+        String match = "Array.from(document.querySelectorAll('[data-session-name]')).find(node => node.dataset.sessionName.endsWith("
+                + JSONObject.quote(name) + "))";
+        awaitJsTrue(match + " !== undefined");
+    }
+
+    private void attachSession(String suffixName) throws Exception {
+        String match = "Array.from(document.querySelectorAll('[data-session-name]')).find(node => node.dataset.sessionName.endsWith("
+                + JSONObject.quote(suffixName) + "))";
+        awaitJsTrue(match + " !== undefined");
+        String actualName = evalString(match + "?.dataset.sessionName ?? ''");
+        click("[data-session-name=" + JSONObject.quote(actualName) + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer]')");
+    }
+
+    private void setComposerDraft(String value) throws Exception {
+        setValue("[data-testid=prompt-draft]", value);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(value));
+    }
+
+    private void awaitDeliveredAndCleared() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState === 'success'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Sent to the terminal')"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''", 20_000);
+    }
+
+    private void awaitInsertedAndCleared() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState === 'success'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''", 20_000);
+    }
+
+    private void armDisconnectAfterFirstAcknowledgement() throws Exception {
+        evalString("(() => {"
+                + "if (window.__ps2857DropPoll) clearInterval(window.__ps2857DropPoll);"
+                + "window.__ps2857DropPoll = setInterval(() => {"
+                + "const composer = document.querySelector('[data-testid=prompt-composer]');"
+                + "const status = document.querySelector('[data-testid=composer-status]');"
+                + "if (Number(composer?.dataset.acknowledgedWrites ?? 0) === 1"
+                + " && status?.dataset.deliveryIntent === 'submit') {"
+                + "clearInterval(window.__ps2857DropPoll);"
+                + "document.querySelector('[data-testid=ssh-disconnect]')?.click();"
+                + "}"
+                + "}, 2); return 'armed';})()");
+    }
+
+    private boolean saveKeyboardScreenshot(String runId) throws Exception {
+        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+        AtomicReference<byte[]> artifact = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            try {
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot == null) return;
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                File destination = new File(activity.getFilesDir(), "composer-keyboard.png");
+                byte[] png = encoded.toByteArray();
+                if (compressed && png.length >= 1024) {
+                    try (FileOutputStream output = new FileOutputStream(destination)) {
+                        output.write(png);
+                    }
+                    artifact.set(png);
+                    saved.set(destination.length() >= 1024);
+                }
+                screenshot.recycle();
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        if (saved.get()) emitArtifact(runId, "composer-keyboard.png", artifact.get());
+        return saved.get();
+    }
+
+    private void showKeyboardAndCapture(String runId) throws Exception {
+        evalString("document.querySelector('[data-testid=prompt-draft]')?.scrollIntoView({block:'center', behavior:'instant'}); 'scrolled'");
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        evalString("document.querySelector('[data-testid=composer-actions]')?.scrollIntoView({block:'end', behavior:'instant'}); 'scrolled'");
+        SystemClock.sleep(350);
+        assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
+        assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
+        String geometry = saveKeyboardGeometry(runId);
+        try {
+            awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
+                    + "const appBar=document.querySelector('.app-bar')?.getBoundingClientRect();"
+                    + "const terminal=document.querySelector('.terminal-viewport')?.getBoundingClientRect();"
+                    + "const height=window.visualViewport?.height ?? innerHeight;"
+                    + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
+                    + "'[data-testid=composer-discard]','[data-testid=composer-insert]','.composer-shared-controls .send'];"
+                    + "const visible=selectors.every(selector=>{const node=document.querySelector(selector);"
+                    + "if(!node)return false;const rect=node.getBoundingClientRect();return rect.top >= 0 && rect.bottom <= height + 0.5"
+                    + " && rect.left >= 0 && rect.right <= innerWidth + 0.5;});"
+                    + "return shell?.dataset.keyboardVisible === 'true' && !!appBar && !!terminal && terminal.height >= 48"
+                    + " && terminal.top >= 0 && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
+                    + " && appBar.top >= parseFloat(getComputedStyle(shell).paddingTop) - 0.5 && visible;})()");
+        } catch (AssertionError error) {
+            throw new AssertionError(error.getMessage() + "; captured keyboard screenshot precedes geometry=" + geometry, error);
+        }
+        assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
+    }
+
+    private String saveKeyboardGeometry(String runId) throws Exception {
+        String geometry = evalString("(() => {const rect=(selector) => {const node=document.querySelector(selector);"
+                + "if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const style=(selector) => {const node=document.querySelector(selector);if(!node)return null;const s=getComputedStyle(node);return {display:s.display,position:s.position,visibility:s.visibility,overflow:s.overflow,overflowY:s.overflowY,zIndex:s.zIndex};};"
+                + "return JSON.stringify({innerHeight,innerWidth,outerHeight,outerWidth,scrollY,clientHeight:document.documentElement.clientHeight,"
+                + "visualViewport:window.visualViewport?{height:visualViewport.height,width:visualViewport.width,offsetTop:visualViewport.offsetTop}:null,"
+                + "screen:{height:screen.height,width:screen.width},activeElement:document.activeElement?.outerHTML?.slice(0,300)??null,"
+                + "shell:rect('.app-shell'),screenContent:rect('.screen-content'),terminal:rect('.terminal-panel'),"
+                + "terminalViewport:rect('.terminal-viewport'),"
+                + "appBar:rect('.app-bar'),draft:rect('[data-testid=prompt-draft]'),"
+                + "status:rect('[data-testid=composer-status]'),actions:rect('[data-testid=composer-actions]'),"
+                + "buttons:{discard:rect('[data-testid=composer-discard]'),insert:rect('[data-testid=composer-insert]'),send:rect('.composer-shared-controls .send')},"
+                + "safeArea:{topCss:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingTop)||0,"
+                + "bottomCss:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingBottom)||0,"
+                + "shellTopPadding:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingTop)||0,"
+                + "shellBottomPadding:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingBottom)||0,"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true'},"
+                + "styles:Object.fromEntries(['.app-shell','.screen-content','.home-screen','.terminal-panel','.terminal-viewport','.composer-panel','.composer-heading','.composer-draft','.composer-status','.composer-actions'].map(selector=>[selector,style(selector)])),"
+                + "scroll:{top:document.querySelector('.screen-content')?.scrollTop,client:document.querySelector('.screen-content')?.clientHeight,"
+                + "height:document.querySelector('.screen-content')?.scrollHeight}});})() ");
+        JSONObject measured = new JSONObject(geometry);
+        measured.put("androidImeVisible", isImeVisible());
+        AtomicReference<JSONObject> nativeInsets = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            if (insets == null) return;
+            float density = activity.getResources().getDisplayMetrics().density;
+            Insets systemBars = insets.getInsets(WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
+            Insets ime = insets.getInsets(WindowInsets.Type.ime());
+            try {
+                nativeInsets.set(new JSONObject()
+                        .put("statusBarTopDp", systemBars.top / density)
+                        .put("systemBottomDp", insets.getInsets(WindowInsets.Type.navigationBars()).bottom / density)
+                        .put("imeBottomDp", ime.bottom / density)
+                        .put("density", density));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        });
+        measured.put("nativeInsets", nativeInsets.get());
+        byte[] bytes = measured.toString().getBytes(StandardCharsets.UTF_8);
+        scenario.onActivity(activity -> {
+            File destination = new File(activity.getFilesDir(), "composer-keyboard-geometry.json");
+            try (FileOutputStream output = new FileOutputStream(destination)) {
+                output.write(bytes);
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        emitArtifact(runId, "composer-keyboard-geometry.json", bytes);
+        return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private void emitArtifact(String runId, String name, byte[] bytes) throws Exception {
+        String encoded = Base64.getEncoder().encodeToString(bytes);
+        int chunkSize = 2_800;
+        int chunks = (encoded.length() + chunkSize - 1) / chunkSize;
+        String sha256 = hex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        Log.i("PS2857Asset", "BEGIN|" + runId + "|" + name + "|" + chunks + "|" + sha256);
+        for (int index = 0; index < chunks; index += 1) {
+            int start = index * chunkSize;
+            int end = Math.min(encoded.length(), start + chunkSize);
+            Log.i("PS2857Asset", "DATA|" + runId + "|" + name + "|" + index + "|" + encoded.substring(start, end));
+            // Keep the logd producer below its per-tag burst limit. The
+            // independent host collector still requires every indexed chunk
+            // and verifies the complete payload hash.
+            SystemClock.sleep(15);
+        }
+        Log.i("PS2857Asset", "END|" + runId + "|" + name);
+    }
+
+    private String hex(byte[] bytes) {
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) result.append(String.format("%02x", value & 0xff));
+        return result.toString();
+    }
+
+    private boolean isImeVisible() {
+        AtomicReference<Boolean> visible = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            visible.set(insets != null && Build.VERSION.SDK_INT >= 30 && insets.isVisible(WindowInsets.Type.ime()));
+        });
+        return visible.get();
+    }
+
+    private void awaitImeVisible(boolean visible) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (isImeVisible() == visible) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Android IME visibility did not become " + visible);
+    }
+
+    private void setValue(String selector, String value) throws Exception {
+        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
+                + "node.value = " + JSONObject.quote(value) + ";"
+                + "node.dispatchEvent(new Event('input', {bubbles: true}));"
+                + "node.dispatchEvent(new Event('change', {bubbles: true})); return 'set';})()");
+    }
+
+    private void click(String selector) throws Exception {
+        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
+                + "node.click(); return 'clicked';})()");
+    }
+
+    private void tapDomCenter(String selector) throws Exception {
+        JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
+                + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
+                + "return JSON.stringify({x:rect.left+rect.width/2,y:rect.top+rect.height/2,width:innerWidth});})()");
+        assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
+        AtomicReference<float[]> screenPoint = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            float scale = webView.getWidth() / (float) point.optDouble("width");
+            screenPoint.set(new float[] {location[0] + (float) point.optDouble("x") * scale,
+                    location[1] + (float) point.optDouble("y") * scale});
+        });
+        float[] screen = screenPoint.get();
+        long downTime = SystemClock.uptimeMillis();
+        var instrumentation = InstrumentationRegistry.getInstrumentation();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        instrumentation.getUiAutomation().injectInputEvent(down, true);
+        down.recycle();
+        SystemClock.sleep(60);
+        MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, screen[0], screen[1], 0);
+        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        instrumentation.getUiAutomation().injectInputEvent(up, true);
+        up.recycle();
+    }
+
+    private void awaitJsTrue(String expression) throws Exception {
+        awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
+    }
+
+    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        String last = "<not evaluated>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = evalRaw(expression);
+            if ("true".equals(last)) return;
+            Thread.sleep(60);
+        }
+        throw new AssertionError("WebView condition did not become true: " + expression + " (last=" + last
+                + "; page=" + evalString("document.body.innerText") + ")");
+    }
+
+    private String evalString(String expression) throws Exception {
+        String raw = evalRaw(expression);
+        Object decoded = new JSONTokener(raw).nextValue();
+        return decoded == null ? null : decoded.toString();
+    }
+
+    private JSONObject evalJson(String expression) throws Exception {
+        return new JSONObject(evalString(expression));
+    }
+
+    private String evalRaw(String expression) throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            webView.evaluateJavascript(expression, value -> {
+                result.set(value);
+                latch.countDown();
+            });
+        });
+        assertTrue("timed out evaluating packaged WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        if (result.get() == null || "null".equals(result.get())) throw new JSONException("JavaScript returned null: " + expression);
+        return result.get();
+    }
+
+    private static WebView findWebView(View view) {
+        if (view instanceof WebView) return (WebView) view;
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                WebView found = findWebView(group.getChildAt(index));
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+}
