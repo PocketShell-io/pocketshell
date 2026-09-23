@@ -243,6 +243,7 @@ public final class JsComposerDockerJourneyTest {
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
         evalString("document.querySelector('[data-testid=composer-actions]')?.scrollIntoView({block:'end', behavior:'instant'}); 'scrolled'");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
@@ -268,17 +269,23 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void ensureImeVisible() throws Exception {
-        if (!isImeVisible()) {
+        boolean composerFocused = "true".equals(evalRaw(
+                "!!document.activeElement?.closest('[data-testid=prompt-composer]')"));
+        if (!isImeVisible() || !composerFocused) {
             evalString("document.querySelector('[data-testid=prompt-draft]')?.scrollIntoView({block:'center', behavior:'instant'}); 'scrolled'");
             tapDomCenter("[data-testid=prompt-draft]");
+            awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')");
             awaitImeVisible(true);
         }
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
         awaitImeVisible(true);
     }
 
     private void tapComposerAction(String selector) throws Exception {
         ensureImeVisible();
+        evalString("document.querySelector(" + JSONObject.quote(selector)
+                + ")?.scrollIntoView({block:'nearest', behavior:'instant'}); 'scrolled'");
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
         tapDomCenter(selector);
     }
@@ -491,7 +498,7 @@ public final class JsComposerDockerJourneyTest {
                 + "return JSON.stringify({x:rect.left+rect.width/2,y:rect.top+rect.height/2,width:innerWidth,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,disabled:!!element.disabled});})()");
         assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
         assertTrue("WebView touch target must be enabled", !point.optBoolean("disabled"));
-        assertTrue("WebView touch target must be visibly inside the Android viewport",
+        assertTrue("WebView touch target must be visibly inside the Android viewport: " + point,
                 point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("height") + 0.5
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
