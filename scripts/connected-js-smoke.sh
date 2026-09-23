@@ -121,7 +121,9 @@ PY
 
 printf 'Running packaged JS smoke suite on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
-    "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain; then
+    "-PpocketshellAppIdSuffix=$SUFFIX" \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.JsShellPackagedSmokeTest \
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?
