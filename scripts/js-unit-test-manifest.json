@@ -63,6 +63,7 @@
         "requests only one reload in the current startup session after writing imported settings",
         "refuses malformed sync state without staging or marking partial data complete",
         "imports unrelated data as partial and visibly retains an unavailable encrypted store",
+        "shows an unmappable legacy terminal size on first import and completed-record startup",
         "marks decrypted native-only credentials partial and offers only opaque legacy host key references",
         "connects a saved host through an opaque native key reference and keeps passphrases transient",
         "does not mark complete or write settings when an imported asset hash differs",

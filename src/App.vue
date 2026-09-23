@@ -678,7 +678,7 @@ onBeforeUnmount(() => {
       data-testid="installed-data-migration-error"
     >
       <div class="migration-error__copy">
-        <strong>{{ installedDataMigrationState.status === 'partial' ? 'Some saved credentials are still in Android storage' : 'Installed data needs attention' }}</strong>
+        <strong>{{ installedDataMigrationState.status === 'partial' ? 'Some installed data needs attention' : 'Installed data needs attention' }}</strong>
         <p>{{ installedDataMigrationState.error }} Your original Android data remains in place.</p>
       </div>
       <button
@@ -689,7 +689,7 @@ onBeforeUnmount(() => {
         :disabled="installedDataMigrationState.retrying"
         @click="retryDataImport"
       >
-        {{ installedDataMigrationState.retrying ? 'Checking…' : installedDataMigrationState.status === 'partial' ? 'Check secure storage again' : 'Retry import' }}
+        {{ installedDataMigrationState.retrying ? 'Checking…' : installedDataMigrationState.status === 'partial' ? 'Check installed data again' : 'Retry import' }}
       </button>
     </section>
 

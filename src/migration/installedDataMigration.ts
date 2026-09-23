@@ -647,16 +647,14 @@ export async function runInstalledDataMigration(
   try {
     const priorRecord = await dependencies.persistence.readRecord();
     if (priorRecord?.status === 'complete' || priorRecord?.status === 'partial' || priorRecord?.status === 'empty') {
-      if (priorRecord.status === 'partial' && dependencies.refreshPartial) {
+      if ((priorRecord.status === 'partial' || priorRecord.warnings.length > 0) && dependencies.refreshPartial) {
         // An explicit retry rechecks encrypted storage and source files. Normal
         // launches repair from the durable record without rereading large files.
       } else {
         validateSnapshot(priorRecord.snapshot);
         const writes = applyLocalStorageWrites(priorRecord.snapshot, dependencies.storage, dependencies.pixelRatio());
-        installedDataMigrationState.status = priorRecord.status === 'partial' ? 'partial' : 'complete';
-        installedDataMigrationState.error = priorRecord.status === 'partial'
-          ? priorRecord.warnings.join(' ')
-          : '';
+        installedDataMigrationState.status = priorRecord.warnings.length > 0 ? 'partial' : 'complete';
+        installedDataMigrationState.error = priorRecord.warnings.join(' ');
         return writes.settings !== undefined;
       }
     }
@@ -678,7 +676,7 @@ export async function runInstalledDataMigration(
     await dependencies.persistence.stage(record, assets);
     // Re-read local settings after asynchronous asset staging so a setting
     // created or changed during this migration attempt always wins.
-    const warnings = unresolvedCredentialWarnings(snapshot);
+    const warnings = record.warnings;
     await dependencies.persistence.markComplete(warnings.length > 0 ? 'partial' : 'complete');
     writes = applyLocalStorageWrites(snapshot, dependencies.storage, dependencies.pixelRatio());
     installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';

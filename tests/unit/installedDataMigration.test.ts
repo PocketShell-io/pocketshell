@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   InstalledDataMigrationError,
   IMPORT_RECORD_ID,
+  SETTINGS_STORAGE_KEY,
   installedDataMigrationState,
   prepareLocalStorageWrites,
   readImportedLegacyHosts,
@@ -344,6 +345,51 @@ describe('installed Android data migration', () => {
     expect(persistence.persistence.markComplete).toHaveBeenCalledWith('partial');
     expect(storage.getItem('pocketshell.js.settings.v1')).toContain('terminalFontSize');
     expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
+  });
+
+  it('shows an unmappable legacy terminal size on first import and completed-record startup', async () => {
+    const snapshot = legacySnapshot();
+    const persistence = memoryPersistence();
+    const storage = new MemoryStorage();
+    installedDataMigrationState.status = 'pending';
+    installedDataMigrationState.error = '';
+
+    await runInstalledDataMigration({
+      native: nativePlugin(snapshot),
+      persistence: persistence.persistence,
+      storage,
+      nativePlatform: true,
+      now: () => 123,
+      pixelRatio: () => 5,
+    });
+
+    expect(installedDataMigrationState.status).toBe('partial');
+    expect(installedDataMigrationState.error).toContain('terminal text size');
+    expect(persistence.stagedRecord?.warnings).toContain(installedDataMigrationState.error);
+    expect(persistence.persistence.markComplete).toHaveBeenCalledWith('partial');
+    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).not.toHaveProperty('terminalFontSize');
+
+    const completedWithOldStatus: ImportRecord = {
+      ...persistence.stagedRecord!,
+      status: 'complete',
+    };
+    const replay = memoryPersistence(completedWithOldStatus);
+    installedDataMigrationState.status = 'pending';
+    installedDataMigrationState.error = '';
+    const native = nativePlugin(snapshot);
+
+    await runInstalledDataMigration({
+      native,
+      persistence: replay.persistence,
+      storage,
+      nativePlatform: true,
+      now: () => 456,
+      pixelRatio: () => 5,
+    });
+
+    expect(installedDataMigrationState.status).toBe('partial');
+    expect(installedDataMigrationState.error).toContain('terminal text size');
+    expect(native.readLegacyInstalledData).not.toHaveBeenCalled();
   });
 
   it('marks decrypted native-only credentials partial and offers only opaque legacy host key references', async () => {
