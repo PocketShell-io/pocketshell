@@ -78,8 +78,8 @@ Keep `tests/docker/`, `tests/docker/fixture-pins.txt`, image self-checks and ind
 1. **Document and inventory.** Commit this plan, desktop UI extraction contract, feature/journey map, data map and exact baseline on the rewrite branch. Update #2854 and split implementation issues. No product-code deletion precedes this gate.
 2. **Foundation spike.** Build a minimal packaged Capacitor APK from pinned core/UI sources. Prove direct SSH, host-key rejection, PTY output/input/resize under load, foreground/background grace, WebView recreation and diagnostics. Reviewer runs the Android/Docker journey. If this fails, reconsider runtime before broad deletion.
 3. **Core host/session path.** Implement `HostCliCore` in the core repo, native SSH plugin and one TS connection/session controller. Replace hosts/workspaces/tree/terminal screens with shared design. Delete corresponding Kotlin product modules on the rewrite branch only as replacement behavior becomes testable.
-4. **Input and persisted data.** Define composer transaction, attachments/drafts, voice/share adapters, sync unknown-field semantics and installed-data migration. Use shared contract vectors and Android journeys.
-5. **Daily-use parity.** Files/editor, usage, ports/auto-forward, settings, diagnostics and remaining feature inventory. Review desktop/phone design side by side.
+4. **Input and persisted data.** Define composer transaction, attachments/drafts, explicit-stop dictation, share adapters, per-host snippets and command chips, sync unknown-field semantics and installed-data migration. Keep portable input and draft policy in JS/core, with Android limited to speech, content URIs and secure storage. Use shared contract vectors and Android journeys.
+5. **Daily-use parity.** Restore the phone's one-tap Up/Down/Enter controls and floating hotkeys palette, then files/editor, usage, ports/auto-forward, settings, diagnostics and remaining feature inventory. The hotkeys launcher stays reachable with the real IME open; the palette floats inside the terminal without resizing its cells. Review desktop/phone design side by side and prove exact key bytes with the Docker PTY oracle.
 6. **Qualification.** Full Docker and device journeys, upgrade test, connection fault/soak tests, visual sign-off, versionCode check and exact-SHA release gates. Merge to `main` only after reviewer approval and green gates; tag 0.6.0 only later from that validated main commit.
 
 Milestones 2–5 require issue-sized implementer/reviewer loops, not one large unreviewed branch change. A 6–9 week candidate is a planning estimate, not a delivery promise. The foundation spike is the decision point before removing most of the old app.
@@ -91,3 +91,6 @@ Milestones 2–5 require issue-sized implementer/reviewer loops, not one large u
 - [#2851](https://github.com/PocketShell-io/pocketshell/issues/2851): host CLI contract work, still needed; adapt to the new JS shell.
 - [#2852](https://github.com/PocketShell-io/pocketshell/issues/2852): sync parity, still needed.
 - [#2853](https://github.com/PocketShell-io/pocketshell/issues/2853): separate 0.5.6 correction.
+- [#2857](https://github.com/PocketShell-io/pocketshell/issues/2857): composer, dictation and share adapters.
+- [#2884](https://github.com/PocketShell-io/pocketshell/issues/2884): mobile fast access keys and floating palette.
+- [#2885](https://github.com/PocketShell-io/pocketshell/issues/2885): per-host snippets and command chips.
