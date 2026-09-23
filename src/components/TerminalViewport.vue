@@ -2,9 +2,9 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { mobileMonoFontFamily, mobileTheme } from '../sharedUiDefaults';
+import type { ITheme } from '@xterm/xterm';
 
-const props = defineProps<{ enabled: boolean }>();
+const props = defineProps<{ enabled: boolean; theme: ITheme; fontFamily: string; fontSize: number }>();
 const emit = defineEmits<{
   input: [data: string];
   resize: [size: { cols: number; rows: number }];
@@ -60,17 +60,26 @@ watch(() => props.enabled, async (enabled) => {
   }
 });
 
+watch(() => [props.theme, props.fontFamily, props.fontSize] as const, async () => {
+  if (!terminal) return;
+  terminal.options.theme = props.theme;
+  terminal.options.fontFamily = props.fontFamily;
+  terminal.options.fontSize = props.fontSize;
+  await nextTick();
+  fitTerminal();
+});
+
 onMounted(() => {
   if (!terminalHost.value) return;
   terminal = new Terminal({
     allowProposedApi: false,
     cursorBlink: true,
     disableStdin: !props.enabled,
-    fontFamily: mobileMonoFontFamily,
-    fontSize: 13,
+    fontFamily: props.fontFamily,
+    fontSize: props.fontSize,
     lineHeight: 1.25,
     scrollback: 1000,
-    theme: mobileTheme.terminal,
+    theme: props.theme,
   });
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
@@ -112,7 +121,11 @@ function focus() {
   terminal?.focus();
 }
 
-defineExpose({ write, clear, focus });
+function fit() {
+  fitTerminal();
+}
+
+defineExpose({ write, clear, focus, fit });
 </script>
 
 <template>

@@ -89,9 +89,66 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
+        awaitJsTrue("document.querySelector('[data-testid=setting-theme]') !== null");
+
+        tapDomCenter("[data-testid=open-terminal-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal' && !!document.querySelector('#terminal-settings-title')");
+        int initialFontSize = Integer.parseInt(evalString("document.querySelector('[data-testid=terminal-font-size]')?.textContent.trim()").replace(" px", ""));
+        tapDomCenter("[aria-label='Increase terminal text size']");
+        awaitJsTrue("document.querySelector('[data-testid=terminal-font-size]')?.textContent.trim() === '" + (initialFontSize + 1) + " px'");
+        awaitJsTrue("getComputedStyle(document.documentElement).getPropertyValue('--term-font-size').trim() === '" + (initialFontSize + 1) + "px'");
+        tapDomCenter("[aria-label='Decrease terminal text size']");
+        tapDomCenter("[data-testid=terminal-font-size-input]");
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=terminal-font-size-input]')");
+        awaitImeVisible(true);
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitImeVisible(false);
+        awaitRoute("settings-terminal");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("settings");
+        tapDomCenter("[data-testid=open-connection-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-connections' && !!document.querySelector('#connection-settings-title')");
+        awaitJsTrue("document.querySelector('[data-testid=setting-background-grace]')?.value === '90000'");
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("settings");
+        tapDomCenter("[data-testid=open-diagnostics]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'diagnostics' && !!document.querySelector('#diagnostics-page-title')");
+        awaitJsTrue("document.querySelector('[data-testid=diagnostics-events] li button') !== null");
+        tapDomCenter("[data-testid=diagnostics-events] li button");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'diagnostics-report' && !!document.querySelector('[data-testid=selected-diagnostic-event]')");
+        String diagnosticExport = evalString("document.querySelector('[data-testid=diagnostics-report-preview]')?.textContent");
+        assertTrue("the reviewed support report must contain its schema", diagnosticExport.contains("\"schema\": 1"));
+        assertTrue("the reviewed support report must declare its privacy scope", diagnosticExport.contains("normalized error codes only"));
+        assertTrue("the support report must not contain the host form's private key", !diagnosticExport.contains("OPENSSH PRIVATE KEY"));
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("diagnostics");
+        tapDomCenter("[data-testid=review-diagnostics-export]");
+        awaitRoute("diagnostics-report");
+        awaitJsTrue("document.querySelector('[data-testid=selected-diagnostic-event]') === null");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("diagnostics");
+
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("settings");
+        tapDomCenter("[data-testid=open-about]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about' && !!document.querySelector('#about-title')");
+        awaitJsTrue("document.querySelector('[data-testid=about-core-revision]')?.textContent.trim().length === 40");
+        tapDomCenter("[data-testid=open-update-status]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about-update' && !!document.querySelector('#update-title')");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("about");
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitRoute("settings");
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitHomeAfterBack();
+    }
+
+    private void awaitRoute(String route) throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === " + JSONObject.quote(route));
     }
 
     @Test

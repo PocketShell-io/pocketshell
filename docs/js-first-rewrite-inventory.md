@@ -6,6 +6,8 @@ This is the pre-deletion map for the 0.6.0 rewrite branch. Baseline: `a6c7e8dab5
 
 Every route in `app2/src/main/java/com/pocketshell/next/nav/Destinations.kt` is represented below. Shared TypeScript presentation work is tracked by [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3); shell bootstrap and the explicit empty-state screen are this issue, #2855.
 
+The executable old-to-new route map, including the current available, partial, information-only, and planned status for each destination, is maintained in [src/destinationInventory.ts](../src/destinationInventory.ts). Its unit test checks the map against the complete pre-rewrite destination list, including the deprecated Tree and CrashReports aliases.
+
 | Existing destination(s) | Existing surface / behavior | Replacement issue and proof target |
 |---|---|---|
 | `Hosts`, `HostForm`, `SshKeys` | Saved hosts, add/edit, key import/generation and credentials | #2851 HostCliCore contracts; #2856 SSH/session/reconnect; #2860 installed-data migration. Docker-backed `J01ConnectAndTrustJourney.kt` and `J21HostAddConnectJourney.kt`. |

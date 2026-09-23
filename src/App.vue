@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -12,22 +12,28 @@ import {
   type SshHostTarget,
   type SshResourceSnapshot,
 } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
+import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
 import { uiSourceRevision } from './uiSourceInfo';
 import { useNavigationStore } from './stores/navigation';
+import { useAppSettings } from './stores/appSettings';
+import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
+import SettingsScreen from './components/SettingsScreen.vue';
+import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
+import AboutScreen from './components/AboutScreen.vue';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
+  fit(): void;
 }
 
 type ComposerSmokeEvidenceWindow = Window & {
@@ -38,6 +44,8 @@ type ComposerSmokeEvidenceWindow = Window & {
 };
 
 const navigation = useNavigationStore();
+const appSettings = useAppSettings();
+const diagnostics = useDiagnosticsStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);
@@ -55,6 +63,12 @@ const bundleShort = computed(() =>
     ? buildVerification.value.bundleAssetHash.slice(0, 12)
     : 'not verified',
 );
+const activeTheme = computed(() => resolveTheme(appSettings.themeChoice));
+const terminalFontFamily = computed(() => fontCssVariables({
+  monospaceFontFamily: null,
+  terminalFontSize: appSettings.terminalFontSize,
+  editorFontSize: 13,
+}, 'ui-monospace, monospace')['--font-mono']);
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
@@ -67,6 +81,12 @@ const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
+const terminalInputPending = ref(0);
+const terminalInputAckCount = ref(0);
+const terminalInputFailureCount = ref(0);
+const terminalResizePending = ref(0);
+const terminalResizeAckCount = ref(0);
+const terminalResizeFailureCount = ref(0);
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -160,8 +180,15 @@ const trustStore: HostKeyTrustStore = {
 
 function bindController(next: ConnectionController) {
   controller = next;
+  let lastReportedError = '';
   removeControllerSnapshot = next.subscribe((snapshot) => {
     connectionSnapshot.value = snapshot;
+    if (snapshot.phase === 'error' && snapshot.error && snapshot.error !== lastReportedError) {
+      lastReportedError = snapshot.error;
+      diagnostics.record('ssh-operation-failed', 'connect', 'CONNECTION_FAILED');
+    } else if (!snapshot.error) {
+      lastReportedError = '';
+    }
   });
   removeTerminalOutput = next.subscribeTerminalOutput((_session, bytes) => {
     const smokeEvidence = window as ComposerSmokeEvidenceWindow;
@@ -174,6 +201,15 @@ function bindController(next: ConnectionController) {
     }
     target?.write(bytes);
   });
+}
+
+function recordFailure(kind: DiagnosticKind, operation: string, error: unknown) {
+  const nativeError = readSshError(error);
+  diagnostics.record(kind, operation, nativeError.code);
+}
+
+function recordOperationFailure(operation: string) {
+  diagnostics.record('ssh-operation-failed', operation, 'OPERATION_FAILED');
 }
 
 function makeHostTarget(): SshHostTarget | null {
@@ -204,26 +240,53 @@ async function connectHost() {
   terminal.value?.clear();
   const next = new ConnectionController({ trustStore });
   bindController(next);
-  const result = await next.connect(host);
+  let result;
+  try {
+    result = await next.connect(host);
+  } catch (error) {
+    recordFailure('ssh-bridge-failed', 'connect', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    return;
+  }
   if (result.ok) await refreshSessions();
-  else if (next.getSnapshot().phase !== 'awaiting-trust') connectionMessage.value = result.message;
+  else if (next.getSnapshot().phase !== 'awaiting-trust') {
+    recordOperationFailure('connect');
+    connectionMessage.value = result.message;
+  }
 }
 
 async function acceptHostKey() {
   const active = controller;
   if (!active) return;
   connectionMessage.value = '';
-  const result = await active.acceptPresentedHostKey();
+  let result;
+  try {
+    result = await active.acceptPresentedHostKey();
+  } catch (error) {
+    recordFailure('ssh-bridge-failed', 'accept-host-key', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    return;
+  }
   if (result.ok) await refreshSessions();
-  else if (active.getSnapshot().phase !== 'awaiting-trust') connectionMessage.value = result.message;
+  else if (active.getSnapshot().phase !== 'awaiting-trust') {
+    recordOperationFailure('accept-host-key');
+    connectionMessage.value = result.message;
+  }
 }
 
 async function refreshSessions() {
   const active = controller;
   if (!active) return;
   connectionMessage.value = '';
-  const result = await active.refreshSessions();
-  if (!result.ok) connectionMessage.value = result.message;
+  const result = await active.refreshSessions().catch((error: unknown) => {
+    recordFailure('ssh-bridge-failed', 'refresh-sessions', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    return null;
+  });
+  if (result && !result.ok) {
+    recordOperationFailure('refresh-sessions');
+    connectionMessage.value = result.message;
+  }
 }
 
 async function createSession() {
@@ -231,24 +294,58 @@ async function createSession() {
   const name = sessionName.value.trim();
   if (!active || !name) return;
   connectionMessage.value = '';
-  const result = await active.createSession(name);
-  if (result.ok) await refreshSessions();
-  else connectionMessage.value = result.message;
+  const result = await active.createSession(name).catch((error: unknown) => {
+    recordFailure('ssh-bridge-failed', 'create-session', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    return null;
+  });
+  if (result && result.ok) await refreshSessions();
+  else if (result && !result.ok) {
+    recordOperationFailure('create-session');
+    connectionMessage.value = result.message;
+  }
 }
 
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
   terminal.value?.clear();
-  const result = await active.switchSession(session);
-  if (!result.ok) connectionMessage.value = result.message;
-  else terminal.value?.focus();
+  const result = await active.switchSession(session).catch((error: unknown) => {
+    recordFailure('ssh-bridge-failed', 'attach-session', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    return null;
+  });
+  if (result && !result.ok) {
+    recordOperationFailure('attach-session');
+    connectionMessage.value = result.message;
+  }
+  else if (result?.ok) {
+    await nextTick();
+    terminal.value?.fit();
+    terminal.value?.focus();
+  }
 }
 
 async function sendTerminalInput(data: string) {
-  if (!controller || !isLive.value) return;
-  const result = await controller.writeTerminalBytes(new TextEncoder().encode(data));
-  if (!result.ok) connectionMessage.value = result.message;
+  const active = controller;
+  if (!active || !isLive.value) return;
+  terminalInputPending.value += 1;
+  try {
+    const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
+    if (!result.ok) {
+      terminalInputFailureCount.value += 1;
+      recordOperationFailure('send-terminal-input');
+      connectionMessage.value = result.message;
+    } else {
+      terminalInputAckCount.value += 1;
+    }
+  } catch (error: unknown) {
+    terminalInputFailureCount.value += 1;
+    recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    terminalInputPending.value -= 1;
+  }
 }
 
 async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
@@ -261,10 +358,24 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
 async function resizeTerminal(size: { cols: number; rows: number }) {
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
-  const result = await controller.resizeTerminal(size.cols, size.rows);
-  terminalResizeStatus.value = result.ok
-    ? `${size.cols} × ${size.rows} accepted by SSH`
-    : `resize failed: ${result.message}`;
+  terminalResizePending.value += 1;
+  try {
+    const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'resize-terminal', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
+    terminalResizeStatus.value = result?.ok
+      ? `${size.cols} × ${size.rows} accepted by SSH`
+      : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
+    if (result?.ok) terminalResizeAckCount.value += 1;
+    else {
+      terminalResizeFailureCount.value += 1;
+      if (result) recordOperationFailure('resize-terminal');
+    }
+  } finally {
+    terminalResizePending.value -= 1;
+  }
 }
 
 async function closeController() {
@@ -290,6 +401,7 @@ async function disconnectHost() {
   } catch (error) {
     resourceSnapshotStatus.value = 'failed';
     const sshError = readSshError(error);
+    diagnostics.record('resource-snapshot-failed', 'resource-snapshot', sshError.code);
     connectionMessage.value = `Native resource snapshot failed (${sshError.code}): ${sshError.message}`;
   }
 }
@@ -300,6 +412,7 @@ async function rejectHostKey() {
 }
 
 onMounted(() => {
+  diagnostics.record('app-started', 'startup', 'OK');
   const updateKeyboardViewport = () => {
     if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -344,8 +457,21 @@ onMounted(() => {
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
-      if (navigation.route === 'settings') navigation.back();
-      else void disconnectHost();
+      const activeElement = document.activeElement;
+      const inputHasFocus = activeElement instanceof HTMLInputElement
+        || activeElement instanceof HTMLTextAreaElement
+        || activeElement instanceof HTMLSelectElement
+        || (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const keyboardIsVisible = window.screen.height - viewportHeight > 120;
+      if (inputHasFocus && keyboardIsVisible) {
+        (activeElement as HTMLElement).blur();
+        return;
+      }
+      if (navigation.canGoBack) navigation.back();
+      else void CapacitorApp.minimizeApp().catch((error: unknown) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
+      });
     }).then((listener) => {
       removeBackButton = () => listener.remove();
       backButtonReady.value = true;
@@ -353,12 +479,16 @@ onMounted(() => {
       console.error('Could not register the Android Back handler.', error);
     });
     void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+      diagnostics.record(isActive ? 'app-foregrounded' : 'app-backgrounded', 'lifecycle', 'OK');
       const active = controller;
       if (!active) return;
-      if (isActive) void active.returnToForeground().catch((error: unknown) => {
+      const phase = active.getSnapshot().phase;
+      if (isActive && phase === 'background') void active.returnToForeground().catch((error: unknown) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
       });
-      else void active.enterBackground(30_000).catch((error: unknown) => {
+      else if (!isActive && phase === 'live') void active.enterBackground(appSettings.backgroundGraceMs).catch((error: unknown) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
       });
     }).then((listener) => {
@@ -370,7 +500,25 @@ onMounted(() => {
 
   void verifyCurrentBuild(coreSourceRevision, uiSourceRevision).then((verification) => {
     buildVerification.value = verification;
+    diagnostics.record(verification.ok ? 'build-verified' : 'build-verification-failed', 'assets', verification.ok ? 'OK' : 'VERIFY_FAILED');
+  }).catch((error: unknown) => {
+    buildVerification.value = { ok: false, reason: error instanceof Error ? error.message : String(error) };
+    recordFailure('build-verification-failed', 'assets', error);
   });
+});
+
+watchEffect(() => {
+  const theme = activeTheme.value;
+  const root = document.documentElement;
+  root.dataset['theme'] = theme.id;
+  root.style.colorScheme = theme.appearance;
+  for (const [name, value] of Object.entries(theme.tokens)) root.style.setProperty(name, value);
+  const fontVariables = fontCssVariables({
+    monospaceFontFamily: null,
+    terminalFontSize: appSettings.terminalFontSize,
+    editorFontSize: 13,
+  }, 'ui-monospace, monospace');
+  for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
 });
 
 onBeforeUnmount(() => {
@@ -392,11 +540,24 @@ onBeforeUnmount(() => {
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
     :data-ssh-phase="currentPhase"
+    :data-ssh-connection-id="connectionSnapshot?.connectionId ?? ''"
+    :data-ssh-generation-id="connectionSnapshot?.generationId ?? ''"
+    :data-ssh-selected-session="connectionSnapshot?.selectedSession?.name ?? ''"
+    :data-ssh-selected-session-id="connectionSnapshot?.selectedSession?.id ?? ''"
+    :data-ssh-selected-workspace="connectionSnapshot?.selectedSession?.workspace ?? ''"
+    :data-ssh-selected-tag="connectionSnapshot?.selectedSession?.tag ?? ''"
+    :data-ssh-retry-attempt="connectionSnapshot?.retryAttempt ?? 0"
+    :data-ssh-terminal-input-pending="terminalInputPending"
+    :data-ssh-terminal-input-acks="terminalInputAckCount"
+    :data-ssh-terminal-input-failures="terminalInputFailureCount"
+    :data-ssh-terminal-resize-pending="terminalResizePending"
+    :data-ssh-terminal-resize-acks="terminalResizeAckCount"
+    :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
   >
     <header class="app-bar">
-      <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
+      <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.home()">
         <AppIcon class="brand-mark" name="terminal" />
         <span class="wordmark">PocketShell</span>
       </button>
@@ -416,8 +577,8 @@ onBeforeUnmount(() => {
           v-else
           class="icon-button back-button"
           type="button"
-          aria-label="Back to hosts"
-          title="Back to hosts"
+          aria-label="Back"
+          title="Back"
           @click="navigation.back()"
         >
           <AppIcon name="arrow-left" />
@@ -517,6 +678,9 @@ onBeforeUnmount(() => {
                 class="session-row"
                 type="button"
                 :data-session-name="session.name"
+                :data-session-id="session.id ?? ''"
+                :data-session-workspace="session.workspace ?? ''"
+                :data-session-tag="session.tag ?? ''"
                 :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
                 @click="attachSession(session)"
               >
@@ -544,6 +708,9 @@ onBeforeUnmount(() => {
         <TerminalViewport
           ref="terminal"
           :enabled="isLive"
+          :theme="activeTheme.terminal"
+          :font-family="terminalFontFamily"
+          :font-size="appSettings.terminalFontSize"
           @input="sendTerminalInput"
           @resize="resizeTerminal"
         />
@@ -604,15 +771,15 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <main v-else class="screen-content settings-screen">
-      <section class="panel settings-panel" aria-labelledby="settings-title">
-        <p class="eyebrow">POCKETSHELL</p>
-        <h1 id="settings-title">Settings</h1>
-        <p class="settings-copy">This is the JS-first Android shell. Product settings will arrive with their replacement issues.</p>
-        <div class="settings-row"><span>Theme reference</span><strong>Desktop dark · GitHub palette</strong></div>
-        <div class="settings-row"><span>Core formatter</span><strong>{{ coreSample }}</strong></div>
-        <button class="action-button action-button--secondary" type="button" @click="navigation.back()">Back to hosts</button>
-      </section>
-    </main>
+    <SettingsScreen v-else-if="navigation.route.startsWith('settings')" />
+    <DiagnosticsScreen v-else-if="navigation.route.startsWith('diagnostics')" />
+    <AboutScreen
+      v-else
+      :build-verification="buildVerification"
+      :core-revision="coreSourceRevision"
+      :ui-revision="uiSourceRevision"
+      :bundle-hash="!('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Not verified'"
+      :build-status="buildStatus"
+    />
   </div>
 </template>
