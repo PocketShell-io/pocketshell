@@ -661,7 +661,7 @@ public final class SshPtyDockerJourneyTest {
         int brightTextPixels = countBrightPixels(full, markerLeft, markerTop, markerRight, markerBottom);
         assertTrue("captured marker row must contain rendered terminal text pixels", brightTextPixels >= 8);
         int markerAccentPixels = countPixelsNearColor(full, markerLeft, markerTop, markerRight, markerBottom,
-                SCREENSHOT_MARKER_ACCENT, 24);
+                markerAccent, 24);
         assertTrue("captured marker row must contain the ANSI accent painted by current terminal output",
                 markerAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS);
         int sampleX = crop[2] - Math.max(2, Math.round(4 * (float) rect.optDouble("devicePixelRatio")));
