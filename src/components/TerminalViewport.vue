@@ -121,7 +121,11 @@ function focus() {
   terminal?.focus();
 }
 
-defineExpose({ write, clear, focus });
+function fit() {
+  fitTerminal();
+}
+
+defineExpose({ write, clear, focus, fit });
 </script>
 
 <template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -33,6 +33,7 @@ interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
+  fit(): void;
 }
 
 type ComposerSmokeEvidenceWindow = Window & {
@@ -80,6 +81,12 @@ const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
+const terminalInputPending = ref(0);
+const terminalInputAckCount = ref(0);
+const terminalInputFailureCount = ref(0);
+const terminalResizePending = ref(0);
+const terminalResizeAckCount = ref(0);
+const terminalResizeFailureCount = ref(0);
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -312,19 +319,32 @@ async function attachSession(session: SessionRow) {
     recordOperationFailure('attach-session');
     connectionMessage.value = result.message;
   }
-  else if (result?.ok) terminal.value?.focus();
+  else if (result?.ok) {
+    await nextTick();
+    terminal.value?.fit();
+    terminal.value?.focus();
+  }
 }
 
 async function sendTerminalInput(data: string) {
-  if (!controller || !isLive.value) return;
-  const result = await controller.writeTerminalBytes(new TextEncoder().encode(data)).catch((error: unknown) => {
+  const active = controller;
+  if (!active || !isLive.value) return;
+  terminalInputPending.value += 1;
+  try {
+    const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
+    if (!result.ok) {
+      terminalInputFailureCount.value += 1;
+      recordOperationFailure('send-terminal-input');
+      connectionMessage.value = result.message;
+    } else {
+      terminalInputAckCount.value += 1;
+    }
+  } catch (error: unknown) {
+    terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
-    return null;
-  });
-  if (result && !result.ok) {
-    recordOperationFailure('send-terminal-input');
-    connectionMessage.value = result.message;
+  } finally {
+    terminalInputPending.value -= 1;
   }
 }
 
@@ -338,15 +358,24 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
 async function resizeTerminal(size: { cols: number; rows: number }) {
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
-  const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
-    recordFailure('ssh-bridge-failed', 'resize-terminal', error);
-    connectionMessage.value = error instanceof Error ? error.message : String(error);
-    return null;
-  });
-  terminalResizeStatus.value = result?.ok
-    ? `${size.cols} × ${size.rows} accepted by SSH`
-    : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
-  if (result && !result.ok) recordOperationFailure('resize-terminal');
+  terminalResizePending.value += 1;
+  try {
+    const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'resize-terminal', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
+    terminalResizeStatus.value = result?.ok
+      ? `${size.cols} × ${size.rows} accepted by SSH`
+      : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
+    if (result?.ok) terminalResizeAckCount.value += 1;
+    else {
+      terminalResizeFailureCount.value += 1;
+      if (result) recordOperationFailure('resize-terminal');
+    }
+  } finally {
+    terminalResizePending.value -= 1;
+  }
 }
 
 async function closeController() {
@@ -518,6 +547,12 @@ onBeforeUnmount(() => {
     :data-ssh-selected-workspace="connectionSnapshot?.selectedSession?.workspace ?? ''"
     :data-ssh-selected-tag="connectionSnapshot?.selectedSession?.tag ?? ''"
     :data-ssh-retry-attempt="connectionSnapshot?.retryAttempt ?? 0"
+    :data-ssh-terminal-input-pending="terminalInputPending"
+    :data-ssh-terminal-input-acks="terminalInputAckCount"
+    :data-ssh-terminal-input-failures="terminalInputFailureCount"
+    :data-ssh-terminal-resize-pending="terminalResizePending"
+    :data-ssh-terminal-resize-acks="terminalResizeAckCount"
+    :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
   >
