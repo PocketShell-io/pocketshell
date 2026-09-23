@@ -2,6 +2,7 @@ package com.pocketshell.app.smoke;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -28,6 +29,7 @@ import androidx.core.content.FileProvider;
 
 import com.pocketshell.app.MainActivity;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -42,6 +44,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -140,6 +143,50 @@ public final class JsShellPackagedSmokeTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("window.__ps2857PickerResult?.cancelled === true && window.__ps2857PickerResult?.files?.length === 0");
         assertTrue("the packaged share fixture should be removed", sharedFile.delete());
+    }
+
+    @Test
+    public void packagedMultipleShareReadsStandardStreamListWithoutClipData() throws Exception {
+        scenario.close();
+
+        File firstFile = new File(targetContext().getCacheDir(), "platform-input-list-first.txt");
+        File secondFile = new File(targetContext().getCacheDir(), "platform-input-list-second.txt");
+        byte[] firstBytes = "first shared file".getBytes(StandardCharsets.UTF_8);
+        byte[] secondBytes = "second shared file".getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(firstFile)) {
+            output.write(firstBytes);
+        }
+        try (FileOutputStream output = new FileOutputStream(secondFile)) {
+            output.write(secondBytes);
+        }
+        Uri firstUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", firstFile);
+        Uri secondUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", secondFile);
+        ArrayList<Uri> streams = new ArrayList<>();
+        streams.add(firstUri);
+        streams.add(secondUri);
+        Intent share = new Intent(Intent.ACTION_SEND_MULTIPLE)
+                .setClass(targetContext(), MainActivity.class)
+                .setType("text/plain")
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, streams);
+        assertNull("the fixture must exercise EXTRA_STREAM without ClipData", share.getClipData());
+        scenario = ActivityScenario.launch(share);
+
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+        awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
+                + "plugin.addListener('shareReceived',(event)=>window.__ps2857ListShare=event); return true;})()");
+        awaitJsTrue("window.__ps2857ListShare?.files?.length === 2");
+
+        JSONObject sharedFiles = evalJson("JSON.stringify({files:window.__ps2857ListShare.files.map(file=>({name:file.name,sizeBytes:file.sizeBytes}))})");
+        JSONArray fileList = sharedFiles.getJSONArray("files");
+        assertEquals(firstFile.getName(), fileList.getJSONObject(0).getString("name"));
+        assertEquals(firstBytes.length, fileList.getJSONObject(0).getInt("sizeBytes"));
+        assertEquals(secondFile.getName(), fileList.getJSONObject(1).getString("name"));
+        assertEquals(secondBytes.length, fileList.getJSONObject(1).getInt("sizeBytes"));
+
+        assertTrue("the first packaged stream fixture should be removed", firstFile.delete());
+        assertTrue("the second packaged stream fixture should be removed", secondFile.delete());
     }
 
     @Test

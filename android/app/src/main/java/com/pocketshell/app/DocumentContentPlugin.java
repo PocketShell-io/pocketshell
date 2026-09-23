@@ -155,36 +155,48 @@ public final class DocumentContentPlugin extends Plugin {
         getActivity().setIntent(consumed);
     }
 
-    private ArrayList<Uri> extractUris(Intent intent) {
+    static ArrayList<Uri> extractUris(Intent intent) {
         ArrayList<Uri> uris = new ArrayList<>();
+        addUnique(uris, intent.getData());
         ClipData clipData = intent.getClipData();
         if (clipData != null) {
             for (int index = 0; index < clipData.getItemCount(); index++) {
-                Uri uri = clipData.getItemAt(index).getUri();
-                if (uri != null && !uris.contains(uri)) uris.add(uri);
+                addUnique(uris, clipData.getItemAt(index).getUri());
             }
         }
-        if (!uris.isEmpty()) return uris;
 
-        Object stream;
         try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                stream = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
+            if (Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
+                ArrayList<?> streams;
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri.class);
+                } else {
+                    //noinspection deprecation
+                    streams = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                }
+                if (streams != null) {
+                    for (Object stream : streams) {
+                        if (stream instanceof Uri) addUnique(uris, (Uri) stream);
+                    }
+                }
             } else {
-                //noinspection deprecation
-                stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                Uri stream;
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    stream = intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class);
+                } else {
+                    //noinspection deprecation
+                    stream = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+                }
+                addUnique(uris, stream);
             }
         } catch (RuntimeException ignored) {
-            stream = null;
-        }
-        if (stream instanceof Uri) {
-            uris.add((Uri) stream);
-        } else if (stream instanceof ArrayList<?>) {
-            for (Object item : (ArrayList<?>) stream) {
-                if (item instanceof Uri && !uris.contains(item)) uris.add((Uri) item);
-            }
+            // Malformed or incompatible EXTRA_STREAM values do not discard valid data/ClipData URIs.
         }
         return uris;
+    }
+
+    private static void addUnique(List<Uri> uris, Uri uri) {
+        if (uri != null && !uris.contains(uri)) uris.add(uri);
     }
 
     private JSArray describeUris(List<Uri> uris) throws IOException {
