@@ -28,10 +28,12 @@ button { color: inherit; }
 }
 
 .app-shell[data-native-platform="android"] {
-  --safe-area-inset-top: max(24px, env(safe-area-inset-top, 0px));
-  --safe-area-inset-bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  --android-shell-safe-top: max(24px, var(--safe-area-inset-top, env(safe-area-inset-top, 0px)));
+  --android-shell-safe-bottom: max(24px, var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+  padding-top: var(--android-shell-safe-top);
+  padding-bottom: var(--android-shell-safe-bottom);
 }
-.app-shell[data-keyboard-visible="true"] { --safe-area-inset-bottom: 0px; }
+.app-shell[data-keyboard-visible="true"] { --android-shell-safe-bottom: 0px; }
 
 .app-bar {
   display: flex;
@@ -206,25 +208,25 @@ button { color: inherit; }
 }
 
 @media (max-width: 719px) {
-  .app-shell[data-keyboard-visible="true"] .app-bar {
+  .app-shell[data-keyboard-composer-mode="true"] .app-bar {
     min-height: 44px;
     gap: 8px;
     padding: 0 10px;
   }
-  .app-shell[data-keyboard-visible="true"] .wordmark { font-size: 16px; }
-  .app-shell[data-keyboard-visible="true"] .rewrite-chip { display: none; }
-  .app-shell[data-keyboard-visible="true"] .build-strip { display: none; }
-  .app-shell[data-keyboard-visible="true"] .screen-content.home-screen {
+  .app-shell[data-keyboard-composer-mode="true"] .wordmark { font-size: 16px; }
+  .app-shell[data-keyboard-composer-mode="true"] .rewrite-chip { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .build-strip { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .screen-content.home-screen {
     display: flex;
     flex-direction: column;
     gap: 0;
     padding: 4px 8px 0;
   }
-  .app-shell[data-keyboard-visible="true"] .home-screen > .host-panel,
-  .app-shell[data-keyboard-visible="true"] .home-screen > .workspace-panel,
-  .app-shell[data-keyboard-visible="true"] .home-screen > .diagnostics-panel,
-  .app-shell[data-keyboard-visible="true"] .terminal-panel > .panel-footnote { display: none; }
-  .app-shell[data-keyboard-visible="true"] .terminal-panel {
+  .app-shell[data-keyboard-composer-mode="true"] .home-screen > .host-panel,
+  .app-shell[data-keyboard-composer-mode="true"] .home-screen > .workspace-panel,
+  .app-shell[data-keyboard-composer-mode="true"] .home-screen > .diagnostics-panel,
+  .app-shell[data-keyboard-composer-mode="true"] .terminal-panel > .panel-footnote { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .terminal-panel {
     display: flex;
     min-height: 0;
     flex: 1 1 auto;
@@ -232,32 +234,32 @@ button { color: inherit; }
     gap: 6px;
     padding: 8px;
   }
-  .app-shell[data-keyboard-visible="true"] .panel-heading--terminal { min-height: 28px; margin: 0; }
-  .app-shell[data-keyboard-visible="true"] .panel-heading--terminal .eyebrow { display: none; }
-  .app-shell[data-keyboard-visible="true"] .panel-heading--terminal h2 { font-size: 13px; }
-  .app-shell[data-keyboard-visible="true"] .panel-heading--terminal .state-tag { padding: 2px 5px; }
-  .app-shell[data-keyboard-visible="true"] .terminal-viewport {
+  .app-shell[data-keyboard-composer-mode="true"] .panel-heading--terminal { min-height: 28px; margin: 0; }
+  .app-shell[data-keyboard-composer-mode="true"] .panel-heading--terminal .eyebrow { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .panel-heading--terminal h2 { font-size: 13px; }
+  .app-shell[data-keyboard-composer-mode="true"] .panel-heading--terminal .state-tag { padding: 2px 5px; }
+  .app-shell[data-keyboard-composer-mode="true"] .terminal-viewport {
     height: 76px;
     min-height: 72px;
     max-height: 88px;
     flex: 0 0 auto;
     padding: 4px;
   }
-  .app-shell[data-keyboard-visible="true"] .composer-panel {
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel {
     flex: 0 0 auto;
     gap: 6px;
     padding: 0;
   }
-  .app-shell[data-keyboard-visible="true"] .composer-heading { min-height: 24px; }
-  .app-shell[data-keyboard-visible="true"] .composer-heading .eyebrow { display: none; }
-  .app-shell[data-keyboard-visible="true"] .composer-heading h3 {
+  .app-shell[data-keyboard-composer-mode="true"] .composer-heading { min-height: 24px; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-heading .eyebrow { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-heading h3 {
     overflow: hidden;
     max-width: calc(100vw - 150px);
     font-size: 13px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-shell[data-keyboard-visible="true"] .composer-draft {
+  .app-shell[data-keyboard-composer-mode="true"] .composer-draft {
     height: 72px;
     min-height: 72px;
     max-height: 84px;
@@ -265,7 +267,7 @@ button { color: inherit; }
     padding: 7px 9px;
     font-size: 12px;
   }
-  .app-shell[data-keyboard-visible="true"] .composer-status {
+  .app-shell[data-keyboard-composer-mode="true"] .composer-status {
     min-height: 14px;
     max-height: 14px;
     overflow: hidden;
@@ -274,10 +276,10 @@ button { color: inherit; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-shell[data-keyboard-visible="true"] .composer-actions { min-height: 44px; gap: 6px; }
-  .app-shell[data-keyboard-visible="true"] .composer-discard,
-  .app-shell[data-keyboard-visible="true"] .composer-insert,
-  .app-shell[data-keyboard-visible="true"] .composer-shared-controls .send {
+  .app-shell[data-keyboard-composer-mode="true"] .composer-actions { min-height: 44px; gap: 6px; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-discard,
+  .app-shell[data-keyboard-composer-mode="true"] .composer-insert,
+  .app-shell[data-keyboard-composer-mode="true"] .composer-shared-controls .send {
     height: 44px;
     min-height: 44px;
     max-height: 44px;
