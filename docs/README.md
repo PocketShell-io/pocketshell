@@ -7,6 +7,7 @@ context; the README and current feature docs track released behavior.
 |---|---|
 | [vision.md](vision.md) | Historical product brief — the original goals and UX vocabulary |
 | [architecture.md](architecture.md) | Post-rewrite module map, tech stack, three load-bearing decisions, connect/session/terminal/grace design |
+| [js-first-rewrite-plan.md](js-first-rewrite-plan.md) | Planned 0.6.0 JS-first Android rewrite, shared desktop design, native boundary and test gates |
 | [input-methods.md](input-methods.md) | Voice, key bar, snippets, and composer behaviour — the alternative-to-typing strategy |
 | [agent-awareness.md](agent-awareness.md) | Live agent identity from an aplexer workload and host logs |
 | [usage-panel.md](usage-panel.md) | Provider quota / usage tracking via server-side `pocketshell usage` over SSH — zero credentials on the phone |
