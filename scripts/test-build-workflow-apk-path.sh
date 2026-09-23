@@ -61,7 +61,9 @@ check_workflow() {
     fail "$wf rename dest must stay $RENAME_NAME"
     failures=$((failures + 1))
   fi
-  if grep -Fq 'uses: softprops/action-gh-release@' "$wf" || grep -Eq '^[[:space:]]*contents:[[:space:]]*write[[:space:]]*$' "$wf"; then
+  if grep -Fq 'uses: softprops/action-gh-release@' "$wf" \
+    || grep -Eq '^[[:space:]]*gh[[:space:]]+release[[:space:]]+(create|upload)([[:space:]]|$)' "$wf" \
+    || grep -Eq '^[[:space:]]*contents:[[:space:]]*write[[:space:]]*$' "$wf"; then
     fail "$wf must remain artifact-only; release publishing belongs in publish-release.yml"
     failures=$((failures + 1))
   fi
