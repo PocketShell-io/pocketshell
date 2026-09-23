@@ -125,7 +125,11 @@ function fit() {
   fitTerminal();
 }
 
-defineExpose({ write, clear, focus, fit });
+function scrollToBottom() {
+  terminal?.scrollToBottom();
+}
+
+defineExpose({ write, clear, focus, fit, scrollToBottom });
 </script>
 
 <template>
