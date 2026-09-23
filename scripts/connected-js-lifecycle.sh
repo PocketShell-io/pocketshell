@@ -89,6 +89,8 @@ done
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-results.py" ]] || fail 'lifecycle result verifier is missing'
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" ]] || fail 'independent host evidence verifier is missing'
 [[ -x "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" ]] || fail 'Docker SSH socket watcher is missing'
+command -v tesseract >/dev/null 2>&1 || fail 'Tesseract OCR is required to prove the screenshot contains the current terminal marker'
+printf 'Using screenshot OCR engine: %s\n' "$(tesseract --version | head -n1)"
 "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" --self-test
 "$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
 [[ -x "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" ]] || fail 'lifecycle artifact extractor is missing'

@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import hashlib
 import ipaddress
+import io
 import json
 import re
 import struct
@@ -35,6 +37,8 @@ MARKER_PHASES = {
 MAX_NATIVE_CLOSE_COMPLETION_LAG_MS = 2_000
 MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS = 8_000
 MIN_HOST_ZERO_SOCKET_STABILITY_MS = 1_000
+MIN_SCREENSHOT_OCR_CONFIDENCE = 75.0
+MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 64
 ANSI_ESCAPE_RE = re.compile(
     r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])"
 )
@@ -71,6 +75,117 @@ def _png_dimensions(path: Path) -> tuple[int, int]:
     if width < 100 or height < 40:
         raise EvidenceFailure(f"viewport PNG is blank or too small ({width}x{height}): {path}")
     return width, height
+
+
+def _canonical_ocr_token(text: str) -> str:
+    token = re.sub(r"[^A-Z0-9_]", "", unicodedata.normalize("NFKC", text).upper())
+    # Tesseract commonly reads the zero in this uppercase monospace output as O.
+    return token.replace("O", "0")
+
+
+def _screenshot_marker_accent_rgb(marker: str) -> str:
+    digest = hashlib.sha256(marker.encode("utf-8")).digest()
+    return ",".join(str(128 + (component & 0x7F)) for component in digest[:3])
+
+
+def has_confident_screenshot_marker(
+    words: list[dict[str, Any]], marker: str, marker_bounds: tuple[int, int, int, int]
+) -> tuple[bool, dict[str, Any] | None]:
+    expected = _canonical_ocr_token(marker)
+    left, top, right, bottom = marker_bounds
+    for word in words:
+        text = word.get("text")
+        confidence = word.get("confidence")
+        word_left = word.get("left")
+        word_top = word.get("top")
+        word_right = word_left + word.get("width", 0) if isinstance(word_left, int) else None
+        word_bottom = word_top + word.get("height", 0) if isinstance(word_top, int) else None
+        if (
+            isinstance(text, str)
+            and isinstance(confidence, (int, float))
+            and confidence >= MIN_SCREENSHOT_OCR_CONFIDENCE
+            and _canonical_ocr_token(text) == expected
+            and isinstance(word_left, int)
+            and isinstance(word_top, int)
+            and isinstance(word_right, int)
+            and isinstance(word_bottom, int)
+            and left - 3 <= word_left < right
+            and top - 3 <= word_top < bottom
+            and word_right <= right + 3
+            and word_bottom <= bottom + 3
+        ):
+            return True, word
+    return False, None
+
+
+def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) -> tuple[int, int, int, int]:
+    dpr = viewport.get("devicePixelRatio")
+    keys = ("left", "top", "right", "bottom")
+    if not isinstance(dpr, (int, float)) or dpr <= 0 or any(
+        not isinstance(rect.get(key), (int, float)) for rect in (viewport, marker_rect) for key in keys
+    ):
+        raise EvidenceFailure("screenshot marker OCR needs finite viewport and marker-row geometry")
+    bounds = (
+        round((marker_rect["left"] - viewport["left"]) * dpr),
+        round((marker_rect["top"] - viewport["top"]) * dpr),
+        round((marker_rect["right"] - viewport["left"]) * dpr),
+        round((marker_rect["bottom"] - viewport["top"]) * dpr),
+    )
+    if bounds[0] < 0 or bounds[1] < 0 or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        raise EvidenceFailure("screenshot marker OCR geometry is outside the captured terminal viewport")
+    return bounds
+
+
+def _screenshot_marker_ocr(path: Path, marker: str, marker_bounds: tuple[int, int, int, int]) -> dict[str, Any]:
+    if shutil.which("tesseract") is None:
+        raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
+    try:
+        result = subprocess.run(
+            [
+                "tesseract", str(path), "stdout", "--psm", "6", "tsv",
+                "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise EvidenceFailure(f"could not OCR screenshot {path}: {error}") from error
+    words: list[dict[str, Any]] = []
+    try:
+        for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t"):
+            if row.get("level") != "5" or not row.get("text"):
+                continue
+            words.append({
+                "text": row["text"],
+                "confidence": float(row.get("conf", "-1")),
+                "left": int(row["left"]),
+                "top": int(row["top"]),
+                "width": int(row["width"]),
+                "height": int(row["height"]),
+            })
+    except (ValueError, csv.Error) as error:
+        raise EvidenceFailure(f"Tesseract returned malformed TSV for {path}: {error}") from error
+    found, match = has_confident_screenshot_marker(words, marker, marker_bounds)
+    if not found or match is None:
+        recognized = [
+            {"text": word["text"], "confidence": round(word["confidence"], 1),
+             "left": word["left"], "top": word["top"], "width": word["width"], "height": word["height"]}
+            for word in words if word["confidence"] >= 0
+        ]
+        raise EvidenceFailure(
+            f"screenshot {path.name} does not OCR the standalone marker {marker!r} "
+            f"inside its measured terminal row at confidence >= {MIN_SCREENSHOT_OCR_CONFIDENCE:g}; "
+            f"recognized={recognized[:20]}"
+        )
+    return {
+        "marker": marker,
+        "recognized": match["text"],
+        "confidence": round(match["confidence"], 1),
+        "pixelBounds": list(marker_bounds),
+        "recognizedBounds": [match["left"], match["top"], match["left"] + match["width"], match["top"] + match["height"]],
+    }
 
 
 def normalized_terminal_lines(text: str) -> list[str]:
@@ -217,6 +332,47 @@ def _self_test() -> int:
             return 1
         print(f"ok [{index}/{len(probes)}] {label}")
 
+    screenshot_marker = "REMOTE_OUTPUT_0CA60FF4FA_AS"
+    marker_bounds = (10, 20, 900, 80)
+    screenshot_probes = [
+        ("exact standalone screenshot marker accepted", [
+            {"text": "REMOTE_OUTPUT_OCA60FF4FA_AS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], True),
+        ("stale session-list screenshot rejected", [
+            {"text": "testuser:js2861-review-0923-a", "confidence": 91.0,
+             "left": 31, "top": 31, "width": 600, "height": 37},
+        ], False),
+        ("command echo outside marker row rejected", [
+            {"text": screenshot_marker, "confidence": 91.0,
+             "left": 26, "top": 120, "width": 675, "height": 37},
+        ], False),
+        ("command echo in marker row rejected when not standalone", [
+            {"text": "PRINTF_REMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("marker substring rejected", [
+            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_EXTRA", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("wrap-split marker rejected", [
+            {"text": "REMOTE_OUTPUT_0CA", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 300, "height": 37},
+            {"text": "60FF4FA_AS", "confidence": 91.0,
+             "left": 26, "top": 61, "width": 300, "height": 37},
+        ], False),
+        ("low-confidence OCR rejected", [
+            {"text": screenshot_marker, "confidence": 42.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+    ]
+    for index, (label, words, expected) in enumerate(screenshot_probes, 1):
+        actual, _match = has_confident_screenshot_marker(words, screenshot_marker, marker_bounds)
+        if actual != expected:
+            print(f"FAIL: screenshot OCR mutation probe {index}: {label}", file=sys.stderr)
+            return 1
+        print(f"ok [screenshot {index}/{len(screenshot_probes)}] {label}")
+
     history_markers = {"REMOTE_OUTPUT_JS2861FIX0923_AS", "REMOTE_OUTPUT_JS2861FIX0923_AR"}
     try:
         validate_independent_session_captures(
@@ -278,6 +434,24 @@ def _self_test() -> int:
     ]
     validate_host_transport_timeline(timing, good_samples, epoch_offset, 0, 64_000)
     print("ok [7/15] independent socket timeline measures native close, host disconnect, and post-foreground reconnect")
+
+    nonzero_device_to_host_offset_ms = 2_762
+    shifted_host_samples = [
+        {**row, "sampledEpochMs": row["sampledEpochMs"] + nonzero_device_to_host_offset_ms}
+        for row in good_samples
+    ]
+    adjusted_timeline = validate_host_transport_timeline(
+        timing, shifted_host_samples, nonzero_device_to_host_offset_ms, 0, 64_000
+    )
+    if (
+        adjusted_timeline["nativeGraceDeadlineHostEpochMs"] != 52_762
+        or adjusted_timeline["nativeTransportCloseCompletedHostEpochMs"] != 52_812
+        or adjusted_timeline["hostServerSocketDisappearedAtEpochMs"] != 57_762
+        or adjusted_timeline["nativeDeadlineToHostSocketDisappearedMs"] != 5_000
+    ):
+        print("FAIL: nonzero device-to-host offset was mixed into lifecycle elapsed time", file=sys.stderr)
+        return 1
+    print("ok [clock] nonzero device-to-host offset keeps deadline and host disappearance in one clock domain")
 
     def mutate_count(sampled_at: int | tuple[int, ...], count: int) -> list[dict[str, Any]]:
         targets = {sampled_at} if isinstance(sampled_at, int) else set(sampled_at)
@@ -666,6 +840,22 @@ def validate_host_transport_timeline(
     reconnected_peer = _remote_address({"family": reconnected_identity[0], "remote": reconnected_identity[2]})
     if original_peer != reconnected_peer:
         raise EvidenceFailure("post-expiry SSH reconnect used a different Docker gateway peer")
+    clock_adjusted_timeline = {
+        "deviceToHostEpochOffsetMs": device_to_host_offset_ms,
+        "nativeGraceDeadlineHostEpochMs": beyond_deadline,
+        "nativeTransportCloseCompletedHostEpochMs": native_close_completed,
+        "hostServerSocketDisappearedAtEpochMs": socket_gone_at,
+        "nativeDeadlineToNativeCloseCompleteMs": native_close_completed - beyond_deadline,
+        "nativeDeadlineToHostSocketDisappearedMs": socket_gone_at - beyond_deadline,
+        "nativeCloseCompleteToHostSocketDisappearedMs": socket_gone_at - native_close_completed,
+    }
+    clock_adjusted_timeline["summary"] = (
+        "Applied device-to-host epoch offset of "
+        f"{device_to_host_offset_ms} ms: native deadline {beyond_deadline}, "
+        f"transport close completion {native_close_completed}, server ESTABLISHED disappearance {socket_gone_at}; "
+        f"deadline-to-disappearance {socket_gone_at - beyond_deadline} ms "
+        f"({socket_gone_at - native_close_completed} ms after transport close completion)."
+    )
     return {
         "source": "Docker container /proc/net/tcp and /proc/net/tcp6, ESTABLISHED local port 22",
         "deviceToHostEpochOffsetMs": device_to_host_offset_ms,
@@ -683,6 +873,7 @@ def validate_host_transport_timeline(
         "nativeDeadlineToNativeCloseCompleteMs": number("nativeTransportCloseCompletedAtEpochMs") - number("nativeGraceDeadlineEpochMs"),
         "nativeCloseCompleteToHostSocketDisappearedMs": host_close_lag,
         "nativeDeadlineToHostSocketDisappearedMs": socket_gone_at - beyond_deadline,
+        "clockAdjustedTimeline": clock_adjusted_timeline,
         "zeroSocketBeforeForegroundStableMs": zero_socket_samples[-1]["sampledEpochMs"] - zero_socket_samples[0]["sampledEpochMs"],
         "hostSocketCloseLagLimitMs": MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS,
         "reconnectedSamples": len(reconnected_samples),
@@ -802,12 +993,17 @@ def validate(
     initial_connection = summary.get("initialConnectionId")
     if not isinstance(initial_connection, str) or not initial_connection:
         raise EvidenceFailure("initial live SSH connection ID is missing")
+    screenshot_marker_evidence: dict[str, dict[str, Any]] = {}
     for checkpoint_name, session_letter in CHECKPOINTS.items():
         checkpoint = by_checkpoint[checkpoint_name]
         session = rows[f"{run_id}-{session_letter}"]
-        _validate_checkpoint(artifact_directory, checkpoint, session, initial_connection)
+        screenshot_marker_evidence[checkpoint_name] = _validate_checkpoint(
+            artifact_directory, checkpoint, session, initial_connection
+        )
     within = by_checkpoint["background-within-grace"]
-    _validate_checkpoint(artifact_directory, within, rows[f"{run_id}-a"], initial_connection)
+    screenshot_marker_evidence["background-within-grace"] = _validate_checkpoint(
+        artifact_directory, within, rows[f"{run_id}-a"], initial_connection
+    )
     if summary.get("connectionAfterWithinGrace") != initial_connection:
         raise EvidenceFailure("within-grace foreground return changed the SSH connection ID")
     if summary.get("expiredConnectionId") != initial_connection or summary.get("expiryBridgeEventObserved") is not True:
@@ -878,7 +1074,9 @@ def validate(
     shutil.copy2(timebase_path, copied_timebase)
 
     after = by_checkpoint["reconnected-after-expiry"]
-    _validate_checkpoint(artifact_directory, after, rows[f"{run_id}-a"], None)
+    screenshot_marker_evidence["reconnected-after-expiry"] = _validate_checkpoint(
+        artifact_directory, after, rows[f"{run_id}-a"], None
+    )
     _validate_reconnected_resize_ack(after, timing["beyondGraceResizeAckBefore"])
     expired_connection = summary.get("connectionAfterExpiry")
     if not isinstance(expired_connection, str) or not expired_connection or expired_connection == initial_connection:
@@ -981,6 +1179,7 @@ def validate(
         "matchedRows": joined_rows,
         "captures": captures,
         "packagedCheckpoints": sorted(expected_names),
+        "screenshotMarkerOcr": screenshot_marker_evidence,
         "nativeGraceExpiry": native_expiry,
         "hostSocketTimeline": socket_timeline,
         "hostSocketTimelineFile": socket_timeline_path.name,
@@ -993,7 +1192,9 @@ def validate(
     return oracle
 
 
-def _validate_checkpoint(directory: Path, checkpoint: dict[str, Any], session: dict[str, Any], connection_id: str | None) -> None:
+def _validate_checkpoint(
+    directory: Path, checkpoint: dict[str, Any], session: dict[str, Any], connection_id: str | None
+) -> dict[str, Any]:
     if checkpoint.get("phase") != "live":
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: app phase is not live")
     if not isinstance(checkpoint.get("capturedAtEpochMs"), int):
@@ -1019,7 +1220,8 @@ def _validate_checkpoint(directory: Path, checkpoint: dict[str, Any], session: d
     png_name = checkpoint.get("viewportPng")
     if not isinstance(png_name, str):
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: viewport PNG name is missing")
-    image_width, image_height = _png_dimensions(directory / png_name)
+    png_path = directory / png_name
+    image_width, image_height = _png_dimensions(png_path)
     viewport = checkpoint.get("viewportRect")
     marker_rect = checkpoint.get("markerRect")
     pixels = checkpoint.get("screenshotPixels")
@@ -1043,6 +1245,16 @@ def _validate_checkpoint(directory: Path, checkpoint: dict[str, Any], session: d
         and marker_rect.get("bottom", float("-inf")) <= viewport.get("bottom", float("inf"))
     ):
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: marker row lies outside the captured terminal viewport")
+    marker_bounds = _marker_pixel_bounds(viewport, marker_rect)
+    ocr_evidence = _screenshot_marker_ocr(png_path, marker, marker_bounds)
+    if pixels.get("markerAccentColor") != _screenshot_marker_accent_rgb(marker):
+        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot lacks the expected terminal-output accent color")
+    if (
+        not isinstance(pixels.get("markerAccentPixels"), int)
+        or pixels["markerAccentPixels"] < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS
+    ):
+        raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: screenshot lacks the current marker-row accent pixels")
+    return ocr_evidence
 
 
 def main() -> int:

@@ -9,6 +9,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.webkit.WebView;
 
@@ -33,6 +34,7 @@ import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.CountDownLatch;
@@ -44,6 +46,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class SshPtyDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long BACKGROUND_GRACE_MILLIS = 30_000;
+    private static final long SCREENSHOT_MARKER_WAIT_MILLIS = 8_000;
+    private static final int SCREENSHOT_MARKER_ACCENT_MIN_PIXELS = 64;
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
@@ -317,7 +321,12 @@ public final class SshPtyDockerJourneyTest {
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
         awaitTerminalReady();
         InstrumentationRegistry.getInstrumentation().waitForIdleSync();
-        InstrumentationRegistry.getInstrumentation().sendStringSync("printf '\\n%s\\n' '" + marker + "'\n");
+        int markerAccent = markerAccentColor(marker);
+        String markerFormat = String.format(Locale.ROOT,
+                "\\033[38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m\\n",
+                Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent));
+        InstrumentationRegistry.getInstrumentation().sendStringSync(
+                "printf '" + markerFormat + "' '" + marker + "'\n");
         awaitExactMarkerRow(marker, checkpoint);
         waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
         JSONObject checkpointData = captureCurrent(checkpoint, marker, artifactDirectory);
@@ -416,7 +425,7 @@ public final class SshPtyDockerJourneyTest {
         assertTrue("exact marker row must fit inside terminal viewport", markerRect.getDouble("left") >= rect.getDouble("left")
                 && markerRect.getDouble("top") >= rect.getDouble("top") && markerRect.getDouble("right") <= rect.getDouble("right")
                 && markerRect.getDouble("bottom") <= rect.getDouble("bottom"));
-        JSONObject screenshot = captureViewportPng(checkpoint, rect, markerRect, artifactDirectory);
+        JSONObject screenshot = captureViewportPng(checkpoint, marker, rect, markerRect, artifactDirectory);
         writeText(new File(artifactDirectory, checkpoint + "-visible-terminal.txt"), text);
         JSONObject input = terminalInputStats();
         assertEquals("no pending terminal input may remain at screenshot checkpoint", 0, input.getInt("pending"));
@@ -606,7 +615,9 @@ public final class SshPtyDockerJourneyTest {
         assertTrue("both foreground returns must reach the lifecycle log", foregrounded >= 2);
     }
 
-    private JSONObject captureViewportPng(String checkpoint, JSONObject rect, JSONObject markerRect, File artifactDirectory) throws Exception {
+    private JSONObject captureViewportPng(
+            String checkpoint, String marker, JSONObject rect, JSONObject markerRect, File artifactDirectory
+    ) throws Exception {
         AtomicReference<int[]> bounds = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         scenario.onActivity(activity -> {
@@ -626,12 +637,8 @@ public final class SshPtyDockerJourneyTest {
             latch.countDown();
         });
         assertTrue("WebView viewport bounds callback timed out", latch.await(10, TimeUnit.SECONDS));
-        Bitmap full = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-        assertNotNull("Android must provide a same-run viewport screenshot", full);
         int[] crop = bounds.get();
         assertNotNull("viewport crop coordinates must be recorded", crop);
-        assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
-                && crop[2] <= full.getWidth() && crop[3] <= full.getHeight() && crop[2] > crop[0] && crop[3] > crop[1]);
         int expectedWidth = Math.round((float) rect.optDouble("width") * (float) rect.optDouble("devicePixelRatio"));
         int expectedHeight = Math.round((float) rect.optDouble("height") * (float) rect.optDouble("devicePixelRatio"));
         assertTrue("viewport crop width must match CSS bounds at WebView DPR", Math.abs((crop[2] - crop[0]) - expectedWidth) <= 1);
@@ -646,8 +653,17 @@ public final class SshPtyDockerJourneyTest {
                 * (float) rect.optDouble("devicePixelRatio"));
         assertTrue("marker row must map inside the physical viewport crop", markerLeft >= crop[0] && markerTop >= crop[1]
                 && markerRight <= crop[2] && markerBottom <= crop[3] && markerRight > markerLeft && markerBottom > markerTop);
+        int markerAccent = markerAccentColor(marker);
+        Bitmap full = takeScreenshotWhenMarkerIsPainted(
+                markerLeft, markerTop, markerRight, markerBottom, checkpoint, markerAccent);
+        assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
+                && crop[2] <= full.getWidth() && crop[3] <= full.getHeight() && crop[2] > crop[0] && crop[3] > crop[1]);
         int brightTextPixels = countBrightPixels(full, markerLeft, markerTop, markerRight, markerBottom);
         assertTrue("captured marker row must contain rendered terminal text pixels", brightTextPixels >= 8);
+        int markerAccentPixels = countPixelsNearColor(full, markerLeft, markerTop, markerRight, markerBottom,
+                SCREENSHOT_MARKER_ACCENT, 24);
+        assertTrue("captured marker row must contain the ANSI accent painted by current terminal output",
+                markerAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS);
         int sampleX = crop[2] - Math.max(2, Math.round(4 * (float) rect.optDouble("devicePixelRatio")));
         int sampleY = crop[3] - Math.max(2, Math.round(4 * (float) rect.optDouble("devicePixelRatio")));
         int backgroundPixel = full.getPixel(sampleX, sampleY);
@@ -660,6 +676,8 @@ public final class SshPtyDockerJourneyTest {
                 .put("cropWidth", crop[2] - crop[0])
                 .put("cropHeight", crop[3] - crop[1])
                 .put("markerBrightPixels", brightTextPixels)
+                .put("markerAccentColor", colorString(markerAccent))
+                .put("markerAccentPixels", markerAccentPixels)
                 .put("backgroundRgb", colorString(backgroundPixel));
         Bitmap viewport = Bitmap.createBitmap(full, crop[0], crop[1], crop[2] - crop[0], crop[3] - crop[1]);
         full.recycle();
@@ -679,6 +697,41 @@ public final class SshPtyDockerJourneyTest {
         return pixelEvidence;
     }
 
+    private Bitmap takeScreenshotWhenMarkerIsPainted(
+            int left, int top, int right, int bottom, String checkpoint, int expectedAccent
+    ) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + SCREENSHOT_MARKER_WAIT_MILLIS;
+        int lastAccentPixels = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            Bitmap frame = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            assertNotNull("Android must provide a same-run viewport screenshot", frame);
+            if (left >= 0 && top >= 0 && right <= frame.getWidth() && bottom <= frame.getHeight()
+                    && right > left && bottom > top) {
+                lastAccentPixels = countPixelsNearColor(frame, left, top, right, bottom,
+                        expectedAccent, 24);
+                if (lastAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS) return frame;
+            }
+            frame.recycle();
+            waitForNextWebViewFrame();
+            Thread.sleep(50);
+        }
+        throw new AssertionError("Android screenshot never painted the current terminal marker row for " + checkpoint
+                + " (accent pixels=" + lastAccentPixels + ", required=" + SCREENSHOT_MARKER_ACCENT_MIN_PIXELS + ")");
+    }
+
+    private void waitForNextWebViewFrame() throws Exception {
+        CountDownLatch frameReady = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            android.view.View decor = activity.getWindow().getDecorView();
+            WebView view = decor instanceof WebView ? (WebView) decor : findWebView((android.view.ViewGroup) decor);
+            assertNotNull("the packaged activity must contain its Capacitor WebView", view);
+            view.postInvalidateOnAnimation();
+            Choreographer.getInstance().postFrameCallback(frameTimeNanos -> frameReady.countDown());
+        });
+        assertTrue("WebView did not reach a bounded presentation frame", frameReady.await(5, TimeUnit.SECONDS));
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+    }
+
     private int countBrightPixels(Bitmap bitmap, int left, int top, int right, int bottom) {
         int count = 0;
         for (int y = top; y < bottom; y += 1) {
@@ -688,6 +741,29 @@ public final class SshPtyDockerJourneyTest {
             }
         }
         return count;
+    }
+
+    private int countPixelsNearColor(Bitmap bitmap, int left, int top, int right, int bottom, int expected, int tolerance) {
+        int count = 0;
+        int expectedRed = Color.red(expected);
+        int expectedGreen = Color.green(expected);
+        int expectedBlue = Color.blue(expected);
+        for (int y = top; y < bottom; y += 1) {
+            for (int x = left; x < right; x += 1) {
+                int pixel = bitmap.getPixel(x, y);
+                if (Math.abs(Color.red(pixel) - expectedRed) <= tolerance
+                        && Math.abs(Color.green(pixel) - expectedGreen) <= tolerance
+                        && Math.abs(Color.blue(pixel) - expectedBlue) <= tolerance) {
+                    count += 1;
+                }
+            }
+        }
+        return count;
+    }
+
+    private int markerAccentColor(String marker) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(marker.getBytes(StandardCharsets.UTF_8));
+        return Color.rgb(128 + (digest[0] & 0x7f), 128 + (digest[1] & 0x7f), 128 + (digest[2] & 0x7f));
     }
 
     private int[] parseRgb(String color) {
