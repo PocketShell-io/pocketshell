@@ -121,9 +121,9 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("safe bottom padding must be applied to the shell", expectedSafeBottom, beforeIme.getDouble("paddingBottom"), 1.0);
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
 
-        evalString("(() => { const input = document.querySelector('#preview-input'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
+        evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
-        tapDomCenter("#preview-input");
+        tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);
         awaitImeSafeAreaSettled(expectedSafeTop);
@@ -132,7 +132,7 @@ public final class JsShellPackagedSmokeTest {
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"
                 + "const shellStyle = getComputedStyle(shell);"
-                + "const input = document.querySelector('#preview-input').getBoundingClientRect();"
+                + "const input = document.querySelector('[data-testid=ssh-host]').getBoundingClientRect();"
                 + "return JSON.stringify({"
                 + "safeTop: parseFloat(root.getPropertyValue('--safe-area-inset-top')),"
                 + "safeBottom: parseFloat(root.getPropertyValue('--safe-area-inset-bottom')),"
@@ -144,15 +144,15 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("top system bar clearance must persist while the IME is open", expectedSafeTop, duringIme.getDouble("safeTop"), 1.0);
         assertEquals("IME inset must replace the navigation safe-area padding", 0.0, duringIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe-area padding must remain clear of the IME", 0.0, duringIme.getDouble("paddingBottom"), 1.0);
-        assertTrue("the composer input must be above the visual viewport bottom",
+        assertTrue("the SSH host input must be above the visual viewport bottom",
                 duringIme.getDouble("inputBottom") <= duringIme.getDouble("viewportHeight") + 1.0);
 
         int imeBottom = readRootInsets(WindowInsets.Type.ime()).bottom;
         assertTrue("the platform must report an open IME inset", imeBottom > 0);
-        int[] inputScreenBounds = domRectOnScreen("#preview-input");
+        int[] inputScreenBounds = domRectOnScreen("[data-testid=ssh-host]");
         int[] displayMetrics = displaySize();
         int imeTopOnScreen = displayMetrics[1] - imeBottom;
-        assertTrue("the focused composer input must remain above the physical IME", inputScreenBounds[1] <= imeTopOnScreen);
+        assertTrue("the focused SSH host input must remain above the physical IME", inputScreenBounds[1] <= imeTopOnScreen);
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitImeVisible(false);
@@ -220,7 +220,7 @@ public final class JsShellPackagedSmokeTest {
     }
 
     private JSONObject composerDomState() throws Exception {
-        return evalJson("(() => {const input = document.querySelector('#preview-input');"
+        return evalJson("(() => {const input = document.querySelector('[data-testid=ssh-host]');"
                 + "const active = document.activeElement;"
                 + "const rect = input?.getBoundingClientRect();"
                 + "return JSON.stringify({inputPresent: !!input, inputFocused: !!input && active === input,"
@@ -260,7 +260,7 @@ public final class JsShellPackagedSmokeTest {
             Thread.sleep(100);
             latest = composerDomState();
         }
-        throw new AssertionError("Injected tap did not focus #preview-input: DOM=" + latest
+        throw new AssertionError("Injected tap did not focus the SSH host input: DOM=" + latest
                 + "; Android=" + nativeImeState());
     }
 
