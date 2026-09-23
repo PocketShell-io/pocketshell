@@ -86,6 +86,16 @@ existing D36/D37 Gradle workflows remain on `main`/`stable`; #2863 owns their
 replacement and validation before integration. Do not manually dispatch a
 legacy Gradle workflow against the rewrite branch.
 
+## Product-code hard cut
+
+This foundation branch removes the Kotlin product modules `app2/` and
+`shared/`, the obsolete Kotlin/Python `ui-mock/` and `ui-mock-app/` projects,
+and the root Gradle graph that assembled them. The Android platform project
+under `android/` remains the generated Capacitor host; JS product code lives in
+`src/`, and `vendor/pocketshell-core` remains a pinned Git submodule. Build and
+release-gate harness scripts stay for the #2863 migration; they are not product
+runtime code and their old Gradle checks must not be run against this branch.
+
 ## Docker preservation baseline
 
 The baseline Docker contract is the tracked `tests/docker/` tree and `tests/docker/fixture-pins.txt` at the baseline commit. The fixture pins are `POCKETSHELL_PIN=0.5.5` and `APLEXER_PIN=0.1.5`. Keep the directory and every tracked fixture file unchanged on this issue. Run `scripts/test-agents-fixture-aplexer.sh --docker` to build the image and exercise its installed self-check, then run `git diff --exit-code a6c7e8dab52e944d2b0aafb366d05374c1ace412 -- tests/docker`. Docker journeys for the rewritten client are added under their feature issues; the existing self-check is not a parity claim.

@@ -1,27 +1,21 @@
-# Android / Gradle / IDE ignores — mirrors ssh-auto-forward-android.
+# JavaScript, Capacitor Android, and IDE build outputs.
 
 node_modules/
 dist/
 android/.gradle/
 android/build/
+android/app/build/
 
 *.iml
-.gradle
+.gradle/
 /local.properties
-/.idea
+/.idea/
 .DS_Store
-/build
+build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
-
-/app/build
-/app/debug
-/app/release
-
-# Shared module build outputs
-/shared/*/build
 
 *.apk
 *.aab
@@ -30,15 +24,9 @@ local.properties
 
 *.class
 *.jar
-!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 
-.kotlin/
-
-# Gradle
-.gradle/
-build/
 */build/
 
 # IDE
@@ -78,7 +66,7 @@ keystore.properties
 .tmp/
 
 # Firebase config (per-machine, not committed — #690)
-app/google-services.json
+android/app/google-services.json
 
 # Generated CI journey harness output
 /artifacts/

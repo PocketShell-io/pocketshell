@@ -7,7 +7,8 @@ the Kotlin storage module is removed from the JS-first branch.
 The source JSON bytes were copied unchanged. They document the database shape
 that the #2860 installed-data reader must inspect; they do not include a user's
 database or private files. Keep the files immutable while implementing the
-reader and signed same-package upgrade proof.
+reader and signed same-package upgrade proof. Verify the archived bytes from the
+repository root with `(cd docs/migration/room-schemas/com.pocketshell.core.storage.AppDatabase && sha256sum -c SHA256SUMS)`.
 
 | Version | SHA-256 |
 |---:|---|
