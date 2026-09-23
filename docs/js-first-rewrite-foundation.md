@@ -80,6 +80,13 @@ which owns nonvacuous JS CI, scheduled test, and release-gate migration. Do not
 manually dispatch a legacy Gradle workflow against this branch; its old build
 graph is intentionally absent.
 
+The legacy `scripts/check-unit-gate-wiring.sh` is not part of the rewrite CI.
+On this branch it exits 123 with no output: its C9 scan treats the retained
+Capacitor `android/app/build.gradle` as the old Kotlin test graph, then `xargs`
+returns 123 when `grep` finds no Kotlin test harness path in that file. Keep
+that guard unchanged until #2863 replaces its Gradle-specific scan with a
+nonvacuous check for the JS test graph.
+
 ## Preserved test environment
 
 The existing Docker fixture remains pinned and untouched. Run
