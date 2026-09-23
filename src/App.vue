@@ -20,6 +20,8 @@ import { useNavigationStore } from './stores/navigation';
 import { ConnectionController } from './session/connectionController';
 import { readSshError, sshCapability } from './native/sshCapability';
 import TerminalViewport from './components/TerminalViewport.vue';
+import PromptComposer from './components/PromptComposer.vue';
+import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
@@ -47,6 +49,7 @@ const bundleShort = computed(() =>
 );
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
+const keyboardVisible = ref(false);
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
@@ -61,11 +64,24 @@ let removeBackButton: (() => Promise<void>) | undefined;
 let removeAppState: (() => Promise<void>) | undefined;
 let removeControllerSnapshot: (() => void) | undefined;
 let removeTerminalOutput: (() => void) | undefined;
-
+let removeKeyboardViewportListeners: (() => void) | undefined;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
 const isLive = computed(() => currentPhase.value === 'live');
+const composerTargetKey = computed(() => {
+  const session = connectionSnapshot.value?.selectedSession;
+  const hostname = hostDraft.value.hostname.trim();
+  const username = hostDraft.value.username.trim();
+  if (!session || !hostname || !username) return '';
+  return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
+});
+const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
+  if (!connectionSnapshot.value?.selectedSession) return 'closed';
+  if (currentPhase.value === 'live') return 'connected';
+  if (['connecting', 'reconnecting', 'attaching', 'background', 'error'].includes(currentPhase.value)) return 'lost';
+  return 'closed';
+});
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
 
@@ -196,6 +212,13 @@ async function sendTerminalInput(data: string) {
   if (!result.ok) connectionMessage.value = result.message;
 }
 
+async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
+  const active = controller;
+  if (!active) return { ok: false, message: 'No active PTY.' };
+  const result = await active.writeTerminalBytes(bytes);
+  return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
 async function resizeTerminal(size: { cols: number; rows: number }) {
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
@@ -238,6 +261,20 @@ async function rejectHostKey() {
 }
 
 onMounted(() => {
+  const updateKeyboardViewport = () => {
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const screenHeight = window.screen.height;
+    keyboardVisible.value = Capacitor.getPlatform() === 'android'
+      && screenHeight - viewportHeight > 150;
+  };
+  updateKeyboardViewport();
+  window.visualViewport?.addEventListener('resize', updateKeyboardViewport);
+  window.addEventListener('resize', updateKeyboardViewport);
+  removeKeyboardViewportListeners = () => {
+    window.visualViewport?.removeEventListener('resize', updateKeyboardViewport);
+    window.removeEventListener('resize', updateKeyboardViewport);
+  };
+
   if (Capacitor.isNativePlatform()) {
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
@@ -271,6 +308,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  removeKeyboardViewportListeners?.();
   void removeBackButton?.();
   void removeAppState?.();
   void closeController();
@@ -283,6 +321,8 @@ onBeforeUnmount(() => {
     :data-route="navigation.route"
     :data-back-button-ready="backButtonReady"
     :data-back-button-events="backButtonEvents"
+    :data-native-platform="Capacitor.getPlatform()"
+    :data-keyboard-visible="keyboardVisible"
     :data-ssh-phase="currentPhase"
   >
     <header class="app-bar">
@@ -436,6 +476,13 @@ onBeforeUnmount(() => {
           :enabled="isLive"
           @input="sendTerminalInput"
           @resize="resizeTerminal"
+        />
+        <PromptComposer
+          v-if="connectionSnapshot?.selectedSession"
+          :target-key="composerTargetKey"
+          :target-label="connectionSnapshot.selectedSession.name"
+          :transport-state="composerTransportState"
+          :write-pty="writeComposerPty"
         />
         <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
       </section>

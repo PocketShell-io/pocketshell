@@ -27,6 +27,38 @@ describe('composer delivery adapter and per-target drafts', () => {
     expect(writePty).toHaveBeenCalledTimes(1);
   });
 
+  it('treats an acknowledgement that arrives after transport loss as uncertain and stops the paste', async () => {
+    const drafts = useComposerDrafts();
+    const targetKey = 'testuser@fixture/session-late-ack';
+    const draft = 'first line\nsecond line';
+    drafts.setDraft(targetKey, draft);
+
+    let resolveWrite: ((acknowledgement: { ok: boolean }) => void) | undefined;
+    let markWriteStarted: (() => void) | undefined;
+    const writeStarted = new Promise<void>((resolve) => { markWriteStarted = resolve; });
+    const writePty = vi.fn(() => new Promise<{ ok: boolean }>((resolve) => {
+      resolveWrite = resolve;
+      markWriteStarted?.();
+    }));
+    const delivery = createComposerDeliveryController(writePty, async () => undefined);
+    delivery.setTransportState('connected');
+
+    const pending = delivery.deliver({ operationId: 'late-ack-submit', payload: draft, intent: 'submit' });
+    await writeStarted;
+    delivery.setTransportState('lost');
+    resolveWrite?.({ ok: true });
+    const result = await pending;
+    if (result.draftEffect === 'clear') drafts.clearDraft(targetKey);
+
+    expect(result).toMatchObject({ status: 'uncertain', reason: 'transport-lost', stage: 'write', draftEffect: 'retain', writeCount: 1 });
+    expect(writePty).toHaveBeenCalledTimes(1);
+    expect(drafts.draftFor(targetKey)).toBe(draft);
+
+    delivery.setTransportState('connected');
+    expect(drafts.draftFor(targetKey)).toBe(draft);
+    expect(writePty).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps one session draft separate from another and clears only after acknowledged delivery', async () => {
     const drafts = useComposerDrafts();
     const writePty = vi.fn(async () => ({ ok: true }));
