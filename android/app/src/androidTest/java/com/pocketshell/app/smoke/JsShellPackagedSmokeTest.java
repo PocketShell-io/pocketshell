@@ -8,11 +8,13 @@ import android.content.Context;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -80,11 +82,12 @@ public final class JsShellPackagedSmokeTest {
     @Test
     public void settingsAndAndroidBackReturnHome() throws Exception {
         awaitJsTrue("document.querySelector('[aria-label=Settings]') !== null");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && !!document.querySelector('#hosts-title')");
+        awaitHomeAfterBack();
     }
 
     @Test
@@ -115,7 +118,9 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
 
         evalString("(() => { const input = document.querySelector('#preview-input'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
+        awaitComposerInputSettled();
         tapDomCenter("#preview-input");
+        awaitComposerFocused();
         awaitImeVisible(true);
 
         JSONObject duringIme = evalJson("(() => {"
@@ -175,6 +180,30 @@ public final class JsShellPackagedSmokeTest {
         throw new AssertionError("JavaScript condition did not become true: " + expression + " (last result: " + last + ")");
     }
 
+    private void awaitHomeAfterBack() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject last = navigationDomState();
+        while (SystemClock.uptimeMillis() < deadline) {
+            if ("home".equals(last.optString("route"))
+                    && last.optBoolean("hasHostsTitle")
+                    && last.optInt("backButtonEvents") > 0) {
+                return;
+            }
+            Thread.sleep(100);
+            last = navigationDomState();
+        }
+        throw new AssertionError("Android Back did not return to Hosts after a registered listener received it: " + last);
+    }
+
+    private JSONObject navigationDomState() throws Exception {
+        return evalJson("(() => {const shell = document.querySelector('.app-shell');"
+                + "return JSON.stringify({route: shell?.dataset.route ?? null,"
+                + "backButtonReady: shell?.dataset.backButtonReady ?? null,"
+                + "backButtonEvents: Number(shell?.dataset.backButtonEvents ?? 0),"
+                + "hasHostsTitle: !!document.querySelector('#hosts-title'),"
+                + "hasSettingsTitle: !!document.querySelector('#settings-title')});})()");
+    }
+
     private String evalString(String expression) throws Exception {
         String raw = evalRaw(expression);
         Object decoded = new JSONTokener(raw).nextValue();
@@ -183,6 +212,77 @@ public final class JsShellPackagedSmokeTest {
 
     private JSONObject evalJson(String expression) throws Exception {
         return new JSONObject(evalString(expression));
+    }
+
+    private JSONObject composerDomState() throws Exception {
+        return evalJson("(() => {const input = document.querySelector('#preview-input');"
+                + "const active = document.activeElement;"
+                + "const rect = input?.getBoundingClientRect();"
+                + "return JSON.stringify({inputPresent: !!input, inputFocused: !!input && active === input,"
+                + "activeTag: active?.tagName ?? null, activeId: active?.id ?? null,"
+                + "inputTop: rect?.top ?? -1, inputBottom: rect?.bottom ?? -1,"
+                + "innerHeight, visualViewportHeight: window.visualViewport?.height ?? innerHeight});})()");
+    }
+
+    private void awaitComposerInputSettled() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject previous = null;
+        JSONObject latest = composerDomState();
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            boolean onScreen = latest.optDouble("inputTop") >= 0
+                    && latest.optDouble("inputBottom") <= latest.optDouble("innerHeight");
+            if (onScreen && previous != null
+                    && Math.abs(latest.optDouble("inputTop") - previous.optDouble("inputTop")) < 0.5
+                    && Math.abs(latest.optDouble("inputBottom") - previous.optDouble("inputBottom")) < 0.5) {
+                stableSamples++;
+                if (stableSamples >= 2) return;
+            } else {
+                stableSamples = 0;
+            }
+            previous = latest;
+            Thread.sleep(100);
+            latest = composerDomState();
+        }
+        throw new AssertionError("Composer input did not settle fully inside the WebView viewport: " + latest);
+    }
+
+    private void awaitComposerFocused() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject latest = composerDomState();
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (latest.optBoolean("inputFocused")) return;
+            Thread.sleep(100);
+            latest = composerDomState();
+        }
+        throw new AssertionError("Injected tap did not focus #preview-input: DOM=" + latest
+                + "; Android=" + nativeImeState());
+    }
+
+    private String nativeImeState() {
+        AtomicReference<String> result = new AtomicReference<>("<not captured>");
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            WindowInsets insets = decor.getRootWindowInsets();
+            WebView webView = findWebView(decor);
+            View focusedView = decor.findFocus();
+            InputMethodManager inputMethodManager =
+                    (InputMethodManager) activity.getSystemService(Context.INPUT_METHOD_SERVICE);
+            int imeBottom = insets == null ? -1 : insets.getInsets(WindowInsets.Type.ime()).bottom;
+            boolean imeVisible = insets != null && insets.isVisible(WindowInsets.Type.ime());
+            int showWithHardwareKeyboard = Settings.Secure.getInt(
+                    activity.getContentResolver(), "show_ime_with_hard_keyboard", -1);
+            result.set("imeVisible=" + imeVisible
+                    + ", imeBottom=" + imeBottom
+                    + ", showImeWithHardKeyboard=" + showWithHardwareKeyboard
+                    + ", webViewHasFocus=" + (webView != null && webView.hasFocus())
+                    + ", webViewIsFocused=" + (webView != null && webView.isFocused())
+                    + ", inputMethodActiveForWebView=" + (webView != null && inputMethodManager.isActive(webView))
+                    + ", inputMethodAcceptingText=" + inputMethodManager.isAcceptingText()
+                    + ", focusedView=" + (focusedView == null ? "none" : focusedView.getClass().getName())
+                    + ", softInputMode=" + activity.getWindow().getAttributes().softInputMode);
+        });
+        return result.get();
     }
 
     private String evalRaw(String expression) throws Exception {
@@ -270,7 +370,8 @@ public final class JsShellPackagedSmokeTest {
             if (last == visible) return;
             Thread.sleep(100);
         }
-        throw new AssertionError("IME visibility did not become " + visible + " (last=" + last + ")");
+        throw new AssertionError("IME visibility did not become " + visible + " (last=" + last
+                + "; DOM=" + composerDomState() + "; Android=" + nativeImeState() + ")");
     }
 
     private Insets readRootInsets(int typeMask) throws Exception {

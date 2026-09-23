@@ -25,18 +25,28 @@ const bundleShort = computed(() =>
     ? buildVerification.value.bundleAssetHash.slice(0, 12)
     : 'not verified',
 );
+const backButtonReady = ref(!Capacitor.isNativePlatform());
+const backButtonEvents = ref(0);
 
 let removeBackButton: (() => Promise<void>) | undefined;
 
-onMounted(async () => {
-  buildVerification.value = await verifyCurrentBuild(coreSourceRevision);
+onMounted(() => {
   if (Capacitor.isNativePlatform()) {
-    const listener = await CapacitorApp.addListener('backButton', () => {
+    void CapacitorApp.addListener('backButton', () => {
+      backButtonEvents.value += 1;
       if (navigation.route === 'settings') navigation.back();
       else void CapacitorApp.exitApp();
+    }).then((listener) => {
+      removeBackButton = () => listener.remove();
+      backButtonReady.value = true;
+    }).catch((error: unknown) => {
+      console.error('Could not register the Android Back handler.', error);
     });
-    removeBackButton = () => listener.remove();
   }
+
+  void verifyCurrentBuild(coreSourceRevision).then((verification) => {
+    buildVerification.value = verification;
+  });
 });
 
 onBeforeUnmount(() => {
@@ -45,7 +55,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell" :data-route="navigation.route">
+  <div
+    class="app-shell"
+    :data-route="navigation.route"
+    :data-back-button-ready="backButtonReady"
+    :data-back-button-events="backButtonEvents"
+  >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
         <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
