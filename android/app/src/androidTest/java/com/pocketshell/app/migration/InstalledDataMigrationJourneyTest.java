@@ -5,6 +5,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
@@ -39,6 +40,10 @@ public final class InstalledDataMigrationJourneyTest {
     private static final long MIGRATION_TIMEOUT_MILLIS = 30_000;
     private static final String FIXTURE_OPT_IN = "installedDataMigrationFixture";
     private static final String CONNECT_OPT_IN = "installedDataMigrationConnect";
+    private static final String MALFORMED_ENCRYPTED_OPT_IN = "installedDataMigrationMalformedEncryptedFixture";
+    private static final String MALFORMED_ENCRYPTED_PREFS = "pocketshell-voice-secrets";
+    private static final String KEY_KEYSET = "__androidx_security_crypto_encrypted_prefs_key_keyset__";
+    private static final String VALUE_KEYSET = "__androidx_security_crypto_encrypted_prefs_value_keyset__";
     private static final String EXPECTED_HOST_KEY_ARGUMENT = "installedDataMigrationExpectedHostKey";
     private static final String DEFAULT_EXPECTED_HOST_KEY =
         "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
@@ -46,6 +51,7 @@ public final class InstalledDataMigrationJourneyTest {
     private Context targetContext;
     private ActivityScenario<MainActivity> scenario;
     private Map<String, String> sourceHashes;
+    private File createdMalformedPreferences;
 
     @Before
     public void requireAndSnapshotFixture() throws Exception {
@@ -55,16 +61,32 @@ public final class InstalledDataMigrationJourneyTest {
             "run only with the preserved synthetic 0.5.6 upgrade fixture and -e " + FIXTURE_OPT_IN + " true",
             requested);
         targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        if (malformedEncryptedFixtureRequested()) {
+            File source = new File(new File(targetContext.getApplicationInfo().dataDir, "shared_prefs"),
+                MALFORMED_ENCRYPTED_PREFS + ".xml");
+            assertTrue("the malformed test must not replace existing encrypted preferences", !source.exists());
+            SharedPreferences preferences = targetContext.getSharedPreferences(
+                MALFORMED_ENCRYPTED_PREFS, Context.MODE_PRIVATE);
+            assertTrue("could not create the synthetic malformed encrypted source",
+                preferences.edit().putString(KEY_KEYSET, "00").putString(VALUE_KEYSET, "00").commit());
+            createdMalformedPreferences = source;
+        }
         sourceHashes = snapshotSourceHashes();
     }
 
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        if (createdMalformedPreferences != null) {
+            targetContext.getSharedPreferences(MALFORMED_ENCRYPTED_PREFS, Context.MODE_PRIVATE)
+                .edit().clear().commit();
+            assertTrue("could not remove synthetic malformed preferences", createdMalformedPreferences.delete());
+        }
     }
 
     @Test
     public void startupStagesLegacyDataAndLeavesOriginalFilesUntouched() throws Exception {
+        org.junit.Assume.assumeFalse(malformedEncryptedFixtureRequested());
         scenario = ActivityScenario.launch(MainActivity.class);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'complete'");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
@@ -145,6 +167,23 @@ public final class InstalledDataMigrationJourneyTest {
             sourceHashes, snapshotSourceHashes());
     }
 
+    @Test
+    public void malformedEncryptedPreferencesAppearInPackagedWebView() throws Exception {
+        org.junit.Assume.assumeTrue(malformedEncryptedFixtureRequested());
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
+        awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
+        String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
+        assertTrue("the partial import must identify the unreadable encrypted source: " + warning,
+            warning.contains("Encrypted preferences") && warning.contains("pocketshell-voice-secrets"));
+        assertEquals("the packaged partial import must not change any source file",
+            sourceHashes, snapshotSourceHashes());
+    }
+
+    private boolean malformedEncryptedFixtureRequested() {
+        return "true".equals(InstrumentationRegistry.getArguments().getString(MALFORMED_ENCRYPTED_OPT_IN));
+    }
+
     private Map<String, String> snapshotSourceHashes() throws Exception {
         File root = new File(targetContext.getApplicationInfo().dataDir);
         Map<String, String> hashes = new LinkedHashMap<>();
@@ -159,6 +198,12 @@ public final class InstalledDataMigrationJourneyTest {
         for (String relativePath : relativePaths) {
             File file = new File(root, relativePath);
             assertTrue("fixture source file is missing: " + relativePath, file.isFile());
+            hashes.put(relativePath, sha256(file));
+        }
+        if (malformedEncryptedFixtureRequested()) {
+            String relativePath = "shared_prefs/" + MALFORMED_ENCRYPTED_PREFS + ".xml";
+            File file = new File(root, relativePath);
+            assertTrue("the malformed encrypted fixture source is missing", file.isFile());
             hashes.put(relativePath, sha256(file));
         }
         return hashes;
