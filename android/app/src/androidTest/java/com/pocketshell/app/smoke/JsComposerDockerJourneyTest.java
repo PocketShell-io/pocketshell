@@ -274,6 +274,7 @@ public final class JsComposerDockerJourneyTest {
             awaitImeVisible(true);
         }
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitImeVisible(true);
     }
 
     private void tapComposerAction(String selector) throws Exception {
