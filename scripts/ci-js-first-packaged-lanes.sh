@@ -51,6 +51,17 @@ else
   usage_status=$?
 fi
 
+if scripts/connected-js-files-docker.sh \
+  --suffix i2858ci \
+  --port 2222 \
+  --container pocketshell-test-agents \
+  --run-id "js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  files_status=0
+else
+  files_status=$?
+fi
+
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
@@ -60,9 +71,9 @@ else
   composer_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s composer=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$composer_status" "$copy_status"
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || composer_status != 0 || copy_status != 0 )); then
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || copy_status != 0 )); then
   exit 1
 fi
