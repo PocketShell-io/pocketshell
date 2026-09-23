@@ -76,6 +76,7 @@ public final class JsComposerDockerJourneyTest {
         uncertainSession = nameBase + "-uncertain";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
@@ -88,34 +89,51 @@ public final class JsComposerDockerJourneyTest {
         createSession(uncertainSession);
         attachSession(bytesSession);
 
-        String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' > /tmp/" + bytesSession + "-unicode.hex";
+        String sentMarker = "PS2857_SENT_" + nameBase;
+        String sentMarkerPrefix = "PS2857_SENT_";
+        String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' | tee /tmp/"
+                + bytesSession + "-unicode.hex; printf '\\n%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
+                + "' | tee /tmp/"
+                + bytesSession + "-sent-output.marker";
+        assertTrue("the sent-output marker must not be present verbatim in the command echo", !unicodeCommand.contains(sentMarker));
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK);
-        awaitImeVisible(false);
-        click(".composer-shared-controls .send");
+        assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
+        tapComposerAction(".composer-shared-controls .send");
         awaitDeliveredAndCleared();
+        waitForTerminalMarkerOrCaptureWindow(sentMarker);
+        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand);
 
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
-        click(".composer-shared-controls .send");
+        tapComposerAction(".composer-shared-controls .send");
         awaitDeliveredAndCleared();
         SystemClock.sleep(500);
 
         String multilinePayload = "alpha\nβeta\n🙂";
         setComposerDraft(multilinePayload);
-        click("[data-testid=composer-insert]");
+        tapComposerAction("[data-testid=composer-insert]");
         awaitInsertedAndCleared();
         setComposerDraft("\u0004\u0004");
-        click("[data-testid=composer-insert]");
+        tapComposerAction("[data-testid=composer-insert]");
         awaitInsertedAndCleared();
 
         String insertMarker = "PS2857_INSERT_" + nameBase;
         String insertCommand = "printf '%s' '" + insertMarker + "' > /tmp/" + bytesSession + "-insert.marker";
         setComposerDraft(insertCommand);
-        click("[data-testid=composer-insert]");
+        tapComposerAction("[data-testid=composer-insert]");
         awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''");
+        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(insertMarker) + ")",
+                10_000);
+
+        setComposerDraft("discard-me-" + nameBase);
+        tapComposerAction("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-discard]')?.textContent.trim() === 'Discard?'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Tap Discard again')");
+        tapComposerAction("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Draft cleared')");
 
         attachSession(uncertainSession);
         String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
@@ -123,7 +141,7 @@ public final class JsComposerDockerJourneyTest {
                 + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
         setComposerDraft(uncertainCommand);
         armDisconnectAfterFirstAcknowledgement();
-        click(".composer-shared-controls .send");
+        tapComposerAction(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'", 30_000);
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
 
@@ -249,6 +267,110 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
     }
 
+    private void ensureImeVisible() throws Exception {
+        if (!isImeVisible()) {
+            evalString("document.querySelector('[data-testid=prompt-draft]')?.scrollIntoView({block:'center', behavior:'instant'}); 'scrolled'");
+            tapDomCenter("[data-testid=prompt-draft]");
+            awaitImeVisible(true);
+        }
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+    }
+
+    private void tapComposerAction(String selector) throws Exception {
+        ensureImeVisible();
+        assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
+        tapDomCenter(selector);
+    }
+
+    private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
+        String quotedMarker = JSONObject.quote(marker);
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        while (SystemClock.uptimeMillis() < deadline) {
+            String found = evalRaw("(window.__ps2857TerminalVisibleText || '').includes(" + quotedMarker + ")"
+                    + " || Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
+                    + ".some(row => (row.textContent || '').includes(" + quotedMarker + "))");
+            if ("true".equals(found)) return;
+            Thread.sleep(100);
+        }
+    }
+
+    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
+        // Sending closes Android's IME and the current mobile screen can keep its
+        // previous outer scroll position at the connection card. Scroll the
+        // terminal into the real WebView viewport before capturing the rendered
+        // output; this is an explicit post-send proof step, not evidence that the
+        // output was visible immediately when Send was tapped.
+        evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
+                + "viewport?.scrollIntoView({block:'center',behavior:'instant'});"
+                + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
+                + "if(terminalScroller)terminalScroller.scrollTop=terminalScroller.scrollHeight;"
+                + "return 'terminal-scrolled-into-view';})()");
+        SystemClock.sleep(400);
+        String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
+                + "const rect=viewport?.getBoundingClientRect();"
+                + "const visibleText=window.__ps2857TerminalVisibleText || '';"
+                + "const terminalDomText=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
+                + ".map(row=>row.textContent || '').join('\\n').slice(-4000);"
+                + "return JSON.stringify({stage:'after-send',expectedMarker:" + JSONObject.quote(expectedMarker)
+                + ",captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
+                + "terminalEvidenceSource:'xterm-active-buffer-after-render',visibleTerminalText:visibleText,terminalDomText:terminalDomText,"
+                + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,appTerminalMissingRefCount:window.__ps2857AppTerminalMissingRefCount??0,"
+                + "appTerminalLastChunk:window.__ps2857AppTerminalLastChunk??'',terminalWriteCount:window.__ps2857TerminalWriteCount??0,"
+                + "terminalLastWriteText:window.__ps2857TerminalLastWriteText??'',terminalRenderCount:window.__ps2857TerminalRenderCount??0,"
+                + "sentMarkerAbsentFromSubmittedCommand:" + !submittedCommand.contains(expectedMarker) + ","
+                + "terminalViewport:rect?{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null,"
+                + "visualViewport:{height:window.visualViewport?.height ?? innerHeight,width:window.visualViewport?.width ?? innerWidth},"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
+                + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop ?? null,"
+                + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
+        JSONObject measured = new JSONObject(report);
+        SystemClock.sleep(250);
+        byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
+        AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
+        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            try {
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot == null) return;
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                byte[] png = encoded.toByteArray();
+                File destination = new File(activity.getFilesDir(), "composer-post-send.png");
+                if (compressed && png.length >= 1024) {
+                    try (FileOutputStream output = new FileOutputStream(destination)) {
+                        output.write(png);
+                    }
+                    screenshotArtifact.set(png);
+                    saved.set(destination.length() >= 1024);
+                }
+                screenshot.recycle();
+                try (FileOutputStream output = new FileOutputStream(new File(activity.getFilesDir(), "composer-post-send-terminal.json"))) {
+                    output.write(reportBytes);
+                }
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        assertTrue("same-run post-send screenshot must be captured", saved.get());
+        emitArtifact(runId, "composer-post-send.png", screenshotArtifact.get());
+        emitArtifact(runId, "composer-post-send-terminal.json", reportBytes);
+        String visibleText = measured.getString("visibleTerminalText");
+        assertTrue("same-run terminal viewport record must identify the successful send",
+                measured.getString("deliveryStatus").contains("Sent to the terminal"));
+        JSONObject viewport = measured.getJSONObject("terminalViewport");
+        JSONObject visualViewport = measured.getJSONObject("visualViewport");
+        assertTrue("same-run terminal viewport must remain onscreen", viewport.getDouble("top") >= 0
+                && viewport.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
+                && viewport.getDouble("left") >= 0
+                && viewport.getDouble("right") <= visualViewport.getDouble("width") + 0.5
+                && viewport.getDouble("height") >= 48);
+        assertTrue("the app terminal subscription must deliver PTY bytes to its mounted Xterm component",
+                measured.getInt("appTerminalDeliveryCount") > 0 && measured.getInt("appTerminalMissingRefCount") == 0
+                        && measured.getInt("terminalWriteCount") > 0);
+        assertTrue("the same-run active Xterm buffer and rendered DOM must contain the sent output",
+                visibleText.contains(expectedMarker) && measured.getString("terminalDomText").contains(expectedMarker));
+    }
+
     private String saveKeyboardGeometry(String runId) throws Exception {
         String geometry = evalString("(() => {const rect=(selector) => {const node=document.querySelector(selector);"
                 + "if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
@@ -361,8 +483,13 @@ public final class JsComposerDockerJourneyTest {
     private void tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
-                + "return JSON.stringify({x:rect.left+rect.width/2,y:rect.top+rect.height/2,width:innerWidth});})()");
+                + "const height=window.visualViewport?.height ?? innerHeight;"
+                + "return JSON.stringify({x:rect.left+rect.width/2,y:rect.top+rect.height/2,width:innerWidth,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,disabled:!!element.disabled});})()");
         assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
+        assertTrue("WebView touch target must be enabled", !point.optBoolean("disabled"));
+        assertTrue("WebView touch target must be visibly inside the Android viewport",
+                point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("height") + 0.5
+                        && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
@@ -377,12 +504,12 @@ public final class JsComposerDockerJourneyTest {
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        instrumentation.getUiAutomation().injectInputEvent(down, true);
+        assertTrue("Android touchscreen ACTION_DOWN must be injected", instrumentation.getUiAutomation().injectInputEvent(down, true));
         down.recycle();
         SystemClock.sleep(60);
         MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, screen[0], screen[1], 0);
         up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        instrumentation.getUiAutomation().injectInputEvent(up, true);
+        assertTrue("Android touchscreen ACTION_UP must be injected", instrumentation.getUiAutomation().injectInputEvent(up, true));
         up.recycle();
     }
 

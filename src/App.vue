@@ -29,6 +29,13 @@ interface TerminalViewportHandle {
   focus(): void;
 }
 
+type ComposerSmokeEvidenceWindow = Window & {
+  __ps2857CaptureTerminalEvidence?: boolean;
+  __ps2857AppTerminalDeliveryCount?: number;
+  __ps2857AppTerminalLastChunk?: string;
+  __ps2857AppTerminalMissingRefCount?: number;
+};
+
 const navigation = useNavigationStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
@@ -133,7 +140,15 @@ function bindController(next: ConnectionController) {
     connectionSnapshot.value = snapshot;
   });
   removeTerminalOutput = next.subscribeTerminalOutput((_session, bytes) => {
-    terminal.value?.write(bytes);
+    const smokeEvidence = window as ComposerSmokeEvidenceWindow;
+    const target = terminal.value;
+    // Instrumentation opts in before connection setup; keep terminal output private in normal sessions.
+    if (smokeEvidence.__ps2857CaptureTerminalEvidence) {
+      smokeEvidence.__ps2857AppTerminalDeliveryCount = (smokeEvidence.__ps2857AppTerminalDeliveryCount ?? 0) + 1;
+      smokeEvidence.__ps2857AppTerminalLastChunk = new TextDecoder().decode(bytes).slice(-4000);
+      if (!target) smokeEvidence.__ps2857AppTerminalMissingRefCount = (smokeEvidence.__ps2857AppTerminalMissingRefCount ?? 0) + 1;
+    }
+    target?.write(bytes);
   });
 }
 
