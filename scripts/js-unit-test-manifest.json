@@ -129,6 +129,16 @@
         "rejects stale generations before requests and after in-flight responses",
         "rejects native responses with an unrelated request ID"
       ]
+    },
+    "tests/unit/documentTransfers.test.ts": {
+      "suite": "bounded Android document transfers",
+      "tests": [
+        "reads selected content URIs in ordered byte chunks and releases the URI",
+        "treats picker and Save As cancellation as no-ops",
+        "rejects a mismatched source chunk and still releases its document ID",
+        "writes exact binary bytes to the selected document and completes the byte count",
+        "aborts a partial save when the document provider rejects a chunk"
+      ]
     }
   }
 }
