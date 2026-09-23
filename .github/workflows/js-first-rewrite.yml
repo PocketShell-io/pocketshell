@@ -74,6 +74,7 @@ jobs:
         run: |
           tests/scripts/connected-test-js-runner-test.sh
           tests/scripts/connected-test-root-guard-test.sh
+          tests/scripts/js-first-rewrite-composer-gate-test.sh
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
@@ -104,6 +105,9 @@ jobs:
           wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
           cat /tmp/js-lifecycle-agents-health.log
 
+      - name: Start isolated Docker agents lane for the composer journey
+        run: scripts/agents-pool.sh up 2245
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -133,10 +137,52 @@ jobs:
           emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
           emulator-boot-timeout: 900
           script: |
+            set +e
             scripts/connected-js-smoke.sh --suffix i2855ci --test-only
+            smoke_status=$?
             mkdir -p android/app/build/outputs/js-smoke-results
             cp -a android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml android/app/build/outputs/js-smoke-results/
+            copy_status=$?
             scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id "js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
+            lifecycle_status=$?
+            scripts/connected-js-composer-docker.sh --suffix i2891ci --port 2245 --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            composer_status=$?
+            set -e
+            printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s composer=%s smoke-junit-copy=%s\n' \
+              "$smoke_status" "$lifecycle_status" "$composer_status" "$copy_status"
+            if (( smoke_status != 0 || lifecycle_status != 0 || composer_status != 0 || copy_status != 0 )); then
+              exit 1
+            fi
+
+      - name: Assert the packaged JS composer journey executed exactly once
+        if: always()
+        run: |
+          scripts/check-js-composer-journey-results.py --self-test
+          scripts/check-js-composer-journey-results.py \
+            --results-dir android/app/build/outputs/androidTest-results/connected/debug
+
+      - name: Collect isolated composer fixture diagnostics
+        if: always()
+        run: |
+          mkdir -p android/app/build/outputs/js-composer/ci-fixture
+          docker inspect pocketshell-test-agents-2245 \
+            > android/app/build/outputs/js-composer/ci-fixture/agents-inspect.json 2>&1 || true
+          docker logs pocketshell-test-agents-2245 \
+            > android/app/build/outputs/js-composer/ci-fixture/agents.log 2>&1 || true
+
+      - name: Upload packaged JS composer run evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-first-composer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/outputs/js-composer/
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+          if-no-files-found: error
+
+      - name: Stop isolated composer Docker agents lane
+        if: always()
+        run: scripts/agents-pool.sh down 2245
 
       - name: Upload packaged APK and connected smoke results
         if: always()

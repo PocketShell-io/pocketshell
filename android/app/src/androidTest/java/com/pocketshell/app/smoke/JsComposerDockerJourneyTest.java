@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -23,6 +24,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONException;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
@@ -32,7 +34,9 @@ import org.junit.runner.RunWith;
 
 import java.io.File;
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
@@ -49,6 +53,13 @@ public final class JsComposerDockerJourneyTest {
     private ActivityScenario<MainActivity> scenario;
     private String bytesSession;
     private String uncertainSession;
+    private String artifactRunId;
+    private boolean forceFirstPostAttachTapMiss;
+    private int composerFocusMaxAttempts = 2;
+    private final JSONArray focusTapAttempts = new JSONArray();
+    private JSONObject lastPhysicalTapEvidence;
+    private boolean focusTraceEmitted;
+    private boolean focusFailureCaptured;
 
     @Before
     public void launchPackagedShell() {
@@ -57,6 +68,11 @@ public final class JsComposerDockerJourneyTest {
 
     @After
     public void closeShell() {
+        try {
+            emitFocusTraceIfNeeded();
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
+        }
         if (scenario != null) scenario.close();
     }
 
@@ -68,7 +84,16 @@ public final class JsComposerDockerJourneyTest {
         String port = arguments.getString("sshPort");
         String encodedKey = arguments.getString("sshPrivateKeyBase64");
         String nameBase = arguments.getString("sshSessionName");
-        String artifactRunId = arguments.getString("artifactRunId", nameBase);
+        artifactRunId = arguments.getString("artifactRunId", nameBase);
+        forceFirstPostAttachTapMiss = Boolean.parseBoolean(
+                arguments.getString("composerForceFirstPostAttachTapMiss", "false"));
+        try {
+            composerFocusMaxAttempts = Integer.parseInt(arguments.getString("composerFocusMaxAttempts", "2"));
+        } catch (NumberFormatException error) {
+            throw new AssertionError("composer focus attempt limit must be an integer from one to two", error);
+        }
+        assertTrue("composer focus attempt limit must stay bounded to one or two taps",
+                composerFocusMaxAttempts >= 1 && composerFocusMaxAttempts <= 2);
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
         assertNotNull("pass unique composer session names with sshSessionName", nameBase);
@@ -101,10 +126,10 @@ public final class JsComposerDockerJourneyTest {
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
         assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
-        tapComposerAction(".composer-shared-controls .send");
+        long sendTouchUpUptimeMs = tapComposerAction(".composer-shared-controls .send");
+        long sendToVisibleOutputLatencyMs = waitForTerminalMarkerOrCaptureWindow(sentMarker, sendTouchUpUptimeMs);
         awaitDeliveredAndCleared();
-        waitForTerminalMarkerOrCaptureWindow(sentMarker);
-        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand);
+        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
 
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
@@ -143,7 +168,9 @@ public final class JsComposerDockerJourneyTest {
                 + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
         setComposerDraft(uncertainCommand);
         armDisconnectAfterFirstAcknowledgement();
-        tapComposerAction(".composer-shared-controls .send");
+        tapComposerAction(".composer-shared-controls .send", "uncertain-session-after-attach");
+        assertTrue("uncertain-session attach must recover composer focus from a physical draft tap",
+                hasSuccessfulPhysicalDraftTap("uncertain-session-after-attach"));
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'", 30_000);
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
 
@@ -154,6 +181,7 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand));
         assertEquals("uncertain delivery must keep the exact draft after reattach", uncertainCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        emitFocusTraceIfNeeded();
     }
 
     private void awaitTrustOrConnected() throws Exception {
@@ -308,34 +336,312 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
     }
 
-    private void ensureImeVisible() throws Exception {
+    private void ensureImeVisible(String stage) throws Exception {
         boolean composerFocused = "true".equals(evalRaw(
-                "!!document.activeElement?.closest('[data-testid=prompt-composer]')"));
+                "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
         boolean composerMode = "true".equals(evalRaw(
                 "document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
-        if (!isImeVisible() || !composerFocused || !composerMode) {
+        boolean imeVisible = isImeVisible();
+        boolean mustPhysicallyTapAfterAttach = "uncertain-session-after-attach".equals(stage);
+        if (!imeVisible || !composerFocused || !composerMode || mustPhysicallyTapAfterAttach) {
             if (!composerMode && composerFocused) evalString("document.activeElement?.blur(); 'blurred'");
-            tapDomCenter("[data-testid=prompt-draft]");
-            awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 3_000);
-            awaitImeVisible(true);
+            installFocusTapEventRecorder();
+            for (int attemptIndex = 0; attemptIndex < composerFocusMaxAttempts; attemptIndex += 1) {
+                awaitWebViewVisualState();
+                boolean injectMiss = forceFirstPostAttachTapMiss
+                        && mustPhysicallyTapAfterAttach && attemptIndex == 0;
+                String targetSelector = injectMiss ? ".terminal-viewport" : "[data-testid=prompt-draft]";
+                clearFocusTapEvents(targetSelector);
+                JSONObject before = readFocusDomState();
+                boolean imeBefore = isImeVisible();
+                long attemptStarted = SystemClock.uptimeMillis();
+                tapDomCenter(targetSelector);
+                JSONObject tap = lastPhysicalTapEvidence == null
+                        ? new JSONObject() : new JSONObject(lastPhysicalTapEvidence.toString());
+                boolean physicalTargetObserved = awaitTrustedPointerDown(targetSelector, 900);
+                boolean focused = awaitPromptDraftFocus(2_500);
+                boolean imeAfter = isImeVisible();
+                JSONObject after = readFocusDomState();
+                JSONObject record = new JSONObject()
+                        .put("stage", stage)
+                        .put("attempt", attemptIndex + 1)
+                        .put("requestedSelector", targetSelector)
+                        .put("before", before)
+                        .put("nativeImeVisibleBefore", imeBefore)
+                        .put("tap", tap)
+                        .put("trustedPointerDownOnRequestedTarget", physicalTargetObserved)
+                        .put("draftFocusedAfter", focused)
+                        .put("nativeImeVisibleAfter", imeAfter)
+                        .put("after", after)
+                        .put("elapsedMs", SystemClock.uptimeMillis() - attemptStarted);
+                focusTapAttempts.put(record);
+                Log.i("PS2891Focus", "ATTEMPT|" + artifactRunId + "|" + record);
+                if (physicalTargetObserved && focused) {
+                    try {
+                        awaitImeVisible(true);
+                        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'", 5_000);
+                    } catch (Exception error) {
+                        captureFocusFailure(stage, "physical draft tap focused the textarea but IME/composer mode did not settle: "
+                                + error.getMessage());
+                        throw error;
+                    }
+                    if (isImeVisible() && "true".equals(evalRaw(
+                            "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"))) {
+                        record.put("nativeImeVisibleAfterImeWait", true)
+                                .put("afterImeWait", readFocusDomState());
+                        Log.i("PS2891Focus", "SETTLED|" + artifactRunId + "|" + record);
+                        break;
+                    }
+                }
+            }
         }
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
-        awaitImeVisible(true);
+        boolean ready = isImeVisible()
+                && "true".equals(evalRaw("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"))
+                && "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"))
+                && "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+        if (!ready) {
+            String state = readFocusDomState().toString();
+            captureFocusFailure(stage, "composer tap attempts did not leave the real draft focused with the IME open; state=" + state);
+            throw new AssertionError("Composer did not reach a focused, keyboard-open state after "
+                    + composerFocusMaxAttempts + " physical tap attempt(s); same-run focus screenshot and diagnostics were captured");
+        }
+        if (mustPhysicallyTapAfterAttach && !hasSuccessfulPhysicalDraftTap(stage)) {
+            captureFocusFailure(stage, "post-attach composer state became ready without an observed trusted physical draft tap");
+            throw new AssertionError("Post-attach composer focus was not proven by a physical draft tap");
+        }
     }
 
-    private void tapComposerAction(String selector) throws Exception {
-        ensureImeVisible();
+    private long tapComposerAction(String selector) throws Exception {
+        return tapComposerAction(selector, "composer-action:" + selector);
+    }
+
+    private long tapComposerAction(String selector, String focusStage) throws Exception {
+        ensureImeVisible(focusStage);
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
-        tapDomCenter(selector);
+        return tapDomCenter(selector);
     }
 
-    private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
+    private void installFocusTapEventRecorder() throws Exception {
+        evalString("(() => {if(window.__ps2891FocusTapRecorderInstalled)return 'installed';"
+                + "window.__ps2891FocusTapEvents=[];window.__ps2891ExpectedFocusTapSelector='';"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "for(const type of ['pointerdown','pointerup','focusin','focusout'])document.addEventListener(type,event=>{"
+                + "const target=event.target;const selector=window.__ps2891ExpectedFocusTapSelector;"
+                + "if(!selector)return;const matches=selector==='[data-testid=prompt-draft]'?"
+                + "target===document.querySelector('[data-testid=prompt-draft]'):!!target?.closest?.(selector);"
+                + "window.__ps2891FocusTapEvents.push({type,isTrusted:event.isTrusted,target:label(target),"
+                + "targetMatchesRequested:matches,clientX:event.clientX??null,clientY:event.clientY??null,"
+                + "pointerType:event.pointerType??'',timeStamp:event.timeStamp});},true);"
+                + "window.__ps2891FocusTapRecorderInstalled=true;return 'installed';})()");
+    }
+
+    private void clearFocusTapEvents(String targetSelector) throws Exception {
+        evalString("(() => {window.__ps2891FocusTapEvents.length=0;"
+                + "window.__ps2891ExpectedFocusTapSelector=" + JSONObject.quote(targetSelector)
+                + ";return 'cleared';})()");
+    }
+
+    private boolean awaitTrustedPointerDown(String targetSelector, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        String expression = "window.__ps2891FocusTapEvents?.some(event=>event.type==='pointerdown'"
+                + "&&event.isTrusted===true&&event.targetMatchesRequested===true)===true";
+        if (targetSelector.isEmpty()) return false;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if ("true".equals(evalRaw(expression))) return true;
+            Thread.sleep(30);
+        }
+        return "true".equals(evalRaw(expression));
+    }
+
+    private boolean awaitPromptDraftFocus(long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        String expression = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
+        while (SystemClock.uptimeMillis() < deadline) {
+            if ("true".equals(evalRaw(expression))) return true;
+            Thread.sleep(60);
+        }
+        return "true".equals(evalRaw(expression));
+    }
+
+    private JSONObject readFocusDomState() throws Exception {
+        return evalJson("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const active=document.activeElement;const rect=draft?.getBoundingClientRect();"
+                + "const x=rect?rect.left+rect.width/2:0,y=rect?rect.top+rect.height/2:0;"
+                + "const hit=document.elementFromPoint(x,y);const label=node=>node?{tag:node.tagName||'',id:node.id||'',"
+                + "testid:node.getAttribute?.('data-testid')||'',className:typeof node.className==='string'?node.className:''}:null;"
+                + "const bounds=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                + "const shell=document.querySelector('.app-shell');"
+                + "return JSON.stringify({uptimeHintMs:performance.now(),route:shell?.dataset.route||'',"
+                + "homeSurface:shell?.dataset.homeSurface||'',sshPhase:shell?.dataset.sshPhase||'',"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "activeElement:label(active),draftPresent:!!draft,draftConnected:!!draft?.isConnected,draftDisabled:!!draft?.disabled,"
+                + "draftFocused:active===draft,draftBounds:bounds(draft),draftCenterHit:label(hit),draftCenterHitIsDraft:hit===draft,"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0,scale:window.visualViewport?.scale??1},"
+                + "innerWidth,innerHeight,screenScroll:document.querySelector('.screen-content')?.scrollTop??null,"
+                + "documentScroll:document.scrollingElement?.scrollTop??null,"
+                + "pointerEvents:(window.__ps2891FocusTapEvents||[]).slice(-20)});})()");
+    }
+
+    private boolean hasSuccessfulPhysicalDraftTap(String stage) throws JSONException {
+        for (int i = 0; i < focusTapAttempts.length(); i += 1) {
+            JSONObject attempt = focusTapAttempts.getJSONObject(i);
+            if (stage.equals(attempt.optString("stage"))
+                    && "[data-testid=prompt-draft]".equals(attempt.optString("requestedSelector"))
+                    && attempt.optBoolean("trustedPointerDownOnRequestedTarget")
+                    && attempt.optBoolean("draftFocusedAfter")
+                    && attempt.optBoolean("nativeImeVisibleAfterImeWait")) return true;
+        }
+        return false;
+    }
+
+    private void emitFocusTraceIfNeeded() throws Exception {
+        if (focusTraceEmitted || focusTapAttempts.length() == 0 || artifactRunId == null) return;
+        JSONObject trace = new JSONObject()
+                .put("runId", artifactRunId)
+                .put("androidApi", Build.VERSION.SDK_INT)
+                .put("maxAttempts", composerFocusMaxAttempts)
+                .put("forcedFirstPostAttachMiss", forceFirstPostAttachTapMiss)
+                .put("attempts", focusTapAttempts);
+        byte[] bytes = trace.toString(2).getBytes(StandardCharsets.UTF_8);
+        scenario.onActivity(activity -> {
+            try (FileOutputStream output = new FileOutputStream(
+                    new File(activity.getFilesDir(), "composer-focus-trace.json"))) {
+                output.write(bytes);
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        emitArtifact(artifactRunId, "composer-focus-trace.json", bytes);
+        focusTraceEmitted = true;
+    }
+
+    private void captureFocusFailure(String stage, String reason) {
+        if (focusFailureCaptured || artifactRunId == null || scenario == null) return;
+        focusFailureCaptured = true;
+        Log.e("PS2891Focus", "FAILURE|" + artifactRunId + "|" + stage + "|" + reason);
+        try {
+            byte[] screenshot = captureFocusFailureScreenshot();
+            if (screenshot != null) emitArtifact(artifactRunId, "composer-focus-failure.png", screenshot);
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not capture same-frame composer focus failure screenshot", error);
+        }
+
+        try {
+            JSONObject report = new JSONObject()
+                    .put("runId", artifactRunId)
+                    .put("stage", stage)
+                    .put("reason", reason)
+                    .put("capturedAtAndroidUptimeMs", SystemClock.uptimeMillis())
+                    .put("androidApi", Build.VERSION.SDK_INT)
+                    .put("imeAndWindowState", readNativeFocusState())
+                    .put("webViewState", readFocusDomState())
+                    .put("lastPhysicalTap", lastPhysicalTapEvidence)
+                    .put("attempts", focusTapAttempts);
+            byte[] reportBytes = report.toString(2).getBytes(StandardCharsets.UTF_8);
+            scenario.onActivity(activity -> {
+                try (FileOutputStream output = new FileOutputStream(
+                        new File(activity.getFilesDir(), "composer-focus-failure.json"))) {
+                    output.write(reportBytes);
+                } catch (Exception error) {
+                    throw new RuntimeException(error);
+                }
+            });
+            emitArtifact(artifactRunId, "composer-focus-failure.json", reportBytes);
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not capture composer focus state before ActivityScenario teardown", error);
+        }
+
+        try {
+            byte[] logcat = executeShellCommand(
+                    "logcat -d -v threadtime -t 1200 -s ImeTracker InputMethodManager InputMethodManagerService ViewRootImpl PS2891Focus");
+            if (logcat.length > 0) emitArtifact(artifactRunId, "composer-focus-failure-logcat.txt", logcat);
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not capture filtered Android focus log before ActivityScenario teardown", error);
+        }
+        try {
+            emitFocusTraceIfNeeded();
+        } catch (Exception error) {
+            Log.e("PS2891Focus", "could not emit composer focus attempts before ActivityScenario teardown", error);
+        }
+    }
+
+    private byte[] captureFocusFailureScreenshot() throws Exception {
+        AtomicReference<byte[]> bytes = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            try {
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot == null) return;
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                screenshot.recycle();
+                byte[] png = encoded.toByteArray();
+                File destination = new File(activity.getFilesDir(), "composer-focus-failure.png");
+                if (compressed && png.length >= 1024) {
+                    try (FileOutputStream output = new FileOutputStream(destination)) {
+                        output.write(png);
+                    }
+                    if (destination.length() >= 1024) bytes.set(png);
+                }
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        return bytes.get();
+    }
+
+    private JSONObject readNativeFocusState() throws Exception {
+        AtomicReference<JSONObject> state = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            View focusedView = decor.findFocus();
+            WebView webView = findWebView(decor);
+            WindowInsets insets = decor.getRootWindowInsets();
+            try {
+                state.set(new JSONObject()
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("decorHasFocus", decor.hasFocus())
+                        .put("decorShown", decor.isShown())
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                        .put("focusedViewClass", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("focusedViewId", focusedView == null ? View.NO_ID : focusedView.getId())
+                        .put("focusedViewHasFocus", focusedView != null && focusedView.hasFocus())
+                        .put("webViewPresent", webView != null)
+                        .put("webViewHasFocus", webView != null && webView.hasFocus())
+                        .put("webViewWindowTokenPresent", webView != null && webView.getWindowToken() != null));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        });
+        return state.get() == null ? new JSONObject() : state.get();
+    }
+
+    private byte[] executeShellCommand(String command) throws Exception {
+        ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().executeShellCommand(command);
+        try (InputStream input = new FileInputStream(descriptor.getFileDescriptor());
+                ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            int remaining = 180_000;
+            while (remaining > 0 && (read = input.read(buffer, 0, Math.min(buffer.length, remaining))) >= 0) {
+                output.write(buffer, 0, read);
+                remaining -= read;
+            }
+            return output.toByteArray();
+        } finally {
+            descriptor.close();
+        }
+    }
+
+    private long waitForTerminalMarkerOrCaptureWindow(String marker, long sendTouchUpUptimeMs) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
         String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
         try {
-            awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
-                + "const viewport=document.querySelector('.terminal-viewport');"
+            awaitJsTrue("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const screen=viewport?.querySelector('.xterm-screen');"
                 + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
                 + "const byteRow=rows.find(node=>(node.textContent||'').includes(" + expectedBytes + "));"
@@ -345,9 +651,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const visible=(bounds,outer,inner)=>!!bounds&&!!outer&&!!inner&&bounds.top>=outer.top&&bounds.bottom<=outer.bottom"
                 + "&&bounds.left>=outer.left&&bounds.right<=outer.right&&bounds.top>=inner.top&&bounds.bottom<=inner.bottom"
                 + "&&bounds.left>=inner.left&&bounds.right<=inner.right;"
-                + "return status?.dataset.deliveryState==='success'&&status.textContent.includes('Sent to the terminal')"
-                + "&&document.querySelector('[data-testid=prompt-draft]')?.value===''"
-                + "&&visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
+                + "return visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
                 + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top+0.5"
                 + "&&document.querySelector('.screen-content')?.scrollTop===0&&document.scrollingElement?.scrollTop===0;})()",
                 5_000);
@@ -364,9 +668,11 @@ public final class JsComposerDockerJourneyTest {
                 + "documentScroll:document.scrollingElement?.scrollTop});})()");
             throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
         }
+        return SystemClock.uptimeMillis() - sendTouchUpUptimeMs;
     }
 
-    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
+    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand,
+            long sendToVisibleOutputLatencyMs) throws Exception {
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
@@ -395,7 +701,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
                 + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
-                + ",captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
+                + ",sendToVisibleOutputLatencyMs:" + sendToVisibleOutputLatencyMs
+                + ",sendToVisibleOutputTiming:'Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen',"
+                + "captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
                 + "terminalEvidenceSource:'xterm-active-buffer-after-render',visibleTerminalText:visibleText,terminalDomText:terminalDomText,"
                 + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,appTerminalMissingRefCount:window.__ps2857AppTerminalMissingRefCount??0,"
                 + "appTerminalLastChunk:window.__ps2857AppTerminalLastChunk??'',terminalWriteCount:window.__ps2857TerminalWriteCount??0,"
@@ -605,37 +913,85 @@ public final class JsComposerDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
-    private void tapDomCenter(String selector) throws Exception {
+    private long tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
                 + "const height=window.visualViewport?.height ?? innerHeight;"
-                + "return JSON.stringify({x:rect.left+rect.width/2,y:rect.top+rect.height/2,width:innerWidth,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,disabled:!!element.disabled});})()");
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "const targetHit=selector=>selector==='[data-testid=prompt-draft]'?hit===element:!!hit?.closest?.(selector);"
+                + "return JSON.stringify({selector:" + JSONObject.quote(selector)
+                + ",x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
+                + "centerHit:label(hit),centerHitMatchesTarget:targetHit(" + JSONObject.quote(selector) + "),"
+                + "activeElementBefore:{tag:document.activeElement?.tagName||'',id:document.activeElement?.id||'',"
+                + "testid:document.activeElement?.getAttribute?.('data-testid')||''},disabled:!!element.disabled});})()");
         assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
         assertTrue("WebView touch target must be enabled", !point.optBoolean("disabled"));
         assertTrue("WebView touch target must be visibly inside the Android viewport: " + point,
                 point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("height") + 0.5
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             int[] location = new int[2];
             webView.getLocationOnScreen(location);
-            float scale = webView.getWidth() / (float) point.optDouble("width");
-            screenPoint.set(new float[] {location[0] + (float) point.optDouble("x") * scale,
-                    location[1] + (float) point.optDouble("y") * scale});
+            double cssWidth = point.optDouble("width");
+            double cssHeight = point.optDouble("cssHeight");
+            float scaleX = webView.getWidth() / (float) cssWidth;
+            float scaleY = webView.getHeight() / (float) cssHeight;
+            float screenX = location[0] + (float) point.optDouble("x") * scaleX;
+            float screenY = location[1] + (float) point.optDouble("y") * scaleY;
+            screenPoint.set(new float[] {screenX, screenY});
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            View focusedView = activity.getWindow().getDecorView().findFocus();
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("cssWidth", cssWidth)
+                        .put("cssHeight", cssHeight)
+                        .put("scaleX", scaleX)
+                        .put("scaleY", scaleY)
+                        .put("webViewHasFocus", webView.hasFocus())
+                        .put("windowHasFocus", activity.getWindow().getDecorView().hasWindowFocus())
+                        .put("nativeFocusedView", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
         });
         float[] screen = screenPoint.get();
         long downTime = SystemClock.uptimeMillis();
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        assertTrue("Android touchscreen ACTION_DOWN must be injected", instrumentation.getUiAutomation().injectInputEvent(down, true));
+        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
         down.recycle();
+        assertTrue("Android touchscreen ACTION_DOWN must be injected", downInjected);
         SystemClock.sleep(60);
-        MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, screen[0], screen[1], 0);
+        long upTime = SystemClock.uptimeMillis();
+        MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, screen[0], screen[1], 0);
         up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        assertTrue("Android touchscreen ACTION_UP must be injected", instrumentation.getUiAutomation().injectInputEvent(up, true));
+        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
         up.recycle();
+        assertTrue("Android touchscreen ACTION_UP must be injected", upInjected);
+        lastPhysicalTapEvidence = new JSONObject(point.toString())
+                .put("nativeMapping", nativeMapping.get())
+                .put("screenX", screen[0])
+                .put("screenY", screen[1])
+                .put("touchDownUptimeMs", downTime)
+                .put("touchUpUptimeMs", upTime)
+                .put("downInjected", downInjected)
+                .put("upInjected", upInjected);
+        return SystemClock.uptimeMillis();
     }
 
     private void awaitJsTrue(String expression) throws Exception {
