@@ -79,6 +79,7 @@ public final class InstalledDataMigrationJourneyTest {
             + "window.__installedDataMigrationProbe = JSON.stringify({"
             + "status: read.result?.status,"
             + "hostId: snapshot?.database?.tables?.hosts?.find(row => row.id === 41)?.id,"
+            + "host: (() => {const row = snapshot?.database?.tables?.hosts?.find(item => item.id === 41); return row ? {id: row.id, name: row.name, hostname: row.hostname, port: row.port, username: row.username} : null;})(),"
             + "snippet: snapshot?.database?.tables?.snippets?.find(row => row.id === 1)?.body,"
             + "draft: snapshot?.preferences?.composer_drafts?.entries?.['host-41']?.value,"
             + "syncUnknown: snapshot?.preferences?.next_sync_selection?.entries?.sync_future_field?.value,"
@@ -99,6 +100,20 @@ public final class InstalledDataMigrationJourneyTest {
         assertEquals("unknown value retained", imported.getString("syncUnknown"));
         assertEquals(32, imported.getInt("legacyTerminalSize"));
         assertEquals("90000", imported.getString("legacyGrace"));
+
+        JSONObject legacyHost = imported.getJSONObject("host");
+        assertEquals(41, legacyHost.getInt("id"));
+        awaitJsTrue("document.querySelector('[data-testid=legacy-host-select] option[value=\"41\"]')?.textContent.trim().length > 0");
+        evalRaw("(() => {const select = document.querySelector('[data-testid=legacy-host-select]');"
+            + "select.value = '41'; select.dispatchEvent(new Event('change', {bubbles: true})); return 'selected';})()");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-host]')?.value === "
+            + JSONObject.quote(legacyHost.getString("hostname"))
+            + " && document.querySelector('[data-testid=ssh-username]')?.value === "
+            + JSONObject.quote(legacyHost.getString("username")));
+        assertEquals(String.valueOf(legacyHost.getInt("port")), evalString("document.querySelector('[data-testid=ssh-port]')?.value ?? ''"));
+        assertEquals("private key bytes must not be exposed by the host selection UI", "hidden",
+            evalString("document.querySelector('[data-testid=ssh-private-key]') ? 'visible' : 'hidden'"));
+
         JSONObject settings = evalJson("localStorage.getItem('pocketshell.js.settings.v1') || '{}'");
         assertTrue("legacy terminal size must be mapped into JS settings: " + settings + " / import=" + imported,
             settings.optInt("terminalFontSize", -1) >= 8 && settings.optInt("terminalFontSize", -1) <= 32);

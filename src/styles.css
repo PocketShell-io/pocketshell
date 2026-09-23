@@ -131,10 +131,10 @@ button { color: inherit; }
 
 .host-fields { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 10px; }
 .form-field { display: grid; min-width: 0; gap: 5px; color: var(--fg-secondary); font-size: var(--fs-100); }
-.form-field input, .form-field textarea, .create-session-row input { width: 100%; min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 10px 11px; color: var(--fg); font: 14px/1.4 var(--font-mono); outline: none; }
-.form-field input { min-height: 44px; }
+.form-field input, .form-field textarea, .form-field select, .create-session-row input { width: 100%; min-width: 0; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 10px 11px; color: var(--fg); font: 14px/1.4 var(--font-mono); outline: none; }
+.form-field input, .form-field select { min-height: 44px; }
 .form-field textarea { min-height: 100px; resize: vertical; }
-.form-field input:focus, .form-field textarea:focus, .create-session-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.form-field input:focus, .form-field textarea:focus, .form-field select:focus, .create-session-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .host-field-key { grid-column: 1 / -1; }
 .host-actions { display: flex; gap: 9px; margin-top: 12px; }
 .host-actions .action-button { flex: 1; }

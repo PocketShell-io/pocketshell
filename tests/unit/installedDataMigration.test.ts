@@ -12,6 +12,7 @@ import {
   type ImportedAsset,
   type StringStorage,
 } from '../../src/migration/installedDataMigration';
+import { makeLegacySshHostTarget } from '../../src/migration/legacySshTarget';
 import type {
   NativeInstalledDataMigrationPlugin,
   NativeLegacySnapshot,
@@ -382,6 +383,39 @@ describe('installed Android data migration', () => {
       keySha256: 'a'.repeat(64),
     }]);
     expect(JSON.stringify(importedHosts)).not.toContain('privateKeyPath');
+  });
+
+  it('connects a saved host through an opaque native key reference and keeps passphrases transient', () => {
+    const host = {
+      id: 41,
+      name: 'devbox',
+      hostname: 'dev.example.test',
+      port: 2222,
+      username: 'alex',
+      keyId: 7,
+      keyName: 'main key',
+      keyHasPassphrase: true,
+      keySha256: 'a'.repeat(64),
+    };
+
+    const target = makeLegacySshHostTarget(host, 'entered-for-this-connection');
+
+    expect(target).toEqual({
+      hostId: '41',
+      hostname: 'dev.example.test',
+      port: 2222,
+      username: 'alex',
+      credential: {
+        kind: 'legacy-private-key',
+        keyId: 7,
+        sha256: 'a'.repeat(64),
+        passphrase: 'entered-for-this-connection',
+      },
+    });
+    expect(JSON.stringify(target)).not.toContain('privateKeyPem');
+    expect(JSON.stringify(target)).not.toContain('-----BEGIN');
+    expect(makeLegacySshHostTarget({ ...host, keyHasPassphrase: false }, 'ignored'))
+      .not.toHaveProperty('credential.passphrase');
   });
 
   it('does not mark complete or write settings when an imported asset hash differs', async () => {
