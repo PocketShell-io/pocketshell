@@ -5,8 +5,10 @@
       "suite": "packaged build diagnostics",
       "tests": [
         "imports and executes the real formatter from the pinned core source",
-        "accepts a manifest only when its pinned core and exact bundle bytes match",
+        "imports theme and font policy from the pinned shared UI source",
+        "accepts a manifest only when both pinned source revisions and exact bundle bytes match",
         "fails closed when the recorded core source revision differs",
+        "fails closed when the recorded shared UI source revision differs",
         "fails closed when the packaged asset bytes differ from the manifest",
         "fails closed when a bundle asset is missing"
       ]

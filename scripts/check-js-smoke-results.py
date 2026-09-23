@@ -28,7 +28,7 @@ DEFAULT_RESULTS_DIR = Path(
 REQUIRED_CLASS = "com.pocketshell.app.smoke.JsShellPackagedSmokeTest"
 REQUIRED_METHODS = frozenset(
     {
-        "launchShowsVerifiedCoreAndAssetIdentity",
+        "launchShowsVerifiedSourcesAndAssetIdentity",
         "settingsAndAndroidBackReturnHome",
         "composerInputStaysAboveImeWithinSafeArea",
     }

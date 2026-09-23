@@ -58,19 +58,23 @@ public final class JsShellPackagedSmokeTest {
     }
 
     @Test
-    public void launchShowsVerifiedCoreAndAssetIdentity() throws Exception {
+    public void launchShowsVerifiedSourcesAndAssetIdentity() throws Exception {
         JSONObject manifest = packagedManifest();
-        String expectedRevision = manifest.getString("coreSourceRevision");
+        String expectedCoreRevision = manifest.getString("coreSourceRevision");
+        String expectedUiRevision = manifest.getString("uiSourceRevision");
         String expectedAssetHash = manifest.getString("bundleAssetHash");
 
-        assertTrue("manifest core revision must be a full git revision", expectedRevision.matches("[a-f0-9]{40}"));
+        assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
+        assertTrue("manifest shared UI revision must be a full git revision", expectedUiRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
-        assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedRevision.substring(0, 12)));
+        assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
+        assertTrue("the visible build strip must identify the pinned shared UI", visibleIdentity.contains(expectedUiRevision.substring(0, 12)));
         assertTrue("the visible build strip must identify the packaged assets", visibleIdentity.contains(expectedAssetHash.substring(0, 12)));
-        assertEquals(expectedRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
+        assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
+        assertEquals(expectedUiRevision, evalString("document.querySelector('[data-testid=ui-revision]')?.textContent.trim()"));
         assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=bundle-asset-hash]')?.textContent.trim()"));
         JSONObject statusBounds = evalJson("(() => {const node = document.querySelector('[data-testid=build-status]');"
                 + "const rect = node.getBoundingClientRect();"
