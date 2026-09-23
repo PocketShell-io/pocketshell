@@ -88,12 +88,16 @@ done
 [[ -x "$ADB" ]] || fail "adb is not executable: $ADB"
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-results.py" ]] || fail 'lifecycle result verifier is missing'
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" ]] || fail 'independent host evidence verifier is missing'
+[[ -x "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" ]] || fail 'Docker SSH socket watcher is missing'
+"$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" --self-test
+"$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
 [[ -x "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" ]] || fail 'lifecycle artifact extractor is missing'
 
   "$ROOT_DIR/scripts/check-js-lifecycle-results.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/js-lifecycle-cleanup.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-lifecycle.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-lifecycle.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -148,6 +152,71 @@ PY
 ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 printf 'Running packaged JS lifecycle journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
+
+record_host_timebase() {
+  local phase="$1"
+  python3 - "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/host-time-offset.json" "$phase" <<'PY'
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+adb, serial, output_name, phase = sys.argv[1:]
+before = time.time_ns() // 1_000_000
+device = subprocess.run(
+    [adb, "-s", serial, "shell", "date", "+%s%3N"], check=True, text=True,
+    capture_output=True, timeout=10,
+)
+after = time.time_ns() // 1_000_000
+device_epoch = int(device.stdout.strip())
+entry = {
+    "hostBeforeEpochMs": before,
+    "hostAfterEpochMs": after,
+    "deviceEpochMs": device_epoch,
+    "offsetMs": round((before + after) / 2) - device_epoch,
+}
+path = Path(output_name)
+value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"schema": 1}
+if value.get("schema") != 1:
+    raise SystemExit("host/device timebase has an unsupported schema")
+value[phase] = entry
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(f"Recorded host/device epoch offset ({phase}): {entry['offsetMs']} ms")
+PY
+}
+
+HOST_SOCKET_WATCHER_PID=""
+LIVE_ASSET_LOGCAT_PID=""
+stop_host_socket_watcher() {
+  if [[ -n "$HOST_SOCKET_WATCHER_PID" ]]; then
+    kill "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || true
+    wait "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || true
+    HOST_SOCKET_WATCHER_PID=""
+  fi
+  if [[ -n "$LIVE_ASSET_LOGCAT_PID" ]]; then
+    kill "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || true
+    wait "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || true
+    LIVE_ASSET_LOGCAT_PID=""
+  fi
+}
+pocketshell_install_js_lifecycle_cleanup_trap
+record_host_timebase before || fail 'could not capture the host/device clock offset before the packaged journey'
+LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/lifecycle-assets-live-logcat.txt"
+: > "$LIVE_ASSET_LOGCAT" || fail 'could not create the live artifact logcat file'
+[[ "$LIVE_ASSET_LOGCAT" != "$RESULTS_DIR/"* ]] || fail 'live artifact logcat must survive Gradle result cleanup'
+printf 'Capturing artifact logcat live outside Gradle cleanup: %s\n' "$LIVE_ASSET_LOGCAT"
+"$ADB" -s "$ANDROID_SERIAL" logcat -c
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
+  > "$LIVE_ASSET_LOGCAT" 2>&1 &
+LIVE_ASSET_LOGCAT_PID=$!
+sleep 0.2
+kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the live artifact logcat collector'
+python3 "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" \
+  --container "$CONTAINER" --output "$ARTIFACTS_DIR/host-ssh-connections.jsonl" &
+HOST_SOCKET_WATCHER_PID=$!
+sleep 1
+kill -0 "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || fail 'Docker SSH socket watcher exited before the packaged journey'
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
@@ -156,9 +225,12 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
-  :
+  record_host_timebase after || fail 'could not capture the host/device clock offset after the packaged journey'
+  stop_host_socket_watcher
 else
   test_exit_code=$?
+  record_host_timebase after || true
+  stop_host_socket_watcher
   printf 'Packaged lifecycle journey failed; collecting emulator and fixture evidence.\n' >&2
   mkdir -p "$ARTIFACTS_DIR/failure-diagnostics"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
@@ -175,10 +247,12 @@ cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
   > "$ARTIFACTS_DIR/lifecycle-logcat.txt"
 "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
-  --run-id "$RUN_ID" --logcat "$ARTIFACTS_DIR/lifecycle-logcat.txt" \
+  --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" \
   --output-dir "$ARTIFACTS_DIR/$RUN_ID"
 docker inspect "$CONTAINER" > "$ARTIFACTS_DIR/docker-agents-inspect.json"
 docker logs --timestamps "$CONTAINER" > "$ARTIFACTS_DIR/docker-agents.log" 2>&1 || true
 "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" \
-  --run-id "$RUN_ID" --container "$CONTAINER" --artifact-directory "$ARTIFACTS_DIR/$RUN_ID"
+  --run-id "$RUN_ID" --container "$CONTAINER" --artifact-directory "$ARTIFACTS_DIR/$RUN_ID" \
+  --host-connections "$ARTIFACTS_DIR/host-ssh-connections.jsonl" \
+  --timebase "$ARTIFACTS_DIR/host-time-offset.json"
 printf 'PASS: complete packaged lifecycle and A→B→C→A evidence is in %s\n' "$ARTIFACTS_DIR"
