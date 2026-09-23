@@ -38,7 +38,8 @@ MAX_NATIVE_CLOSE_COMPLETION_LAG_MS = 2_000
 MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS = 8_000
 MIN_HOST_ZERO_SOCKET_STABILITY_MS = 1_000
 MIN_SCREENSHOT_OCR_CONFIDENCE = 75.0
-MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 64
+MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 4_096
+SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12
 ANSI_ESCAPE_RE = re.compile(
     r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])"
 )
@@ -85,7 +86,17 @@ def _canonical_ocr_token(text: str) -> str:
 
 def _screenshot_marker_accent_rgb(marker: str) -> str:
     digest = hashlib.sha256(marker.encode("utf-8")).digest()
-    return ",".join(str(128 + (component & 0x7F)) for component in digest[:3])
+    rgb = [24 + (component & 0x3F) for component in digest[2:5]]
+    rgb[digest[0] % 3] = 240 + (digest[1] & 0x0F)
+    return ",".join(str(component) for component in rgb)
+
+
+def _pixel_matches_marker_accent(pixel: tuple[int, int, int], marker: str) -> bool:
+    expected = tuple(int(component) for component in _screenshot_marker_accent_rgb(marker).split(","))
+    return all(
+        abs(actual - target) <= SCREENSHOT_MARKER_ACCENT_TOLERANCE
+        for actual, target in zip(pixel, expected)
+    )
 
 
 def has_confident_screenshot_marker(
@@ -137,11 +148,13 @@ def has_confident_screenshot_marker(
 
 def validate_screenshot_marker_evidence(
     words: list[dict[str, Any]], marker: str, marker_bounds: tuple[int, int, int, int],
-    accent_color: Any, accent_pixels: Any,
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
 ) -> dict[str, Any]:
     expected_accent = _screenshot_marker_accent_rgb(marker)
     if accent_color != expected_accent:
         raise EvidenceFailure("screenshot lacks the expected terminal-output accent color")
+    if accent_tolerance != SCREENSHOT_MARKER_ACCENT_TOLERANCE:
+        raise EvidenceFailure("screenshot marker accent tolerance is missing or inconsistent")
     if not isinstance(accent_pixels, int) or accent_pixels < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
         raise EvidenceFailure("screenshot lacks enough current marker-row accent pixels")
     found, match = has_confident_screenshot_marker(words, marker, marker_bounds)
@@ -158,6 +171,7 @@ def validate_screenshot_marker_evidence(
         "recognizedBounds": [match["left"], match["top"], match["left"] + match["width"], match["top"] + match["height"]],
         "accentColor": accent_color,
         "accentPixels": accent_pixels,
+        "accentTolerance": accent_tolerance,
     }
 
 
@@ -181,7 +195,7 @@ def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) 
 
 def _screenshot_marker_ocr(
     path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
-    accent_color: Any, accent_pixels: Any,
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
 ) -> dict[str, Any]:
     if shutil.which("tesseract") is None:
         raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
@@ -215,7 +229,7 @@ def _screenshot_marker_ocr(
         raise EvidenceFailure(f"Tesseract returned malformed TSV for {path}: {error}") from error
     try:
         return validate_screenshot_marker_evidence(
-            words, marker, marker_bounds, accent_color, accent_pixels
+            words, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance
         )
     except EvidenceFailure as error:
         recognized = [
@@ -418,17 +432,32 @@ def _self_test() -> int:
         print(f"ok [screenshot {index}/{len(screenshot_probes)}] {label}")
 
     expected_accent = _screenshot_marker_accent_rgb(screenshot_marker)
+    expected_accent_rgb = tuple(int(channel) for channel in expected_accent.split(","))
+    valid_marker_crop = [expected_accent_rgb] * MIN_SCREENSHOT_MARKER_ACCENT_PIXELS
+    stale_light_text_crop = [(224, 224, 232)] * (MIN_SCREENSHOT_MARKER_ACCENT_PIXELS * 4)
+    if not (max(expected_accent_rgb) >= 240 and min(expected_accent_rgb) <= 87):
+        print("FAIL: screenshot marker accent palette is not high-chroma", file=sys.stderr)
+        return 1
+    if sum(_pixel_matches_marker_accent(pixel, screenshot_marker) for pixel in valid_marker_crop) < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+        print("FAIL: valid marker crop did not meet the screenshot accent pixel minimum", file=sys.stderr)
+        return 1
+    if sum(_pixel_matches_marker_accent(pixel, screenshot_marker) for pixel in stale_light_text_crop) >= MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+        print("FAIL: stale light session-card text met the screenshot accent pixel minimum", file=sys.stderr)
+        return 1
+    print("ok [accent pixels] valid marker crop passes; stale light session-list crop remains below threshold")
+
     combined_screenshot_probes = [
-        ("accent plus exact standalone marker accepted", screenshot_probes[0][1], expected_accent, 96, True),
-        ("blank accent rectangle rejected without OCR text", [], expected_accent, 96, False),
-        ("stale session-list OCR rejected despite accent pixels", screenshot_probes[1][1], expected_accent, 96, False),
-        ("exact marker OCR rejected without enough accent pixels", screenshot_probes[0][1], expected_accent, 12, False),
-        ("split printf echo rejected despite accent pixels", screenshot_probes[4][1], expected_accent, 96, False),
+        ("accent plus exact standalone marker accepted", screenshot_probes[0][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, True),
+        ("blank accent rectangle rejected without OCR text", [], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
+        ("stale session-list OCR rejected despite accent pixels", screenshot_probes[1][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
+        ("exact marker OCR rejected without enough accent pixels", screenshot_probes[0][1], expected_accent, 12, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
+        ("split printf echo rejected despite accent pixels", screenshot_probes[4][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
+        ("wide legacy accent tolerance rejected", screenshot_probes[0][1], expected_accent, 5_000, 24, False),
     ]
-    for index, (label, words, accent_color, accent_pixels, expected) in enumerate(combined_screenshot_probes, 1):
+    for index, (label, words, accent_color, accent_pixels, accent_tolerance, expected) in enumerate(combined_screenshot_probes, 1):
         try:
             validate_screenshot_marker_evidence(
-                words, screenshot_marker, marker_bounds, accent_color, accent_pixels
+                words, screenshot_marker, marker_bounds, accent_color, accent_pixels, accent_tolerance
             )
             actual = True
         except EvidenceFailure:
@@ -1344,6 +1373,7 @@ def _validate_checkpoint(
         ocr_evidence = _screenshot_marker_ocr(
             png_path, marker, marker_bounds,
             pixels.get("markerAccentColor"), pixels.get("markerAccentPixels"),
+            pixels.get("markerAccentTolerance"),
         )
     except EvidenceFailure as error:
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: {error}") from error

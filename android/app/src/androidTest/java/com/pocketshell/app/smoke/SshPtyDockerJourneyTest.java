@@ -47,7 +47,8 @@ public final class SshPtyDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long BACKGROUND_GRACE_MILLIS = 30_000;
     private static final long SCREENSHOT_MARKER_WAIT_MILLIS = 8_000;
-    private static final int SCREENSHOT_MARKER_ACCENT_MIN_PIXELS = 64;
+    private static final int SCREENSHOT_MARKER_ACCENT_MIN_PIXELS = 4_096;
+    private static final int SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12;
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
@@ -659,7 +660,7 @@ public final class SshPtyDockerJourneyTest {
         assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
                 && crop[2] <= full.getWidth() && crop[3] <= full.getHeight() && crop[2] > crop[0] && crop[3] > crop[1]);
         int markerAccentPixels = countPixelsNearColor(full, markerLeft, markerTop, markerRight, markerBottom,
-                markerAccent, 24);
+                markerAccent, SCREENSHOT_MARKER_ACCENT_TOLERANCE);
         assertTrue("captured marker row must contain the ANSI accent painted by current terminal output",
                 markerAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS);
         int sampleX = crop[2] - Math.max(2, Math.round(4 * (float) rect.optDouble("devicePixelRatio")));
@@ -675,6 +676,7 @@ public final class SshPtyDockerJourneyTest {
                 .put("cropHeight", crop[3] - crop[1])
                 .put("markerAccentColor", colorString(markerAccent))
                 .put("markerAccentPixels", markerAccentPixels)
+                .put("markerAccentTolerance", SCREENSHOT_MARKER_ACCENT_TOLERANCE)
                 .put("backgroundRgb", colorString(backgroundPixel));
         Bitmap viewport = Bitmap.createBitmap(full, crop[0], crop[1], crop[2] - crop[0], crop[3] - crop[1]);
         full.recycle();
@@ -705,7 +707,7 @@ public final class SshPtyDockerJourneyTest {
             if (left >= 0 && top >= 0 && right <= frame.getWidth() && bottom <= frame.getHeight()
                     && right > left && bottom > top) {
                 lastAccentPixels = countPixelsNearColor(frame, left, top, right, bottom,
-                        expectedAccent, 24);
+                        expectedAccent, SCREENSHOT_MARKER_ACCENT_TOLERANCE);
                 if (lastAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS) return frame;
             }
             frame.recycle();
@@ -749,7 +751,14 @@ public final class SshPtyDockerJourneyTest {
 
     private int markerAccentColor(String marker) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(marker.getBytes(StandardCharsets.UTF_8));
-        return Color.rgb(128 + (digest[0] & 0x7f), 128 + (digest[1] & 0x7f), 128 + (digest[2] & 0x7f));
+        int[] rgb = new int[] {
+                24 + (digest[2] & 0x3f),
+                24 + (digest[3] & 0x3f),
+                24 + (digest[4] & 0x3f),
+        };
+        int strongChannel = (digest[0] & 0xff) % 3;
+        rgb[strongChannel] = 240 + (digest[1] & 0x0f);
+        return Color.rgb(rgb[0], rgb[1], rgb[2]);
     }
 
     private int[] parseRgb(String color) {
