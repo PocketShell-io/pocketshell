@@ -70,6 +70,11 @@ jobs:
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
 
+      - name: Check JS-first connected-test dispatch and lock contracts
+        run: |
+          tests/scripts/connected-test-js-runner-test.sh
+          tests/scripts/connected-test-root-guard-test.sh
+
       - name: Build Android debug APK
         run: pnpm build:android:debug
 
