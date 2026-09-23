@@ -2,6 +2,7 @@ import { defineStore } from 'pinia';
 
 export const SHELL_ROUTES = [
   'home',
+  'files',
   'settings',
   'settings-terminal',
   'settings-voice',

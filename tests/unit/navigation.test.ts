@@ -49,6 +49,16 @@ describe('mobile route stack', () => {
     expect(navigation.selectedReportId).toBeNull();
   });
 
+  it('opens the SSH file workspace as a back-navigable full-screen destination', () => {
+    const navigation = useNavigationStore();
+
+    navigation.open('files');
+    expect(navigation.route).toBe('files');
+    expect(navigation.stack).toEqual(['home', 'files']);
+    navigation.back();
+    expect(navigation.route).toBe('home');
+  });
+
   it('does not push the current destination a second time', () => {
     const navigation = useNavigationStore();
     navigation.openSettings();

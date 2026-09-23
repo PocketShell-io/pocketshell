@@ -103,6 +103,7 @@
         "keeps nested settings and support routes reachable through Back",
         "retains a selected report ID and resets the stack when returning home",
         "clears the selected event when opening the whole-log export preview",
+        "opens the SSH file workspace as a back-navigable full-screen destination",
         "does not push the current destination a second time"
       ]
     },
