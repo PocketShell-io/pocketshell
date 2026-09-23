@@ -2,6 +2,7 @@ package com.pocketshell.app;
 
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Base64;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -13,6 +14,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -32,6 +34,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -261,21 +264,42 @@ public final class SshCapabilityPlugin extends Plugin {
             long deadline = requiredLong(options, "deadlineEpochMs");
             synchronized (connection.graceLock) {
                 if (connection.graceRunnable != null) mainHandler.removeCallbacks(connection.graceRunnable);
+                long scheduledAtEpochMs = System.currentTimeMillis();
+                long scheduledAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
+                long delayMs = Math.max(0L, deadline - scheduledAtEpochMs);
+                connection.graceScheduledAtEpochMs = scheduledAtEpochMs;
+                connection.graceScheduledAtElapsedRealtimeMs = scheduledAtElapsedRealtimeMs;
+                connection.graceDeadlineElapsedRealtimeMs = scheduledAtElapsedRealtimeMs + delayMs;
+                connection.graceExpiryDispatchedAtEpochMs = null;
+                connection.graceExpiryDispatchedAtElapsedRealtimeMs = null;
+                connection.graceCleanupExecutorRejectErrorClass = "";
                 Runnable[] holder = new Runnable[1];
                 Runnable closeAtDeadline = () -> {
                     synchronized (connection.graceLock) {
                         if (connection.graceRunnable != holder[0]) return;
                         connection.graceRunnable = null;
-                        connection.graceDeadlineEpochMs = null;
+                        connection.graceExpiryDispatchedAtEpochMs = System.currentTimeMillis();
+                        connection.graceExpiryDispatchedAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
                     }
-                    closeConnection(connection, "grace-expired", true);
+                    Runnable cleanup = () -> closeConnection(connection, "grace-expired", true);
+                    try {
+                        CLEANUP_EXECUTOR.execute(cleanup);
+                    } catch (RejectedExecutionException rejected) {
+                        connection.graceCleanupExecutorRejectErrorClass = rejected.getClass().getSimpleName();
+                        Thread fallback = new Thread(cleanup, "pocketshell-ssh-cleanup-fallback");
+                        fallback.setDaemon(true);
+                        fallback.start();
+                    }
                 };
                 holder[0] = closeAtDeadline;
                 connection.graceRunnable = closeAtDeadline;
                 connection.graceDeadlineEpochMs = deadline;
-                if (!mainHandler.postDelayed(closeAtDeadline, Math.max(0L, deadline - System.currentTimeMillis()))) {
+                if (!mainHandler.postDelayed(closeAtDeadline, delayMs)) {
                     connection.graceRunnable = null;
                     connection.graceDeadlineEpochMs = null;
+                    connection.graceScheduledAtEpochMs = null;
+                    connection.graceScheduledAtElapsedRealtimeMs = null;
+                    connection.graceDeadlineElapsedRealtimeMs = null;
                     throw new PluginFailure("SCHEDULE_FAILED", "Could not schedule SSH grace closure.");
                 }
             }
@@ -296,6 +320,9 @@ public final class SshCapabilityPlugin extends Plugin {
                         mainHandler.removeCallbacks(connection.graceRunnable);
                         connection.graceRunnable = null;
                         connection.graceDeadlineEpochMs = null;
+                        connection.graceScheduledAtEpochMs = null;
+                        connection.graceScheduledAtElapsedRealtimeMs = null;
+                        connection.graceDeadlineElapsedRealtimeMs = null;
                     }
                 }
             }
@@ -929,21 +956,63 @@ public final class SshCapabilityPlugin extends Plugin {
 
     private void closeConnection(SshConnection connection, String reason, boolean notify) {
         if (!connection.intentionalClose.compareAndSet(false, true)) return;
+        long closedAtEpochMs = System.currentTimeMillis();
+        long closedAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
+        Long graceScheduledAtEpochMs = connection.graceScheduledAtEpochMs;
+        Long graceScheduledAtElapsedRealtimeMs = connection.graceScheduledAtElapsedRealtimeMs;
+        Long graceDeadlineEpochMs = connection.graceDeadlineEpochMs;
+        Long graceDeadlineElapsedRealtimeMs = connection.graceDeadlineElapsedRealtimeMs;
+        Long graceExpiryDispatchedAtEpochMs = connection.graceExpiryDispatchedAtEpochMs;
+        Long graceExpiryDispatchedAtElapsedRealtimeMs = connection.graceExpiryDispatchedAtElapsedRealtimeMs;
+        String graceCleanupExecutorRejectErrorClass = connection.graceCleanupExecutorRejectErrorClass;
         synchronized (connection.graceLock) {
             if (connection.graceRunnable != null) mainHandler.removeCallbacks(connection.graceRunnable);
             connection.graceRunnable = null;
             connection.graceDeadlineEpochMs = null;
+            connection.graceScheduledAtEpochMs = null;
+            connection.graceScheduledAtElapsedRealtimeMs = null;
+            connection.graceDeadlineElapsedRealtimeMs = null;
         }
         connection.state = "closed";
         closeChildren(connection);
         connections.remove(connection.connectionId, connection);
-        closeClient(connection.client);
+        ClientCloseResult closeResult = closeClient(connection.client);
+        long transportCloseCompletedAtEpochMs = System.currentTimeMillis();
+        long transportCloseCompletedAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
         if (notify) {
             JSObject event = new JSObject()
                 .put("connectionId", connection.connectionId)
                 .put("generationId", connection.generationId)
                 .put("state", "closed")
                 .put("reason", reason);
+            if ("grace-expired".equals(reason)) {
+                event.put("nativeClosedAtEpochMs", closedAtEpochMs)
+                    .put("nativeClosedAtElapsedRealtimeMs", closedAtElapsedRealtimeMs)
+                    .put("nativeTransportCloseCompletedAtEpochMs", transportCloseCompletedAtEpochMs)
+                    .put("nativeTransportCloseCompletedAtElapsedRealtimeMs", transportCloseCompletedAtElapsedRealtimeMs)
+                    .put("nativeSocketClosedAfterClose", closeResult.socketClosed)
+                    .put("nativeClientSocketDetachedAfterClose", closeResult.clientSocketDetached)
+                    .put("nativeClientReportedConnectedAfterClose", closeResult.clientReportedConnected)
+                    .put("nativeSshjDisconnectErrorClass", closeResult.disconnectErrorClass)
+                    .put("nativeSshjClientCloseErrorClass", closeResult.clientCloseErrorClass)
+                    .put("nativeRawSocketCloseFallbackUsed", closeResult.rawSocketCloseFallbackUsed)
+                    .put("nativeRawSocketCloseErrorClass", closeResult.rawSocketCloseErrorClass)
+                    .put("nativeCleanupExecutorRejectErrorClass", graceCleanupExecutorRejectErrorClass);
+                if (graceExpiryDispatchedAtEpochMs != null) {
+                    event.put("nativeGraceExpiryDispatchedAtEpochMs", graceExpiryDispatchedAtEpochMs);
+                }
+                if (graceExpiryDispatchedAtElapsedRealtimeMs != null) {
+                    event.put("nativeGraceExpiryDispatchedAtElapsedRealtimeMs", graceExpiryDispatchedAtElapsedRealtimeMs);
+                }
+                if (graceScheduledAtEpochMs != null) event.put("nativeGraceScheduledAtEpochMs", graceScheduledAtEpochMs);
+                if (graceScheduledAtElapsedRealtimeMs != null) {
+                    event.put("nativeGraceScheduledAtElapsedRealtimeMs", graceScheduledAtElapsedRealtimeMs);
+                }
+                if (graceDeadlineEpochMs != null) event.put("nativeGraceDeadlineEpochMs", graceDeadlineEpochMs);
+                if (graceDeadlineElapsedRealtimeMs != null) {
+                    event.put("nativeGraceDeadlineElapsedRealtimeMs", graceDeadlineElapsedRealtimeMs);
+                }
+            }
             mainHandler.post(() -> notifyListeners("connectionState", event));
         }
     }
@@ -1059,14 +1128,96 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static void closeClient(SSHClient client) {
+    private static ClientCloseResult closeClient(SSHClient client) {
+        Socket socket = client.getSocket();
         try {
             client.setTimeout(1000);
-            client.disconnect();
         } catch (Exception ignored) {}
+        ClientCloseAttempt closeAttempt = closeSshjTransportAndSocket(socket, client::disconnect, client::close);
+        boolean clientSocketDetached = client.getSocket() == null;
+        boolean clientReportedConnected = client.isConnected();
+        return new ClientCloseResult(closeAttempt, clientSocketDetached, clientReportedConnected);
+    }
+
+    static ClientCloseAttempt closeSshjTransportAndSocket(Socket socket, CloseOperation disconnect, CloseOperation close) {
+        String disconnectErrorClass = "";
+        String clientCloseErrorClass = "";
+        String rawSocketCloseErrorClass = "";
+        boolean rawSocketCloseFallbackUsed = false;
         try {
-            client.close();
-        } catch (Exception ignored) {}
+            disconnect.run();
+        } catch (Exception ignored) {
+            disconnectErrorClass = ignored.getClass().getSimpleName();
+        }
+        try {
+            close.run();
+        } catch (Exception ignored) {
+            clientCloseErrorClass = ignored.getClass().getSimpleName();
+        } finally {
+            if (socket != null && !socket.isClosed()) {
+                rawSocketCloseFallbackUsed = true;
+                try {
+                    socket.close();
+                } catch (Exception ignored) {
+                    rawSocketCloseErrorClass = ignored.getClass().getSimpleName();
+                }
+            }
+        }
+        boolean socketClosed = socket != null && socket.isClosed();
+        return new ClientCloseAttempt(
+            socketClosed,
+            disconnectErrorClass,
+            clientCloseErrorClass,
+            rawSocketCloseFallbackUsed,
+            rawSocketCloseErrorClass
+        );
+    }
+
+    @FunctionalInterface
+    interface CloseOperation {
+        void run() throws Exception;
+    }
+
+    static final class ClientCloseAttempt {
+        final boolean socketClosed;
+        final String disconnectErrorClass;
+        final String clientCloseErrorClass;
+        final boolean rawSocketCloseFallbackUsed;
+        final String rawSocketCloseErrorClass;
+
+        ClientCloseAttempt(
+            boolean socketClosed,
+            String disconnectErrorClass,
+            String clientCloseErrorClass,
+            boolean rawSocketCloseFallbackUsed,
+            String rawSocketCloseErrorClass
+        ) {
+            this.socketClosed = socketClosed;
+            this.disconnectErrorClass = disconnectErrorClass;
+            this.clientCloseErrorClass = clientCloseErrorClass;
+            this.rawSocketCloseFallbackUsed = rawSocketCloseFallbackUsed;
+            this.rawSocketCloseErrorClass = rawSocketCloseErrorClass;
+        }
+    }
+
+    private static final class ClientCloseResult {
+        final boolean socketClosed;
+        final boolean clientSocketDetached;
+        final boolean clientReportedConnected;
+        final String disconnectErrorClass;
+        final String clientCloseErrorClass;
+        final boolean rawSocketCloseFallbackUsed;
+        final String rawSocketCloseErrorClass;
+
+        ClientCloseResult(ClientCloseAttempt attempt, boolean clientSocketDetached, boolean clientReportedConnected) {
+            this.socketClosed = attempt.socketClosed;
+            this.clientSocketDetached = clientSocketDetached;
+            this.clientReportedConnected = clientReportedConnected;
+            this.disconnectErrorClass = attempt.disconnectErrorClass;
+            this.clientCloseErrorClass = attempt.clientCloseErrorClass;
+            this.rawSocketCloseFallbackUsed = attempt.rawSocketCloseFallbackUsed;
+            this.rawSocketCloseErrorClass = attempt.rawSocketCloseErrorClass;
+        }
     }
 
     private static void closeQuietly(AutoCloseable value) {
@@ -1222,6 +1373,12 @@ public final class SshCapabilityPlugin extends Plugin {
         volatile SFTPClient sftpClient;
         volatile Runnable graceRunnable;
         volatile Long graceDeadlineEpochMs;
+        volatile Long graceScheduledAtEpochMs;
+        volatile Long graceScheduledAtElapsedRealtimeMs;
+        volatile Long graceDeadlineElapsedRealtimeMs;
+        volatile Long graceExpiryDispatchedAtEpochMs;
+        volatile Long graceExpiryDispatchedAtElapsedRealtimeMs;
+        volatile String graceCleanupExecutorRejectErrorClass = "";
 
         SshConnection(String connectionId, String generationId, String hostId, String connectRequestId, SSHClient client) {
             this.connectionId = connectionId;
