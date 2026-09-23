@@ -451,6 +451,10 @@ def _self_test() -> int:
     ):
         print("FAIL: nonzero device-to-host offset was mixed into lifecycle elapsed time", file=sys.stderr)
         return 1
+    rendered_timeline = render_clock_adjusted_timeline_report(adjusted_timeline)
+    if "+5,000 ms after deadline" not in rendered_timeline:
+        print("FAIL: generated lifecycle report did not use the clock-adjusted interval", file=sys.stderr)
+        return 1
     print("ok [clock] nonzero device-to-host offset keeps deadline and host disappearance in one clock domain")
 
     def mutate_count(sampled_at: int | tuple[int, ...], count: int) -> list[dict[str, Any]]:
@@ -892,6 +896,30 @@ def validate_host_transport_timeline(
     }
 
 
+def render_clock_adjusted_timeline_report(timeline: dict[str, Any]) -> str:
+    adjusted = timeline.get("clockAdjustedTimeline")
+    if not isinstance(adjusted, dict):
+        raise EvidenceFailure("cannot render the lifecycle report without the clock-adjusted host timeline")
+    required = (
+        "deviceToHostEpochOffsetMs", "nativeGraceDeadlineHostEpochMs",
+        "nativeTransportCloseCompletedHostEpochMs", "hostServerSocketDisappearedAtEpochMs",
+        "nativeDeadlineToNativeCloseCompleteMs", "nativeDeadlineToHostSocketDisappearedMs",
+        "nativeCloseCompleteToHostSocketDisappearedMs",
+    )
+    if any(not isinstance(adjusted.get(key), int) for key in required):
+        raise EvidenceFailure("clock-adjusted host timeline report is missing integer timestamps or intervals")
+    return "\n".join((
+        "Clock domain: host epoch throughout; device-to-host offset applied: "
+        f"+{adjusted['deviceToHostEpochOffsetMs']:,} ms.",
+        f"- Native grace deadline: {adjusted['nativeGraceDeadlineHostEpochMs']:,} ms.",
+        f"- Native transport close complete: {adjusted['nativeTransportCloseCompletedHostEpochMs']:,} ms "
+        f"(+{adjusted['nativeDeadlineToNativeCloseCompleteMs']:,} ms after deadline).",
+        f"- Docker ESTABLISHED socket disappeared: {adjusted['hostServerSocketDisappearedAtEpochMs']:,} ms "
+        f"(+{adjusted['nativeDeadlineToHostSocketDisappearedMs']:,} ms after deadline, "
+        f"+{adjusted['nativeCloseCompleteToHostSocketDisappearedMs']:,} ms after native close).",
+    )) + "\n"
+
+
 def _read_socket_samples(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -1187,6 +1215,9 @@ def validate(
         "hostDeviceTimebaseFile": copied_timebase.name,
         "result": "PASS",
     }
+    timeline_report_path = artifact_directory / "clock-adjusted-timeline.md"
+    timeline_report_path.write_text(render_clock_adjusted_timeline_report(socket_timeline), encoding="utf-8")
+    oracle["clockAdjustedTimelineReportFile"] = timeline_report_path.name
     oracle_path = artifact_directory / "host-oracle-summary.json"
     oracle_path.write_text(json.dumps(oracle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return oracle
@@ -1275,7 +1306,11 @@ def main() -> int:
     except EvidenceFailure as error:
         print(f"FAIL: lifecycle host evidence: {error}", file=sys.stderr)
         return 1
-    print(f"PASS: independent aplexer oracle matched {len(oracle['matchedRows'])} live host rows and all terminal markers")
+    print(
+        f"PASS: independent aplexer oracle matched {len(oracle['matchedRows'])} live host rows, "
+        f"all terminal markers, and {len(oracle['screenshotMarkerOcr'])} screenshot OCR markers"
+    )
+    print(oracle["hostSocketTimeline"]["clockAdjustedTimeline"]["summary"])
     return 0
 
 
