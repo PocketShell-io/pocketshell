@@ -1,6 +1,18 @@
 {
   "schema": 1,
   "testFiles": {
+    "tests/unit/mobileHotkeys.test.ts": {
+      "suite": "mobile fast-key behavior",
+      "tests": [
+        "keeps the controls inert off-live and resumes only after an explicit live state",
+        "emits core catalog bytes and keeps the palette open until toggled or closed",
+        "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
+        "closes and cancels a pending hold on live-session loss, then starts on the main page again",
+        "drags only from the card surface and clamps the floating palette to the terminal slot",
+        "provides a direct close action for the app-level Back route",
+        "wires the mounted fast-key controls to core bytes and live-state transitions"
+      ]
+    },
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
