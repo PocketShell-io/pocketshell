@@ -4,17 +4,18 @@ This is how PocketShell ships a version.
 
 ## JS-first 0.6.0 release blocker
 
-The rewrite foundation workflow is not the 0.6.0 release gate. It checks the
-JS unit suite, debug APK identity and derived version, three packaged shell
-smoke tests, and the existing Docker fixture. The 24 replacement feature
-journey classes are registered in `scripts/js-journey-class-manifest.json`;
+The JS rewrite branch has a foundation workflow for the JS unit suite, debug
+APK identity/version, three packaged shell smoke tests, and the existing
+Docker fixture. The tag-triggered `Build` workflow packages the JS debug and
+release APKs and checks package, version, and signer identity; it does not
+replace the release validation gate. The 24 replacement feature journey
+classes are registered in `scripts/js-journey-class-manifest.json`;
 `scripts/check-js-journey-results.py --json` emits their fail-closed
 qualification result. At the current foundation state it reports all 24
 journeys missing. The JS branch has no scheduled full-suite D36 verdict or
 exact-commit D37 fault verdict. Do not merge this branch to `main` or tag
 0.6.0 until those journeys and both blocking release signals are migrated and
-reviewer-validated. The legacy Gradle release workflow is not a substitute
-and must not be dispatched against the rewrite tree.
+reviewer-validated.
 
 `main` keeps moving; other people merge there. We don't freeze `main` and
 don't tag whatever `origin/main` happens to be after a long stabilize fight,
@@ -35,11 +36,12 @@ signing identity:
 | | debug APK | release APK |
 |---|---|---|
 | applicationId | `com.pocketshell.app` | `com.pocketshell.app.release` |
-| launcher label | PocketShell Debug | PocketShell |
+| launcher label | PocketShell | PocketShell |
 | signer | committed `debug.keystore` | dedicated release keystore |
 
-Different signatures cannot replace each other under one applicationId, so
-the two install and run side by side on one device.
+The separate application IDs allow both APKs to install side by side. The
+release package can only be updated by an APK signed with the dedicated
+release key.
 
 The release keystore is NOT in the repo. It lives on this box at
 `/home/alexey/.pocketshell/keys/pocketshell-release.keystore` (PKCS12, alias
@@ -49,12 +51,14 @@ Losing it means every existing release install (`com.pocketshell.app.release`)
 can never be updated in place again — back it up somewhere off this box.
 
 Signing material reaches the build through exactly one of two paths, checked
-in this order by `app2/build.gradle.kts` (no debug-keystore fallback, D22):
+in this order by `android/app/build.gradle` (no debug-keystore fallback, D22):
 
 1. **Local**: a gitignored `keystore.properties` in the repository root.
    Schema: `storeFile` / `storePassword` / `keyAlias` / `keyPassword`.
    `keystore.properties` is gitignored, so a fresh worktree does not have
-   it — copy it from the root checkout before building a release APK there.
+   it — copy it from the root checkout before building a release APK there,
+   then verify `storeFile` resolves from that worktree's root. A relative path
+   copied unchanged may point at the wrong location in a deeper worktree.
 2. **CI**: the four GitHub secrets `ANDROID_RELEASE_KEYSTORE_BASE64` (the
    PKCS12 keystore, base64-encoded), `ANDROID_RELEASE_STORE_PASSWORD`,
    `ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_KEY_PASSWORD`, exported by
@@ -67,9 +71,15 @@ release APK fails loudly instead of silently producing an unsigned APK.
 Verify a built APK's identity with:
 
 ```bash
-scripts/check-apk-signing.sh --variant release --apk app2/build/outputs/apk/release/app2-release.apk
-scripts/check-apk-signing.sh --variant debug  --apk app2/build/outputs/apk/debug/app2-debug.apk
+scripts/check-apk-signing.sh --variant release --apk android/app/build/outputs/apk/release/app-release.apk
+scripts/check-apk-signing.sh --variant debug --js-first --apk android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The tag build also runs `scripts/check-js-apk-metadata.py` against both
+variants and compares their embedded version code/name to
+`scripts/derive-version.sh`. Debug is checked with `--js-first` because the
+generated Capacitor manifest labels it `PocketShell`, matching the release
+launcher label; the package IDs and signatures remain distinct.
 
 ## Product note for the next release
 

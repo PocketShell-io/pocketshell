@@ -17,23 +17,39 @@ jobs:
       contents: write
 
     steps:
-      # Issue #2356 (Phase 4 of epic #2350): FULL history + tags. Both this
-      # job's "Generate version" step and app/build.gradle.kts's own
-      # versionCode/versionName derivation (scripts/derive-version.sh) need
-      # `git tag --list 'v*' --merged HEAD` / `git describe` to see every
-      # prior release tag, not just the one commit a shallow checkout would
-      # fetch — a shallow checkout here would silently undercount tags and
-      # produce a WRONG (non-monotonic) versionCode for the real release APK.
+      # Version code is the count of reachable release tags. Full history and
+      # recursive submodules are required to build the real tagged APK from
+      # the pinned JS core source.
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          submodules: recursive
 
-      - name: Set up JDK 17
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.5.1 --activate
+
+      - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Cache Gradle
         uses: actions/cache@v5
@@ -41,99 +57,99 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', '**/*.gradle*', '**/libs.versions.toml') }}
+            android/.gradle
+          key: ${{ runner.os }}-gradle-js-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/**/*.gradle.kts') }}
           restore-keys: |
-            ${{ runner.os }}-gradle-
+            ${{ runner.os }}-gradle-js-
 
-      # Issue #2356: reuse the SAME derivation app/build.gradle.kts uses
-      # (scripts/derive-version.sh) for the artifact filename, rather than a
-      # second independently-written "dev-<timestamp>-<sha>" scheme, so the
-      # uploaded APK filename always matches the version baked into the APK
-      # itself.
-      - name: Generate version
+      - name: Install locked JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Derive package version from this tag
         id: version
         run: |
-          chmod +x scripts/derive-version.sh
-          VERSION="$(scripts/derive-version.sh version-name)"
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          scripts/derive-version.sh --self-test
+          version_code="$(scripts/derive-version.sh version-code)"
+          version_name="$(scripts/derive-version.sh version-name)"
+          echo "code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "name=${version_name}" >> "$GITHUB_OUTPUT"
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Build web assets
+        run: pnpm build:web
 
-      # Issue #2570: a plain assemble. This used to run through
-      # scripts/ci-assemble-with-ndk-retry.sh, which cleared a partial NDK
-      # download and retried when Gradle's on-demand NDK install produced a
-      # corrupt archive (#1581). #2566 deleted the last `externalNativeBuild`
-      # in the build, so no NDK is ever downloaded and the wrapper was dead
-      # weight; scripts/check-no-native-build.sh keeps it that way.
+      - name: Sync Capacitor Android project
+        run: pnpm cap:sync android
+
       - name: Assemble debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: ./android/gradlew -p android assembleDebug --stacktrace --console=plain
 
-      # Issue #2638: assert the packaged signing identity before the APK is
-      # renamed/uploaded. This is the gate for the identity contract: it fails
-      # the build if a release APK is ever signed with the debug keystore
-      # again, or if the debug APK's identity (package, label, signer) drifts.
-      - name: Check debug APK signing identity
-        run: chmod +x scripts/check-apk-signing.sh && scripts/check-apk-signing.sh --variant debug --apk app2/build/outputs/apk/debug/app2-debug.apk
-
-      - name: Rename APK
+      - name: Validate debug APK identity and signature
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          mv app2/build/outputs/apk/debug/app2-debug.apk "app2/build/outputs/apk/debug/pocketshell-${VERSION}-debug.apk"
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          scripts/check-js-apk-metadata.py --self-test
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant debug \
+            --expected-version-code "$VERSION_CODE" \
+            --expected-version-name "$VERSION_NAME"
+          scripts/check-apk-signing.sh --variant debug --js-first --apk "$apk"
+
+      - name: Rename debug APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: mv android/app/build/outputs/apk/debug/app-debug.apk "android/app/build/outputs/apk/debug/pocketshell-${VERSION_NAME}-debug.apk"
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
-          name: pocketshell-${{ steps.version.outputs.version }}-debug.apk
-          path: app2/build/outputs/apk/debug/*.apk
+          name: pocketshell-${{ steps.version.outputs.name }}-debug.apk
+          path: android/app/build/outputs/apk/debug/pocketshell-${{ steps.version.outputs.name }}-debug.apk
           if-no-files-found: error
 
-      # Issue #2638: a RELEASE-signed APK alongside the debug one, signed by
-      # the dedicated release keystore delivered through the four
-      # ANDROID_RELEASE_* secrets (app2/build.gradle.kts resolves them; no
-      # keystore is ever committed to the repo). Because the signatures
-      # differ, the release APK carries applicationIdSuffix ".release" and
-      # installs side by side with the debug build.
-      - name: Assemble release APK
-        run: ./gradlew assembleRelease --stacktrace
+      # Release packaging refuses to fall back to the debug key. The same
+      # four signing secrets used by the established release identity feed
+      # the generated Capacitor Gradle project.
+      - name: Assemble signed release APK
+        run: ./android/gradlew -p android assembleRelease --stacktrace --console=plain
         env:
           ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
 
-      # Issue #2638: same gate for the release APK. Deliberately NO
-      # ANDROID_RELEASE_* env here (assembleRelease's env is per-step) and no
-      # keystore.properties exists on runners, so the script's
-      # ==local-keystore assertion auto-skips and exactly its 4 assertions
-      # run — CI is verified against the same secrets it signed with.
-      - name: Check release APK signing identity
-        run: scripts/check-apk-signing.sh --variant release --apk app2/build/outputs/apk/release/app2-release.apk
+      - name: Validate release APK identity and signature
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant release \
+            --expected-version-code "$VERSION_CODE" \
+            --expected-version-name "$VERSION_NAME"
+          scripts/check-apk-signing.sh --variant release --apk "$apk"
 
       - name: Rename release APK
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          mv app2/build/outputs/apk/release/app2-release.apk "app2/build/outputs/apk/release/pocketshell-${VERSION}-release.apk"
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: mv android/app/build/outputs/apk/release/app-release.apk "android/app/build/outputs/apk/release/pocketshell-${VERSION_NAME}-release.apk"
 
       - name: Upload release APK
         uses: actions/upload-artifact@v7
         with:
-          name: pocketshell-${{ steps.version.outputs.version }}-release.apk
-          path: app2/build/outputs/apk/release/*.apk
+          name: pocketshell-${{ steps.version.outputs.name }}-release.apk
+          path: android/app/build/outputs/apk/release/pocketshell-${{ steps.version.outputs.name }}-release.apk
           if-no-files-found: error
 
-      - name: Create Release
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            app2/build/outputs/apk/debug/*.apk
-            app2/build/outputs/apk/release/*.apk
+            android/app/build/outputs/apk/debug/pocketshell-${{ steps.version.outputs.name }}-debug.apk
+            android/app/build/outputs/apk/release/pocketshell-${{ steps.version.outputs.name }}-release.apk
           generate_release_notes: true
-
-  # The `publish-pypi` job was DELETED with its subject (issue #2643): the host
-  # CLI (tools/pocketshell/) moved to PocketShell-io/pocketshell-cli and its
-  # tag-driven PyPI publish, pyproject version stamp and check-pypi-version
-  # guard run in that repo's own CI now. This workflow builds the APK only;
-  # the app version still derives from the pushed tag alone
-  # (scripts/derive-version.sh).
