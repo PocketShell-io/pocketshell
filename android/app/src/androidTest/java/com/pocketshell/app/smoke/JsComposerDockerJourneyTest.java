@@ -299,13 +299,22 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("workspace chrome must begin below the Android status bar",
                 keyboardGeometry.getJSONObject("appBar").getDouble("top")
                         >= nativeInsets.getDouble("statusBarTopDp") - 1.0);
+        JSONObject buttons = keyboardGeometry.getJSONObject("buttons");
+        for (String name : new String[]{"discard", "insert", "send"}) {
+            JSONObject bounds = buttons.getJSONObject(name);
+            assertTrue(name + " must keep a 48dp touch target with the IME open",
+                    bounds.getDouble("bottom") - bounds.getDouble("top") >= 47.9);
+        }
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
     }
 
     private void ensureImeVisible() throws Exception {
         boolean composerFocused = "true".equals(evalRaw(
                 "!!document.activeElement?.closest('[data-testid=prompt-composer]')"));
-        if (!isImeVisible() || !composerFocused) {
+        boolean composerMode = "true".equals(evalRaw(
+                "document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+        if (!isImeVisible() || !composerFocused || !composerMode) {
+            if (!composerMode && composerFocused) evalString("document.activeElement?.blur(); 'blurred'");
             tapDomCenter("[data-testid=prompt-draft]");
             awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 3_000);
             awaitImeVisible(true);

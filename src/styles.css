@@ -243,13 +243,13 @@ button { color: inherit; }
 .composer-status[data-delivery-state="error"] { color: var(--error); }
 .composer-actions { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .composer-action-spacer { flex: 1 1 auto; }
-.composer-discard, .composer-insert { min-height: 44px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); padding: 0 12px; color: var(--fg); font-size: var(--fs-200); font-weight: 600; }
+.composer-discard, .composer-insert { min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); padding: 0 12px; color: var(--fg); font-size: var(--fs-200); font-weight: 600; }
 .composer-discard { color: var(--fg-secondary); }
 .composer-discard:disabled, .composer-insert:disabled { opacity: 0.5; }
 .composer-insert:not(:disabled):active { border-color: var(--accent); color: var(--accent); }
 .composer-shared-controls { flex: 0 0 auto; margin: 0; border: 0; padding: 0; }
 .composer-shared-controls .pill, .composer-shared-controls .spacer, .composer-shared-controls .kbd-hint { display: none; }
-.composer-shared-controls .send { min-height: 44px; height: 44px; }
+.composer-shared-controls .send { min-height: 48px; height: 48px; }
 .preview-input { width: 100%; min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 0 12px; color: var(--fg); font-size: 16px; outline: none; }
 .preview-input::placeholder { color: var(--fg-muted); }
 .preview-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
@@ -439,13 +439,13 @@ button { color: inherit; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-shell[data-keyboard-composer-mode="true"] .composer-actions { min-height: 44px; gap: 6px; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-actions { min-height: 48px; gap: 6px; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-discard,
   .app-shell[data-keyboard-composer-mode="true"] .composer-insert,
   .app-shell[data-keyboard-composer-mode="true"] .composer-shared-controls .send {
-    height: 44px;
-    min-height: 44px;
-    max-height: 44px;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
   }
   .app-shell[data-keyboard-composer-mode="true"] .app-bar--workspace {
     min-height: 48px;
@@ -499,7 +499,7 @@ button { color: inherit; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-actions { min-height: 44px; gap: 5px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-actions { min-height: 48px; gap: 5px; }
 }
 
 @media (max-width: 460px) {
