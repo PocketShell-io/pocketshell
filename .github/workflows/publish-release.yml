@@ -37,6 +37,9 @@ jobs:
       - name: Self-test exact-main release authorization
         run: scripts/check-tag-release-authorization.py --self-test
 
+      - name: Self-test fail-closed release absence lookup
+        run: scripts/check-release-absence.py --self-test
+
       - name: Authorize the requested tag against current main and D37
         id: authorize
         env:
@@ -203,24 +206,21 @@ jobs:
           name: pocketshell-release-apks
           path: release-assets
 
-      - name: Refuse to overwrite an existing GitHub Release
+      - name: Check GitHub Release is absent
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
-        run: |
-          if gh release view "$RELEASE_TAG" --repo PocketShell-io/pocketshell >/dev/null 2>&1; then
-            echo "::error::A GitHub Release already exists for $RELEASE_TAG; refusing to replace it."
-            exit 1
-          fi
+        run: scripts/check-release-absence.py --release-tag "$RELEASE_TAG"
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          token: ${{ github.token }}
-          repository: PocketShell-io/pocketshell
-          tag_name: ${{ needs.authorize.outputs.release_tag }}
-          target_commitish: ${{ needs.authorize.outputs.release_sha }}
-          files: release-assets/*.apk
-          generate_release_notes: true
-          fail_on_unmatched_files: true
-          overwrite_files: false
+      - name: Create GitHub Release (create-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          gh release create "$RELEASE_TAG" release-assets/*.apk \
+            --repo PocketShell-io/pocketshell \
+            --verify-tag \
+            --target "$RELEASE_SHA" \
+            --title "$RELEASE_TAG" \
+            --generate-notes

@@ -28,6 +28,13 @@ signing identity:
 Different signatures cannot replace each other under one applicationId, so
 the two install and run side by side on one device.
 
+Before publishing, the workflow verifies repository access and checks the
+exact tag's GitHub Release endpoint. Only its JSON `404 Not Found` response
+means the release is absent; an existing release or any inconclusive response
+stops publication. It then uses `gh release create --verify-tag`, which creates
+a release and fails if one already exists, so a release created after the
+preflight check is not updated by this workflow.
+
 The release keystore is NOT in the repo. It lives on this box at
 `/home/alexey/.pocketshell/keys/pocketshell-release.keystore` (PKCS12, alias
 `pocketshell-release`, valid to 2056; cert SHA256

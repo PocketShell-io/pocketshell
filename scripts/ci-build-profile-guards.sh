@@ -32,12 +32,14 @@ cd "$(dirname "$0")/.."
 
 chmod +x scripts/assemble-debug.sh scripts/test-assemble-debug.sh \
   scripts/test-build-workflow-apk-path.sh scripts/check-no-native-build.sh \
-  scripts/check-tag-release-authorization.py scripts/check-apk-metadata.py
+  scripts/check-tag-release-authorization.py scripts/check-release-absence.py \
+  scripts/check-apk-metadata.py
 
 scripts/test-assemble-debug.sh
 scripts/test-build-workflow-apk-path.sh --self-test
 scripts/test-build-workflow-apk-path.sh
 scripts/check-tag-release-authorization.py --self-test
+scripts/check-release-absence.py --self-test
 scripts/check-apk-metadata.py --self-test
 scripts/check-no-native-build.sh --self-test
 scripts/check-no-native-build.sh
