@@ -68,6 +68,17 @@ name only because Room must first open databases at versions 1–20. It is not a
 runtime compatibility path and does not appear in the current entity, DAO, or
 schema 21.
 
+## Correcting a published release
+
+The Android `versionCode` uses the count of reachable `v*` tags. If a GitHub
+release is withdrawn, retain its annotated Git tag so later APKs keep unique
+installation codes; remove the public release and APK assets. Tag the
+correction on a later validated `main` commit with one exact-match release
+tag, since the APK's `versionName` derives from that exact tag.
+
+Issue #2853 tracks the `v1.0.0` retraction and `v0.5.6` correction; the
+upcoming shared-JavaScript migration is reserved for `v0.6.0`.
+
 ## The nightly fault gate blocks the tag, full stop (D37)
 
 `scripts/release-emulator-validation.sh` runs
