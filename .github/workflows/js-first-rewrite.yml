@@ -101,6 +101,7 @@ jobs:
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+            android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
           if-no-files-found: warn
 
   docker-agents-fixture:

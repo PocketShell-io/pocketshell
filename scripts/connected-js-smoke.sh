@@ -120,6 +120,21 @@ if results.exists():
 PY
 
 printf 'Running packaged JS smoke suite on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
-"$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
-  "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain
+if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+    "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain; then
+  :
+else
+  test_exit_code=$?
+  printf 'Connected packaged JS smoke tests failed; capturing emulator diagnostics.\n' >&2
+  mkdir -p "$RESULTS_DIR"
+  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 \
+    > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method \
+    > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys window \
+    > "$RESULTS_DIR/diagnostics-window.txt" 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
+    > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  exit "$test_exit_code"
+fi
 "$ROOT_DIR/scripts/check-js-smoke-results.py" --results-dir "$RESULTS_DIR"
