@@ -19,6 +19,11 @@ on:
       - "docs/**"
       - "chat/**"
   pull_request:
+    # The rewrite branch runs js-first-rewrite.yml; this workflow still gates
+    # the existing Gradle graph on main/stable until #2863 replaces it.
+    branches:
+      - main
+      - stable
     paths-ignore:
       - "**/*.md"
       - "docs/**"

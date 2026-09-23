@@ -1,4 +1,10 @@
-# Architecture
+# Previous Android architecture (main/stable)
+
+This document describes the app2 Kotlin architecture that remains on `main` and
+`stable` during the JS-first rewrite. The rewrite branch's current foundation is
+documented in [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md);
+feature destinations and data migration contracts are in
+[js-first-rewrite-inventory.md](js-first-rewrite-inventory.md).
 
 This is the current post-rewrite architecture. `app2` is the only Android
 application module, and the host session runtime is aplexer. The product has one

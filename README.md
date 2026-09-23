@@ -1,223 +1,55 @@
 # PocketShell
 
-PocketShell is a voice-first, agent-aware Android SSH client. It
-connects your phone to the developer workstation you already use over SSH,
-attaches to host-managed aplexer sessions, and gives you a phone-shaped way to
-drive shells and AI coding agents (Claude Code, Codex, OpenCode, Grok Build)
-without typing everything by hand.
+PocketShell is a voice-first Android SSH client with an app UI that follows the
+shared PocketShell desktop design. This `rewrite/js-first-0.6.0` branch is the
+new Vue 3, TypeScript, and Capacitor foundation. The shell currently shows
+offline host/workspace states and a sample terminal; it does not yet connect to
+SSH hosts or implement the old app's feature set.
 
-It is built for one job: keep working on a dev box from a phone. Long-lived
-state lives on the box in aplexer and a small server-side `pocketshell` helper;
-the app reconnects when you bring it back to the foreground.
+The rewrite is tracked by umbrella issue [#2854](https://github.com/PocketShell-io/pocketshell/issues/2854).
+The pre-deletion destination, journey, and stored-data map is in
+[docs/js-first-rewrite-inventory.md](docs/js-first-rewrite-inventory.md). UI
+component extraction is tracked by
+[pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3).
 
-## Status
+## Build and test
 
-**Active development, used daily.** This is the maintainer's primary way of
-working on a dev box from a phone, not a planning exercise. Latest tagged
-release is **[v0.4.44](https://github.com/PocketShell-io/pocketshell/releases/latest)**
-(debug APK + matching PyPI helper).
+Requirements: Node.js 22, pnpm 12.5.1, JDK 21, and Android SDK platform 36.
+Clone the repository with its pinned core source:
 
-It is Android-only and single-user. Releases take hard cuts on breaking changes
-rather than carrying compatibility shims — there is no install base to keep
-happy (locked decision [D22](docs/decisions.md)). Keep the Android app and the
-host `pocketshell` helper on the **same version**; a newer app talking to an
-older helper can hang on connect.
-
-## Current release note
-
-The next release removes the product's retired tmux session path. The host CLI,
-Android wire contract, Room storage, Docker fixtures, and journeys now use
-aplexer sessions only; old Room databases migrate forward and drop the obsolete
-host capability column.
-
-## What it does
-
-- **Persistent sessions.** Attaches through `pocketshell sessions attach`, which
-  resolves a live aplexer session and runs `a attach` on the host. After you tap a host, a folder/session
-  tree shows watched projects and live sessions; swipe or tap to move between
-  panes and sessions.
-- **Agent awareness.** The host session row reports the active Claude Code,
-  Codex, OpenCode, or Grok Build workload when aplexer can identify it. The
-  terminal remains the primary session surface.
-- **Voice-first input.** A composer with OpenAI Whisper and the Android speech
-  recognizer turns dictation into commands or agent prompts. A key bar adds Esc,
-  Tab, Ctrl, Alt, and arrows above the keyboard; per-host snippets and prompt
-  templates cut down typing further.
-- **Host management.** Save SSH hosts, import or generate keys, and unlock key
-  passphrases biometrically.
-- **Server-side helpers, zero phone-side credentials.** Provider usage/quota,
-  the session tree, repo browsing, and env files run through the
-  `pocketshell` helper on the box. Provider credentials never move onto the
-  phone.
-- **More.** Remote file browse/view, share a file from another Android app onto
-  the host, per-host port forwarding, and a dense dark dev-tool UI.
-
-Deeper docs live in [docs/README.md](docs/README.md) (architecture, agent
-awareness, usage panel, design system, testing).
-
-## Screenshots
-
-Host list, session tree, terminal, composer, and settings are from the current
-`main` debug APK via the visual-audit emulator workflow against the
-deterministic Docker SSH fixture (`scripts/capture-walkthrough-screenshots.sh`).
-Conversation is the production conversation pane with sample agent events.
-
-<table>
-  <tr>
-    <td><img src="docs/screenshots/readme-host-list.png" alt="PocketShell host list" width="220"></td>
-    <td><img src="docs/screenshots/readme-session-tree.png" alt="PocketShell host session tree" width="220"></td>
-    <td><img src="docs/screenshots/readme-terminal-session.png" alt="PocketShell terminal session" width="220"></td>
-  </tr>
-  <tr>
-    <td align="center">Hosts</td>
-    <td align="center">Session tree</td>
-    <td align="center">Terminal session</td>
-  </tr>
-  <tr>
-    <td><img src="docs/screenshots/readme-conversation-view.png" alt="PocketShell agent conversation view" width="220"></td>
-    <td><img src="docs/screenshots/readme-prompt-composer.png" alt="PocketShell prompt composer" width="220"></td>
-    <td><img src="docs/screenshots/readme-settings.png" alt="PocketShell settings screen" width="220"></td>
-  </tr>
-  <tr>
-    <td align="center">Conversation</td>
-    <td align="center">Prompt composer</td>
-    <td align="center">Settings</td>
-  </tr>
-</table>
-
-## Install
-
-### 1. Install the Android app
-
-1. Open the [GitHub Releases page](https://github.com/PocketShell-io/pocketshell/releases)
-   and download the latest debug APK (`pocketshell-<version>-debug.apk`).
-2. Allow installs from your browser/file manager if your phone prompts, then open
-   the APK to install it.
-
-   Or, with `adb`:
-
-   ```bash
-   adb install -r pocketshell-<version>-debug.apk
-   ```
-
-Requirements: Android 8.0 (API 26) or newer.
-
-### 2. Install the server-side helper on the dev box
-
-The app drives a small Python helper named `pocketshell` on each box for
-usage/quota, the session tree, repos, and env. Install the same version as
-the app:
-
-```bash
-uv tool install pocketshell
-# or pin to the app release:
-uv tool install 'pocketshell==0.4.44'
-# or
-pipx install pocketshell
+```sh
+git clone --branch rewrite/js-first-0.6.0 --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
+cd pocketshell
+pnpm install --frozen-lockfile
+pnpm test:unit
+scripts/assemble-debug.sh
 ```
 
-Put `~/.local/bin` on `PATH` for **non-interactive** SSH (the app does not
-open a login shell). See [docs/server-setup.md](docs/server-setup.md) and the CLI repo's README
-([PocketShell-io/pocketshell-cli](https://github.com/PocketShell-io/pocketshell-cli),
-extracted from this repo's `tools/pocketshell/` in issue #2643).
+`vendor/pocketshell-core` is a Git submodule pinned by the superproject; it is
+not an npm package or registry dependency. JS tooling dependencies are locked
+in `pnpm-lock.yaml`. To build and install under an isolated package name:
 
-## Configure a host
-
-1. On the **Hosts** screen, tap the **+** button.
-2. Fill in the host form:
-   - **Name** — display name for the host (e.g. `dev box`).
-   - **Hostname / IP** — the address to connect to (e.g. `dev.example.com`).
-   - **Port** — SSH port, defaults to `22`.
-   - **Username** — the SSH user.
-   - **SSH key** — pick a key from your saved keys.
-   - **Usage command** (optional) — a custom command for the usage panel;
-     defaults to `pocketshell usage --json`.
-3. Tap **Add host**.
-
-To add keys, open the SSH keys screen and use **Import key** (load an existing
-private key from the device) or **Generate** (create a new key on the device).
-PocketShell inspects the key locally and prompts for a passphrase when one is
-needed; passphrases are not stored.
-
-## Connect
-
-1. Tap a host on the **Hosts** screen.
-2. PocketShell connects, checks the `pocketshell` helper version (offering an
-   install/upgrade command if needed), and shows the folder/session tree for
-   that host.
-3. Open or create an aplexer session. Use the mic/composer, key bar, snippets,
-   Conversation tab, file browser, or port-forward panel as needed.
-
-## How it fits together
-
-```text
-Android phone                 SSH (sshj)              Dev box
-PocketShell UI   PTY: sessions attach ----------->   aplexer session
-Compose + VT     exec: sessions list --json ----->   pocketshell helper
-foreground app   exec: usage, engines, … -------->   host-side registry
+```sh
+scripts/assemble-debug.sh --suffix local --install
 ```
 
-Load-bearing choices: the client attaches through a host-side helper
-(`pocketshell sessions attach`) instead of implementing the session runtime in
-the app; a host-side
-session tree so ordering and folders survive reconnect and reinstall;
-server-side helpers so no provider credentials live on the phone; and a
-foreground-first model — the app does not schedule background phone work, it
-reconnects when you bring it forward (the active connection has a short
-app-switch grace window so quick app swaps don't tear it down). The scoped
-exception is port forwarding, which uses a foreground service while tunnels are
-active.
+The preserved Docker agents fixture can be checked with:
 
-See [docs/architecture.md](docs/architecture.md) and
-[docs/decisions.md](docs/decisions.md) for the full rationale.
-
-## Development
-
-Prerequisites: JDK 17, the Android SDK and platform tools, an emulator image,
-Docker with Compose, and a `local.properties` pointing at the SDK:
-
-```properties
-sdk.dir=/home/alexey/Android/Sdk
+```sh
+scripts/test-agents-fixture-aplexer.sh --docker
 ```
 
-Common commands:
+The app keeps `applicationId = com.pocketshell.app`, the existing debug key,
+minimum SDK 26, target SDK 35, and compile SDK 36. Room schema exports retained
+for the future installed-data reader live under
+[docs/migration/room-schemas/](docs/migration/room-schemas/).
 
-```bash
-scripts/assemble-debug.sh                 # fast local debug APK (daemon + cache)
-scripts/assemble-debug.sh --install
-scripts/full-jvm-gate.py
-scripts/connected-test.sh
-scripts/capture-walkthrough-screenshots.sh
-```
+## Current branch gates
 
-`scripts/assemble-debug.sh` is the local APK path: it keeps the Gradle daemon
-and build cache, pins the Kotlin daemon heap, and does not build androidTest.
-The release/visual-audit wrappers still use
-`--no-daemon --no-build-cache --max-workers=1` on purpose.
-
-The test matrix and Docker/emulator setup are in
-[docs/testing.md](docs/testing.md) and
-[docs/docker-emulator-runbook.md](docs/docker-emulator-runbook.md). The
-orchestrator/reviewer process is in [process.md](process.md). How we
-ship a version (candidate branch, stabilize, fast-forward the exact SHA to main, push main, tag from main) is
-[docs/release.md](docs/release.md).
-
-## Repository layout
-
-- `app2/` — Android application.
-- `shared/core-transport/` — sshj wrapper, connection lifecycle, and channels.
-- `shared/core-hostapi/` — the host `pocketshell` JSON contract.
-- `shared/core-portfwd/` — port forwarding.
-- `shared/core-terminal/` — vendored Termux terminal emulator + Compose adapter.
-- `shared/core-agents/` — Claude Code, Codex, OpenCode, and Grok Build parsers.
-- `shared/core-assistant/` — in-app action assistant (OpenAI / Anthropic / ZAI).
-- `shared/core-usage/` — normalized usage/quota parsing.
-- `shared/core-storage/` — Room entities, DAOs, migrations.
-- `shared/core-voice/` — Whisper and speech input.
-- `shared/ui-kit/` — shared dark design system.
-- `shared/test-support/` — test-only settle helpers (not shipped in the APK).
-- The host-side `pocketshell` CLI — published to PyPI from its own repo,
-  [PocketShell-io/pocketshell-cli](https://github.com/PocketShell-io/pocketshell-cli)
-  (extracted from `tools/pocketshell/` in issue #2643; its own release cycle).
-- `tests/docker/` — deterministic SSH/dev-box test fixtures.
-- `docs/` — product docs, architecture notes, and QA runbooks.
+The rewrite branch CI builds the web app and debug APK, runs its unit tests, and
+checks the Docker fixture. Emulator parity journeys, scheduled D36/D37 verdicts,
+and release packaging are still owned by the existing Android gates on
+`main`/`stable`. Issue [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863)
+tracks their validated replacement before branch integration. See
+[docs/js-first-rewrite-foundation.md](docs/js-first-rewrite-foundation.md) and
+[docs/README.md](docs/README.md) for details.

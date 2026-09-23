@@ -69,13 +69,22 @@ The install identity remains `applicationId = com.pocketshell.app`, with the com
 | Crash reports and diagnostic history | `files/crash-reports/` text reports; `files/diagnostics/pocketshell-diagnostics.jsonl`; export cache is disposable | #2860 does not remove source data; #2861 owns diagnostics display/export. |
 | Update-check bookkeeping | `update_check` SharedPreferences | #2860 may leave as opaque legacy metadata; #2861 defines whether it is read or deliberately expired. |
 
-Room schema exports `16.json` through `22.json` are retained exactly as evidence for the importer. Schema 22 currently contains 10 application tables: `hosts`, `ssh_keys`, `port_remappings`, `port_usage`, `project_roots`, `snippets`, `ai_api_call_log`, `pending_transcriptions`, `command_templates`, and `sent_messages`. Room also carries its internal `room_master_table`. The schema version is 22. Do not infer user data from the host-side `a` session list: live sessions remain host-owned and are not in Room.
+Room schema exports `16.json` through `22.json` are retained exactly at [`migration/room-schemas/com.pocketshell.core.storage.AppDatabase/`](migration/room-schemas/com.pocketshell.core.storage.AppDatabase/) as evidence for the importer. The source exports are removed with the old Kotlin module after their bytes are archived. Schema 22 currently contains 10 application tables: `hosts`, `ssh_keys`, `port_remappings`, `port_usage`, `project_roots`, `snippets`, `ai_api_call_log`, `pending_transcriptions`, `command_templates`, and `sent_messages`. Room also carries its internal `room_master_table`. The schema version is 22. Do not infer user data from the host-side `a` session list: live sessions remain host-owned and are not in Room.
 
 ## Desktop design extraction contract
 
 The desktop reference at the pinned review baseline is `pocketshell-desktop`'s `src/renderer/themes.ts`, `fonts.ts`, `App.vue`, and `components/`. Desktop extraction is tracked in [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3). Prioritize shared tokens/type/icon semantics and prop/event based presentation components: `AppIcon`, host/session rows, session tree, terminal theme and terminal view, composer/attachment controls, workspace tabs, buttons/menus/overlays, and warning/update banners. Desktop `views/HostPickerView.vue`, `HostWorkspaceView.vue`, `FolderWorkspaceView.vue`, `FilesView.vue`, `SettingsView.vue`, `UsageView.vue`, and `PortPanelView.vue` contain Electron stores/IPC assumptions and must be decomposed before reuse. Font files need explicit licensing and Android-compatible packaging.
 
 The phone shell keeps desktop colors, wording, icon family, type hierarchy, spacing rhythm, selected/disabled/warning states, and terminal palette as its starting point. It adapts navigation to a host/session drawer, uses touch-sized controls, applies safe areas, handles Android Back, and keeps the composer above the IME. #2855 only supplies an unfinished host/workspace/terminal-shaped empty mock shell; it does not claim any old journey above is implemented.
+
+## CI and release-gate boundary
+
+The temporary `rewrite/js-first-0.6.0` CI runs JS unit checks, packages the
+Android debug APK, and exercises the unchanged Docker fixture. It does not yet
+cover emulator journeys, scheduled parity, or signed release packaging. The
+existing D36/D37 Gradle workflows remain on `main`/`stable`; #2863 owns their
+replacement and validation before integration. Do not manually dispatch a
+legacy Gradle workflow against the rewrite branch.
 
 ## Docker preservation baseline
 

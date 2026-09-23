@@ -58,6 +58,12 @@ on:
       - main
       - stable
   pull_request:
+    # The rewrite branch has its own JS/Capacitor gate. Keep the D36/D37
+    # app2 lanes attached only to the existing Android branches until #2863
+    # proves the replacement gates before any main-branch handoff.
+    branches:
+      - main
+      - stable
   workflow_dispatch:
   # NIGHTLY CADENCE (decision D37). D37 requires the fault/journey release gate
   # to run on a scheduled cadence with no off switch; it used to be satisfied by

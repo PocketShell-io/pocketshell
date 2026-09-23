@@ -41,6 +41,12 @@ Gradle preserves `applicationId = com.pocketshell.app`, the committed
 [release.md](release.md). Version code and name continue to come from
 `scripts/derive-version.sh`.
 
+For fast local builds, use `scripts/assemble-debug.sh`; it runs `pnpm build:web`,
+`pnpm cap:sync`, and the generated Android Gradle wrapper. Use
+`scripts/assemble-debug.sh --suffix i2855 --install` for an isolated package
+install while testing alongside an existing app. JS dependencies are installed
+with `pnpm install --frozen-lockfile`; this repository does not use npm.
+
 The first APK preserves the current Android compatibility settings: minimum
 SDK 26, target SDK 35, and compile SDK 36. A later target-SDK change requires an
 explicit compatibility review and must not be introduced as incidental
@@ -60,6 +66,20 @@ The shell is not a visual acceptance claim. Follow
 should use the extracted shared desktop components tracked by
 [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3).
 
+## Temporary branch CI boundary
+
+`.github/workflows/js-first-rewrite.yml` runs on pushes and pull requests to
+`rewrite/js-first-0.6.0`. It installs the locked JS dependencies, runs unit
+tests, builds a debug APK, and runs the pinned Docker agents fixture. It does
+not yet run parity journeys in an emulator, create a signed release artifact,
+or establish a nightly release verdict. The existing `app2.yml` and `tests.yml`
+D36/D37 lanes remain attached to `main` and `stable`; they are not copied onto
+this branch because their Kotlin modules are being removed. Pull requests into
+those branches must wait for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863),
+which owns nonvacuous JS CI, scheduled test, and release-gate migration. Do not
+manually dispatch a legacy Gradle workflow against this branch; its old build
+graph is intentionally absent.
+
 ## Preserved test environment
 
 The existing Docker fixture remains pinned and untouched. Run
@@ -67,3 +87,9 @@ The existing Docker fixture remains pinned and untouched. Run
 run the installed CLI self-check. Do not change `tests/docker/` as part of the
 foundation or the app-module hard cut; new JS client journeys and their Docker
 assertions belong to their feature issues.
+
+Room schemas 16 through 22, the source evidence for the later installed-data
+reader, are retained in
+[`migration/room-schemas/com.pocketshell.core.storage.AppDatabase/`](migration/room-schemas/com.pocketshell.core.storage.AppDatabase/).
+They are exact copies of the exports formerly under
+`shared/core-storage/schemas/`; #2860 owns the reader and migration tests.
