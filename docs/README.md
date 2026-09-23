@@ -9,6 +9,7 @@ context; the README and current feature docs track released behavior.
 | [architecture.md](architecture.md) | Previous Android module map and session design; describes the existing app2 line while JS parity is built |
 | [js-first-rewrite-plan.md](js-first-rewrite-plan.md) | Planned 0.6.0 JS-first Android rewrite, shared desktop design, native boundary and test gates |
 | [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md) | Pre-deletion map of Android destinations, journeys, stored data, replacement issues and Docker baseline |
+| [migration/installed-data-map.md](migration/installed-data-map.md) | Exact legacy private-data owners, Room 16–22 records, preference shapes and encrypted-store limits for #2860 |
 | [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md) | JS/Capacitor Android shell, pinned source dependency, build diagnostics and preserved Docker test setup |
 | [migration/room-schemas/](migration/room-schemas/) | Immutable Room schema exports retained for the installed-data reader in #2860 |
 | [input-methods.md](input-methods.md) | Voice, key bar, snippets, and composer behaviour — the alternative-to-typing strategy |
