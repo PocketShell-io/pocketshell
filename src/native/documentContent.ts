@@ -20,6 +20,26 @@ export interface NativeDocumentChunk {
   base64: string;
 }
 
+export interface NativeCreatedDocument {
+  cancelled: boolean;
+  fileId?: string;
+  name?: string;
+  mimeType?: string | null;
+}
+
+export interface NativeDocumentWriteChunk {
+  fileId: string;
+  offset: number;
+  bytesWritten: number;
+}
+
+export interface NativeCompletedDocumentWrite {
+  fileId: string;
+  name: string;
+  bytesWritten: number;
+  complete: boolean;
+}
+
 export interface NativeSharedContent {
   requestId: string;
   action: 'android.intent.action.SEND' | 'android.intent.action.SEND_MULTIPLE';
@@ -38,6 +58,14 @@ export type DocumentContentPlugin = Plugin & {
     maxBytes: number;
   }): Promise<NativeDocumentChunk>;
   releasePickedFile(options: { fileId: string }): Promise<{ released: boolean }>;
+  createDocument(options: { name: string; mimeType: string }): Promise<NativeCreatedDocument>;
+  writeCreatedDocumentChunk(options: {
+    fileId: string;
+    offset: number;
+    base64: string;
+  }): Promise<NativeDocumentWriteChunk>;
+  completeCreatedDocument(options: { fileId: string; expectedBytes: number }): Promise<NativeCompletedDocumentWrite>;
+  abortCreatedDocument(options: { fileId: string }): Promise<{ aborted: boolean; deleted: boolean }>;
   addListener(
     eventName: 'shareReceived',
     listener: (content: NativeSharedContent) => void,
