@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Fail closed before publishing a release for a pushed vMAJOR.MINOR.PATCH tag.
+"""Fail closed before publishing a manually requested main-branch release.
 
 The trusted proof is an artifact uploaded by the successful
 release-emulator-validation workflow run for the exact tag commit. The
@@ -8,7 +8,7 @@ verdict for that same SHA. A tag annotation or locally supplied summary is not
 publication evidence.
 
 Usage:
-  scripts/check-tag-release-authorization.py --release-tag v0.6.0 --release-sha <sha>
+  scripts/check-tag-release-authorization.py --release-tag v0.6.0 --release-sha <sha> --workflow-ref refs/heads/main
   scripts/check-tag-release-authorization.py --self-test
 """
 
@@ -30,8 +30,9 @@ REPOSITORY = "PocketShell-io/pocketshell"
 RELEASE_WORKFLOW = ".github/workflows/release-emulator-validation.yml"
 RELEASE_JOB = "Emulator-only release validation"
 RELEASE_ARTIFACT_PREFIX = "release-emulator-validation-"
-BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
-EXPECTED_SELF_TESTS = 22
+PUBLISH_WORKFLOW = ROOT / ".github/workflows/publish-release.yml"
+LEGACY_BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
+EXPECTED_SELF_TESTS = 31
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -91,6 +92,13 @@ def validate_tag_and_main(tag: str, release_sha: str, main_sha: str) -> None:
         raise GateFailure(f"tag commit {release_sha} is not the exact origin/main head {main_sha}")
 
 
+def validate_workflow_ref(workflow_ref: str) -> None:
+    if workflow_ref != "refs/heads/main":
+        raise GateFailure(
+            f"release publication workflow must run from refs/heads/main, got {workflow_ref!r}"
+        )
+
+
 def validate_release_run(
     run: dict[str, Any], job: dict[str, Any], summary: str, expected_sha: str
 ) -> None:
@@ -115,85 +123,160 @@ def validate_release_run(
     validate_summary(summary, expected_sha)
 
 
-def _workflow_step_blocks(workflow: str) -> list[tuple[str, str]]:
+def _workflow_job_bounds(workflow: str, job_name: str) -> tuple[list[str], int, int]:
     lines = workflow.splitlines()
-    starts = [index for index, line in enumerate(lines) if line.startswith("      - name: ")]
-    blocks: list[tuple[str, str]] = []
+    jobs_heading = next((i for i, line in enumerate(lines) if line == "jobs:"), None)
+    if jobs_heading is None:
+        raise GateFailure("workflow has no jobs section")
+    starts = [
+        i for i in range(jobs_heading + 1, len(lines))
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:\s*", lines[i])
+    ]
+    matches = [i for i in starts if lines[i].strip() == f"{job_name}:"]
+    if len(matches) != 1:
+        raise GateFailure(f"workflow must contain exactly one {job_name!r} job")
+    start = matches[0]
+    end = next((i for i in starts if i > start), len(lines))
+    return lines, start, end
+
+
+def _job_text(workflow: str, job_name: str) -> str:
+    lines, start, end = _workflow_job_bounds(workflow, job_name)
+    return "\n".join(lines[start:end])
+
+
+def _job_step_blocks(workflow: str, job_name: str) -> list[tuple[str, str]]:
+    lines, job_start, job_end = _workflow_job_bounds(workflow, job_name)
+    starts = [
+        i for i in range(job_start + 1, job_end)
+        if lines[i].startswith("      - name: ")
+    ]
+    blocks = []
     for offset, start in enumerate(starts):
-        end = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+        end = starts[offset + 1] if offset + 1 < len(starts) else job_end
         name = lines[start].removeprefix("      - name: ")
         blocks.append((name, "\n".join(lines[start:end])))
     return blocks
 
 
-def validate_workflow_wiring(workflow: str) -> None:
-    """Require the live build job to authorize tags before release publication."""
-    steps = _workflow_step_blocks(workflow)
-    names = [name for name, _ in steps]
-
-    def one_step(name: str) -> tuple[int, str]:
-        matches = [(index, block) for index, (step_name, block) in enumerate(steps) if step_name == name]
-        if len(matches) != 1:
-            raise GateFailure(f"Build workflow must contain exactly one {name!r} step")
-        return matches[0]
-
-    _, self_test = one_step("Self-test exact-main tag publication guard")
-    if "run: scripts/check-tag-release-authorization.py --self-test" not in self_test:
-        raise GateFailure("Build workflow must run the tag-publication guard self-test")
-
-    guard_index, guard = one_step("Authorize release tag against exact main validation")
-    expected_guard = 'run: scripts/check-tag-release-authorization.py --release-tag "$RELEASE_TAG" --release-sha "$RELEASE_SHA"'
-    if expected_guard not in guard:
-        raise GateFailure("Build workflow must run the exact tag + event SHA authorization command")
-    if "if: startsWith(github.ref, 'refs/tags/v')" not in guard:
-        raise GateFailure("Build workflow must authorize every v* tag ref before packaging")
-    if "GH_TOKEN: ${{ github.token }}" not in guard or "RELEASE_SHA: ${{ github.sha }}" not in guard:
-        raise GateFailure("Build workflow must use its GitHub token and event SHA for release proof")
-
-    release_index, release = one_step("Create GitHub Release")
-    if guard_index >= release_index:
-        raise GateFailure("release authorization must run before GitHub Release creation")
-    if "uses: softprops/action-gh-release@v3" not in release:
-        raise GateFailure("Build workflow release publication action changed unexpectedly")
-    if "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" not in release:
-        raise GateFailure("GitHub Release creation must be restricted to pushed v* tags after authorization")
-
-    if names.index("Authorize release tag against exact main validation") >= names.index("Install locked JS dependencies"):
-        raise GateFailure("tag authorization must run before dependency installation and APK build")
-    if "permissions:\n      actions: read\n      contents: write" not in workflow:
-        raise GateFailure("Build workflow must grant read-only Actions access and release contents access")
-    if workflow.count("uses: softprops/action-gh-release@v3") != 1:
-        raise GateFailure("Build workflow must have exactly one GitHub Release publication action")
-
-
-def _drop_step(workflow: str, name: str) -> str:
-    lines = workflow.splitlines()
-    starts = [index for index, line in enumerate(lines) if line == f"      - name: {name}"]
+def _drop_job_step(workflow: str, job_name: str, step_name: str) -> str:
+    lines, job_start, job_end = _workflow_job_bounds(workflow, job_name)
+    starts = [
+        i for i in range(job_start + 1, job_end)
+        if lines[i] == f"      - name: {step_name}"
+    ]
     if len(starts) != 1:
-        raise GateFailure(f"self-test setup expected exactly one {name!r} step")
+        raise GateFailure(f"self-test setup expected exactly one {step_name!r} step")
     start = starts[0]
     end = next(
-        (index for index in range(start + 1, len(lines)) if lines[index].startswith("      - name: ")),
-        len(lines),
+        (i for i in range(start + 1, job_end) if lines[i].startswith("      - name: ")),
+        job_end,
     )
     return "\n".join(lines[:start] + lines[end:]) + "\n"
 
 
-def _move_step_after(workflow: str, moved_name: str, after_name: str) -> str:
-    lines = workflow.splitlines()
-    starts = [index for index, line in enumerate(lines) if line.startswith("      - name: ")]
+def _move_job_step_after(workflow: str, job_name: str, moved_name: str, after_name: str) -> str:
+    lines, job_start, job_end = _workflow_job_bounds(workflow, job_name)
+    starts = [
+        i for i in range(job_start + 1, job_end)
+        if lines[i].startswith("      - name: ")
+    ]
     blocks: list[list[str]] = []
     for offset, start in enumerate(starts):
-        end = starts[offset + 1] if offset + 1 < len(starts) else len(lines)
+        end = starts[offset + 1] if offset + 1 < len(starts) else job_end
         blocks.append(lines[start:end])
     moved = [block for block in blocks if block and block[0] == f"      - name: {moved_name}"]
     following = [block for block in blocks if block and block[0] == f"      - name: {after_name}"]
     if len(moved) != 1 or len(following) != 1:
         raise GateFailure("self-test setup could not find the workflow steps to reorder")
     blocks.remove(moved[0])
-    position = blocks.index(following[0]) + 1
-    blocks.insert(position, moved[0])
-    return "\n".join(line for block in blocks for line in block).rstrip() + "\n"
+    blocks.insert(blocks.index(following[0]) + 1, moved[0])
+    return "\n".join(lines[:job_start] + [line for block in blocks for line in block] + lines[job_end:]) + "\n"
+
+
+def validate_workflow_wiring(workflow: str, legacy_build: str) -> None:
+    """Require default-branch manual publishing and an artifact-only legacy Build."""
+    if not re.search(r"(?m)^  workflow_dispatch:$", workflow):
+        raise GateFailure("publisher must use workflow_dispatch")
+    if re.search(r"(?m)^  push:", workflow) or re.search(r"(?m)^  schedule:", workflow):
+        raise GateFailure("publisher must not publish from tag pushes or a schedule")
+    if not re.search(
+        r"(?ms)^      release_tag:\n(?:(?!^      [A-Za-z0-9_-]+:).)*?^        required: true\n(?:(?!^      [A-Za-z0-9_-]+:).)*?^        type: string$",
+        workflow,
+    ):
+        raise GateFailure("publisher must require a string release_tag dispatch input")
+    if "permissions:\n  contents: read" not in workflow:
+        raise GateFailure("publisher workflow default permissions must be read-only")
+
+    authorize = _job_text(workflow, "authorize")
+    build = _job_text(workflow, "build")
+    publish = _job_text(workflow, "publish")
+    if "if: github.ref == 'refs/heads/main'" not in authorize:
+        raise GateFailure("authorize job must run only from refs/heads/main")
+    if "if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success'" not in build:
+        raise GateFailure("build job must require main and successful authorization")
+    if (
+        "if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success' && needs.build.result == 'success'"
+        not in publish
+    ):
+        raise GateFailure("publish job must require main and successful authorization/build jobs")
+    if "permissions:\n      actions: read\n      contents: read" not in authorize:
+        raise GateFailure("authorize job must have read-only Actions and contents permissions")
+    if "permissions:\n      contents: read" not in build or "contents: write" in build:
+        raise GateFailure("build job must remain read-only")
+    if "permissions:\n      actions: read\n      contents: write" not in publish:
+        raise GateFailure("only publish job may receive Actions read and contents write")
+    if workflow.count("contents: write") != 1:
+        raise GateFailure("contents: write must be scoped only to the publish job")
+
+    authorize_steps = _job_step_blocks(workflow, "authorize")
+    auth_names = [name for name, _ in authorize_steps]
+    if "Self-test exact-main release authorization" not in auth_names:
+        raise GateFailure("authorize job must self-test the release authorization guard")
+    auth_matches = [block for name, block in authorize_steps if name == "Authorize the requested tag against current main and D37"]
+    if len(auth_matches) != 1:
+        raise GateFailure("authorize job must contain one release authorization step")
+    auth_step = auth_matches[0]
+    expected_script = "scripts/check-tag-release-authorization.py"
+    if (
+        expected_script not in auth_step
+        or '--release-tag "$RELEASE_TAG"' not in auth_step
+        or '--release-sha "$RELEASE_SHA"' not in auth_step
+        or '--workflow-ref "$WORKFLOW_REF"' not in auth_step
+    ):
+        raise GateFailure("authorize job must check the dispatch ref, tag, exact main SHA, and D37 proof")
+    if "RELEASE_SHA: ${{ github.sha }}" not in auth_step or "WORKFLOW_REF: ${{ github.ref }}" not in auth_step:
+        raise GateFailure("authorize job must bind the dispatched branch and SHA")
+    if "release_sha: ${{ steps.authorize.outputs.release_sha }}" not in authorize:
+        raise GateFailure("authorize job must pass its exact SHA to downstream jobs")
+
+    publish_steps = _job_step_blocks(workflow, "publish")
+    publish_names = [name for name, _ in publish_steps]
+    reauth_index = publish_names.index("Reauthorize current main, tag, and exact-SHA D37 proof") if "Reauthorize current main, tag, and exact-SHA D37 proof" in publish_names else -1
+    release_index = publish_names.index("Create GitHub Release") if "Create GitHub Release" in publish_names else -1
+    if reauth_index < 0 or release_index < 0 or reauth_index >= release_index:
+        raise GateFailure("publish job must reauthorize immediately before creating the release")
+    reauth_step = publish_steps[reauth_index][1]
+    if expected_script not in reauth_step:
+        raise GateFailure("publish job must rerun the exact main/tag/D37 authorization guard")
+    release_step = publish_steps[release_index][1]
+    if "uses: softprops/action-gh-release@v3" not in release_step:
+        raise GateFailure("publish job must use the GitHub Release action")
+    if "token: ${{ github.token }}" not in release_step or "target_commitish: ${{ needs.authorize.outputs.release_sha }}" not in release_step:
+        raise GateFailure("release action must use the scoped token and authorized commit SHA")
+    if "tag_name: ${{ needs.authorize.outputs.release_tag }}" not in release_step:
+        raise GateFailure("release action must use the authorized dispatch tag")
+    if "actions/download-artifact@v7" not in publish or "pocketshell-release-apks" not in publish:
+        raise GateFailure("publish job must consume APKs built in this workflow run")
+    if "actions/upload-artifact@v7" not in build or "pocketshell-release-apks" not in build:
+        raise GateFailure("build job must upload the validated APKs for publication")
+    if "check-js-apk-metadata.py" not in build or "check-apk-signing.sh" not in build:
+        raise GateFailure("build job must validate APK identity and signature")
+
+    if "Create GitHub Release" in legacy_build or "uses: softprops/action-gh-release@v3" in legacy_build:
+        raise GateFailure("legacy Build workflow must remain artifact-only")
+    if "contents: write" in legacy_build:
+        raise GateFailure("legacy Build workflow must not have publication permission")
 
 
 def _gh_environment() -> dict[str, str]:
@@ -339,18 +422,19 @@ def download_release_summary(run: dict[str, Any], env: dict[str, str]) -> str:
             raise GateFailure(f"could not read trusted release validation summary: {exc}") from exc
 
 
-def authorize_tag(tag: str, release_sha: str) -> None:
+def authorize_tag(tag: str, release_sha: str, workflow_ref: str) -> None:
     if not TAG_PATTERN.fullmatch(tag):
         raise GateFailure(f"release tag must be exactly vMAJOR.MINOR.PATCH, got {tag!r}")
     if not SHA_PATTERN.fullmatch(release_sha):
         raise GateFailure(f"release SHA is not a full lowercase commit hash: {release_sha!r}")
+    validate_workflow_ref(workflow_ref)
 
+    _run(["git", "fetch", "--quiet", "--force", "origin", f"+refs/tags/{tag}:refs/tags/{tag}"])
     tag_sha = _run(["git", "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"])
-    if tag_sha != release_sha:
-        raise GateFailure(f"tag {tag} resolves to {tag_sha}, but the event commit is {release_sha}")
-
     _run(["git", "fetch", "--quiet", "--force", "origin", "+refs/heads/main:refs/remotes/origin/main"])
     main_sha = _run(["git", "rev-parse", "refs/remotes/origin/main"])
+    if tag_sha != release_sha:
+        raise GateFailure(f"tag {tag} resolves to {tag_sha}, but the dispatched main SHA is {release_sha}")
     validate_tag_and_main(tag, release_sha, main_sha)
 
     env = _gh_environment()
@@ -363,7 +447,7 @@ def authorize_tag(tag: str, release_sha: str) -> None:
     summary = download_release_summary(run, env)
     validate_release_run(run, job, summary, release_sha)
     print(
-        f"PASS: tag {tag} is exact origin/main head {release_sha} and has "
+        f"PASS: main-branch dispatch tag {tag} is exact origin/main head {release_sha} and has "
         f"exact-SHA D37 release proof from Actions run {run['id']}"
     )
 
@@ -440,23 +524,25 @@ def _newest_failed_run_probe(sha: str, summary: str) -> None:
     validate_release_run(run, job, summary, sha)
 
 
-def _expect_invalid_workflow(workflow: str) -> None:
-    validate_workflow_wiring(workflow)
-
-
 def self_test() -> int:
     sha = "a" * 40
     good_run = _synthetic_run(sha)
     good_job = _synthetic_job()
     good_summary = _synthetic_summary(sha)
+    workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
+    legacy_build = LEGACY_BUILD_WORKFLOW.read_text(encoding="utf-8")
 
-    workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
     probes: list[tuple[str, Callable[[], None], bool]] = [
         (
-            "exact main SHA and exact-SHA D37 release proof pass",
-            lambda: (validate_tag_and_main("v0.6.0", sha, sha), validate_release_run(good_run, good_job, good_summary, sha)),
+            "main dispatch with exact main SHA and exact-SHA D37 proof passes",
+            lambda: (
+                validate_workflow_ref("refs/heads/main"),
+                validate_tag_and_main("v0.6.0", sha, sha),
+                validate_release_run(good_run, good_job, good_summary, sha),
+            ),
             True,
         ),
+        ("dispatch from any non-main ref blocks", lambda: validate_workflow_ref("refs/heads/rewrite"), False),
         ("tag not at exact origin/main head blocks", lambda: validate_tag_and_main("v0.6.0", "b" * 40, sha), False),
         ("non-semver v tag blocks", lambda: validate_tag_and_main("v0.6.0-rc1", sha, sha), False),
         (
@@ -521,9 +607,7 @@ def self_test() -> int:
         ),
         (
             "ambiguous duplicate release validation jobs block",
-            lambda: select_latest_release_validation(
-                [good_run], sha, lambda _run: [good_job, good_job]
-            ),
+            lambda: select_latest_release_validation([good_run], sha, lambda _run: [good_job, good_job]),
             False,
         ),
         (
@@ -531,44 +615,126 @@ def self_test() -> int:
             lambda: _newest_failed_run_probe(sha, good_summary),
             False,
         ),
-        ("Build workflow wires tag authorization before publication", lambda: validate_workflow_wiring(workflow), True),
         (
-            "Build workflow without authorization blocks",
-            lambda: _expect_invalid_workflow(
-                _drop_step(workflow, "Authorize release tag against exact main validation")
+            "manual publisher is default-branch-only and legacy Build is artifact-only",
+            lambda: validate_workflow_wiring(workflow, legacy_build),
+            True,
+        ),
+        (
+            "authorize job without main guard blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace("if: github.ref == 'refs/heads/main'", "if: github.ref != 'refs/heads/main'", 1),
+                legacy_build,
             ),
             False,
         ),
         (
-            "authorization moved after release creation blocks",
-            lambda: _expect_invalid_workflow(
-                _move_step_after(
+            "build job without main and authorize success guard blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace(
+                    "if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success'",
+                    "if: needs.authorize.result == 'success'",
+                    1,
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "publish job without main and dependency guards blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace(
+                    "if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success' && needs.build.result == 'success'",
+                    "if: needs.authorize.result == 'success' && needs.build.result == 'success'",
+                    1,
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "missing pre-publication reauthorization blocks",
+            lambda: validate_workflow_wiring(
+                _drop_job_step(workflow, "publish", "Reauthorize current main, tag, and exact-SHA D37 proof"),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "reauthorization after release creation blocks",
+            lambda: validate_workflow_wiring(
+                _move_job_step_after(
                     workflow,
-                    "Authorize release tag against exact main validation",
+                    "publish",
+                    "Reauthorize current main, tag, and exact-SHA D37 proof",
                     "Create GitHub Release",
-                )
+                ),
+                legacy_build,
             ),
             False,
         ),
         (
-            "unconditional tag authorization wiring blocks",
-            lambda: _expect_invalid_workflow(
-                workflow.replace(
-                    "if: startsWith(github.ref, 'refs/tags/v')",
-                    "if: github.event_name == 'workflow_dispatch'",
-                    1,
-                )
+            "optional release tag input blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace("        required: true\n        type: string", "        required: false\n        type: string", 1),
+                legacy_build,
             ),
             False,
         ),
         (
-            "workflow-dispatched tag cannot publish a release",
-            lambda: _expect_invalid_workflow(
+            "tag push trigger on publisher blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace("on:\n  workflow_dispatch:", 'on:\n  push:\n    tags: ["v*"]\n  workflow_dispatch:', 1),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "write permission leaked into authorization job blocks",
+            lambda: validate_workflow_wiring(
                 workflow.replace(
-                    "if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
-                    "if: startsWith(github.ref, 'refs/tags/v')",
+                    "      actions: read\n      contents: read\n    outputs:",
+                    "      actions: read\n      contents: write\n    outputs:",
                     1,
-                )
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "write permission leaked into APK build job blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace(
+                    "      contents: read\n    steps:\n      - name: Checkout the authorized release commit",
+                    "      contents: write\n    steps:\n      - name: Checkout the authorized release commit",
+                    1,
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "APK identity checks removed from build job block",
+            lambda: validate_workflow_wiring(workflow.replace("scripts/check-js-apk-metadata.py", ""), legacy_build),
+            False,
+        ),
+        (
+            "release action using a caller-selected ref instead of authorized tag blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace(
+                    "tag_name: ${{ needs.authorize.outputs.release_tag }}",
+                    "tag_name: ${{ github.ref_name }}",
+                    1,
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "historical Build workflow with a release action blocks",
+            lambda: validate_workflow_wiring(
+                workflow,
+                legacy_build + "\n      - name: Create GitHub Release\n        uses: softprops/action-gh-release@v3\n",
             ),
             False,
         ),
@@ -585,29 +751,32 @@ def self_test() -> int:
             failures += 1
             print(f"FAIL: self-test #{index}: {label}", file=sys.stderr)
         else:
-            print(f"  ok  [{index}/{EXPECTED_SELF_TESTS}] {label}")
+            print(f"  ok  [{index}/{len(probes)}] {label}")
     if len(probes) != EXPECTED_SELF_TESTS:
         failures += 1
         print(f"FAIL: defined {len(probes)} probes, expected {EXPECTED_SELF_TESTS}", file=sys.stderr)
     if failures:
-        print(f"FAIL: {failures} tag publication authorization checks failed", file=sys.stderr)
+        print(f"FAIL: {failures} release authorization checks failed", file=sys.stderr)
         return 1
-    print(f"SELF-TEST PASS: exact-main tag + trusted exact-SHA D37 evidence required ({EXPECTED_SELF_TESTS}/{EXPECTED_SELF_TESTS})")
+    print(
+        "SELF-TEST PASS: main-only manual publisher + exact tag/main SHA + trusted exact-SHA D37 evidence "
+        f"required ({EXPECTED_SELF_TESTS}/{EXPECTED_SELF_TESTS})"
+    )
     return 0
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-tag")
     parser.add_argument("--release-sha")
+    parser.add_argument("--workflow-ref")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
-    if not args.release_tag or not args.release_sha:
-        parser.error("--release-tag and --release-sha are required unless --self-test is used")
+    if not args.release_tag or not args.release_sha or not args.workflow_ref:
+        parser.error("--release-tag, --release-sha, and --workflow-ref are required unless --self-test is used")
     try:
-        authorize_tag(args.release_tag, args.release_sha.lower())
+        authorize_tag(args.release_tag, args.release_sha.lower(), args.workflow_ref)
     except GateFailure as exc:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 1

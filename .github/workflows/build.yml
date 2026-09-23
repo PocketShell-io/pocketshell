@@ -1,5 +1,9 @@
 name: Build
 
+# Legacy artifact-only workflow. Workflow ID 280774562 is disabled in GitHub
+# and must stay disabled; release publication now belongs to
+# publish-release.yml, which can run only from the default branch.
+
 on:
   push:
     tags: ["v*"]
@@ -14,8 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
-      actions: read
-      contents: write
+      contents: read
 
     steps:
       # Version code is the count of reachable release tags. Full history and
@@ -26,23 +29,6 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
-
-      # A direct `git push origin refs/tags/v...` bypasses
-      # scripts/push-release-tag.sh. Re-check its publication boundary here
-      # against a successful Actions release-validation run and that run's
-      # trusted summary artifact; tag text and locally supplied summaries are
-      # not evidence. The new JS rewrite cannot publish until its D36/D37
-      # producers generate a matching successful summary.
-      - name: Self-test exact-main tag publication guard
-        run: scripts/check-tag-release-authorization.py --self-test
-
-      - name: Authorize release tag against exact main validation
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-        run: scripts/check-tag-release-authorization.py --release-tag "$RELEASE_TAG" --release-sha "$RELEASE_SHA"
 
       - name: Set up Node.js 22
         uses: actions/setup-node@v5
@@ -162,12 +148,3 @@ jobs:
           name: pocketshell-${{ steps.version.outputs.name }}-release.apk
           path: android/app/build/outputs/apk/release/pocketshell-${{ steps.version.outputs.name }}-release.apk
           if-no-files-found: error
-
-      - name: Create GitHub Release
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            android/app/build/outputs/apk/debug/pocketshell-${{ steps.version.outputs.name }}-debug.apk
-            android/app/build/outputs/apk/release/pocketshell-${{ steps.version.outputs.name }}-release.apk
-          generate_release_notes: true
