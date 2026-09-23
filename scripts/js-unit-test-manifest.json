@@ -12,6 +12,16 @@
         "fails closed when the packaged asset bytes differ from the manifest",
         "fails closed when a bundle asset is missing"
       ]
+    },
+    "tests/unit/sshCapabilityBridge.test.ts": {
+      "suite": "Capacitor SSH resource snapshot bridge",
+      "tests": [
+        "wraps the core request ID in Capacitor method options",
+        "rejects a mismatched request ID instead of accepting an unverified snapshot",
+        "rejects a missing counter instead of accepting an unverified snapshot",
+        "rejects a negative counter instead of accepting an unverified snapshot",
+        "propagates a native bridge rejection"
+      ]
     }
   }
 }

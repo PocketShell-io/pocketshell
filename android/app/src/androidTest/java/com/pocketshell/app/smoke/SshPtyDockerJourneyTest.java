@@ -1,5 +1,6 @@
 package com.pocketshell.app.smoke;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -100,7 +101,24 @@ public final class SshPtyDockerJourneyTest {
 
         click("[data-testid=ssh-disconnect]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'");
-        awaitJsTrue("document.querySelector('[data-testid=ssh-resources]')?.textContent.replace(/\\s/g, '').includes('Connections0PTYchannels0SFTPclients0Portforwards0')");
+        awaitJsTrue(
+                "['verified', 'failed'].includes(document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState ?? '')",
+                10_000);
+        String snapshotState = evalString("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState ?? ''");
+        String snapshotError = evalString("document.querySelector('[data-testid=ssh-message]')?.textContent.trim() ?? ''");
+        assertEquals("native resource snapshot must resolve successfully after disconnect; state=" + snapshotState
+                + "; error=" + snapshotError, "verified", snapshotState);
+
+        String requestId = evalString("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotRequestId ?? ''");
+        assertTrue("resource counts must come from the native close snapshot request", requestId.matches("ui-close-[0-9]+"));
+        assertEquals("native connection count after close must be zero", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-connections]')?.textContent.trim() ?? ''"));
+        assertEquals("native PTY count after close must be zero", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-ptys]')?.textContent.trim() ?? ''"));
+        assertEquals("native SFTP count after close must be zero", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-sftp]')?.textContent.trim() ?? ''"));
+        assertEquals("native port-forward count after close must be zero", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-forwards]')?.textContent.trim() ?? ''"));
     }
 
     private void setValue(String selector, String value) throws Exception {
@@ -118,7 +136,11 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void awaitJsTrue(String expression) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
+    }
+
+    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
             last = evalRaw(expression);

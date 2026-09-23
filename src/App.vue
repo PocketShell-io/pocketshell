@@ -18,7 +18,7 @@ import { coreSourceRevision } from './coreSourceInfo';
 import { uiSourceRevision } from './uiSourceInfo';
 import { useNavigationStore } from './stores/navigation';
 import { ConnectionController } from './session/connectionController';
-import { sshCapability } from './native/sshCapability';
+import { readSshError, sshCapability } from './native/sshCapability';
 import TerminalViewport from './components/TerminalViewport.vue';
 
 interface TerminalViewportHandle {
@@ -52,6 +52,7 @@ const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
 const connectionMessage = ref('');
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
+const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
 
@@ -143,6 +144,7 @@ async function connectHost() {
   if (!host) return;
   await closeController();
   resourceSnapshot.value = null;
+  resourceSnapshotStatus.value = 'unverified';
   connectionMessage.value = '';
   terminal.value?.clear();
   const next = new ConnectionController({ trustStore });
@@ -216,10 +218,17 @@ async function closeController() {
 
 async function disconnectHost() {
   await closeController();
+  const requestId = `ui-close-${Date.now()}`;
+  resourceSnapshot.value = null;
+  resourceSnapshotStatus.value = 'pending';
+  connectionMessage.value = '';
   try {
-    resourceSnapshot.value = await sshCapability.resourceSnapshot(`ui-close-${Date.now()}`);
+    resourceSnapshot.value = await sshCapability.resourceSnapshot(requestId);
+    resourceSnapshotStatus.value = 'verified';
   } catch (error) {
-    connectionMessage.value = error instanceof Error ? error.message : String(error);
+    resourceSnapshotStatus.value = 'failed';
+    const sshError = readSshError(error);
+    connectionMessage.value = `Native resource snapshot failed (${sshError.code}): ${sshError.message}`;
   }
 }
 
@@ -439,13 +448,18 @@ onBeforeUnmount(() => {
           </div>
           <span class="state-tag state-tag--muted">{{ currentPhase.toUpperCase() }}</span>
         </div>
-        <dl class="resource-list" data-testid="ssh-resources">
-          <div><dt>Connections</dt><dd>{{ resourceSnapshot ? resourceSnapshot.connections : connectionSnapshot?.connectionId ? 1 : 0 }}</dd></div>
-          <div><dt>PTY channels</dt><dd>{{ resourceSnapshot?.ptys ?? (isLive ? 1 : 0) }}</dd></div>
-          <div><dt>SFTP clients</dt><dd>{{ resourceSnapshot?.sftpClients ?? 0 }}</dd></div>
-          <div><dt>Port forwards</dt><dd>{{ resourceSnapshot?.forwards ?? 0 }}</dd></div>
+        <dl
+          class="resource-list"
+          data-testid="ssh-resources"
+          :data-snapshot-state="resourceSnapshotStatus"
+          :data-snapshot-request-id="resourceSnapshot?.requestId ?? ''"
+        >
+          <div><dt>Connections</dt><dd data-testid="ssh-resource-connections">{{ resourceSnapshot?.connections ?? 'Unverified' }}</dd></div>
+          <div><dt>PTY channels</dt><dd data-testid="ssh-resource-ptys">{{ resourceSnapshot?.ptys ?? 'Unverified' }}</dd></div>
+          <div><dt>SFTP clients</dt><dd data-testid="ssh-resource-sftp">{{ resourceSnapshot?.sftpClients ?? 'Unverified' }}</dd></div>
+          <div><dt>Port forwards</dt><dd data-testid="ssh-resource-forwards">{{ resourceSnapshot?.forwards ?? 'Unverified' }}</dd></div>
         </dl>
-        <p class="panel-footnote">A disconnected resource snapshot is captured after closing the SSH generation.</p>
+        <p class="panel-footnote">{{ resourceSnapshotStatus === 'verified' ? 'Native close snapshot verified.' : resourceSnapshotStatus === 'failed' ? 'Native close snapshot failed; counts are unverified.' : 'Native close snapshot has not been verified.' }}</p>
       </section>
 
       <section class="panel diagnostics-panel" aria-labelledby="build-diagnostics-title">
