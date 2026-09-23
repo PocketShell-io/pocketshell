@@ -93,13 +93,29 @@ def has_confident_screenshot_marker(
 ) -> tuple[bool, dict[str, Any] | None]:
     expected = _canonical_ocr_token(marker)
     left, top, right, bottom = marker_bounds
-    for word in words:
-        text = word.get("text")
-        confidence = word.get("confidence")
-        word_left = word.get("left")
-        word_top = word.get("top")
-        word_right = word_left + word.get("width", 0) if isinstance(word_left, int) else None
-        word_bottom = word_top + word.get("height", 0) if isinstance(word_top, int) else None
+    row_words = [
+        word for word in words
+        if isinstance(word.get("text"), str)
+        and word["text"].strip()
+        and isinstance(word.get("left"), int)
+        and isinstance(word.get("top"), int)
+        and isinstance(word.get("width"), int)
+        and isinstance(word.get("height"), int)
+        and top - 3 <= word["top"] + word["height"] / 2 < bottom + 3
+    ]
+    # A command echo can OCR as two separate words ("printf" and the literal
+    # marker), so the marker must be the only recognized word centered on the
+    # measured terminal output row.
+    if len(row_words) != 1:
+        return False, None
+    target_word = row_words[0]
+    for candidate in words:
+        text = candidate.get("text")
+        word_left = candidate.get("left")
+        word_top = candidate.get("top")
+        confidence = candidate.get("confidence")
+        word_right = word_left + candidate.get("width", 0) if isinstance(word_left, int) else None
+        word_bottom = word_top + candidate.get("height", 0) if isinstance(word_top, int) else None
         if (
             isinstance(text, str)
             and isinstance(confidence, (int, float))
@@ -113,8 +129,9 @@ def has_confident_screenshot_marker(
             and top - 3 <= word_top < bottom
             and word_right <= right + 3
             and word_bottom <= bottom + 3
+            and candidate is target_word
         ):
-            return True, word
+            return True, candidate
     return False, None
 
 
@@ -350,6 +367,12 @@ def _self_test() -> int:
         ("command echo in marker row rejected when not standalone", [
             {"text": "PRINTF_REMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
+        ("OCR-split printf echo rejected on marker row", [
+            {"text": "printf", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 80, "height": 37},
+            {"text": screenshot_marker, "confidence": 91.0,
+             "left": 116, "top": 31, "width": 675, "height": 37},
         ], False),
         ("marker substring rejected", [
             {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_EXTRA", "confidence": 91.0,
