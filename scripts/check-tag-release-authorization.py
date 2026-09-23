@@ -32,7 +32,7 @@ RELEASE_JOB = "Emulator-only release validation"
 RELEASE_ARTIFACT_PREFIX = "release-emulator-validation-"
 PUBLISH_WORKFLOW = ROOT / ".github/workflows/publish-release.yml"
 LEGACY_BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
-EXPECTED_SELF_TESTS = 32
+EXPECTED_SELF_TESTS = 33
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -560,6 +560,11 @@ def self_test() -> int:
             True,
         ),
         ("dispatch from any non-main ref blocks", lambda: validate_workflow_ref("refs/heads/rewrite"), False),
+        (
+            "workflow_dispatch from a tag ref blocks",
+            lambda: validate_workflow_ref("refs/tags/v0.5.6"),
+            False,
+        ),
         ("tag not at exact origin/main head blocks", lambda: validate_tag_and_main("v0.6.0", "b" * 40, sha), False),
         ("non-semver v tag blocks", lambda: validate_tag_and_main("v0.6.0-rc1", sha, sha), False),
         (
