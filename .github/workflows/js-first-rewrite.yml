@@ -93,7 +93,9 @@ jobs:
           scripts/check-apk-signing.sh --variant debug --js-first --apk "$apk"
 
       - name: Prepare packaged JS smoke APKs
-        run: scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
+        run: |
+          scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
+          scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
 
       - name: Start version-matched Docker agents fixture
         run: |
@@ -137,6 +139,7 @@ jobs:
             mkdir -p android/app/build/outputs/js-smoke-results
             cp -a android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml android/app/build/outputs/js-smoke-results/
             scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id "js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
+            scripts/connected-js-files-docker.sh --suffix i2858ci --port 2222 --container pocketshell-test-agents --run-id "js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
 
       - name: Upload packaged APK and connected smoke results
         if: always()
@@ -149,6 +152,7 @@ jobs:
             android/app/build/outputs/js-smoke-results/TEST-*.xml
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**
+            android/app/build/outputs/js-files/**
           if-no-files-found: warn
 
   docker-agents-fixture:

@@ -5,6 +5,7 @@ import { Capacitor } from '@capacitor/core';
 import {
   fromAndroidTrustedHostKeySha256,
   formatBytes,
+  joinRemoteChildPath,
   type ConnectionSnapshot,
   type HostKeyTrustPin,
   type HostKeyTrustStore,
@@ -39,6 +40,7 @@ import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import SettingsScreen from './components/SettingsScreen.vue';
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
+import FileWorkspaceScreen from './components/FileWorkspaceScreen.vue';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
@@ -141,6 +143,17 @@ const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
 });
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
+const fileConnection = computed(() => {
+  const snapshot = connectionSnapshot.value;
+  return snapshot?.connectionId && snapshot.generationId
+    ? { connectionId: snapshot.connectionId, generationId: snapshot.generationId }
+    : null;
+});
+const fileRootDirectory = computed(() => {
+  const username = hostDraft.value.username.trim();
+  const home = joinRemoteChildPath('/home', username);
+  return home.ok ? home.path : '';
+});
 const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
   (host) => String(host.id) === selectedLegacyHostId.value,
 ) ?? null);
@@ -904,7 +917,10 @@ onBeforeUnmount(() => {
             <p class="eyebrow">REMOTE SESSIONS</p>
             <h2 id="sessions-title">Sessions</h2>
           </div>
-          <button v-if="isConnected" class="small-action" type="button" data-testid="refresh-sessions" @click="refreshSessions">Refresh</button>
+          <div class="workspace-panel-actions">
+            <button v-if="isConnected" class="small-action files-open-button" type="button" data-testid="open-files" @click="navigation.open('files')">Files</button>
+            <button v-if="isConnected" class="small-action" type="button" data-testid="refresh-sessions" @click="refreshSessions">Refresh</button>
+          </div>
         </div>
         <div v-if="!isConnected" class="workspace-placeholder">
           <div class="workspace-placeholder__icon" aria-hidden="true"><AppIcon name="folder" /></div>
@@ -974,6 +990,12 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
+    <FileWorkspaceScreen
+      v-else-if="navigation.route === 'files'"
+      :connection="fileConnection"
+      :initial-root-directory="fileRootDirectory"
+      :capability="sshCapability"
+    />
     <SettingsScreen v-else-if="navigation.route.startsWith('settings')" />
     <DiagnosticsScreen v-else-if="navigation.route.startsWith('diagnostics')" />
     <AboutScreen
