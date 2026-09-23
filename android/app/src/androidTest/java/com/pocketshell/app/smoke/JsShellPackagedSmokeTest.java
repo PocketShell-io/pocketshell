@@ -5,6 +5,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.ClipData;
 import android.content.Intent;
@@ -27,6 +28,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.core.content.FileProvider;
 
+import com.pocketshell.app.DocumentContentIntentTest;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONArray;
@@ -48,6 +50,7 @@ import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /** Packaged-device checks for the JS-first shell; these exercise the installed APK WebView. */
 @RunWith(AndroidJUnit4.class)
@@ -56,6 +59,7 @@ public final class JsShellPackagedSmokeTest {
     private static final long WAIT_TIMEOUT_MILLIS = 12_000;
 
     private ActivityScenario<MainActivity> scenario;
+    private MainActivity directActivity;
 
     @Before
     public void launchPackagedShell() {
@@ -64,6 +68,12 @@ public final class JsShellPackagedSmokeTest {
 
     @After
     public void closeShell() {
+        if (directActivity != null) {
+            MainActivity activity = directActivity;
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            directActivity = null;
+        }
         if (scenario != null) scenario.close();
     }
 
@@ -94,8 +104,14 @@ public final class JsShellPackagedSmokeTest {
     }
 
     @Test
+    public void singleOpenDocumentDataUriIsIncludedAndDeduplicated() {
+        DocumentContentIntentTest.assertSingleOpenDocumentDataUriIsIncludedAndDeduplicated();
+    }
+
+    @Test
     public void packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes() throws Exception {
-        scenario.close();
+        startUntrackedPackagedShell();
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
 
         byte[] sharedBytes = "packed café 🧪".getBytes(StandardCharsets.UTF_8);
         File sharedFile = new File(targetContext().getCacheDir(), "platform-input-share.txt");
@@ -112,9 +128,8 @@ public final class JsShellPackagedSmokeTest {
                 .putExtra(Intent.EXTRA_TEXT, "Packaged share body")
                 .putExtra(Intent.EXTRA_STREAM, sharedUri);
         share.setClipData(ClipData.newUri(targetContext().getContentResolver(), "shared file", sharedUri));
-        scenario = ActivityScenario.launch(share);
+        deliverIncomingShareAndAwaitNativeCapture(share);
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
         awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
                 + "plugin.addListener('shareReceived',(event)=>window.__ps2857SharedContent=event); return true;})()");
         awaitJsTrue("window.__ps2857SharedContent?.text === 'Packaged share body'"
@@ -147,7 +162,8 @@ public final class JsShellPackagedSmokeTest {
 
     @Test
     public void packagedMultipleShareReadsStandardStreamListWithoutClipData() throws Exception {
-        scenario.close();
+        startUntrackedPackagedShell();
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
 
         File firstFile = new File(targetContext().getCacheDir(), "platform-input-list-first.txt");
         File secondFile = new File(targetContext().getCacheDir(), "platform-input-list-second.txt");
@@ -171,9 +187,8 @@ public final class JsShellPackagedSmokeTest {
                 .setType("text/plain")
                 .putParcelableArrayListExtra(Intent.EXTRA_STREAM, streams);
         assertNull("the fixture must exercise EXTRA_STREAM without ClipData", share.getClipData());
-        scenario = ActivityScenario.launch(share);
+        deliverIncomingShareAndAwaitNativeCapture(share);
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
         awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
                 + "plugin.addListener('shareReceived',(event)=>window.__ps2857ListShare=event); return true;})()");
         awaitJsTrue("window.__ps2857ListShare?.files?.length === 2");
@@ -231,6 +246,8 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("diagnostics");
+        evalRaw("document.querySelector('[data-testid=review-diagnostics-export]')"
+                + "?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}); 'scrolled'");
         tapDomCenter("[data-testid=review-diagnostics-export]");
         awaitRoute("diagnostics-report");
         awaitJsTrue("document.querySelector('[data-testid=selected-diagnostic-event]') === null");
@@ -337,6 +354,49 @@ public final class JsShellPackagedSmokeTest {
 
     private Context targetContext() {
         return InstrumentationRegistry.getInstrumentation().getTargetContext();
+    }
+
+    /** Start a normal app session without ActivityScenario's intent lifecycle matcher. */
+    private void startUntrackedPackagedShell() {
+        if (scenario != null) {
+            scenario.close();
+            scenario = null;
+        }
+        Intent launch = targetContext().getPackageManager().getLaunchIntentForPackage(targetContext().getPackageName());
+        assertNotNull("the packaged app must have a launcher intent", launch);
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Activity launched = InstrumentationRegistry.getInstrumentation().startActivitySync(launch);
+        assertTrue("the packaged launch should create MainActivity", launched instanceof MainActivity);
+        directActivity = (MainActivity) launched;
+    }
+
+    /**
+     * Send an actual share intent to the already running singleTask activity,
+     * then prove the native plugin consumed it before registering the JS
+     * listener. That late listener must receive Capacitor's retained event.
+     */
+    private void deliverIncomingShareAndAwaitNativeCapture(Intent share) throws Exception {
+        assertNotNull("share test must have a directly launched MainActivity", directActivity);
+        share.setClass(directActivity, MainActivity.class);
+        share.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        targetContext().startActivity(share);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String latestAction = "unknown";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<String> action = new AtomicReference<>();
+            runOnCurrentActivity(activity -> {
+                assertTrue("incoming share should be delivered to the running singleTask activity",
+                        activity == directActivity);
+                action.set(activity.getIntent().getAction());
+            });
+            latestAction = action.get();
+            if (latestAction == null) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Android share intent was not captured and cleared before JS listener registration"
+                + " (remaining activity action=" + latestAction + ")");
     }
 
     private JSONObject packagedManifest() throws IOException, JSONException {
@@ -470,7 +530,7 @@ public final class JsShellPackagedSmokeTest {
     private String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        runOnCurrentActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("the packaged activity must contain its Capacitor WebView", webView);
             webView.evaluateJavascript(expression, value -> {
@@ -480,6 +540,14 @@ public final class JsShellPackagedSmokeTest {
         });
         assertTrue("timed out evaluating packaged WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         return result.get();
+    }
+
+    private void runOnCurrentActivity(Consumer<MainActivity> action) {
+        if (directActivity != null) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> action.accept(directActivity));
+        } else {
+            scenario.onActivity(action::accept);
+        }
     }
 
     private void tapDomCenter(String selector) throws Exception {

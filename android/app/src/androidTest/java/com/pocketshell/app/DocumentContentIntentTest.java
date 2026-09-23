@@ -19,6 +19,11 @@ import java.util.Collections;
 public final class DocumentContentIntentTest {
     @Test
     public void singleOpenDocumentDataUriIsIncludedAndDeduplicated() {
+        assertSingleOpenDocumentDataUriIsIncludedAndDeduplicated();
+    }
+
+    /** Shared assertion also invoked by the registered packaged-shell smoke class. */
+    public static void assertSingleOpenDocumentDataUriIsIncludedAndDeduplicated() {
         Uri selected = Uri.parse("content://documents/document/one");
         Intent dataOnlyResult = new Intent(Intent.ACTION_OPEN_DOCUMENT).setData(selected);
         assertEquals(Collections.singletonList(selected), DocumentContentPlugin.extractUris(dataOnlyResult));
