@@ -1,0 +1,250 @@
+name: Publish release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing vMAJOR.MINOR.PATCH tag at the current main head
+        required: true
+        type: string
+
+concurrency:
+  group: publish-release-${{ inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: Authorize exact main tag and D37 proof
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      release_tag: ${{ steps.authorize.outputs.release_tag }}
+      release_sha: ${{ steps.authorize.outputs.release_sha }}
+    steps:
+      - name: Checkout the dispatched default-branch commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Self-test exact-main release authorization
+        run: scripts/check-tag-release-authorization.py --self-test
+
+      - name: Authorize the requested tag against current main and D37
+        id: authorize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          scripts/check-tag-release-authorization.py \
+            --release-tag "$RELEASE_TAG" \
+            --release-sha "$RELEASE_SHA" \
+            --workflow-ref "$WORKFLOW_REF"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and sign release APKs
+    needs: authorize
+    if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the authorized release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Confirm checked-out release commit and tag
+        env:
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")" = "$RELEASE_SHA"
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.5.1 --activate
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Cache Gradle
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            android/.gradle
+          key: ${{ runner.os }}-gradle-js-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/**/*.gradle', 'android/**/*.gradle.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-js-
+
+      - name: Install locked JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Derive package version from the authorized tag
+        id: version
+        env:
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          scripts/derive-version.sh --self-test
+          version_code="$(scripts/derive-version.sh version-code --ref "$RELEASE_TAG")"
+          version_name="$(scripts/derive-version.sh version-name --ref "$RELEASE_TAG")"
+          echo "code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "name=${version_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Build web assets
+        run: pnpm build:web
+
+      - name: Sync Capacitor Android project
+        run: pnpm cap:sync android
+
+      - name: Assemble debug APK
+        run: ./android/gradlew -p android assembleDebug --stacktrace --console=plain
+
+      - name: Validate debug APK identity and signature
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          apk=android/app/build/outputs/apk/debug/app-debug.apk
+          scripts/check-js-apk-metadata.py --self-test
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant debug \
+            --expected-version-code "$VERSION_CODE" \
+            --expected-version-name "$VERSION_NAME"
+          scripts/check-apk-signing.sh --variant debug --js-first --apk "$apk"
+
+      - name: Rename debug APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: mv android/app/build/outputs/apk/debug/app-debug.apk "android/app/build/outputs/apk/debug/pocketshell-${VERSION_NAME}-debug.apk"
+
+      - name: Assemble signed release APK
+        run: ./android/gradlew -p android assembleRelease --stacktrace --console=plain
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+
+      - name: Validate release APK identity and signature
+        env:
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant release \
+            --expected-version-code "$VERSION_CODE" \
+            --expected-version-name "$VERSION_NAME"
+          scripts/check-apk-signing.sh --variant release --apk "$apk"
+
+      - name: Rename release APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: mv android/app/build/outputs/apk/release/app-release.apk "android/app/build/outputs/apk/release/pocketshell-${VERSION_NAME}-release.apk"
+
+      - name: Upload validated APKs for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: pocketshell-release-apks
+          path: |
+            android/app/build/outputs/apk/debug/pocketshell-${{ steps.version.outputs.name }}-debug.apk
+            android/app/build/outputs/apk/release/pocketshell-${{ steps.version.outputs.name }}-release.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish authorized APKs
+    needs: [authorize, build]
+    if: github.ref == 'refs/heads/main' && needs.authorize.result == 'success' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout the authorized release commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.authorize.outputs.release_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Recheck immediately before the only write-token job publishes. This
+      # catches main movement or tag replacement during APK assembly.
+      - name: Reauthorize current main, tag, and exact-SHA D37 proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+          RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          scripts/check-tag-release-authorization.py \
+            --release-tag "$RELEASE_TAG" \
+            --release-sha "$RELEASE_SHA" \
+            --workflow-ref "$WORKFLOW_REF"
+
+      - name: Download APKs from this exact workflow run
+        uses: actions/download-artifact@v7
+        with:
+          name: pocketshell-release-apks
+          path: release-assets
+
+      - name: Refuse to overwrite an existing GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo PocketShell-io/pocketshell >/dev/null 2>&1; then
+            echo "::error::A GitHub Release already exists for $RELEASE_TAG; refusing to replace it."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          token: ${{ github.token }}
+          repository: PocketShell-io/pocketshell
+          tag_name: ${{ needs.authorize.outputs.release_tag }}
+          target_commitish: ${{ needs.authorize.outputs.release_sha }}
+          files: release-assets/*.apk
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          overwrite_files: false

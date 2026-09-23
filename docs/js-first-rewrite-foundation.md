@@ -80,22 +80,38 @@ should use the extracted shared desktop components tracked by
 ## Temporary branch CI boundary
 
 `.github/workflows/js-first-rewrite.yml` runs on pushes and pull requests to
-`rewrite/js-first-0.6.0`. It installs the locked JS dependencies, runs unit
-`rewrite/js-first-0.6.0`. It requires the exact registered JS unit suite,
-packages the debug APK, runs a packaged API 35 Android smoke suite, and runs
-the pinned Docker agents fixture. The smoke suite executes exactly three tests:
-the installed shell must show the verified core revision and asset hash, a
-Settings tap and Android Back must return to Hosts, and the focused composer
-must remain above the real IME while Capacitor safe-area insets are applied.
+`rewrite/js-first-0.6.0`. It installs the locked JS dependencies, requires the
+exact registered JS unit suite, packages the debug APK, verifies its package,
+signature, and `derive-version.sh` version, runs a packaged API 35 Android
+smoke suite, and runs the pinned Docker agents fixture. The smoke suite
+executes exactly three tests: the installed shell must show the verified core
+revision and asset hash, a Settings tap and Android Back must return to Hosts,
+and the focused composer must remain above the real IME while Capacitor
+safe-area insets are applied.
 This is shell coverage, not feature parity. It does not cover the SSH/session
 journeys, create a signed release artifact, or establish a nightly release
-verdict. The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached
-to `main` and `stable`; they are not copied onto this branch because their
-Kotlin modules are being removed. Pull requests into those branches must wait
-for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863), which
-owns the broader scheduled test and release-gate migration. Do not manually
-dispatch a legacy Gradle workflow against this branch; its old build graph is
-intentionally absent.
+verdict.
+
+The 24 feature journey classes mapped from app2 are registered in
+[`scripts/js-journey-class-manifest.json`](../scripts/js-journey-class-manifest.json).
+Run `scripts/check-js-journey-results.py --json --results-dir <connected-XML-dir>`
+to get a machine-readable qualification result. It blocks missing classes,
+zero-test runs, skips, failures, duplicates, malformed summaries, and extra
+classes. The foundation lane intentionally does not invoke this checker while
+the feature journeys are absent, so product PRs can keep building the shell.
+At the current foundation state the checker reports all 24 journeys missing.
+Its class-level contract must be tightened to exact method names as the real
+journeys land.
+
+The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached to
+`main` and `stable`; they are not valid for this JS tree because their Kotlin
+modules are gone. This branch has no JS replacement for the scheduled D36
+full-suite verdict or the exact-commit D37 fault verdict. Pull requests into
+those branches must wait for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863),
+which owns those blocking gates. A green foundation workflow is not release
+evidence: 0.6.0 is blocked until the feature journeys and both release verdicts
+are migrated and reviewer-validated. Do not manually dispatch a legacy Gradle
+workflow against this branch.
 
 The legacy `scripts/check-unit-gate-wiring.sh` is not part of the rewrite CI.
 On this branch it exits 123 with no output: its C9 scan treats the retained

@@ -2,6 +2,37 @@
 
 This is how PocketShell ships a version.
 
+## JS-first 0.6.0 release blocker
+
+The JS rewrite branch has a foundation workflow for the JS unit suite, debug
+APK identity/version, three packaged shell smoke tests, and the existing
+Docker fixture. The legacy tag-triggered `Build` workflow is artifact-only
+and its GitHub workflow ID `280774562` remains disabled. Keep it disabled:
+historical tag commits carry older definitions of that workflow.
+
+`.github/workflows/publish-release.yml` is the replacement publication path.
+It accepts a `vMAJOR.MINOR.PATCH` tag through `workflow_dispatch`, and every
+job requires `github.ref == refs/heads/main`. It verifies the fetched tag
+commit is both the dispatched SHA and the exact current `origin/main` head,
+then requires a trusted exact-SHA summary artifact from a successful
+`release-emulator-validation.yml` run with D37 PASS. It builds and checks the
+debug and signed release APKs; only the final publish job has `contents: write`,
+and it repeats authorization immediately before publishing. A direct tag push
+cannot create a GitHub Release.
+
+This workflow is currently on the rewrite branch. It does not become an
+available default-branch publication path until merged to `main`; a manual
+run selected on another branch is rejected by all jobs.
+
+The 0.6.0 release remains blocked. The 24 replacement feature journey classes
+are registered in `scripts/js-journey-class-manifest.json`;
+`scripts/check-js-journey-results.py --json` emits their fail-closed
+qualification result. The current packaged smoke XML has 3 tests and reports
+all 24 required journeys missing. The JS branch has no scheduled full-suite
+D36 verdict or exact-commit D37 fault verdict. Do not merge this branch to
+`main`, dispatch the publisher, or tag 0.6.0 until those journeys and both
+blocking release signals are migrated and reviewer-validated.
+
 `main` keeps moving; other people merge there. We don't freeze `main` and
 don't tag whatever `origin/main` happens to be after a long stabilize fight,
 and the root checkout never switches off `main` to do this work (locked,
@@ -15,17 +46,18 @@ branch's SHA has reached `main`, never before.
 
 ## Signing (issue #2638)
 
-Two APKs ship from the tag-triggered Build workflow, each with its own
+The manual Publish release workflow builds two APKs, each with its own
 signing identity:
 
 | | debug APK | release APK |
 |---|---|---|
 | applicationId | `com.pocketshell.app` | `com.pocketshell.app.release` |
-| launcher label | PocketShell Debug | PocketShell |
+| launcher label | PocketShell | PocketShell |
 | signer | committed `debug.keystore` | dedicated release keystore |
 
-Different signatures cannot replace each other under one applicationId, so
-the two install and run side by side on one device.
+The separate application IDs allow both APKs to install side by side. The
+release package can only be updated by an APK signed with the dedicated
+release key.
 
 The release keystore is NOT in the repo. It lives on this box at
 `/home/alexey/.pocketshell/keys/pocketshell-release.keystore` (PKCS12, alias
@@ -35,16 +67,18 @@ Losing it means every existing release install (`com.pocketshell.app.release`)
 can never be updated in place again — back it up somewhere off this box.
 
 Signing material reaches the build through exactly one of two paths, checked
-in this order by `app2/build.gradle.kts` (no debug-keystore fallback, D22):
+in this order by `android/app/build.gradle` (no debug-keystore fallback, D22):
 
 1. **Local**: a gitignored `keystore.properties` in the repository root.
    Schema: `storeFile` / `storePassword` / `keyAlias` / `keyPassword`.
    `keystore.properties` is gitignored, so a fresh worktree does not have
-   it — copy it from the root checkout before building a release APK there.
+   it — copy it from the root checkout before building a release APK there,
+   then verify `storeFile` resolves from that worktree's root. A relative path
+   copied unchanged may point at the wrong location in a deeper worktree.
 2. **CI**: the four GitHub secrets `ANDROID_RELEASE_KEYSTORE_BASE64` (the
    PKCS12 keystore, base64-encoded), `ANDROID_RELEASE_STORE_PASSWORD`,
    `ANDROID_RELEASE_KEY_ALIAS`, `ANDROID_RELEASE_KEY_PASSWORD`, exported by
-   `.github/workflows/build.yml` around `assembleRelease`.
+   `.github/workflows/publish-release.yml` around `assembleRelease`.
 
 A checkout with neither still configures and builds `assembleDebug` (and the
 confidence gate's release-compile lanes) fine; any task that would package a
@@ -53,9 +87,15 @@ release APK fails loudly instead of silently producing an unsigned APK.
 Verify a built APK's identity with:
 
 ```bash
-scripts/check-apk-signing.sh --variant release --apk app2/build/outputs/apk/release/app2-release.apk
-scripts/check-apk-signing.sh --variant debug  --apk app2/build/outputs/apk/debug/app2-debug.apk
+scripts/check-apk-signing.sh --variant release --apk android/app/build/outputs/apk/release/app-release.apk
+scripts/check-apk-signing.sh --variant debug --js-first --apk android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+The release package job also runs `scripts/check-js-apk-metadata.py` against both
+variants and compares their embedded version code/name to
+`scripts/derive-version.sh`. Debug is checked with `--js-first` because the
+generated Capacitor manifest labels it `PocketShell`, matching the release
+launcher label; the package IDs and signatures remain distinct.
 
 ## Product note for the next release
 
@@ -346,9 +386,12 @@ re-stabilize.
 
 ### 5. Tag the release
 
-The GitHub Release APK comes from the tag-triggered Build workflow. From the
-root checkout, now that `HEAD` equals `origin/main` at the merged candidate
-SHA:
+`scripts/push-release-tag.sh` creates the tag after the validated commit has
+reached `main`; it does not publish a GitHub Release. Once the new
+`Publish release` workflow is present on the default branch and its D36/D37
+requirements pass, dispatch it on `main` with that tag. The workflow checks
+the tag against the current main head again, builds and signs the APKs, then
+publishes them:
 
 ```bash
 git fetch origin
@@ -365,9 +408,9 @@ Commit SHA: <the now-merged candidate SHA, matching HEAD>
 Automated status: PASS
 ```
 
-Watch Build. Confirm `gh release view v0.4.45` is not a draft and has a
-downloadable APK. Don't retag an older version or publish a
-`workflow_dispatch` APK as the release.
+Watch `Publish release`. Confirm `gh release view v0.4.45` is not a draft and
+has downloadable APKs. The old `Build` workflow must remain disabled; a tag
+push alone never creates a release.
 
 ### 6. Remove the worktree
 
