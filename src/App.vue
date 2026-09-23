@@ -30,6 +30,7 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
+import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
@@ -43,7 +44,8 @@ interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
   clear(): void;
   focus(): void;
-  fit(): void;
+  fit(): Promise<{ cols: number; rows: number } | null>;
+  scrollToBottom(): void;
 }
 
 type ComposerSmokeEvidenceWindow = Window & {
@@ -83,6 +85,7 @@ const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const promptComposerHasFocus = ref(false);
+const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
 const selectedLegacyHostId = ref('');
@@ -101,6 +104,8 @@ const terminalInputFailureCount = ref(0);
 const terminalResizePending = ref(0);
 const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
+// Resize callbacks can finish after the user has selected a different PTY.
+let terminalAttachEpoch = 0;
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -139,6 +144,13 @@ const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
 const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
   (host) => String(host.id) === selectedLegacyHostId.value,
 ) ?? null);
+
+function navigateHomeSurface(action: HomeSurfaceAction) {
+  if (action !== 'session-attached' && document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+  homeSurface.value = transitionHomeSurface(homeSurface.value, action);
+}
 
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
@@ -290,7 +302,10 @@ async function connectHost() {
     connectionMessage.value = error instanceof Error ? error.message : String(error);
     return;
   }
-  if (result.ok) await refreshSessions();
+  if (result.ok) {
+    await refreshSessions();
+    navigateHomeSurface('connected');
+  }
   else if (next.getSnapshot().phase !== 'awaiting-trust') {
     recordOperationFailure('connect');
     connectionMessage.value = result.message;
@@ -309,7 +324,10 @@ async function acceptHostKey() {
     connectionMessage.value = error instanceof Error ? error.message : String(error);
     return;
   }
-  if (result.ok) await refreshSessions();
+  if (result.ok) {
+    await refreshSessions();
+    navigateHomeSurface('connected');
+  }
   else if (active.getSnapshot().phase !== 'awaiting-trust') {
     recordOperationFailure('accept-host-key');
     connectionMessage.value = result.message;
@@ -351,6 +369,7 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
+  terminalAttachEpoch += 1;
   terminal.value?.clear();
   const result = await active.switchSession(session).catch((error: unknown) => {
     recordFailure('ssh-bridge-failed', 'attach-session', error);
@@ -362,8 +381,12 @@ async function attachSession(session: SessionRow) {
     connectionMessage.value = result.message;
   }
   else if (result?.ok) {
+    navigateHomeSurface('session-attached');
     await nextTick();
-    terminal.value?.fit();
+    // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
+    // have identical geometry. Explicitly resize each newly attached PTY.
+    const size = await terminal.value?.fit();
+    if (size) await resizeTerminal(size);
     terminal.value?.focus();
   }
 }
@@ -371,9 +394,11 @@ async function attachSession(session: SessionRow) {
 async function sendTerminalInput(data: string) {
   const active = controller;
   if (!active || !isLive.value) return;
+  const attachEpoch = terminalAttachEpoch;
   terminalInputPending.value += 1;
   try {
     const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
+    if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
       recordOperationFailure('send-terminal-input');
@@ -382,6 +407,7 @@ async function sendTerminalInput(data: string) {
       terminalInputAckCount.value += 1;
     }
   } catch (error: unknown) {
+    if (attachEpoch !== terminalAttachEpoch) return;
     terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
@@ -394,12 +420,14 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   const active = controller;
   if (!active) return { ok: false, message: 'No active PTY.' };
   const result = await active.writeTerminalBytes(bytes);
+  if (result.ok) terminal.value?.scrollToBottom();
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
 
 async function resizeTerminal(size: { cols: number; rows: number }) {
-  terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   if (!controller || !isLive.value) return;
+  const attachEpoch = terminalAttachEpoch;
+  terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
     const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
@@ -407,6 +435,7 @@ async function resizeTerminal(size: { cols: number; rows: number }) {
       connectionMessage.value = error instanceof Error ? error.message : String(error);
       return null;
     });
+    if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
@@ -432,6 +461,7 @@ async function closeController() {
 }
 
 async function disconnectHost() {
+  navigateHomeSurface('disconnected');
   await closeController();
   const requestId = `ui-close-${Date.now()}`;
   resourceSnapshot.value = null;
@@ -546,10 +576,15 @@ onMounted(() => {
         (activeElement as HTMLElement).blur();
         return;
       }
-      if (navigation.canGoBack) navigation.back();
-      else void CapacitorApp.minimizeApp().catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-      });
+      switch (resolveAndroidBackDestination(navigation.canGoBack, homeSurface.value, !!connectionSnapshot.value)) {
+        case 'navigation': navigation.back(); break;
+        case 'workspace': navigateHomeSurface('back'); break;
+        case 'minimize':
+          void CapacitorApp.minimizeApp().catch((error: unknown) => {
+            recordFailure('ssh-bridge-failed', 'lifecycle', error);
+          });
+          break;
+      }
     }).then((listener) => {
       removeBackButton = () => listener.remove();
       backButtonReady.value = true;
@@ -599,6 +634,7 @@ watchEffect(() => {
   for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
 });
 
+
 onBeforeUnmount(() => {
   removeKeyboardViewportListeners?.();
   void removeKeyboardInsetsListener?.();
@@ -618,6 +654,7 @@ onBeforeUnmount(() => {
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
     :data-ssh-phase="currentPhase"
+    :data-home-surface="homeSurface"
     :data-ssh-connection-id="connectionSnapshot?.connectionId ?? ''"
     :data-ssh-generation-id="connectionSnapshot?.generationId ?? ''"
     :data-ssh-selected-session="connectionSnapshot?.selectedSession?.name ?? ''"
@@ -635,37 +672,85 @@ onBeforeUnmount(() => {
     @focusout="recordFocusAfterBlur"
     :data-migration-status="installedDataMigrationState.status"
   >
-    <header class="app-bar">
-      <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.home()">
-        <AppIcon class="brand-mark" name="terminal" />
-        <span class="wordmark">PocketShell</span>
-      </button>
-      <div class="app-bar-actions">
-        <span class="rewrite-chip">0.6.0 · rewrite preview</span>
-        <button
-          v-if="navigation.route === 'home'"
-          class="icon-button"
-          type="button"
-          aria-label="Settings"
-          title="Settings"
-          @click="navigation.openSettings()"
-        >
-          <AppIcon name="settings" />
+    <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
+      <template v-if="navigation.route === 'home' && connectionSnapshot">
+        <div class="session-context" aria-live="polite">
+          <AppIcon class="brand-mark" name="terminal" />
+          <div class="session-context__copy">
+            <span class="session-context__title">{{ connectionSnapshot.selectedSession?.name || 'PocketShell' }}</span>
+            <span class="session-context__host">{{ hostDraft.username }}@{{ hostDraft.hostname }}</span>
+          </div>
+        </div>
+        <nav class="workspace-navigation" aria-label="Session destinations">
+          <button
+            class="workspace-nav-button"
+            type="button"
+            aria-label="Host connection"
+            title="Host connection"
+            data-testid="open-connection"
+            :aria-current="homeSurface === 'connection' ? 'page' : undefined"
+            @click="navigateHomeSurface('open-connection')"
+          ><AppIcon name="home" /></button>
+          <button
+            class="workspace-nav-button"
+            type="button"
+            aria-label="Sessions"
+            title="Sessions"
+            data-testid="open-sessions"
+            :aria-current="homeSurface === 'sessions' ? 'page' : undefined"
+            :disabled="!isConnected"
+            @click="navigateHomeSurface('open-sessions')"
+          ><AppIcon name="folder" /></button>
+          <button
+            v-if="isConnected"
+            class="workspace-nav-button workspace-nav-button--disconnect"
+            type="button"
+            aria-label="Disconnect SSH"
+            title="Disconnect"
+            data-testid="ssh-disconnect"
+            @click="disconnectHost"
+          ><AppIcon name="close" /></button>
+          <button
+            class="workspace-nav-button"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            @click="navigation.openSettings()"
+          ><AppIcon name="settings" /></button>
+        </nav>
+      </template>
+      <template v-else>
+        <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.home()">
+          <AppIcon class="brand-mark" name="terminal" />
+          <span class="wordmark">PocketShell</span>
         </button>
-        <button
-          v-else
-          class="icon-button back-button"
-          type="button"
-          aria-label="Back"
-          title="Back"
-          @click="navigation.back()"
-        >
-          <AppIcon name="arrow-left" />
-        </button>
-      </div>
+        <div class="app-bar-actions">
+          <span class="rewrite-chip">0.6.0 · rewrite preview</span>
+          <button
+            v-if="navigation.route === 'home'"
+            class="icon-button"
+            type="button"
+            aria-label="Settings"
+            title="Settings"
+            @click="navigation.openSettings()"
+          >
+            <AppIcon name="settings" />
+          </button>
+          <button
+            v-else
+            class="icon-button back-button"
+            type="button"
+            aria-label="Back"
+            title="Back"
+            @click="navigation.back()"
+          >
+            <AppIcon name="arrow-left" />
+          </button>
+        </div>
+      </template>
     </header>
 
-    <div class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
+    <div v-if="!connectionSnapshot" class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
       <AppIcon class="status-dot" name="dot" :size="12" />
       <span>{{ buildStatus }}</span>
       <span class="build-strip__detail">core {{ coreShort }} · ui {{ uiShort }} · assets {{ bundleShort }}</span>
@@ -693,7 +778,8 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
-    <main v-if="navigation.route === 'home'" class="screen-content home-screen">
+    <main v-if="navigation.route === 'home'" class="screen-content home-screen" :class="{ 'home-screen--workspace': !!connectionSnapshot }">
+      <section v-if="homeSurface === 'connection'" class="connection-stack">
       <section class="panel host-panel" aria-labelledby="hosts-title">
         <div class="panel-heading">
           <div>
@@ -748,9 +834,6 @@ onBeforeUnmount(() => {
           <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting || migrationBlocksConnection" @click="connectHost">
             {{ isConnecting ? 'Connecting…' : 'Connect' }}
           </button>
-          <button v-if="connectionSnapshot" class="action-button action-button--secondary" type="button" data-testid="ssh-disconnect" @click="disconnectHost">
-            Disconnect
-          </button>
         </div>
 
         <div v-if="trustDecision" class="trust-prompt" role="alert" data-testid="host-key-decision">
@@ -766,76 +849,6 @@ onBeforeUnmount(() => {
           {{ connectionMessage || connectionSnapshot?.error }}
         </p>
         <p class="panel-footnote">SSH host-key pins are saved locally. Imported private keys stay in Android private storage and are read by native SSH only.</p>
-      </section>
-
-      <section class="panel workspace-panel" aria-labelledby="sessions-title">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">REMOTE SESSIONS</p>
-            <h2 id="sessions-title">Sessions</h2>
-          </div>
-          <button v-if="isConnected" class="small-action" type="button" data-testid="refresh-sessions" @click="refreshSessions">Refresh</button>
-        </div>
-        <div v-if="!isConnected" class="workspace-placeholder">
-          <div class="workspace-placeholder__icon" aria-hidden="true"><AppIcon name="folder" /></div>
-          <p>Connect to list or create sessions on the host.</p>
-        </div>
-        <template v-else>
-          <div class="create-session-row">
-            <label class="sr-only" for="session-name">New session name</label>
-            <input id="session-name" v-model="sessionName" data-testid="new-session-name" placeholder="New session name" />
-            <button class="small-action" type="button" data-testid="create-session" :disabled="!sessionName.trim()" @click="createSession">Create</button>
-          </div>
-          <ul v-if="sessions.length" class="session-list" data-testid="session-list">
-            <li v-for="session in sessions" :key="session.id ?? session.name">
-              <button
-                class="session-row"
-                type="button"
-                :data-session-name="session.name"
-                :data-session-id="session.id ?? ''"
-                :data-session-workspace="session.workspace ?? ''"
-                :data-session-tag="session.tag ?? ''"
-                :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
-                @click="attachSession(session)"
-              >
-                <span class="session-name">{{ session.name }}</span>
-                <span class="session-meta">{{ session.workspace || session.engine || 'remote session' }}</span>
-                <span class="session-attach">{{ connectionSnapshot?.selectedSession?.name === session.name && isLive ? 'Attached' : 'Attach' }}</span>
-              </button>
-            </li>
-          </ul>
-          <p v-else class="empty-sessions" data-testid="empty-sessions">No sessions on this host yet.</p>
-        </template>
-        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation">
-          {{ connectionSnapshot.uncertainMutation.kind }} “{{ connectionSnapshot.uncertainMutation.target }}” may have completed. Refresh sessions before retrying.
-        </p>
-      </section>
-
-      <section class="panel terminal-panel" aria-labelledby="terminal-title">
-        <div class="panel-heading panel-heading--terminal">
-          <div>
-            <p class="eyebrow">TERMINAL</p>
-            <h2 id="terminal-title">{{ connectionSnapshot?.selectedSession?.name || 'Live terminal' }}</h2>
-          </div>
-          <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
-        </div>
-        <TerminalViewport
-          ref="terminal"
-          :enabled="isLive"
-          :theme="activeTheme.terminal"
-          :font-family="terminalFontFamily"
-          :font-size="appSettings.terminalFontSize"
-          @input="sendTerminalInput"
-          @resize="resizeTerminal"
-        />
-        <PromptComposer
-          v-if="connectionSnapshot?.selectedSession"
-          :target-key="composerTargetKey"
-          :target-label="connectionSnapshot.selectedSession.name"
-          :transport-state="composerTransportState"
-          :write-pty="writeComposerPty"
-        />
-        <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
       </section>
 
       <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
@@ -882,6 +895,82 @@ onBeforeUnmount(() => {
         <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">
           {{ buildVerification.reason }}
         </p>
+      </section>
+      </section>
+
+      <section v-if="homeSurface === 'sessions'" class="panel workspace-panel" aria-labelledby="sessions-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">REMOTE SESSIONS</p>
+            <h2 id="sessions-title">Sessions</h2>
+          </div>
+          <button v-if="isConnected" class="small-action" type="button" data-testid="refresh-sessions" @click="refreshSessions">Refresh</button>
+        </div>
+        <div v-if="!isConnected" class="workspace-placeholder">
+          <div class="workspace-placeholder__icon" aria-hidden="true"><AppIcon name="folder" /></div>
+          <p>Connect to list or create sessions on the host.</p>
+        </div>
+        <template v-else>
+          <div class="create-session-row">
+            <label class="sr-only" for="session-name">New session name</label>
+            <input id="session-name" v-model="sessionName" data-testid="new-session-name" placeholder="New session name" />
+            <button class="small-action" type="button" data-testid="create-session" :disabled="!sessionName.trim()" @click="createSession">Create</button>
+          </div>
+          <ul v-if="sessions.length" class="session-list" data-testid="session-list">
+            <li v-for="session in sessions" :key="session.id ?? session.name">
+              <button
+                class="session-row"
+                type="button"
+                :data-session-name="session.name"
+                :data-session-id="session.id ?? ''"
+                :data-session-workspace="session.workspace ?? ''"
+                :data-session-tag="session.tag ?? ''"
+                :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
+                @click="attachSession(session)"
+              >
+                <span class="session-name">{{ session.name }}</span>
+                <span class="session-meta">{{ session.workspace || session.engine || 'remote session' }}</span>
+                <span class="session-attach">{{ connectionSnapshot?.selectedSession?.name === session.name && isLive ? 'Attached' : 'Attach' }}</span>
+              </button>
+            </li>
+          </ul>
+          <p v-else class="empty-sessions" data-testid="empty-sessions">No sessions on this host yet.</p>
+        </template>
+        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation">
+          {{ connectionSnapshot.uncertainMutation.kind }} “{{ connectionSnapshot.uncertainMutation.target }}” may have completed. Refresh sessions before retrying.
+        </p>
+      </section>
+
+      <section v-if="homeSurface === 'live' || connectionSnapshot?.selectedSession" v-show="homeSurface === 'live'" class="live-workspace">
+        <p v-if="connectionMessage" class="connection-message live-connection-message" role="alert" data-testid="ssh-message">
+          {{ connectionMessage }}
+        </p>
+        <section class="panel terminal-panel" aria-labelledby="terminal-title">
+        <div class="panel-heading panel-heading--terminal">
+          <div>
+            <p class="eyebrow">TERMINAL</p>
+            <h2 id="terminal-title">{{ connectionSnapshot?.selectedSession?.name || 'Live terminal' }}</h2>
+          </div>
+          <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
+        </div>
+        <TerminalViewport
+          ref="terminal"
+          :enabled="isLive"
+          :theme="activeTheme.terminal"
+          :font-family="terminalFontFamily"
+          :font-size="appSettings.terminalFontSize"
+          @input="sendTerminalInput"
+          @resize="resizeTerminal"
+        />
+        <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
+        </section>
+        <PromptComposer
+          v-if="connectionSnapshot?.selectedSession"
+          :target-key="composerTargetKey"
+          :target-label="connectionSnapshot.selectedSession.name"
+          :transport-state="composerTransportState"
+          :write-pty="writeComposerPty"
+        />
       </section>
     </main>
 

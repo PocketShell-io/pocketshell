@@ -46,6 +46,37 @@ button { color: inherit; }
   background: var(--surface);
 }
 
+/* The connected workspace follows desktop's terminal-first hierarchy: a
+   compact session strip, one terminal pane, then the shared composer dock. */
+.app-bar--workspace {
+  min-height: 52px;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 2px 8px;
+}
+.session-context { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 8px; }
+.session-context__copy { display: grid; min-width: 0; gap: 2px; }
+.session-context__title { overflow: hidden; color: var(--fg); font: 500 var(--fs-300)/var(--lh-300) var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.session-context__host { overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 0; }
+.workspace-nav-button {
+  display: inline-flex;
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-secondary);
+}
+.workspace-nav-button svg { width: 20px; height: 20px; }
+.workspace-nav-button[aria-current="page"] { background: var(--state-selected); color: var(--accent); }
+.workspace-nav-button:disabled { opacity: var(--disabled-opacity); }
+.workspace-nav-button--disconnect { color: var(--error); }
+
 .brand-button, .icon-button {
   display: inline-flex;
   min-width: 44px;
@@ -110,6 +141,34 @@ button { color: inherit; }
   scrollbar-color: var(--border-strong) var(--bg);
 }
 .home-screen { display: grid; align-content: start; gap: 12px; }
+.home-screen--workspace {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  padding: 8px 10px;
+}
+.connection-stack { display: grid; min-height: 0; align-content: start; gap: 12px; overflow-x: hidden; overflow-y: auto; padding-bottom: 12px; }
+.home-screen--workspace > .connection-stack,
+.home-screen--workspace > .workspace-panel { min-height: 0; flex: 1 1 auto; }
+.home-screen--workspace > .workspace-panel { overflow-x: hidden; overflow-y: auto; }
+.live-workspace { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 8px; overflow: hidden; }
+.live-workspace .terminal-panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
+  padding: 10px;
+}
+.live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
+.live-workspace .terminal-viewport { height: auto; min-height: 120px; max-height: none; flex: 1 1 auto; }
+.live-workspace .panel-footnote { flex: 0 0 auto; margin: 0; }
+.live-workspace > .composer-panel { min-width: 0; flex: 0 0 auto; margin: 0; }
+.live-connection-message { flex: 0 0 auto; margin: 0; }
 .panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 .host-panel, .workspace-panel, .terminal-panel, .composer-panel, .diagnostics-panel, .settings-panel { padding: 16px; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: 14px; }
@@ -184,13 +243,13 @@ button { color: inherit; }
 .composer-status[data-delivery-state="error"] { color: var(--error); }
 .composer-actions { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .composer-action-spacer { flex: 1 1 auto; }
-.composer-discard, .composer-insert { min-height: 44px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); padding: 0 12px; color: var(--fg); font-size: var(--fs-200); font-weight: 600; }
+.composer-discard, .composer-insert { min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--surface-2); padding: 0 12px; color: var(--fg); font-size: var(--fs-200); font-weight: 600; }
 .composer-discard { color: var(--fg-secondary); }
 .composer-discard:disabled, .composer-insert:disabled { opacity: 0.5; }
 .composer-insert:not(:disabled):active { border-color: var(--accent); color: var(--accent); }
 .composer-shared-controls { flex: 0 0 auto; margin: 0; border: 0; padding: 0; }
 .composer-shared-controls .pill, .composer-shared-controls .spacer, .composer-shared-controls .kbd-hint { display: none; }
-.composer-shared-controls .send { min-height: 44px; height: 44px; }
+.composer-shared-controls .send { min-height: 48px; height: 48px; }
 .preview-input { width: 100%; min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 0 12px; color: var(--fg); font-size: 16px; outline: none; }
 .preview-input::placeholder { color: var(--fg-muted); }
 .preview-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
@@ -306,6 +365,9 @@ button { color: inherit; }
   .home-screen { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
   .terminal-panel, .composer-panel, .diagnostics-panel, .rewrite-note { grid-column: 1 / -1; }
   .terminal-viewport { min-height: 240px; }
+  .connection-stack { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .connection-stack > .host-panel { grid-column: 1 / -1; }
+  .home-screen--workspace { display: flex; padding: 14px; }
 }
 
 @media (max-width: 719px) {
@@ -377,14 +439,67 @@ button { color: inherit; }
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .app-shell[data-keyboard-composer-mode="true"] .composer-actions { min-height: 44px; gap: 6px; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-actions { min-height: 48px; gap: 6px; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-discard,
   .app-shell[data-keyboard-composer-mode="true"] .composer-insert,
   .app-shell[data-keyboard-composer-mode="true"] .composer-shared-controls .send {
-    height: 44px;
-    min-height: 44px;
-    max-height: 44px;
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
   }
+  .app-shell[data-keyboard-composer-mode="true"] .app-bar--workspace {
+    min-height: 48px;
+    padding: 0 6px;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .session-context { gap: 5px; }
+  .app-shell[data-keyboard-composer-mode="true"] .session-context .brand-mark { width: 20px; height: 20px; }
+  .app-shell[data-keyboard-composer-mode="true"] .session-context__title { font-size: var(--fs-200); }
+  .app-shell[data-keyboard-composer-mode="true"] .session-context__host { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .workspace-nav-button { width: 48px; min-width: 48px; height: 48px; }
+  .app-shell[data-keyboard-composer-mode="true"] .home-screen--workspace { gap: 5px; padding: 4px 7px 3px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace { gap: 5px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-heading--terminal { min-height: 24px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-viewport {
+    height: auto;
+    min-height: 80px;
+    max-height: none;
+    flex: 1 1 auto;
+    padding: 4px;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-footnote { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace > .composer-panel {
+    flex: 0 0 auto;
+    gap: 5px;
+    padding: 8px;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-heading { min-height: 22px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-heading .eyebrow { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-heading h3 {
+    overflow: hidden;
+    max-width: calc(100vw - 150px);
+    font-size: var(--fs-200);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-draft {
+    height: 68px;
+    min-height: 68px;
+    max-height: 80px;
+    resize: none;
+    padding: 6px 8px;
+    font-size: var(--fs-200);
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-status {
+    min-height: 14px;
+    max-height: 14px;
+    overflow: hidden;
+    font-size: var(--fs-100);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .composer-actions { min-height: 48px; gap: 5px; }
 }
 
 @media (max-width: 460px) {

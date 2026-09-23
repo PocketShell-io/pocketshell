@@ -151,6 +151,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             button = controls.get(name)
             if not isinstance(button, dict):
                 raise ExtractionFailure(f"keyboard geometry is missing the {name} button bounds")
+            try:
+                if float(button["bottom"]) - float(button["top"]) < 47.9:
+                    raise ExtractionFailure(f"{name} touch target is below the 48dp minimum")
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"keyboard geometry has invalid bounds for {name}") from error
             visible_rects[name] = button
         for name, rect in visible_rects.items():
             try:
@@ -270,18 +275,18 @@ def self_test() -> None:
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
-                         send_bottom: float = 198.0, terminal_height: float = 60.0) -> bytes:
+                         send_bottom: float = 218.0, terminal_height: float = 60.0) -> bytes:
         return json.dumps({
             "androidImeVisible": ime_visible,
-            "visualViewport": {"height": 200.0, "width": 400.0},
+            "visualViewport": {"height": 240.0, "width": 400.0},
             "terminalViewport": {"top": 30.0, "bottom": 30.0 + terminal_height, "left": 1.0, "right": 399.0, "height": terminal_height},
             "appBar": {"top": app_bar_top},
             "draft": {"top": 100.0, "bottom": 150.0, "left": 1.0, "right": 399.0},
             "status": {"top": 152.0, "bottom": 166.0, "left": 1.0, "right": 399.0},
-            "actions": {"top": 168.0, "bottom": 199.0, "left": 1.0, "right": 399.0},
+            "actions": {"top": 168.0, "bottom": 219.0, "left": 1.0, "right": 399.0},
             "buttons": {
-                "discard": {"top": 170.0, "bottom": 198.0, "left": 1.0, "right": 70.0},
-                "insert": {"top": 170.0, "bottom": 198.0, "left": 250.0, "right": 310.0},
+                "discard": {"top": 170.0, "bottom": 218.0, "left": 1.0, "right": 70.0},
+                "insert": {"top": 170.0, "bottom": 218.0, "left": 250.0, "right": 310.0},
                 "send": {"top": 170.0, "bottom": send_bottom, "left": 320.0, "right": 398.0},
             },
             "safeArea": {"topCss": 24.0, "bottomCss": 0.0, "shellTopPadding": 24.0, "shellBottomPadding": 0.0, "keyboardVisible": True},
@@ -316,7 +321,8 @@ def self_test() -> None:
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
         ("bad digest", [line.replace(hashlib.sha256(png).hexdigest(), "0" * 64) for line in lines]),
         ("IME hidden", make_lines(geometry_payload(ime_visible=False))),
-        ("send button clipped by viewport", make_lines(geometry_payload(send_bottom=201))),
+        ("send button clipped by viewport", make_lines(geometry_payload(send_bottom=241))),
+        ("send touch target below 48dp", make_lines(geometry_payload(send_bottom=214))),
         ("status bar overlap", make_lines(geometry_payload(app_bar_top=0))),
         ("terminal context hidden", make_lines(geometry_payload(terminal_height=30))),
         ("post-send marker missing from rendered terminal", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"wrong-marker"))),

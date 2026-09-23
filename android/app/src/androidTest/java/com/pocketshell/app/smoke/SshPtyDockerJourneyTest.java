@@ -300,6 +300,12 @@ public final class SshPtyDockerJourneyTest {
         JSONObject resizeBefore = terminalResizeStats();
         assertEquals("no native terminal resize may be pending before " + checkpoint, 0,
                 resizeBefore.getInt("pending"));
+        if (!"sessions".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+            click("[data-testid=open-sessions]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
+        }
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-session-tag]')).some((node) => node.dataset.sessionTag === "
+                + JSONObject.quote(tag) + ")");
         click("[data-session-tag=\"" + tag + "\"]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === " + JSONObject.quote(tag));
@@ -854,12 +860,16 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void awaitNativeResizeAckAfter(int previousAckCount, String checkpoint) throws Exception {
-        awaitJsTrue("(() => {const root=document.querySelector('.app-shell');"
+        try {
+            awaitJsTrue("(() => {const root=document.querySelector('.app-shell');"
                 + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||'';"
                 + "return !!root && Number(root.dataset.sshTerminalResizeAcks||0) > " + previousAckCount
                 + " && Number(root.dataset.sshTerminalResizePending||0) === 0"
                 + " && Number(root.dataset.sshTerminalResizeFailures||0) === 0"
                 + " && status.endsWith('accepted by SSH');})()", WAIT_TIMEOUT_MILLIS);
+        } catch (AssertionError failure) {
+            throw new AssertionError(checkpoint + " resize state: " + evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');return {phase:root?.dataset.sshPhase,surface:root?.dataset.homeSurface,selected:root?.dataset.sshSelectedTag,resize:document.querySelector('[data-testid=terminal-resize-status]')?.textContent,acks:root?.dataset.sshTerminalResizeAcks,pending:root?.dataset.sshTerminalResizePending,failures:root?.dataset.sshTerminalResizeFailures}})())"), failure);
+        }
         JSONObject resize = terminalResizeStats();
         assertEquals(checkpoint + " must finish with no pending native resize", 0, resize.getInt("pending"));
         assertTrue(checkpoint + " must have a fresh native resize acknowledgement",

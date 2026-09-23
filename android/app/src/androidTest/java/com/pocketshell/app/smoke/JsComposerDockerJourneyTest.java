@@ -9,6 +9,7 @@ import android.graphics.Insets;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
@@ -88,6 +89,7 @@ public final class JsComposerDockerJourneyTest {
         createSession(bytesSession);
         createSession(uncertainSession);
         attachSession(bytesSession);
+        verifyNestedAndroidBackKeepsLiveSession();
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
@@ -162,7 +164,24 @@ public final class JsComposerDockerJourneyTest {
         }
     }
 
+    private void verifyNestedAndroidBackKeepsLiveSession() throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        click("button[aria-label='Settings']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        click("[data-testid=open-terminal-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
+        int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && !!document.querySelector('[data-testid=prompt-composer]')");
+    }
+
     private void createSession(String name) throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=new-session-name]')");
         setValue("[data-testid=new-session-name]", name);
         click("[data-testid=create-session]");
         String match = "Array.from(document.querySelectorAll('[data-session-name]')).find(node => node.dataset.sessionName.endsWith("
@@ -171,6 +190,10 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void attachSession(String suffixName) throws Exception {
+        if (!"sessions".equals(evalRaw("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+            click("[data-testid=open-sessions]");
+        }
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
         String match = "Array.from(document.querySelectorAll('[data-session-name]')).find(node => node.dataset.sessionName.endsWith("
                 + JSONObject.quote(suffixName) + "))";
         awaitJsTrue(match + " !== undefined");
@@ -178,6 +201,7 @@ public final class JsComposerDockerJourneyTest {
         click("[data-session-name=" + JSONObject.quote(actualName) + "]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
         awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer]')");
+        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
     }
 
     private void setComposerDraft(String value) throws Exception {
@@ -239,12 +263,10 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void showKeyboardAndCapture(String runId) throws Exception {
-        evalString("document.querySelector('[data-testid=prompt-draft]')?.scrollIntoView({block:'center', behavior:'instant'}); 'scrolled'");
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
-        evalString("document.querySelector('[data-testid=composer-actions]')?.scrollIntoView({block:'end', behavior:'instant'}); 'scrolled'");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
         assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
@@ -254,16 +276,34 @@ public final class JsComposerDockerJourneyTest {
                     + "const appBar=document.querySelector('.app-bar')?.getBoundingClientRect();"
                     + "const terminal=document.querySelector('.terminal-viewport')?.getBoundingClientRect();"
                     + "const height=window.visualViewport?.height ?? innerHeight;"
+                    + "const safeTop=parseFloat(getComputedStyle(shell).paddingTop)||0;"
                     + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
                     + "'[data-testid=composer-discard]','[data-testid=composer-insert]','.composer-shared-controls .send'];"
                     + "const visible=selectors.every(selector=>{const node=document.querySelector(selector);"
                     + "if(!node)return false;const rect=node.getBoundingClientRect();return rect.top >= 0 && rect.bottom <= height + 0.5"
                     + " && rect.left >= 0 && rect.right <= innerWidth + 0.5;});"
+                    + "const nav=Array.from(document.querySelectorAll('.workspace-navigation button'));"
+                    + "const navVisible=nav.length >= 3 && nav.every(node=>{const rect=node.getBoundingClientRect();"
+                    + "return rect.top >= 0 && rect.bottom <= height + 0.5 && rect.left >= 0 && rect.right <= innerWidth + 0.5;});"
+                    + "const screen=document.querySelector('.screen-content');"
                     + "return shell?.dataset.keyboardVisible === 'true' && !!appBar && !!terminal && terminal.height >= 48"
-                    + " && terminal.top >= 0 && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
-                    + " && appBar.top >= parseFloat(getComputedStyle(shell).paddingTop) - 0.5 && visible;})()");
+                    + " && appBar.top >= safeTop - 0.5 && appBar.bottom <= height + 0.5"
+                    + " && terminal.top >= appBar.bottom && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
+                    + " && navVisible && visible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
         } catch (AssertionError error) {
             throw new AssertionError(error.getMessage() + "; captured keyboard screenshot precedes geometry=" + geometry, error);
+        }
+        JSONObject keyboardGeometry = new JSONObject(geometry);
+        JSONObject nativeInsets = keyboardGeometry.optJSONObject("nativeInsets");
+        assertNotNull("keyboard capture must include Android system-bar insets", nativeInsets);
+        assertTrue("workspace chrome must begin below the Android status bar",
+                keyboardGeometry.getJSONObject("appBar").getDouble("top")
+                        >= nativeInsets.getDouble("statusBarTopDp") - 1.0);
+        JSONObject buttons = keyboardGeometry.getJSONObject("buttons");
+        for (String name : new String[]{"discard", "insert", "send"}) {
+            JSONObject bounds = buttons.getJSONObject(name);
+            assertTrue(name + " must keep a 48dp touch target with the IME open",
+                    bounds.getDouble("bottom") - bounds.getDouble("top") >= 47.9);
         }
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
     }
@@ -271,10 +311,12 @@ public final class JsComposerDockerJourneyTest {
     private void ensureImeVisible() throws Exception {
         boolean composerFocused = "true".equals(evalRaw(
                 "!!document.activeElement?.closest('[data-testid=prompt-composer]')"));
-        if (!isImeVisible() || !composerFocused) {
-            evalString("document.querySelector('[data-testid=prompt-draft]')?.scrollIntoView({block:'center', behavior:'instant'}); 'scrolled'");
+        boolean composerMode = "true".equals(evalRaw(
+                "document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+        if (!isImeVisible() || !composerFocused || !composerMode) {
+            if (!composerMode && composerFocused) evalString("document.activeElement?.blur(); 'blurred'");
             tapDomCenter("[data-testid=prompt-draft]");
-            awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')");
+            awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 3_000);
             awaitImeVisible(true);
         }
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
@@ -284,42 +326,75 @@ public final class JsComposerDockerJourneyTest {
 
     private void tapComposerAction(String selector) throws Exception {
         ensureImeVisible();
-        evalString("document.querySelector(" + JSONObject.quote(selector)
-                + ")?.scrollIntoView({block:'nearest', behavior:'instant'}); 'scrolled'");
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
         tapDomCenter(selector);
     }
 
     private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
-        long deadline = SystemClock.uptimeMillis() + 5_000;
-        while (SystemClock.uptimeMillis() < deadline) {
-            String found = evalRaw("(window.__ps2857TerminalVisibleText || '').includes(" + quotedMarker + ")"
-                    + " || Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
-                    + ".some(row => (row.textContent || '').includes(" + quotedMarker + "))");
-            if ("true".equals(found)) return;
-            Thread.sleep(100);
+        String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
+        try {
+            awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
+                + "const viewport=document.querySelector('.terminal-viewport');"
+                + "const screen=viewport?.querySelector('.xterm-screen');"
+                + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
+                + "const byteRow=rows.find(node=>(node.textContent||'').includes(" + expectedBytes + "));"
+                + "const markerRow=rows.find(node=>(node.textContent||'').includes(" + quotedMarker + "));"
+                + "const byteBounds=byteRow?.getBoundingClientRect(),markerBounds=markerRow?.getBoundingClientRect();"
+                + "const view=viewport?.getBoundingClientRect(),screenBounds=screen?.getBoundingClientRect();"
+                + "const visible=(bounds,outer,inner)=>!!bounds&&!!outer&&!!inner&&bounds.top>=outer.top&&bounds.bottom<=outer.bottom"
+                + "&&bounds.left>=outer.left&&bounds.right<=outer.right&&bounds.top>=inner.top&&bounds.bottom<=inner.bottom"
+                + "&&bounds.left>=inner.left&&bounds.right<=inner.right;"
+                + "return status?.dataset.deliveryState==='success'&&status.textContent.includes('Sent to the terminal')"
+                + "&&document.querySelector('[data-testid=prompt-draft]')?.value===''"
+                + "&&visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
+                + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top+0.5"
+                + "&&document.querySelector('.screen-content')?.scrollTop===0&&document.scrollingElement?.scrollTop===0;})()",
+                5_000);
+        } catch (AssertionError failure) {
+            String bounds = evalString("(() => {const v=document.querySelector('.terminal-viewport');"
+                + "const screen=v?.querySelector('.xterm-screen');"
+                + "const rows=Array.from(v?.querySelectorAll('.xterm-rows > div') ?? []);"
+                + "const pick=text=>rows.find(node=>(node.textContent||'').includes(text));"
+                + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right}:null};"
+                + "return JSON.stringify({status:document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState,"
+                + "draft:document.querySelector('[data-testid=prompt-draft]')?.value,"
+                + "bytes:rect(pick('636166c3a920f09fa7aa')),marker:rect(pick(" + quotedMarker + ")),"
+                + "viewport:rect(v),screen:rect(screen),screenScroll:document.querySelector('.screen-content')?.scrollTop,"
+                + "documentScroll:document.scrollingElement?.scrollTop});})()");
+            throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
         }
     }
 
     private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
-        // Sending closes Android's IME and the current mobile screen can keep its
-        // previous outer scroll position at the connection card. Scroll the
-        // terminal into the real WebView viewport before capturing the rendered
-        // output; this is an explicit post-send proof step, not evidence that the
-        // output was visible immediately when Send was tapped.
-        evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
-                + "viewport?.scrollIntoView({block:'center',behavior:'instant'});"
-                + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
-                + "if(terminalScroller)terminalScroller.scrollTop=terminalScroller.scrollHeight;"
-                + "return 'terminal-scrolled-into-view';})()");
-        SystemClock.sleep(400);
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
+                + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
+                + "const composerRect=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
+                + "const terminalScreenRect=viewport?.querySelector('.xterm-screen')?.getBoundingClientRect();"
+                + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
+                + "const markerRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
+                + ".find(row=>(row.textContent||'').includes(" + JSONObject.quote(expectedMarker) + "));"
+                + "const byteOutputRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
+                + ".find(row=>(row.textContent||'').includes('636166c3a920f09fa7aa'));"
+                + "const markerRect=markerRow?.getBoundingClientRect();"
+                + "const byteOutputRect=byteOutputRow?.getBoundingClientRect();"
                 + "const visibleText=window.__ps2857TerminalVisibleText || '';"
                 + "const terminalDomText=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
                 + ".map(row=>row.textContent || '').join('\\n').slice(-4000);"
-                + "return JSON.stringify({stage:'after-send',expectedMarker:" + JSONObject.quote(expectedMarker)
+                + "const height=window.visualViewport?.height ?? innerHeight;"
+                + "const markerVisible=!!rect&&!!terminalScreenRect&&!!markerRect"
+                + "&&markerRect.top>=rect.top&&markerRect.bottom<=rect.bottom&&markerRect.left>=rect.left&&markerRect.right<=rect.right"
+                + "&&markerRect.top>=terminalScreenRect.top&&markerRect.bottom<=terminalScreenRect.bottom"
+                + "&&markerRect.left>=terminalScreenRect.left&&markerRect.right<=terminalScreenRect.right;"
+                + "const byteOutputVisible=!!rect&&!!terminalScreenRect&&!!byteOutputRect"
+                + "&&byteOutputRect.top>=rect.top&&byteOutputRect.bottom<=rect.bottom&&byteOutputRect.left>=rect.left&&byteOutputRect.right<=rect.right"
+                + "&&byteOutputRect.top>=terminalScreenRect.top&&byteOutputRect.bottom<=terminalScreenRect.bottom"
+                + "&&byteOutputRect.left>=terminalScreenRect.left&&byteOutputRect.right<=terminalScreenRect.right;"
+                + "const screenScrollTop=document.querySelector('.screen-content')?.scrollTop??null;"
+                + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
+                + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
+                + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
                 + ",captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
                 + "terminalEvidenceSource:'xterm-active-buffer-after-render',visibleTerminalText:visibleText,terminalDomText:terminalDomText,"
                 + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,appTerminalMissingRefCount:window.__ps2857AppTerminalMissingRefCount??0,"
@@ -327,13 +402,20 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalLastWriteText:window.__ps2857TerminalLastWriteText??'',terminalRenderCount:window.__ps2857TerminalRenderCount??0,"
                 + "sentMarkerAbsentFromSubmittedCommand:" + !submittedCommand.contains(expectedMarker) + ","
                 + "terminalViewport:rect?{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null,"
-                + "visualViewport:{height:window.visualViewport?.height ?? innerHeight,width:window.visualViewport?.width ?? innerWidth},"
+                + "terminalScreen:terminalScreenRect?{top:terminalScreenRect.top,bottom:terminalScreenRect.bottom,left:terminalScreenRect.left,right:terminalScreenRect.right}:null,"
+                + "appBar:appBarRect?{top:appBarRect.top,bottom:appBarRect.bottom,left:appBarRect.left,right:appBarRect.right}:null,"
+                + "composer:composerRect?{top:composerRect.top,bottom:composerRect.bottom,left:composerRect.left,right:composerRect.right}:null,"
+                + "markerRow:markerRect?{top:markerRect.top,bottom:markerRect.bottom,left:markerRect.left,right:markerRect.right}:null,"
+                + "byteOutputRow:byteOutputRect?{top:byteOutputRect.top,bottom:byteOutputRect.bottom,left:byteOutputRect.left,right:byteOutputRect.right}:null,"
+                + "terminalScroller:{scrollTop:terminalScroller?.scrollTop??null,scrollHeight:terminalScroller?.scrollHeight??null,clientHeight:terminalScroller?.clientHeight??null},"
+                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top+0.5,"
+                + "byteOutputVisible,visualViewport:{height,width:window.visualViewport?.width ?? innerWidth},"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
-                + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop ?? null,"
+                + "screenScrollTop,documentScrollTop,"
                 + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
         JSONObject measured = new JSONObject(report);
-        SystemClock.sleep(250);
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
+        awaitWebViewVisualState();
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
         AtomicReference<Boolean> saved = new AtomicReference<>(false);
         scenario.onActivity(activity -> {
@@ -372,11 +454,43 @@ public final class JsComposerDockerJourneyTest {
                 && viewport.getDouble("left") >= 0
                 && viewport.getDouble("right") <= visualViewport.getDouble("width") + 0.5
                 && viewport.getDouble("height") >= 48);
+        JSONObject appBar = measured.getJSONObject("appBar");
+        JSONObject composer = measured.getJSONObject("composer");
+        assertTrue("immediate post-send chrome, terminal and composer must remain visible without scrolling",
+                !measured.getBoolean("keyboardVisible")
+                        && appBar.getDouble("top") >= 0
+                        && appBar.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
+                && appBar.getDouble("bottom") <= viewport.getDouble("top")
+                && composer.getDouble("top") >= viewport.getDouble("bottom")
+                && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
+                        && measured.getBoolean("capturedBeforeScroll")
+                        && measured.getDouble("screenScrollTop") == 0
+                        && measured.getDouble("documentScrollTop") == 0);
         assertTrue("the app terminal subscription must deliver PTY bytes to its mounted Xterm component",
                 measured.getInt("appTerminalDeliveryCount") > 0 && measured.getInt("appTerminalMissingRefCount") == 0
                         && measured.getInt("terminalWriteCount") > 0);
-        assertTrue("the same-run active Xterm buffer and rendered DOM must contain the sent output",
-                visibleText.contains(expectedMarker) && measured.getString("terminalDomText").contains(expectedMarker));
+        assertTrue("the sent output row must already be rendered inside the onscreen terminal without test scrolling",
+                measured.getBoolean("terminalOutputRowVisible")
+                        && visibleText.contains(expectedMarker)
+                        && measured.getString("terminalDomText").contains(expectedMarker));
+    }
+
+    private void awaitWebViewVisualState() throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            long requestId = SystemClock.uptimeMillis();
+            webView.postVisualStateCallback(requestId, new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long completedRequestId) {
+                    latch.countDown();
+                }
+            });
+        });
+        assertTrue("WebView did not commit the measured post-send state before screenshot capture",
+                latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        SystemClock.sleep(250);
     }
 
     private String saveKeyboardGeometry(String runId) throws Exception {
