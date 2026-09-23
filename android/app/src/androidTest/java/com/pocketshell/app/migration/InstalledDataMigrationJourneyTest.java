@@ -38,6 +38,10 @@ public final class InstalledDataMigrationJourneyTest {
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final long MIGRATION_TIMEOUT_MILLIS = 30_000;
     private static final String FIXTURE_OPT_IN = "installedDataMigrationFixture";
+    private static final String CONNECT_OPT_IN = "installedDataMigrationConnect";
+    private static final String EXPECTED_HOST_KEY_ARGUMENT = "installedDataMigrationExpectedHostKey";
+    private static final String DEFAULT_EXPECTED_HOST_KEY =
+        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
     private Context targetContext;
     private ActivityScenario<MainActivity> scenario;
@@ -120,8 +124,22 @@ public final class InstalledDataMigrationJourneyTest {
         assertEquals(90_000, settings.getInt("backgroundGraceMs"));
 
         JSONObject pin = evalJson("localStorage.getItem('pocketshell.ssh.host-key.41') || '{}'");
-        assertEquals("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            pin.getString("fingerprintSha256"));
+        String expectedHostKey = InstrumentationRegistry.getArguments()
+            .getString(EXPECTED_HOST_KEY_ARGUMENT, DEFAULT_EXPECTED_HOST_KEY);
+        assertEquals(expectedHostKey, pin.getString("fingerprintSha256"));
+
+        if ("true".equals(InstrumentationRegistry.getArguments().getString(CONNECT_OPT_IN))) {
+            evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
+            awaitJsTrue("['CONNECTED', 'LIVE'].includes(document.querySelector(" +
+                "'section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim())");
+            awaitJsTrue("document.querySelector('[data-testid=session-list], [data-testid=empty-sessions]') !== null");
+            assertEquals("CONNECTED", evalString(
+                "document.querySelector('section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim()"));
+            evalRaw("document.querySelector('[data-testid=ssh-disconnect]')?.click(); 'disconnect-clicked'");
+            awaitJsTrue("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState === 'verified'");
+            assertEquals("the native resolver connection must close cleanly", "0",
+                evalString("document.querySelector('[data-testid=ssh-resource-connections]')?.textContent.trim()"));
+        }
 
         assertEquals("the migration must not alter any original installed source file",
             sourceHashes, snapshotSourceHashes());
