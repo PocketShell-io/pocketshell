@@ -17,10 +17,15 @@ import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.PublicKey;
+import java.security.Provider;
+import java.security.Security;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -47,6 +52,8 @@ import net.schmizz.sshj.userauth.keyprovider.FileKeyProvider;
 import net.schmizz.sshj.userauth.keyprovider.KeyFormat;
 import net.schmizz.sshj.userauth.keyprovider.KeyProviderUtil;
 import net.schmizz.sshj.common.Factory;
+import net.schmizz.sshj.common.SecurityUtils;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
 
 /**
  * Narrow Android SSH I/O capability. This class owns sshj objects and bounded
@@ -64,6 +71,8 @@ public final class SshCapabilityPlugin extends Plugin {
     private static final int MAX_EXEC_TIMEOUT_MS = 120_000;
     private static final int MAX_SFTP_ENTRIES = 1000;
     private static final int MAX_ACTIVE_FORWARDS = 8;
+    private static final int MAX_CONNECT_CANCELLATION_TOMBSTONES = 256;
+    private static final long CONNECT_CANCELLATION_TTL_MS = 120_000L;
     private static final Semaphore FORWARD_PERMITS = new Semaphore(MAX_ACTIVE_FORWARDS);
     private static final ExecutorService FORWARD_EXECUTOR = Executors.newFixedThreadPool(MAX_ACTIVE_FORWARDS, runnable -> {
         Thread thread = new Thread(runnable, "pocketshell-ssh-forward");
@@ -75,14 +84,19 @@ public final class SshCapabilityPlugin extends Plugin {
         thread.setDaemon(true);
         return thread;
     });
+    private static volatile boolean sshProviderReady;
 
     private final Map<String, SshConnection> connections = new ConcurrentHashMap<>();
     private final Map<String, SshPty> ptys = new ConcurrentHashMap<>();
     private final Map<String, SshForward> forwards = new ConcurrentHashMap<>();
+    private final Object connectLock = new Object();
+    private final Map<String, ConnectAttempt> pendingConnects = new HashMap<>();
+    private final LinkedHashMap<String, Long> connectCancellationTombstones = new LinkedHashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     @Override
     protected void handleOnDestroy() {
+        cancelPendingConnects();
         for (SshConnection connection : new ArrayList<>(connections.values())) {
             closeConnection(connection, "plugin-destroyed", false);
         }
@@ -101,18 +115,21 @@ public final class SshCapabilityPlugin extends Plugin {
             JSObject credential = options.getJSObject("credential");
             if (credential == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH credential is missing.");
             String credentialKind = requiredString(credential, "kind");
-            JSObject expectedHostKey = options.getJSObject("expectedHostKey");
-            String expectedKeyType = expectedHostKey == null ? null : requiredString(expectedHostKey, "keyType");
-            String expectedKeyB64 = expectedHostKey == null ? null : requiredString(expectedHostKey, "keyB64");
+            HostKeyPinExpectation expectedHostKey = parseExpectedHostKey(options.getJSObject("expectedHostKey"));
 
+            ensureSshCryptoProvider();
             SSHClient client = new SSHClient();
-            client.setConnectTimeout(connectTimeout);
-            client.setTimeout(Math.min(connectTimeout, 10_000));
+            ConnectAttempt attempt = new ConnectAttempt(requestId, client);
             PresentedHostKey presented = new PresentedHostKey();
-            client.addHostKeyVerifier(new PinVerifier(expectedKeyType, expectedKeyB64, presented));
             SshConnection connection = null;
             try {
+                registerConnectAttempt(attempt);
+                checkConnectNotCancelled(attempt);
+                client.setConnectTimeout(connectTimeout);
+                client.setTimeout(Math.min(connectTimeout, 10_000));
+                client.addHostKeyVerifier(new PinVerifier(expectedHostKey, presented, attempt));
                 client.connect(hostname, port);
+                checkConnectNotCancelled(attempt);
                 client.setTimeout(5000);
                 if ("password".equals(credentialKind)) {
                     String password = requiredString(credential, "password");
@@ -141,8 +158,9 @@ public final class SshCapabilityPlugin extends Plugin {
                 } else {
                     throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
                 }
+                checkConnectNotCancelled(attempt);
 
-                connection = new SshConnection(UUID.randomUUID().toString(), generationId, hostId, client);
+                connection = new SshConnection(UUID.randomUUID().toString(), generationId, hostId, requestId, client);
                 final SshConnection connected = connection;
                 client.getTransport().setDisconnectListener((reason, message) -> {
                     if (connected.intentionalClose.get()) return;
@@ -155,9 +173,13 @@ public final class SshCapabilityPlugin extends Plugin {
                     event.put("reason", message == null || message.isBlank() ? String.valueOf(reason) : message);
                     mainHandler.post(() -> notifyListeners("connectionState", event));
                 });
-                connections.put(connection.connectionId, connection);
-                if (!connection.state.equals("connected") || !client.isConnected()) {
-                    throw new PluginFailure("CONNECTION_LOST", "SSH connection ended during setup.");
+                synchronized (connectLock) {
+                    checkConnectNotCancelled(attempt);
+                    if (!connection.state.equals("connected") || !client.isConnected()) {
+                        throw new PluginFailure("CONNECTION_LOST", "SSH connection ended during setup.");
+                    }
+                    connections.put(connection.connectionId, connection);
+                    pendingConnects.remove(requestId, attempt);
                 }
                 JSObject hostKey = presented.asJson();
                 return new JSObject()
@@ -166,14 +188,44 @@ public final class SshCapabilityPlugin extends Plugin {
                     .put("generationId", generationId)
                     .put("hostKey", hostKey);
             } catch (Exception error) {
+                if (attempt.cancelled.get()) {
+                    if (connection != null) closeConnection(connection, "connect-cancelled", false);
+                    else attempt.closeClient();
+                    throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.", error);
+                }
                 if (connection != null) closeConnection(connection, "connect-failed", false);
-                else closeClient(client);
+                else attempt.closeClient();
                 if (presented.keyType != null && !presented.trusted) {
                     JSObject details = presented.asJson();
                     throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, error);
                 }
                 throw failureFor(error);
+            } finally {
+                unregisterConnectAttempt(attempt);
             }
+        });
+    }
+
+    @PluginMethod
+    public void cancelOperation(PluginCall call) {
+        run(call, options -> {
+            String requestId = requiredString(options, "requestId");
+            JSObject target = options.getJSObject("target");
+            if (target == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH cancellation target is missing.");
+            String kind = requiredString(target, "kind");
+            boolean cancelled;
+            if ("connect".equals(kind)) {
+                String targetRequestId = requiredString(target, "targetRequestId");
+                cancelConnect(targetRequestId);
+                cancelled = true;
+            } else if ("connection".equals(kind)) {
+                SshConnection connection = findConnection(target);
+                cancelled = connection != null;
+                if (connection != null) closeConnection(connection, "operation-cancelled", false);
+            } else {
+                throw new PluginFailure("INVALID_ARGUMENT", "SSH cancellation target kind is not supported.");
+            }
+            return ack(requestId).put("cancelled", cancelled);
         });
     }
 
@@ -680,6 +732,134 @@ public final class SshCapabilityPlugin extends Plugin {
         });
     }
 
+    private static HostKeyPinExpectation parseExpectedHostKey(JSObject expectedHostKey) throws PluginFailure {
+        if (expectedHostKey == null) return null;
+        String kind = expectedHostKey.getString("kind");
+        if ("sha256-fingerprint".equals(kind)) {
+            return new HostKeyPinExpectation(null, null, requiredString(expectedHostKey, "fingerprintSha256"));
+        }
+        if ("wire-key".equals(kind)) {
+            return new HostKeyPinExpectation(
+                requiredString(expectedHostKey, "keyType"),
+                requiredString(expectedHostKey, "keyB64"),
+                null
+            );
+        }
+        // Accept the previous JS capability shape during a same-app upgrade.
+        // Core now adapts persisted Android rows to the fingerprint form.
+        if (kind == null) {
+            return new HostKeyPinExpectation(
+                requiredString(expectedHostKey, "keyType"),
+                requiredString(expectedHostKey, "keyB64"),
+                null
+            );
+        }
+        throw new PluginFailure("INVALID_ARGUMENT", "SSH host-key pin kind is not supported.");
+    }
+
+    /**
+     * Android installs a platform provider named BC which can shadow sshj's
+     * bundled provider while lacking X25519. Install the bundled implementation
+     * under BC before sshj caches that provider name; this keeps modern server
+     * KEX available on Android releases with the older platform provider.
+     */
+    private static synchronized void ensureSshCryptoProvider() throws PluginFailure {
+        if (sshProviderReady) return;
+        try {
+            Provider installed = Security.getProvider(BouncyCastleProvider.PROVIDER_NAME);
+            if (installed == null || installed.getService("KeyPairGenerator", "X25519") == null) {
+                if (installed != null) Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME);
+                Security.insertProviderAt(new BouncyCastleProvider(), 1);
+            }
+            Provider selected = Security.getProvider(BouncyCastleProvider.PROVIDER_NAME);
+            if (selected == null || selected.getService("KeyPairGenerator", "X25519") == null) {
+                throw new IllegalStateException("the installed BC provider does not offer X25519");
+            }
+            SecurityUtils.setRegisterBouncyCastle(false);
+            SecurityUtils.setSecurityProvider(BouncyCastleProvider.PROVIDER_NAME);
+            sshProviderReady = true;
+        } catch (RuntimeException error) {
+            throw new PluginFailure("CRYPTO_UNAVAILABLE", "Android could not install the bundled SSH crypto provider.", error);
+        }
+    }
+
+    private void registerConnectAttempt(ConnectAttempt attempt) throws PluginFailure {
+        synchronized (connectLock) {
+            pruneConnectCancellationTombstones();
+            Long cancelledUntil = connectCancellationTombstones.remove(attempt.requestId);
+            if (cancelledUntil != null && cancelledUntil >= System.currentTimeMillis()) {
+                attempt.cancelled.set(true);
+                throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled before it started.");
+            }
+            if (pendingConnects.containsKey(attempt.requestId)) {
+                throw new PluginFailure("DUPLICATE_REQUEST", "SSH connect request id is already active.");
+            }
+            pendingConnects.put(attempt.requestId, attempt);
+        }
+    }
+
+    private void unregisterConnectAttempt(ConnectAttempt attempt) {
+        synchronized (connectLock) {
+            pendingConnects.remove(attempt.requestId, attempt);
+        }
+    }
+
+    private void checkConnectNotCancelled(ConnectAttempt attempt) throws PluginFailure {
+        if (attempt.cancelled.get()) throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.");
+    }
+
+    private void cancelConnect(String targetRequestId) {
+        ConnectAttempt attempt;
+        SshConnection connected = null;
+        synchronized (connectLock) {
+            pruneConnectCancellationTombstones();
+            attempt = pendingConnects.get(targetRequestId);
+            if (attempt != null) {
+                attempt.cancelled.set(true);
+            } else {
+                for (SshConnection candidate : connections.values()) {
+                    if (candidate.connectRequestId.equals(targetRequestId)) {
+                        connected = candidate;
+                        break;
+                    }
+                }
+                if (connected == null) {
+                    connectCancellationTombstones.put(
+                        targetRequestId,
+                        System.currentTimeMillis() + CONNECT_CANCELLATION_TTL_MS
+                    );
+                    pruneConnectCancellationTombstones();
+                }
+            }
+        }
+        if (attempt != null) attempt.closeClient();
+        if (connected != null) closeConnection(connected, "connect-cancelled", false);
+    }
+
+    private void cancelPendingConnects() {
+        List<ConnectAttempt> attempts;
+        synchronized (connectLock) {
+            attempts = new ArrayList<>(pendingConnects.values());
+            for (ConnectAttempt attempt : attempts) attempt.cancelled.set(true);
+            connectCancellationTombstones.clear();
+        }
+        for (ConnectAttempt attempt : attempts) attempt.closeClient();
+    }
+
+    private void pruneConnectCancellationTombstones() {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<String, Long>> iterator = connectCancellationTombstones.entrySet().iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next().getValue() < now) iterator.remove();
+        }
+        while (connectCancellationTombstones.size() > MAX_CONNECT_CANCELLATION_TOMBSTONES) {
+            Iterator<String> oldest = connectCancellationTombstones.keySet().iterator();
+            if (!oldest.hasNext()) break;
+            oldest.next();
+            oldest.remove();
+        }
+    }
+
     private void run(PluginCall call, CallOperation operation) {
         try {
             JSObject result = operation.execute(call.getData());
@@ -948,19 +1128,57 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class PinVerifier implements HostKeyVerifier {
-        private final String expectedKeyType;
-        private final String expectedKeyB64;
-        private final PresentedHostKey presented;
+    private static final class HostKeyPinExpectation {
+        final String keyType;
+        final String keyB64;
+        final String fingerprintSha256;
 
-        PinVerifier(String expectedKeyType, String expectedKeyB64, PresentedHostKey presented) {
-            this.expectedKeyType = expectedKeyType;
-            this.expectedKeyB64 = expectedKeyB64;
+        HostKeyPinExpectation(String keyType, String keyB64, String fingerprintSha256) {
+            this.keyType = keyType;
+            this.keyB64 = keyB64;
+            this.fingerprintSha256 = fingerprintSha256;
+        }
+
+        boolean matches(PresentedHostKey presented) {
+            if (presented == null) return false;
+            if (fingerprintSha256 != null) return fingerprintSha256.equals(presented.fingerprintSha256);
+            return keyType != null
+                && keyB64 != null
+                && keyType.equals(presented.keyType)
+                && keyB64.equals(presented.keyB64);
+        }
+    }
+
+    private static final class ConnectAttempt {
+        final String requestId;
+        final SSHClient client;
+        final AtomicBoolean cancelled = new AtomicBoolean(false);
+        final AtomicBoolean clientClosed = new AtomicBoolean(false);
+
+        ConnectAttempt(String requestId, SSHClient client) {
+            this.requestId = requestId;
+            this.client = client;
+        }
+
+        void closeClient() {
+            if (clientClosed.compareAndSet(false, true)) SshCapabilityPlugin.closeClient(client);
+        }
+    }
+
+    private static final class PinVerifier implements HostKeyVerifier {
+        private final HostKeyPinExpectation expectedHostKey;
+        private final PresentedHostKey presented;
+        private final ConnectAttempt attempt;
+
+        PinVerifier(HostKeyPinExpectation expectedHostKey, PresentedHostKey presented, ConnectAttempt attempt) {
+            this.expectedHostKey = expectedHostKey;
             this.presented = presented;
+            this.attempt = attempt;
         }
 
         @Override
         public boolean verify(String hostname, int port, PublicKey key) {
+            if (attempt.cancelled.get()) return false;
             try {
                 byte[] blob = new Buffer.PlainBuffer().putPublicKey(key).getCompactData();
                 Buffer.PlainBuffer reader = new Buffer.PlainBuffer(blob);
@@ -973,10 +1191,7 @@ public final class SshCapabilityPlugin extends Plugin {
                 presented.keyType = keyType;
                 presented.keyB64 = keyB64;
                 presented.fingerprintSha256 = fingerprint;
-                presented.trusted = expectedKeyType != null
-                    && expectedKeyB64 != null
-                    && expectedKeyType.equals(keyType)
-                    && expectedKeyB64.equals(keyB64);
+                presented.trusted = expectedHostKey != null && expectedHostKey.matches(presented);
                 return presented.trusted;
             } catch (Exception error) {
                 presented.keyType = "unknown";
@@ -997,6 +1212,7 @@ public final class SshCapabilityPlugin extends Plugin {
         final String connectionId;
         final String generationId;
         final String hostId;
+        final String connectRequestId;
         final SSHClient client;
         final Semaphore channelPermits = new Semaphore(MAX_CHANNELS_PER_CONNECTION);
         final AtomicBoolean intentionalClose = new AtomicBoolean(false);
@@ -1007,10 +1223,11 @@ public final class SshCapabilityPlugin extends Plugin {
         volatile Runnable graceRunnable;
         volatile Long graceDeadlineEpochMs;
 
-        SshConnection(String connectionId, String generationId, String hostId, SSHClient client) {
+        SshConnection(String connectionId, String generationId, String hostId, String connectRequestId, SSHClient client) {
             this.connectionId = connectionId;
             this.generationId = generationId;
             this.hostId = hostId;
+            this.connectRequestId = connectRequestId;
             this.client = client;
         }
     }
