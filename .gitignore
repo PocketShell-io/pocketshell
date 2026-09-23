@@ -24,6 +24,7 @@ local.properties
 
 *.class
 *.jar
+!android/gradle/wrapper/gradle-wrapper.jar
 *.war
 *.ear
 
