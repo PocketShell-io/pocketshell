@@ -3,13 +3,14 @@
 The Android client is a Capacitor host around a Vue 3 and TypeScript app. The
 first shell is an explicitly offline preview: host and workspace lists are
 empty, terminal output is marked as mock, and the composer field is local only.
-Feature behavior and parity work belong to the issues listed in
+Its theme, font policy, icons, and composer controls come from the pinned
+desktop UI source. Feature behavior and parity work belong to the issues listed in
 [the pre-deletion inventory](js-first-rewrite-inventory.md).
 
 ## Build and test
 
-Clone the repository with the pinned core source, install the locked JS tool
-dependencies, and build the debug APK:
+Clone the repository with its pinned core and desktop UI sources, install the
+locked JS tool dependencies, and build the debug APK:
 
 ```sh
 git clone --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
@@ -20,18 +21,22 @@ pnpm build:android:debug
 scripts/connected-js-smoke.sh --suffix i2855
 ```
 
-The shell imports TypeScript directly from `vendor/pocketshell-core`, a git
-submodule pinned by the superproject's gitlink. Core is not an npm package and
-is not published to a package registry. `pnpm-lock.yaml` pins the JS app,
+The shell imports TypeScript directly from `vendor/pocketshell-core`, and
+imports browser-safe Vue components and design data from
+`vendor/pocketshell-desktop/packages/ui/`. Both repositories are git submodules
+pinned by superproject gitlinks; neither PocketShell source is an npm package
+or published to a package registry. `pnpm-lock.yaml` pins the JS app,
 Capacitor, Vue, xterm, and test/build tool dependencies. `pnpm-workspace.yaml`
 allows build scripts only for esbuild and vue-demi, the packages that require
 them for Vite's native executable and Vue compatibility setup.
 
-`pnpm build:web` fails unless the submodule checkout is present, clean, and at
-the gitlink revision. Vite embeds that core revision and writes a manifest with
-SHA-256 hashes for packaged JS, CSS, fonts, and other assets. The app verifies
-the embedded revision and fetched asset bytes at startup. A mismatch appears as
-a visible failed build status with the reason, rather than a verified status.
+`pnpm build:web` fails unless both submodule checkouts are present, clean, and
+at their gitlink revisions. Vite embeds both source revisions and writes a
+manifest with SHA-256 hashes for packaged JS, CSS, fonts, and other assets. The
+app verifies both revisions and the fetched asset bytes at startup. A mismatch
+appears as a visible failed build status with the reason, rather than a
+verified status. The production bundle also fails the build if it contains an
+Electron import, Node builtin import, or Electron IPC bridge reference.
 
 Capacitor generates `android/` and copies `dist/` into the Android asset bundle.
 `pnpm build:android:debug` runs the source check, type check, web bundle,
@@ -57,12 +62,15 @@ Capacitor template drift.
 
 ## Visual baseline
 
-`src/styles.css` starts from the shared desktop dark-tool palette and type
-hierarchy: GitHub-like surfaces, cyan action color, Inter, 4 px spacing steps,
-and shared terminal colors. The phone layout keeps that visual language while
-using a vertical card flow, safe-area padding, touch-sized controls, responsive
-viewport sizing, and Android Back handling. `TerminalPreview.vue` uses xterm
-with fixed sample output and cannot connect to a host.
+`packages/ui/src/` in the pinned desktop source supplies the theme data and CSS
+tokens, Inter loading, monospace policy, `AppIcon`, and `ComposerControls`. The
+Android shell imports those sources directly. Its local `src/styles.css` owns
+the phone card flow, safe-area padding, touch-sized controls, responsive
+viewport sizing, and Android Back handling. The local-only composer preview
+uses the shared disabled controls without desktop keyboard shortcut hints.
+`TerminalPreview.vue` uses the shared terminal palette with fixed sample output
+and cannot connect to a host. The visible source and asset diagnostics are
+temporary rewrite verification UI, not a planned product surface.
 
 The shell is not a visual acceptance claim. Follow
 [review-standards.md](review-standards.md) for emulator review; later UI work

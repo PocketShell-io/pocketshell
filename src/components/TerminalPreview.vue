@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
+import { mobileMonoFontFamily, mobileTheme } from '../sharedUiDefaults';
 
 const terminalHost = ref<HTMLDivElement>();
 let terminal: Terminal | undefined;
@@ -25,33 +26,11 @@ onMounted(() => {
     allowProposedApi: false,
     cursorBlink: false,
     disableStdin: true,
-    fontFamily: "Consolas, 'Cascadia Mono', ui-monospace, monospace",
+    fontFamily: mobileMonoFontFamily,
     fontSize: 13,
     lineHeight: 1.25,
     scrollback: 40,
-    theme: {
-      background: '#0c0c0c',
-      foreground: '#cccccc',
-      cursor: '#ffffff',
-      cursorAccent: '#0c0c0c',
-      selectionBackground: 'rgba(255,255,255,0.32)',
-      black: '#0c0c0c',
-      red: '#c50f1f',
-      green: '#13a10e',
-      yellow: '#c19c00',
-      blue: '#0037da',
-      magenta: '#881798',
-      cyan: '#3a96dd',
-      white: '#cccccc',
-      brightBlack: '#767676',
-      brightRed: '#e74856',
-      brightGreen: '#16c60c',
-      brightYellow: '#f9f1a5',
-      brightBlue: '#3b78ff',
-      brightMagenta: '#b4009e',
-      brightCyan: '#61d6d6',
-      brightWhite: '#f2f2f2',
-    },
+    theme: mobileTheme.terminal,
   });
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);

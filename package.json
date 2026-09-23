@@ -29,6 +29,7 @@
   "devDependencies": {
     "@capacitor/cli": "8.1.0",
     "@vitejs/plugin-vue": "5.2.1",
+    "@vue/tsconfig": "0.7.0",
     "typescript": "5.7.2",
     "vite": "6.0.7",
     "vitest": "2.1.8",

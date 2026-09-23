@@ -58,19 +58,23 @@ public final class JsShellPackagedSmokeTest {
     }
 
     @Test
-    public void launchShowsVerifiedCoreAndAssetIdentity() throws Exception {
+    public void launchShowsVerifiedSourcesAndAssetIdentity() throws Exception {
         JSONObject manifest = packagedManifest();
-        String expectedRevision = manifest.getString("coreSourceRevision");
+        String expectedCoreRevision = manifest.getString("coreSourceRevision");
+        String expectedUiRevision = manifest.getString("uiSourceRevision");
         String expectedAssetHash = manifest.getString("bundleAssetHash");
 
-        assertTrue("manifest core revision must be a full git revision", expectedRevision.matches("[a-f0-9]{40}"));
+        assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
+        assertTrue("manifest shared UI revision must be a full git revision", expectedUiRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
-        assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedRevision.substring(0, 12)));
+        assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
+        assertTrue("the visible build strip must identify the pinned shared UI", visibleIdentity.contains(expectedUiRevision.substring(0, 12)));
         assertTrue("the visible build strip must identify the packaged assets", visibleIdentity.contains(expectedAssetHash.substring(0, 12)));
-        assertEquals(expectedRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
+        assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
+        assertEquals(expectedUiRevision, evalString("document.querySelector('[data-testid=ui-revision]')?.textContent.trim()"));
         assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=bundle-asset-hash]')?.textContent.trim()"));
         JSONObject statusBounds = evalJson("(() => {const node = document.querySelector('[data-testid=build-status]');"
                 + "const rect = node.getBoundingClientRect();"
@@ -122,6 +126,7 @@ public final class JsShellPackagedSmokeTest {
         tapDomCenter("#preview-input");
         awaitComposerFocused();
         awaitImeVisible(true);
+        awaitImeSafeAreaSettled(expectedSafeTop);
 
         JSONObject duringIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
@@ -372,6 +377,56 @@ public final class JsShellPackagedSmokeTest {
         }
         throw new AssertionError("IME visibility did not become " + visible + " (last=" + last
                 + "; DOM=" + composerDomState() + "; Android=" + nativeImeState() + ")");
+    }
+
+    /**
+     * Native IME visibility arrives before Capacitor's SystemBars plugin has
+     * injected the replacement CSS inset and WebView has recalculated the
+     * descendant padding. Wait for the actual CSS consumer to settle at zero;
+     * the assertions in the test still fail if the phone keeps navigation-bar
+     * padding while the keyboard covers it.
+     */
+    private void awaitImeSafeAreaSettled(float expectedSafeTop) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject previous = null;
+        JSONObject latest = imeSafeAreaDomState();
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            boolean correctInsets = closeTo(latest.optDouble("safeTop"), expectedSafeTop, 1.0)
+                    && closeTo(latest.optDouble("safeBottom"), 0.0, 0.5)
+                    && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5);
+            boolean stable = previous != null
+                    && closeTo(latest.optDouble("safeTop"), previous.optDouble("safeTop"), 0.5)
+                    && closeTo(latest.optDouble("safeBottom"), previous.optDouble("safeBottom"), 0.5)
+                    && closeTo(latest.optDouble("paddingBottom"), previous.optDouble("paddingBottom"), 0.5)
+                    && closeTo(latest.optDouble("viewportHeight"), previous.optDouble("viewportHeight"), 0.5);
+            if (correctInsets && stable) {
+                stableSamples++;
+                if (stableSamples >= 2) return;
+            } else {
+                stableSamples = 0;
+            }
+            previous = latest;
+            Thread.sleep(100);
+            latest = imeSafeAreaDomState();
+        }
+        throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: " + latest);
+    }
+
+    private JSONObject imeSafeAreaDomState() throws Exception {
+        return evalJson("(() => {"
+                + "const root = getComputedStyle(document.documentElement);"
+                + "const shellStyle = getComputedStyle(document.querySelector('.app-shell'));"
+                + "return JSON.stringify({"
+                + "safeTop: parseFloat(root.getPropertyValue('--safe-area-inset-top')),"
+                + "safeBottom: parseFloat(root.getPropertyValue('--safe-area-inset-bottom')),"
+                + "paddingBottom: parseFloat(shellStyle.paddingBottom),"
+                + "viewportHeight: window.visualViewport ? window.visualViewport.height : window.innerHeight"
+                + "});})()");
+    }
+
+    private static boolean closeTo(double actual, double expected, double tolerance) {
+        return !Double.isNaN(actual) && Math.abs(actual - expected) <= tolerance;
     }
 
     private Insets readRootInsets(int typeMask) throws Exception {

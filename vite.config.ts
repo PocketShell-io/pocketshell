@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig, type Plugin } from 'vite';
-import { readPinnedCore } from './scripts/js-source-integrity.mjs';
+import { readPinnedCore, readPinnedDesktop } from './scripts/js-source-integrity.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -12,11 +12,27 @@ function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
 }
 
-function bundledAssetManifest(coreRevision: string): Plugin {
+function assertBrowserOnlyUi(bundle: Record<string, { type: string; code?: string; imports?: string[]; dynamicImports?: string[] }>): void {
+  const forbiddenExternal = /^(?:electron|@electron\/|node:)/;
+  const forbiddenBridge = /\b(?:ipcRenderer|ipcMain|contextBridge)\b|\b(?:window|globalThis)\.electron\b/;
+
+  for (const output of Object.values(bundle)) {
+    if (output.type !== 'chunk') continue;
+    const external = [...(output.imports ?? []), ...(output.dynamicImports ?? [])]
+      .find((specifier) => forbiddenExternal.test(specifier));
+    if (external) throw new Error(`Browser UI bundle contains a forbidden runtime import: ${external}`);
+    if (forbiddenBridge.test(output.code ?? '')) {
+      throw new Error('Browser UI bundle contains an Electron IPC bridge reference.');
+    }
+  }
+}
+
+function bundledAssetManifest(coreRevision: string, uiRevision: string): Plugin {
   return {
     name: 'pocketshell-bundled-asset-manifest',
     apply: 'build',
     writeBundle(options, bundle) {
+      assertBrowserOnlyUi(bundle);
       const outputDirectory = options.dir ?? path.join(repoRoot, 'dist');
       const assets = Object.values(bundle)
         .filter((output) =>
@@ -37,6 +53,7 @@ function bundledAssetManifest(coreRevision: string): Plugin {
           {
             schema: 1,
             coreSourceRevision: coreRevision,
+            uiSourceRevision: uiRevision,
             bundleAssetHash: aggregate.digest('hex'),
             assets: assets.map(({ file, hash }) => ({ file, sha256: hash })),
           },
@@ -50,16 +67,26 @@ function bundledAssetManifest(coreRevision: string): Plugin {
 
 export default defineConfig(() => {
   const core = readPinnedCore(repoRoot);
+  const desktop = readPinnedDesktop(repoRoot);
 
   return {
     base: './',
-    plugins: [vue(), bundledAssetManifest(core.revision)],
+    plugins: [vue(), bundledAssetManifest(core.revision, desktop.revision)],
+    esbuild: {
+      // Do not inherit the desktop package's authoring tsconfig, which extends
+      // @vue/tsconfig for its own workspace. This shell supplies its own
+      // compiler settings and consumes the shared source without that package.
+      tsconfigRaw: { compilerOptions: { target: 'ES2022', module: 'ESNext' } },
+    },
     define: {
       __POCKETSHELL_CORE_REVISION__: JSON.stringify(core.revision),
+      __POCKETSHELL_UI_REVISION__: JSON.stringify(desktop.revision),
     },
     resolve: {
       alias: {
         '@pocketshell/core': core.sourceEntry,
+        '@pocketshell/ui/styles.css': desktop.stylesEntry,
+        '@pocketshell/ui': desktop.sourceEntry,
         '@': path.join(repoRoot, 'src'),
       },
     },

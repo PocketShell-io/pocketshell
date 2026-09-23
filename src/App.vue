@@ -3,8 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import { formatBytes } from '@pocketshell/core';
+import { AppIcon, ComposerControls } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
+import { uiSourceRevision } from './uiSourceInfo';
 import { useNavigationStore } from './stores/navigation';
 import TerminalPreview from './components/TerminalPreview.vue';
 
@@ -12,6 +14,7 @@ const navigation = useNavigationStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);
+const uiShort = uiSourceRevision.slice(0, 12);
 const buildStatus = computed(() => {
   if ('checking' in buildVerification.value) return 'Checking bundled assets';
   return buildVerification.value.ok ? 'Build verified' : 'Build verification failed';
@@ -44,7 +47,7 @@ onMounted(() => {
     });
   }
 
-  void verifyCurrentBuild(coreSourceRevision).then((verification) => {
+  void verifyCurrentBuild(coreSourceRevision, uiSourceRevision).then((verification) => {
     buildVerification.value = verification;
   });
 });
@@ -63,9 +66,7 @@ onBeforeUnmount(() => {
   >
     <header class="app-bar">
       <button class="brand-button" type="button" aria-label="PocketShell home" @click="navigation.back()">
-        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 17l6-6-6-6M12 19h8" />
-        </svg>
+        <AppIcon class="brand-mark" name="terminal" />
         <span class="wordmark">PocketShell</span>
       </button>
       <div class="app-bar-actions">
@@ -78,10 +79,7 @@ onBeforeUnmount(() => {
           title="Settings"
           @click="navigation.openSettings()"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
-            <path d="m19.4 15 .1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.4 1.7 1.7 0 0 0-1 1.5v.2a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .4-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.4-1.8l-.1-.1A2 2 0 1 1 7 4.5l.1.1a1.7 1.7 0 0 0 1.8.4 1.7 1.7 0 0 0 1-1.5v-.2a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.4 1.8 1.7 1.7 0 0 0 1.5 1h.2a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1 1.7 1.7 0 0 0 .3 1.8Z" />
-          </svg>
+          <AppIcon name="settings" />
         </button>
         <button
           v-else
@@ -91,15 +89,15 @@ onBeforeUnmount(() => {
           title="Back to hosts"
           @click="navigation.back()"
         >
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m7 7-7-7 7-7" /></svg>
+          <AppIcon name="arrow-left" />
         </button>
       </div>
     </header>
 
     <div class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
-      <span class="status-dot" aria-hidden="true" />
+      <AppIcon class="status-dot" name="dot" :size="12" />
       <span>{{ buildStatus }}</span>
-      <span class="build-strip__detail">core {{ coreShort }} · assets {{ bundleShort }}</span>
+      <span class="build-strip__detail">core {{ coreShort }} · ui {{ uiShort }} · assets {{ bundleShort }}</span>
     </div>
 
     <main v-if="navigation.route === 'home'" class="screen-content home-screen">
@@ -112,7 +110,7 @@ onBeforeUnmount(() => {
           <span class="state-tag state-tag--muted">EMPTY</span>
         </div>
         <div class="empty-state">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5zM9 9h.01M12 9h.01M15 9h.01M9 13h6M9 16h6" /></svg>
+          <AppIcon name="terminal" />
           <div>
             <h2>No host configured</h2>
             <p>Host setup and SSH transport are planned for later rewrite slices.</p>
@@ -131,7 +129,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="workspace-placeholder">
           <div class="workspace-placeholder__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v10H3zM3 7V5h7l2 2" /></svg>
+            <AppIcon name="folder" />
           </div>
           <p>Workspace and session lists will appear here after a host is connected.</p>
         </div>
@@ -166,7 +164,17 @@ onBeforeUnmount(() => {
           enterkeyhint="send"
           placeholder="Tap to check the Android keyboard"
         />
-        <p class="panel-footnote">This field does not send or save text. It is present for initial IME layout checks.</p>
+        <fieldset class="preview-control-boundary" disabled aria-label="Preview composer controls">
+          <ComposerControls
+            :uploading-count="0"
+            :can-send="false"
+            :send-in-flight="false"
+            :draft-length="0"
+            :attachment-count="0"
+            :discard-armed="false"
+          />
+        </fieldset>
+        <p class="panel-footnote">The input and shared controls are a local preview. Text is not sent or saved.</p>
       </section>
 
       <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
@@ -183,6 +191,10 @@ onBeforeUnmount(() => {
           <div>
             <dt>pocketshell-core revision</dt>
             <dd data-testid="core-revision">{{ coreSourceRevision }}</dd>
+          </div>
+          <div>
+            <dt>pocketshell-desktop shared UI revision</dt>
+            <dd data-testid="ui-revision">{{ uiSourceRevision }}</dd>
           </div>
           <div>
             <dt>Bundled asset SHA-256</dt>

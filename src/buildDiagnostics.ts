@@ -6,12 +6,13 @@ export interface BundledAsset {
 export interface BuildManifest {
   schema: 1;
   coreSourceRevision: string;
+  uiSourceRevision: string;
   bundleAssetHash: string;
   assets: BundledAsset[];
 }
 
 export type BuildVerification =
-  | { ok: true; coreRevision: string; bundleAssetHash: string }
+  | { ok: true; coreRevision: string; uiRevision: string; bundleAssetHash: string }
   | { ok: false; reason: string };
 
 export type FetchAsset = (file: string) => Promise<Uint8Array | null>;
@@ -33,6 +34,7 @@ function isSha256(value: unknown): value is string {
 export async function verifyBuildManifest(
   value: unknown,
   expectedCoreRevision: string,
+  expectedUiRevision: string,
   fetchAsset: FetchAsset,
 ): Promise<BuildVerification> {
   if (!isRecord(value) || value.schema !== 1) {
@@ -43,6 +45,13 @@ export async function verifyBuildManifest(
       ok: false,
       reason: `Core source revision mismatch: bundle says ${String(value.coreSourceRevision)}, ` +
         `but this shell was built for ${expectedCoreRevision}.`,
+    };
+  }
+  if (value.uiSourceRevision !== expectedUiRevision) {
+    return {
+      ok: false,
+      reason: `Shared UI source revision mismatch: bundle says ${String(value.uiSourceRevision)}, ` +
+        `but this shell was built for ${expectedUiRevision}.`,
     };
   }
   if (!Array.isArray(value.assets) || value.assets.length === 0 || !isSha256(value.bundleAssetHash)) {
@@ -86,12 +95,16 @@ export async function verifyBuildManifest(
   return {
     ok: true,
     coreRevision: expectedCoreRevision,
+    uiRevision: expectedUiRevision,
     bundleAssetHash,
   };
 }
 
 /** Load and verify this packaged shell's generated manifest and assets. */
-export async function verifyCurrentBuild(expectedCoreRevision: string): Promise<BuildVerification> {
+export async function verifyCurrentBuild(
+  expectedCoreRevision: string,
+  expectedUiRevision: string,
+): Promise<BuildVerification> {
   try {
     const manifestUrl = new URL('build-manifest.json', document.baseURI);
     const manifestResponse = await fetch(manifestUrl, { cache: 'no-store' });
@@ -99,7 +112,7 @@ export async function verifyCurrentBuild(expectedCoreRevision: string): Promise<
       return { ok: false, reason: `Build manifest fetch failed (${manifestResponse.status}).` };
     }
     const manifest: unknown = await manifestResponse.json();
-    return verifyBuildManifest(manifest, expectedCoreRevision, async (file) => {
+    return verifyBuildManifest(manifest, expectedCoreRevision, expectedUiRevision, async (file) => {
       const response = await fetch(new URL(file, document.baseURI), { cache: 'no-store' });
       if (!response.ok) return null;
       return new Uint8Array(await response.arrayBuffer());

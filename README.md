@@ -15,7 +15,7 @@ component extraction is tracked by
 ## Build and test
 
 Requirements: Node.js 22, pnpm 12.5.1, JDK 21, and Android SDK platform 36.
-Clone the repository with its pinned core source:
+Clone the repository with its pinned core and desktop UI sources:
 
 ```sh
 git clone --branch rewrite/js-first-0.6.0 --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
@@ -25,9 +25,13 @@ pnpm test:unit
 scripts/assemble-debug.sh
 ```
 
-`vendor/pocketshell-core` is a Git submodule pinned by the superproject; it is
-not an npm package or registry dependency. JS tooling dependencies are locked
-in `pnpm-lock.yaml`. To build and install under an isolated package name:
+`vendor/pocketshell-core` and `vendor/pocketshell-desktop` are Git submodules
+pinned by the superproject. Android imports core TypeScript and the desktop
+repository's browser-safe `packages/ui/` source directly; neither PocketShell
+repo is an npm package or registry dependency. The APK build manifest records
+both source commits and the SHA-256 of its bundled web assets. JS tooling
+dependencies are locked in `pnpm-lock.yaml`. To build and install under an
+isolated package name:
 
 ```sh
 scripts/assemble-debug.sh --suffix local --install
