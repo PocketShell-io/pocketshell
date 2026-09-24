@@ -476,6 +476,21 @@ public final class SshPtyDockerJourneyTest {
         assertTrue("exact marker row must fit inside terminal viewport", markerRect.getDouble("left") >= rect.getDouble("left")
                 && markerRect.getDouble("top") >= rect.getDouble("top") && markerRect.getDouble("right") <= rect.getDouble("right")
                 && markerRect.getDouble("bottom") <= rect.getDouble("bottom"));
+        JSONObject elements = layout.optJSONObject("elements");
+        JSONObject hotkeysBar = elements == null ? null : elements.optJSONObject("mobileHotkeysBar");
+        JSONObject hotkeysBarRect = hotkeysBar == null ? null : hotkeysBar.optJSONObject("rect");
+        assertNotNull("live terminal fast-key toolbar geometry must be captured", hotkeysBarRect);
+        assertTrue("live terminal fast-key toolbar must be visible", !"none".equals(hotkeysBar.optString("display")));
+        assertTrue("live terminal fast-key toolbar must have visible dimensions; keybar=" + hotkeysBarRect,
+                hotkeysBarRect.getDouble("width") > 0 && hotkeysBarRect.getDouble("height") > 0);
+        double geometryTolerancePx = 0.1;
+        assertTrue("mobile fast-key row must sit outside visible xterm rows; viewport=" + rect + ", keybar=" + hotkeysBarRect,
+                rect.getDouble("bottom") <= hotkeysBarRect.getDouble("top") + geometryTolerancePx
+                        || rect.getDouble("top") >= hotkeysBarRect.getDouble("bottom") - geometryTolerancePx);
+        assertTrue("exact terminal marker row must remain unobscured by mobile fast keys; marker=" + markerRect
+                        + ", keybar=" + hotkeysBarRect,
+                markerRect.getDouble("bottom") <= hotkeysBarRect.getDouble("top") + geometryTolerancePx
+                        || markerRect.getDouble("top") >= hotkeysBarRect.getDouble("bottom") - geometryTolerancePx);
         writeText(new File(artifactDirectory, checkpoint + "-visible-terminal.txt"), text);
         writeText(new File(artifactDirectory, checkpoint + "-terminal-layout.json"), layout.toString(2));
         JSONObject screenshot = captureViewportPng(checkpoint, marker, rect, markerRect, artifactDirectory);
@@ -538,7 +553,8 @@ public final class SshPtyDockerJourneyTest {
                 + "shellSafeBottom:shellStyle?.getPropertyValue('--android-shell-safe-bottom').trim()??null},"
                 + "elements:{shell:box(shell),appBar:box(document.querySelector('.app-bar--workspace')),main:box(main),"
                 + "liveWorkspace:box(live),terminalPanel:box(panel),terminalHost:box(host),xterm:box(xterm),"
-                + "xtermViewport:box(scroll),xtermScreen:box(screen),xtermRows:box(rows),composer:box(composer)},"
+                + "xtermViewport:box(scroll),xtermScreen:box(screen),xtermRows:box(rows),composer:box(composer),"
+                + "mobileHotkeysBar:box(live?.querySelector('.mobile-hotkeys__bar'))},"
                 + "xtermDom:{domRows:rows?.children.length??0,rowHeight,cssVisibleRows:rowHeight>0?screen.clientHeight/rowHeight:null,"
                 + "viewportScrollTop:scroll?.scrollTop??null,viewportScrollHeight:scroll?.scrollHeight??null,"
                 + "viewportClientHeight:scroll?.clientHeight??null,runtime:window.__ps2875TerminalRuntimeGeometry??null}});})()";
