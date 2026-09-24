@@ -77,6 +77,8 @@ public final class JsComposerDockerJourneyTest {
         uncertainSession = nameBase + "-uncertain";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        setVoicePreferencesForComposerJourney();
+        installControlledSpeechAdapter();
         evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
@@ -90,6 +92,8 @@ public final class JsComposerDockerJourneyTest {
         createSession(uncertainSession);
         attachSession(bytesSession);
         verifyNestedAndroidBackKeepsLiveSession();
+
+        exerciseComposerDictation(nameBase, bytesSession, artifactRunId);
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
@@ -209,6 +213,86 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(value));
     }
 
+    private void setVoicePreferencesForComposerJourney() throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
+        tapDomCenter("[aria-label=Settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        tapDomCenter("[data-testid=open-voice-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-voice'");
+        setValue("[data-testid=setting-dictation-language]", "de-DE");
+        setValue("[data-testid=setting-dictation-silence]", "9");
+        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationLanguageTag === 'de-DE'"
+                + " && JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationSilenceWindowMs === 9000");
+        tapDomCenter("[aria-label=Back]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        tapDomCenter("[aria-label=Back]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
+    }
+
+    /** Replace only the Capacitor speech bridge for this packaged test; other native plugins stay real. */
+    private void installControlledSpeechAdapter() throws Exception {
+        String installed = evalString("(() => {"
+                + "const cap=window.Capacitor;"
+                + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
+                + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
+                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,"
+                + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
+                + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
+                + "window.__ps2857ControlledSpeech=state;"
+                + "cap.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
+                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.requestId=options.requestId;"
+                + "return Promise.resolve({requestId:state.requestId,started:true});}"
+                + "if(method==='stopDictation'){state.stopOptions=JSON.parse(JSON.stringify(options));"
+                + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
+                + "if(method==='getCapabilities')return Promise.resolve({speechRecognitionAvailable:true,microphonePermissionGranted:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech method '+method));};"
+                + "cap.nativeCallback=(plugin,method,options,callback)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativeCallback(plugin,method,options,callback);"
+                + "if(method==='addListener'){state.listener=callback;return Promise.resolve({callbackId:'controlled-dictation'});}"
+                + "if(method==='removeListener')return Promise.resolve({removed:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech callback '+method));};"
+                + "return 'installed';})()");
+        assertEquals("test must replace only the speech bridge", "installed", installed);
+    }
+
+    private void exerciseComposerDictation(String nameBase, String sessionName, String artifactRunId) throws Exception {
+        String dictatedMarker = "PS2857_DICTATION_" + nameBase;
+        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
+        String dictatedCommand = "printf '%s' '" + dictatedMarker + "' > /tmp/" + sessionName + "-dictation.marker";
+        String editedCommand = dictatedCommand.replace(dictatedMarker, editedMarker);
+
+        setComposerDraft("");
+        tapComposerAction("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Stop dictation'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === true");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        assertEquals("the composer must pass the saved language into Android speech", "de-DE", start.getString("languageTag"));
+        assertEquals("the composer must pass the saved silence window into Android speech", 9_000,
+                start.getInt("silenceWindowMs"));
+        String requestId = start.getString("requestId");
+
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(dictatedCommand) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(dictatedCommand) + "); 'result emitted'");
+        // The text area is disabled during recognition, so stop through the visible
+        // control instead of trying to focus the draft again to reopen the IME.
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Dictate'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === false"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
+
+        setComposerDraft(editedCommand);
+        String speechEvidence = evalString("JSON.stringify({start:window.__ps2857ControlledSpeech.startOptions,"
+                + "stop:window.__ps2857ControlledSpeech.stopOptions,draft:document.querySelector('[data-testid=prompt-draft]')?.value})");
+        Log.i("PS2857Dictation", "RUN|" + artifactRunId + "|" + speechEvidence);
+        tapComposerAction(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(editedMarker) + ")", 10_000);
+    }
+
     private void awaitDeliveredAndCleared() throws Exception {
         awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState === 'success'"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Sent to the terminal')"
@@ -316,7 +400,36 @@ public final class JsComposerDockerJourneyTest {
         if (!isImeVisible() || !composerFocused || !composerMode) {
             if (!composerMode && composerFocused) evalString("document.activeElement?.blur(); 'blurred'");
             tapDomCenter("[data-testid=prompt-draft]");
-            awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 3_000);
+            try {
+                awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 3_000);
+            } catch (AssertionError failure) {
+                String webState = evalString("(() => {const shell=document.querySelector('.app-shell');"
+                        + "const target=document.querySelector('[data-testid=prompt-draft]');"
+                        + "const active=document.activeElement;const r=target?.getBoundingClientRect();"
+                        + "const point=r?document.elementFromPoint(r.left+r.width/2,r.top+r.height/2):null;"
+                        + "const describe=node=>node?{tag:node.tagName,id:node.id,className:typeof node.className==='string'?node.className:'',"
+                        + "testId:node.dataset?.testid,disabled:!!node.disabled,html:node.outerHTML?.slice(0,240)}:null;"
+                        + "const style=target?getComputedStyle(target):null;"
+                        + "return JSON.stringify({phase:shell?.dataset.sshPhase,keyboardVisible:shell?.dataset.keyboardVisible,"
+                        + "keyboardComposerMode:shell?.dataset.keyboardComposerMode,targetConnected:!!target?.isConnected,"
+                        + "targetDisabled:target?.disabled,targetReadOnly:target?.readOnly,targetRect:r?{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}:null,"
+                        + "targetStyle:style?{display:style.display,visibility:style.visibility,pointerEvents:style.pointerEvents,opacity:style.opacity}:null,"
+                        + "active:describe(active),hitTarget:describe(point),documentHasFocus:document.hasFocus(),"
+                        + "visualViewport:window.visualViewport?{height:visualViewport.height,width:visualViewport.width,offsetTop:visualViewport.offsetTop}:null,"
+                        + "innerHeight,scrollY});})()");
+                AtomicReference<String> nativeState = new AtomicReference<>("unavailable");
+                scenario.onActivity(activity -> {
+                    WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+                    nativeState.set("windowFocus=" + activity.getWindow().getDecorView().hasWindowFocus()
+                            + ",activityResumed=" + activity.getLifecycle().getCurrentState().isAtLeast(
+                                    androidx.lifecycle.Lifecycle.State.RESUMED)
+                            + ",imeVisible=" + (insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                            + ",decorSize=" + activity.getWindow().getDecorView().getWidth() + "x"
+                            + activity.getWindow().getDecorView().getHeight());
+                });
+                throw new AssertionError("composer draft failed to focus after a touchscreen tap; WebView="
+                        + webState + "; Android=" + nativeState.get(), failure);
+            }
             awaitImeVisible(true);
         }
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");

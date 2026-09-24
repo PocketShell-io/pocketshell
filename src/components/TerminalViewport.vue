@@ -3,6 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
+import { focusTerminalUnlessComposerFocused } from '../session/terminalFocus';
 
 const props = defineProps<{ enabled: boolean; theme: ITheme; fontFamily: string; fontSize: number }>();
 const emit = defineEmits<{
@@ -56,7 +57,11 @@ watch(() => props.enabled, async (enabled) => {
   if (enabled) {
     await nextTick();
     fitTerminal();
-    terminal.focus();
+    await focusTerminalUnlessComposerFocused(
+      () => document.activeElement instanceof Element
+        && document.activeElement.closest('[data-testid="prompt-composer"]') !== null,
+      () => terminal?.focus(),
+    );
   }
 });
 

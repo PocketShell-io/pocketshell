@@ -31,6 +31,7 @@ import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
+import { focusTerminalUnlessComposerFocused } from './session/terminalFocus';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
@@ -387,7 +388,11 @@ async function attachSession(session: SessionRow) {
     // have identical geometry. Explicitly resize each newly attached PTY.
     const size = await terminal.value?.fit();
     if (size) await resizeTerminal(size);
-    terminal.value?.focus();
+    await focusTerminalUnlessComposerFocused(
+      () => document.activeElement instanceof Element
+        && document.activeElement.closest('[data-testid="prompt-composer"]') !== null,
+      () => terminal.value?.focus(),
+    );
   }
 }
 
@@ -969,6 +974,8 @@ onBeforeUnmount(() => {
           :target-key="composerTargetKey"
           :target-label="connectionSnapshot.selectedSession.name"
           :transport-state="composerTransportState"
+          :dictation-language-tag="appSettings.dictationLanguageTag"
+          :dictation-silence-window-ms="appSettings.dictationSilenceWindowMs"
           :write-pty="writeComposerPty"
         />
       </section>

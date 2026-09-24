@@ -13,6 +13,8 @@ const props = defineProps<{
   targetKey: string;
   targetLabel: string;
   transportState: 'connected' | 'lost' | 'closed';
+  dictationLanguageTag: string;
+  dictationSilenceWindowMs: number;
   writePty: PtyWriteEffect;
 }>();
 
@@ -168,6 +170,10 @@ async function toggleDictation() {
   try {
     const session = await platformInput.startDictation(
       (event) => handleDictationEvent(targetKey, event),
+      {
+        languageTag: props.dictationLanguageTag,
+        silenceWindowMs: props.dictationSilenceWindowMs,
+      },
     );
     dictationSession = session;
     dictationStarting.value = false;
