@@ -1,6 +1,12 @@
 {
   "schema": 1,
   "testFiles": {
+    "tests/unit/appLifecycle.test.ts": {
+      "suite": "native app lifecycle transitions",
+      "tests": [
+        "returns to foreground when it arrives before background scheduling resolves"
+      ]
+    },
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
@@ -62,7 +68,7 @@
       "tests": [
         "previews partials, buffers final phrases until explicit Stop, then inserts settings-backed safe text once",
         "inserts multiple final segments but replaces terminal controls so speech cannot press Enter",
-        "cancels on background and ignores final events that arrive after cancellation",
+        "ignores final events that arrive after controller cancellation",
         "stops a start that resolves after cancellation without forwarding its final text",
         "reports denied microphone access and does not write any text",
         "does not turn a partial into a terminal write when Stop receives no final result"

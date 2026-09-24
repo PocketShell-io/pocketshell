@@ -19,6 +19,7 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.lifecycle.Lifecycle;
 
 import com.pocketshell.app.MainActivity;
 
@@ -94,7 +95,7 @@ public final class JsComposerDockerJourneyTest {
         verifyNestedAndroidBackKeepsLiveSession();
 
         exerciseComposerDictation(nameBase, bytesSession, artifactRunId);
-        exerciseInlineTerminalDictation(nameBase, bytesSession, artifactRunId);
+        exerciseInlineTerminalDictation(nameBase, bytesSession, uncertainSession, artifactRunId);
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
@@ -283,7 +284,7 @@ public final class JsComposerDockerJourneyTest {
                 + "window.__ps2857ControlledSpeech=state;"
                 + "cap.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
-                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.requestId=options.requestId;"
+                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.requestId=options.requestId;"
                 + "return Promise.resolve({requestId:state.requestId,started:true});}"
                 + "if(method==='stopDictation'){state.stopOptions=JSON.parse(JSON.stringify(options));"
                 + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
@@ -335,7 +336,8 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(editedMarker) + ")", 10_000);
     }
 
-    private void exerciseInlineTerminalDictation(String nameBase, String sessionName, String artifactRunId) throws Exception {
+    private void exerciseInlineTerminalDictation(String nameBase, String sessionName, String targetChangeSession,
+            String artifactRunId) throws Exception {
         awaitJsTrue("!!document.querySelector('[data-testid=inline-dictation-toggle]')"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false");
         String inlineMarker = "PS2857_INLINE_" + nameBase;
@@ -383,6 +385,102 @@ public final class JsComposerDockerJourneyTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
         awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (acknowledgementsBefore + 2), 10_000);
+
+        exerciseBackgroundDictationCancellation(nameBase, sessionName, artifactRunId);
+        exerciseTargetChangeDictationCancellation(nameBase, sessionName, targetChangeSession, artifactRunId);
+    }
+
+    private void exerciseBackgroundDictationCancellation(String nameBase, String sessionName, String artifactRunId)
+            throws Exception {
+        String partialMarker = "PS2857_BG_PARTIAL_" + nameBase;
+        String lateMarker = "PS2857_BG_LATE_" + nameBase;
+        String partial = "printf '%s' '" + partialMarker + "'";
+        String lateCommand = "printf '%s' '" + lateMarker + "' > /tmp/" + sessionName + "-inline-background.marker";
+        int acknowledgementsBefore = terminalInputAcknowledgements();
+
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        String requestId = start.getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(partial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(partial));
+        assertEquals("background partial must remain local", acknowledgementsBefore, terminalInputAcknowledgements());
+
+        // ActivityScenario drives BridgeActivity.onStop/onResume, which fires the
+        // real Capacitor appStateChange event consumed by the mounted app and bar.
+        scenario.moveToState(Lifecycle.State.CREATED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + acknowledgementsBefore, 15_000);
+        assertEquals("the mounted inline bar must request speech stop on native background", requestId,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        Log.i("PS2857Inline", "BACKGROUND_CANCELLED|" + artifactRunId + "|request=" + requestId
+                + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
+
+        String recoveryMarker = "PS2857_BG_RECOVERY_" + nameBase;
+        String recoveryCommand = "printf '%s' '" + recoveryMarker + "' > /tmp/" + sessionName
+                + "-inline-background-recovery.marker";
+        startFreshInlineDictation(recoveryCommand, acknowledgementsBefore);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 2), 10_000);
+        Log.i("PS2857Inline", "BACKGROUND_RECOVERY|" + artifactRunId + "|marker=" + recoveryMarker);
+    }
+
+    private void exerciseTargetChangeDictationCancellation(String nameBase, String sessionName,
+            String targetChangeSession, String artifactRunId) throws Exception {
+        String partialMarker = "PS2857_TARGET_PARTIAL_" + nameBase;
+        String lateMarker = "PS2857_TARGET_LATE_" + nameBase;
+        String partial = "printf '%s' '" + partialMarker + "'";
+        String lateCommand = "printf '%s' '" + lateMarker + "' > /tmp/" + sessionName + "-inline-target-change.marker";
+        int acknowledgementsBefore = terminalInputAcknowledgements();
+
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        String requestId = start.getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(partial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(partial));
+        assertEquals("target-change partial must remain local", acknowledgementsBefore, terminalInputAcknowledgements());
+
+        // Switching the selected live session changes targetKey on the mounted
+        // bar while its recognition callback remains capable of late delivery.
+        attachSession(targetChangeSession);
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + acknowledgementsBefore, 15_000);
+        assertEquals("the mounted inline bar must request speech stop when targetKey changes", requestId,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'quiet'");
+        Log.i("PS2857Inline", "TARGET_CANCELLED|" + artifactRunId + "|request=" + requestId
+                + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
+        attachSession(sessionName);
+    }
+
+    private void startFreshInlineDictation(String command, int acknowledgementsBefore) throws Exception {
+        // Keep the original visible-control touchscreen proof in the happy path;
+        // use the mounted button event here because Android may still be
+        // settling its IME/window focus immediately after ActivityScenario resume.
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(command) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(command));
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(command) + "); 'final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 1), 15_000);
     }
 
     private int terminalInputAcknowledgements() throws Exception {

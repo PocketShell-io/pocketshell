@@ -30,6 +30,7 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
+import { createAppLifecycleHandler } from './session/appLifecycle';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import {
   focusTerminalUnlessComposerFocused,
@@ -642,19 +643,17 @@ onMounted(() => {
     }).catch((error: unknown) => {
       console.error('Could not register the Android Back handler.', error);
     });
+    const handleAppState = createAppLifecycleHandler({
+      getController: () => controller,
+      getBackgroundGraceMs: () => appSettings.backgroundGraceMs,
+      onError: (error) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+      },
+    });
     void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       diagnostics.record(isActive ? 'app-foregrounded' : 'app-backgrounded', 'lifecycle', 'OK');
-      const active = controller;
-      if (!active) return;
-      const phase = active.getSnapshot().phase;
-      if (isActive && phase === 'background') void active.returnToForeground().catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
-      else if (!isActive && phase === 'live') void active.enterBackground(appSettings.backgroundGraceMs).catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
+      handleAppState(isActive);
     }).then((listener) => {
       removeAppState = () => listener.remove();
     }).catch((error: unknown) => {

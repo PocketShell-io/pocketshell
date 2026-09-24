@@ -246,6 +246,33 @@ inline_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes
   || fail 'independent host PTY capture did not contain the inline dictation command'
 echo "PASS: explicit-stop inline dictation reached the host as exact UTF-8 bytes $inline_hex and executed only after Enter"
 
+background_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+background_uncertain_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$uncertain_session' --bytes 4096")"
+for marker in "PS2857_BG_PARTIAL_$SESSION_BASE" "PS2857_BG_LATE_$SESSION_BASE"; do
+  [[ "$background_capture" != *"$marker"* ]] || fail "background-cancelled transcript marker reached the bytes-session PTY: $marker"
+  [[ "$background_uncertain_capture" != *"$marker"* ]] || fail "background-cancelled transcript marker reached the uncertain-session PTY: $marker"
+done
+background_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-inline-background.marker; then printf present; else printf absent; fi")"
+[[ "$background_file_state" == absent ]] || fail 'late background transcript executed on the host after app resume'
+background_recovery_marker="PS2857_BG_RECOVERY_$SESSION_BASE"
+background_recovery_output="$(ssh_remote "cat /tmp/$bytes_session-inline-background-recovery.marker | tr -d '\\n'")"
+[[ "$background_recovery_output" == "$background_recovery_marker" ]] \
+  || fail "fresh dictation did not recover after background cancellation: expected $background_recovery_marker, got ${background_recovery_output:-<empty>}"
+[[ "$background_capture" == *"$background_recovery_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the post-background recovery dictation'
+printf 'PASS: background appStateChange cancelled partial/late text; fresh dictation reached Docker PTY as %s\n' \
+  "$background_recovery_marker"
+
+target_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$uncertain_session' --bytes 4096")"
+target_bytes_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+for marker in "PS2857_TARGET_PARTIAL_$SESSION_BASE" "PS2857_TARGET_LATE_$SESSION_BASE"; do
+  [[ "$target_capture" != *"$marker"* ]] || fail "target-change-cancelled transcript marker reached the target PTY: $marker"
+  [[ "$target_bytes_capture" != *"$marker"* ]] || fail "target-change-cancelled transcript marker reached the original bytes-session PTY: $marker"
+done
+target_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-inline-target-change.marker; then printf present; else printf absent; fi")"
+[[ "$target_file_state" == absent ]] || fail 'late transcript executed after switching the live target session'
+printf 'PASS: live target change cancelled partial/late text before either PTY accepted a write\n'
+
 insert_marker="PS2857_INSERT_$SESSION_BASE"
 insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
 [[ "$insert_capture" == *"$insert_marker"* ]] || fail 'remote PTY history did not contain the inserted prompt line'

@@ -76,7 +76,7 @@ describe('inline terminal dictation', () => {
     expect(safeInlineTranscriptText('a\rb\u001b[31m\u0007c')).toBe('a b [31m c');
   });
 
-  it('cancels on background and ignores final events that arrive after cancellation', async () => {
+  it('ignores final events that arrive after controller cancellation', async () => {
     const harness = makeHarness();
     await harness.controller.start({ targetKey: 'host/session-1', languageTag: 'auto', silenceWindowMs: 4_000 });
     harness.emit({ requestId: 'inline-1', type: 'partial', text: 'do not run this' });
