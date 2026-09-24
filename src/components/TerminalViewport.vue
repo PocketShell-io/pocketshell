@@ -3,11 +3,18 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
+import { TerminalGeometryReporter, type TerminalResizeRequest } from '../terminalGeometry';
 
-const props = defineProps<{ enabled: boolean; theme: ITheme; fontFamily: string; fontSize: number }>();
+const props = defineProps<{
+  enabled: boolean;
+  theme: ITheme;
+  fontFamily: string;
+  fontSize: number;
+  resizeFailure?: TerminalResizeRequest | null;
+}>();
 const emit = defineEmits<{
   input: [data: string];
-  resize: [size: { cols: number; rows: number }];
+  resize: [size: TerminalResizeRequest];
 }>();
 
 type ComposerSmokeEvidenceWindow = Window & {
@@ -16,6 +23,13 @@ type ComposerSmokeEvidenceWindow = Window & {
   __ps2857TerminalWriteCount?: number;
   __ps2857TerminalLastWriteText?: string;
   __ps2857TerminalRenderCount?: number;
+  __ps2875TerminalRuntimeGeometry?: {
+    cols: number;
+    rows: number;
+    viewportY: number;
+    baseY: number;
+    bufferLength: number;
+  };
 };
 
 const terminalHost = ref<HTMLDivElement>();
@@ -23,6 +37,9 @@ let terminal: Terminal | undefined;
 let fitAddon: FitAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let renderListener: { dispose(): void } | undefined;
+const resizeReporter = new TerminalGeometryReporter();
+let foregroundRefitFrame = 0;
+let foregroundRefitFrameAfterLayout = 0;
 
 function captureComposerSmokeTerminalText() {
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
@@ -38,26 +55,73 @@ function captureComposerSmokeTerminalText() {
   evidenceWindow.__ps2857TerminalRenderCount = (evidenceWindow.__ps2857TerminalRenderCount ?? 0) + 1;
 }
 
+function captureRequestedTerminalGeometry() {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return;
+  const buffer = terminal.buffer.active;
+  evidenceWindow.__ps2875TerminalRuntimeGeometry = {
+    cols: terminal.cols,
+    rows: terminal.rows,
+    viewportY: buffer.viewportY,
+    baseY: buffer.baseY,
+    bufferLength: buffer.length,
+  };
+}
+
+const terminalGeometryRequestEvent = 'pocketshell:terminal-geometry-request';
+
 function fitTerminal() {
   requestAnimationFrame(() => {
     if (!terminal || !fitAddon) return;
     try {
       fitAddon.fit();
-      emit('resize', { cols: terminal.cols, rows: terminal.rows });
+      const geometry = { cols: terminal.cols, rows: terminal.rows };
+      if (!props.enabled) {
+        // A fit while disconnected can prepare xterm's local grid, but it
+        // cannot acknowledge geometry on the next native PTY generation.
+        resizeReporter.reset();
+        return;
+      }
+      const request = resizeReporter.request(geometry);
+      if (request) emit('resize', request);
     } catch {
       // The terminal host is not measurable until its containing panel is laid out.
     }
   });
 }
 
+function refitAfterVisibilityResume() {
+  if (document.visibilityState !== 'visible') return;
+  void nextTick().then(() => {
+    if (document.visibilityState !== 'visible') return;
+    cancelAnimationFrame(foregroundRefitFrame);
+    cancelAnimationFrame(foregroundRefitFrameAfterLayout);
+    foregroundRefitFrame = requestAnimationFrame(() => {
+      foregroundRefitFrame = 0;
+      foregroundRefitFrameAfterLayout = requestAnimationFrame(() => {
+        foregroundRefitFrameAfterLayout = 0;
+        if (document.visibilityState === 'visible') fitTerminal();
+      });
+    });
+  });
+}
+
 watch(() => props.enabled, async (enabled) => {
   if (!terminal) return;
   terminal.options.disableStdin = !enabled;
-  if (enabled) {
-    await nextTick();
-    fitTerminal();
-    terminal.focus();
+  if (!enabled) {
+    // Reconnects reuse this xterm instance. Forget its last acknowledged size
+    // so the next live fit resizes the new physical PTY even at the same grid.
+    resizeReporter.reset();
+    return;
   }
+  await nextTick();
+  fitTerminal();
+  terminal.focus();
+});
+
+watch(() => props.resizeFailure?.requestId, (requestId) => {
+  if (requestId !== undefined) resizeReporter.reject(requestId);
 });
 
 watch(() => [props.theme, props.fontFamily, props.fontSize] as const, async () => {
@@ -85,12 +149,14 @@ onMounted(() => {
   terminal.loadAddon(fitAddon);
   terminal.open(terminalHost.value);
   renderListener = terminal.onRender(captureComposerSmokeTerminalText);
+  window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal.onData((data) => emit('input', data));
   fitTerminal();
   resizeObserver = new ResizeObserver(fitTerminal);
   resizeObserver.observe(terminalHost.value);
   window.visualViewport?.addEventListener('resize', fitTerminal);
   window.addEventListener('resize', fitTerminal);
+  document.addEventListener('visibilitychange', refitAfterVisibilityResume);
 });
 
 onBeforeUnmount(() => {
@@ -99,6 +165,10 @@ onBeforeUnmount(() => {
   renderListener = undefined;
   window.visualViewport?.removeEventListener('resize', fitTerminal);
   window.removeEventListener('resize', fitTerminal);
+  document.removeEventListener('visibilitychange', refitAfterVisibilityResume);
+  cancelAnimationFrame(foregroundRefitFrame);
+  cancelAnimationFrame(foregroundRefitFrameAfterLayout);
+  window.removeEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal?.dispose();
   terminal = undefined;
 });
@@ -121,7 +191,7 @@ function focus() {
   terminal?.focus();
 }
 
-function fit(): Promise<{ cols: number; rows: number } | null> {
+function fit(): Promise<TerminalResizeRequest | null> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => {
       if (!terminal || !fitAddon) {
@@ -130,7 +200,9 @@ function fit(): Promise<{ cols: number; rows: number } | null> {
       }
       try {
         fitAddon.fit();
-        resolve({ cols: terminal.cols, rows: terminal.rows });
+        // The caller uses this forced request after each session attach so the
+        // new PTY receives its own resize acknowledgement even at the same grid.
+        resolve(resizeReporter.request({ cols: terminal.cols, rows: terminal.rows }, true));
       } catch {
         resolve(null);
       }
@@ -155,3 +227,9 @@ defineExpose({ write, clear, focus, fit, scrollToBottom });
     :data-enabled="enabled"
   />
 </template>
+
+<style scoped>
+:global(.live-workspace) .terminal-viewport {
+  min-height: 0;
+}
+</style>

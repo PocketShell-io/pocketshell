@@ -7,10 +7,14 @@ import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.accessibility.AccessibilityWindowInfo;
 import android.webkit.WebView;
 
 import androidx.lifecycle.Lifecycle;
@@ -28,12 +32,15 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -75,6 +82,7 @@ public final class SshPtyDockerJourneyTest {
         String runId = arguments.getString("sshSessionName", "js2861-" + System.currentTimeMillis());
         assertTrue("run ID must be a safe, unique fixture tag prefix", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
+        assertPostFocusResizeRaceGuard();
         String sessionA = runId + "-a";
         String sessionB = runId + "-b";
         String sessionC = runId + "-c";
@@ -132,6 +140,7 @@ public final class SshPtyDockerJourneyTest {
         assertFalse("A and C must be distinct host sessions", rowA.getString("id").equals(rowC.getString("id")));
 
         JSONObject switchA = attachAndCapture(rowA, "switch-a", markerASwitch, artifactDirectory);
+        assertUnchangedViewportFitsAreCoalesced("switch-a");
         String originalConnectionId = switchA.getString("connectionId");
         checkpoints.put(switchA);
         JSONObject switchB = attachAndCapture(rowB, "switch-b", markerBSwitch, artifactDirectory);
@@ -313,40 +322,73 @@ public final class SshPtyDockerJourneyTest {
         assertEquals("selected session ID must come from the live host row", row.getString("id"), selectedSessionId());
         assertEquals("selected workspace must come from the live host row", row.getString("workspace"), selectedWorkspace());
         awaitNativeResizeAckAfter(resizeBefore.getInt("ackCount"), checkpoint);
-        awaitTerminalReady();
         JSONObject checkpointData = sendMarkerAndCapture(checkpoint, marker, artifactDirectory);
         Log.i("SshPtyDockerJourney", "RUN " + row.getString("tag") + " CHECKPOINT " + checkpointData);
         return checkpointData;
     }
 
     private JSONObject sendMarkerAndCapture(String checkpoint, String marker, File artifactDirectory) throws Exception {
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        awaitTerminalReady(checkpoint);
         int terminalColumns = currentTerminalColumns();
         assertTrue("remote output marker must fit one terminal row for " + checkpoint + " (columns="
                 + terminalColumns + "): " + marker, marker.length() <= terminalColumns);
         JSONObject before = terminalInputStats();
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        awaitTerminalReady();
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         int markerAccent = markerAccentColor(marker);
         String markerFormat = String.format(Locale.ROOT,
                 "\\033[38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m\\n",
                 Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent));
-        InstrumentationRegistry.getInstrumentation().sendStringSync(
-                "printf '" + markerFormat + "' '" + marker + "'\n");
+        String markerCommand = "printf '" + markerFormat + "' '" + marker + "'";
+        // Inject the shell command through xterm's paste handler to avoid emulator per-character IME
+        // duplication. The packaged composer journey separately exercises the real Android IME path.
+        pasteTerminalText(markerCommand, checkpoint);
+        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint + " command paste");
+
+        JSONObject beforeEnter = terminalInputStats();
+        assertEquals("pasted marker command must finish before Enter for " + checkpoint, 0,
+                beforeEnter.getInt("pending"));
+        assertEquals("terminal input failures must remain zero before Enter for " + checkpoint,
+                before.getInt("failureCount"), beforeEnter.getInt("failureCount"));
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        waitForTerminalInputDrain(beforeEnter.getInt("ackCount"), beforeEnter.getInt("failureCount"), checkpoint + " command Enter");
         awaitExactMarkerRow(marker, checkpoint);
-        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
         JSONObject checkpointData = captureCurrent(checkpoint, marker, artifactDirectory);
         Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " ACK_DRAIN " + checkpoint
                 + " " + terminalInputStats());
         return checkpointData;
     }
 
-    private void awaitTerminalReady() throws Exception {
+    private void pasteTerminalText(String text, String checkpoint) throws Exception {
+        String result = evalString("JSON.stringify((() => {"
+                + "const textarea=document.querySelector('#terminal-viewport .xterm-helper-textarea');"
+                + "const focused=!!textarea&&document.activeElement===textarea;"
+                + "if(!focused||typeof DataTransfer==='undefined'||typeof ClipboardEvent==='undefined')"
+                + "return {focused,eventAccepted:false,clipboardText:''};"
+                + "const transfer=new DataTransfer();transfer.setData('text/plain'," + JSONObject.quote(text) + ");"
+                + "const event=new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true});"
+                + "const eventAccepted=textarea.dispatchEvent(event);"
+                + "return {focused,eventAccepted,clipboardText:event.clipboardData?.getData('text/plain')??''};})())");
+        JSONObject paste = new JSONObject(result);
+        assertTrue("xterm helper textarea must be focused for marker paste at " + checkpoint,
+                paste.getBoolean("focused"));
+        assertTrue("xterm must accept the marker ClipboardEvent at " + checkpoint,
+                paste.getBoolean("eventAccepted"));
+        assertEquals("xterm paste clipboard must contain the exact command at " + checkpoint,
+                text, paste.getString("clipboardText"));
+    }
+
+    private void awaitTerminalReady(String checkpoint) throws Exception {
         awaitJsTrue("(() => {const viewport=document.querySelector('#terminal-viewport');"
                 + "const textarea=viewport?.querySelector('.xterm-helper-textarea');"
                 + "if(!viewport||!textarea||viewport.dataset.enabled!=='true') return false;"
                 + "textarea.focus(); return document.activeElement===textarea;})()");
+        // Focusing xterm may open or dismiss Android's IME after the attach's
+        // first resize acknowledgement. Wait for the accepted PTY grid to
+        // match the current xterm grid and for the viewport to remain settled
+        // before reading columns or sending terminal input.
+        awaitStableNativeResizeState(-1, checkpoint + " after terminal focus");
     }
 
     private void awaitExactMarkerRow(String marker, String checkpoint) throws Exception {
@@ -390,7 +432,7 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void sendControlCAndDrain() throws Exception {
-        awaitTerminalReady();
+        awaitTerminalReady("post-expiry Ctrl-C cleanup");
         JSONObject before = terminalInputStats();
         assertEquals("reconnected terminal must have no pending input before clearing any partial line", 0,
                 before.getInt("pending"));
@@ -426,14 +468,17 @@ public final class SshPtyDockerJourneyTest {
                 + "return r&&q?{viewport:{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height,"
                 + "devicePixelRatio:window.devicePixelRatio,backgroundColor:style.backgroundColor},"
                 + "marker:{left:q.left,top:q.top,right:q.right,bottom:q.bottom,width:q.width,height:q.height}}:null;})())"));
+        JSONObject layout = terminalLayoutDiagnostics();
+        layout.put("markerGeometry", geometry);
         JSONObject rect = geometry.getJSONObject("viewport");
         JSONObject markerRect = geometry.getJSONObject("marker");
         assertTrue("terminal viewport must have positive visible dimensions", rect.getDouble("width") > 0 && rect.getDouble("height") > 0);
         assertTrue("exact marker row must fit inside terminal viewport", markerRect.getDouble("left") >= rect.getDouble("left")
                 && markerRect.getDouble("top") >= rect.getDouble("top") && markerRect.getDouble("right") <= rect.getDouble("right")
                 && markerRect.getDouble("bottom") <= rect.getDouble("bottom"));
-        JSONObject screenshot = captureViewportPng(checkpoint, marker, rect, markerRect, artifactDirectory);
         writeText(new File(artifactDirectory, checkpoint + "-visible-terminal.txt"), text);
+        writeText(new File(artifactDirectory, checkpoint + "-terminal-layout.json"), layout.toString(2));
+        JSONObject screenshot = captureViewportPng(checkpoint, marker, rect, markerRect, artifactDirectory);
         JSONObject input = terminalInputStats();
         assertEquals("no pending terminal input may remain at screenshot checkpoint", 0, input.getInt("pending"));
         assertEquals("terminal input failures must remain zero at screenshot checkpoint", 0, input.getInt("failureCount"));
@@ -464,7 +509,40 @@ public final class SshPtyDockerJourneyTest {
                 .put("viewportPng", checkpoint + "-viewport.png")
                 .put("viewportRect", rect)
                 .put("markerRect", markerRect)
+                .put("terminalLayoutFile", checkpoint + "-terminal-layout.json")
                 .put("screenshotPixels", screenshot);
+    }
+
+    private JSONObject terminalLayoutDiagnostics() throws Exception {
+        String script = "(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+                + "const box=(el)=>{if(!el)return null;const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {"
+                + "rect:{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height},"
+                + "clientWidth:el.clientWidth,clientHeight:el.clientHeight,scrollWidth:el.scrollWidth,scrollHeight:el.scrollHeight,"
+                + "scrollTop:el.scrollTop,display:s.display,position:s.position,height:s.height,minHeight:s.minHeight,maxHeight:s.maxHeight,"
+                + "flex:s.flex,flexBasis:s.flexBasis,flexGrow:s.flexGrow,flexShrink:s.flexShrink,overflowX:s.overflowX,overflowY:s.overflowY};};"
+                + "const shell=document.querySelector('.app-shell'),main=document.querySelector('.screen-content.home-screen'),"
+                + "live=document.querySelector('.live-workspace'),panel=document.querySelector('.terminal-panel'),host=document.querySelector('#terminal-viewport'),"
+                + "xterm=host?.querySelector('.xterm'),scroll=host?.querySelector('.xterm-viewport'),screen=host?.querySelector('.xterm-screen'),"
+                + "rows=host?.querySelector('.xterm-rows'),row=host?.querySelector('.xterm-rows > div'),composer=document.querySelector('.composer-panel'),"
+                + "vv=window.visualViewport,rootStyle=getComputedStyle(document.documentElement),shellStyle=shell?getComputedStyle(shell):null;"
+                + "const rowHeight=row?.getBoundingClientRect().height??0;return JSON.stringify({capturedAtEpochMs:Date.now(),"
+                + "screen:{width:window.screen.width,height:window.screen.height,availWidth:window.screen.availWidth,availHeight:window.screen.availHeight},"
+                + "window:{innerWidth:window.innerWidth,innerHeight:window.innerHeight,outerWidth:window.outerWidth,outerHeight:window.outerHeight,"
+                + "devicePixelRatio:window.devicePixelRatio,documentClientWidth:document.documentElement.clientWidth,"
+                + "documentClientHeight:document.documentElement.clientHeight,scrollX:window.scrollX,scrollY:window.scrollY},"
+                + "visualViewport:vv?{width:vv.width,height:vv.height,offsetLeft:vv.offsetLeft,offsetTop:vv.offsetTop,"
+                + "pageLeft:vv.pageLeft,pageTop:vv.pageTop,scale:vv.scale}:null,"
+                + "keyboard:{visible:shell?.dataset.keyboardVisible??null,composerMode:shell?.dataset.keyboardComposerMode??null,"
+                + "nativePlatform:shell?.dataset.nativePlatform??null,activeElement:document.activeElement?.tagName??null,"
+                + "safeAreaBottom:rootStyle.getPropertyValue('--safe-area-inset-bottom').trim(),"
+                + "shellSafeBottom:shellStyle?.getPropertyValue('--android-shell-safe-bottom').trim()??null},"
+                + "elements:{shell:box(shell),appBar:box(document.querySelector('.app-bar--workspace')),main:box(main),"
+                + "liveWorkspace:box(live),terminalPanel:box(panel),terminalHost:box(host),xterm:box(xterm),"
+                + "xtermViewport:box(scroll),xtermScreen:box(screen),xtermRows:box(rows),composer:box(composer)},"
+                + "xtermDom:{domRows:rows?.children.length??0,rowHeight,cssVisibleRows:rowHeight>0?screen.clientHeight/rowHeight:null,"
+                + "viewportScrollTop:scroll?.scrollTop??null,viewportScrollHeight:scroll?.scrollHeight??null,"
+                + "viewportClientHeight:scroll?.clientHeight??null,runtime:window.__ps2875TerminalRuntimeGeometry??null}});})()";
+        return new JSONObject(evalString(script));
     }
 
     private void backgroundAndResumeWithinGrace() throws Exception {
@@ -541,6 +619,7 @@ public final class SshPtyDockerJourneyTest {
 
     private void installPhaseRecorder(String runId) throws Exception {
         String script = "(() => {const root=document.querySelector('.app-shell'); if(!root) throw new Error('app shell missing');"
+                + "window.__ps2857CaptureTerminalEvidence=true;"
                 + "window.__pocketshellJourney={runId:" + JSONObject.quote(runId) + ",phases:[],bridgeEvents:[],bridgeListenerReady:false};"
                 + "const sample=()=>{const d=root.dataset; const next={at:Date.now(),phase:d.sshPhase,"
                 + "connectionId:d.sshConnectionId,generationId:d.sshGenerationId,selectedName:d.sshSelectedSession,"
@@ -626,6 +705,7 @@ public final class SshPtyDockerJourneyTest {
             String checkpoint, String marker, JSONObject rect, JSONObject markerRect, File artifactDirectory
     ) throws Exception {
         AtomicReference<int[]> bounds = new AtomicReference<>();
+        AtomicReference<JSONObject> nativeWindow = new AtomicReference<>();
         CountDownLatch latch = new CountDownLatch(1);
         scenario.onActivity(activity -> {
             android.view.View decor = activity.getWindow().getDecorView();
@@ -633,6 +713,40 @@ public final class SshPtyDockerJourneyTest {
             assertNotNull("the packaged activity must contain its Capacitor WebView", view);
             int[] location = new int[2];
             view.getLocationOnScreen(location);
+            Rect visibleFrame = new Rect();
+            decor.getWindowVisibleDisplayFrame(visibleFrame);
+            android.view.WindowInsets rootInsets = decor.getRootWindowInsets();
+            boolean imeVisible = false;
+            int systemBarsTop = 0;
+            int systemBarsBottom = 0;
+            int imeBottom = 0;
+            if (rootInsets != null && android.os.Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets systemBars = rootInsets.getInsets(android.view.WindowInsets.Type.systemBars());
+                android.graphics.Insets ime = rootInsets.getInsets(android.view.WindowInsets.Type.ime());
+                imeVisible = rootInsets.isVisible(android.view.WindowInsets.Type.ime());
+                systemBarsTop = systemBars.top;
+                systemBarsBottom = systemBars.bottom;
+                imeBottom = ime.bottom;
+            }
+            try {
+                nativeWindow.set(new JSONObject()
+                        .put("decorWidth", decor.getWidth())
+                        .put("decorHeight", decor.getHeight())
+                        .put("webViewX", location[0])
+                        .put("webViewY", location[1])
+                        .put("webViewWidth", view.getWidth())
+                        .put("webViewHeight", view.getHeight())
+                        .put("windowVisibleFrame", new JSONObject()
+                                .put("left", visibleFrame.left).put("top", visibleFrame.top)
+                                .put("right", visibleFrame.right).put("bottom", visibleFrame.bottom)
+                                .put("width", visibleFrame.width()).put("height", visibleFrame.height()))
+                        .put("systemBarsTop", systemBarsTop)
+                        .put("systemBarsBottom", systemBarsBottom)
+                        .put("imeBottom", imeBottom)
+                        .put("imeVisible", imeVisible));
+            } catch (JSONException error) {
+                throw new IllegalStateException("could not serialize native WebView bounds", error);
+            }
             float scale = (float) rect.optDouble("devicePixelRatio");
             assertTrue("WebView device pixel ratio must be finite and positive", scale > 0 && Float.isFinite(scale));
             bounds.set(new int[] {
@@ -646,6 +760,16 @@ public final class SshPtyDockerJourneyTest {
         assertTrue("WebView viewport bounds callback timed out", latch.await(10, TimeUnit.SECONDS));
         int[] crop = bounds.get();
         assertNotNull("viewport crop coordinates must be recorded", crop);
+        JSONObject nativeBounds = nativeWindow.get();
+        assertNotNull("native WebView bounds must be recorded", nativeBounds);
+        if ("background-within-grace".equals(checkpoint)) {
+            JSONObject visibleFrame = nativeBounds.getJSONObject("windowVisibleFrame");
+            assertFalse("the IME must be hidden after lifecycle resume before screenshot acceptance",
+                    nativeBounds.getBoolean("imeVisible"));
+            assertTrue("resumed WebView must fill the available window after the IME closes: native="
+                            + nativeBounds,
+                    nativeBounds.getInt("webViewHeight") >= visibleFrame.getInt("height") - 120);
+        }
         int expectedWidth = Math.round((float) rect.optDouble("width") * (float) rect.optDouble("devicePixelRatio"));
         int expectedHeight = Math.round((float) rect.optDouble("height") * (float) rect.optDouble("devicePixelRatio"));
         assertTrue("viewport crop width must match CSS bounds at WebView DPR", Math.abs((crop[2] - crop[0]) - expectedWidth) <= 1);
@@ -662,7 +786,7 @@ public final class SshPtyDockerJourneyTest {
                 && markerRight <= crop[2] && markerBottom <= crop[3] && markerRight > markerLeft && markerBottom > markerTop);
         int markerAccent = markerAccentColor(marker);
         Bitmap full = takeScreenshotWhenMarkerIsPainted(
-                markerLeft, markerTop, markerRight, markerBottom, checkpoint, markerAccent);
+                markerLeft, markerTop, markerRight, markerBottom, checkpoint, markerAccent, artifactDirectory);
         assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
                 && crop[2] <= full.getWidth() && crop[3] <= full.getHeight() && crop[2] > crop[0] && crop[3] > crop[1]);
         int markerAccentPixels = countPixelsNearColor(full, markerLeft, markerTop, markerRight, markerBottom,
@@ -678,6 +802,7 @@ public final class SshPtyDockerJourneyTest {
                 colorNear(backgroundPixel, expectedBackground, 32));
         JSONObject pixelEvidence = new JSONObject()
                 .put("devicePixelRatio", rect.optDouble("devicePixelRatio"))
+                .put("nativeWindow", nativeBounds)
                 .put("cropWidth", crop[2] - crop[0])
                 .put("cropHeight", crop[3] - crop[1])
                 .put("markerAccentColor", colorString(markerAccent))
@@ -703,10 +828,12 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private Bitmap takeScreenshotWhenMarkerIsPainted(
-            int left, int top, int right, int bottom, String checkpoint, int expectedAccent
+            int left, int top, int right, int bottom, String checkpoint, int expectedAccent, File artifactDirectory
     ) throws Exception {
         long deadline = SystemClock.uptimeMillis() + SCREENSHOT_MARKER_WAIT_MILLIS;
         int lastAccentPixels = 0;
+        long lastSampleEpochMs = 0;
+        Bitmap lastFrame = null;
         while (SystemClock.uptimeMillis() < deadline) {
             Bitmap frame = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
             assertNotNull("Android must provide a same-run viewport screenshot", frame);
@@ -714,14 +841,190 @@ public final class SshPtyDockerJourneyTest {
                     && right > left && bottom > top) {
                 lastAccentPixels = countPixelsNearColor(frame, left, top, right, bottom,
                         expectedAccent, SCREENSHOT_MARKER_ACCENT_TOLERANCE);
-                if (lastAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS) return frame;
+                if (lastAccentPixels >= SCREENSHOT_MARKER_ACCENT_MIN_PIXELS) {
+                    if (lastFrame != null) lastFrame.recycle();
+                    return frame;
+                }
             }
-            frame.recycle();
+            if (lastFrame != null) lastFrame.recycle();
+            lastFrame = frame;
+            lastSampleEpochMs = System.currentTimeMillis();
             waitForNextWebViewFrame();
             Thread.sleep(50);
         }
+        if (lastFrame != null) {
+            try {
+                persistScreenshotFailureEvidence(lastFrame, left, top, right, bottom, checkpoint,
+                        expectedAccent, lastAccentPixels, lastSampleEpochMs, artifactDirectory);
+            } catch (Throwable diagnosticsFailure) {
+                Log.e("SshPtyDockerJourney", "RUN " + activeRunId
+                        + " could not persist same-frame screenshot failure evidence", diagnosticsFailure);
+            } finally {
+                lastFrame.recycle();
+            }
+        }
         throw new AssertionError("Android screenshot never painted the current terminal marker row for " + checkpoint
                 + " (accent pixels=" + lastAccentPixels + ", required=" + SCREENSHOT_MARKER_ACCENT_MIN_PIXELS + ")");
+    }
+
+    private void persistScreenshotFailureEvidence(
+            Bitmap frame, int left, int top, int right, int bottom, String checkpoint, int expectedAccent,
+            int accentPixels, long sampledAtEpochMs, File artifactDirectory
+    ) throws Exception {
+        String screenshotName = checkpoint + "-same-frame-failure.png";
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        if (!frame.compress(Bitmap.CompressFormat.PNG, 100, encoded)) {
+            throw new IllegalStateException("same-frame failure screenshot could not be encoded as PNG");
+        }
+        byte[] pngBytes = encoded.toByteArray();
+        try (FileOutputStream output = new FileOutputStream(new File(artifactDirectory, screenshotName))) {
+            output.write(pngBytes);
+        }
+        emitArtifact(screenshotName, pngBytes);
+
+        JSONObject state = new JSONObject()
+                .put("schema", 1)
+                .put("runId", activeRunId)
+                .put("checkpoint", checkpoint)
+                .put("sampledAtEpochMs", sampledAtEpochMs)
+                .put("stateCapturedAtEpochMs", System.currentTimeMillis())
+                .put("screenWidth", frame.getWidth())
+                .put("screenHeight", frame.getHeight())
+                .put("markerBounds", new JSONObject()
+                        .put("left", left).put("top", top).put("right", right).put("bottom", bottom))
+                .put("markerAccentRgb", colorString(expectedAccent))
+                .put("markerAccentPixels", accentPixels)
+                .put("requiredAccentPixels", SCREENSHOT_MARKER_ACCENT_MIN_PIXELS);
+
+        try {
+            AtomicReference<JSONObject> activityState = new AtomicReference<>();
+            scenario.onActivity(activity -> {
+                android.view.View decor = activity.getWindow().getDecorView();
+                try {
+                    WebView webView = decor instanceof WebView ? (WebView) decor
+                            : findWebView((android.view.ViewGroup) decor);
+                    int[] webViewLocation = new int[] {-1, -1};
+                    if (webView != null) webView.getLocationOnScreen(webViewLocation);
+                    Rect visibleFrame = new Rect();
+                    decor.getWindowVisibleDisplayFrame(visibleFrame);
+                    JSONObject webViewGeometry = new JSONObject()
+                            .put("present", webView != null)
+                            .put("attached", webView != null && webView.isAttachedToWindow())
+                            .put("shown", webView != null && webView.isShown())
+                            .put("x", webViewLocation[0])
+                            .put("y", webViewLocation[1])
+                            .put("width", webView == null ? 0 : webView.getWidth())
+                            .put("height", webView == null ? 0 : webView.getHeight());
+                    JSONObject visibleFrameGeometry = new JSONObject()
+                            .put("left", visibleFrame.left).put("top", visibleFrame.top)
+                            .put("right", visibleFrame.right).put("bottom", visibleFrame.bottom)
+                            .put("width", visibleFrame.width()).put("height", visibleFrame.height());
+                    android.view.WindowInsets rootInsets = decor.getRootWindowInsets();
+                    if (rootInsets != null && android.os.Build.VERSION.SDK_INT >= 30) {
+                        android.graphics.Insets systemBars = rootInsets.getInsets(android.view.WindowInsets.Type.systemBars());
+                        android.graphics.Insets ime = rootInsets.getInsets(android.view.WindowInsets.Type.ime());
+                        webViewGeometry.put("systemBarsInsets", new JSONObject()
+                                .put("top", systemBars.top).put("bottom", systemBars.bottom));
+                        webViewGeometry.put("imeInsets", new JSONObject()
+                                .put("top", ime.top).put("bottom", ime.bottom)
+                                .put("visible", rootInsets.isVisible(android.view.WindowInsets.Type.ime())));
+                    }
+                    activityState.set(new JSONObject()
+                            .put("className", activity.getClass().getName())
+                            .put("lifecycle", activity.getLifecycle().getCurrentState().name())
+                            .put("hasWindowFocus", activity.hasWindowFocus())
+                            .put("isFinishing", activity.isFinishing())
+                            .put("isDestroyed", activity.isDestroyed())
+                            .put("decorAttached", decor.isAttachedToWindow())
+                            .put("decorShown", decor.isShown())
+                            .put("decorVisibility", decor.getVisibility())
+                            .put("decorWindowVisibility", decor.getWindowVisibility())
+                            .put("decorHasWindowFocus", decor.hasWindowFocus())
+                            .put("decorWidth", decor.getWidth())
+                            .put("decorHeight", decor.getHeight())
+                            .put("webView", webViewGeometry)
+                            .put("windowVisibleDisplayFrame", visibleFrameGeometry));
+                } catch (JSONException error) {
+                    throw new IllegalStateException("could not serialize same-frame activity state", error);
+                }
+            });
+            state.put("activity", activityState.get());
+        } catch (Exception stateError) {
+            state.put("activityStateError", stateError.getClass().getName() + ": " + stateError.getMessage());
+        }
+
+        try {
+            state.put("webViewLayout", terminalLayoutDiagnostics());
+        } catch (Exception layoutError) {
+            state.put("webViewLayoutError", layoutError.getClass().getName() + ": " + layoutError.getMessage());
+        }
+
+        try {
+            org.json.JSONArray windows = new org.json.JSONArray();
+            List<AccessibilityWindowInfo> activeWindows = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getWindows();
+            for (AccessibilityWindowInfo window : activeWindows) {
+                Rect bounds = new Rect();
+                window.getBoundsInScreen(bounds);
+                AccessibilityNodeInfo root = window.getRoot();
+                CharSequence packageName = root == null ? null : root.getPackageName();
+                CharSequence className = root == null ? null : root.getClassName();
+                windows.put(new JSONObject()
+                        .put("id", window.getId())
+                        .put("type", window.getType())
+                        .put("title", window.getTitle() == null ? "" : window.getTitle().toString())
+                        .put("active", window.isActive())
+                        .put("focused", window.isFocused())
+                        .put("packageName", packageName == null ? "" : packageName.toString())
+                        .put("rootClassName", className == null ? "" : className.toString())
+                        .put("bounds", new JSONObject().put("left", bounds.left).put("top", bounds.top)
+                                .put("right", bounds.right).put("bottom", bounds.bottom)));
+            }
+            state.put("accessibilityWindows", windows);
+        } catch (Exception windowError) {
+            state.put("accessibilityWindowStateError", windowError.getClass().getName() + ": " + windowError.getMessage());
+        }
+
+        try {
+            state.put("systemForegroundWindowState", captureSystemForegroundWindowState());
+        } catch (Exception shellError) {
+            state.put("systemForegroundWindowStateError", shellError.getClass().getName() + ": " + shellError.getMessage());
+        }
+        writeText(new File(artifactDirectory, checkpoint + "-screenshot-failure-state.json"), state.toString(2));
+    }
+
+    private String captureSystemForegroundWindowState() throws Exception {
+        String activities = runUiAutomationCommand("dumpsys activity activities");
+        String windows = runUiAutomationCommand("dumpsys window");
+        StringBuilder result = new StringBuilder();
+        appendMatchingLines(result, "activity", activities,
+                "topResumedActivity", "mResumedActivity", "ResumedActivity");
+        appendMatchingLines(result, "window", windows,
+                "mCurrentFocus", "mFocusedApp", "mInputMethodWindow");
+        return result.toString();
+    }
+
+    private String runUiAutomationCommand(String command) throws Exception {
+        ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .executeShellCommand(command);
+        StringBuilder result = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new ParcelFileDescriptor.AutoCloseInputStream(descriptor), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) result.append(line).append('\n');
+        }
+        return result.toString();
+    }
+
+    private void appendMatchingLines(StringBuilder destination, String label, String text, String... needles) {
+        for (String line : text.split("\\R")) {
+            for (String needle : needles) {
+                if (line.contains(needle)) {
+                    destination.append(label).append(": ").append(line.trim()).append('\n');
+                    break;
+                }
+            }
+        }
     }
 
     private void waitForNextWebViewFrame() throws Exception {
@@ -853,10 +1156,21 @@ public final class SshPtyDockerJourneyTest {
 
     private JSONObject terminalResizeStats() throws Exception {
         return new JSONObject(evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
+                + "window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||'';"
+                + "const accepted=status.match(/^(\\d+)\\s*[×x]\\s*(\\d+)\\s+accepted by SSH$/);"
+                + "const runtime=window.__ps2875TerminalRuntimeGeometry;"
+                + "const viewport=document.querySelector('#terminal-viewport');const rect=viewport?.getBoundingClientRect();"
+                + "const vv=window.visualViewport;"
                 + "return root?{pending:Number(root.dataset.sshTerminalResizePending||0),"
                 + "ackCount:Number(root.dataset.sshTerminalResizeAcks||0),"
                 + "failureCount:Number(root.dataset.sshTerminalResizeFailures||0),"
-                + "status:document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||''}:null;})())"));
+                + "status,acceptedCols:accepted?Number(accepted[1]):0,acceptedRows:accepted?Number(accepted[2]):0,"
+                + "runtimeCols:Number(runtime?.cols||0),runtimeRows:Number(runtime?.rows||0),"
+                + "viewportWidth:rect?.width||0,viewportHeight:rect?.height||0,"
+                + "windowWidth:window.innerWidth,windowHeight:window.innerHeight,"
+                + "visualViewportWidth:vv?.width??0,visualViewportHeight:vv?.height??0,"
+                + "keyboardVisible:root.dataset.keyboardVisible||''}:null;})())"));
     }
 
     private void awaitNativeResizeAckAfter(int previousAckCount, String checkpoint) throws Exception {
@@ -870,11 +1184,157 @@ public final class SshPtyDockerJourneyTest {
         } catch (AssertionError failure) {
             throw new AssertionError(checkpoint + " resize state: " + evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');return {phase:root?.dataset.sshPhase,surface:root?.dataset.homeSurface,selected:root?.dataset.sshSelectedTag,resize:document.querySelector('[data-testid=terminal-resize-status]')?.textContent,acks:root?.dataset.sshTerminalResizeAcks,pending:root?.dataset.sshTerminalResizePending,failures:root?.dataset.sshTerminalResizeFailures}})())"), failure);
         }
-        JSONObject resize = terminalResizeStats();
+        JSONObject resize = awaitStableNativeResizeState(previousAckCount, checkpoint);
         assertEquals(checkpoint + " must finish with no pending native resize", 0, resize.getInt("pending"));
         assertTrue(checkpoint + " must have a fresh native resize acknowledgement",
                 resize.getInt("ackCount") > previousAckCount);
         assertEquals(checkpoint + " must not report a native resize failure", 0, resize.getInt("failureCount"));
+    }
+
+    private JSONObject awaitStableNativeResizeState(int previousAckCount, String checkpoint) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        long stableSince = -1;
+        JSONObject previousSettled = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            JSONObject current = terminalResizeStats();
+            boolean settled = isSettledResizeObservation(current, previousAckCount);
+            if (!settled) {
+                stableSince = -1;
+                previousSettled = null;
+            } else if (previousSettled == null || !sameSettledResizeState(previousSettled, current)) {
+                stableSince = SystemClock.uptimeMillis();
+                previousSettled = current;
+            } else if (SystemClock.uptimeMillis() - stableSince >= 350) {
+                return current;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError(checkpoint + " resize state did not remain settled: " + terminalResizeStats());
+    }
+
+    private boolean isSettledResizeObservation(JSONObject current, int previousAckCount) throws JSONException {
+        return current.getInt("pending") == 0
+                && current.getInt("ackCount") > previousAckCount
+                && current.getInt("failureCount") == 0
+                && current.getInt("acceptedCols") > 0
+                && current.getInt("acceptedCols") == current.getInt("runtimeCols")
+                && current.getInt("acceptedRows") == current.getInt("runtimeRows")
+                && current.getDouble("viewportWidth") > 0
+                && current.getDouble("viewportHeight") > 0;
+    }
+
+    private void assertPostFocusResizeRaceGuard() throws JSONException {
+        JSONObject lateFit = resizeObservation(8, 0, 5, 120, 578, 578, "true")
+                .put("status", "37 × 5 (local fit)")
+                // The status parser only accepts the explicit SSH acknowledgement form.
+                // A local-fit label therefore parses as zero accepted columns and rows.
+                .put("acceptedCols", 0);
+        JSONObject staleAck = resizeObservation(8, 15, 5, 120, 578, 578, "true");
+        JSONObject acceptedAfterIme = resizeObservation(9, 5, 5, 120, 578, 578, "true");
+
+        assertFalse("a post-focus local fit must not be mistaken for an accepted PTY resize",
+                isSettledResizeObservation(lateFit, 7));
+        assertFalse("an earlier SSH acknowledgement must not settle after the xterm grid changes",
+                isSettledResizeObservation(staleAck, 7));
+        assertTrue("a fresh SSH acknowledgement for the current IME-sized xterm grid must settle",
+                isSettledResizeObservation(acceptedAfterIme, 7));
+        assertGeometryChangesResetStability(acceptedAfterIme);
+    }
+
+    private JSONObject resizeObservation(int ackCount, int acceptedRows, int runtimeRows,
+                                         double viewportHeight, int windowHeight,
+                                         double visualViewportHeight, String keyboardVisible) throws JSONException {
+        return new JSONObject()
+                .put("pending", 0)
+                .put("ackCount", ackCount)
+                .put("failureCount", 0)
+                .put("status", "37 × " + acceptedRows + " accepted by SSH")
+                .put("acceptedCols", 37)
+                .put("acceptedRows", acceptedRows)
+                .put("runtimeCols", 37)
+                .put("runtimeRows", runtimeRows)
+                .put("viewportWidth", 370.7)
+                .put("viewportHeight", viewportHeight)
+                .put("windowWidth", 412)
+                .put("windowHeight", windowHeight)
+                .put("visualViewportWidth", 412.2)
+                .put("visualViewportHeight", visualViewportHeight)
+                .put("keyboardVisible", keyboardVisible);
+    }
+
+    private void assertGeometryChangesResetStability(JSONObject settled) throws JSONException {
+        // Keep ACK, status, and both accepted/runtime grids identical while varying
+        // each geometry signal independently. This proves the stability check is
+        // sensitive to the viewport/IME transition itself.
+        assertGeometryFieldChangeResetsStability(settled, "viewportWidth", 371.7);
+        assertGeometryFieldChangeResetsStability(settled, "viewportHeight", 121);
+        assertGeometryFieldChangeResetsStability(settled, "windowWidth", 413);
+        assertGeometryFieldChangeResetsStability(settled, "windowHeight", 579);
+        assertGeometryFieldChangeResetsStability(settled, "visualViewportWidth", 413.2);
+        assertGeometryFieldChangeResetsStability(settled, "visualViewportHeight", 579);
+        assertGeometryFieldChangeResetsStability(settled, "keyboardVisible", "false");
+
+        assertTrue("an identical accepted grid and geometry can complete the stability window",
+                sameSettledResizeState(settled, new JSONObject(settled.toString())));
+    }
+
+    private void assertGeometryFieldChangeResetsStability(JSONObject settled, String field, Object changedValue)
+            throws JSONException {
+        JSONObject changed = new JSONObject(settled.toString()).put(field, changedValue);
+        assertFalse("a geometry-only change to " + field + " must reset the stable observation window",
+                sameSettledResizeState(settled, changed));
+        assertTrue("an identical follow-up after the " + field + " change can complete the stability window",
+                sameSettledResizeState(changed, new JSONObject(changed.toString())));
+    }
+
+    private boolean sameSettledResizeState(JSONObject previous, JSONObject current) throws JSONException {
+        return previous.getInt("ackCount") == current.getInt("ackCount")
+                && previous.getString("status").equals(current.getString("status"))
+                && previous.getInt("acceptedCols") == current.getInt("acceptedCols")
+                && previous.getInt("acceptedRows") == current.getInt("acceptedRows")
+                && previous.getInt("runtimeCols") == current.getInt("runtimeCols")
+                && previous.getInt("runtimeRows") == current.getInt("runtimeRows")
+                && previous.getInt("windowWidth") == current.getInt("windowWidth")
+                && previous.getInt("windowHeight") == current.getInt("windowHeight")
+                && previous.getString("keyboardVisible").equals(current.getString("keyboardVisible"))
+                && nearlyEqual(previous.getDouble("viewportWidth"), current.getDouble("viewportWidth"))
+                && nearlyEqual(previous.getDouble("viewportHeight"), current.getDouble("viewportHeight"))
+                && nearlyEqual(previous.getDouble("visualViewportWidth"), current.getDouble("visualViewportWidth"))
+                && nearlyEqual(previous.getDouble("visualViewportHeight"), current.getDouble("visualViewportHeight"));
+    }
+
+    private boolean nearlyEqual(double left, double right) {
+        return Math.abs(left - right) < 0.5;
+    }
+
+    private void assertUnchangedViewportFitsAreCoalesced(String checkpoint) throws Exception {
+        JSONObject before = terminalResizeStats();
+        String viewportBefore = evalString("JSON.stringify({innerWidth,innerHeight,screenWidth:screen.width,screenHeight:screen.height,"
+                + "visualWidth:visualViewport?.width??null,visualHeight:visualViewport?.height??null})");
+        assertEquals(checkpoint + " must start with no pending resize", 0, before.getInt("pending"));
+        assertTrue(checkpoint + " must have a settled SSH resize before the coalescing probe",
+                before.getString("status").endsWith("accepted by SSH"));
+
+        evalString("(() => {window.__ps2875ResizeProbeDone=false;window.__ps2875ResizeProbeFrames=0;"
+                + "for(let i=0;i<5;i++)window.dispatchEvent(new Event('resize'));"
+                + "const next=()=>{window.__ps2875ResizeProbeFrames+=1;"
+                + "if(window.__ps2875ResizeProbeFrames>=4){window.__ps2875ResizeProbeDone=true;return;}"
+                + "requestAnimationFrame(next);};requestAnimationFrame(next);return 'scheduled';})()");
+        awaitJsTrue("window.__ps2875ResizeProbeDone===true", 5_000);
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizePending||0)===0", 10_000);
+
+        JSONObject after = terminalResizeStats();
+        String viewportAfter = evalString("JSON.stringify({innerWidth,innerHeight,screenWidth:screen.width,screenHeight:screen.height,"
+                + "visualWidth:visualViewport?.width??null,visualHeight:visualViewport?.height??null})");
+        assertEquals(checkpoint + " synthetic resize events must not alter viewport dimensions", viewportBefore, viewportAfter);
+        assertEquals(checkpoint + " coalescing probe must keep the accepted PTY grid unchanged",
+                before.getString("status"), after.getString("status"));
+        assertEquals(checkpoint + " five unchanged window-fit notifications must not start native resizes",
+                before.getInt("ackCount"), after.getInt("ackCount"));
+        assertEquals(checkpoint + " unchanged window-fit notifications must not fail native resizes",
+                before.getInt("failureCount"), after.getInt("failureCount"));
+        assertEquals(checkpoint + " coalescing probe must end with no pending native resize", 0,
+                after.getInt("pending"));
     }
 
     private String visiblePageText() throws Exception { return evalString("document.body.innerText"); }
