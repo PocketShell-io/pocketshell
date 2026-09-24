@@ -55,4 +55,18 @@ describe('mobile route stack', () => {
     navigation.openSettings();
     expect(navigation.stack).toEqual(['home', 'settings']);
   });
+
+  it('keeps usage and port tools as Settings child routes without changing the live home destination', () => {
+    const navigation = useNavigationStore();
+    navigation.openSettings();
+    navigation.open('usage');
+    expect(navigation.stack).toEqual(['home', 'settings', 'usage']);
+    navigation.back();
+    navigation.open('ports');
+    expect(navigation.stack).toEqual(['home', 'settings', 'ports']);
+    navigation.back();
+    expect(navigation.route).toBe('settings');
+    navigation.back();
+    expect(navigation.route).toBe('home');
+  });
 });

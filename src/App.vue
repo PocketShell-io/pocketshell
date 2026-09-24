@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect, type CSSProperties } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import {
   fromAndroidTrustedHostKeySha256,
   formatBytes,
+  isValidTcpPort,
   type ConnectionSnapshot,
   type HostKeyTrustPin,
   type HostKeyTrustStore,
   type SessionRow,
+  type SshConnectionRef,
   type SshHostTarget,
   type SshResourceSnapshot,
+  type UsageProviderRecord,
 } from '@pocketshell/core';
 import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
@@ -38,6 +41,10 @@ import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './terminalGeometry';
 import SettingsScreen from './components/SettingsScreen.vue';
+import ProviderUsageScreen from './components/ProviderUsageScreen.vue';
+import PortForwardScreen from './components/PortForwardScreen.vue';
+import { readHostUsage } from './policy/usage';
+import { PortForwardController, type PortForwardControllerSnapshot } from './policy/portForwardController';
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
 
@@ -97,6 +104,18 @@ const connectionMessage = ref('');
 const settingsReloading = ref(false);
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
+const usageRecords = ref<UsageProviderRecord[]>([]);
+const usageLoading = ref(false);
+const usageError = ref('');
+const usageLastReadAt = ref<number | null>(null);
+const portSnapshot = ref<PortForwardControllerSnapshot>(emptyPortSnapshot());
+const portLoading = ref(false);
+const portError = ref('');
+const portAutoEnabled = ref(true);
+const portManualDesiredPorts = ref<number[]>([]);
+const portDisabledPorts = ref<number[]>([]);
+const portScanCount = ref(0);
+const retainedHomeScreenStyle = ref<CSSProperties>();
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
 const terminalInputPending = ref(0);
@@ -110,6 +129,11 @@ const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 let terminalAttachEpoch = 0;
 
 let controller: ConnectionController | null = null;
+let portForwardController: PortForwardController | null = null;
+let portForwardHostId: string | null = null;
+let portForwardConnectionKey: string | null = null;
+let usageRequestEpoch = 0;
+let portRequestEpoch = 0;
 let removeBackButton: (() => Promise<void>) | undefined;
 let removeAppState: (() => Promise<void>) | undefined;
 let removeKeyboardInsetsListener: (() => Promise<void>) | undefined;
@@ -121,6 +145,8 @@ let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
+const hasActiveConnection = computed(() => isConnected.value
+  && Boolean(connectionSnapshot.value?.connectionId && connectionSnapshot.value.generationId));
 const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
   || installedDataMigrationState.status === 'pending'
   || settingsReloading.value);
@@ -153,6 +179,212 @@ function navigateHomeSurface(action: HomeSurfaceAction) {
   }
   homeSurface.value = transitionHomeSurface(homeSurface.value, action);
 }
+
+function openSettings(): void {
+  if (connectionSnapshot.value) {
+    const homeScreen = document.querySelector<HTMLElement>('.home-screen');
+    const bounds = homeScreen?.getBoundingClientRect();
+    if (bounds && bounds.width > 0 && bounds.height > 0) {
+      retainedHomeScreenStyle.value = {
+        position: 'fixed',
+        left: `${bounds.left}px`,
+        top: `${bounds.top}px`,
+        width: `${bounds.width}px`,
+        height: `${bounds.height}px`,
+        visibility: 'hidden',
+        pointerEvents: 'none',
+      };
+    }
+  }
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+  navigation.openSettings();
+}
+
+interface StoredPortPreferences {
+  autoEnabled: boolean;
+  desiredManualPorts: number[];
+  disabledPorts: number[];
+}
+
+function emptyPortSnapshot(): PortForwardControllerSnapshot {
+  return {
+    scan: { ok: false, ports: [], error: null },
+    activeForwards: [],
+    deferredPorts: [],
+    errors: {},
+  };
+}
+
+function portPreferencesKey(hostId: string): string {
+  return `pocketshell.js.port-preferences.v1.${hostId}`;
+}
+
+function readPortPreferences(hostId: string): StoredPortPreferences {
+  try {
+    const stored = localStorage.getItem(portPreferencesKey(hostId));
+    if (!stored) return { autoEnabled: true, desiredManualPorts: [], disabledPorts: [] };
+    const value: unknown = JSON.parse(stored);
+    if (typeof value !== 'object' || value === null) {
+      return { autoEnabled: true, desiredManualPorts: [], disabledPorts: [] };
+    }
+    const preferences = value as Record<string, unknown>;
+    return {
+      autoEnabled: typeof preferences.autoEnabled === 'boolean' ? preferences.autoEnabled : true,
+      desiredManualPorts: Array.isArray(preferences.desiredManualPorts)
+        ? [...new Set(preferences.desiredManualPorts.filter(
+          (port): port is number => typeof port === 'number' && isValidTcpPort(port),
+        ))].sort((left, right) => left - right)
+        : [],
+      disabledPorts: Array.isArray(preferences.disabledPorts)
+        ? [...new Set(preferences.disabledPorts.filter(
+          (port): port is number => typeof port === 'number' && isValidTcpPort(port),
+        ))].sort((left, right) => left - right)
+        : [],
+    };
+  } catch {
+    return { autoEnabled: true, desiredManualPorts: [], disabledPorts: [] };
+  }
+}
+
+function storePortPreferences(): void {
+  if (!portForwardHostId || !portForwardController) return;
+  try {
+    localStorage.setItem(portPreferencesKey(portForwardHostId), JSON.stringify({
+      autoEnabled: portAutoEnabled.value,
+      desiredManualPorts: portForwardController.getManualDesiredPorts(),
+      disabledPorts: portDisabledPorts.value,
+    }));
+  } catch {
+    // Port policy remains usable for this connection if browser storage is unavailable.
+  }
+}
+
+function currentConnectionRef(): SshConnectionRef | null {
+  const snapshot = connectionSnapshot.value;
+  if (!snapshot?.connectionId || !snapshot.generationId) return null;
+  return { connectionId: snapshot.connectionId, generationId: snapshot.generationId };
+}
+
+function sameConnection(left: SshConnectionRef | null, right: SshConnectionRef | null): boolean {
+  return left !== null && right !== null && left.connectionId === right.connectionId &&
+    left.generationId === right.generationId;
+}
+
+function syncPortForwardController(snapshot: ConnectionSnapshot): void {
+  if (!snapshot.hostId || !snapshot.connectionId || !snapshot.generationId) return;
+  const connection = { connectionId: snapshot.connectionId, generationId: snapshot.generationId };
+  const connectionKey = `${connection.connectionId}\u0000${connection.generationId}`;
+  const existing = portForwardController;
+  if (existing && portForwardHostId === snapshot.hostId) {
+    if (portForwardConnectionKey === connectionKey) return;
+    portForwardConnectionKey = connectionKey;
+    portRequestEpoch += 1;
+    usageRequestEpoch += 1;
+    usageLoading.value = false;
+    portLoading.value = true;
+    portError.value = '';
+    void existing.setConnection(connection).then(async () => {
+      if (existing !== portForwardController || portForwardConnectionKey !== connectionKey) return;
+      portSnapshot.value = existing.snapshot();
+      await refreshPorts();
+      if (navigation.route === 'usage') void refreshUsage();
+    }).catch((error: unknown) => {
+      if (existing !== portForwardController || portForwardConnectionKey !== connectionKey) return;
+      portError.value = error instanceof Error ? error.message : String(error);
+      portLoading.value = false;
+    });
+    return;
+  }
+
+  const preferences = readPortPreferences(snapshot.hostId);
+  const next = new PortForwardController(sshCapability, connection, {
+    desiredManualPorts: preferences.desiredManualPorts,
+  });
+  for (const port of preferences.disabledPorts) next.setManualDesiredPort(port, false);
+  next.setAutoEnabled(preferences.autoEnabled);
+  portForwardController = next;
+  portForwardHostId = snapshot.hostId;
+  portForwardConnectionKey = connectionKey;
+  portAutoEnabled.value = preferences.autoEnabled;
+  portManualDesiredPorts.value = next.getManualDesiredPorts();
+  portDisabledPorts.value = preferences.disabledPorts;
+  portSnapshot.value = next.snapshot();
+  portError.value = '';
+  portLoading.value = true;
+  usageRequestEpoch += 1;
+  if (navigation.route === 'usage') void refreshUsage();
+  void refreshPorts();
+}
+
+async function refreshUsage(): Promise<void> {
+  const connection = currentConnectionRef();
+  if (!hasActiveConnection.value || !connection) return;
+  const requestEpoch = ++usageRequestEpoch;
+  usageLoading.value = true;
+  usageError.value = '';
+  try {
+    const records = await readHostUsage(sshCapability, connection);
+    if (requestEpoch !== usageRequestEpoch || !sameConnection(connection, currentConnectionRef())) return;
+    usageRecords.value = records;
+    usageLastReadAt.value = Date.now();
+  } catch (error: unknown) {
+    if (requestEpoch !== usageRequestEpoch || !sameConnection(connection, currentConnectionRef())) return;
+    usageError.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    if (requestEpoch === usageRequestEpoch) usageLoading.value = false;
+  }
+}
+
+async function refreshPorts(): Promise<void> {
+  const active = portForwardController;
+  if (!active || !hasActiveConnection.value || !currentConnectionRef()) return;
+  const requestEpoch = ++portRequestEpoch;
+  portLoading.value = true;
+  portError.value = '';
+  try {
+    const snapshot = await active.scanAndReconcile();
+    if (requestEpoch === portRequestEpoch && active === portForwardController) {
+      portSnapshot.value = snapshot;
+    }
+  } catch (error: unknown) {
+    if (requestEpoch === portRequestEpoch && active === portForwardController) {
+      portError.value = error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (requestEpoch === portRequestEpoch && active === portForwardController) portLoading.value = false;
+    if (requestEpoch === portRequestEpoch && active === portForwardController) portScanCount.value += 1;
+  }
+}
+
+function setAutomaticPortForwarding(enabled: boolean): void {
+  const active = portForwardController;
+  if (!active) return;
+  portAutoEnabled.value = enabled;
+  active.setAutoEnabled(enabled);
+  storePortPreferences();
+  void refreshPorts();
+}
+
+function setManualPortForwarding(remotePort: number, enabled: boolean): void {
+  const active = portForwardController;
+  if (!active || !isValidTcpPort(remotePort)) return;
+  try {
+    active.setManualDesiredPort(remotePort, enabled);
+    portManualDesiredPorts.value = active.getManualDesiredPorts();
+    portDisabledPorts.value = enabled
+      ? portDisabledPorts.value.filter((port) => port !== remotePort)
+      : [...new Set([...portDisabledPorts.value, remotePort])].sort((left, right) => left - right);
+    storePortPreferences();
+    void refreshPorts();
+  } catch (error: unknown) {
+    portError.value = error instanceof Error ? error.message : String(error);
+  }
+}
+
+watch(() => navigation.route, (route) => {
+  if (route === 'usage') void refreshUsage();
+  if (route === 'ports') void refreshPorts();
+});
 
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
@@ -217,6 +449,7 @@ function bindController(next: ConnectionController) {
   let lastReportedError = '';
   removeControllerSnapshot = next.subscribe((snapshot) => {
     connectionSnapshot.value = snapshot;
+    syncPortForwardController(snapshot);
     if (snapshot.phase === 'error' && snapshot.error && snapshot.error !== lastReportedError) {
       lastReportedError = snapshot.error;
       diagnostics.record('ssh-operation-failed', 'connect', 'CONNECTION_FAILED');
@@ -455,11 +688,31 @@ async function resizeTerminal(size: TerminalResizeRequest) {
 
 async function closeController() {
   const active = controller;
+  const activePortForwardController = portForwardController;
+  portForwardController = null;
+  portForwardHostId = null;
+  portForwardConnectionKey = null;
+  portRequestEpoch += 1;
+  usageRequestEpoch += 1;
+  portLoading.value = false;
+  portError.value = '';
+  portSnapshot.value = emptyPortSnapshot();
+  portAutoEnabled.value = true;
+  portManualDesiredPorts.value = [];
+  portDisabledPorts.value = [];
+  portScanCount.value = 0;
+  usageLoading.value = false;
+  usageRecords.value = [];
+  usageError.value = '';
+  usageLastReadAt.value = null;
   removeControllerSnapshot?.();
   removeControllerSnapshot = undefined;
   removeTerminalOutput?.();
   removeTerminalOutput = undefined;
   controller = null;
+  // Tunnels use the active SSH generation. Close them while that connection
+  // is still valid, then close the connection itself as a final native guard.
+  if (activePortForwardController) await activePortForwardController.closeAll().catch(() => undefined);
   if (active) await active.close().catch(() => undefined);
   connectionSnapshot.value = null;
 }
@@ -719,7 +972,7 @@ onBeforeUnmount(() => {
             type="button"
             aria-label="Settings"
             title="Settings"
-            @click="navigation.openSettings()"
+            @click="openSettings"
           ><AppIcon name="settings" /></button>
         </nav>
       </template>
@@ -736,7 +989,7 @@ onBeforeUnmount(() => {
             type="button"
             aria-label="Settings"
             title="Settings"
-            @click="navigation.openSettings()"
+            @click="openSettings"
           >
             <AppIcon name="settings" />
           </button>
@@ -782,7 +1035,14 @@ onBeforeUnmount(() => {
       </button>
     </section>
 
-    <main v-if="navigation.route === 'home'" class="screen-content home-screen" :class="{ 'home-screen--workspace': !!connectionSnapshot }">
+    <main
+      v-if="connectionSnapshot || navigation.route === 'home'"
+      class="screen-content home-screen"
+      :class="{ 'home-screen--workspace': !!connectionSnapshot }"
+      :style="navigation.route === 'home' ? undefined : retainedHomeScreenStyle"
+      :aria-hidden="navigation.route !== 'home'"
+      :inert="navigation.route !== 'home'"
+    >
       <section v-if="homeSurface === 'connection'" class="connection-stack">
       <section class="panel host-panel" aria-labelledby="hosts-title">
         <div class="panel-heading">
@@ -979,10 +1239,32 @@ onBeforeUnmount(() => {
       </section>
     </main>
 
-    <SettingsScreen v-else-if="navigation.route.startsWith('settings')" />
-    <DiagnosticsScreen v-else-if="navigation.route.startsWith('diagnostics')" />
+    <ProviderUsageScreen
+      v-if="navigation.route === 'usage'"
+      :connected="hasActiveConnection"
+      :records="usageRecords"
+      :loading="usageLoading"
+      :error="usageError"
+      :last-read-at="usageLastReadAt"
+      @refresh="refreshUsage"
+    />
+    <PortForwardScreen
+      v-if="navigation.route === 'ports'"
+      :connected="hasActiveConnection"
+      :loading="portLoading"
+      :error="portError"
+      :auto-enabled="portAutoEnabled"
+      :manual-ports="portManualDesiredPorts"
+      :scan-count="portScanCount"
+      :snapshot="portSnapshot"
+      @refresh="refreshPorts"
+      @set-auto="setAutomaticPortForwarding"
+      @set-port="setManualPortForwarding"
+    />
+    <SettingsScreen v-if="navigation.route.startsWith('settings')" />
+    <DiagnosticsScreen v-if="navigation.route.startsWith('diagnostics')" />
     <AboutScreen
-      v-else
+      v-if="navigation.route === 'about' || navigation.route === 'about-update'"
       :build-verification="buildVerification"
       :core-revision="coreSourceRevision"
       :ui-revision="uiSourceRevision"

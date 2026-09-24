@@ -70,6 +70,11 @@ jobs:
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
 
+      - name: Check fail-closed packaged usage and ports result guards
+        run: |
+          scripts/check-js-usage-ports-results.py --self-test
+          scripts/check-js-usage-ports-host-evidence.py --self-test
+
       - name: Check JS-first connected-test dispatch and lock contracts
         run: |
           tests/scripts/connected-test-js-runner-test.sh
@@ -136,7 +141,7 @@ jobs:
       - name: Check emulator action pin
         run: scripts/check-emulator-action-pin.sh
 
-      - name: Run packaged JS smoke suite on API 35
+      - name: Run packaged JS journeys on API 35
         id: packaged-smoke
         timeout-minutes: 45
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
@@ -154,12 +159,14 @@ jobs:
           emulator-boot-timeout: 900
           script: scripts/ci-js-first-packaged-lanes.sh
 
-      - name: Assert the packaged JS composer journey executed exactly once
+      - name: Assert packaged JS composer and Usage/Ports journeys executed exactly once
         if: always()
         run: |
           scripts/check-js-composer-journey-results.py --self-test
           scripts/check-js-composer-journey-results.py \
             --results-dir android/app/build/outputs/androidTest-results/connected/debug
+          scripts/check-js-usage-ports-results.py \
+            --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
 
       - name: Collect isolated composer fixture diagnostics
         if: always()
@@ -184,18 +191,23 @@ jobs:
         if: always()
         run: scripts/agents-pool.sh down 2245
 
-      - name: Upload packaged APK and connected smoke results
+      - name: Upload packaged APK and connected journey evidence
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: pocketshell-js-first-debug-smoke
+          name: pocketshell-js-first-packaged-journeys
           path: |
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
             android/app/build/outputs/js-smoke-results/TEST-*.xml
+            android/app/build/outputs/js-usage-ports/**
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**
           if-no-files-found: warn
+
+      - name: Stop Docker agents fixture
+        if: always()
+        run: docker compose -f tests/docker/docker-compose.yml down --volumes --remove-orphans
 
   docker-agents-fixture:
     name: Docker agents fixture contract

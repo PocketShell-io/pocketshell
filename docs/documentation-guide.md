@@ -26,6 +26,7 @@ Everything else lives under `docs/` (or `.claude/agents/` for role prompts) and 
 | Working on voice/composer/key-bar input | [input-methods.md](input-methods.md) |
 | Working on agent detection or the conversation view | [agent-awareness.md](agent-awareness.md) |
 | Working on the usage/quota panel | [usage-panel.md](usage-panel.md) |
+| Working on JS-first Android usage or port forwarding | [js-usage-ports.md](js-usage-ports.md) |
 | Working on the server-side `pocketshell` CLI setup | [server-setup.md](server-setup.md) |
 | Recovering a split-brained tmux socket | [tmux-socket-recovery.md](tmux-socket-recovery.md) |
 | Replacing the Android product with the JS-first 0.6.0 shell | [js-first-rewrite-plan.md](js-first-rewrite-plan.md), [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md), [installed-data map](migration/installed-data-map.md), [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md), [Room schema archive](migration/room-schemas/) |

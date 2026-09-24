@@ -68,6 +68,7 @@ import org.bouncycastle.jce.provider.BouncyCastleProvider;
  */
 @CapacitorPlugin(name = "SshCapability")
 public final class SshCapabilityPlugin extends Plugin {
+    private static final String LOCAL_FORWARD_BIND_HOST = "127.0.0.1";
     private static final int MAX_CHANNELS_PER_CONNECTION = 8;
     private static final int MAX_PTY_READ_BYTES = 32 * 1024;
     private static final int MAX_PTY_WRITE_BYTES = 32 * 1024;
@@ -935,9 +936,9 @@ public final class SshCapabilityPlugin extends Plugin {
             try {
                 server = new ServerSocket();
                 server.setReuseAddress(false);
-                server.bind(new InetSocketAddress("127.0.0.1", requestedPort));
+                server.bind(new InetSocketAddress(LOCAL_FORWARD_BIND_HOST, requestedPort));
                 int localPort = server.getLocalPort();
-                Parameters parameters = new Parameters(remoteHost, remotePort, "127.0.0.1", localPort);
+                Parameters parameters = localForwardParameters(remoteHost, remotePort, localPort);
                 forwarder = connection.client.newLocalPortForwarder(parameters, server);
                 forwarding = new SshForward(UUID.randomUUID().toString(), connection, server, forwarder, localPort);
                 forwards.put(forwarding.forwardId, forwarding);
@@ -990,6 +991,11 @@ public final class SshCapabilityPlugin extends Plugin {
             }
             return ack(requestId);
         });
+    }
+
+    /** SSHJ parameters use local endpoint first, then the remote destination. */
+    private static Parameters localForwardParameters(String remoteHost, int remotePort, int localPort) {
+        return new Parameters(LOCAL_FORWARD_BIND_HOST, localPort, remoteHost, remotePort);
     }
 
     @PluginMethod

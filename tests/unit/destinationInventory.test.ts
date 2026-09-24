@@ -20,7 +20,7 @@ describe('pre-rewrite destination inventory', () => {
   });
 
   it('states which prior settings/support surfaces have working routes in this slice', () => {
-    const currentDestinations = ['Settings', 'TerminalSettings', 'ConnectionSettings', 'Diagnostics', 'DiagnosticReport', 'About', 'ClearReports', 'Grace'];
+    const currentDestinations = ['Settings', 'TerminalSettings', 'ConnectionSettings', 'Usage', 'HostUsage', 'Ports', 'TunnelDetail', 'AddTunnel', 'Diagnostics', 'DiagnosticReport', 'About', 'ClearReports', 'Grace'];
     for (const destination of currentDestinations) {
       expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === destination)?.status).toBe('available');
     }

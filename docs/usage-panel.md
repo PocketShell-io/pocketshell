@@ -1,5 +1,10 @@
 # Usage Panel
 
+This document records the broader Android Compose usage design and host-side
+producer contract. The current JS-first Android route, its direct-refresh
+behavior, and its Docker journey are described in
+[`js-usage-ports.md`](js-usage-ports.md).
+
 Provider quota tracking for Claude Code, Codex, GitHub Copilot, Grok Build, Z.AI, and other coding-agent CLIs — surfaced as a dedicated screen and a dashboard widget. The pinned producer currently reports five providers; a separate canonical producer contract can add providers such as OpenCode Go.
 
 ## Key principle: zero credentials on the phone
