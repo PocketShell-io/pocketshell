@@ -1009,7 +1009,10 @@ onBeforeUnmount(() => {
         <div
           class="terminal-slot"
           data-testid="terminal-slot"
-          :class="{ 'terminal-slot--ime-open': mobileHotkeysEnabled && keyboardVisible }"
+          :class="{
+            'terminal-slot--hotkeys': isLive,
+            'terminal-slot--ime-open': mobileHotkeysEnabled && keyboardVisible,
+          }"
           :data-keyboard-visible="keyboardVisible"
         >
           <TerminalViewport

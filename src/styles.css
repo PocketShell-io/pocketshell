@@ -173,7 +173,7 @@ button { color: inherit; }
   flex-direction: column;
   overflow: hidden;
 }
-.live-workspace .terminal-slot--ime-open {
+.live-workspace .terminal-slot--hotkeys {
   min-height: calc(var(--terminal-min-grid-height, 110px) + 56px);
   padding-bottom: 56px;
 }
@@ -547,10 +547,6 @@ button { color: inherit; }
     max-height: none;
     flex: 1 1 auto;
     padding: 4px;
-  }
-  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-slot--ime-open {
-    min-height: calc(var(--terminal-min-grid-height, 110px) + 56px);
-    padding-bottom: 56px;
   }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-footnote { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace > .composer-panel {
