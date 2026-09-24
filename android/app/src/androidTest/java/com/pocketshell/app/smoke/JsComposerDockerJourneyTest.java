@@ -4,10 +4,13 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Activity;
+import android.app.ActivityManager;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.KeyEvent;
@@ -220,13 +223,191 @@ public final class JsComposerDockerJourneyTest {
         click("[data-testid=open-terminal-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
         int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
-                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
-                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && !!document.querySelector('[data-testid=prompt-composer]')");
+        JSONObject backTrace = new JSONObject()
+                .put("schema", 1)
+                .put("runId", artifactRunId)
+                .put("beforeFirstBack", captureBackSnapshot("before-first"));
+        sendBackWithEvidence(backTrace, "first", KeyEvent.KEYCODE_BACK, before + 1);
+        try {
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
+                    + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
+            backTrace.put("firstBackAssertion", "passed");
+        } catch (AssertionError failure) {
+            backTrace.put("firstBackAssertion", "failed: " + failure.getMessage());
+            emitBackTrace(backTrace, "composer-back-failure.json");
+            throw failure;
+        } catch (Exception failure) {
+            backTrace.put("firstBackAssertion", "threw: " + failure.getClass().getName() + ": " + failure.getMessage());
+            try {
+                emitBackTrace(backTrace, "composer-back-failure.json");
+            } catch (Exception evidenceFailure) {
+                failure.addSuppressed(evidenceFailure);
+            }
+            throw failure;
+        }
+        int beforeSecond = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+        backTrace.put("beforeSecondBack", captureBackSnapshot("before-second"));
+        sendBackWithEvidence(backTrace, "second", KeyEvent.KEYCODE_BACK, beforeSecond + 1);
+        try {
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && !!document.querySelector('[data-testid=prompt-composer]')");
+        } catch (AssertionError failure) {
+            backTrace.put("secondBackAssertion", "failed: " + failure.getMessage());
+            emitBackTrace(backTrace, "composer-back-failure.json");
+            throw failure;
+        } catch (Exception failure) {
+            backTrace.put("secondBackAssertion", "threw: " + failure.getClass().getName() + ": " + failure.getMessage());
+            try {
+                emitBackTrace(backTrace, "composer-back-failure.json");
+            } catch (Exception evidenceFailure) {
+                failure.addSuppressed(evidenceFailure);
+            }
+            throw failure;
+        }
+        backTrace.put("secondBackAssertion", "passed");
+        emitBackTrace(backTrace, "composer-back-trace.json");
+    }
+
+    private void sendBackWithEvidence(JSONObject trace, String label, int keyCode, int expectedBackEvents) throws Exception {
+        long dispatchStartedUptimeMs = SystemClock.uptimeMillis();
+        int processId = Process.myPid();
+        Log.i("PS2901Back", "KEY_DISPATCH_START|" + artifactRunId + "|" + label + "|"
+                + keyCode + "|uptime=" + dispatchStartedUptimeMs + "|pid=" + processId);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(keyCode);
+        long dispatchReturnedUptimeMs = SystemClock.uptimeMillis();
+        Log.i("PS2901Back", "KEY_DISPATCH_RETURN|" + artifactRunId + "|" + label + "|"
+                + keyCode + "|uptime=" + dispatchReturnedUptimeMs + "|pid=" + processId);
+        trace.put(label + "BackDispatch", new JSONObject()
+                .put("api", "Instrumentation.sendKeyDownUpSync")
+                .put("keyCode", keyCode)
+                .put("startedUptimeMs", dispatchStartedUptimeMs)
+                .put("returnedUptimeMs", dispatchReturnedUptimeMs)
+                .put("processId", processId)
+                .put("expectedBackButtonEvents", expectedBackEvents));
+        trace.put("after" + Character.toUpperCase(label.charAt(0)) + label.substring(1) + "Back",
+                captureBackSnapshot("after-" + label));
+        byte[] screenshot = captureDeviceScreenshot();
+        if (screenshot != null) emitArtifact(artifactRunId, "composer-back-" + label + ".png", screenshot);
+    }
+
+    private JSONObject captureBackSnapshot(String phase) throws Exception {
+        JSONObject snapshot = new JSONObject()
+                .put("phase", phase)
+                .put("uptimeMs", SystemClock.uptimeMillis())
+                .put("instrumentationPid", Process.myPid());
+        try {
+            JSONObject dom = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                    + "const active=document.activeElement;return JSON.stringify({route:shell?.dataset.route??null,"
+                    + "backButtonReady:shell?.dataset.backButtonReady??null,"
+                    + "backButtonEvents:Number(shell?.dataset.backButtonEvents??0),"
+                    + "sshPhase:shell?.dataset.sshPhase??null,keyboardVisible:shell?.dataset.keyboardVisible??null,"
+                    + "documentVisibility:document.visibilityState,documentHasFocus:document.hasFocus(),"
+                    + "activeTag:active?.tagName??null,activeId:active?.id??null,"
+                    + "activeClass:typeof active?.className==='string'?active.className:null});})()");
+            snapshot.put("webView", dom);
+        } catch (Exception error) {
+            snapshot.put("webViewReadError", error.getClass().getName() + ": " + error.getMessage());
+        }
+        try {
+            scenario.onActivity(activity -> {
+                View decor = activity.getWindow().getDecorView();
+                WindowInsets insets = decor.getRootWindowInsets();
+                ActivityManager manager = (ActivityManager) activity.getSystemService(Activity.ACTIVITY_SERVICE);
+                ActivityManager.RunningAppProcessInfo appProcess = null;
+                java.util.List<ActivityManager.RunningAppProcessInfo> runningProcesses = manager.getRunningAppProcesses();
+                if (runningProcesses != null) {
+                    for (ActivityManager.RunningAppProcessInfo process : runningProcesses) {
+                        if (process.pid == Process.myPid()) {
+                            appProcess = process;
+                            break;
+                        }
+                    }
+                }
+                try {
+                    snapshot.put("activity", new JSONObject()
+                            .put("class", activity.getClass().getName())
+                            .put("package", activity.getPackageName())
+                            .put("processName", activity.getApplicationInfo().processName)
+                            .put("pid", Process.myPid())
+                            .put("lifecycle", activity.getLifecycle().getCurrentState().name())
+                            .put("finishing", activity.isFinishing())
+                            .put("destroyed", activity.isDestroyed())
+                            .put("windowHasFocus", decor.hasWindowFocus())
+                            .put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                                    && insets.isVisible(WindowInsets.Type.ime()))
+                            .put("imeBottomPx", insets == null || Build.VERSION.SDK_INT < 30 ? 0
+                                    : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                            .put("processImportance", appProcess == null ? JSONObject.NULL : appProcess.importance)
+                            .put("processImportanceReason", appProcess == null ? JSONObject.NULL : appProcess.importanceReasonCode));
+                } catch (JSONException error) {
+                    throw new RuntimeException(error);
+                }
+            });
+        } catch (Exception error) {
+            snapshot.put("activityReadError", error.getClass().getName() + ": " + error.getMessage());
+        }
+        snapshot.put("foregroundActivities", filteredShellSnapshot("dumpsys activity activities",
+                "mResumedActivity", "topResumedActivity", "ResumedActivity", "mFocusedApp"));
+        snapshot.put("windowFocus", filteredShellSnapshot("dumpsys window displays",
+                "mCurrentFocus", "mFocusedApp", "mFocusedWindow"));
+        snapshot.put("imeService", filteredShellSnapshot("dumpsys input_method",
+                "mInputShown", "mShowRequested", "isInputViewShown", "mImeWindowVis",
+                "mCurFocusedWindow", "mServedView", "mNextServedView"));
+        return snapshot;
+    }
+
+    private String filteredShellSnapshot(String command, String... filters) {
+        try (ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().executeShellCommand(command);
+             InputStream input = new FileInputStream(descriptor.getFileDescriptor())) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int count;
+            while ((count = input.read(buffer)) >= 0 && bytes.size() < 128 * 1024) {
+                bytes.write(buffer, 0, Math.min(count, 128 * 1024 - bytes.size()));
+            }
+            String[] lines = bytes.toString(StandardCharsets.UTF_8.name()).split("\\R");
+            StringBuilder result = new StringBuilder();
+            int selected = 0;
+            for (String line : lines) {
+                for (String filter : filters) {
+                    if (line.contains(filter)) {
+                        if (selected++ > 0) result.append('\n');
+                        String concise = line.trim();
+                        result.append(concise.length() > 500 ? concise.substring(0, 500) : concise);
+                        break;
+                    }
+                }
+                if (selected >= 24) break;
+            }
+            return result.toString();
+        } catch (Exception error) {
+            return "unavailable: " + error.getClass().getName() + ": " + error.getMessage();
+        }
+    }
+
+    private byte[] captureDeviceScreenshot() {
+        Bitmap screenshot;
+        try {
+            screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        } catch (Exception error) {
+            Log.w("PS2901Back", "could not capture screenshot for Back diagnostics", error);
+            return null;
+        }
+        if (screenshot == null) return null;
+        try {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            if (!screenshot.compress(Bitmap.CompressFormat.PNG, 100, bytes)) return null;
+            byte[] encoded = bytes.toByteArray();
+            return encoded.length >= 1024 ? encoded : null;
+        } finally {
+            screenshot.recycle();
+        }
+    }
+
+    private void emitBackTrace(JSONObject trace, String artifactName) throws Exception {
+        emitArtifact(artifactRunId, artifactName, trace.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private void createSession(String name) throws Exception {
