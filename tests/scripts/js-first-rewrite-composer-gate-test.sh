@@ -5,24 +5,32 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-composer-artifacts.py"
+TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 
-[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" ]] || {
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -x "$TOOLCACHE_PRUNER" ]] || {
   printf 'FAIL: rewrite composer gate inputs are missing\n' >&2
   exit 1
 }
 
 bash -n "$RUNNER"
-python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" <<'PY'
+python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" <<'PY'
 import ast
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-workflow_path, runner_path, extractor_path = map(Path, sys.argv[1:])
+workflow_path, runner_path, extractor_path, toolcache_pruner_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
+disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 ast.parse(extractor_path.read_text(), filename=str(extractor_path))
+subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
+subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
+if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
+    raise AssertionError("disk preflight does not invoke the tested toolcache-preservation helper")
 
 
 def require_contract(source: str) -> None:
@@ -34,15 +42,26 @@ def require_contract(source: str) -> None:
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
         ("artifact uploader", "uses: actions/upload-artifact@v6"),
         ("JUnit upload", "android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml"),
-        ("runtime preflight step", "- name: Capture and verify emulator JS runtime"),
+        ("post-cleanup runtime preflight step", "- name: Capture and verify emulator JS runtime after disk cleanup"),
         ("captured node path", 'node_path="$(command -v node)"'),
         ("captured pnpm path", 'pnpm_path="$(command -v pnpm)"'),
-        ("emulator PATH forwarding", "PATH: ${{ steps.emulator-js-runtime.outputs.path }}"),
-        ("emulator pnpm forwarding", "PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}"),
+        ("runtime PATH forwarded to the emulator action", "PATH: ${{ steps.emulator-js-runtime.outputs.path }}"),
+        ("runtime pnpm path forwarded to the emulator action", "PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}"),
     )
     for label, needle in required:
         if needle not in source:
             raise AssertionError(f"workflow is missing {label}: {needle}")
+    action_start = source.index("- name: Run packaged JS smoke suite on API 35")
+    action_end = source.index("\n      - name:", action_start + 8)
+    emulator_action = source[action_start:action_end]
+    for needle in (
+        "        env:\n          PATH: ${{ steps.emulator-js-runtime.outputs.path }}\n"
+        "          PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}\n",
+    ):
+        if needle not in emulator_action:
+            raise AssertionError("Node/pnpm outputs must be inherited from the emulator action's step-level env")
+    if "PATH='${{ steps.emulator-js-runtime.outputs.path }}'" in emulator_action:
+        raise AssertionError("runtime PATH should be passed through the action environment, not an inline workaround")
     composer = source.index("scripts/connected-js-composer-docker.sh --suffix i2891ci --port 2245")
     lifecycle = source.index("scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222")
     if lifecycle >= composer:
@@ -65,13 +84,15 @@ def require_contract(source: str) -> None:
 
 require_contract(workflow)
 
-runtime_step = workflow.index("- name: Capture and verify emulator JS runtime")
+runtime_step = workflow.index("- name: Capture and verify emulator JS runtime after disk cleanup")
 fixture_step = workflow.index("- name: Start version-matched Docker agents fixture")
+cleanup_step = workflow.index("- name: Free disk space for API 35 emulator")
 emulator_step = workflow.index("uses: reactivecircus/android-emulator-runner@")
-if not runtime_step < fixture_step < emulator_step:
-    raise AssertionError("the Node/pnpm runtime preflight must fail before Docker fixture and emulator work")
+if not fixture_step < cleanup_step < runtime_step < emulator_step:
+    raise AssertionError("the Node/pnpm runtime preflight must run after toolcache cleanup and before emulator work")
 
-runtime_section = workflow[runtime_step:fixture_step]
+runtime_end = workflow.index("- name: Repair Android cmdline-tools and accept licenses", runtime_step)
+runtime_section = workflow[runtime_step:runtime_end]
 runtime_lines = runtime_section.splitlines()
 runtime_run_index = next(
     index for index, line in enumerate(runtime_lines)
@@ -103,13 +124,18 @@ for needle in (
         raise AssertionError(f"emulator JavaScript runtime preflight is missing: {needle}")
 
 for label, damaged in (
-    ("emulator PATH forwarding", workflow.replace(
+    ("action runtime PATH forwarding", workflow.replace(
         "          PATH: ${{ steps.emulator-js-runtime.outputs.path }}\n",
         "",
         1,
     )),
+    ("action runtime pnpm forwarding", workflow.replace(
+        "          PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}\n",
+        "",
+        1,
+    )),
     ("early runtime preflight", workflow.replace(
-        "- name: Capture and verify emulator JS runtime",
+        "- name: Capture and verify emulator JS runtime after disk cleanup",
         "- name: Capture runtime without verification",
         1,
     )),
@@ -154,6 +180,173 @@ for line in lines[script_index + 1:]:
         break
     script_lines.append(line[script_indent + 2:] if line.startswith(" " * (script_indent + 2)) else "")
 subprocess.run(["bash", "-n"], input="\n".join(script_lines), text=True, check=True)
+
+# android-emulator-runner v2.37.0's parseScript splits the `script` input into
+# individual lines and starts a separate `sh -c` for each one. Each child gets
+# the action's process environment, including step-level env. Model that exact
+# inheritance so the captured runtime is tested through the real composer
+# command without inventing a missing-env failure.
+action_lines = [line.strip() for line in script_lines if line.strip() and not line.strip().startswith("#")]
+composer_command = next(
+    line for line in action_lines if "scripts/connected-js-composer-docker.sh" in line
+)
+with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
+    action_root = Path(temporary)
+    runtime_bin = action_root / "runtime bin"
+    runtime_bin.mkdir()
+    fake_pnpm = runtime_bin / "pnpm"
+    fake_pnpm.write_text("#!/bin/sh\nprintf 'fixture-pnpm-ok\\n'\n")
+    fake_pnpm.chmod(0o755)
+
+    fake_repo = action_root / "repo"
+    fake_runner = fake_repo / "scripts/connected-js-composer-docker.sh"
+    fake_runner.parent.mkdir(parents=True)
+    capture = action_root / "captured-runtime.txt"
+    fake_runner.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PNPM\" \"$PATH\" >> \"$CAPTURE_RUNTIME\"\n"
+        "\"$PNPM\" --version >> \"$CAPTURE_RUNTIME\"\n"
+        "printf '%s\\n' \"$*\" >> \"$CAPTURE_RUNTIME\"\n"
+    )
+    fake_runner.chmod(0o755)
+
+    subprocess.run(
+        ["/bin/sh", "-c", composer_command],
+        cwd=fake_repo,
+        env={
+            "PATH": f"{runtime_bin}:/usr/bin:/bin",
+            "PNPM": str(fake_pnpm),
+            "CAPTURE_RUNTIME": str(capture),
+            "GITHUB_RUN_ID": "run",
+            "GITHUB_RUN_ATTEMPT": "1",
+        },
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    captured_runtime = capture.read_text().splitlines()
+    if captured_runtime != [
+        str(fake_pnpm),
+        f"{runtime_bin}:/usr/bin:/bin",
+        "fixture-pnpm-ok",
+        "--suffix i2891ci --port 2245 --session-prefix js2891-run-1",
+    ]:
+        raise AssertionError(
+            "the isolated emulator action command did not pass its captured Node/pnpm runtime to the composer runner: "
+            f"{captured_runtime!r}"
+        )
+
+# Exercise the actual disk-prune helper against a temporary toolcache. It must
+# preserve and run the exact JDK/Node/pnpm paths discovered before pruning,
+# while deleting unrelated caches. The old JDK-only behavior is also run as a
+# negative control and must fail after deleting the active Node root.
+toolcache_pruner = toolcache_pruner_path.read_text()
+if 'remember_root "$node_path" || true' not in toolcache_pruner:
+    raise AssertionError("toolcache regression fixture no longer targets Node-root preservation")
+
+
+def run_toolcache_fixture(helper_text: str, *, expect_success: bool) -> None:
+    with tempfile.TemporaryDirectory(prefix="js rewrite toolcache ") as temporary:
+        fixture = Path(temporary)
+        toolcache = fixture / "hostedtoolcache"
+        if not str(toolcache.resolve()).startswith(str(fixture.resolve()) + "/"):
+            raise AssertionError("toolcache regression fixture escaped its temporary directory")
+        java_home = toolcache / "JavaFixture" / "21" / "x64"
+        java_bin = java_home / "bin"
+        node_bin = toolcache / "node" / "22" / "x64" / "bin"
+        guard_bin = fixture / "guard-bin"
+        codeql = toolcache / "CodeQL" / "cache"
+        other = toolcache / "UnusedFixture" / "cache"
+        for directory in (java_bin, node_bin, guard_bin, codeql, other):
+            directory.mkdir(parents=True, exist_ok=True)
+        java = java_bin / "java"
+        node = node_bin / "node"
+        pnpm = node_bin / "pnpm"
+        java.write_text("#!/bin/sh\nprintf 'fixture-java-21\\n'\n")
+        node.write_text("#!/bin/sh\nprintf 'fixture-node-22\\n'\n")
+        pnpm.write_text('#!/bin/sh\nexec "$(dirname "$0")/node" --version\n')
+        for executable in (java, node, pnpm):
+            executable.chmod(0o755)
+        (codeql / "sentinel").write_text("unused\n")
+        (other / "sentinel").write_text("unused\n")
+        side_effect_log = fixture / "unexpected-host-side-effect.txt"
+        for command in ("sudo", "docker"):
+            stub = guard_bin / command
+            stub.write_text(
+                "#!/bin/sh\n"
+                f"printf '%s\\n' '{command} $*' >> '{side_effect_log}'\n"
+                "exit 97\n"
+            )
+            stub.chmod(0o755)
+        (guard_bin / "find").write_text(
+            "#!/bin/sh\n"
+            'case "$1" in "$FIXTURE_TOOLCACHE"|"$FIXTURE_TOOLCACHE"/*) ;;\n'
+            f"  *) printf '%s\\n' 'find escaped temporary toolcache: $*' >> '{side_effect_log}'; exit 98 ;;\n"
+            "esac\n"
+            'exec /usr/bin/find "$@"\n'
+        )
+        (guard_bin / "find").chmod(0o755)
+        (guard_bin / "rm").write_text(
+            "#!/bin/sh\n"
+            'for arg do\n'
+            '  case "$arg" in\n'
+            '    -*) ;;\n'
+            '    "$FIXTURE_TOOLCACHE"/*) ;;\n'
+            f"    *) printf '%s\\n' 'rm escaped temporary toolcache: $*' >> '{side_effect_log}'; exit 99 ;;\n"
+            '  esac\n'
+            'done\n'
+            'exec /usr/bin/rm "$@"\n'
+        )
+        (guard_bin / "rm").chmod(0o755)
+
+        helper = fixture / "prune-toolcache.sh"
+        helper.write_text(helper_text)
+        result = subprocess.run(
+            ["bash", str(helper)],
+            env={
+                **os.environ,
+                "AGENT_TOOLSDIRECTORY": str(toolcache),
+                "JAVA_HOME": str(java_home),
+                "FIXTURE_TOOLCACHE": str(toolcache),
+                "PATH": f"{node_bin}:{guard_bin}:/usr/bin:/bin",
+                "CI_EMULATOR_TOOLCACHE_NO_SUDO": "1",
+            },
+            text=True,
+            capture_output=True,
+        )
+        if side_effect_log.exists():
+            raise AssertionError(
+                "toolcache fixture reached a sudo/docker side effect: "
+                f"{side_effect_log.read_text()!r}"
+            )
+        if expect_success:
+            if result.returncode != 0:
+                raise AssertionError(
+                    "safe toolcache fixture failed to preserve the live runtimes: "
+                    f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                )
+            for executable in (java, node, pnpm):
+                if not executable.is_file() or not os.access(executable, os.X_OK):
+                    raise AssertionError(f"active executable was pruned: {executable}")
+            if (toolcache / "CodeQL").exists() or (toolcache / "UnusedFixture").exists():
+                raise AssertionError("toolcache fixture did not prune unused entries")
+            for executable in (java, node, pnpm):
+                subprocess.run([str(executable), "--version"], check=True, capture_output=True, text=True)
+        elif result.returncode == 0:
+            raise AssertionError("JDK-only cleanup regression unexpectedly preserved Node")
+
+
+run_toolcache_fixture(toolcache_pruner, expect_success=True)
+old_jdk_only_behavior = toolcache_pruner.replace(
+    'remember_root "$node_path" || true',
+    ': # old cleanup kept only JAVA_HOME',
+    1,
+).replace(
+    'remember_root "$pnpm_path" || true',
+    ': # old cleanup kept only JAVA_HOME',
+    1,
+)
+run_toolcache_fixture(old_jdk_only_behavior, expect_success=False)
 
 if "android/app/build/outputs/js-composer/$ARTIFACT_RUN_ID" not in runner:
     raise AssertionError("composer runner evidence is not stored in run-scoped Android build outputs")
