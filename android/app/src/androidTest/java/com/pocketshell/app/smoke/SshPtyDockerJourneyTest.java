@@ -82,6 +82,7 @@ public final class SshPtyDockerJourneyTest {
         String runId = arguments.getString("sshSessionName", "js2861-" + System.currentTimeMillis());
         assertTrue("run ID must be a safe, unique fixture tag prefix", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
+        assertPostFocusResizeRaceGuard();
         String sessionA = runId + "-a";
         String sessionB = runId + "-b";
         String sessionC = runId + "-c";
@@ -321,21 +322,20 @@ public final class SshPtyDockerJourneyTest {
         assertEquals("selected session ID must come from the live host row", row.getString("id"), selectedSessionId());
         assertEquals("selected workspace must come from the live host row", row.getString("workspace"), selectedWorkspace());
         awaitNativeResizeAckAfter(resizeBefore.getInt("ackCount"), checkpoint);
-        awaitTerminalReady();
         JSONObject checkpointData = sendMarkerAndCapture(checkpoint, marker, artifactDirectory);
         Log.i("SshPtyDockerJourney", "RUN " + row.getString("tag") + " CHECKPOINT " + checkpointData);
         return checkpointData;
     }
 
     private JSONObject sendMarkerAndCapture(String checkpoint, String marker, File artifactDirectory) throws Exception {
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        awaitTerminalReady(checkpoint);
         int terminalColumns = currentTerminalColumns();
         assertTrue("remote output marker must fit one terminal row for " + checkpoint + " (columns="
                 + terminalColumns + "): " + marker, marker.length() <= terminalColumns);
         JSONObject before = terminalInputStats();
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        awaitTerminalReady();
-        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         int markerAccent = markerAccentColor(marker);
         String markerFormat = String.format(Locale.ROOT,
                 "\\033[38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m\\n",
@@ -379,11 +379,16 @@ public final class SshPtyDockerJourneyTest {
                 text, paste.getString("clipboardText"));
     }
 
-    private void awaitTerminalReady() throws Exception {
+    private void awaitTerminalReady(String checkpoint) throws Exception {
         awaitJsTrue("(() => {const viewport=document.querySelector('#terminal-viewport');"
                 + "const textarea=viewport?.querySelector('.xterm-helper-textarea');"
                 + "if(!viewport||!textarea||viewport.dataset.enabled!=='true') return false;"
                 + "textarea.focus(); return document.activeElement===textarea;})()");
+        // Focusing xterm may open or dismiss Android's IME after the attach's
+        // first resize acknowledgement. Wait for the accepted PTY grid to
+        // match the current xterm grid and for the viewport to remain settled
+        // before reading columns or sending terminal input.
+        awaitStableNativeResizeState(-1, checkpoint + " after terminal focus");
     }
 
     private void awaitExactMarkerRow(String marker, String checkpoint) throws Exception {
@@ -427,7 +432,7 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void sendControlCAndDrain() throws Exception {
-        awaitTerminalReady();
+        awaitTerminalReady("post-expiry Ctrl-C cleanup");
         JSONObject before = terminalInputStats();
         assertEquals("reconnected terminal must have no pending input before clearing any partial line", 0,
                 before.getInt("pending"));
@@ -1151,10 +1156,21 @@ public final class SshPtyDockerJourneyTest {
 
     private JSONObject terminalResizeStats() throws Exception {
         return new JSONObject(evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
+                + "window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||'';"
+                + "const accepted=status.match(/^(\\d+)\\s*[×x]\\s*(\\d+)\\s+accepted by SSH$/);"
+                + "const runtime=window.__ps2875TerminalRuntimeGeometry;"
+                + "const viewport=document.querySelector('#terminal-viewport');const rect=viewport?.getBoundingClientRect();"
+                + "const vv=window.visualViewport;"
                 + "return root?{pending:Number(root.dataset.sshTerminalResizePending||0),"
                 + "ackCount:Number(root.dataset.sshTerminalResizeAcks||0),"
                 + "failureCount:Number(root.dataset.sshTerminalResizeFailures||0),"
-                + "status:document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||''}:null;})())"));
+                + "status,acceptedCols:accepted?Number(accepted[1]):0,acceptedRows:accepted?Number(accepted[2]):0,"
+                + "runtimeCols:Number(runtime?.cols||0),runtimeRows:Number(runtime?.rows||0),"
+                + "viewportWidth:rect?.width||0,viewportHeight:rect?.height||0,"
+                + "windowWidth:window.innerWidth,windowHeight:window.innerHeight,"
+                + "visualViewportWidth:vv?.width??0,visualViewportHeight:vv?.height??0,"
+                + "keyboardVisible:root.dataset.keyboardVisible||''}:null;})())"));
     }
 
     private void awaitNativeResizeAckAfter(int previousAckCount, String checkpoint) throws Exception {
@@ -1181,16 +1197,11 @@ public final class SshPtyDockerJourneyTest {
         JSONObject previousSettled = null;
         while (SystemClock.uptimeMillis() < deadline) {
             JSONObject current = terminalResizeStats();
-            boolean settled = current.getInt("pending") == 0
-                    && current.getInt("ackCount") > previousAckCount
-                    && current.getInt("failureCount") == 0
-                    && current.getString("status").endsWith("accepted by SSH");
+            boolean settled = isSettledResizeObservation(current, previousAckCount);
             if (!settled) {
                 stableSince = -1;
                 previousSettled = null;
-            } else if (previousSettled == null
-                    || previousSettled.getInt("ackCount") != current.getInt("ackCount")
-                    || !previousSettled.getString("status").equals(current.getString("status"))) {
+            } else if (previousSettled == null || !sameSettledResizeState(previousSettled, current)) {
                 stableSince = SystemClock.uptimeMillis();
                 previousSettled = current;
             } else if (SystemClock.uptimeMillis() - stableSince >= 350) {
@@ -1199,6 +1210,101 @@ public final class SshPtyDockerJourneyTest {
             Thread.sleep(100);
         }
         throw new AssertionError(checkpoint + " resize state did not remain settled: " + terminalResizeStats());
+    }
+
+    private boolean isSettledResizeObservation(JSONObject current, int previousAckCount) throws JSONException {
+        return current.getInt("pending") == 0
+                && current.getInt("ackCount") > previousAckCount
+                && current.getInt("failureCount") == 0
+                && current.getInt("acceptedCols") > 0
+                && current.getInt("acceptedCols") == current.getInt("runtimeCols")
+                && current.getInt("acceptedRows") == current.getInt("runtimeRows")
+                && current.getDouble("viewportWidth") > 0
+                && current.getDouble("viewportHeight") > 0;
+    }
+
+    private void assertPostFocusResizeRaceGuard() throws JSONException {
+        JSONObject lateFit = resizeObservation(8, 0, 5, 120, 578, 578, "true")
+                .put("status", "37 × 5 (local fit)")
+                // The status parser only accepts the explicit SSH acknowledgement form.
+                // A local-fit label therefore parses as zero accepted columns and rows.
+                .put("acceptedCols", 0);
+        JSONObject staleAck = resizeObservation(8, 15, 5, 120, 578, 578, "true");
+        JSONObject acceptedAfterIme = resizeObservation(9, 5, 5, 120, 578, 578, "true");
+
+        assertFalse("a post-focus local fit must not be mistaken for an accepted PTY resize",
+                isSettledResizeObservation(lateFit, 7));
+        assertFalse("an earlier SSH acknowledgement must not settle after the xterm grid changes",
+                isSettledResizeObservation(staleAck, 7));
+        assertTrue("a fresh SSH acknowledgement for the current IME-sized xterm grid must settle",
+                isSettledResizeObservation(acceptedAfterIme, 7));
+        assertGeometryChangesResetStability(acceptedAfterIme);
+    }
+
+    private JSONObject resizeObservation(int ackCount, int acceptedRows, int runtimeRows,
+                                         double viewportHeight, int windowHeight,
+                                         double visualViewportHeight, String keyboardVisible) throws JSONException {
+        return new JSONObject()
+                .put("pending", 0)
+                .put("ackCount", ackCount)
+                .put("failureCount", 0)
+                .put("status", "37 × " + acceptedRows + " accepted by SSH")
+                .put("acceptedCols", 37)
+                .put("acceptedRows", acceptedRows)
+                .put("runtimeCols", 37)
+                .put("runtimeRows", runtimeRows)
+                .put("viewportWidth", 370.7)
+                .put("viewportHeight", viewportHeight)
+                .put("windowWidth", 412)
+                .put("windowHeight", windowHeight)
+                .put("visualViewportWidth", 412.2)
+                .put("visualViewportHeight", visualViewportHeight)
+                .put("keyboardVisible", keyboardVisible);
+    }
+
+    private void assertGeometryChangesResetStability(JSONObject settled) throws JSONException {
+        // Keep ACK, status, and both accepted/runtime grids identical while varying
+        // each geometry signal independently. This proves the stability check is
+        // sensitive to the viewport/IME transition itself.
+        assertGeometryFieldChangeResetsStability(settled, "viewportWidth", 371.7);
+        assertGeometryFieldChangeResetsStability(settled, "viewportHeight", 121);
+        assertGeometryFieldChangeResetsStability(settled, "windowWidth", 413);
+        assertGeometryFieldChangeResetsStability(settled, "windowHeight", 579);
+        assertGeometryFieldChangeResetsStability(settled, "visualViewportWidth", 413.2);
+        assertGeometryFieldChangeResetsStability(settled, "visualViewportHeight", 579);
+        assertGeometryFieldChangeResetsStability(settled, "keyboardVisible", "false");
+
+        assertTrue("an identical accepted grid and geometry can complete the stability window",
+                sameSettledResizeState(settled, new JSONObject(settled.toString())));
+    }
+
+    private void assertGeometryFieldChangeResetsStability(JSONObject settled, String field, Object changedValue)
+            throws JSONException {
+        JSONObject changed = new JSONObject(settled.toString()).put(field, changedValue);
+        assertFalse("a geometry-only change to " + field + " must reset the stable observation window",
+                sameSettledResizeState(settled, changed));
+        assertTrue("an identical follow-up after the " + field + " change can complete the stability window",
+                sameSettledResizeState(changed, new JSONObject(changed.toString())));
+    }
+
+    private boolean sameSettledResizeState(JSONObject previous, JSONObject current) throws JSONException {
+        return previous.getInt("ackCount") == current.getInt("ackCount")
+                && previous.getString("status").equals(current.getString("status"))
+                && previous.getInt("acceptedCols") == current.getInt("acceptedCols")
+                && previous.getInt("acceptedRows") == current.getInt("acceptedRows")
+                && previous.getInt("runtimeCols") == current.getInt("runtimeCols")
+                && previous.getInt("runtimeRows") == current.getInt("runtimeRows")
+                && previous.getInt("windowWidth") == current.getInt("windowWidth")
+                && previous.getInt("windowHeight") == current.getInt("windowHeight")
+                && previous.getString("keyboardVisible").equals(current.getString("keyboardVisible"))
+                && nearlyEqual(previous.getDouble("viewportWidth"), current.getDouble("viewportWidth"))
+                && nearlyEqual(previous.getDouble("viewportHeight"), current.getDouble("viewportHeight"))
+                && nearlyEqual(previous.getDouble("visualViewportWidth"), current.getDouble("visualViewportWidth"))
+                && nearlyEqual(previous.getDouble("visualViewportHeight"), current.getDouble("visualViewportHeight"));
+    }
+
+    private boolean nearlyEqual(double left, double right) {
+        return Math.abs(left - right) < 0.5;
     }
 
     private void assertUnchangedViewportFitsAreCoalesced(String checkpoint) throws Exception {
