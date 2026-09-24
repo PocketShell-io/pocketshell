@@ -152,23 +152,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
           emulator-boot-timeout: 900
-          script: |
-            set +e
-            scripts/connected-js-smoke.sh --suffix i2855ci --test-only
-            smoke_status=$?
-            mkdir -p android/app/build/outputs/js-smoke-results
-            cp -a android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml android/app/build/outputs/js-smoke-results/
-            copy_status=$?
-            scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id "js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
-            lifecycle_status=$?
-            scripts/connected-js-composer-docker.sh --suffix i2891ci --port 2245 --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            composer_status=$?
-            set -e
-            printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s composer=%s smoke-junit-copy=%s\n' \
-              "$smoke_status" "$lifecycle_status" "$composer_status" "$copy_status"
-            if (( smoke_status != 0 || lifecycle_status != 0 || composer_status != 0 || copy_status != 0 )); then
-              exit 1
-            fi
+          script: scripts/ci-js-first-packaged-lanes.sh
 
       - name: Assert the packaged JS composer journey executed exactly once
         if: always()
