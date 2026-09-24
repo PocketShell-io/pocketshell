@@ -205,6 +205,15 @@ sent_output_marker="$(ssh_remote "cat /tmp/$bytes_session-sent-output.marker | t
   || fail "remote sent-output marker mismatch: expected $sent_marker, got ${sent_output_marker:-<empty>}"
 printf 'PASS: host PTY output contained %s\n' "$sent_output_marker"
 
+dictation_marker="PS2857_DICTATION_EDITED_$SESSION_BASE"
+dictation_output_marker="$(ssh_remote "cat /tmp/$bytes_session-dictation.marker | tr -d '\\n'")"
+[[ "$dictation_output_marker" == "$dictation_marker" ]] \
+  || fail "edited composer dictation did not reach the host PTY exactly: expected $dictation_marker, got ${dictation_output_marker:-<empty>}"
+dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$dictation_capture" == *"$dictation_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the edited dictation text'
+printf 'PASS: edited controlled-recognition text reached Docker PTY and host capture as %s\n' "$dictation_marker"
+
 insert_marker="PS2857_INSERT_$SESSION_BASE"
 insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
 [[ "$insert_capture" == *"$insert_marker"* ]] || fail 'remote PTY history did not contain the inserted prompt line'
