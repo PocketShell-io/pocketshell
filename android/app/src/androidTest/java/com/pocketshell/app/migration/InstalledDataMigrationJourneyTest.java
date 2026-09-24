@@ -33,7 +33,10 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Opt-in real-WebView import check for the signed-upgrade fixture. */
+/**
+ * Opt-in real-WebView import check for the signed-upgrade fixture.
+ * CI_JOURNEY_SUITE_JUSTIFIED: #2860 requires a signed 0.5.x install; run in the isolated migration acceptance lane.
+ */
 @RunWith(AndroidJUnit4.class)
 public final class InstalledDataMigrationJourneyTest {
     private static final long JS_TIMEOUT_SECONDS = 15;

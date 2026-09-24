@@ -66,6 +66,25 @@ removes stale JUnit XML before instrumentation, and checks the report from that
 run. Provide a new suffix for each worktree so parallel APK installs have
 distinct package IDs.
 
+The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
+rewrite tree it verifies the three current packaged contracts: smoke selects
+`JsShellPackagedSmokeTest` and requires its three methods; lifecycle selects
+`SshPtyDockerJourneyTest#sshSessionSwitchingAndBackgroundGraceAgainstDockerFixture`;
+composer selects
+`JsComposerDockerJourneyTest#composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop`.
+The opt-in `InstalledDataMigrationJourneyTest` remains attached to #2860 because
+it requires a signed prior install that the regular package lanes do not
+prepare. The guard checks that justification and rejects any other undispatched
+`*SmokeTest`, `*JourneyTest`, `*DockerTest`, or `*E2eTest` source.
+
+Run its synthetic contract checks with
+`scripts/check-test-validity.sh --j1-only --self-test`. This verifies the JS
+selectors and exact result-checker method sets, rejects missing/extra dispatch
+and unjustified journey classes, and retains a synthetic app2 whole-suite
+regression case. J1 only proves dispatch of the existing packaged tests; it does
+not qualify the separate 24-class feature inventory or complete the 0.6.0
+release gates.
+
 For a session-runtime change, also run the focused fixture contract checks:
 
 ```bash

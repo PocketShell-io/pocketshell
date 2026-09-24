@@ -75,14 +75,17 @@
 #       but never returns pinned the coroutine and `Loading` never resolved.
 #       Advisory + baselined; the bound + regression test is the #847 hotfix.
 #
-#   J1 (HARD-FAIL on a NEW occurrence) — an androidTest `*E2eTest` /
-#       `*DockerTest` class that lives outside the wholesale journey root
-#       and has no local `// CI_JOURNEY_SUITE_JUSTIFIED:` reason. The per-push
-#       journey suite is the load-bearing connected-test net; new journey-shaped
-#       classes must either join it or say, next to the class, why they are
-#       intentionally local/nightly/backlog-only. Current known unwired classes
-#       are baselined, and stale J1 baseline entries hard-fail so the baseline
-#       only shrinks as classes are promoted or removed.
+#   J1 (HARD-FAIL on a NEW occurrence) — an androidTest journey class that is
+#       not actually dispatched. On main/stable, app2 keeps its legacy rule:
+#       `*E2eTest` / `*DockerTest` classes must be under the wholesale
+#       `ci-app2-journey-suite.sh` root or carry a local justification. On the
+#       JS-first tree, `scripts/check-js-first-android-journeys.py` verifies the
+#       smoke/lifecycle/composer class selectors against the dispatcher, child
+#       runners, source `@Test` methods, and exact result-checker contracts.
+#       Other `*E2eTest`, `*DockerTest`, or `*JourneyTest` classes need a
+#       nearby issue-backed `// CI_JOURNEY_SUITE_JUSTIFIED:` reason. A zero-class
+#       tree or missing lane contract is a hard failure; this dispatch guard
+#       does not claim the separate 24-class feature inventory is implemented.
 #
 #   --- #1430 addition (the synthetic-masks-reality state-injection cheat class) ---
 #
@@ -158,6 +161,7 @@
 #   scripts/check-test-validity.sh            # guard mode (CI): exit 1 on a NEW A5/A5L/C1/J1/TIMING1/SEAM1 hard-fail smell
 #   scripts/check-test-validity.sh --report   # report ALL findings incl. baseline; never fails
 #   scripts/check-test-validity.sh --self-test # run the synthetic red->green proof (delegates to check-test-validity-selftest.sh)
+#   scripts/check-test-validity.sh --j1-only   # run only the cross-platform Android journey dispatcher guard
 #
 # REVIEWER FAST-CHECK: run this (and scripts/check-test-validity-selftest.sh)
 # locally before approving any test change — it is the machine sibling of
@@ -176,6 +180,15 @@ set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
+
+# The rewrite has a Capacitor Android module and explicit package-lane class
+# selectors. Keep a narrow entry point so the JS workflow can run the adapted
+# J1 check without accidentally treating the legacy app2-only detectors below
+# as coverage of the new tree.
+if [[ "${1:-}" == "--j1-only" ]]; then
+  shift
+  exec "$REPO_ROOT/scripts/check-js-first-android-journeys.py" "$@"
+fi
 
 # --------------------------------------------------------------------------
 # #850: scan EVERY test source root, not just app/src/androidTest. The original
@@ -932,9 +945,9 @@ scan_await1() {
 }
 
 # --------------------------------------------------------------------------
-# J1 scan (#848 follow-up) — androidTest `*E2eTest` / `*DockerTest` classes
-# must be in the per-push ci-journey-suite, locally justified, or part of the
-# current unwired baseline.
+# J1 scan (#848 follow-up) — the original app2 whole-module path stays intact
+# on main/stable. The rewrite delegates to the exact JS-first package selector
+# and method-contract scanner below.
 # --------------------------------------------------------------------------
 declare -a J1_WIRED=()
 declare -a J1_NEW=()
@@ -1034,6 +1047,38 @@ scan_j1() {
       J1_STALE_BASELINE+=("$fqcn -> now has local CI_JOURNEY_SUITE_JUSTIFIED")
     fi
   done
+}
+
+# The JS-first Android source tree is not under app2, and its packaged lanes
+# select exact classes rather than running a wholesale Gradle module. Delegate
+# to the fail-closed selector contract checker and preserve its findings in the
+# existing J1 report categories. CHECK_TEST_VALIDITY_J1_MODE exists only so the
+# self-test can exercise the retained app2 path after this checkout has moved
+# to the JS-first tree.
+scan_js_j1() {
+  J1_JOURNEY_ROOT="android/app/src/androidTest"
+  local output="" rc=0 kind value detail
+  output="$(python3 "$REPO_ROOT/scripts/check-js-first-android-journeys.py" \
+    --repo-root "$REPO_ROOT" --mode js --machine 2>&1)" || rc=$?
+  if [[ -z "$output" ]]; then
+    J1_PARSER_FAILURE+=("JS-first J1 checker returned no findings (exit $rc)")
+    return
+  fi
+  while IFS=$'\t' read -r kind value detail; do
+    case "$kind" in
+      WIRED)
+        J1_WIRED_ANDROID_TEST_CLASSES+=("$value")
+        J1_WIRED+=("$value — $detail")
+        ;;
+      JUSTIFIED) J1_JUSTIFIED+=("$value — $detail") ;;
+      NEW) J1_NEW+=("$value — $detail") ;;
+      ERROR) J1_PARSER_FAILURE+=("$value${detail:+ — $detail}") ;;
+      *) J1_PARSER_FAILURE+=("unrecognized JS-first J1 checker output: $kind $value $detail") ;;
+    esac
+  done <<< "$output"
+  if [[ "$rc" -ne 0 && "${#J1_NEW[@]}" -eq 0 && "${#J1_PARSER_FAILURE[@]}" -eq 0 ]]; then
+    J1_PARSER_FAILURE+=("JS-first J1 checker exited $rc without a classified finding")
+  fi
 }
 
 # --------------------------------------------------------------------------
@@ -1883,7 +1928,20 @@ scan_a4
 scan_c1
 scan_fake1
 scan_await1
-scan_j1
+case "${CHECK_TEST_VALIDITY_J1_MODE:-auto}" in
+  js) scan_js_j1 ;;
+  app2) scan_j1 ;;
+  auto)
+    if [[ -f "$REPO_ROOT/app2/build.gradle" || -f "$REPO_ROOT/app2/build.gradle.kts" ]]; then
+      scan_j1
+    elif [[ -d "$REPO_ROOT/android/app/src/androidTest" ]]; then
+      scan_js_j1
+    else
+      scan_j1
+    fi
+    ;;
+  *) J1_PARSER_FAILURE+=("CHECK_TEST_VALIDITY_J1_MODE must be auto, js, or app2") ;;
+esac
 validate_timing1_scope_contract
 scan_timing1
 scan_seam1
@@ -1894,7 +1952,7 @@ echo " Test-validity guard (issue #657 / F4; extended #848 / #850 / #1048 / #185
 echo " Scanned test roots:"
 for r in "${TEST_ROOTS[@]}"; do echo "   - $r/**/*.kt"; done
 echo " Connect-path RPC sources: $RPC_SOURCE_ROOT/**/*RemoteSource.kt (+ FolderListViewModel.kt)"
-echo " CI journey suite: $CI_JOURNEY_SUITE — runs ${J1_JOURNEY_ROOT:-?} wholesale (${#J1_WIRED_ANDROID_TEST_CLASSES[@]} androidTest class(es) covered)"
+echo " CI journey dispatch: ${J1_JOURNEY_ROOT:-?} (${#J1_WIRED_ANDROID_TEST_CLASSES[@]} dispatched androidTest class(es))"
 echo " Vetted state-injection seam registry: $VETTED_SEAM_REGISTRY (${#SEAM1_REGISTRY_NAMES[@]} seam(s) vetted)"
 echo "=============================================================="
 
@@ -1933,8 +1991,8 @@ print_list "FAKE1 — NEW connect-path test with an always-answering fake (no fa
 print_list "FAKE1 — KNOWN baseline (always-answering connect fake; #847/#849) [advisory]" "${FAKE1_KNOWN[@]:-}"
 print_list "AWAIT1 — NEW unbounded connect-path RPC await (no withTimeout) [advisory]" "${AWAIT1_FINDINGS[@]:-}"
 print_list "AWAIT1 — KNOWN baseline (unbounded connect RPC; #847) [advisory]" "${AWAIT1_KNOWN[@]:-}"
-print_list "J1 — WIRED androidTest E2e/Docker classes (under the wholesale journey root) [advisory]" "${J1_WIRED[@]:-}"
-print_list "J1 — NEW androidTest E2e/Docker class missing ci-journey-suite coverage or local justification [HARD FAIL]" "${J1_NEW[@]:-}"
+print_list "J1 — WIRED androidTest journey classes (selected package lane or app2 wholesale suite) [advisory]" "${J1_WIRED[@]:-}"
+print_list "J1 — NEW androidTest journey class missing dispatched coverage or local justification [HARD FAIL]" "${J1_NEW[@]:-}"
 print_list "J1 — KNOWN unwired androidTest E2e/Docker baseline (#848 follow-up) [advisory]" "${J1_KNOWN[@]:-}"
 print_list "J1 — JUSTIFIED local CI_JOURNEY_SUITE_JUSTIFIED exemption [advisory]" "${J1_JUSTIFIED[@]:-}"
 print_list "J1 — STALE unwired baseline entry [HARD FAIL]" "${J1_STALE_BASELINE[@]:-}"
@@ -2026,7 +2084,7 @@ fi
 
 if [[ "${#real_hard_fail[@]}" -gt 0 ]]; then
   echo
-  echo "::error title=Test-validity guard (issue #657/#848/#1048/#1154/#1430/#1758/#1857/#2026)::A NEW load-bearing self-skip, ungated androidTest journey, fixed-sleep-before-assert, hand-rolled portfwd/prefs wall-clock deadline pump, unvetted connected-test state-injection seam (a production-defined force*/Override*/set*Active*ForTest call or property assignment driving an assertion that is not vetted in scripts/vetted-test-state-setters.txt with a real-path-reachability reason — the #1158 alt-buffer cheat class), or non-void androidTest @Test method was found. An unconditional assumeTrue(..., false) / assumeFalse(..., true) makes the remainder of a test unreachable and must be removed; an exact survivor baseline requires a tracking issue (#1857). An androidTest @Test/@Before/@After must use a VOID BLOCK body (fun x() { … }), never an expression body (fun x() = …) — a non-Unit expression body makes the method non-void and JUnit rejects the ENTIRE class at load (InvalidTestClassError), so it never runs (#1154). An IME/keyboard/geometry test must not gate its assertion behind assumeTrue(...) (convert to the synthetic-inset model, #780), a connect/journey test must not gate behind assumeFalse(isRunningOnCi()) outside a genuine opt-in fault/Docker fixture (inject the state and HARD-assert, or add an inline // JUSTIFIED: comment naming the opt-in fixture), a new androidTest *E2eTest/*DockerTest class must live under the wholesale journey root (app2/src/androidTest) or carry a local // CI_JOURNEY_SUITE_JUSTIFIED: reason, and a connection/terminal runTest test must not use a bare Thread.sleep(N) as the only sync before a load-bearing assert (use a StandardTestDispatcher seam or the audited drainMainLooperUntil helper per #1048/#2026). Remove stale J1/A5L baselines when a class or exact occurrence is promoted, moved, or deleted."
+  echo "::error title=Test-validity guard (issue #657/#848/#1048/#1154/#1430/#1758/#1857/#2026)::A NEW load-bearing self-skip, ungated androidTest journey, fixed-sleep-before-assert, hand-rolled portfwd/prefs wall-clock deadline pump, unvetted connected-test state-injection seam (a production-defined force*/Override*/set*Active*ForTest call or property assignment driving an assertion that is not vetted in scripts/vetted-test-state-setters.txt with a real-path-reachability reason — the #1158 alt-buffer cheat class), or non-void androidTest @Test method was found. An unconditional assumeTrue(..., false) / assumeFalse(..., true) makes the remainder of a test unreachable and must be removed; an exact survivor baseline requires a tracking issue (#1857). An androidTest @Test/@Before/@After must use a VOID BLOCK body (fun x() { … }), never an expression body (fun x() = …) — a non-Unit expression body makes the method non-void and JUnit rejects the ENTIRE class at load (InvalidTestClassError), so it never runs (#1154). An IME/keyboard/geometry test must not gate its assertion behind assumeTrue(...) (convert to the synthetic-inset model, #780), a connect/journey test must not gate behind assumeFalse(isRunningOnCi()) outside a genuine opt-in fault/Docker fixture (inject the state and HARD-assert, or add an inline // JUSTIFIED: comment naming the opt-in fixture), J1 must dispatch each JS-first journey through the selected packaged lane and exact result-method contract while app2 retains its historical wholesale-root rule; intentionally local journeys need a nearby issue-backed // CI_JOURNEY_SUITE_JUSTIFIED: reason. A connection/terminal runTest test must not use a bare Thread.sleep(N) as the only sync before a load-bearing assert (use a StandardTestDispatcher seam or the audited drainMainLooperUntil helper per #1048/#2026). Remove stale J1/A5L baselines when a class or exact occurrence is promoted, moved, or deleted."
   echo
   echo "FAIL: ${#real_hard_fail[@]} unjustified hard-fail occurrence(s) (A5 + A5L + C1 + J1 + TIMING1 + SEAM1 + V1)."
   exit 1
