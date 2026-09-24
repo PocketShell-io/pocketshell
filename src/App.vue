@@ -11,6 +11,7 @@ import {
   type SessionRow,
   type SshHostTarget,
   type SshResourceSnapshot,
+  type TerminalKeyId,
 } from '@pocketshell/core';
 import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
@@ -30,10 +31,12 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
+import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
+import MobileHotkeys from './components/MobileHotkeys.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './terminalGeometry';
@@ -49,11 +52,16 @@ interface TerminalViewportHandle {
   scrollToBottom(): void;
 }
 
+interface MobileHotkeysHandle {
+  closePalette(): void;
+}
+
 type ComposerSmokeEvidenceWindow = Window & {
   __ps2857CaptureTerminalEvidence?: boolean;
   __ps2857AppTerminalDeliveryCount?: number;
   __ps2857AppTerminalLastChunk?: string;
   __ps2857AppTerminalMissingRefCount?: number;
+  __ps2884HotkeyWrites?: Array<{ key: TerminalKeyId; bytes: number[] }>;
 };
 
 const navigation = useNavigationStore();
@@ -86,6 +94,8 @@ const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const promptComposerHasFocus = ref(false);
+const mobileHotkeysHasFocus = ref(false);
+const mobileHotkeysPaletteOpen = ref(false);
 const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
@@ -99,6 +109,7 @@ const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
+const mobileHotkeys = ref<MobileHotkeysHandle | null>(null);
 const terminalInputPending = ref(0);
 const terminalInputAckCount = ref(0);
 const terminalInputFailureCount = ref(0);
@@ -107,7 +118,10 @@ const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
 const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 // Resize callbacks can finish after the user has selected a different PTY.
-let terminalAttachEpoch = 0;
+const terminalAttachEpoch = ref(0);
+const terminalAttachFocusWindowEpoch = ref(0);
+const terminalAttachPromptFocusEpoch = ref(0);
+const terminalAttachResizeAckEpoch = ref(0);
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -125,8 +139,14 @@ const migrationBlocksConnection = computed(() => installedDataMigrationState.ret
   || installedDataMigrationState.status === 'pending'
   || settingsReloading.value);
 const isLive = computed(() => currentPhase.value === 'live');
+const terminalAutofocusAllowed = computed(() => (terminalAttachPromptFocusEpoch.value === 0
+  || terminalAttachPromptFocusEpoch.value !== terminalAttachEpoch.value)
+  && !promptComposerHasFocus.value);
+const mobileHotkeysEnabled = computed(() => isLive.value
+  && homeSurface.value === 'live'
+  && navigation.route === 'home');
 const keyboardComposerMode = computed(() =>
-  keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
+  keyboardVisible.value && isLive.value && (promptComposerHasFocus.value || mobileHotkeysHasFocus.value),
 );
 const composerTargetKey = computed(() => {
   const session = connectionSnapshot.value?.selectedSession;
@@ -162,15 +182,35 @@ function isPromptComposerElement(target: Element | null): boolean {
   return target !== null && target.closest('[data-testid="prompt-composer"]') !== null;
 }
 
+function isMobileHotkeysElement(target: Element | null): boolean {
+  return target !== null && target.closest('[data-testid="mobile-hotkeys"]') !== null;
+}
+
 function recordFocusedElement(event: FocusEvent) {
-  promptComposerHasFocus.value = event.target instanceof Element
-    && isPromptComposerElement(event.target);
+  const target = event.target instanceof Element ? event.target : null;
+  promptComposerHasFocus.value = isPromptComposerElement(target);
+  mobileHotkeysHasFocus.value = isMobileHotkeysElement(target);
+  if (event.type === 'focusin') recordAttachComposerInteraction(target);
+}
+
+function recordAttachComposerPointer(event: PointerEvent) {
+  recordAttachComposerInteraction(event.target instanceof Element ? event.target : null);
+}
+
+function recordAttachComposerInteraction(target: Element | null) {
+  if (terminalAttachFocusWindowEpoch.value === 0
+    || terminalAttachFocusWindowEpoch.value !== terminalAttachEpoch.value
+    || homeSurface.value !== 'live'
+    || !isLive.value
+    || !isPromptComposerElement(target)) return;
+  terminalAttachPromptFocusEpoch.value = terminalAttachEpoch.value;
 }
 
 function recordFocusAfterBlur() {
   queueMicrotask(() => {
-    promptComposerHasFocus.value = document.activeElement instanceof Element
-      && isPromptComposerElement(document.activeElement);
+    const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+    promptComposerHasFocus.value = isPromptComposerElement(activeElement);
+    mobileHotkeysHasFocus.value = isMobileHotkeysElement(activeElement);
   });
 }
 
@@ -371,36 +411,50 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
-  terminalAttachEpoch += 1;
-  terminal.value?.clear();
-  const result = await active.switchSession(session).catch((error: unknown) => {
-    recordFailure('ssh-bridge-failed', 'attach-session', error);
-    connectionMessage.value = error instanceof Error ? error.message : String(error);
-    return null;
-  });
-  if (result && !result.ok) {
-    recordOperationFailure('attach-session');
-    connectionMessage.value = result.message;
-  }
-  else if (result?.ok) {
-    navigateHomeSurface('session-attached');
-    await nextTick();
-    // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
-    // have identical geometry. Explicitly resize each newly attached PTY.
-    const size = await terminal.value?.fit();
-    if (size) await resizeTerminal(size);
-    terminal.value?.focus();
+  const attachEpoch = ++terminalAttachEpoch.value;
+  terminalAttachFocusWindowEpoch.value = attachEpoch;
+  try {
+    terminal.value?.clear();
+    const result = await active.switchSession(session).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'attach-session', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
+    if (attachEpoch !== terminalAttachEpoch.value) return;
+    if (result && !result.ok) {
+      recordOperationFailure('attach-session');
+      connectionMessage.value = result.message;
+      return;
+    }
+    if (result?.ok) {
+      navigateHomeSurface('session-attached');
+      await nextTick();
+      // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
+      // have identical geometry. Explicitly resize each newly attached PTY.
+      const size = await terminal.value?.fit();
+      if (size) {
+        const resizeGate = waitForAttachAutofocusTestGate('attach-resize');
+        if (resizeGate) await resizeGate;
+        await resizeTerminal(size, attachEpoch);
+      }
+      await nextTick();
+      const focusGate = waitForAttachAutofocusTestGate('attach-final-focus');
+      if (focusGate) await focusGate;
+      if (terminalAutofocusAllowed.value) terminal.value?.focus();
+    }
+  } finally {
+    if (terminalAttachFocusWindowEpoch.value === attachEpoch) terminalAttachFocusWindowEpoch.value = 0;
   }
 }
 
-async function sendTerminalInput(data: string) {
+async function sendTerminalBytes(bytes: Uint8Array) {
   const active = controller;
   if (!active || !isLive.value) return;
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalInputPending.value += 1;
   try {
-    const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
-    if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
+    const result = await active.writeTerminalBytes(bytes);
+    if (attachEpoch !== terminalAttachEpoch.value || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
       recordOperationFailure('send-terminal-input');
@@ -409,13 +463,35 @@ async function sendTerminalInput(data: string) {
       terminalInputAckCount.value += 1;
     }
   } catch (error: unknown) {
-    if (attachEpoch !== terminalAttachEpoch) return;
+    if (attachEpoch !== terminalAttachEpoch.value) return;
     terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
   } finally {
     terminalInputPending.value -= 1;
   }
+}
+
+async function sendTerminalInput(data: string) {
+  await sendTerminalBytes(new TextEncoder().encode(data));
+}
+
+function sendMobileHotkey(bytes: Uint8Array, key: TerminalKeyId) {
+  if (!mobileHotkeysEnabled.value) return;
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (evidenceWindow.__ps2857CaptureTerminalEvidence) {
+    evidenceWindow.__ps2884HotkeyWrites = [
+      ...(evidenceWindow.__ps2884HotkeyWrites ?? []),
+      { key, bytes: Array.from(bytes) },
+    ];
+  }
+  // Keep core-generated key sequences in one PTY write, including Ctrl+C/D holds.
+  void sendTerminalBytes(bytes);
+}
+
+function keepMobileHotkeysImeOpen() {
+  if (!mobileHotkeysEnabled.value) return;
+  document.querySelector<HTMLTextAreaElement>('[data-testid="prompt-draft"]')?.focus({ preventScroll: true });
 }
 
 async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
@@ -426,10 +502,10 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
 
-async function resizeTerminal(size: TerminalResizeRequest) {
+async function resizeTerminal(size: TerminalResizeRequest, attachEpochForAck?: number) {
   if (!controller || !isLive.value) return;
   const requestId = size.requestId ?? allocateTerminalResizeRequestId();
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
@@ -438,11 +514,14 @@ async function resizeTerminal(size: TerminalResizeRequest) {
       connectionMessage.value = error instanceof Error ? error.message : String(error);
       return null;
     });
-    if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
+    if (attachEpoch !== terminalAttachEpoch.value || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
-    if (result?.ok) terminalResizeAckCount.value += 1;
+    if (result?.ok) {
+      terminalResizeAckCount.value += 1;
+      if (attachEpochForAck === terminalAttachEpoch.value) terminalAttachResizeAckEpoch.value = attachEpochForAck;
+    }
     else {
       terminalResizeFailure.value = { ...size, requestId };
       terminalResizeFailureCount.value += 1;
@@ -574,10 +653,15 @@ onMounted(() => {
         || activeElement instanceof HTMLTextAreaElement
         || activeElement instanceof HTMLSelectElement
         || (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+      const hotkeysHaveFocus = activeElement instanceof Element && isMobileHotkeysElement(activeElement);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const keyboardIsVisible = window.screen.height - viewportHeight > 120;
-      if (inputHasFocus && keyboardIsVisible) {
+      const keyboardIsVisible = keyboardVisible.value || window.screen.height - viewportHeight > 120;
+      if ((inputHasFocus || hotkeysHaveFocus) && keyboardIsVisible) {
         (activeElement as HTMLElement).blur();
+        return;
+      }
+      if (mobileHotkeysPaletteOpen.value) {
+        mobileHotkeys.value?.closePalette();
         return;
       }
       switch (resolveAndroidBackDestination(navigation.canGoBack, homeSurface.value, !!connectionSnapshot.value)) {
@@ -636,6 +720,9 @@ watchEffect(() => {
     editorFontSize: 13,
   }, 'ui-monospace, monospace');
   for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
+  // Keep five measured xterm rows visible with the default 8px viewport inset
+  // and a little room for Android/WebView font metric rounding.
+  root.style.setProperty('--terminal-min-grid-height', `${Math.ceil(appSettings.terminalFontSize * 7.6 + 22)}px`);
 });
 
 
@@ -672,8 +759,12 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-pending="terminalResizePending"
     :data-ssh-terminal-resize-acks="terminalResizeAckCount"
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
+    :data-ssh-attach-epoch="terminalAttachEpoch"
+    :data-ssh-attach-focus-pending="terminalAttachFocusWindowEpoch !== 0"
+    :data-ssh-attach-resize-ack-epoch="terminalAttachResizeAckEpoch"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    @pointerdown.capture="recordAttachComposerPointer"
     :data-migration-status="installedDataMigrationState.status"
   >
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
@@ -957,16 +1048,36 @@ onBeforeUnmount(() => {
           </div>
           <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
         </div>
-        <TerminalViewport
-          ref="terminal"
-          :enabled="isLive"
-          :resize-failure="terminalResizeFailure"
-          :theme="activeTheme.terminal"
-          :font-family="terminalFontFamily"
-          :font-size="appSettings.terminalFontSize"
-          @input="sendTerminalInput"
-          @resize="resizeTerminal"
-        />
+        <div
+          class="terminal-slot"
+          data-testid="terminal-slot"
+          :class="{
+            'terminal-slot--hotkeys': isLive,
+            'terminal-slot--ime-open': mobileHotkeysEnabled && keyboardVisible,
+          }"
+          :data-keyboard-visible="keyboardVisible"
+        >
+          <TerminalViewport
+            ref="terminal"
+            :enabled="isLive"
+            :resize-failure="terminalResizeFailure"
+            :autofocus-allowed="terminalAutofocusAllowed"
+            :theme="activeTheme.terminal"
+            :font-family="terminalFontFamily"
+            :font-size="appSettings.terminalFontSize"
+            @input="sendTerminalInput"
+            @resize="resizeTerminal"
+          />
+          <MobileHotkeys
+            v-if="isLive"
+            ref="mobileHotkeys"
+            :enabled="mobileHotkeysEnabled"
+            :keyboard-visible="keyboardVisible"
+            @send="sendMobileHotkey"
+            @palette-change="mobileHotkeysPaletteOpen = $event"
+            @keep-keyboard-open="keepMobileHotkeysImeOpen"
+          />
+        </div>
         <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
         </section>
         <PromptComposer

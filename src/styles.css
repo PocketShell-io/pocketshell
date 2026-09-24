@@ -164,8 +164,27 @@ button { color: inherit; }
   overflow: hidden;
   padding: 10px;
 }
+.live-workspace .terminal-slot {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: max(120px, var(--terminal-min-grid-height, 110px));
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+.live-workspace .terminal-slot--hotkeys {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 56px);
+  padding-bottom: 56px;
+}
 .live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
-.live-workspace .terminal-viewport { height: auto; min-height: 120px; max-height: none; flex: 1 1 auto; }
+.live-workspace .terminal-slot > .terminal-viewport {
+  width: 100%;
+  height: auto;
+  min-height: var(--terminal-min-grid-height, 110px);
+  max-height: none;
+  flex: 1 1 auto;
+}
 .live-workspace .panel-footnote { flex: 0 0 auto; margin: 0; }
 .live-workspace > .composer-panel { min-width: 0; flex: 0 0 auto; margin: 0; }
 .live-connection-message { flex: 0 0 auto; margin: 0; }
@@ -371,6 +390,68 @@ button { color: inherit; }
 }
 
 @media (max-width: 719px) {
+  /* A terminal-focused reconnect also opens the Android IME. Compact the
+     workspace around that keyboard so the five-row xterm floor and the
+     navigation-key overlay both remain on screen. */
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .app-bar--workspace {
+    min-height: 48px;
+    padding: 0 6px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .home-screen--workspace {
+    gap: 5px;
+    padding: 4px 7px 3px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace { gap: 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-panel {
+    gap: 5px;
+    padding: 6px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal {
+    min-height: 24px;
+    margin: 0;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal .eyebrow { display: none; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal h2 { font-size: 13px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal .state-tag { padding: 2px 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace > .composer-panel {
+    gap: 5px;
+    padding: 8px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading { min-height: 22px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading .eyebrow { display: none; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading h3 {
+    overflow: hidden;
+    max-width: calc(100vw - 150px);
+    font-size: var(--fs-200);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-draft {
+    height: 68px;
+    min-height: 68px;
+    max-height: 80px;
+    resize: none;
+    padding: 6px 8px;
+    font-size: var(--fs-200);
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-status {
+    min-height: 14px;
+    max-height: 14px;
+    overflow: hidden;
+    font-size: var(--fs-100);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-actions { min-height: 48px; gap: 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-discard,
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-insert,
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-shared-controls .send {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+  }
+
   .app-shell[data-keyboard-composer-mode="true"] .app-bar {
     min-height: 44px;
     gap: 8px;
@@ -462,7 +543,7 @@ button { color: inherit; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-heading--terminal { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-viewport {
     height: auto;
-    min-height: 80px;
+    min-height: var(--terminal-min-grid-height, 110px);
     max-height: none;
     flex: 1 1 auto;
     padding: 4px;

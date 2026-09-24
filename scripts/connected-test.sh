@@ -21,6 +21,7 @@ JS-first packaged Android lanes:
   lifecycle         SSH session switching and background-grace journey plus
                     independent Docker host/screenshot evidence
   composer-docker   Packaged composer journey plus Docker PTY byte oracles
+  hotkeys-docker    Packaged mobile fast-key journey plus Docker PTY byte oracles
 
 Each run requires an explicit per-worktree --suffix TOKEN. Docker lanes also
 require their fixture's port; lifecycle additionally requires its container
@@ -33,6 +34,8 @@ Examples:
   scripts/agents-pool.sh up 2245
   scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
     --session-prefix js2863-local
+  scripts/connected-test.sh hotkeys-docker --suffix i2884 --port 2245 \
+    --session-prefix js2884-local
 
 During its connected phase, the selected lane owns the android/ Gradle output
 tree and one emulator while it installs and collects its exact same-run JUnit
@@ -68,8 +71,11 @@ case "$LANE" in
   composer-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
     ;;
+  hotkeys-docker)
+    TARGET="$ROOT_DIR/scripts/connected-js-hotkeys-docker.sh"
+    ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, or composer-docker"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, or hotkeys-docker"
     ;;
 esac
 

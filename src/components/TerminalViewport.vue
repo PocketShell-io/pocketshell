@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
 import { TerminalGeometryReporter, type TerminalResizeRequest } from '../terminalGeometry';
+import { waitForAttachAutofocusTestGate } from '../session/attachAutofocusTestGate';
 
 const props = defineProps<{
   enabled: boolean;
@@ -11,6 +12,8 @@ const props = defineProps<{
   fontFamily: string;
   fontSize: number;
   resizeFailure?: TerminalResizeRequest | null;
+  /** App-level focus intent can suppress a delayed autofocus after a composer tap. */
+  autofocusAllowed?: boolean;
 }>();
 const emit = defineEmits<{
   input: [data: string];
@@ -22,13 +25,18 @@ type ComposerSmokeEvidenceWindow = Window & {
   __ps2857TerminalVisibleText?: string;
   __ps2857TerminalWriteCount?: number;
   __ps2857TerminalLastWriteText?: string;
+  __ps2857TerminalWriteCallbackCount?: number;
+  __ps2857TerminalWriteParsedCount?: number;
   __ps2857TerminalRenderCount?: number;
+  __ps2857TerminalLastRenderRange?: string;
+  __ps2857TerminalBufferState?: string;
   __ps2875TerminalRuntimeGeometry?: {
     cols: number;
     rows: number;
     viewportY: number;
     baseY: number;
     bufferLength: number;
+    cellHeight: number | null;
   };
 };
 
@@ -37,6 +45,7 @@ let terminal: Terminal | undefined;
 let fitAddon: FitAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let renderListener: { dispose(): void } | undefined;
+let writeParsedListener: { dispose(): void } | undefined;
 const resizeReporter = new TerminalGeometryReporter();
 let foregroundRefitFrame = 0;
 let foregroundRefitFrameAfterLayout = 0;
@@ -52,19 +61,42 @@ function captureComposerSmokeTerminalText() {
     .map((line, index) => `${index > 0 && !line?.isWrapped ? '\n' : ''}${line?.translateToString(true) ?? ''}`)
     .join('')
     .slice(-4000);
-  evidenceWindow.__ps2857TerminalRenderCount = (evidenceWindow.__ps2857TerminalRenderCount ?? 0) + 1;
+  const tailStart = Math.max(0, buffer.length - Math.max(terminal.rows, 12));
+  const tailRows = Array.from({ length: buffer.length - tailStart }, (_, index) => {
+    const line = buffer.getLine(tailStart + index);
+    return `${line?.isWrapped ? '' : '\n'}${line?.translateToString(true) ?? ''}`;
+  }).join('').slice(-1200);
+  const hostRect = terminalHost.value?.getBoundingClientRect();
+  evidenceWindow.__ps2857TerminalBufferState = JSON.stringify({
+    cols: terminal.cols,
+    rows: terminal.rows,
+    cursorX: buffer.cursorX,
+    cursorY: buffer.cursorY,
+    viewportY: buffer.viewportY,
+    baseY: buffer.baseY,
+    bufferLength: buffer.length,
+    bufferType: buffer.type,
+    hostWidth: hostRect?.width ?? null,
+    hostHeight: hostRect?.height ?? null,
+    visibleText: evidenceWindow.__ps2857TerminalVisibleText,
+    tailText: tailRows,
+  });
 }
 
 function captureRequestedTerminalGeometry() {
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
   if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return;
   const buffer = terminal.buffer.active;
+  const renderMetrics = (terminal as unknown as {
+    _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } };
+  })._core?._renderService?.dimensions?.css?.cell;
   evidenceWindow.__ps2875TerminalRuntimeGeometry = {
     cols: terminal.cols,
     rows: terminal.rows,
     viewportY: buffer.viewportY,
     baseY: buffer.baseY,
     bufferLength: buffer.length,
+    cellHeight: typeof renderMetrics?.height === 'number' ? renderMetrics.height : null,
   };
 }
 
@@ -117,7 +149,9 @@ watch(() => props.enabled, async (enabled) => {
   }
   await nextTick();
   fitTerminal();
-  terminal.focus();
+  const autofocusGate = waitForAttachAutofocusTestGate('terminal-enabled-watcher');
+  if (autofocusGate) await autofocusGate;
+  if (props.autofocusAllowed !== false) terminal.focus();
 });
 
 watch(() => props.resizeFailure?.requestId, (requestId) => {
@@ -148,7 +182,19 @@ onMounted(() => {
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   terminal.open(terminalHost.value);
-  renderListener = terminal.onRender(captureComposerSmokeTerminalText);
+  renderListener = terminal.onRender(({ start, end }) => {
+    const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+    if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
+    evidenceWindow.__ps2857TerminalRenderCount = (evidenceWindow.__ps2857TerminalRenderCount ?? 0) + 1;
+    evidenceWindow.__ps2857TerminalLastRenderRange = `${start}-${end}`;
+    captureComposerSmokeTerminalText();
+  });
+  writeParsedListener = terminal.onWriteParsed(() => {
+    const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+    if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
+    evidenceWindow.__ps2857TerminalWriteParsedCount = (evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0) + 1;
+    captureComposerSmokeTerminalText();
+  });
   window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal.onData((data) => emit('input', data));
   fitTerminal();
@@ -163,6 +209,8 @@ onBeforeUnmount(() => {
   resizeObserver?.disconnect();
   renderListener?.dispose();
   renderListener = undefined;
+  writeParsedListener?.dispose();
+  writeParsedListener = undefined;
   window.visualViewport?.removeEventListener('resize', fitTerminal);
   window.removeEventListener('resize', fitTerminal);
   document.removeEventListener('visibilitychange', refitAfterVisibilityResume);
@@ -180,7 +228,12 @@ function write(bytes: Uint8Array) {
     evidenceWindow.__ps2857TerminalWriteCount = (evidenceWindow.__ps2857TerminalWriteCount ?? 0) + 1;
     evidenceWindow.__ps2857TerminalLastWriteText = new TextDecoder().decode(bytes).slice(-4000);
   }
-  terminal.write(bytes, captureComposerSmokeTerminalText);
+  terminal.write(bytes, () => {
+    const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+    if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
+    evidenceWindow.__ps2857TerminalWriteCallbackCount = (evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0) + 1;
+    captureComposerSmokeTerminalText();
+  });
 }
 
 function clear() {
