@@ -41,6 +41,8 @@ MIN_HOST_ZERO_SOCKET_STABILITY_MS = 1_000
 MIN_SCREENSHOT_OCR_CONFIDENCE = 75.0
 MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 4_096
 SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12
+SCREENSHOT_MARKER_OCR_CROP_PADDING_PX = 2
+SCREENSHOT_MARKER_OCR_BACKGROUND_FUZZ = "2%"
 ANSI_ESCAPE_RE = re.compile(
     r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])"
 )
@@ -153,13 +155,7 @@ def validate_screenshot_marker_evidence(
     words: list[dict[str, Any]], marker: str, marker_bounds: tuple[int, int, int, int],
     accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
 ) -> dict[str, Any]:
-    expected_accent = _screenshot_marker_accent_rgb(marker)
-    if accent_color != expected_accent:
-        raise EvidenceFailure("screenshot lacks the expected terminal-output accent color")
-    if accent_tolerance != SCREENSHOT_MARKER_ACCENT_TOLERANCE:
-        raise EvidenceFailure("screenshot marker accent tolerance is missing or inconsistent")
-    if not isinstance(accent_pixels, int) or accent_pixels < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
-        raise EvidenceFailure("screenshot lacks enough current marker-row accent pixels")
+    _validate_screenshot_marker_accent_evidence(marker, accent_color, accent_pixels, accent_tolerance)
     found, match = has_confident_screenshot_marker(words, marker, marker_bounds)
     if not found or match is None:
         raise EvidenceFailure(
@@ -176,6 +172,18 @@ def validate_screenshot_marker_evidence(
         "accentPixels": accent_pixels,
         "accentTolerance": accent_tolerance,
     }
+
+
+def _validate_screenshot_marker_accent_evidence(
+    marker: str, accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
+) -> None:
+    expected_accent = _screenshot_marker_accent_rgb(marker)
+    if accent_color != expected_accent:
+        raise EvidenceFailure("screenshot lacks the expected terminal-output accent color")
+    if accent_tolerance != SCREENSHOT_MARKER_ACCENT_TOLERANCE:
+        raise EvidenceFailure("screenshot marker accent tolerance is missing or inconsistent")
+    if not isinstance(accent_pixels, int) or accent_pixels < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+        raise EvidenceFailure("screenshot lacks enough current marker-row accent pixels")
 
 
 def _marker_pixel_bounds(viewport: dict[str, Any], marker_rect: dict[str, Any]) -> tuple[int, int, int, int]:
@@ -228,17 +236,35 @@ def _marker_text_pixel_bounds(
     return _marker_pixel_bounds(viewport, text_rect)
 
 
-def _screenshot_marker_ocr(
-    path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
-    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
-) -> dict[str, Any]:
+def _parse_tesseract_words(tsv: str, crop_left: int, crop_top: int) -> list[dict[str, Any]]:
+    words: list[dict[str, Any]] = []
+    try:
+        for row in csv.DictReader(io.StringIO(tsv), delimiter="\t"):
+            if row.get("level") != "5" or not row.get("text"):
+                continue
+            words.append({
+                "text": row["text"],
+                "confidence": float(row.get("conf", "-1")),
+                "left": int(row["left"]) + crop_left,
+                "top": int(row["top"]) + crop_top,
+                "width": int(row["width"]),
+                "height": int(row["height"]),
+            })
+    except (ValueError, csv.Error) as error:
+        raise EvidenceFailure(f"Tesseract returned malformed TSV: {error}") from error
+    return words
+
+
+def _screenshot_marker_words(
+    path: Path, marker: str, marker_bounds: tuple[int, int, int, int], *, normalize_highlight: bool,
+) -> list[dict[str, Any]]:
     if shutil.which("tesseract") is None:
         raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
     convert = shutil.which("convert")
     if convert is None:
         raise EvidenceFailure("ImageMagick convert is required to crop the measured xterm marker text run for OCR")
     image_width, image_height = _png_dimensions(path)
-    padding = 2
+    padding = SCREENSHOT_MARKER_OCR_CROP_PADDING_PX
     crop_left = max(0, marker_bounds[0] - padding)
     crop_top = max(0, marker_bounds[1] - padding)
     crop_right = min(image_width, marker_bounds[2] + padding)
@@ -258,10 +284,28 @@ def _screenshot_marker_ocr(
             raise EvidenceFailure(f"could not crop measured marker text from screenshot {path}: {error}") from error
         if not crop_path.is_file():
             raise EvidenceFailure(f"ImageMagick did not produce the marker OCR crop for {path}")
+        ocr_path = crop_path
+        if normalize_highlight:
+            ocr_path = Path(temporary_directory) / "marker-ocr.png"
+            expected_accent = _screenshot_marker_accent_rgb(marker)
+            try:
+                subprocess.run(
+                    [
+                        convert, str(crop_path),
+                        "-fuzz", SCREENSHOT_MARKER_OCR_BACKGROUND_FUZZ,
+                        "-fill", "white", "-opaque", f"rgb({expected_accent})",
+                        str(ocr_path),
+                    ],
+                    check=True, text=True, capture_output=True, timeout=20,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                raise EvidenceFailure(f"could not normalize the highlighted marker background in {path}: {error}") from error
+            if not ocr_path.is_file():
+                raise EvidenceFailure(f"ImageMagick did not produce the normalized marker OCR crop for {path}")
         try:
             result = subprocess.run(
                 [
-                    "tesseract", str(crop_path), "stdout", "--psm", "7", "tsv",
+                    "tesseract", str(ocr_path), "stdout", "--psm", "7", "tsv",
                     "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
                 ],
                 check=True,
@@ -271,21 +315,17 @@ def _screenshot_marker_ocr(
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise EvidenceFailure(f"could not OCR screenshot {path}: {error}") from error
-    words: list[dict[str, Any]] = []
-    try:
-        for row in csv.DictReader(io.StringIO(result.stdout), delimiter="\t"):
-            if row.get("level") != "5" or not row.get("text"):
-                continue
-            words.append({
-                "text": row["text"],
-                "confidence": float(row.get("conf", "-1")),
-                "left": int(row["left"]) + crop_left,
-                "top": int(row["top"]) + crop_top,
-                "width": int(row["width"]),
-                "height": int(row["height"]),
-            })
-    except (ValueError, csv.Error) as error:
-        raise EvidenceFailure(f"Tesseract returned malformed TSV for {path}: {error}") from error
+    return _parse_tesseract_words(result.stdout, crop_left, crop_top)
+
+
+def _screenshot_marker_ocr_path(
+    path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
+    *, normalize_highlight: bool,
+) -> dict[str, Any]:
+    words = _screenshot_marker_words(
+        path, marker, marker_bounds, normalize_highlight=normalize_highlight
+    )
     try:
         return validate_screenshot_marker_evidence(
             words, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance
@@ -296,7 +336,268 @@ def _screenshot_marker_ocr(
              "left": word["left"], "top": word["top"], "width": word["width"], "height": word["height"]}
             for word in words if word["confidence"] >= 0
         ]
-        raise EvidenceFailure(f"screenshot {path.name}: {error}; recognized={recognized[:20]}") from error
+        mode = "highlight-normalized" if normalize_highlight else "raw"
+        raise EvidenceFailure(f"screenshot {path.name} ({mode} OCR): {error}; recognized={recognized[:20]}") from error
+
+
+def _screenshot_marker_ocr(
+    path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
+) -> dict[str, Any]:
+    _validate_screenshot_marker_accent_evidence(marker, accent_color, accent_pixels, accent_tolerance)
+    try:
+        return _screenshot_marker_ocr_path(
+            path, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance,
+            normalize_highlight=False,
+        )
+    except EvidenceFailure as raw_error:
+        try:
+            return _screenshot_marker_ocr_path(
+                path, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance,
+                normalize_highlight=True,
+            )
+        except EvidenceFailure as normalized_error:
+            raise EvidenceFailure(
+                f"screenshot {path.name}: raw OCR failed ({raw_error}); "
+                f"highlight-normalized OCR failed ({normalized_error})"
+            ) from normalized_error
+
+
+def _self_test_highlighted_screenshot_fixture() -> int:
+    fixture_directory = Path(__file__).resolve().parent.parent / "tests/fixtures/js-lifecycle"
+    try:
+        marker = "REMOTE_OUTPUT_DEB029C929_AS"
+
+        def load_fixture(
+            image_path: Path, metadata_path: Path, expected_marker: str,
+        ) -> tuple[Path, dict[str, Any], tuple[int, int, int, int]]:
+            metadata = _read_json(metadata_path)
+            stem = metadata_path.stem
+            if not isinstance(metadata, dict):
+                raise EvidenceFailure(f"{stem} fixture metadata must be an object")
+            if hashlib.sha256(image_path.read_bytes()).hexdigest() != metadata.get("sourceSha256"):
+                raise EvidenceFailure(f"{stem} screenshot digest does not match its registered metadata")
+            if metadata.get("marker") != expected_marker:
+                raise EvidenceFailure(f"{stem} screenshot fixture has an unexpected marker")
+            bounds = _marker_text_pixel_bounds(
+                metadata.get("viewportRect", {}), metadata.get("markerRect", {}),
+                expected_marker, metadata.get("terminalColumns"),
+            )
+            return image_path, metadata, bounds
+
+        screenshot_path, metadata, bounds = load_fixture(
+            fixture_directory / "switch-a-highlighted-marker.png",
+            fixture_directory / "switch-a-highlighted-marker.json",
+            marker,
+        )
+        legacy_tsv_path = fixture_directory / "switch-a-highlighted-marker-legacy.tsv"
+        legacy = metadata.get("legacyPaddedCropOcr")
+        if not isinstance(legacy, dict) or legacy.get("cropPaddingPixels") != SCREENSHOT_MARKER_OCR_CROP_PADDING_PX:
+            raise EvidenceFailure("highlighted screenshot fixture does not describe the active legacy crop padding")
+        crop_left = max(0, bounds[0] - SCREENSHOT_MARKER_OCR_CROP_PADDING_PX)
+        crop_top = max(0, bounds[1] - SCREENSHOT_MARKER_OCR_CROP_PADDING_PX)
+        legacy_words = _parse_tesseract_words(legacy_tsv_path.read_text(encoding="utf-8"), crop_left, crop_top)
+        expected_confidence = legacy.get("confidence")
+        if (
+            len(legacy_words) != 1
+            or legacy_words[0].get("text") != marker
+            or not isinstance(expected_confidence, (int, float))
+            or legacy_words[0].get("confidence") != expected_confidence
+            or round(float(legacy_words[0]["confidence"]), 1) != 53.7
+        ):
+            raise EvidenceFailure("registered pre-fix OCR output no longer reproduces the hosted 53.7 score")
+        legacy_found, _legacy_match = has_confident_screenshot_marker(legacy_words, marker, bounds)
+        if legacy_found:
+            raise EvidenceFailure("registered pre-fix OCR output unexpectedly passes the unchanged confidence threshold")
+        print("ok [highlight fixture] recorded hosted crop TSV reproduces the exact 53.7 rejection")
+
+        raw_words = _screenshot_marker_words(screenshot_path, marker, bounds, normalize_highlight=False)
+        if (
+            len(raw_words) != 1
+            or raw_words[0].get("text") != marker
+            or round(float(raw_words[0]["confidence"]), 1) != 53.7
+        ):
+            raise EvidenceFailure(
+                "offline Tesseract did not reproduce the fixture's hosted 53.7 score "
+                f"(observed {[(word.get('text'), word.get('confidence')) for word in raw_words]})"
+            )
+        accent_color = metadata.get("accentColor")
+        accent_pixels = metadata.get("accentPixels")
+        accent_tolerance = metadata.get("accentTolerance")
+        try:
+            _screenshot_marker_ocr_path(
+                screenshot_path, marker, bounds, accent_color, accent_pixels, accent_tolerance,
+                normalize_highlight=False,
+            )
+        except EvidenceFailure:
+            pass
+        else:
+            raise EvidenceFailure("53.7 raw highlighted OCR unexpectedly passed the unchanged confidence threshold")
+        normalized_visual = _screenshot_marker_ocr_path(
+            screenshot_path, marker, bounds, accent_color, accent_pixels, accent_tolerance,
+            normalize_highlight=True,
+        )
+        visual = _screenshot_marker_ocr(
+            screenshot_path, marker, bounds, accent_color, accent_pixels, accent_tolerance
+        )
+        if (
+            normalized_visual["confidence"] < MIN_SCREENSHOT_OCR_CONFIDENCE
+            or visual != normalized_visual
+        ):
+            raise EvidenceFailure("normalized highlighted marker did not clear the existing OCR threshold")
+        print(
+            "ok [highlight fallback] 53.7 raw score fails; normalized OCR passes at "
+            f"{visual['confidence']:.1f} with the unchanged >= {MIN_SCREENSHOT_OCR_CONFIDENCE:g} threshold"
+        )
+
+        raw_marker = "REMOTE_OUTPUT_5FE2E70F84_AR"
+        raw_screenshot_path, raw_metadata, raw_bounds = load_fixture(
+            fixture_directory / "switch-a-return-raw-marker.png",
+            fixture_directory / "switch-a-return-raw-marker.json",
+            raw_marker,
+        )
+        raw_evidence = raw_metadata.get("rawPaddedCropOcr")
+        if (
+            not isinstance(raw_evidence, dict)
+            or raw_evidence.get("cropPaddingPixels") != SCREENSHOT_MARKER_OCR_CROP_PADDING_PX
+        ):
+            raise EvidenceFailure("raw screenshot fixture does not describe the active padded crop")
+        raw_crop_left = max(0, raw_bounds[0] - SCREENSHOT_MARKER_OCR_CROP_PADDING_PX)
+        raw_crop_top = max(0, raw_bounds[1] - SCREENSHOT_MARKER_OCR_CROP_PADDING_PX)
+        raw_tsv_path = fixture_directory / "switch-a-return-raw-marker-legacy.tsv"
+        raw_tsv_words = _parse_tesseract_words(
+            raw_tsv_path.read_text(encoding="utf-8"), raw_crop_left, raw_crop_top
+        )
+        if (
+            len(raw_tsv_words) != 1
+            or raw_tsv_words[0].get("text") != raw_marker
+            or raw_tsv_words[0].get("confidence") != raw_evidence.get("confidence")
+            or raw_evidence.get("text") != raw_marker
+            or not isinstance(raw_evidence.get("confidence"), (int, float))
+            or raw_evidence["confidence"] < MIN_SCREENSHOT_OCR_CONFIDENCE
+        ):
+            raise EvidenceFailure("registered raw hosted crop TSV does not show the exact marker above threshold")
+        raw_words = _screenshot_marker_words(
+            raw_screenshot_path, raw_marker, raw_bounds, normalize_highlight=False
+        )
+        if (
+            len(raw_words) != 1
+            or raw_words[0].get("text") != raw_marker
+            or round(float(raw_words[0]["confidence"]), 1)
+            != round(float(raw_evidence["confidence"]), 1)
+            or raw_words[0]["confidence"] < MIN_SCREENSHOT_OCR_CONFIDENCE
+        ):
+            raise EvidenceFailure(
+                "offline raw Tesseract did not reproduce the hosted exact marker and passing confidence "
+                f"(observed {[(word.get('text'), word.get('confidence')) for word in raw_words]})"
+            )
+        raw_accent_color = raw_metadata.get("accentColor")
+        raw_accent_pixels = raw_metadata.get("accentPixels")
+        raw_accent_tolerance = raw_metadata.get("accentTolerance")
+        raw_visual = _screenshot_marker_ocr_path(
+            raw_screenshot_path, raw_marker, raw_bounds,
+            raw_accent_color, raw_accent_pixels, raw_accent_tolerance,
+            normalize_highlight=False,
+        )
+        if raw_visual["confidence"] < MIN_SCREENSHOT_OCR_CONFIDENCE:
+            raise EvidenceFailure("raw marker fixture did not clear the unchanged OCR threshold")
+        expected_normalized_words = raw_metadata.get("normalizedPaddedCropOcr", {}).get("text")
+        normalized_raw_words = _screenshot_marker_words(
+            raw_screenshot_path, raw_marker, raw_bounds, normalize_highlight=True
+        )
+        if (
+            not isinstance(expected_normalized_words, list)
+            or [word["text"] for word in normalized_raw_words] != expected_normalized_words
+            or has_confident_screenshot_marker(normalized_raw_words, raw_marker, raw_bounds)[0]
+        ):
+            raise EvidenceFailure("raw fixture no longer proves that highlight normalization splits the exact marker")
+        full_raw_visual = _screenshot_marker_ocr(
+            raw_screenshot_path, raw_marker, raw_bounds,
+            raw_accent_color, raw_accent_pixels, raw_accent_tolerance,
+        )
+        if full_raw_visual != raw_visual:
+            raise EvidenceFailure("raw-first screenshot OCR did not preserve the passing raw result")
+        print(
+            "ok [raw-first fixture] hosted switch-a-return raw OCR passes at "
+            f"{raw_visual['confidence']:.1f}; normalized OCR splits the marker"
+        )
+
+        convert = shutil.which("convert")
+        if convert is None:
+            raise EvidenceFailure("ImageMagick convert is required for highlighted screenshot negative controls")
+
+        def check_path_negative_controls(
+            label: str, fixture_marker: str, image_path: Path, fixture_metadata: dict[str, Any],
+            marker_bounds: tuple[int, int, int, int], *, normalize_highlight: bool,
+        ) -> None:
+            accent = _screenshot_marker_accent_rgb(fixture_marker)
+            width = marker_bounds[2] - marker_bounds[0]
+            height = marker_bounds[3] - marker_bounds[1]
+            cell_width = width / len(fixture_marker)
+            padding = SCREENSHOT_MARKER_OCR_CROP_PADDING_PX
+            crop_left = max(0, marker_bounds[0] - padding)
+            crop_top = max(0, marker_bounds[1] - padding)
+            mode = "normalized" if normalize_highlight else "raw"
+            with tempfile.TemporaryDirectory(prefix=f"pocketshell-{label}-negative-") as temporary_directory:
+                temporary_path = Path(temporary_directory)
+                absent_path = temporary_path / "marker-absent.png"
+                subprocess.run(
+                    [convert, str(image_path), "-fill", f"rgb({accent})", "-draw",
+                     f"rectangle {marker_bounds[0]},{marker_bounds[1]} {marker_bounds[2] - 1},{marker_bounds[3] - 1}",
+                     str(absent_path)],
+                    check=True, text=True, capture_output=True, timeout=20,
+                )
+                try:
+                    _screenshot_marker_ocr_path(
+                        absent_path, fixture_marker, marker_bounds,
+                        fixture_metadata.get("accentColor"), fixture_metadata.get("accentPixels"),
+                        fixture_metadata.get("accentTolerance"), normalize_highlight=normalize_highlight,
+                    )
+                except EvidenceFailure:
+                    print(f"ok [{mode} negative] {label}: blank accent row rejected")
+                else:
+                    raise EvidenceFailure(f"{mode} OCR accepted a blank highlighted row for {label}")
+
+                mutated_path = temporary_path / "marker-mutated.png"
+                mutated_index = fixture_metadata.get("mutatedCharacterIndex")
+                if (
+                    not isinstance(mutated_index, int) or isinstance(mutated_index, bool)
+                    or mutated_index < 0 or mutated_index >= len(fixture_marker)
+                    or fixture_marker[mutated_index] != fixture_metadata.get("mutatedCharacter")
+                ):
+                    raise EvidenceFailure(f"{label} fixture has invalid masked-glyph metadata")
+                mask_left = round(crop_left + padding + mutated_index * cell_width + 3)
+                mask_right = round(crop_left + padding + (mutated_index + 1) * cell_width - 3)
+                mask_top = round(crop_top + padding + 12)
+                mask_bottom = round(crop_top + padding + height - 12)
+                subprocess.run(
+                    [convert, str(image_path), "-fill", f"rgb({accent})", "-draw",
+                     f"rectangle {mask_left},{mask_top} {mask_right},{mask_bottom}", str(mutated_path)],
+                    check=True, text=True, capture_output=True, timeout=20,
+                )
+                try:
+                    _screenshot_marker_ocr_path(
+                        mutated_path, fixture_marker, marker_bounds,
+                        fixture_metadata.get("accentColor"), fixture_metadata.get("accentPixels"),
+                        fixture_metadata.get("accentTolerance"), normalize_highlight=normalize_highlight,
+                    )
+                except EvidenceFailure:
+                    print(f"ok [{mode} negative] {label}: one masked marker glyph rejected")
+                else:
+                    raise EvidenceFailure(f"{mode} OCR accepted a masked marker glyph for {label}")
+
+        check_path_negative_controls(
+            "raw-first fixture", raw_marker, raw_screenshot_path, raw_metadata, raw_bounds,
+            normalize_highlight=False,
+        )
+        check_path_negative_controls(
+            "highlight fallback fixture", marker, screenshot_path, metadata, bounds,
+            normalize_highlight=True,
+        )
+    except (EvidenceFailure, OSError, KeyError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"FAIL: highlighted screenshot OCR fixture: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def normalized_terminal_lines(text: str) -> list[str]:
@@ -837,6 +1138,8 @@ def _self_test() -> int:
             print(f"FAIL: native grace timestamp mutation probe {index}: {label}", file=sys.stderr)
             return 1
     print("PASS: exact output/history, native resize, physical socket close timing, and host transport timeline guards (32/32)")
+    if _self_test_highlighted_screenshot_fixture() != 0:
+        return 1
     return 0
 
 

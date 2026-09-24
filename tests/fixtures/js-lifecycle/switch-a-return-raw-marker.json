@@ -1,0 +1,59 @@
+{
+  "sourceRunId": "js2861-35979726004-1",
+  "sourceCheckpoint": "switch-a-return",
+  "sourceScreenshot": "switch-a-return-viewport.png",
+  "sourceSha256": "252bd8d1a0354b79eda7652671cb4650f53b40a9ad3b6ce46f604b1d4cc69a3f",
+  "marker": "REMOTE_OUTPUT_5FE2E70F84_AR",
+  "terminalColumns": 38,
+  "viewportRect": {
+    "left": 13.7619047164917,
+    "top": 139.52381896972656,
+    "right": 398.42859172821045,
+    "bottom": 286.81549072265625,
+    "width": 384.66668701171875,
+    "height": 147.2916717529297,
+    "devicePixelRatio": 2.625,
+    "backgroundColor": "rgb(12, 12, 12)"
+  },
+  "markerRect": {
+    "left": 22.5238094329834,
+    "top": 242.952392578125,
+    "right": 387.5238094329834,
+    "bottom": 266.6190605163574,
+    "width": 365,
+    "height": 23.666667938232422
+  },
+  "accentColor": "58,39,255",
+  "accentPixels": 35043,
+  "accentTolerance": 12,
+  "rawPaddedCropOcr": {
+    "engine": "Tesseract 5.3.4 / eng 4.1.0",
+    "cropPaddingPixels": 2,
+    "text": "REMOTE_OUTPUT_5FE2E70F84_AR",
+    "confidence": 88.891373,
+    "cropLocalBounds": [
+      6,
+      16,
+      682,
+      53
+    ],
+    "screenshotPixelBounds": [
+      27,
+      286,
+      703,
+      323
+    ]
+  },
+  "normalizedPaddedCropOcr": {
+    "text": [
+      "REMOTE_OUTPUT_5FE2E70",
+      "F84_AR"
+    ],
+    "confidences": [
+      91.601959,
+      91.227554
+    ]
+  },
+  "mutatedCharacterIndex": 14,
+  "mutatedCharacter": "5"
+}

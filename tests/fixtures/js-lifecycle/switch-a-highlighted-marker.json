@@ -1,0 +1,49 @@
+{
+  "sourceRunId": "js2861-35976223358-1",
+  "sourceCheckpoint": "switch-a",
+  "sourceScreenshot": "switch-a-viewport.png",
+  "sourceSha256": "9ec61efcf46d21feb7a2af1817373bf09b77e544c1435eac3eca11d5cc943ae6",
+  "marker": "REMOTE_OUTPUT_DEB029C929_AS",
+  "terminalColumns": 37,
+  "viewportRect": {
+    "left": 20.761905670166016,
+    "top": 170.9761962890625,
+    "right": 391.42859268188477,
+    "bottom": 494.625,
+    "width": 370.66668701171875,
+    "height": 323.6488037109375,
+    "devicePixelRatio": 2.625,
+    "backgroundColor": "rgb(12, 12, 12)"
+  },
+  "markerRect": {
+    "left": 29.5238094329834,
+    "top": 250.577392578125,
+    "right": 384.5238094329834,
+    "bottom": 274.1904888153076,
+    "width": 355,
+    "height": 23.613096237182617
+  },
+  "accentColor": "79,37,254",
+  "accentPixels": 34820,
+  "accentTolerance": 12,
+  "legacyPaddedCropOcr": {
+    "engine": "Tesseract 5.3.4 / eng 4.1.0",
+    "cropPaddingPixels": 2,
+    "text": "REMOTE_OUTPUT_DEB029C929_AS",
+    "confidence": 53.703419,
+    "cropLocalBounds": [
+      5,
+      16,
+      679,
+      53
+    ],
+    "screenshotPixelBounds": [
+      26,
+      223,
+      700,
+      260
+    ]
+  },
+  "mutatedCharacterIndex": 14,
+  "mutatedCharacter": "D"
+}
