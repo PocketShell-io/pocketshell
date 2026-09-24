@@ -38,6 +38,18 @@ type ComposerSmokeEvidenceWindow = Window & {
     bufferLength: number;
     cellHeight: number | null;
   };
+  __ps2898ResizeBeforeParse?: {
+    marker: string;
+    colsDelta: number;
+    rowsDelta: number;
+    fired?: boolean;
+  };
+  __ps2898TerminalTrace?: {
+    events: Array<Record<string, unknown>>;
+    writeChunks: Array<{ at: number; byteLength: number; text: string; hex: string }>;
+    writtenText: string;
+    latestBuffer?: Record<string, unknown>;
+  };
 };
 
 const terminalHost = ref<HTMLDivElement>();
@@ -81,11 +93,59 @@ function captureComposerSmokeTerminalText() {
     visibleText: evidenceWindow.__ps2857TerminalVisibleText,
     tailText: tailRows,
   });
+  const trace = evidenceWindow.__ps2898TerminalTrace;
+  if (trace) {
+    const diagnosticRows = Array.from({ length: buffer.length }, (_, index) => {
+      const line = buffer.getLine(index);
+      return {
+        row: index,
+        isWrapped: line?.isWrapped ?? false,
+        text: line?.translateToString(false) ?? '',
+      };
+    }).slice(-Math.max(terminal.rows + 20, 40));
+    trace.latestBuffer = {
+      at: performance.now(),
+      cols: terminal.cols,
+      rows: terminal.rows,
+      viewportY: buffer.viewportY,
+      baseY: buffer.baseY,
+      bufferLength: buffer.length,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      visibleText: evidenceWindow.__ps2857TerminalVisibleText,
+      visibleRows: visibleRows.map((line, row) => ({
+        row: buffer.viewportY + row,
+        isWrapped: line?.isWrapped ?? false,
+        text: line?.translateToString(false) ?? '',
+      })),
+      tailRows: diagnosticRows,
+    };
+  }
+}
+
+function recordComposerResizeRaceEvent(type: string, details: Record<string, unknown> = {}) {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
+  const trace = evidenceWindow.__ps2898TerminalTrace ?? {
+    events: [],
+    writeChunks: [],
+    writtenText: '',
+  };
+  trace.events.push({
+    type,
+    at: performance.now(),
+    cols: terminal?.cols ?? null,
+    rows: terminal?.rows ?? null,
+    ...details,
+  });
+  if (trace.events.length > 160) trace.events.splice(0, trace.events.length - 160);
+  evidenceWindow.__ps2898TerminalTrace = trace;
 }
 
 function captureRequestedTerminalGeometry() {
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
   if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return;
+  captureComposerSmokeTerminalText();
   const buffer = terminal.buffer.active;
   const renderMetrics = (terminal as unknown as {
     _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } };
@@ -106,8 +166,10 @@ function fitTerminal() {
   requestAnimationFrame(() => {
     if (!terminal || !fitAddon) return;
     try {
+      const before = { cols: terminal.cols, rows: terminal.rows };
       fitAddon.fit();
       const geometry = { cols: terminal.cols, rows: terminal.rows };
+      recordComposerResizeRaceEvent('fit-applied', { before, geometry });
       if (!props.enabled) {
         // A fit while disconnected can prepare xterm's local grid, but it
         // cannot acknowledge geometry on the next native PTY generation.
@@ -115,7 +177,10 @@ function fitTerminal() {
         return;
       }
       const request = resizeReporter.request(geometry);
-      if (request) emit('resize', request);
+      if (request) {
+        recordComposerResizeRaceEvent('resize-emitted', { request });
+        emit('resize', request);
+      }
     } catch {
       // The terminal host is not measurable until its containing panel is laid out.
     }
@@ -187,12 +252,14 @@ onMounted(() => {
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalRenderCount = (evidenceWindow.__ps2857TerminalRenderCount ?? 0) + 1;
     evidenceWindow.__ps2857TerminalLastRenderRange = `${start}-${end}`;
+    recordComposerResizeRaceEvent('render', { start, end });
     captureComposerSmokeTerminalText();
   });
   writeParsedListener = terminal.onWriteParsed(() => {
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalWriteParsedCount = (evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0) + 1;
+    recordComposerResizeRaceEvent('write-parsed');
     captureComposerSmokeTerminalText();
   });
   window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
@@ -224,16 +291,67 @@ onBeforeUnmount(() => {
 function write(bytes: Uint8Array) {
   if (!terminal) return;
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
-  if (evidenceWindow.__ps2857CaptureTerminalEvidence) {
-    evidenceWindow.__ps2857TerminalWriteCount = (evidenceWindow.__ps2857TerminalWriteCount ?? 0) + 1;
-    evidenceWindow.__ps2857TerminalLastWriteText = new TextDecoder().decode(bytes).slice(-4000);
+  const captureEvidence = Boolean(evidenceWindow.__ps2857CaptureTerminalEvidence);
+  const chunkText = captureEvidence ? new TextDecoder().decode(bytes) : '';
+  let trace = captureEvidence ? evidenceWindow.__ps2898TerminalTrace : undefined;
+  if (captureEvidence) {
+    trace ??= { events: [], writeChunks: [], writtenText: '' };
+    const at = performance.now();
+    trace.writeChunks.push({
+      at,
+      byteLength: bytes.length,
+      text: chunkText.slice(-512),
+      hex: Array.from(bytes.slice(-512), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+    });
+    if (trace.writeChunks.length > 100) trace.writeChunks.splice(0, trace.writeChunks.length - 100);
+    trace.writtenText = `${trace.writtenText}${chunkText}`.slice(-12000);
+    evidenceWindow.__ps2898TerminalTrace = trace;
+    recordComposerResizeRaceEvent('write-queued', { byteLength: bytes.length, text: chunkText.slice(-1024) });
   }
+  if (captureEvidence) {
+    evidenceWindow.__ps2857TerminalWriteCount = (evidenceWindow.__ps2857TerminalWriteCount ?? 0) + 1;
+    evidenceWindow.__ps2857TerminalLastWriteText = chunkText.slice(-4000);
+  }
+  const parsedCountBefore = captureEvidence ? evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0 : 0;
+  const callbackCountBefore = captureEvidence ? evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0 : 0;
   terminal.write(bytes, () => {
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalWriteCallbackCount = (evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0) + 1;
+    recordComposerResizeRaceEvent('write-callback');
     captureComposerSmokeTerminalText();
   });
+  const resizeHook = captureEvidence ? evidenceWindow.__ps2898ResizeBeforeParse : undefined;
+  const accumulatedWrites = captureEvidence
+    ? evidenceWindow.__ps2898TerminalTrace?.writtenText ?? chunkText
+    : '';
+  if (captureEvidence && resizeHook && !resizeHook.fired
+      && resizeHook.marker.length > 0 && accumulatedWrites.includes(resizeHook.marker)) {
+    const geometry = {
+      cols: Math.max(2, terminal.cols + resizeHook.colsDelta),
+      rows: Math.max(2, terminal.rows + resizeHook.rowsDelta),
+    };
+    const parsedCountAfterWrite = evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0;
+    recordComposerResizeRaceEvent('insert-resize-before-parse', {
+      marker: resizeHook.marker,
+      before: { cols: terminal.cols, rows: terminal.rows },
+      requested: geometry,
+      parsedCountBefore,
+      parsedCountAfterWrite,
+      callbackCountBefore,
+      callbackCountAfterWrite: evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0,
+      parserPending: parsedCountAfterWrite === parsedCountBefore
+        && (evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0) === callbackCountBefore,
+    });
+    // xterm schedules this echoed PTY chunk for parsing. Resize its live grid
+    // in the same JS turn so the packaged journey deterministically covers
+    // the output/resize overlap without delaying, rewriting, or replaying bytes.
+    terminal.resize(geometry.cols, geometry.rows);
+    const request = props.enabled ? resizeReporter.request(geometry) : undefined;
+    if (request) emit('resize', request);
+    resizeHook.fired = true;
+    recordComposerResizeRaceEvent('insert-resize-applied', { geometry, request: request ?? null });
+  }
 }
 
 function clear() {
