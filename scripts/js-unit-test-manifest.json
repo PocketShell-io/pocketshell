@@ -83,9 +83,11 @@
       ]
     },
     "tests/unit/dictationStartCancellation.test.ts": {
-      "suite": "pending dictation start cancellation",
+      "suite": "prompt composer dictation",
       "tests": [
-        "stops a pending start once when the mounted composer backgrounds"
+        "stops a pending start once when the mounted composer backgrounds",
+        "starts with saved Voice settings, appends recognition to the draft, and leaves it editable after stop",
+        "stops active recognition on background and retains its latest partial in the session draft"
       ]
     },
     "tests/unit/diagnostics.test.ts": {
@@ -119,6 +121,13 @@
         "retains a selected report ID and resets the stack when returning home",
         "clears the selected event when opening the whole-log export preview",
         "does not push the current destination a second time"
+      ]
+    },
+    "tests/unit/terminalFocus.test.ts": {
+      "suite": "terminal focus after attach",
+      "tests": [
+        "keeps a composer focus acquired while attach focus is waiting for its update",
+        "still gives the terminal focus when no composer has claimed it"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {
