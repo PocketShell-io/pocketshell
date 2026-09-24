@@ -22,6 +22,7 @@ REQUIRED_NAMES = {
     "composer-focus-trace.json",
 }
 OPTIONAL_NAMES = {
+    "composer-insert-terminal.json",
     "composer-focus-failure.png",
     "composer-focus-failure.json",
     "composer-focus-failure-logcat.txt",

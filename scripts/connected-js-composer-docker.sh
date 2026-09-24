@@ -107,6 +107,37 @@ copy_key_hash="$(sha256sum "$ssh_key_copy" | awk '{print $1}')"
 printf 'Fixture SSH key copy verified: %s\n' "$copy_key_hash"
 ssh_opts=(-i "$ssh_key_copy" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+ssh_remote() {
+  ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
+}
+capture_insert_failure_oracle() {
+  local bytes_session="${SESSION_BASE}-bytes"
+  local insert_marker="PS2857_INSERT_$SESSION_BASE"
+  local insert_command="printf '%s' '$insert_marker' > /tmp/$bytes_session-insert.marker"
+  local capture_file="$evidence_dir/composer-insert-failure-host-oracle.txt"
+  local capture_output
+  local marker_file_state
+  {
+    printf 'run_id=%s\n' "$ARTIFACT_RUN_ID"
+    printf 'insert_command_expected=%s\n' "$insert_command"
+    if capture_output="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096" 2>&1)"; then
+      printf '%s\n' "$capture_output"
+      if [[ "$capture_output" == *"$insert_command"* ]]; then
+        printf 'host_capture_contains_exact_insert_command=true\n'
+      else
+        printf 'host_capture_contains_exact_insert_command=false\n'
+      fi
+      if marker_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-insert.marker; then printf present; else printf absent; fi" 2>&1)"; then
+        printf 'insert_marker_file_state=%s\n' "$marker_file_state"
+      else
+        printf 'insert_marker_file_state=unavailable:%s\n' "$marker_file_state"
+      fi
+    else
+      printf 'host_capture_unavailable=%s\n' "$capture_output"
+      printf 'insert_marker_file_state=unavailable\n'
+    fi
+  } > "$capture_file" 2>&1
+}
 ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 \
   'command -v a >/dev/null && command -v aplexer >/dev/null && command -v pocketshell >/dev/null' \
   || fail "agents lane $PORT does not authenticate with the committed test key or lacks the aplexer tools"
@@ -231,6 +262,7 @@ else
       cp -- "$RESULTS_DIR/$diagnostic" "$evidence_dir/wrapper-$diagnostic"
     fi
   done
+  capture_insert_failure_oracle || true
   exit "$test_exit_code"
 fi
 
@@ -243,10 +275,6 @@ stop_asset_logcat
   --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
 sha256sum "$evidence_dir/composer-keyboard.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
 sha256sum "$evidence_dir/composer-post-send.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
-
-ssh_remote() {
-  ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
-}
 
 bytes_session="$SESSION_BASE-bytes"
 uncertain_session="$SESSION_BASE-uncertain"
