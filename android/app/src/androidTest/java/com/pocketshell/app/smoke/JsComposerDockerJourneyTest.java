@@ -147,13 +147,14 @@ public final class JsComposerDockerJourneyTest {
 
         String insertMarker = "PS2857_INSERT_" + nameBase;
         String insertCommand = "printf '%s' '" + insertMarker + "' > /tmp/" + bytesSession + "-insert.marker";
-        armInsertResizeBeforeParse(insertMarker);
+        armInsertResizeAfterParse(insertMarker);
         setComposerDraft(insertCommand);
         tapComposerAction("[data-testid=composer-insert]");
         awaitJsTrue("document.querySelector('[data-testid=composer-status]')?.textContent.includes('without pressing Enter')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''");
         try {
-            awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(insertMarker) + ")",
+            awaitJsTrue("String(window.__ps2857ReadTerminalVisibleText?.() ?? '').includes("
+                    + JSONObject.quote(insertMarker) + ")",
                     10_000);
         } catch (AssertionError failure) {
             try {
@@ -165,11 +166,14 @@ public final class JsComposerDockerJourneyTest {
         }
         JSONObject insertEvidence = saveInsertResizeEvidence(artifactRunId, insertMarker);
         JSONObject resizeHook = insertEvidence.getJSONObject("resizeHook");
-        JSONObject overlap = insertEvidence.getJSONObject("resizeBeforeParse");
-        assertTrue("the Insert regression must force one xterm resize while the echoed output write is pending",
-                resizeHook.optBoolean("fired") && overlap.optBoolean("parserPending"));
-        assertTrue("the exact inserted marker must remain in xterm's active buffer after resize",
-                insertEvidence.getJSONObject("latestBuffer").optString("visibleText").contains(insertMarker));
+        JSONObject overlap = insertEvidence.getJSONObject("resizeAfterParse");
+        assertTrue("the Insert regression must resize xterm after parsing the echoed command",
+                resizeHook.optBoolean("fired") && overlap.optInt("parsedCount", 0) > 0);
+        assertTrue("the complete marker must be parsed before the controlled resize",
+                insertEvidence.optBoolean("visibleBufferBeforeResizeContainsExactMarker"));
+        assertTrue("the complete marker must reach xterm and remain in its active visible buffer after resize",
+                insertEvidence.optBoolean("terminalWriteContainsExactMarker")
+                        && insertEvidence.optBoolean("activeBufferContainsExactMarker"));
 
         setComposerDraft("discard-me-" + nameBase);
         tapComposerAction("[data-testid=composer-discard]");
@@ -266,9 +270,9 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === ''", 20_000);
     }
 
-    private void armInsertResizeBeforeParse(String marker) throws Exception {
+    private void armInsertResizeAfterParse(String marker) throws Exception {
         evalString("window.__ps2898TerminalTrace = {events:[],writeChunks:[],writtenText:''};"
-                + "window.__ps2898ResizeBeforeParse = {marker:" + JSONObject.quote(marker)
+                + "window.__ps2898ResizeAfterParse = {marker:" + JSONObject.quote(marker)
                 + ",colsDelta:-1,rowsDelta:6,fired:false};'armed'");
     }
 
@@ -276,9 +280,17 @@ public final class JsComposerDockerJourneyTest {
         String report = evalString("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
                 + "const trace=window.__ps2898TerminalTrace||{events:[],writeChunks:[],writtenText:''};"
                 + "const buffer=window.__ps2857TerminalBufferState?JSON.parse(window.__ps2857TerminalBufferState):{};"
-                + "const overlap=(trace.events||[]).find(event=>event.type==='insert-resize-before-parse')||{};"
+                + "const overlap=(trace.events||[]).find(event=>event.type==='insert-resize-after-parse')||{};"
+                + "const latestBuffer=trace.latestBuffer||{};"
+                + "const beforeBuffer=trace.bufferBeforeInsertResize||{};"
                 + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",marker:" + JSONObject.quote(marker)
-                + ",resizeHook:window.__ps2898ResizeBeforeParse||{},resizeBeforeParse:overlap,latestBuffer:trace.latestBuffer||{},"
+                + ",resizeHook:window.__ps2898ResizeAfterParse||{},resizeAfterParse:overlap,"
+                + "bufferBeforeInsertResize:beforeBuffer,latestBuffer,"
+                + "visibleBufferBeforeResizeContainsExactMarker:String(beforeBuffer.visibleText||'').includes("
+                + JSONObject.quote(marker) + "),"
+                + "terminalWriteContainsExactMarker:(trace.writtenText||'').includes(" + JSONObject.quote(marker) + "),"
+                + "activeBufferContainsExactMarker:String(latestBuffer.visibleText||'').includes(" + JSONObject.quote(marker) + "),"
+                + "freshVisibleText:String(window.__ps2857ReadTerminalVisibleText?.()??''),"
                 + "bufferState:buffer,trace,appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,"
                 + "appTerminalLastChunk:window.__ps2857AppTerminalLastChunk??'',terminalWriteCount:window.__ps2857TerminalWriteCount??0,"
                 + "terminalLastWriteText:window.__ps2857TerminalLastWriteText??'',terminalWriteParsedCount:window.__ps2857TerminalWriteParsedCount??0});})()");

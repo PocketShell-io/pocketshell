@@ -14,6 +14,25 @@ vi.mock('@xterm/xterm', () => ({
     cols = 80;
     rows = 24;
     options: Record<string, unknown>;
+    bufferRows: Array<{ isWrapped: boolean; text: string }> = [];
+    nextResizeRows?: Array<{ isWrapped: boolean; text: string }>;
+    buffer = {
+      active: {
+        viewportY: 0,
+        baseY: 0,
+        length: 0,
+        cursorX: 0,
+        cursorY: 0,
+        type: 'normal',
+        getLine: (index: number) => {
+          const line = this.bufferRows[index];
+          return line ? {
+            isWrapped: line.isWrapped,
+            translateToString: (_trimRight: boolean) => line.text,
+          } : undefined;
+        },
+      },
+    };
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
@@ -26,6 +45,15 @@ vi.mock('@xterm/xterm', () => ({
     onWriteParsed() { return { dispose() {} }; }
     onData() { return { dispose() {} }; }
     write(_bytes: Uint8Array, callback?: () => void) { callback?.(); }
+    resize(cols: number, rows: number) {
+      this.cols = cols;
+      this.rows = rows;
+      if (this.nextResizeRows) {
+        this.bufferRows = this.nextResizeRows;
+        this.buffer.active.length = this.bufferRows.length;
+        this.nextResizeRows = undefined;
+      }
+    }
     clear() {}
     focus() {}
     scrollToBottom() {}
@@ -209,5 +237,50 @@ describe('TerminalViewport resize failure across a route remount', () => {
     expect(retry[0]).toMatchObject({ cols: 80, rows: 24 });
     expect(retry[0]!.requestId).toBeGreaterThan(replacementRequest.requestId!);
     expect(await fireOneFit()).toEqual([]);
+  });
+
+  it('enables cursor-line reflow and reads the active buffer while the event-driven text sample is stale', async () => {
+    const root = hostNode('root');
+    const app = renderer.createApp(defineComponent(() => () => h(mountableTerminalViewport as typeof TerminalViewport, {
+      enabled: true,
+      theme: {} as ITheme,
+      fontFamily: 'monospace',
+      fontSize: 13,
+    })));
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    mountedApps.push(app);
+    await flushFrames();
+
+    const evidenceWindow = window as Window & {
+      __ps2857CaptureTerminalEvidence?: boolean;
+      __ps2857TerminalVisibleText?: string;
+      __ps2857ReadTerminalVisibleText?: () => string;
+    };
+    const terminal = xtermState.instances[0] as unknown as {
+      rows: number;
+      options: Record<string, unknown>;
+      resize: (cols: number, rows: number) => void;
+      bufferRows: Array<{ isWrapped: boolean; text: string }>;
+      nextResizeRows?: Array<{ isWrapped: boolean; text: string }>;
+      buffer: { active: { length: number } };
+    };
+    expect(terminal.options.reflowCursorLine).toBe(true);
+    evidenceWindow.__ps2857CaptureTerminalEvidence = true;
+    evidenceWindow.__ps2857TerminalVisibleText = 'sample captured before xterm reflow';
+    terminal.bufferRows = [{ isWrapped: false, text: 'old prompt' }];
+    terminal.buffer.active.length = terminal.bufferRows.length;
+
+    const marker = 'PS2857_INSERT_wrap-reflow-marker';
+    const splitAt = marker.indexOf('reflow');
+    terminal.nextResizeRows = [
+      { isWrapped: false, text: marker.slice(0, splitAt) },
+      { isWrapped: true, text: marker.slice(splitAt) },
+    ];
+    terminal.resize(37, 12);
+
+    expect(evidenceWindow.__ps2857TerminalVisibleText).toBe('sample captured before xterm reflow');
+    expect(terminal.rows).toBe(12);
+    expect(evidenceWindow.__ps2857ReadTerminalVisibleText?.()).toContain(marker);
   });
 });
