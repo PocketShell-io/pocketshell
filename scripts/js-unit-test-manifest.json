@@ -50,11 +50,27 @@
         "keeps one session draft separate from another and clears only after acknowledged delivery"
       ]
     },
+    "tests/unit/platformInput.test.ts": {
+      "suite": "Android platform input adapter",
+      "tests": [
+        "reads selected documents in ordered bounded chunks and returns exact attachment bytes",
+        "preserves valid files when one selection is over the shared native transfer limit",
+        "rejects mismatched chunk identity and still releases the native document reference",
+        "materializes incoming shared text and files before delivering the share callback",
+        "registers before starting speech, filters foreign events, and stops the matching request"
+      ]
+    },
     "tests/unit/destinationInventory.test.ts": {
       "suite": "pre-rewrite destination inventory",
       "tests": [
         "maps each shipped destination to a replacement route, owning issue, and implementation status",
         "states which prior settings/support surfaces have working routes in this slice"
+      ]
+    },
+    "tests/unit/dictationStartCancellation.test.ts": {
+      "suite": "pending dictation start cancellation",
+      "tests": [
+        "stops a pending start once when the mounted composer backgrounds"
       ]
     },
     "tests/unit/diagnostics.test.ts": {

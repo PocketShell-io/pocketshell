@@ -29,6 +29,9 @@ REQUIRED_CLASS = "com.pocketshell.app.smoke.JsShellPackagedSmokeTest"
 REQUIRED_METHODS = frozenset(
     {
         "launchShowsVerifiedSourcesAndAssetIdentity",
+        "singleOpenDocumentDataUriIsIncludedAndDeduplicated",
+        "packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes",
+        "packagedMultipleShareReadsStandardStreamListWithoutClipData",
         "settingsAndAndroidBackReturnHome",
         "composerInputStaysAboveImeWithinSafeArea",
     }

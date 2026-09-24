@@ -2,13 +2,19 @@ package com.pocketshell.app.smoke;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.ClipData;
+import android.content.Intent;
 import android.graphics.Insets;
+import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Base64;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -20,9 +26,12 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.core.content.FileProvider;
 
+import com.pocketshell.app.DocumentContentIntentTest;
 import com.pocketshell.app.MainActivity;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.json.JSONTokener;
@@ -32,12 +41,16 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /** Packaged-device checks for the JS-first shell; these exercise the installed APK WebView. */
 @RunWith(AndroidJUnit4.class)
@@ -46,6 +59,7 @@ public final class JsShellPackagedSmokeTest {
     private static final long WAIT_TIMEOUT_MILLIS = 12_000;
 
     private ActivityScenario<MainActivity> scenario;
+    private MainActivity directActivity;
 
     @Before
     public void launchPackagedShell() {
@@ -54,6 +68,12 @@ public final class JsShellPackagedSmokeTest {
 
     @After
     public void closeShell() {
+        if (directActivity != null) {
+            MainActivity activity = directActivity;
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            directActivity = null;
+        }
         if (scenario != null) scenario.close();
     }
 
@@ -81,6 +101,107 @@ public final class JsShellPackagedSmokeTest {
                 + "return JSON.stringify({top: rect.top, bottom: rect.bottom, height: innerHeight});})()");
         assertTrue("verified status and short build identity must be on screen",
                 statusBounds.getDouble("top") >= 0 && statusBounds.getDouble("bottom") <= statusBounds.getDouble("height"));
+    }
+
+    @Test
+    public void singleOpenDocumentDataUriIsIncludedAndDeduplicated() {
+        DocumentContentIntentTest.assertSingleOpenDocumentDataUriIsIncludedAndDeduplicated();
+    }
+
+    @Test
+    public void packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes() throws Exception {
+        startUntrackedPackagedShell();
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+
+        byte[] sharedBytes = "packed café 🧪".getBytes(StandardCharsets.UTF_8);
+        File sharedFile = new File(targetContext().getCacheDir(), "platform-input-share.txt");
+        try (FileOutputStream output = new FileOutputStream(sharedFile)) {
+            output.write(sharedBytes);
+        }
+        Uri sharedUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", sharedFile);
+        Intent share = new Intent(Intent.ACTION_SEND)
+                .setClass(targetContext(), MainActivity.class)
+                .setType("text/plain")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(Intent.EXTRA_SUBJECT, "Packaged share subject")
+                .putExtra(Intent.EXTRA_TEXT, "Packaged share body")
+                .putExtra(Intent.EXTRA_STREAM, sharedUri);
+        share.setClipData(ClipData.newUri(targetContext().getContentResolver(), "shared file", sharedUri));
+        deliverIncomingShareAndAwaitNativeCapture(share);
+
+        awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
+                + "plugin.addListener('shareReceived',(event)=>window.__ps2857SharedContent=event); return true;})()");
+        awaitJsTrue("window.__ps2857SharedContent?.text === 'Packaged share body'"
+                + " && window.__ps2857SharedContent?.subject === 'Packaged share subject'"
+                + " && window.__ps2857SharedContent?.files?.length === 1");
+
+        JSONObject sharedMetadata = evalJson("(() => {const file=window.__ps2857SharedContent.files[0];"
+                + "return JSON.stringify({name:file.name,sizeBytes:file.sizeBytes,mimeType:file.mimeType});})()");
+        assertEquals(sharedFile.getName(), sharedMetadata.getString("name"));
+        assertEquals(sharedBytes.length, sharedMetadata.getInt("sizeBytes"));
+
+        String expectedBase64 = Base64.encodeToString(sharedBytes, Base64.NO_WRAP);
+        evalRaw("(() => {const plugin=window.Capacitor.Plugins.DocumentContent;"
+                + "const fileId=window.__ps2857SharedContent.files[0].fileId;"
+                + "plugin.readPickedFileChunk({fileId,offset:0,maxBytes:65536}).then(async (chunk)=>{"
+                + "window.__ps2857SharedChunk=chunk.base64; await plugin.releasePickedFile({fileId});});})()");
+        awaitJsTrue("window.__ps2857SharedChunk === " + JSONObject.quote(expectedBase64));
+
+        evalRaw("window.Capacitor.Plugins.SpeechRecognition.getCapabilities().then((value)=>window.__ps2857SpeechCapabilities=value)");
+        awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
+                + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
+
+        evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
+                + ".then((value)=>window.__ps2857PickerResult=value)");
+        Thread.sleep(700);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitJsTrue("window.__ps2857PickerResult?.cancelled === true && window.__ps2857PickerResult?.files?.length === 0");
+        assertTrue("the packaged share fixture should be removed", sharedFile.delete());
+    }
+
+    @Test
+    public void packagedMultipleShareReadsStandardStreamListWithoutClipData() throws Exception {
+        startUntrackedPackagedShell();
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+
+        File firstFile = new File(targetContext().getCacheDir(), "platform-input-list-first.txt");
+        File secondFile = new File(targetContext().getCacheDir(), "platform-input-list-second.txt");
+        byte[] firstBytes = "first shared file".getBytes(StandardCharsets.UTF_8);
+        byte[] secondBytes = "second shared file".getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(firstFile)) {
+            output.write(firstBytes);
+        }
+        try (FileOutputStream output = new FileOutputStream(secondFile)) {
+            output.write(secondBytes);
+        }
+        Uri firstUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", firstFile);
+        Uri secondUri = FileProvider.getUriForFile(
+                targetContext(), targetContext().getPackageName() + ".fileprovider", secondFile);
+        ArrayList<Uri> streams = new ArrayList<>();
+        streams.add(firstUri);
+        streams.add(secondUri);
+        Intent share = new Intent(Intent.ACTION_SEND_MULTIPLE)
+                .setClass(targetContext(), MainActivity.class)
+                .setType("text/plain")
+                .putParcelableArrayListExtra(Intent.EXTRA_STREAM, streams);
+        assertNull("the fixture must exercise EXTRA_STREAM without ClipData", share.getClipData());
+        deliverIncomingShareAndAwaitNativeCapture(share);
+
+        awaitJsTrue("(() => {const plugin=window.Capacitor?.Plugins?.DocumentContent; if(!plugin?.addListener) return false;"
+                + "plugin.addListener('shareReceived',(event)=>window.__ps2857ListShare=event); return true;})()");
+        awaitJsTrue("window.__ps2857ListShare?.files?.length === 2");
+
+        JSONObject sharedFiles = evalJson("JSON.stringify({files:window.__ps2857ListShare.files.map(file=>({name:file.name,sizeBytes:file.sizeBytes}))})");
+        JSONArray fileList = sharedFiles.getJSONArray("files");
+        assertEquals(firstFile.getName(), fileList.getJSONObject(0).getString("name"));
+        assertEquals(firstBytes.length, fileList.getJSONObject(0).getInt("sizeBytes"));
+        assertEquals(secondFile.getName(), fileList.getJSONObject(1).getString("name"));
+        assertEquals(secondBytes.length, fileList.getJSONObject(1).getInt("sizeBytes"));
+
+        assertTrue("the first packaged stream fixture should be removed", firstFile.delete());
+        assertTrue("the second packaged stream fixture should be removed", secondFile.delete());
     }
 
     @Test
@@ -125,6 +246,8 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("diagnostics");
+        evalRaw("document.querySelector('[data-testid=review-diagnostics-export]')"
+                + "?.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'}); 'scrolled'");
         tapDomCenter("[data-testid=review-diagnostics-export]");
         awaitRoute("diagnostics-report");
         awaitJsTrue("document.querySelector('[data-testid=selected-diagnostic-event]') === null");
@@ -231,6 +354,49 @@ public final class JsShellPackagedSmokeTest {
 
     private Context targetContext() {
         return InstrumentationRegistry.getInstrumentation().getTargetContext();
+    }
+
+    /** Start a normal app session without ActivityScenario's intent lifecycle matcher. */
+    private void startUntrackedPackagedShell() {
+        if (scenario != null) {
+            scenario.close();
+            scenario = null;
+        }
+        Intent launch = targetContext().getPackageManager().getLaunchIntentForPackage(targetContext().getPackageName());
+        assertNotNull("the packaged app must have a launcher intent", launch);
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        Activity launched = InstrumentationRegistry.getInstrumentation().startActivitySync(launch);
+        assertTrue("the packaged launch should create MainActivity", launched instanceof MainActivity);
+        directActivity = (MainActivity) launched;
+    }
+
+    /**
+     * Send an actual share intent to the already running singleTask activity,
+     * then prove the native plugin consumed it before registering the JS
+     * listener. That late listener must receive Capacitor's retained event.
+     */
+    private void deliverIncomingShareAndAwaitNativeCapture(Intent share) throws Exception {
+        assertNotNull("share test must have a directly launched MainActivity", directActivity);
+        share.setClass(directActivity, MainActivity.class);
+        share.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        targetContext().startActivity(share);
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String latestAction = "unknown";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<String> action = new AtomicReference<>();
+            runOnCurrentActivity(activity -> {
+                assertTrue("incoming share should be delivered to the running singleTask activity",
+                        activity == directActivity);
+                action.set(activity.getIntent().getAction());
+            });
+            latestAction = action.get();
+            if (latestAction == null) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Android share intent was not captured and cleared before JS listener registration"
+                + " (remaining activity action=" + latestAction + ")");
     }
 
     private JSONObject packagedManifest() throws IOException, JSONException {
@@ -364,7 +530,7 @@ public final class JsShellPackagedSmokeTest {
     private String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        runOnCurrentActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("the packaged activity must contain its Capacitor WebView", webView);
             webView.evaluateJavascript(expression, value -> {
@@ -374,6 +540,14 @@ public final class JsShellPackagedSmokeTest {
         });
         assertTrue("timed out evaluating packaged WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         return result.get();
+    }
+
+    private void runOnCurrentActivity(Consumer<MainActivity> action) {
+        if (directActivity != null) {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> action.accept(directActivity));
+        } else {
+            scenario.onActivity(action::accept);
+        }
     }
 
     private void tapDomCenter(String selector) throws Exception {
