@@ -90,6 +90,7 @@ export interface AttachmentSource {
 }
 
 export interface StagedAttachment {
+  sourceIndex: number;
   path: string;
   filename: string;
   sourceName: string;
@@ -97,6 +98,7 @@ export interface StagedAttachment {
 }
 
 export interface AttachmentStageFailure {
+  sourceIndex: number;
   sourceName: string;
   message: string;
 }
@@ -426,17 +428,26 @@ export function createFileWorkspaceService(
   }
 
   async function ensureDirectory(directory: string): Promise<void> {
-    const parts = fileParts(directory);
-    const existing = await entryAt(parts.path);
-    if (existing != null) {
-      assertNotSymlink(existing);
-      if (!existing.isDirectory) {
-        throw new FileWorkspaceError('not-directory', 'The attachment staging path is not a directory.');
+    const normalized = resolvePath(directory);
+    if (normalized === normalizedRoot) return;
+    const relative = normalized.slice(normalizedRoot === '/' ? 1 : normalizedRoot.length);
+    const segments = relative.split('/').filter((segment) => segment !== '');
+    let parent = normalizedRoot;
+    for (const segment of segments) {
+      const child = joinRemoteChildPath(parent, segment);
+      if (!child.ok) throw new FileWorkspaceError('invalid-path', 'The attachment staging path is invalid.');
+      const existing = await entryAt(child.path);
+      if (existing != null) {
+        assertNotSymlink(existing);
+        if (!existing.isDirectory) {
+          throw new FileWorkspaceError('not-directory', 'The attachment staging path is not a directory.');
+        }
+      } else {
+        const options = requestOptions(child.path);
+        await checkedResponse(capability.sftpMkdir(options), options.requestId);
       }
-      return;
+      parent = child.path;
     }
-    const options = requestOptions(parts.path);
-    await checkedResponse(capability.sftpMkdir(options), options.requestId);
   }
 
   async function uploadAttachmentBatch(input: {
@@ -467,13 +478,14 @@ export function createFileWorkspaceService(
     }
     const prepared = input.attachments.map((source, index) => ({
       source,
+      sourceIndex: index,
       filename: composeAttachmentFilename(input.timestamp, index, sanitizeFilename(source.name)),
     }));
     await ensureDirectory(directory);
     const initialListing = await listDirectoryAt(directory);
     const occupiedNames = new Set(initialListing.entries.map((entry) => entry.name));
 
-    for (const { source, filename } of prepared) {
+    for (const { source, sourceIndex, filename } of prepared) {
       if (input.isCancelled?.() === true) {
         return { directory, decision: decideAttachmentStage(attempts, true), failures };
       }
@@ -481,22 +493,23 @@ export function createFileWorkspaceService(
       const child = joinRemoteChildPath(directory, filename);
       if (!child.ok) {
         attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+        failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
         continue;
       }
       if (!isRemotePathWithin(normalizedRoot, child.path)) {
         attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+        failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
         continue;
       }
       if (occupiedNames.has(filename)) {
         attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: 'An attachment with this generated name already exists.' });
+        failures.push({ sourceIndex, sourceName: source.name, message: 'An attachment with this generated name already exists.' });
         continue;
       }
       if (!(source.bytes instanceof Uint8Array) || source.bytes.byteLength > MAX_SFTP_FILE_BYTES) {
         attempts.push({ kind: 'failed' });
         failures.push({
+          sourceIndex,
           sourceName: source.name,
           message: source.bytes instanceof Uint8Array
             ? `The native SFTP bridge accepts at most ${MAX_SFTP_FILE_BYTES} bytes per transfer.`
@@ -508,6 +521,7 @@ export function createFileWorkspaceService(
       try {
         const uploaded = await writeBytes(child.path, source.bytes);
         const attachment = {
+          sourceIndex,
           path: uploaded.path,
           filename,
           sourceName: source.name,
@@ -518,7 +532,7 @@ export function createFileWorkspaceService(
       } catch (error) {
         assertCurrent();
         attempts.push({ kind: 'failed' });
-        failures.push({ sourceName: source.name, message: errorMessage(error) });
+        failures.push({ sourceIndex, sourceName: source.name, message: errorMessage(error) });
       }
     }
 

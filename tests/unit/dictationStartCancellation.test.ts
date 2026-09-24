@@ -6,13 +6,14 @@ import { useComposerDrafts } from '../../src/stores/composerDrafts';
 const mocks = vi.hoisted(() => ({
   appStateListener: undefined as ((state: { isActive: boolean }) => void) | undefined,
   addListener: vi.fn(),
+  pickAttachments: vi.fn(),
   startDictation: vi.fn(),
 }));
 
 vi.mock('@capacitor/app', () => ({ App: { addListener: mocks.addListener } }));
 vi.mock('@pocketshell/ui', () => ({ ComposerControls: { render: () => null } }));
 vi.mock('../../src/session/platformInput', () => ({
-  platformInput: { startDictation: mocks.startDictation },
+  platformInput: { pickAttachments: mocks.pickAttachments, startDictation: mocks.startDictation },
 }));
 
 import PromptComposer from '../../src/components/PromptComposer.vue';
@@ -131,6 +132,7 @@ describe('prompt composer dictation', () => {
       targetLabel: 'session',
       transportState: 'connected',
       writePty: vi.fn(async () => ({ ok: true })),
+      stageAttachments: vi.fn(async () => ({ staged: [], failures: [] })),
     });
     app.use(createPinia());
     app.provide(ssrContextKey, { modules: new Set<string>() });
@@ -183,6 +185,7 @@ describe('prompt composer dictation', () => {
       dictationLanguageTag: 'de-DE',
       dictationSilenceWindowMs: 9_000,
       writePty: vi.fn(async () => ({ ok: true })),
+      stageAttachments: vi.fn(async () => ({ staged: [], failures: [] })),
     });
     app.use(pinia);
     app.provide(ssrContextKey, { modules: new Set<string>() });
@@ -241,6 +244,7 @@ describe('prompt composer dictation', () => {
       dictationLanguageTag: 'auto',
       dictationSilenceWindowMs: 4_000,
       writePty: vi.fn(async () => ({ ok: true })),
+      stageAttachments: vi.fn(async () => ({ staged: [], failures: [] })),
     });
     app.use(pinia);
     app.provide(ssrContextKey, { modules: new Set<string>() });
@@ -263,5 +267,56 @@ describe('prompt composer dictation', () => {
     expect(drafts.draftFor('host/session')).toBe('inspect the service logs');
     app.unmount();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('stages picker bytes without sending them until the user explicitly delivers the draft', async () => {
+    mocks.addListener.mockImplementation(async () => ({ remove: vi.fn(async () => {}) }));
+    const pinia = createPinia();
+    const drafts = useComposerDrafts(pinia);
+    const bytes = Uint8Array.from([0, 0xff, 0x41]);
+    mocks.pickAttachments.mockResolvedValue({
+      sources: [{ kind: 'bytes', name: 'notes.bin', mimeType: 'application/octet-stream', data: bytes }],
+      failures: [],
+    });
+    const writePty = vi.fn(async (_bytes: Uint8Array) => ({ ok: true }));
+    const stageAttachments = vi.fn(async (_targetKey: string, pending: Array<{ id: string; source: { data: Uint8Array; name?: string | null } }>) => ({
+      staged: pending.map((attachment) => ({
+        id: attachment.id,
+        path: '/home/testuser/.pocketshell/attachments/notes.bin',
+        name: attachment.source.name ?? 'Shared file',
+        sizeBytes: attachment.source.data.byteLength,
+      })),
+      failures: [],
+    }));
+    const root = node('root');
+    const app = renderer.createApp(mountedPromptComposer, {
+      targetKey: 'host/session',
+      targetLabel: 'session',
+      transportState: 'connected',
+      dictationLanguageTag: 'auto',
+      dictationSilenceWindowMs: 4_000,
+      writePty,
+      stageAttachments,
+    });
+    app.use(pinia);
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+    drafts.setDraft('host/session', 'Review café');
+
+    await (renderedSetupState?.pickAttachments as () => Promise<void>)();
+    await vi.waitFor(() => expect(drafts.stagedAttachmentsFor('host/session')).toHaveLength(1));
+    expect(stageAttachments).toHaveBeenCalledTimes(1);
+    expect(stageAttachments.mock.calls[0]?.[1][0]?.source.data).toEqual(bytes);
+    expect(writePty).not.toHaveBeenCalled();
+    expect(drafts.draftFor('host/session')).toBe('Review café');
+
+    await (renderedSetupState?.deliver as (intent: 'submit') => Promise<void>)('submit');
+
+    const written = writePty.mock.calls.map(([chunk]) => new TextDecoder().decode(chunk)).join('');
+    expect(written).toContain('Review café\n\nAttached files:\n- /home/testuser/.pocketshell/attachments/notes.bin');
+    expect(drafts.draftFor('host/session')).toBe('');
+    expect(drafts.stagedAttachmentsFor('host/session')).toEqual([]);
+    app.unmount();
   });
 });

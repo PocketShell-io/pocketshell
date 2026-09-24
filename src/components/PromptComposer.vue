@@ -3,8 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ComposerControls } from '@pocketshell/ui';
-import type { ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
+import type { AttachmentSource, ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
+import {
+  appendAttachmentPaths,
+  type ComposerAttachmentStageResult,
+  type PendingComposerAttachment,
+} from '../session/composerAttachments';
 import { createDictationStartCancellation } from '../session/dictationStartCancellation';
 import { platformInput, type DictationEvent } from '../session/platformInput';
 import { useComposerDrafts } from '../stores/composerDrafts';
@@ -16,10 +21,17 @@ const props = defineProps<{
   dictationLanguageTag: string;
   dictationSilenceWindowMs: number;
   writePty: PtyWriteEffect;
+  stageAttachments: (
+    targetKey: string,
+    pending: readonly PendingComposerAttachment[],
+  ) => Promise<ComposerAttachmentStageResult>;
 }>();
 
 const drafts = useComposerDrafts();
 const sendingIntent = ref<ComposerDeliveryIntent | null>(null);
+const deliveryRequested = ref(false);
+const pickingAttachments = ref(false);
+const stagingAttachments = ref(false);
 const acknowledgedWrites = ref(0);
 const statusText = ref('');
 const statusTone = ref<'quiet' | 'success' | 'warning' | 'error'>('quiet');
@@ -47,12 +59,28 @@ function createObservedDelivery() {
 
 const delivery = shallowRef(createObservedDelivery());
 const draft = computed(() => drafts.draftFor(props.targetKey));
+const pendingAttachments = computed(() => drafts.pendingAttachmentsFor(props.targetKey));
+const stagedAttachments = computed(() => drafts.stagedAttachmentsFor(props.targetKey));
+const attachmentIssues = computed(() => drafts.attachmentIssuesFor(props.targetKey));
+const attachmentCount = computed(() => pendingAttachments.value.length + stagedAttachments.value.length);
+const attachmentBusy = computed(() => pickingAttachments.value || stagingAttachments.value || deliveryRequested.value);
 const canDeliver = computed(() => props.targetKey.length > 0
   && props.transportState === 'connected'
-  && draft.value.length > 0
+  && (draft.value.length > 0 || attachmentCount.value > 0)
   && !dictationStarting.value
   && !dictationActive.value
+  && !attachmentBusy.value
   && sendingIntent.value === null);
+
+watch(
+  [() => props.targetKey, () => props.transportState, () => pendingAttachments.value.length, () => deliveryRequested.value],
+  ([targetKey, state, count, requested]) => {
+    if (targetKey && state === 'connected' && count > 0 && !requested && !attachmentBusy.value) {
+      void stagePendingAttachments(targetKey);
+    }
+  },
+  { immediate: true },
+);
 
 watch(() => props.transportState, (state) => delivery.value.setTransportState(state), { immediate: true });
 watch(() => props.writePty, () => {
@@ -76,6 +104,7 @@ watch(() => props.targetKey, () => {
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+  deliveryRequested.value = false;
 }, { flush: 'sync' });
 
 onBeforeUnmount(() => {
@@ -102,6 +131,99 @@ function setDraft(event: Event) {
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+}
+
+function attachmentIssueId(prefix: string): string {
+  return `${prefix}-${nextOperationId()}`;
+}
+
+async function pickAttachments() {
+  const targetKey = props.targetKey;
+  if (!targetKey || pickingAttachments.value) return;
+  pickingAttachments.value = true;
+  statusText.value = 'Choose files to attach…';
+  statusTone.value = 'quiet';
+  try {
+    const result = await platformInput.pickAttachments();
+    const added = drafts.addPendingAttachments(targetKey, result.sources as AttachmentSource[]);
+    for (const [index, failure] of result.failures.entries()) {
+      drafts.addAttachmentIssue(targetKey, {
+        id: attachmentIssueId(`picker-${index}`),
+        name: failure.name,
+        message: failure.message,
+      });
+    }
+    if (targetKey === props.targetKey && result.failures.length > 0) {
+      statusTone.value = 'warning';
+      statusText.value = `Some selected files could not be read. ${added.length} file(s) remain available.`;
+    } else if (targetKey === props.targetKey && added.length > 0) {
+      statusText.value = 'Files added to this draft.';
+    }
+  } catch (error) {
+    if (targetKey === props.targetKey) {
+      statusTone.value = 'error';
+      statusText.value = `Files could not be selected: ${errorMessage(error)}`;
+    }
+  } finally {
+    pickingAttachments.value = false;
+  }
+}
+
+async function stagePendingAttachments(
+  targetKey: string,
+  onlyIds?: ReadonlySet<string>,
+  duringDelivery = false,
+): Promise<void> {
+  if (!targetKey || stagingAttachments.value || props.transportState !== 'connected') return;
+  if (deliveryRequested.value && !duringDelivery) return;
+  const pending = drafts.pendingAttachmentsFor(targetKey)
+    .filter((attachment) => onlyIds === undefined || onlyIds.has(attachment.id));
+  if (pending.length === 0) return;
+  const attemptedIds = new Set(pending.map((attachment) => attachment.id));
+  stagingAttachments.value = true;
+  statusTone.value = 'quiet';
+  statusText.value = `Uploading ${pending.length} attachment(s)…`;
+  try {
+    const result = await props.stageAttachments(targetKey, pending);
+    drafts.markAttachmentsStaged(targetKey, result.staged);
+    for (const failure of result.failures) {
+      drafts.addAttachmentIssue(targetKey, failure);
+    }
+    if (targetKey === props.targetKey && result.failures.length > 0) {
+      statusTone.value = 'warning';
+      statusText.value = 'Some files could not be uploaded. Their bytes and the draft are retained; retry or remove them.';
+    } else if (targetKey === props.targetKey && result.staged.length > 0) {
+      statusTone.value = 'success';
+      statusText.value = `${result.staged.length} attachment(s) ready in the remote workspace.`;
+    }
+  } catch (error) {
+    for (const attachment of pending) {
+      drafts.addAttachmentIssue(targetKey, {
+        id: attachment.id,
+        name: attachment.source.name ?? 'Shared file',
+        message: errorMessage(error),
+      });
+    }
+    if (targetKey === props.targetKey) {
+      statusTone.value = 'error';
+      statusText.value = `Attachments could not be staged: ${errorMessage(error)}. The draft and file bytes are retained.`;
+    }
+  } finally {
+    stagingAttachments.value = false;
+    const targetNow = props.targetKey;
+    const newlyAdded = drafts.pendingAttachmentsFor(targetKey)
+      .some((attachment) => !attemptedIds.has(attachment.id));
+    if (!deliveryRequested.value && targetNow && props.transportState === 'connected'
+        && (targetNow !== targetKey || newlyAdded)) {
+      queueMicrotask(() => void stagePendingAttachments(targetNow));
+    }
+  }
+}
+
+function removeAttachment(id: string) {
+  drafts.removeAttachment(props.targetKey, id);
+  statusTone.value = 'quiet';
+  statusText.value = 'Attachment removed from this draft.';
 }
 
 function nextOperationId(): string {
@@ -225,22 +347,59 @@ function showResult(result: ComposerDeliveryResult, intent: ComposerDeliveryInte
 
 async function deliver(intent: ComposerDeliveryIntent) {
   const targetKey = props.targetKey;
-  const payload = drafts.draftFor(targetKey);
-  if (!targetKey || payload.length === 0 || dictationStarting.value || dictationActive.value || sendingIntent.value !== null) return;
-  const activeDelivery = delivery.value;
-  sendingIntent.value = intent;
-  acknowledgedWrites.value = 0;
+  if (!targetKey || (!drafts.draftFor(targetKey) && attachmentCount.value === 0)
+      || dictationStarting.value || dictationActive.value || deliveryRequested.value
+      || sendingIntent.value !== null || pickingAttachments.value || stagingAttachments.value) return;
+  const operationEpoch = deliveryEpoch;
+  deliveryRequested.value = true;
   statusTone.value = 'quiet';
-  statusText.value = intent === 'insert' ? 'Inserting into the terminal…' : 'Sending to the terminal…';
-  const result = await activeDelivery.deliver({
-    operationId: nextOperationId(),
-    payload,
-    intent,
-  });
-  if (result.draftEffect === 'clear') drafts.clearDraft(targetKey);
-  if (delivery.value !== activeDelivery) return;
-  showResult(result, intent);
-  sendingIntent.value = null;
+  statusText.value = 'Preparing the draft for delivery…';
+  try {
+    const pending = drafts.pendingAttachmentsFor(targetKey);
+    if (pending.length > 0) {
+      await stagePendingAttachments(targetKey, undefined, true);
+      if (operationEpoch !== deliveryEpoch) return;
+      if (drafts.pendingAttachmentsFor(targetKey).length > 0) {
+        statusTone.value = 'warning';
+        statusText.value = 'Delivery stopped because some attachments are not staged. Their bytes and the draft are retained.';
+        return;
+      }
+    }
+
+    const payload = appendAttachmentPaths(
+      drafts.draftFor(targetKey),
+      drafts.stagedAttachmentsFor(targetKey).map((attachment) => attachment.path),
+    );
+    if (payload.length === 0) return;
+    const revision = drafts.revisionFor(targetKey);
+    const activeDelivery = delivery.value;
+    sendingIntent.value = intent;
+    acknowledgedWrites.value = 0;
+    statusTone.value = 'quiet';
+    statusText.value = intent === 'insert' ? 'Inserting into the terminal…' : 'Sending to the terminal…';
+    const result = await activeDelivery.deliver({
+      operationId: nextOperationId(),
+      payload,
+      intent,
+    });
+    if (delivery.value !== activeDelivery) return;
+    const cleared = result.draftEffect === 'clear' && drafts.clearDraftIfRevision(targetKey, revision);
+    showResult(result, intent);
+    if (result.draftEffect === 'clear' && !cleared) {
+      statusTone.value = 'warning';
+      statusText.value = 'Delivered. New content arrived during delivery and remains in this draft.';
+    }
+  } catch (error) {
+    if (operationEpoch === deliveryEpoch) {
+      statusTone.value = 'error';
+      statusText.value = `Draft could not be prepared: ${errorMessage(error)}. The draft and attachments are retained.`;
+    }
+  } finally {
+    if (operationEpoch === deliveryEpoch) {
+      sendingIntent.value = null;
+      deliveryRequested.value = false;
+    }
+  }
 }
 
 function discardDraft() {
@@ -254,7 +413,7 @@ function discardDraft() {
   drafts.clearDraft(props.targetKey);
   discardArmed.value = false;
   statusTone.value = 'quiet';
-  statusText.value = 'Draft cleared.';
+  statusText.value = 'Draft and attachments cleared.';
 }
 </script>
 
@@ -287,29 +446,52 @@ function discardDraft() {
       @input="setDraft"
     />
 
+    <div v-if="attachmentCount > 0" class="composer-attachments" data-testid="composer-attachments">
+      <ul class="composer-attachment-list" aria-label="Draft attachments">
+        <li v-for="attachment in pendingAttachments" :key="attachment.id" class="composer-attachment"
+          data-attachment-state="pending" :data-attachment-id="attachment.id">
+          <span class="composer-attachment-name">{{ attachment.source.name || 'Shared file' }}</span>
+          <span class="composer-attachment-state">Ready to upload</span>
+          <button type="button" class="composer-attachment-remove" :disabled="attachmentBusy || sendingIntent !== null"
+            :aria-label="`Remove ${attachment.source.name || 'shared file'}`" @click="removeAttachment(attachment.id)">Remove</button>
+        </li>
+        <li v-for="attachment in stagedAttachments" :key="attachment.id" class="composer-attachment"
+          data-attachment-state="staged" :data-attachment-id="attachment.id" :data-attachment-path="attachment.path">
+          <span class="composer-attachment-name">{{ attachment.name }}</span>
+          <span class="composer-attachment-state">Uploaded · {{ attachment.path.split('/').at(-1) }}</span>
+          <button type="button" class="composer-attachment-remove" :disabled="attachmentBusy || sendingIntent !== null"
+            :aria-label="`Remove ${attachment.name}`" @click="removeAttachment(attachment.id)">Remove</button>
+        </li>
+      </ul>
+    </div>
+    <ul v-if="attachmentIssues.length > 0" class="composer-attachment-issues" data-testid="composer-attachment-issues" role="alert">
+      <li v-for="issue in attachmentIssues" :key="issue.id"><strong>{{ issue.name }}:</strong> {{ issue.message }}</li>
+    </ul>
+
     <p class="composer-status" role="status" aria-live="polite" data-testid="composer-status"
       :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
       {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
     </p>
 
     <div class="composer-actions" data-testid="composer-actions">
-      <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="draft.length === 0 || sendingIntent !== null || dictationStarting || dictationActive"
+      <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="(draft.length === 0 && attachmentCount === 0) || sendingIntent !== null || deliveryRequested || dictationStarting || dictationActive"
         @click="discardDraft">{{ discardArmed ? 'Discard?' : 'Discard' }}</button>
       <span class="composer-action-spacer"></span>
       <button class="composer-insert" type="button" data-testid="composer-dictate"
-        :disabled="dictationStarting || sendingIntent !== null || !targetKey"
+        :disabled="dictationStarting || sendingIntent !== null || deliveryRequested || !targetKey"
         :aria-pressed="dictationActive"
         @click="toggleDictation">{{ dictationStarting ? 'Starting…' : dictationActive ? 'Stop dictation' : 'Dictate' }}</button>
       <button class="composer-insert" type="button" data-testid="composer-insert" :disabled="!canDeliver"
         @click="deliver('insert')">Insert</button>
       <ComposerControls
         class="composer-shared-controls"
-        :uploading-count="0"
+        :uploading-count="attachmentBusy ? Math.max(1, pendingAttachments.length) : 0"
         :can-send="canDeliver"
-        :send-in-flight="sendingIntent === 'submit'"
-        :draft-length="0"
-        :attachment-count="0"
+        :send-in-flight="sendingIntent === 'submit' || deliveryRequested"
+        :draft-length="draft.length"
+        :attachment-count="attachmentCount"
         :discard-armed="false"
+        @attach="pickAttachments"
         @send="deliver('submit')"
       />
     </div>
@@ -321,3 +503,57 @@ function errorMessage(error: unknown): string {
   return error instanceof Error && error.message !== '' ? error.message : String(error);
 }
 </script>
+
+<style scoped>
+.composer-attachments {
+  max-height: 120px;
+  overflow: auto;
+  padding: 0 var(--sp-3) var(--sp-2);
+}
+.composer-attachment-list,
+.composer-attachment-issues {
+  display: grid;
+  gap: var(--sp-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.composer-attachment {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
+  color: var(--fg-secondary);
+  font-size: var(--fs-100);
+}
+.composer-attachment-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.composer-attachment-state {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-attachment-remove {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  font: inherit;
+}
+.composer-attachment-issues {
+  padding: 0 var(--sp-3) var(--sp-2);
+  color: var(--error);
+  font-size: var(--fs-100);
+}
+</style>

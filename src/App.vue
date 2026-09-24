@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watchEffect } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, watchEffect } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import {
@@ -11,6 +11,7 @@ import {
   type SessionRow,
   type SshHostTarget,
   type SshResourceSnapshot,
+  type AttachmentSource,
 } from '@pocketshell/core';
 import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
@@ -36,7 +37,7 @@ import {
   getComposerPointerIntentEpoch,
   noteComposerPointerIntent,
 } from './session/terminalFocus';
-import { readSshError, sshCapability } from './native/sshCapability';
+import { readSshError, sshCapability, type SshConnectionRef } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
 import TerminalDictationBar from './components/TerminalDictationBar.vue';
@@ -45,6 +46,14 @@ import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import SettingsScreen from './components/SettingsScreen.vue';
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
+import { createFileWorkspaceService, type AttachmentSource as FileAttachmentSource } from './session/files';
+import {
+  nextAttachmentTimestamp,
+  type ComposerAttachmentStageResult,
+  type PendingComposerAttachment,
+} from './session/composerAttachments';
+import { platformInput, type SharedContent } from './session/platformInput';
+import { useComposerDrafts } from './stores/composerDrafts';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
@@ -64,6 +73,7 @@ type ComposerSmokeEvidenceWindow = Window & {
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
 const diagnostics = useDiagnosticsStore();
+const composerDrafts = useComposerDrafts();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);
@@ -120,6 +130,10 @@ let removeKeyboardInsetsListener: (() => Promise<void>) | undefined;
 let removeControllerSnapshot: (() => void) | undefined;
 let removeTerminalOutput: (() => void) | undefined;
 let removeKeyboardViewportListeners: (() => void) | undefined;
+let removeShareListener: (() => Promise<void>) | undefined;
+let appUnmounting = false;
+const pendingIncomingShares = ref<SharedContent[]>([]);
+const receivedShareRequestIds = new Set<string>();
 let keyboardInsetsEvents = 0;
 let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
@@ -139,6 +153,115 @@ const composerTargetKey = computed(() => {
   if (!session || !hostname || !username) return '';
   return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
 });
+
+function recordIncomingShare(targetKey: string, share: SharedContent) {
+  composerDrafts.appendSharedText(targetKey, share.subject, share.text);
+  composerDrafts.addPendingAttachments(targetKey, share.attachments);
+  for (const [index, failure] of share.failures.entries()) {
+    composerDrafts.addAttachmentIssue(targetKey, {
+      id: `share-${share.requestId}-${index}-${failure.name}`,
+      name: failure.name,
+      message: failure.message,
+    });
+  }
+  if (share.fileError) {
+    composerDrafts.addAttachmentIssue(targetKey, {
+      id: `share-${share.requestId}-file-error`,
+      name: 'Shared file',
+      message: share.fileError,
+    });
+  }
+}
+
+function routeIncomingShare(share: SharedContent) {
+  if (share.requestId && receivedShareRequestIds.has(share.requestId)) return;
+  if (share.requestId) receivedShareRequestIds.add(share.requestId);
+  const targetKey = composerTargetKey.value;
+  if (!targetKey) {
+    pendingIncomingShares.value.push(share);
+    return;
+  }
+  recordIncomingShare(targetKey, share);
+}
+
+function flushIncomingShares() {
+  const targetKey = composerTargetKey.value;
+  if (!targetKey || pendingIncomingShares.value.length === 0) return;
+  const queued = pendingIncomingShares.value.splice(0);
+  for (const share of queued) recordIncomingShare(targetKey, share);
+}
+
+watch(composerTargetKey, flushIncomingShares);
+
+async function stageComposerAttachments(
+  targetKey: string,
+  pending: readonly PendingComposerAttachment[],
+): Promise<ComposerAttachmentStageResult> {
+  const snapshot = connectionSnapshot.value;
+  const session = snapshot?.selectedSession;
+  if (!snapshot || !session || !isLive.value || targetKey !== composerTargetKey.value) {
+    throw new Error('Attach a live session before staging these files.');
+  }
+  if (!snapshot.connectionId || !snapshot.generationId) {
+    throw new Error('The live SSH connection is not ready to stage files.');
+  }
+  const username = hostDraft.value.username.trim();
+  const remoteHome = /^[A-Za-z0-9_.-]+$/.test(username)
+    ? username === 'root' ? '/root' : `/home/${username}`
+    : session.workspace && session.workspace.startsWith('/') && !session.workspace.includes('\0')
+      ? session.workspace
+      : null;
+  if (!remoteHome) {
+    throw new Error('The SSH username or session workspace does not identify a safe remote home directory.');
+  }
+
+  const connection: SshConnectionRef = {
+    connectionId: snapshot.connectionId,
+    generationId: snapshot.generationId,
+  };
+  const workspace = createFileWorkspaceService(sshCapability, {
+    connection,
+    rootDirectory: remoteHome,
+    initialDirectory: remoteHome,
+    isCurrent: () => {
+      const current = connectionSnapshot.value;
+      return isLive.value
+        && composerTargetKey.value === targetKey
+        && current?.connectionId === connection.connectionId
+        && current.generationId === connection.generationId;
+    },
+  });
+  const sources: FileAttachmentSource[] = pending.map(({ source }) => ({
+    name: source.name ?? 'Shared file',
+    bytes: source.data,
+  }));
+  const result = await workspace.stageAttachments({
+    directory: `${remoteHome}/.pocketshell/attachments`,
+    scopeKey: session.workspace
+      ? `${session.workspace.replace(/\/+$/, '').split('/').pop() ?? ''}-${session.name}`
+      : session.name,
+    timestamp: nextAttachmentTimestamp(),
+    attachments: sources,
+  });
+  const staged = result.decision.kind === 'complete' || result.decision.kind === 'partial'
+    ? result.decision.attachments
+    : [];
+  return {
+    staged: staged.flatMap((attachment) => {
+      const source = pending[attachment.sourceIndex];
+      return source ? [{
+        id: source.id,
+        path: attachment.path,
+        name: source.source.name ?? attachment.sourceName,
+        sizeBytes: attachment.sizeBytes,
+      }] : [];
+    }),
+    failures: result.failures.flatMap((failure) => {
+      const source = pending[failure.sourceIndex];
+      return source ? [{ id: source.id, name: failure.sourceName, message: failure.message }] : [];
+    }),
+  };
+}
 const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
   if (!connectionSnapshot.value?.selectedSession) return 'closed';
   if (currentPhase.value === 'live') return 'connected';
@@ -568,6 +691,12 @@ function reloadAfterSettingsImport(settingsWritten: boolean) {
 
 onMounted(() => {
   diagnostics.record('app-started', 'startup', 'OK');
+  void platformInput.listenForShares(routeIncomingShare).then((remove) => {
+    if (appUnmounting) void remove();
+    else removeShareListener = remove;
+  }).catch((error: unknown) => {
+    console.error('Could not register the Android share listener.', error);
+  });
   const updateKeyboardViewport = () => {
     if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
@@ -687,10 +816,12 @@ watchEffect(() => {
 
 
 onBeforeUnmount(() => {
+  appUnmounting = true;
   removeKeyboardViewportListeners?.();
   void removeKeyboardInsetsListener?.();
   void removeBackButton?.();
   void removeAppState?.();
+  void removeShareListener?.();
   void closeController();
 });
 </script>
@@ -1032,6 +1163,7 @@ onBeforeUnmount(() => {
           :dictation-language-tag="appSettings.dictationLanguageTag"
           :dictation-silence-window-ms="appSettings.dictationSilenceWindowMs"
           :write-pty="writeComposerPty"
+          :stage-attachments="stageComposerAttachments"
         />
       </section>
     </main>
