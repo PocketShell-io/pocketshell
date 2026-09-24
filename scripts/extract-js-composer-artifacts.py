@@ -17,6 +17,8 @@ TAG = "PS2857Asset:"
 EXPECTED_NAMES = {
     "composer-keyboard.png",
     "composer-keyboard-geometry.json",
+    "composer-picker-attached.png",
+    "composer-picker-attached-geometry.json",
     "composer-post-send.png",
     "composer-post-send-terminal.json",
     "inline-dictation-preview.png",
@@ -92,7 +94,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png", "inline-dictation-preview.png"):
+    for name in ("composer-keyboard.png", "composer-picker-attached.png", "composer-post-send.png", "inline-dictation-preview.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
@@ -175,6 +177,69 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("keyboard layout hides the terminal context instead of preserving a useful viewport")
         if float(actions["top"]) < float(draft["bottom"]):
             raise ExtractionFailure("composer action container overlaps the draft")
+
+        picker_geometry_bytes = decoded.get("composer-picker-attached-geometry.json")
+        if picker_geometry_bytes is None or "composer-picker-attached.png" not in decoded:
+            raise ExtractionFailure("same-run staged picker screenshot and geometry are required")
+        try:
+            picker_geometry = json.loads(picker_geometry_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"picker attachment geometry JSON is invalid: {error}") from error
+        if not isinstance(picker_geometry, dict) or picker_geometry.get("stage") != "after-picker-before-discard":
+            raise ExtractionFailure("picker attachment record was not captured before draft cleanup")
+        if (picker_geometry.get("androidImeVisible") is not True
+                or picker_geometry.get("keyboardVisible") is not True
+                or picker_geometry.get("keyboardComposerMode") is not True):
+            raise ExtractionFailure("picker attachment screenshot does not prove the Android IME and composer keyboard mode")
+        attachment = picker_geometry.get("attachment")
+        draft_value = picker_geometry.get("draftValue")
+        picker_viewport = picker_geometry.get("visualViewport")
+        picker_rects = picker_geometry.get("rects")
+        if not isinstance(attachment, dict) or attachment.get("state") != "staged":
+            raise ExtractionFailure("picker attachment was not staged at screenshot time")
+        if (not isinstance(attachment.get("path"), str)
+                or "/.pocketshell/attachments/" not in attachment["path"]):
+            raise ExtractionFailure("picked content is missing its staged remote attachment path")
+        if not isinstance(draft_value, str) or not draft_value.startswith("Review picker attachment "):
+            raise ExtractionFailure("picker screenshot did not retain the user's composer draft")
+        if not isinstance(picker_viewport, dict) or not isinstance(picker_rects, dict):
+            raise ExtractionFailure("picker screenshot geometry is missing viewport or control bounds")
+        try:
+            picker_height = float(picker_viewport["height"])
+            picker_width = float(picker_viewport["width"])
+            picker_terminal = picker_rects["terminal"]
+            picker_draft = picker_rects["draft"]
+            picker_status = picker_rects["status"]
+            picker_actions = picker_rects["actions"]
+            picker_attach = picker_rects["attach"]
+            picker_discard = picker_rects["discard"]
+            picker_insert = picker_rects["insert"]
+            picker_send = picker_rects["send"]
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("picker screenshot geometry has invalid viewport or control bounds") from error
+        picker_visible_rects = {
+            "terminal": picker_terminal, "draft": picker_draft, "status": picker_status,
+            "actions": picker_actions, "attach": picker_attach, "discard": picker_discard,
+            "insert": picker_insert, "send": picker_send,
+        }
+        for name, rect in picker_visible_rects.items():
+            if not isinstance(rect, dict):
+                raise ExtractionFailure(f"picker screenshot is missing {name} bounds")
+            try:
+                top = float(rect["top"])
+                bottom = float(rect["bottom"])
+                left = float(rect["left"])
+                right = float(rect["right"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"picker screenshot has invalid {name} bounds") from error
+            if top < 0 or bottom > picker_height + 0.5 or left < 0 or right > picker_width + 0.5:
+                raise ExtractionFailure(f"picker screenshot {name} is clipped by the visible viewport")
+        for name, rect in (("Attach", picker_attach), ("Discard", picker_discard),
+                           ("Insert", picker_insert), ("Send", picker_send)):
+            if float(rect["bottom"]) - float(rect["top"]) < 47.9:
+                raise ExtractionFailure(f"picker screenshot {name} target is below the 48dp minimum")
+        if float(picker_terminal["height"]) < 48 or float(picker_actions["top"]) < float(picker_draft["bottom"]):
+            raise ExtractionFailure("picker screenshot hides the terminal context or overlaps the composer draft")
 
         post_send_bytes = decoded.get("composer-post-send-terminal.json")
         if post_send_bytes is None or "composer-post-send.png" not in decoded:
@@ -296,11 +361,42 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
+    def picker_geometry_payload(*, ime_visible: bool = True, draft_value: str = "Review picker attachment fixture",
+                                 attach_bottom: float = 218.0) -> bytes:
+        rect = lambda top, bottom, left, right: {
+            "top": top, "bottom": bottom, "left": left, "right": right,
+            "width": right - left, "height": bottom - top,
+        }
+        return json.dumps({
+            "stage": "after-picker-before-discard",
+            "androidImeVisible": ime_visible,
+            "keyboardVisible": ime_visible,
+            "keyboardComposerMode": ime_visible,
+            "draftValue": draft_value,
+            "attachment": {"state": "staged", "path": "/home/test/.pocketshell/attachments/picked.bin"},
+            "visualViewport": {"height": 240.0, "width": 400.0},
+            "rects": {
+                "terminal": rect(30.0, 90.0, 1.0, 399.0),
+                "draft": rect(100.0, 150.0, 1.0, 399.0),
+                "status": rect(152.0, 166.0, 1.0, 399.0),
+                "actions": rect(168.0, 219.0, 1.0, 399.0),
+                "attach": rect(170.0, attach_bottom, 1.0, 49.0),
+                "discard": rect(170.0, 218.0, 60.0, 129.0),
+                "insert": rect(170.0, 218.0, 250.0, 310.0),
+                "send": rect(170.0, 218.0, 320.0, 398.0),
+            },
+        }).encode()
+
+    picker_geometry = picker_geometry_payload()
+
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
-                   inline_preview_bytes: bytes = png) -> list[str]:
+                   inline_preview_bytes: bytes = png, picker_geometry_bytes: bytes = picker_geometry,
+                   picker_screenshot_bytes: bytes = png) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
+            ("composer-picker-attached.png", picker_screenshot_bytes),
+            ("composer-picker-attached-geometry.json", picker_geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
             ("inline-dictation-preview.png", inline_preview_bytes),
@@ -319,13 +415,18 @@ def self_test() -> None:
     extracted = parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)
     assert extracted["composer-keyboard.png"] == png
     assert extracted["inline-dictation-preview.png"] == png
-    print("PASS: keyboard, post-send, and inline dictation screenshots extract with matching SHA-256")
+    assert extracted["composer-picker-attached.png"] == png
+    print("PASS: keyboard, picker, post-send, and inline dictation screenshots extract with matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
         ("bad digest", [line.replace(hashlib.sha256(png).hexdigest(), "0" * 64) for line in lines]),
         ("IME hidden", make_lines(geometry_payload(ime_visible=False))),
+        ("picker attachment artifact missing", [line for line in lines if "composer-picker-attached.png" not in line]),
+        ("picker IME hidden", make_lines(picker_geometry_bytes=picker_geometry_payload(ime_visible=False))),
+        ("picker draft missing", make_lines(picker_geometry_bytes=picker_geometry_payload(draft_value=""))),
+        ("picker attach target clipped", make_lines(picker_geometry_bytes=picker_geometry_payload(attach_bottom=241.0))),
         ("send button clipped by viewport", make_lines(geometry_payload(send_bottom=241))),
         ("send touch target below 48dp", make_lines(geometry_payload(send_bottom=214))),
         ("status bar overlap", make_lines(geometry_payload(app_bar_top=0))),

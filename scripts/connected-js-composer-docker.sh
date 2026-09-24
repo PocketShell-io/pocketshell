@@ -108,7 +108,7 @@ pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 tmp_root="$(printenv TMPDIR || printf '/tmp')"
-evidence_dir="$tmp_root/pocketshell-js2857-$SESSION_BASE"
+evidence_dir="${POCKETSHELL_JS_COMPOSER_EVIDENCE_DIR:-$tmp_root/pocketshell-js2857-$SESSION_BASE}"
 mkdir -p "$evidence_dir"
 python3 - "$RESULTS_DIR" <<'PY'
 from pathlib import Path
@@ -200,6 +200,30 @@ sha256sum "$inline_preview"
 ssh_remote() {
   ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
 }
+
+share_record="$(rg -F "PS2857Share: RUN|$SESSION_BASE|" "$RESULTS_DIR/diagnostics-logcat.txt" | tail -n1 || true)"
+[[ -n "$share_record" ]] || fail 'same-run incoming-share record is missing from Android logcat'
+share_attachment_path="$(printf '%s\n' "$share_record" | sed -n 's/.*|staged=\([^|]*\)|bytes=.*/\1/p')"
+[[ "$share_attachment_path" == */.pocketshell/attachments/* ]] \
+  || fail "shared attachment record is missing the staged remote path: ${share_attachment_path:-<empty>}"
+share_attachment_hex="$(ssh_remote "od -An -tx1 '$share_attachment_path' | tr -d '[:space:]'")"
+[[ "$share_attachment_hex" == '00ff410ac3a9' ]] \
+  || fail "Docker host shared attachment bytes mismatch: expected 00ff410ac3a9, got ${share_attachment_hex:-<empty>}"
+share_output_marker="$(ssh_remote "cat /tmp/$SESSION_BASE-share-executed.marker | tr -d '\\n'")"
+[[ "$share_output_marker" == "PS2857_SHARE_EXEC_$SESSION_BASE" ]] \
+  || fail "Docker host share marker mismatch: got ${share_output_marker:-<empty>}"
+printf 'PASS: Docker host shared content bytes %s and explicit-Send marker %s\n' \
+  "$share_attachment_hex" "$share_output_marker"
+
+picker_record="$(rg -F "PS2857Picker: RUN|$SESSION_BASE|" "$RESULTS_DIR/diagnostics-logcat.txt" | tail -n1 || true)"
+[[ -n "$picker_record" ]] || fail 'same-run document-picker record is missing from Android logcat'
+picker_attachment_path="$(printf '%s\n' "$picker_record" | sed -n 's/.*|staged=\([^|]*\)|bytes=.*/\1/p')"
+[[ "$picker_attachment_path" == */.pocketshell/attachments/* ]] \
+  || fail "picked attachment record is missing the staged remote path: ${picker_attachment_path:-<empty>}"
+picker_attachment_hex="$(ssh_remote "od -An -tx1 '$picker_attachment_path' | tr -d '[:space:]'")"
+[[ "$picker_attachment_hex" == 'fe50530ac3a9' ]] \
+  || fail "Docker host picked attachment bytes mismatch: expected fe50530ac3a9, got ${picker_attachment_hex:-<empty>}"
+printf 'PASS: Docker host picked content bytes %s\n' "$picker_attachment_hex"
 
 bytes_session="$SESSION_BASE-bytes"
 uncertain_session="$SESSION_BASE-uncertain"
