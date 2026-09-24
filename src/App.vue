@@ -31,6 +31,7 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
+import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
@@ -117,7 +118,10 @@ const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
 const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 // Resize callbacks can finish after the user has selected a different PTY.
-let terminalAttachEpoch = 0;
+const terminalAttachEpoch = ref(0);
+const terminalAttachFocusWindowEpoch = ref(0);
+const terminalAttachPromptFocusEpoch = ref(0);
+const terminalAttachResizeAckEpoch = ref(0);
 
 let controller: ConnectionController | null = null;
 let removeBackButton: (() => Promise<void>) | undefined;
@@ -135,6 +139,9 @@ const migrationBlocksConnection = computed(() => installedDataMigrationState.ret
   || installedDataMigrationState.status === 'pending'
   || settingsReloading.value);
 const isLive = computed(() => currentPhase.value === 'live');
+const terminalAutofocusAllowed = computed(() => (terminalAttachPromptFocusEpoch.value === 0
+  || terminalAttachPromptFocusEpoch.value !== terminalAttachEpoch.value)
+  && !promptComposerHasFocus.value);
 const mobileHotkeysEnabled = computed(() => isLive.value
   && homeSurface.value === 'live'
   && navigation.route === 'home');
@@ -183,6 +190,20 @@ function recordFocusedElement(event: FocusEvent) {
   const target = event.target instanceof Element ? event.target : null;
   promptComposerHasFocus.value = isPromptComposerElement(target);
   mobileHotkeysHasFocus.value = isMobileHotkeysElement(target);
+  if (event.type === 'focusin') recordAttachComposerInteraction(target);
+}
+
+function recordAttachComposerPointer(event: PointerEvent) {
+  recordAttachComposerInteraction(event.target instanceof Element ? event.target : null);
+}
+
+function recordAttachComposerInteraction(target: Element | null) {
+  if (terminalAttachFocusWindowEpoch.value === 0
+    || terminalAttachFocusWindowEpoch.value !== terminalAttachEpoch.value
+    || homeSurface.value !== 'live'
+    || !isLive.value
+    || !isPromptComposerElement(target)) return;
+  terminalAttachPromptFocusEpoch.value = terminalAttachEpoch.value;
 }
 
 function recordFocusAfterBlur() {
@@ -390,36 +411,50 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
-  terminalAttachEpoch += 1;
-  terminal.value?.clear();
-  const result = await active.switchSession(session).catch((error: unknown) => {
-    recordFailure('ssh-bridge-failed', 'attach-session', error);
-    connectionMessage.value = error instanceof Error ? error.message : String(error);
-    return null;
-  });
-  if (result && !result.ok) {
-    recordOperationFailure('attach-session');
-    connectionMessage.value = result.message;
-  }
-  else if (result?.ok) {
-    navigateHomeSurface('session-attached');
-    await nextTick();
-    // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
-    // have identical geometry. Explicitly resize each newly attached PTY.
-    const size = await terminal.value?.fit();
-    if (size) await resizeTerminal(size);
-    terminal.value?.focus();
+  const attachEpoch = ++terminalAttachEpoch.value;
+  terminalAttachFocusWindowEpoch.value = attachEpoch;
+  try {
+    terminal.value?.clear();
+    const result = await active.switchSession(session).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'attach-session', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
+    if (attachEpoch !== terminalAttachEpoch.value) return;
+    if (result && !result.ok) {
+      recordOperationFailure('attach-session');
+      connectionMessage.value = result.message;
+      return;
+    }
+    if (result?.ok) {
+      navigateHomeSurface('session-attached');
+      await nextTick();
+      // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
+      // have identical geometry. Explicitly resize each newly attached PTY.
+      const size = await terminal.value?.fit();
+      if (size) {
+        const resizeGate = waitForAttachAutofocusTestGate('attach-resize');
+        if (resizeGate) await resizeGate;
+        await resizeTerminal(size, attachEpoch);
+      }
+      await nextTick();
+      const focusGate = waitForAttachAutofocusTestGate('attach-final-focus');
+      if (focusGate) await focusGate;
+      if (terminalAutofocusAllowed.value) terminal.value?.focus();
+    }
+  } finally {
+    if (terminalAttachFocusWindowEpoch.value === attachEpoch) terminalAttachFocusWindowEpoch.value = 0;
   }
 }
 
 async function sendTerminalBytes(bytes: Uint8Array) {
   const active = controller;
   if (!active || !isLive.value) return;
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalInputPending.value += 1;
   try {
     const result = await active.writeTerminalBytes(bytes);
-    if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
+    if (attachEpoch !== terminalAttachEpoch.value || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
       recordOperationFailure('send-terminal-input');
@@ -428,7 +463,7 @@ async function sendTerminalBytes(bytes: Uint8Array) {
       terminalInputAckCount.value += 1;
     }
   } catch (error: unknown) {
-    if (attachEpoch !== terminalAttachEpoch) return;
+    if (attachEpoch !== terminalAttachEpoch.value) return;
     terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
@@ -467,10 +502,10 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
 
-async function resizeTerminal(size: TerminalResizeRequest) {
+async function resizeTerminal(size: TerminalResizeRequest, attachEpochForAck?: number) {
   if (!controller || !isLive.value) return;
   const requestId = size.requestId ?? allocateTerminalResizeRequestId();
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
@@ -479,11 +514,14 @@ async function resizeTerminal(size: TerminalResizeRequest) {
       connectionMessage.value = error instanceof Error ? error.message : String(error);
       return null;
     });
-    if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
+    if (attachEpoch !== terminalAttachEpoch.value || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
-    if (result?.ok) terminalResizeAckCount.value += 1;
+    if (result?.ok) {
+      terminalResizeAckCount.value += 1;
+      if (attachEpochForAck === terminalAttachEpoch.value) terminalAttachResizeAckEpoch.value = attachEpochForAck;
+    }
     else {
       terminalResizeFailure.value = { ...size, requestId };
       terminalResizeFailureCount.value += 1;
@@ -721,8 +759,12 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-pending="terminalResizePending"
     :data-ssh-terminal-resize-acks="terminalResizeAckCount"
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
+    :data-ssh-attach-epoch="terminalAttachEpoch"
+    :data-ssh-attach-focus-pending="terminalAttachFocusWindowEpoch !== 0"
+    :data-ssh-attach-resize-ack-epoch="terminalAttachResizeAckEpoch"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    @pointerdown.capture="recordAttachComposerPointer"
     :data-migration-status="installedDataMigrationState.status"
   >
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
@@ -1019,6 +1061,7 @@ onBeforeUnmount(() => {
             ref="terminal"
             :enabled="isLive"
             :resize-failure="terminalResizeFailure"
+            :autofocus-allowed="terminalAutofocusAllowed"
             :theme="activeTheme.terminal"
             :font-family="terminalFontFamily"
             :font-size="appSettings.terminalFontSize"

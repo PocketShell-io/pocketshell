@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import type { ITheme } from '@xterm/xterm';
 import { TerminalGeometryReporter, type TerminalResizeRequest } from '../terminalGeometry';
+import { waitForAttachAutofocusTestGate } from '../session/attachAutofocusTestGate';
 
 const props = defineProps<{
   enabled: boolean;
@@ -11,6 +12,8 @@ const props = defineProps<{
   fontFamily: string;
   fontSize: number;
   resizeFailure?: TerminalResizeRequest | null;
+  /** App-level focus intent can suppress a delayed autofocus after a composer tap. */
+  autofocusAllowed?: boolean;
 }>();
 const emit = defineEmits<{
   input: [data: string];
@@ -146,7 +149,9 @@ watch(() => props.enabled, async (enabled) => {
   }
   await nextTick();
   fitTerminal();
-  terminal.focus();
+  const autofocusGate = waitForAttachAutofocusTestGate('terminal-enabled-watcher');
+  if (autofocusGate) await autofocusGate;
+  if (props.autofocusAllowed !== false) terminal.focus();
 });
 
 watch(() => props.resizeFailure?.requestId, (requestId) => {

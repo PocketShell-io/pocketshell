@@ -82,17 +82,31 @@ public final class JsFastKeysDockerJourneyTest {
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         evalString("window.__ps2857CaptureTerminalEvidence = true; window.__ps2884HotkeyWrites = [];"
-                + "window.__ps2884PointerEvents = [];"
+                + "window.__ps2884PointerEvents = []; window.__ps2884FocusEvents = [];"
                 + "for (const type of ['pointerdown','pointerup','pointercancel','click']) window.addEventListener(type, event => {"
                 + "const button=event.target instanceof Element ? event.target.closest('button') : null;"
                 + "window.__ps2884PointerEvents.push({type,pointerId:event.pointerId??null,detail:event.detail??null,"
                 + "key:button?.dataset.keyId??button?.getAttribute('aria-label')??null,defaultPrevented:event.defaultPrevented,"
                 + "activeElement:document.activeElement?.getAttribute('data-testid')??document.activeElement?.tagName??null});"
-                + "}); 'evidence enabled'");
+                + "});"
+                + "const describeFocusNode=node=>{if(!(node instanceof Element))return null;return {tag:node.tagName.toLowerCase(),"
+                + "id:node.id||null,testId:node.getAttribute('data-testid'),className:String(node.className||'').slice(0,80)};};"
+                + "for(const type of ['focusin','focusout'])document.addEventListener(type,event=>{"
+                + "const entries=window.__ps2884FocusEvents;entries.push({type,atMs:Math.round(performance.now()),"
+                + "target:describeFocusNode(event.target),related:describeFocusNode(event.relatedTarget),"
+                + "active:describeFocusNode(document.activeElement),keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible||'false'});"
+                + "if(entries.length>40)entries.shift();},true); 'evidence enabled'");
+        // SystemClock.uptimeMillis() is Android's monotonic clock. This interval
+        // ends after the attached live prompt is present and a rendered frame settles.
+        long connectToPromptStartedAt = SystemClock.uptimeMillis();
         connect(host, port, privateKey);
         createSession(firstSession);
         attachSession(firstSession);
         awaitTerminalResizeIdle();
+        awaitJsTrue("!!document.querySelector('[data-testid=prompt-draft]')"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        awaitRenderedFrame();
+        journey.put("connectToPromptMs", SystemClock.uptimeMillis() - connectToPromptStartedAt);
 
         String firstRaw = "/tmp/" + firstSession + "-bytes.raw";
         String firstReady = "PS2884_READY_" + nameBase;
@@ -157,11 +171,16 @@ public final class JsFastKeysDockerJourneyTest {
 
         int writesBeforeEnter = hotkeyWrites().length();
         int pointerEventsBeforeEnter = pointerEventCount();
+        // Measure the actual hotkey tap through the rendered host completion marker.
+        long tapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
         tapDomCenter("[data-key-id='enter']");
         assertTrue("compact Enter must receive the tap while the floating palette is open",
                 hotkeyClickSince("enter", pointerEventsBeforeEnter));
         awaitHotkeyWrites(writesBeforeEnter + 1);
         awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(firstDone) + ")", 15_000);
+        awaitRenderedFrame();
+        journey.put("tapToVisibleOutputMs", SystemClock.uptimeMillis() - tapToVisibleOutputStartedAt);
+        journey.put("firstDoneMarker", firstDone);
         JSONArray expectedFirstWrites = expectedFirstWrites();
         assertEquals("each visible fast-key action must be one typed-byte PTY write", expectedFirstWrites.toString(), hotkeyWrites().toString());
         journey.put("firstHotkeyWrites", hotkeyWrites());
@@ -172,6 +191,7 @@ public final class JsFastKeysDockerJourneyTest {
         awaitImeVisible(false);
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 10_000);
+        awaitRenderedFrame();
         JSONObject paletteAfterImeBack = captureGeometry("palette-open-ime-dismissed");
         assertPaletteInsideTerminalSlot(paletteAfterImeBack);
         assertEquals("Android Back dismissing the IME must not send a terminal byte", writesBeforeBack, hotkeyWrites().length());
@@ -181,6 +201,10 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        awaitRenderedFrame();
+        assertTrue("Android Back must render the palette as absent before capturing the closed state",
+                "true".equals(evalRaw("!document.querySelector('[data-testid=mobile-hotkeys-palette]')"
+                        + " && document.querySelector('[data-testid=mobile-hotkeys-launcher]')?.getAttribute('aria-expanded') === 'false'")));
         assertEquals("Android Back closing the palette must not send a terminal byte", writesBeforeBack, hotkeyWrites().length());
         captureScreenshot("fastkeys-palette-closed.png");
         JSONObject beforeReconnectGeometry = captureGeometry("before-reconnect");
@@ -191,8 +215,55 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("disconnect must unmount the hotkey controls",
                 !"true".equals(evalRaw("!!document.querySelector('[data-testid=mobile-hotkeys]')")));
 
+        installAttachAutofocusGate();
         connect(host, port, privateKey);
         attachSession(firstSession);
+        awaitJsTrue("(window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'terminal-enabled-watcher')"
+                + " && (window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'attach-resize')"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshAttachFocusPending === 'true'"
+                + " && !!document.querySelector('[data-testid=prompt-draft]')");
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitPromptFocusedForReattach();
+        JSONObject earlyPromptTapWhileAttachHeld = evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
+                + "return JSON.stringify({activeElement:document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName||null,"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
+                + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
+                + "gate:{entered:gate?.entered??[],pending:gate?.pending??0,released:gate?.released??false},"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-12)});})()");
+        earlyPromptTapWhileAttachHeld.put("androidImeVisible", isImeVisible());
+        assertTrue("early prompt tap evidence must be captured while final attach resize/autofocus is still held",
+                earlyPromptTapWhileAttachHeld.getBoolean("attachFocusPending")
+                        && !earlyPromptTapWhileAttachHeld.getJSONObject("gate").getBoolean("released")
+                        && earlyPromptTapWhileAttachHeld.getJSONObject("gate").getInt("pending") > 0
+                        && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "terminal-enabled-watcher")
+                        && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "attach-resize")
+                        && earlyPromptTapWhileAttachHeld.getInt("attachResizeAckEpoch") != earlyPromptTapWhileAttachHeld.getInt("attachEpoch")
+                        && earlyPromptTapWhileAttachHeld.getBoolean("androidImeVisible"));
+        releaseAttachAutofocusGate();
+        awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
+                + "return shell?.dataset.sshAttachFocusPending === 'false'"
+                + " && Number(shell.dataset.sshAttachResizeAckEpoch) === Number(shell.dataset.sshAttachEpoch)"
+                + " && Number(shell.dataset.sshTerminalResizePending) === 0"
+                + " && Number(shell.dataset.sshTerminalResizeFailures) === 0"
+                + " && gate.entered.some(event => event.source === 'terminal-enabled-watcher')"
+                + " && gate.entered.some(event => event.source === 'attach-resize')"
+                + " && gate.entered.some(event => event.source === 'attach-final-focus')"
+                + " && gate?.released === true && gate.pending === 0;})()");
+        awaitRenderedFrame();
+        awaitPromptFocusedForReattach();
+        awaitImeVisible(true);
+        JSONObject earlyPromptTapAfterAttachFinished = evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
+                + "return JSON.stringify({activeElement:document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName||null,"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
+                + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
+                + "gate:{entered:gate?.entered??[],pending:gate?.pending??0,released:gate?.released??false},"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-12)});})()");
+        earlyPromptTapAfterAttachFinished.put("androidImeVisible", isImeVisible());
+        journey.put("reattachEarlyPromptTapWhileHeld", earlyPromptTapWhileAttachHeld);
+        journey.put("reattachEarlyPromptTapAfterAttach", earlyPromptTapAfterAttachFinished);
         awaitTerminalResizeIdle();
         try {
             awaitImeVisible(true);
@@ -205,9 +276,8 @@ public final class JsFastKeysDockerJourneyTest {
                     + failureGeometry, error);
         }
         JSONObject afterReconnectGeometry = captureGeometry("after-reconnect");
-        captureScreenshot("fastkeys-reconnected-ime-open.png");
         assertTrue("reattach geometry must describe the terminal-focused keyboard state", afterReconnectGeometry.getBoolean("keyboardVisible")
-                && !afterReconnectGeometry.getBoolean("keyboardComposerMode"));
+                && afterReconnectGeometry.getBoolean("keyboardComposerMode"));
         JSONObject reattachedGrid = runtimeGrid(afterReconnectGeometry);
         assertHotkeyBarReachable(afterReconnectGeometry);
         assertHotkeyBarWithinTerminalPanel(afterReconnectGeometry);
@@ -231,6 +301,7 @@ public final class JsFastKeysDockerJourneyTest {
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.enabled === 'true'");
+        long reconnectTapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
         tapDomCenter("[data-key-id='arrow-up']");
         awaitHotkeyWrites(writesBeforeBack + 1);
         try {
@@ -240,6 +311,9 @@ public final class JsFastKeysDockerJourneyTest {
             captureScreenshot("fastkeys-reconnected-ime-open.png");
             throw new AssertionError(error.getMessage() + "; terminal evidence=" + terminalEvidence(resumedReady, resumedDone), error);
         }
+        awaitRenderedFrame();
+        journey.put("reconnectTapToVisibleOutputMs", SystemClock.uptimeMillis() - reconnectTapToVisibleOutputStartedAt);
+        journey.put("resumedDoneMarker", resumedDone);
         JSONArray expectedFinalWrites = expectedFirstWrites();
         expectedFinalWrites.put(write("arrow-up", 0x1b, 0x5b, 0x41));
         assertEquals("the reattached live session must emit the expected arrow bytes", expectedFinalWrites.toString(), hotkeyWrites().toString());
@@ -248,8 +322,21 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("finalGeometry", captureGeometry("reconnected-keybar-ime-up"));
         journey.put("beforeReconnectGeometry", beforeReconnectGeometry);
         journey.put("afterReconnectGeometry", afterReconnectGeometry);
-        journey.put("geometryTrace", geometryTrace);
         assertTrue("resumed session must keep the Android IME open", isImeVisible());
+        captureScreenshot("fastkeys-reconnected-ime-open.png");
+
+        click("[data-testid=ssh-disconnect]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'"
+                + " && !document.querySelector('[data-testid=mobile-hotkeys]')");
+        JSONObject afterReconnectLoss = captureGeometry("after-reconnect-loss");
+        assertTrue("all hotkey controls must be removed after the reattached SSH session is lost",
+                "idle".equals(afterReconnectLoss.getString("sshPhase"))
+                        && afterReconnectLoss.isNull("mobileHotkeys")
+                        && afterReconnectLoss.getJSONArray("navigationTargets").length() == 0
+                        && afterReconnectLoss.getJSONArray("hotkeyControls").length() == 0);
+
+        // Persist the final loss checkpoint with the reconnect write and timings.
+        journey.put("geometryTrace", geometryTrace);
         journey.put("androidApi", Build.VERSION.SDK_INT);
         emitArtifact("fastkeys-journey.json", journey.toString(2).getBytes(StandardCharsets.UTF_8));
     }
@@ -424,11 +511,15 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const shell=document.querySelector('.app-shell');const slot=document.querySelector('[data-testid=terminal-slot]');"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
                 + "[data-testid=mobile-hotkeys-launcher]')).map(target);const palette=document.querySelector('[data-testid=mobile-hotkeys-palette]');"
+                + "const hotkeyControls=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys],"
+                + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-palette],[data-key-id]')).map(node=>({"
+                + "testId:node.getAttribute('data-testid'),keyId:node.getAttribute('data-key-id'),"
+                + "disabled:'disabled' in node?!!node.disabled:null}));"
                 + "return JSON.stringify({stage:" + JSONObject.quote(stage) + ",androidApi:" + Build.VERSION.SDK_INT + ","
                 + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
                 + "sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
                 + "terminalPanel:rect('.terminal-panel'),terminalSlot:rect('[data-testid=terminal-slot]'),terminalViewport:rect('.terminal-viewport'),"
-                + "mobileHotkeys:rect('[data-testid=mobile-hotkeys]'),navigationTargets:keys,"
+                + "mobileHotkeys:rect('[data-testid=mobile-hotkeys]'),navigationTargets:keys,hotkeyControls,"
                 + "layout:Object.fromEntries(['.app-shell','.screen-content','.home-screen--workspace','.live-workspace','.terminal-panel',"
                 + "'[data-testid=terminal-slot]','.terminal-viewport','.composer-panel'].map(selector=>{const node=document.querySelector(selector);"
                 + "if(!node)return [selector,null];const style=getComputedStyle(node),r=node.getBoundingClientRect();return [selector,{display:style.display,"
@@ -517,6 +608,13 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject end = after.getJSONObject("palette").getJSONObject("bounds");
         return Math.abs(start.getDouble("left") - end.getDouble("left")) > 1
                 || Math.abs(start.getDouble("top") - end.getDouble("top")) > 1;
+    }
+
+    private void awaitRenderedFrame() throws Exception {
+        evalString("(() => {window.__ps2884RenderedFrame = false;"
+                + "requestAnimationFrame(() => requestAnimationFrame(() => {window.__ps2884RenderedFrame = true;}));"
+                + "return 'scheduled';})()");
+        awaitJsTrue("window.__ps2884RenderedFrame === true");
     }
 
     private JSONObject runtimeGrid(JSONObject geometry) throws Exception {
@@ -643,8 +741,49 @@ public final class JsFastKeysDockerJourneyTest {
         }
         String webState = evalString("JSON.stringify({activeElement:document.activeElement?.outerHTML?.slice(0,160)??null,"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
-                + "paletteOpen:document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen??null})");
+                + "paletteOpen:document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen??null,"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-20)})");
         throw new AssertionError("Android IME visibility did not become " + visible + " (WebView=" + webState + ")");
+    }
+
+    private void installAttachAutofocusGate() throws Exception {
+        evalString("(() => {const gate=window.__ps2884AttachAutofocusGate={entered:[],pending:0,released:false,waiters:[]};"
+                + "window.__ps2884BeforeAttachAutofocus=source=>{gate.entered.push({source,atMs:Math.round(performance.now())});"
+                + "gate.pending+=1;return new Promise(resolve=>{const finish=()=>{gate.pending-=1;resolve();};"
+                + "if(gate.released){queueMicrotask(finish);return;}gate.waiters.push(finish);});};return 'gate installed';})()");
+    }
+
+    private boolean hasAutofocusSource(JSONObject gate, String source) throws Exception {
+        JSONArray entered = gate.optJSONArray("entered");
+        if (entered == null) return false;
+        for (int index = 0; index < entered.length(); index++) {
+            JSONObject event = entered.optJSONObject(index);
+            if (event != null && source.equals(event.optString("source"))) return true;
+        }
+        return false;
+    }
+
+    private void releaseAttachAutofocusGate() throws Exception {
+        evalString("(() => {const gate=window.__ps2884AttachAutofocusGate;if(!gate)throw new Error('missing attach gate');"
+                + "gate.released=true;for(const finish of gate.waiters.splice(0))finish();return 'gate released';})()");
+    }
+
+    private void awaitPromptFocusedForReattach() throws Exception {
+        try {
+            awaitJsTrue("document.activeElement?.matches('[data-testid=prompt-draft]') === true"
+                    + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
+                    + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'", 5_000);
+        } catch (AssertionError error) {
+            String state = evalString("JSON.stringify({activeElement:document.activeElement?.outerHTML?.slice(0,180)??null,"
+                    + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
+                    + "keyboardComposerMode:document.querySelector('.app-shell')?.dataset.keyboardComposerMode??null,"
+                    + "attachFocusPending:document.querySelector('.app-shell')?.dataset.sshAttachFocusPending??null,"
+                    + "attachEpoch:document.querySelector('.app-shell')?.dataset.sshAttachEpoch??null,"
+                    + "attachResizeAckEpoch:document.querySelector('.app-shell')?.dataset.sshAttachResizeAckEpoch??null,"
+                    + "gate:window.__ps2884AttachAutofocusGate??null,"
+                    + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-16)})");
+            throw new AssertionError("reattach did not preserve prompt focus with the keyboard visible: " + state, error);
+        }
     }
 
     private void tapDomCenter(String selector) throws Exception {
