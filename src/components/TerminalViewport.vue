@@ -30,6 +30,7 @@ type ComposerSmokeEvidenceWindow = Window & {
   __ps2857TerminalRenderCount?: number;
   __ps2857TerminalLastRenderRange?: string;
   __ps2857TerminalBufferState?: string;
+  __ps2857ReadTerminalVisibleText?: () => string;
   __ps2875TerminalRuntimeGeometry?: {
     cols: number;
     rows: number;
@@ -37,6 +38,19 @@ type ComposerSmokeEvidenceWindow = Window & {
     baseY: number;
     bufferLength: number;
     cellHeight: number | null;
+  };
+  __ps2898ResizeAfterParse?: {
+    marker: string;
+    colsDelta: number;
+    rowsDelta: number;
+    fired?: boolean;
+  };
+  __ps2898TerminalTrace?: {
+    events: Array<Record<string, unknown>>;
+    writeChunks: Array<{ at: number; byteLength: number; text: string; hex: string }>;
+    writtenText: string;
+    latestBuffer?: Record<string, unknown>;
+    bufferBeforeInsertResize?: Record<string, unknown>;
   };
 };
 
@@ -57,10 +71,7 @@ function captureComposerSmokeTerminalText() {
   const buffer = terminal.buffer.active;
   const visibleRows = Array.from({ length: terminal.rows }, (_, row) =>
     buffer.getLine(buffer.viewportY + row));
-  evidenceWindow.__ps2857TerminalVisibleText = visibleRows
-    .map((line, index) => `${index > 0 && !line?.isWrapped ? '\n' : ''}${line?.translateToString(true) ?? ''}`)
-    .join('')
-    .slice(-4000);
+  evidenceWindow.__ps2857TerminalVisibleText = readComposerSmokeVisibleText();
   const tailStart = Math.max(0, buffer.length - Math.max(terminal.rows, 12));
   const tailRows = Array.from({ length: buffer.length - tailStart }, (_, index) => {
     const line = buffer.getLine(tailStart + index);
@@ -81,11 +92,70 @@ function captureComposerSmokeTerminalText() {
     visibleText: evidenceWindow.__ps2857TerminalVisibleText,
     tailText: tailRows,
   });
+  const trace = evidenceWindow.__ps2898TerminalTrace;
+  if (trace) {
+    const diagnosticRows = Array.from({ length: buffer.length }, (_, index) => {
+      const line = buffer.getLine(index);
+      return {
+        row: index,
+        isWrapped: line?.isWrapped ?? false,
+        text: line?.translateToString(false) ?? '',
+      };
+    }).slice(-Math.max(terminal.rows + 20, 40));
+    trace.latestBuffer = {
+      at: performance.now(),
+      cols: terminal.cols,
+      rows: terminal.rows,
+      viewportY: buffer.viewportY,
+      baseY: buffer.baseY,
+      bufferLength: buffer.length,
+      cursorX: buffer.cursorX,
+      cursorY: buffer.cursorY,
+      visibleText: evidenceWindow.__ps2857TerminalVisibleText,
+      visibleRows: visibleRows.map((line, row) => ({
+        row: buffer.viewportY + row,
+        isWrapped: line?.isWrapped ?? false,
+        text: line?.translateToString(false) ?? '',
+      })),
+      tailRows: diagnosticRows,
+    };
+  }
+}
+
+function readComposerSmokeVisibleText(): string {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return '';
+  const buffer = terminal.buffer.active;
+  return Array.from({ length: terminal.rows }, (_, row) =>
+    buffer.getLine(buffer.viewportY + row))
+    .map((line, index) => `${index > 0 && !line?.isWrapped ? '\n' : ''}${line?.translateToString(true) ?? ''}`)
+    .join('')
+    .slice(-4000);
+}
+
+function recordComposerResizeRaceEvent(type: string, details: Record<string, unknown> = {}) {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
+  const trace = evidenceWindow.__ps2898TerminalTrace ?? {
+    events: [],
+    writeChunks: [],
+    writtenText: '',
+  };
+  trace.events.push({
+    type,
+    at: performance.now(),
+    cols: terminal?.cols ?? null,
+    rows: terminal?.rows ?? null,
+    ...details,
+  });
+  if (trace.events.length > 160) trace.events.splice(0, trace.events.length - 160);
+  evidenceWindow.__ps2898TerminalTrace = trace;
 }
 
 function captureRequestedTerminalGeometry() {
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
   if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return;
+  captureComposerSmokeTerminalText();
   const buffer = terminal.buffer.active;
   const renderMetrics = (terminal as unknown as {
     _core?: { _renderService?: { dimensions?: { css?: { cell?: { height?: number } } } } };
@@ -100,14 +170,51 @@ function captureRequestedTerminalGeometry() {
   };
 }
 
+function applyComposerInsertResizeAfterParse() {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  const resizeHook = evidenceWindow.__ps2898ResizeAfterParse;
+  const trace = evidenceWindow.__ps2898TerminalTrace;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal || !resizeHook || resizeHook.fired
+      || !resizeHook.marker || !trace?.writtenText.includes(resizeHook.marker)
+      || !String(trace.latestBuffer?.visibleText ?? '').includes(resizeHook.marker)) return;
+
+  // A write-parse notification for an earlier queued chunk may arrive after
+  // later bytes have already entered the evidence trace. Require the latest
+  // active-buffer sample to contain the marker before calling this a
+  // post-parse resize boundary.
+  trace.bufferBeforeInsertResize = trace.latestBuffer;
+  const geometry = {
+    cols: Math.max(2, terminal.cols + resizeHook.colsDelta),
+    rows: Math.max(2, terminal.rows + resizeHook.rowsDelta),
+  };
+  recordComposerResizeRaceEvent('insert-resize-after-parse', {
+    marker: resizeHook.marker,
+    before: { cols: terminal.cols, rows: terminal.rows },
+    requested: geometry,
+    parsedCount: evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0,
+  });
+  // The packaged regression waits for xterm to parse the actual PTY echo first,
+  // then forces the same grid change reported by the hosted failure. This
+  // tests whether parsed bytes survive reflow and whether the sampled text is
+  // fresh after resize; it does not rewrite or replay terminal output.
+  terminal.resize(geometry.cols, geometry.rows);
+  const request = props.enabled ? resizeReporter.request(geometry) : undefined;
+  if (request) emit('resize', request);
+  resizeHook.fired = true;
+  captureComposerSmokeTerminalText();
+  recordComposerResizeRaceEvent('insert-resize-applied', { geometry, request: request ?? null });
+}
+
 const terminalGeometryRequestEvent = 'pocketshell:terminal-geometry-request';
 
 function fitTerminal() {
   requestAnimationFrame(() => {
     if (!terminal || !fitAddon) return;
     try {
+      const before = { cols: terminal.cols, rows: terminal.rows };
       fitAddon.fit();
       const geometry = { cols: terminal.cols, rows: terminal.rows };
+      recordComposerResizeRaceEvent('fit-applied', { before, geometry });
       if (!props.enabled) {
         // A fit while disconnected can prepare xterm's local grid, but it
         // cannot acknowledge geometry on the next native PTY generation.
@@ -115,7 +222,10 @@ function fitTerminal() {
         return;
       }
       const request = resizeReporter.request(geometry);
-      if (request) emit('resize', request);
+      if (request) {
+        recordComposerResizeRaceEvent('resize-emitted', { request });
+        emit('resize', request);
+      }
     } catch {
       // The terminal host is not measurable until its containing panel is laid out.
     }
@@ -169,6 +279,9 @@ watch(() => [props.theme, props.fontFamily, props.fontSize] as const, async () =
 
 onMounted(() => {
   if (!terminalHost.value) return;
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  const visibleTextReader = () => readComposerSmokeVisibleText();
+  evidenceWindow.__ps2857ReadTerminalVisibleText = visibleTextReader;
   terminal = new Terminal({
     allowProposedApi: false,
     cursorBlink: true,
@@ -176,6 +289,10 @@ onMounted(() => {
     fontFamily: props.fontFamily,
     fontSize: props.fontSize,
     lineHeight: 1.25,
+    // xterm resizes locally before the remote shell can redraw its current
+    // command after SIGWINCH. Reflow that cursor line so a narrow resize does
+    // not trim characters from the command while that redraw is pending.
+    reflowCursorLine: true,
     scrollback: 1000,
     theme: props.theme,
   });
@@ -187,13 +304,16 @@ onMounted(() => {
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalRenderCount = (evidenceWindow.__ps2857TerminalRenderCount ?? 0) + 1;
     evidenceWindow.__ps2857TerminalLastRenderRange = `${start}-${end}`;
+    recordComposerResizeRaceEvent('render', { start, end });
     captureComposerSmokeTerminalText();
   });
   writeParsedListener = terminal.onWriteParsed(() => {
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalWriteParsedCount = (evidenceWindow.__ps2857TerminalWriteParsedCount ?? 0) + 1;
+    recordComposerResizeRaceEvent('write-parsed');
     captureComposerSmokeTerminalText();
+    applyComposerInsertResizeAfterParse();
   });
   window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal.onData((data) => emit('input', data));
@@ -219,19 +339,41 @@ onBeforeUnmount(() => {
   window.removeEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
   terminal?.dispose();
   terminal = undefined;
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (evidenceWindow.__ps2857ReadTerminalVisibleText) {
+    delete evidenceWindow.__ps2857ReadTerminalVisibleText;
+  }
 });
 
 function write(bytes: Uint8Array) {
   if (!terminal) return;
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
-  if (evidenceWindow.__ps2857CaptureTerminalEvidence) {
+  const captureEvidence = Boolean(evidenceWindow.__ps2857CaptureTerminalEvidence);
+  const chunkText = captureEvidence ? new TextDecoder().decode(bytes) : '';
+  let trace = captureEvidence ? evidenceWindow.__ps2898TerminalTrace : undefined;
+  if (captureEvidence) {
+    trace ??= { events: [], writeChunks: [], writtenText: '' };
+    const at = performance.now();
+    trace.writeChunks.push({
+      at,
+      byteLength: bytes.length,
+      text: chunkText.slice(-512),
+      hex: Array.from(bytes.slice(-512), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+    });
+    if (trace.writeChunks.length > 100) trace.writeChunks.splice(0, trace.writeChunks.length - 100);
+    trace.writtenText = `${trace.writtenText}${chunkText}`.slice(-12000);
+    evidenceWindow.__ps2898TerminalTrace = trace;
+    recordComposerResizeRaceEvent('write-queued', { byteLength: bytes.length, text: chunkText.slice(-1024) });
+  }
+  if (captureEvidence) {
     evidenceWindow.__ps2857TerminalWriteCount = (evidenceWindow.__ps2857TerminalWriteCount ?? 0) + 1;
-    evidenceWindow.__ps2857TerminalLastWriteText = new TextDecoder().decode(bytes).slice(-4000);
+    evidenceWindow.__ps2857TerminalLastWriteText = chunkText.slice(-4000);
   }
   terminal.write(bytes, () => {
     const evidenceWindow = window as ComposerSmokeEvidenceWindow;
     if (!evidenceWindow.__ps2857CaptureTerminalEvidence) return;
     evidenceWindow.__ps2857TerminalWriteCallbackCount = (evidenceWindow.__ps2857TerminalWriteCallbackCount ?? 0) + 1;
+    recordComposerResizeRaceEvent('write-callback');
     captureComposerSmokeTerminalText();
   });
 }
