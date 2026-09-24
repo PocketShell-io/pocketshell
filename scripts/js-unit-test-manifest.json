@@ -4,9 +4,16 @@
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists only shared theme/font policy and supported background grace values",
+        "reads and persists shared appearance, connection, and dictation preferences",
         "degrades malformed or unsupported saved values to safe defaults",
-        "clamps terminal size using the pinned desktop font-size policy"
+        "clamps terminal size using the pinned desktop font-size policy",
+        "normalizes valid language hints and applies the adapter silence bounds"
+      ]
+    },
+    "tests/unit/dictationSettingsInteraction.test.ts": {
+      "suite": "mounted dictation settings controls",
+      "tests": [
+        "binds the production Voice template to accessible persisted language and silence controls"
       ]
     },
     "tests/unit/homeSurface.test.ts": {
