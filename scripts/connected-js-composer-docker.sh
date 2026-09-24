@@ -181,8 +181,21 @@ stop_asset_logcat
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir" \
   --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
+inline_preview="$evidence_dir/inline-dictation-preview.png"
+[[ -s "$inline_preview" ]] || fail 'same-run inline dictation screenshot is missing or empty'
+file "$inline_preview"
+python3 - "$inline_preview" <<'PY'
+from pathlib import Path
+import sys
+
+payload = Path(sys.argv[1]).read_bytes()
+if len(payload) < 1024 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+    raise SystemExit("FAIL: inline dictation evidence is not a non-empty PNG")
+print(f"PASS: validated inline dictation PNG ({len(payload)} bytes)")
+PY
 sha256sum "$evidence_dir/composer-keyboard.png"
 sha256sum "$evidence_dir/composer-post-send.png"
+sha256sum "$inline_preview"
 
 ssh_remote() {
   ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
@@ -213,6 +226,25 @@ dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$by
 [[ "$dictation_capture" == *"$dictation_marker"* ]] \
   || fail 'independent host PTY capture did not contain the edited dictation text'
 printf 'PASS: edited controlled-recognition text reached Docker PTY and host capture as %s\n' "$dictation_marker"
+
+inline_marker="PS2857_INLINE_$SESSION_BASE"
+inline_file_state='absent'
+for attempt in $(seq 1 30); do
+  inline_file_state="$(ssh_remote "if test -f /tmp/$bytes_session-inline-submitted.marker; then printf present; else printf absent; fi")"
+  [[ "$inline_file_state" == present ]] && break
+  sleep 0.2
+done
+[[ "$inline_file_state" == present ]] || fail 'explicit Enter did not execute the inserted inline dictation command'
+inline_hex="$(ssh_remote "cat /tmp/$bytes_session-inline-utf8.hex")"
+[[ "$inline_hex" == '636166c3a920f09fa7aa' ]] \
+  || fail "inline dictation Unicode bytes mismatch: expected 636166c3a920f09fa7aa, got ${inline_hex:-<empty>}"
+inline_submitted_marker="$(ssh_remote "cat /tmp/$bytes_session-inline-submitted.marker | tr -d '\\n'")"
+[[ "$inline_submitted_marker" == "$inline_marker" ]] \
+  || fail "inline dictation marker mismatch: expected $inline_marker, got ${inline_submitted_marker:-<empty>}"
+inline_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$inline_capture" == *"$inline_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the inline dictation command'
+echo "PASS: explicit-stop inline dictation reached the host as exact UTF-8 bytes $inline_hex and executed only after Enter"
 
 insert_marker="PS2857_INSERT_$SESSION_BASE"
 insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"

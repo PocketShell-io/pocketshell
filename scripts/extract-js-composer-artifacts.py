@@ -19,6 +19,7 @@ EXPECTED_NAMES = {
     "composer-keyboard-geometry.json",
     "composer-post-send.png",
     "composer-post-send-terminal.json",
+    "inline-dictation-preview.png",
 }
 REQUIRED_NAMES = EXPECTED_NAMES
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -91,7 +92,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png"):
+    for name in ("composer-keyboard.png", "composer-post-send.png", "inline-dictation-preview.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
@@ -295,12 +296,14 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
-    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send) -> list[str]:
+    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
+                   inline_preview_bytes: bytes = png) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
+            ("inline-dictation-preview.png", inline_preview_bytes),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -313,8 +316,10 @@ def self_test() -> None:
         return lines
 
     lines = make_lines()
-    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-keyboard.png"] == png
-    print("PASS: keyboard and post-send artifacts extract with complete chunks and matching SHA-256")
+    extracted = parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)
+    assert extracted["composer-keyboard.png"] == png
+    assert extracted["inline-dictation-preview.png"] == png
+    print("PASS: keyboard, post-send, and inline dictation screenshots extract with matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -332,6 +337,8 @@ def self_test() -> None:
         ("post-send text source is not the rendered xterm buffer", make_lines(post_send_bytes=post_send.replace(b"xterm-active-buffer-after-render", b"unverified-dom-text"))),
         ("post-send terminal scrolled below the viewport", make_lines(post_send_bytes=clipped_post_send)),
         ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
+        ("inline screenshot is ASCII run-as error text",
+         make_lines(inline_preview_bytes=b"run-as: unknown package: com.pocketshell.app.i2857inline\n")),
     ):
         try:
             parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)
