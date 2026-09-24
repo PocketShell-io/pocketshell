@@ -20,12 +20,16 @@ REQUIRED_NAMES = {
     "composer-post-send.png",
     "composer-post-send-terminal.json",
     "composer-focus-trace.json",
+    "composer-back-trace.json",
+    "composer-back-first.png",
+    "composer-back-second.png",
 }
 OPTIONAL_NAMES = {
     "composer-insert-terminal.json",
     "composer-focus-failure.png",
     "composer-focus-failure.json",
     "composer-focus-failure-logcat.txt",
+    "composer-back-failure.json",
 }
 EXPECTED_NAMES = REQUIRED_NAMES | OPTIONAL_NAMES
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -98,7 +102,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png"):
+    for name in ("composer-keyboard.png", "composer-post-send.png", "composer-back-first.png", "composer-back-second.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
@@ -295,6 +299,85 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("composer focus trace has an invalid post-IME wait observation")
         if focus_failure_screenshot is not None:
             raise ExtractionFailure("packaged composer run contains a failure-state focus screenshot")
+        if "composer-back-failure.json" in decoded:
+            raise ExtractionFailure("packaged composer run contains a failed nested Back trace")
+        try:
+            back_trace = json.loads(decoded["composer-back-trace.json"])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer Back trace JSON is invalid: {error}") from error
+        if not isinstance(back_trace, dict) or back_trace.get("schema") != 1 or back_trace.get("runId") != run_id:
+            raise ExtractionFailure("composer Back trace does not identify this packaged run")
+
+        def back_snapshot(name: str, route: str) -> dict[str, object]:
+            snapshot = back_trace.get(name)
+            if not isinstance(snapshot, dict):
+                raise ExtractionFailure(f"composer Back trace is missing {name}")
+            web_view = snapshot.get("webView")
+            activity = snapshot.get("activity")
+            if not isinstance(web_view, dict) or not isinstance(activity, dict):
+                raise ExtractionFailure(f"composer Back trace {name} is missing WebView or native activity state")
+            if web_view.get("route") != route or web_view.get("backButtonReady") != "true":
+                raise ExtractionFailure(f"composer Back trace {name} has an unexpected route or unready Capacitor listener")
+            if (activity.get("class") != "com.pocketshell.app.MainActivity"
+                    or activity.get("lifecycle") != "RESUMED"
+                    or activity.get("destroyed") is not False
+                    or activity.get("windowHasFocus") is not True):
+                raise ExtractionFailure(f"composer Back trace {name} did not capture the foreground PocketShell activity")
+            if not isinstance(activity.get("imeVisible"), bool) or not isinstance(snapshot.get("imeService"), str):
+                raise ExtractionFailure(f"composer Back trace {name} is missing native IME visibility evidence")
+            if not isinstance(snapshot.get("foregroundActivities"), str) or not isinstance(snapshot.get("windowFocus"), str):
+                raise ExtractionFailure(f"composer Back trace {name} is missing foreground task or focused-window evidence")
+            if "MainActivity" not in snapshot["windowFocus"] or not snapshot["windowFocus"]:
+                raise ExtractionFailure(f"composer Back trace {name} does not identify PocketShell as the focused window")
+            return web_view
+
+        def back_dispatch(name: str, expected_events: int) -> None:
+            dispatch = back_trace.get(name)
+            if not isinstance(dispatch, dict) or dispatch.get("api") != "Instrumentation.sendKeyDownUpSync":
+                raise ExtractionFailure(f"composer Back trace is missing the real Android key dispatch for {name}")
+            try:
+                code = int(dispatch["keyCode"])
+                started = int(dispatch["startedUptimeMs"])
+                returned = int(dispatch["returnedUptimeMs"])
+                process_id = int(dispatch["processId"])
+                observed_minimum = int(dispatch["expectedBackButtonEvents"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"composer Back trace has invalid dispatch timing for {name}") from error
+            if code != 4 or started > returned or process_id < 1 or observed_minimum != expected_events:
+                raise ExtractionFailure(f"composer Back trace has an invalid BACK key event or dispatch window for {name}")
+
+        before_first = back_snapshot("beforeFirstBack", "settings-terminal")
+        after_first = back_snapshot("afterFirstBack", "settings")
+        before_second = back_snapshot("beforeSecondBack", "settings")
+        after_second = back_snapshot("afterSecondBack", "home")
+        snapshots = [
+            back_trace["beforeFirstBack"], back_trace["afterFirstBack"],
+            back_trace["beforeSecondBack"], back_trace["afterSecondBack"],
+        ]
+        process_ids = set()
+        for snapshot in snapshots:
+            activity = snapshot["activity"]
+            try:
+                process_ids.add(int(activity["pid"]))
+                instrumentation_pid = int(snapshot["instrumentationPid"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure("composer Back trace is missing native app process identity") from error
+            if instrumentation_pid != int(activity["pid"]) or activity.get("processName") != activity.get("package"):
+                raise ExtractionFailure("composer Back trace instrumentation and foreground app process identities differ")
+        if len(process_ids) != 1 or min(process_ids) < 1:
+            raise ExtractionFailure("composer Back trace does not preserve one live PocketShell process")
+        try:
+            first_before_events = int(before_first["backButtonEvents"])
+            first_after_events = int(after_first["backButtonEvents"])
+            second_before_events = int(before_second["backButtonEvents"])
+            second_after_events = int(after_second["backButtonEvents"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("composer Back trace has invalid Capacitor event counts") from error
+        if (first_after_events <= first_before_events or second_before_events < first_after_events
+                or second_after_events <= second_before_events or after_second.get("sshPhase") != "live"):
+            raise ExtractionFailure("composer Back trace does not prove both nested routes handled BACK while SSH stayed live")
+        back_dispatch("firstBackDispatch", first_before_events + 1)
+        back_dispatch("secondBackDispatch", second_before_events + 1)
     return decoded
 
 
@@ -353,6 +436,53 @@ def self_test() -> None:
             "after": {"activeElement": {"id": "prompt-draft"}},
         }],
     }).encode()
+    back_failure = json.dumps({"runId": run_id, "firstBackAssertion": "failed"}).encode()
+    def back_snapshot(route: str, events: int, *, ssh_phase: str | None = None) -> dict[str, object]:
+        web_view: dict[str, object] = {
+            "route": route,
+            "backButtonReady": "true",
+            "backButtonEvents": events,
+        }
+        if ssh_phase is not None:
+            web_view["sshPhase"] = ssh_phase
+        return {
+            "webView": web_view,
+            "instrumentationPid": 42,
+            "foregroundActivities": "topResumedActivity=MainActivity",
+            "windowFocus": "mCurrentFocus=Window{com.pocketshell.app/MainActivity}",
+            "imeService": "mInputShown=false",
+            "activity": {
+                "class": "com.pocketshell.app.MainActivity",
+                "package": "com.pocketshell.app",
+                "processName": "com.pocketshell.app",
+                "pid": 42,
+                "lifecycle": "RESUMED",
+                "destroyed": False,
+                "windowHasFocus": True,
+                "imeVisible": False,
+            },
+        }
+
+    def back_dispatch(expected_events: int, started: int) -> dict[str, object]:
+        return {
+            "api": "Instrumentation.sendKeyDownUpSync",
+            "keyCode": 4,
+            "startedUptimeMs": started,
+            "returnedUptimeMs": started + 10,
+            "processId": 42,
+            "expectedBackButtonEvents": expected_events,
+        }
+
+    back_trace = json.dumps({
+        "schema": 1,
+        "runId": run_id,
+        "beforeFirstBack": back_snapshot("settings-terminal", 0),
+        "firstBackDispatch": back_dispatch(1, 100),
+        "afterFirstBack": back_snapshot("settings", 1),
+        "beforeSecondBack": back_snapshot("settings", 1),
+        "secondBackDispatch": back_dispatch(2, 120),
+        "afterSecondBack": back_snapshot("home", 2, ssh_phase="live"),
+    }).encode()
     clipped_post_send_value = json.loads(post_send)
     clipped_post_send_value["terminalViewport"]["top"] = 220.0
     clipped_post_send_value["terminalViewport"]["bottom"] = 300.0
@@ -387,13 +517,17 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
-    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send) -> list[str]:
+    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
+                   back_trace_bytes: bytes = back_trace) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
             ("composer-focus-trace.json", focus_trace),
+            ("composer-back-trace.json", back_trace_bytes),
+            ("composer-back-first.png", png),
+            ("composer-back-second.png", png),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -408,6 +542,18 @@ def self_test() -> None:
     lines = make_lines()
     assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-keyboard.png"] == png
     print("PASS: keyboard and post-send artifacts extract with complete chunks and matching SHA-256")
+    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-back-trace.json"] == back_trace
+    print("PASS: nested Back trace binds real key dispatch, listener events, foreground activity, and screenshots")
+
+    wrong_back_trace = json.loads(back_trace)
+    wrong_back_trace["afterFirstBack"]["webView"]["route"] = "home"
+    try:
+        parse_assets("\n".join(make_lines(back_trace_bytes=json.dumps(wrong_back_trace).encode())),
+                     run_id, expected_terminal_marker=marker)
+    except ExtractionFailure:
+        print("PASS: a first Back that skips its parent route fails closed")
+    else:
+        raise AssertionError("a first Back that skips its parent route unexpectedly passed")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -461,6 +607,21 @@ def self_test() -> None:
     no_geometry = [line for line in lines if "composer-keyboard-geometry.json" not in line]
     assert parse_assets("\n".join(no_geometry), run_id, validate_layout=False)["composer-keyboard.png"] == png
     print("PASS: failure-mode extraction preserves a screenshot without turning invalid geometry green")
+    back_failure_lines = list(lines)
+    encoded = base64.b64encode(back_failure).decode()
+    digest = hashlib.sha256(back_failure).hexdigest()
+    back_failure_lines.extend((
+        f"I/PS2857Asset: BEGIN|{run_id}|composer-back-failure.json|1|{digest}",
+        f"I/PS2857Asset: DATA|{run_id}|composer-back-failure.json|0|{encoded}",
+        f"I/PS2857Asset: END|{run_id}|composer-back-failure.json",
+    ))
+    try:
+        parse_assets("\n".join(back_failure_lines), run_id, expected_terminal_marker=marker)
+    except ExtractionFailure:
+        print("PASS: packaged acceptance rejects a retained failed nested Back trace")
+    else:
+        raise AssertionError("failed nested Back trace unexpectedly passed strict acceptance")
+    assert parse_assets("\n".join(back_failure_lines), run_id, validate_layout=False)["composer-back-failure.json"] == back_failure
 
 
 def main() -> int:
