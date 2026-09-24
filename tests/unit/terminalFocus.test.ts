@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { focusTerminalUnlessComposerFocused } from '../../src/session/terminalFocus';
+import {
+  focusTerminalUnlessComposerFocused,
+  getComposerPointerIntentEpoch,
+  noteComposerPointerIntent,
+} from '../../src/session/terminalFocus';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -26,6 +30,45 @@ describe('terminal focus after attach', () => {
 
     expect(focusTerminal).not.toHaveBeenCalled();
     expect(focusedView).toBe('composer');
+  });
+
+  it('does not steal focus when a composer tap precedes WebView activeElement', async () => {
+    const intentAtStart = getComposerPointerIntentEpoch();
+    const renderUpdate = deferred<void>();
+    let activeElement: 'terminal' | 'composer' = 'terminal';
+    const focusTerminal = vi.fn(() => { activeElement = 'terminal'; });
+    const pendingFocus = focusTerminalUnlessComposerFocused(
+      () => activeElement === 'composer',
+      focusTerminal,
+      () => renderUpdate.promise,
+      () => getComposerPointerIntentEpoch() !== intentAtStart,
+    );
+
+    // Android can deliver pointerdown before Chromium changes activeElement.
+    noteComposerPointerIntent();
+    renderUpdate.resolve(undefined);
+    await pendingFocus;
+
+    expect(focusTerminal).not.toHaveBeenCalled();
+    activeElement = 'composer';
+    expect(activeElement).toBe('composer');
+  });
+
+  it('scopes composer pointer intent to the pending focus request', async () => {
+    // An interaction completed before this attach started must not suppress
+    // the terminal's normal focus for the new request.
+    noteComposerPointerIntent();
+    const intentAtStart = getComposerPointerIntentEpoch();
+    const focusTerminal = vi.fn();
+
+    await focusTerminalUnlessComposerFocused(
+      () => false,
+      focusTerminal,
+      undefined,
+      () => getComposerPointerIntentEpoch() !== intentAtStart,
+    );
+
+    expect(focusTerminal).toHaveBeenCalledOnce();
   });
 
   it('still gives the terminal focus when no composer has claimed it', async () => {

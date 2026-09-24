@@ -1,6 +1,12 @@
 {
   "schema": 1,
   "testFiles": {
+    "tests/unit/appLifecycle.test.ts": {
+      "suite": "native app lifecycle transitions",
+      "tests": [
+        "returns to foreground when it arrives before background scheduling resolves"
+      ]
+    },
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
@@ -55,6 +61,17 @@
         "retains an ambiguous draft and does not replay it after reconnect",
         "treats an acknowledgement that arrives after transport loss as uncertain and stops the paste",
         "keeps one session draft separate from another and clears only after acknowledged delivery"
+      ]
+    },
+    "tests/unit/inlineDictation.test.ts": {
+      "suite": "inline terminal dictation",
+      "tests": [
+        "previews partials, buffers final phrases until explicit Stop, then inserts settings-backed safe text once",
+        "inserts multiple final segments but replaces terminal controls so speech cannot press Enter",
+        "ignores final events that arrive after controller cancellation",
+        "stops a start that resolves after cancellation without forwarding its final text",
+        "reports denied microphone access and does not write any text",
+        "does not turn a partial into a terminal write when Stop receives no final result"
       ]
     },
     "tests/unit/platformInput.test.ts": {
@@ -127,6 +144,8 @@
       "suite": "terminal focus after attach",
       "tests": [
         "keeps a composer focus acquired while attach focus is waiting for its update",
+        "does not steal focus when a composer tap precedes WebView activeElement",
+        "scopes composer pointer intent to the pending focus request",
         "still gives the terminal focus when no composer has claimed it"
       ]
     },

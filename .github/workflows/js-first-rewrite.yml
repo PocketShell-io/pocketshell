@@ -4,7 +4,7 @@ on:
   push:
     branches: [rewrite/js-first-0.6.0]
   pull_request:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [rewrite/js-first-0.6.0, issue-2857-live-dictation]
 
 concurrency:
   group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
@@ -17,7 +17,7 @@ jobs:
   web-and-android:
     name: JS checks and Android debug APK
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - name: Checkout with pinned core source
         uses: actions/checkout@v6
@@ -63,6 +63,11 @@ jobs:
         run: |
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
+
+      - name: Check fail-closed inline-terminal journey CI wiring
+        run: |
+          ruby scripts/check-inline-terminal-journey-wiring.rb --self-test
+          ruby scripts/check-inline-terminal-journey-wiring.rb
 
       - name: Check fail-closed feature journey qualification guard
         run: scripts/check-js-journey-results.py --self-test
@@ -122,6 +127,11 @@ jobs:
           wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
           cat /tmp/js-lifecycle-agents-health.log
 
+      - name: Start isolated Docker agents lane for inline terminal journey
+        id: inline_terminal_agents
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/agents-pool.sh up 2243
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -139,8 +149,12 @@ jobs:
 
       - name: Run packaged JS smoke suite on API 35
         id: packaged-smoke
-        timeout-minutes: 45
+        timeout-minutes: 90
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        env:
+          TMPDIR: ${{ runner.temp }}
+          RUN_INLINE_TERMINAL_JOURNEY: ${{ github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation' }}
+          COMPOSER_SESSION_PREFIX: js2857pr-${{ github.run_id }}-${{ github.run_attempt }}
         with:
           api-level: 35
           target: google_apis
@@ -155,6 +169,12 @@ jobs:
             mkdir -p android/app/build/outputs/js-smoke-results
             cp -a android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml android/app/build/outputs/js-smoke-results/
             scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id "js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
+            if [[ "${RUN_INLINE_TERMINAL_JOURNEY:-false}" == "true" ]]; then
+              scripts/connected-js-composer-docker.sh \
+                --port 2243 \
+                --session-prefix "$COMPOSER_SESSION_PREFIX" \
+                --suffix i2857ci
+            fi
 
       - name: Upload packaged APK and connected smoke results
         if: always()
@@ -167,7 +187,12 @@ jobs:
             android/app/build/outputs/js-smoke-results/TEST-*.xml
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**
+            ${{ runner.temp }}/pocketshell-js2857-js2857pr-${{ github.run_id }}-${{ github.run_attempt }}/**
           if-no-files-found: warn
+
+      - name: Stop isolated Docker agents lane for inline terminal journey
+        if: always() && steps.inline_terminal_agents.conclusion != 'skipped' && github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/agents-pool.sh down 2243
 
   docker-agents-fixture:
     name: Docker agents fixture contract
