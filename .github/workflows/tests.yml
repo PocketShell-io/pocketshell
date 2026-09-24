@@ -20,10 +20,13 @@ on:
       - "chat/**"
   pull_request:
     # The rewrite branch runs js-first-rewrite.yml; this workflow still gates
-    # the existing Gradle graph on main/stable until #2863 replaces it.
+    # the existing Gradle graph on main/stable until #2863 replaces it. The
+    # stacked inline-terminal PR base also runs the packaged composer journey
+    # inside the required Unit tests check.
     branches:
       - main
       - stable
+      - issue-2857-live-dictation
     paths-ignore:
       - "**/*.md"
       - "docs/**"
@@ -609,6 +612,15 @@ jobs:
           scripts/check-unit-gate-wiring.sh
           grep -Fqx '      - run: scripts/test-full-jvm-gate-detached.sh' .github/workflows/tests.yml
 
+      # PR #2896's lifecycle regression lives on a stacked base, so pin its
+      # branch trigger and required-check path just like the test's Docker/API35
+      # runner. This guard catches a future branch-filter, runner, artifact, or
+      # teardown edit before the mounted listener coverage can become optional.
+      - name: Inline terminal Docker journey workflow wiring
+        run: |
+          ruby scripts/check-inline-terminal-journey-wiring.rb --self-test
+          ruby scripts/check-inline-terminal-journey-wiring.rb
+
   # ---------------------------------------------------------------------------
   # Issue #2060 (CI Phase A): CI/harness fixture guards, split out of the `unit`
   # job. They drive the real emulator-journey / nightly / release harness scripts
@@ -995,7 +1007,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [unit, guards-static, guards-ci-harness, guards-test-selection, dex, ui-mock]
     if: ${{ !cancelled() }}
-    timeout-minutes: 5
+    timeout-minutes: 120
     steps:
       - name: Require every unit-lane job to have succeeded
         env:
@@ -1026,6 +1038,114 @@ jobs:
             exit 1
           fi
           echo "All unit-lane jobs succeeded."
+
+      # PR #2896 is stacked on issue-2857-live-dictation instead of main, so
+      # the existing workflow branch filter did not run its mounted inline
+      # dictation lifecycle test. Keep this lane inside the required Unit tests
+      # check: a failed or missing Docker/API35 run must fail the same status
+      # context the repository already requires. The pull_request branch
+      # filter above matches the PR base branch; this condition narrows the
+      # expensive setup to that exact stacked path.
+      - name: Checkout full history for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Node.js 22 for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Activate pnpm for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.5.1 --activate
+
+      - name: Set up JDK 21 for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK platform for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install locked JS dependencies for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: pnpm install --frozen-lockfile
+
+      - name: Check emulator action pin for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/check-emulator-action-pin.sh
+
+      - name: Enable KVM for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Free disk space for API 35 inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/ci-emulator-free-disk.sh
+
+      - name: Repair Android SDK tools for inline terminal journey
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/ci-emulator-repair-sdk-tools.sh
+
+      - name: Start isolated Docker agents lane for inline terminal journey
+        id: inline_terminal_agents
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/agents-pool.sh up 2243
+
+      - name: Run packaged inline terminal journey on API 35
+        if: github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        timeout-minutes: 90
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        env:
+          TMPDIR: ${{ runner.temp }}
+          COMPOSER_SESSION_PREFIX: js2857pr-${{ github.run_id }}-${{ github.run_attempt }}
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          script: |
+            scripts/connected-js-composer-docker.sh \
+              --port 2243 \
+              --session-prefix "$COMPOSER_SESSION_PREFIX" \
+              --suffix i2857ci
+
+      - name: Upload inline terminal journey artifacts
+        if: always() && github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pocketshell-inline-terminal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/outputs/androidTest-results/connected/debug/**
+            ${{ runner.temp }}/pocketshell-js2857-js2857pr-${{ github.run_id }}-${{ github.run_attempt }}/**
+          if-no-files-found: warn
+
+      - name: Stop isolated Docker agents lane for inline terminal journey
+        if: always() && steps.inline_terminal_agents.conclusion != 'skipped' && github.event_name == 'pull_request' && github.base_ref == 'issue-2857-live-dictation'
+        run: scripts/agents-pool.sh down 2243
 
   # The `python` job ("Python utility tests (pocketshell)") was DELETED with its
   # subject (issue #2643): the host CLI moved to PocketShell-io/pocketshell-cli
