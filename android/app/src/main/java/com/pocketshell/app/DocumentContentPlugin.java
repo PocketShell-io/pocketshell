@@ -29,6 +29,7 @@ import java.util.UUID;
 public final class DocumentContentPlugin extends Plugin {
     private static final int MAX_CHUNK_BYTES = 64 * 1024;
     private static final int MAX_OPEN_DOCUMENTS = 64;
+    private static final String EXTRA_SHARE_CONSUMED = "com.pocketshell.app.extra.SHARE_CONSUMED";
     private final Map<String, PickedContent> pickedContent = new LinkedHashMap<>();
 
     @Override
@@ -129,6 +130,7 @@ public final class DocumentContentPlugin extends Plugin {
 
     private void handleShareIntent(Intent intent) {
         if (intent == null) return;
+        if (intent.getBooleanExtra(EXTRA_SHARE_CONSUMED, false)) return;
         String action = intent.getAction();
         if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) return;
 
@@ -151,7 +153,16 @@ public final class DocumentContentPlugin extends Plugin {
 
         // The same Activity intent is visible again after WebView/process recreation.
         // Clearing its share payload after capture prevents duplicate delivery.
-        Intent consumed = new Intent(getActivity(), MainActivity.class);
+        // Keep the launch identity (action/type/component) while stripping the
+        // share payload. ActivityScenario and Android lifecycle observers match
+        // the delivered Activity against that identity, and WebView recreation
+        // must not emit the original payload a second time.
+        Intent consumed = new Intent(intent);
+        consumed.removeExtra(Intent.EXTRA_SUBJECT);
+        consumed.removeExtra(Intent.EXTRA_TEXT);
+        consumed.removeExtra(Intent.EXTRA_STREAM);
+        consumed.setClipData(null);
+        consumed.putExtra(EXTRA_SHARE_CONSUMED, true);
         getActivity().setIntent(consumed);
     }
 

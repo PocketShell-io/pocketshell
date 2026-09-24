@@ -13,6 +13,7 @@ function picked(fileId: string, name: string, bytes: Uint8Array, mimeType = 'tex
 
 function makeDocumentPlugin(files: Record<string, Uint8Array>) {
   let shareListener: ((event: NativeSharedContent) => void) | undefined;
+  const pendingShares: NativeSharedContent[] = [];
   const plugin = {
     pickFiles: vi.fn(async () => ({ cancelled: false, files: [] as NativePickedDocument[] })),
     readPickedFileChunk: vi.fn(async ({ fileId, offset, maxBytes }: { fileId: string; offset: number; maxBytes: number }) => {
@@ -29,9 +30,13 @@ function makeDocumentPlugin(files: Record<string, Uint8Array>) {
     releasePickedFile: vi.fn(async () => ({ released: true })),
     addListener: vi.fn(async (_name: string, listener: (event: NativeSharedContent) => void) => {
       shareListener = listener;
+      for (const event of pendingShares.splice(0)) shareListener(event);
       return { remove: vi.fn(async () => { shareListener = undefined; }) };
     }),
-    emitShare(event: NativeSharedContent) { shareListener?.(event); },
+    emitShare(event: NativeSharedContent) {
+      if (shareListener) shareListener(event);
+      else pendingShares.push(event);
+    },
   };
   return plugin;
 }
@@ -141,6 +146,35 @@ describe('Android platform input adapter', () => {
       failures: [],
     });
     expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'shareFile' });
+  });
+
+  it('delivers a retained share that arrived before the JS listener registered', async () => {
+    const bytes = Uint8Array.from([0, 0xff, 0x41, 0x0a]);
+    const documents = makeDocumentPlugin({ late: bytes });
+    documents.emitShare({
+      requestId: 'late-share-1',
+      action: 'android.intent.action.SEND',
+      mimeType: 'application/octet-stream',
+      text: 'review this file',
+      files: [picked('late', 'bytes.bin', bytes, 'application/octet-stream')],
+    });
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
+      { chunkBytes: 2, maxFileBytes: 64, maxBatchBytes: 64 },
+    );
+    const onShare = vi.fn();
+
+    await service.listenForShares(onShare);
+    await vi.waitFor(() => expect(onShare).toHaveBeenCalledTimes(1));
+
+    expect(onShare.mock.calls[0]?.[0]).toMatchObject({
+      requestId: 'late-share-1',
+      text: 'review this file',
+      attachments: [{ kind: 'bytes', name: 'bytes.bin', data: bytes }],
+      failures: [],
+    });
+    expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'late' });
   });
 
   it('registers before starting speech, filters foreign events, and stops the matching request', async () => {

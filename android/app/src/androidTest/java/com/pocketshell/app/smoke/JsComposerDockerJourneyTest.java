@@ -6,6 +6,11 @@ import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
 import android.graphics.Insets;
+import android.app.Activity;
+import android.app.Instrumentation;
+import android.content.ClipData;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
@@ -19,6 +24,8 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.core.content.FileProvider;
+import androidx.test.espresso.intent.Intents;
 
 import com.pocketshell.app.MainActivity;
 
@@ -40,6 +47,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static androidx.test.espresso.intent.Intents.intending;
+import static androidx.test.espresso.intent.matcher.IntentMatchers.hasAction;
+
 /** Packaged composer journey against the real agents/aplexer Docker fixture. */
 @RunWith(AndroidJUnit4.class)
 public final class JsComposerDockerJourneyTest {
@@ -49,15 +59,61 @@ public final class JsComposerDockerJourneyTest {
     private ActivityScenario<MainActivity> scenario;
     private String bytesSession;
     private String uncertainSession;
+    private File sharedAttachmentFile;
+    private File pickedAttachmentFile;
+    private byte[] sharedAttachmentBytes;
+    private byte[] pickedAttachmentBytes;
+    private String sharedAttachmentText;
+    private String sharedAttachmentSubject;
+    private String sharedAttachmentMarker;
+    private String sharedAttachmentMarkerPath;
 
     @Before
-    public void launchPackagedShell() {
-        scenario = ActivityScenario.launch(MainActivity.class);
+    public void launchPackagedShell() throws Exception {
+        String runId = InstrumentationRegistry.getArguments().getString("sshSessionName", "composer-share")
+                .replaceAll("[^A-Za-z0-9_-]", "-");
+        sharedAttachmentBytes = new byte[] {0, (byte) 0xff, 0x41, 0x0a, (byte) 0xc3, (byte) 0xa9};
+        sharedAttachmentFile = new File(InstrumentationRegistry.getInstrumentation().getTargetContext().getCacheDir(),
+                "ps2857-shared-" + runId + ".bin");
+        try (FileOutputStream output = new FileOutputStream(sharedAttachmentFile)) {
+            output.write(sharedAttachmentBytes);
+        }
+        pickedAttachmentBytes = new byte[] {(byte) 0xfe, 0x50, 0x53, 0x0a, (byte) 0xc3, (byte) 0xa9};
+        pickedAttachmentFile = new File(InstrumentationRegistry.getInstrumentation().getTargetContext().getCacheDir(),
+                "ps2857-picked-" + runId + ".bin");
+        try (FileOutputStream output = new FileOutputStream(pickedAttachmentFile)) {
+            output.write(pickedAttachmentBytes);
+        }
+        sharedAttachmentSubject = "Shared attachment " + runId;
+        sharedAttachmentMarker = "PS2857_SHARE_EXEC_" + runId;
+        sharedAttachmentMarkerPath = "/tmp/" + runId + "-share-executed.marker";
+        sharedAttachmentText = "printf '%s' '" + sharedAttachmentMarker + "' > " + sharedAttachmentMarkerPath;
+        Uri sharedUri = FileProvider.getUriForFile(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(),
+                InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName() + ".fileprovider",
+                sharedAttachmentFile);
+        Intent shareIntent = new Intent(Intent.ACTION_SEND)
+                .setClass(InstrumentationRegistry.getInstrumentation().getTargetContext(), MainActivity.class)
+                .setType("application/octet-stream")
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                .putExtra(Intent.EXTRA_SUBJECT, sharedAttachmentSubject)
+                .putExtra(Intent.EXTRA_TEXT, sharedAttachmentText)
+                .putExtra(Intent.EXTRA_STREAM, sharedUri);
+        shareIntent.setClipData(ClipData.newUri(
+                InstrumentationRegistry.getInstrumentation().getTargetContext().getContentResolver(),
+                "shared bytes", sharedUri));
+        scenario = ActivityScenario.launch(shareIntent);
     }
 
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        if (sharedAttachmentFile != null && sharedAttachmentFile.exists()) {
+            assertTrue("the packaged content URI fixture should be removed", sharedAttachmentFile.delete());
+        }
+        if (pickedAttachmentFile != null && pickedAttachmentFile.exists()) {
+            assertTrue("the packaged picker fixture should be removed", pickedAttachmentFile.delete());
+        }
     }
 
     @Test
@@ -91,6 +147,7 @@ public final class JsComposerDockerJourneyTest {
         createSession(bytesSession);
         createSession(uncertainSession);
         attachSession(bytesSession);
+        exerciseIncomingShareAtLiveComposer(nameBase, artifactRunId);
         verifyNestedAndroidBackKeepsLiveSession();
 
         exerciseComposerDictation(nameBase, bytesSession, artifactRunId);
@@ -140,7 +197,7 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Tap Discard again')");
         tapComposerAction("[data-testid=composer-discard]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
-                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Draft cleared')");
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Draft and attachments cleared')");
 
         attachSession(uncertainSession);
         String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
@@ -148,7 +205,14 @@ public final class JsComposerDockerJourneyTest {
                 + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
         setComposerDraft(uncertainCommand);
         armDisconnectAfterFirstAcknowledgement();
-        tapComposerAction(".composer-shared-controls .send");
+        evalRaw("(() => {const button=document.querySelector('.composer-shared-controls .send');"
+                + "window.__ps2857UncertainSendClick=null;button.addEventListener('click',event=>{"
+                + "window.__ps2857UncertainSendClick={trusted:event.isTrusted,target:event.target?.tagName??null};});return true;})()");
+        // The keyboard-up Send path was exercised and measured earlier. After
+        // reconnect, exercise the visible keyboard-down Send control directly;
+        // this path does not depend on reopening the IME first.
+        tapDomCenter(".composer-shared-controls .send");
+        awaitJsTrue("window.__ps2857UncertainSendClick?.trusted === true", 3_000);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'", 30_000);
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
 
@@ -248,6 +312,175 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
         awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer]')");
         awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
+    }
+
+    private void exerciseIncomingShareAtLiveComposer(String nameBase, String artifactRunId) throws Exception {
+        String expectedDraft = sharedAttachmentSubject + "\n" + sharedAttachmentText;
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(expectedDraft));
+        awaitJsTrue("document.querySelector('[data-testid=composer-attachments] [data-attachment-state=staged]') !== null");
+        String stagedPath = evalString("document.querySelector('[data-testid=composer-attachments] [data-attachment-state=staged]')?.dataset.attachmentPath ?? ''");
+        assertTrue("the shared content URI must be staged in the desktop-compatible attachment tree",
+                stagedPath.contains("/.pocketshell/attachments/") && stagedPath.endsWith(".bin"));
+
+        String expectedBase64 = Base64.getEncoder().encodeToString(sharedAttachmentBytes);
+        String readRequestId = "ps2857-share-read-" + nameBase.replaceAll("[^A-Za-z0-9_-]", "-");
+        evalRaw("(() => {const shell=document.querySelector('.app-shell'); window.__ps2857SharedBytes=null;"
+                + "window.Capacitor.Plugins.SshCapability.sftpRead({requestId:" + JSONObject.quote(readRequestId)
+                + ",connectionId:shell.dataset.sshConnectionId,generationId:shell.dataset.sshGenerationId,path:"
+                + JSONObject.quote(stagedPath) + ",maxBytes:" + sharedAttachmentBytes.length
+                + "}).then((result)=>window.__ps2857SharedBytes=result.dataBase64);return true;})()");
+        awaitJsTrue("window.__ps2857SharedBytes === " + JSONObject.quote(expectedBase64));
+
+        String beforeRequestId = "ps2857-share-before-" + nameBase.replaceAll("[^A-Za-z0-9_-]", "-");
+        evalRaw("(() => {const shell=document.querySelector('.app-shell'); window.__ps2857ShareMarkerBefore=null;"
+                + "window.Capacitor.Plugins.SshCapability.exec({requestId:" + JSONObject.quote(beforeRequestId)
+                + ",connectionId:shell.dataset.sshConnectionId,generationId:shell.dataset.sshGenerationId,"
+                + "command:" + JSONObject.quote("if test -e '" + sharedAttachmentMarkerPath
+                + "'; then printf present; else printf absent; fi")
+                + ",timeoutMs:5000}).then((result)=>window.__ps2857ShareMarkerBefore=result.stdout);return true;})()");
+        awaitJsTrue("window.__ps2857ShareMarkerBefore === 'absent'");
+        assertEquals("incoming shared text must remain a draft until explicit Send", expectedDraft,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+
+        tapComposerAction(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+        String afterRequestId = "ps2857-share-after-" + nameBase.replaceAll("[^A-Za-z0-9_-]", "-");
+        evalRaw("(() => {const shell=document.querySelector('.app-shell'); window.__ps2857ShareMarkerAfter=null;"
+                + "window.Capacitor.Plugins.SshCapability.exec({requestId:" + JSONObject.quote(afterRequestId)
+                + ",connectionId:shell.dataset.sshConnectionId,generationId:shell.dataset.sshGenerationId,"
+                + "command:" + JSONObject.quote("cat '" + sharedAttachmentMarkerPath + "'")
+                + ",timeoutMs:5000}).then((result)=>window.__ps2857ShareMarkerAfter=result.stdout);return true;})()");
+        awaitJsTrue("window.__ps2857ShareMarkerAfter === " + JSONObject.quote(sharedAttachmentMarker));
+        Log.i("PS2857Share", "RUN|" + nameBase + "|staged=" + stagedPath + "|bytes=" + expectedBase64
+                + "|before=absent|after=" + sharedAttachmentMarker);
+        exercisePickedContentThroughComposer(nameBase, artifactRunId);
+    }
+
+    private void exercisePickedContentThroughComposer(String nameBase, String artifactRunId) throws Exception {
+        String pickerMarker = "Review picker attachment " + nameBase;
+        setComposerDraft(pickerMarker);
+        Uri pickedUri = FileProvider.getUriForFile(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(),
+                InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName() + ".fileprovider",
+                pickedAttachmentFile);
+        Intent pickerResult = new Intent().setData(pickedUri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        Intents.init();
+        try {
+            intending(hasAction(Intent.ACTION_OPEN_DOCUMENT)).respondWith(
+                    new Instrumentation.ActivityResult(Activity.RESULT_OK, pickerResult));
+            String attachSelector = "[data-testid=prompt-composer] [aria-label='Attach to prompt']";
+            JSONObject attachState = evalJson("(() => {const button=document.querySelector("
+                    + JSONObject.quote(attachSelector) + ");const rect=button.getBoundingClientRect();"
+                    + "const hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);"
+                    + "window.__ps2857AttachClickCount=0;window.__ps2857AttachClickTrusted=false;"
+                    + "button.addEventListener('click',event=>{window.__ps2857AttachClickCount++;window.__ps2857AttachClickTrusted=event.isTrusted;});"
+                    + "return JSON.stringify({disabled:button.disabled,hitButton:hit?.closest('button')===button,"
+                    + "hitTag:hit?.tagName,hitClass:typeof hit?.className==='string'?hit.className:'',"
+                    + "hitButtonLabel:hit?.closest('button')?.getAttribute('aria-label')||'',"
+                    + "rect:{left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom}});})()");
+            Log.i("PS2857Picker", "ATTACH_TARGET|" + attachState);
+            assertTrue("the live composer attach button must be enabled", !attachState.optBoolean("disabled"));
+            assertTrue("the live composer attach button must own its visible center point: " + attachState,
+                    attachState.optBoolean("hitButton"));
+            tapComposerAction(attachSelector);
+            awaitJsTrue("window.__ps2857AttachClickCount === 1 && window.__ps2857AttachClickTrusted === true", 3_000);
+            Log.i("PS2857Picker", "ATTACH_TAP|" + attachState + "|trustedClick=true");
+            awaitJsTrue("document.querySelector('[data-testid=composer-attachments] [data-attachment-state=staged]') !== null");
+            awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                    + JSONObject.quote(pickerMarker));
+            String stagedPath = evalString("document.querySelector('[data-testid=composer-attachments] [data-attachment-state=staged]')?.dataset.attachmentPath ?? ''");
+            String expectedBase64 = Base64.getEncoder().encodeToString(pickedAttachmentBytes);
+            String readRequestId = "ps2857-picker-read-" + nameBase.replaceAll("[^A-Za-z0-9_-]", "-");
+            evalRaw("(() => {const shell=document.querySelector('.app-shell'); window.__ps2857PickedBytes=null;"
+                    + "window.Capacitor.Plugins.SshCapability.sftpRead({requestId:" + JSONObject.quote(readRequestId)
+                    + ",connectionId:shell.dataset.sshConnectionId,generationId:shell.dataset.sshGenerationId,path:"
+                    + JSONObject.quote(stagedPath) + ",maxBytes:" + pickedAttachmentBytes.length
+                    + "}).then((result)=>window.__ps2857PickedBytes=result.dataBase64);return true;})()");
+            awaitJsTrue("window.__ps2857PickedBytes === " + JSONObject.quote(expectedBase64));
+            assertTrue("picked content must use the same remote attachment tree as shares",
+                    stagedPath.contains("/.pocketshell/attachments/") && stagedPath.endsWith(".bin"));
+            Log.i("PS2857Picker", "RUN|" + nameBase + "|uri=" + pickedUri + "|staged=" + stagedPath
+                    + "|bytes=" + expectedBase64 + "|draftRetained=true");
+            savePickerAttachedEvidence(artifactRunId, pickerMarker, stagedPath);
+            tapComposerAction("[data-testid=composer-discard]");
+            awaitJsTrue("document.querySelector('[data-testid=composer-discard]')?.textContent?.trim() === 'Discard?'"
+                    + " && document.querySelector('[data-testid=composer-status]')?.textContent?.includes('Tap Discard again') === true");
+            tapVisibleDiscardAndAssertTrustedTouch("[data-testid=composer-discard]");
+            awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                    + " && document.querySelector('[data-testid=composer-attachments]') === null");
+        } finally {
+            Intents.release();
+        }
+    }
+
+    private void savePickerAttachedEvidence(String runId, String expectedDraft, String expectedPath) throws Exception {
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
+        SystemClock.sleep(350);
+        assertTrue("the Android IME must stay open while capturing the picked attachment in the composer",
+                isImeVisible());
+
+        JSONObject measured = new JSONObject(evalString("(() => {"
+                + "const shell=document.querySelector('.app-shell');"
+                + "const rect=(node)=>{if(!node)return null;const r=node.getBoundingClientRect();"
+                + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const staged=document.querySelector('[data-testid=composer-attachments] [data-attachment-state=staged]');"
+                + "return JSON.stringify({stage:'after-picker-before-discard',keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "draftValue:document.querySelector('[data-testid=prompt-draft]')?.value??null,"
+                + "statusText:document.querySelector('[data-testid=composer-status]')?.textContent??null,"
+                + "attachment:{state:staged?.dataset.attachmentState??null,path:staged?.dataset.attachmentPath??null},"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight},"
+                + "rects:{terminal:rect(document.querySelector('.terminal-viewport')),"
+                + "draft:rect(document.querySelector('[data-testid=prompt-draft]')),"
+                + "status:rect(document.querySelector('[data-testid=composer-status]')),"
+                + "actions:rect(document.querySelector('[data-testid=composer-actions]')),"
+                + "attach:rect(document.querySelector(\"[data-testid=prompt-composer] [aria-label='Attach to prompt']\")),"
+                + "discard:rect(document.querySelector('[data-testid=composer-discard]')),"
+                + "insert:rect(document.querySelector('[data-testid=composer-insert]')),"
+                + "send:rect(document.querySelector('.composer-shared-controls .send'))}});})()"));
+        measured.put("androidImeVisible", isImeVisible());
+        assertTrue("same-run picker evidence must retain the exact draft and staged path: " + measured,
+                expectedDraft.equals(measured.optString("draftValue"))
+                        && "staged".equals(measured.getJSONObject("attachment").optString("state"))
+                        && expectedPath.equals(measured.getJSONObject("attachment").optString("path")));
+        assertTrue("same-run picker evidence must show the Android IME and composer keyboard mode: " + measured,
+                measured.optBoolean("androidImeVisible") && measured.optBoolean("keyboardVisible")
+                        && measured.optBoolean("keyboardComposerMode"));
+
+        byte[] geometryBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
+        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+        AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            try {
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot == null) return;
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                byte[] png = encoded.toByteArray();
+                File destination = new File(activity.getFilesDir(), "composer-picker-attached.png");
+                if (compressed && png.length >= 1024) {
+                    try (FileOutputStream output = new FileOutputStream(destination)) {
+                        output.write(png);
+                    }
+                    screenshotArtifact.set(png);
+                    saved.set(destination.length() >= 1024);
+                }
+                screenshot.recycle();
+                try (FileOutputStream output = new FileOutputStream(
+                        new File(activity.getFilesDir(), "composer-picker-attached-geometry.json"))) {
+                    output.write(geometryBytes);
+                }
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        assertTrue("same-run screenshot of the staged picker attachment must be captured before discard", saved.get());
+        emitArtifact(runId, "composer-picker-attached.png", screenshotArtifact.get());
+        emitArtifact(runId, "composer-picker-attached-geometry.json", geometryBytes);
     }
 
     private void setComposerDraft(String value) throws Exception {
@@ -562,6 +795,26 @@ public final class JsComposerDockerJourneyTest {
         ensureImeVisible();
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
         tapDomCenter(selector);
+    }
+
+    private void tapVisibleDiscardAndAssertTrustedTouch(String selector) throws Exception {
+        JSONObject point = evalJson("(() => {const button=document.querySelector(" + JSONObject.quote(selector)
+                + ");if(!button)return JSON.stringify({missing:true});const rect=button.getBoundingClientRect();"
+                + "const hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);"
+                + "window.__ps2857DiscardClickCount=0;window.__ps2857DiscardClickTrusted=false;"
+                + "button.addEventListener('click',event=>{window.__ps2857DiscardClickCount++;"
+                + "window.__ps2857DiscardClickTrusted=event.isTrusted;});"
+                + "return JSON.stringify({disabled:button.disabled,hitButton:hit?.closest('button')===button,"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
+                + "keyboardComposerMode:document.querySelector('.app-shell')?.dataset.keyboardComposerMode==='true',"
+                + "rect:{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right}});})()");
+        assertTrue("second Discard target must exist", !point.optBoolean("missing"));
+        assertTrue("second Discard target must be enabled", !point.optBoolean("disabled"));
+        assertTrue("second Discard target must own its visible center point: " + point,
+                point.optBoolean("hitButton"));
+        tapDomCenter(selector);
+        awaitJsTrue("window.__ps2857DiscardClickCount === 1 && window.__ps2857DiscardClickTrusted === true", 3_000);
+        Log.i("PS2857Picker", "DISCARD_TAP|" + point + "|trustedClick=true");
     }
 
     private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {

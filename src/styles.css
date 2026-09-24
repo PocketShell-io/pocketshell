@@ -290,7 +290,15 @@ button { color: inherit; }
 .composer-discard:disabled, .composer-insert:disabled { opacity: 0.5; }
 .composer-insert:not(:disabled):active { border-color: var(--accent); color: var(--accent); }
 .composer-shared-controls { flex: 0 0 auto; margin: 0; border: 0; padding: 0; }
-.composer-shared-controls .pill, .composer-shared-controls .spacer, .composer-shared-controls .kbd-hint { display: none; }
+.composer-shared-controls .pill { display: flex; }
+.composer-shared-controls .pill .tool:not([aria-label="Attach to prompt"]) { display: none; }
+.composer-shared-controls .pill .tool[aria-label="Attach to prompt"] {
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+}
+.composer-shared-controls .discard { display: none; }
+.composer-shared-controls .spacer, .composer-shared-controls .kbd-hint { display: none; }
 .composer-shared-controls .send { min-height: 48px; height: 48px; }
 .preview-input { width: 100%; min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 0 12px; color: var(--fg); font-size: 16px; outline: none; }
 .preview-input::placeholder { color: var(--fg-muted); }

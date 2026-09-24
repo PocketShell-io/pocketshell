@@ -57,6 +57,14 @@
         "keeps one session draft separate from another and clears only after acknowledged delivery"
       ]
     },
+    "tests/unit/composerAttachments.test.ts": {
+      "suite": "JS composer attachment state",
+      "tests": [
+        "appends staged paths only to the outgoing payload and keeps attachment-only sends valid",
+        "keeps share bytes and text per target, retains failed uploads, and clears only the acknowledged revision",
+        "creates unique host-compatible stage prefixes for picks in the same second"
+      ]
+    },
     "tests/unit/inlineDictation.test.ts": {
       "suite": "inline terminal dictation",
       "tests": [
@@ -75,7 +83,8 @@
         "preserves valid files when one selection is over the shared native transfer limit",
         "rejects mismatched chunk identity and still releases the native document reference",
         "materializes incoming shared text and files before delivering the share callback",
-        "registers before starting speech, filters foreign events, and stops the matching request"
+        "registers before starting speech, filters foreign events, and stops the matching request",
+        "delivers a retained share that arrived before the JS listener registered"
       ]
     },
     "tests/unit/speechRecognition.test.ts": {
@@ -98,7 +107,8 @@
       "tests": [
         "stops a pending start once when the mounted composer backgrounds",
         "starts with saved Voice settings, appends recognition to the draft, and leaves it editable after stop",
-        "stops active recognition on background and retains its latest partial in the session draft"
+        "stops active recognition on background and retains its latest partial in the session draft",
+        "stages picker bytes without sending them until the user explicitly delivers the draft"
       ]
     },
     "tests/unit/diagnostics.test.ts": {
@@ -159,6 +169,7 @@
         "does not offer binary magic content to the text editor",
         "uploads bytes through a resolved path and prevents implicit overwrite",
         "stages sanitized attachment names, preserves partial success, and returns retention candidates",
+        "creates the desktop-compatible hidden attachment tree and writes exact bytes",
         "does not return completed uploads as attachments after cancellation",
         "leaves the remote tree untouched for an empty attachment batch",
         "rejects files above the native transfer limit before issuing a write",

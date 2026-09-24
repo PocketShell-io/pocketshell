@@ -384,10 +384,12 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
 
     expect(staged.directory).toBe('/home/alex/project/uploads/host-a-session');
     expect(staged.decision).toMatchObject({ kind: 'partial', failedCount: 1, attachments: [{
+      sourceIndex: 0,
       filename: '20260102-030405-01-plan_for_review.md',
       sourceName: '../plan for review?.md',
       sizeBytes: valid.length,
     }] });
+    expect(staged.failures).toEqual([expect.objectContaining({ sourceIndex: 1, sourceName: 'too-large.bin' })]);
     expect(mock.files.has(`${staged.directory}/20260102-030405-02-too-large.bin`)).toBe(false);
 
     mock.files.set(`${staged.directory}/old.txt`, { bytes: valid, modifiedEpochMs: 1_000 });
@@ -399,6 +401,27 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
     });
     expect(plan.pathsToDelete).toContain(`${staged.directory}/old.txt`);
     expect(plan.pathsToDelete).not.toContain(`${staged.directory}/new.txt`);
+  });
+
+  it('creates the desktop-compatible hidden attachment tree and writes exact bytes', async () => {
+    const mock = createMockSftp();
+    const service = serviceFor(mock, { rootDirectory: '/home/alex' });
+    const bytes = Uint8Array.from([0, 0xff, 0x41, 0x0a]);
+
+    const staged = await service.stageAttachments({
+      directory: '/home/alex/.pocketshell/attachments',
+      scopeKey: 'project-main',
+      timestamp: '20260924-101112',
+      attachments: [{ name: 'shared bytes.bin', bytes }],
+    });
+
+    expect(mock.directories).toContain('/home/alex/.pocketshell');
+    expect(mock.directories).toContain('/home/alex/.pocketshell/attachments');
+    expect(staged.directory).toBe('/home/alex/.pocketshell/attachments/project-main');
+    expect(staged.decision.kind).toBe('complete');
+    const attachment = staged.decision.kind === 'complete' ? staged.decision.attachments[0] : undefined;
+    expect(attachment).toMatchObject({ sourceIndex: 0, sourceName: 'shared bytes.bin', sizeBytes: bytes.length });
+    expect(mock.files.get(attachment!.path)?.bytes).toEqual(bytes);
   });
 
   it('does not return completed uploads as attachments after cancellation', async () => {
