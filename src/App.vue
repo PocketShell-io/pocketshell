@@ -31,10 +31,15 @@ import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
-import { focusTerminalUnlessComposerFocused } from './session/terminalFocus';
+import {
+  focusTerminalUnlessComposerFocused,
+  getComposerPointerIntentEpoch,
+  noteComposerPointerIntent,
+} from './session/terminalFocus';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import TerminalViewport from './components/TerminalViewport.vue';
+import TerminalDictationBar from './components/TerminalDictationBar.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import SettingsScreen from './components/SettingsScreen.vue';
@@ -171,6 +176,12 @@ function recordFocusAfterBlur() {
     promptComposerHasFocus.value = document.activeElement instanceof Element
       && isPromptComposerElement(document.activeElement);
   });
+}
+
+function recordComposerPointerDown(event: PointerEvent) {
+  if (event.target instanceof Element && isPromptComposerElement(event.target)) {
+    noteComposerPointerIntent();
+  }
 }
 
 function readStoredPin(hostId: string): HostKeyTrustPin | null {
@@ -370,6 +381,7 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
+  const composerPointerIntentAtStart = getComposerPointerIntentEpoch();
   terminalAttachEpoch += 1;
   terminal.value?.clear();
   const result = await active.switchSession(session).catch((error: unknown) => {
@@ -392,6 +404,8 @@ async function attachSession(session: SessionRow) {
       () => document.activeElement instanceof Element
         && document.activeElement.closest('[data-testid="prompt-composer"]') !== null,
       () => terminal.value?.focus(),
+      undefined,
+      () => getComposerPointerIntentEpoch() !== composerPointerIntentAtStart,
     );
   }
 }
@@ -427,6 +441,38 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   const result = await active.writeTerminalBytes(bytes);
   if (result.ok) terminal.value?.scrollToBottom();
   return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
+async function insertInlineDictationText(targetKey: string, text: string): Promise<boolean> {
+  const active = controller;
+  if (!active || !isLive.value || targetKey !== composerTargetKey.value) return false;
+  const attachEpoch = terminalAttachEpoch;
+  terminalInputPending.value += 1;
+  try {
+    // Inline dictation inserts only after the user taps Stop. The controller
+    // strips terminal control bytes, so this write cannot submit the line.
+    const result = await active.writeTerminalBytes(new TextEncoder().encode(text));
+    if (attachEpoch !== terminalAttachEpoch || active !== controller) return false;
+    if (!result.ok) {
+      terminalInputFailureCount.value += 1;
+      recordOperationFailure('insert-inline-dictation');
+      connectionMessage.value = result.message;
+      return false;
+    }
+    terminalInputAckCount.value += 1;
+    terminal.value?.focus();
+    terminal.value?.scrollToBottom();
+    return true;
+  } catch (error) {
+    if (attachEpoch === terminalAttachEpoch) {
+      terminalInputFailureCount.value += 1;
+      recordFailure('ssh-bridge-failed', 'insert-inline-dictation', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+    }
+    return false;
+  } finally {
+    terminalInputPending.value -= 1;
+  }
 }
 
 async function resizeTerminal(size: { cols: number; rows: number }) {
@@ -675,6 +721,7 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    @pointerdown.capture="recordComposerPointerDown"
     :data-migration-status="installedDataMigrationState.status"
   >
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
@@ -966,6 +1013,14 @@ onBeforeUnmount(() => {
           :font-size="appSettings.terminalFontSize"
           @input="sendTerminalInput"
           @resize="resizeTerminal"
+        />
+        <TerminalDictationBar
+          v-if="Capacitor.getPlatform() === 'android' && !keyboardComposerMode"
+          :enabled="isLive && homeSurface === 'live'"
+          :target-key="composerTargetKey"
+          :language-tag="appSettings.dictationLanguageTag"
+          :silence-window-ms="appSettings.dictationSilenceWindowMs"
+          :insert-text="insertInlineDictationText"
         />
         <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
         </section>
