@@ -19,9 +19,12 @@ const HOLD_THRESHOLD_MS = 500;
 const props = withDefaults(defineProps<{
   /** Only a live PTY accepts key bytes. Reconnecting and attached states stay disabled. */
   enabled: boolean;
+  /** Reserve a compact row between the live terminal and Android IME. */
+  keyboardVisible?: boolean;
   /** Override only for deterministic tests; production uses Android's 500 ms long-press feel. */
   holdThresholdMs?: number;
 }>(), {
+  keyboardVisible: false,
   holdThresholdMs: HOLD_THRESHOLD_MS,
 });
 
@@ -30,6 +33,8 @@ const emit = defineEmits<{
   send: [bytes: Uint8Array, key: TerminalKeyId];
   /** Lets the app's Android Back handler dismiss this non-modal floating palette. */
   paletteChange: [open: boolean];
+  /** Re-focuses the prompt after a physical hotkey tap so Android keeps the IME open. */
+  keepKeyboardOpen: [];
 }>();
 
 const slot = ref<HTMLDivElement>();
@@ -46,6 +51,7 @@ const paletteStyle = computed(() => state.dragPosition == null
   : { left: `${state.dragPosition.left}px`, top: `${state.dragPosition.top}px`, right: 'auto', bottom: 'auto' });
 const sendKey = actions.sendKey;
 let sizeObserver: ResizeObserver | undefined;
+let keyboardPointer: { id: number; button: Element } | null = null;
 
 function closePalette(): void { actions.closePalette(); }
 function showCtrlPage(): void { actions.showCtrlPage(); }
@@ -77,6 +83,32 @@ function cancelControlPointer(event: PointerEvent): void {
 
 function onLauncherClick(): void {
   actions.togglePalette();
+}
+
+function preserveKeyboardFocus(event: PointerEvent): void {
+  // Buttons above Android's IME must not take focus away from the composer:
+  // WebView otherwise blurs the input and dismisses the native keyboard. Keep
+  // the pointer identity so click can restore focus after the hotkey action.
+  keyboardPointer = null;
+  const target = event.target as Element | null;
+  const button = target?.closest?.('button');
+  if (props.keyboardVisible && button) {
+    keyboardPointer = { id: event.pointerId, button };
+    event.preventDefault();
+  }
+}
+
+function cancelKeyboardPointer(event: PointerEvent): void {
+  if (keyboardPointer?.id === event.pointerId) keyboardPointer = null;
+}
+
+function restoreKeyboardAfterPointerClick(event: MouseEvent): void {
+  const pointer = keyboardPointer;
+  keyboardPointer = null;
+  const target = event.target as Element | null;
+  if (event.detail > 0 && pointer && target?.closest?.('button') === pointer.button) {
+    emit('keepKeyboardOpen');
+  }
 }
 
 function showMainPage(): void {
@@ -156,7 +188,10 @@ onMounted(() => {
   if (palette.value) sizeObserver.observe(palette.value);
 });
 
-onBeforeUnmount(() => sizeObserver?.disconnect());
+onBeforeUnmount(() => {
+  sizeObserver?.disconnect();
+  actions.closePalette();
+});
 
 defineExpose({
   closePalette: actions.closePalette,
@@ -172,7 +207,11 @@ defineExpose({
     class="mobile-hotkeys"
     data-testid="mobile-hotkeys"
     :data-enabled="enabled"
+    :data-keyboard-visible="keyboardVisible"
     :data-palette-open="paletteOpen"
+    @pointerdown="preserveKeyboardFocus"
+    @pointercancel="cancelKeyboardPointer"
+    @click="restoreKeyboardAfterPointerClick"
   >
     <div class="mobile-hotkeys__bar" role="toolbar" aria-label="Terminal navigation keys">
       <div class="mobile-hotkeys__navigation">
@@ -413,13 +452,25 @@ defineExpose({
 .mobile-hotkeys__header-button :deep(svg) { width: 18px; height: 18px; }
 .mobile-hotkeys__close { color: var(--fg-secondary); }
 
-.mobile-hotkeys__content { min-height: 0; overflow: auto; padding: var(--sp-2); }
+.mobile-hotkeys__content {
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sp-2);
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
 .mobile-hotkeys__section + .mobile-hotkeys__section { margin-top: var(--sp-2); }
 .mobile-hotkeys__section h3 { margin: 0 0 var(--sp-1); color: var(--fg-muted); font-size: var(--fs-100); font-weight: var(--fw-semibold); letter-spacing: 0.06em; }
 .mobile-hotkeys__main-keys { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
 .mobile-hotkeys__key--palette { min-width: 52px; flex-direction: column; gap: 1px; padding: 3px var(--sp-2); font: 500 12px/1.1 var(--font-mono); }
 .mobile-hotkeys__key--palette small { color: var(--fg-muted); font: 9px/1 var(--font-ui); }
-.mobile-hotkeys__key--holdable { min-width: 58px; }
+.mobile-hotkeys__key--holdable {
+  min-width: 58px;
+  /* Keep Android's long-press selection/callout from cancelling pointerup. */
+  touch-action: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
 .mobile-hotkeys__key--ctrl-page { min-width: 88px; padding-inline: var(--sp-2); font-size: var(--fs-200); font-weight: var(--fw-medium); }
 
 .mobile-hotkeys__content--ctrl { display: grid; gap: var(--sp-1); padding-block: var(--sp-3); }
