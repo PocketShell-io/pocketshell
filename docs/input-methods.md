@@ -69,7 +69,7 @@ Behaviours:
 
 For short shell commands when the prompt composer is overkill. The mic sits in the terminal controls (the composer has its own mic). Tap to start; partials appear only in the status preview and never reach the PTY. Tap Stop to insert validated final text once at the terminal cursor. Enter remains a separate action, and no final transcript means no insertion. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
 
-Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s).
+Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s under Settings → Advanced). A pause can end an Android recognition segment; PocketShell keeps dictation open until you tap Stop.
 
 Used for: `git status`, file names mid-command, dictating an `ssh` target.
 

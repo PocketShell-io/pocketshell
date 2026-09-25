@@ -24,10 +24,10 @@ export interface NativeSpeechCapabilities {
 
 export interface StartDictationOptions {
   requestId: string;
-  /** BCP-47 language hint from Voice settings, or `auto` to omit the recognizer hint. */
+  /** BCP-47 language hint from Voice settings; omit it for device auto-detect. */
   languageTag?: string;
-  /** Android recognizer endpointer silence window, in milliseconds. */
   silenceWindowMs?: number;
+  testMode?: boolean;
 }
 
 export const DEFAULT_SPEECH_SILENCE_WINDOW_MS = 4_000;
@@ -36,13 +36,18 @@ export const MAX_SPEECH_SILENCE_WINDOW_MS = 60_000;
 
 export type SpeechRecognitionPlugin = Plugin & {
   getCapabilities(): Promise<NativeSpeechCapabilities>;
-  startDictation(options: StartDictationOptions): Promise<{
+  startDictation(options: StartDictationOptions): Promise<{ requestId: string; started: boolean }>;
+  stopDictation(options: { requestId: string }): Promise<{ requestId: string; stopped: boolean }>;
+  cancelDictation(options: { requestId: string }): Promise<{ requestId: string; cancelled: boolean }>;
+  injectTestDictationEvent(options: {
+    requestId?: string;
+    type: 'partial' | 'processing' | 'result' | 'ready' | 'listening' | 'finish';
+    text?: string;
+  }): Promise<{
     requestId: string;
-    started: boolean;
-  }>;
-  stopDictation(options: { requestId: string }): Promise<{
-    requestId: string;
-    stopped: boolean;
+    emitted: boolean;
+    languageTag?: string;
+    silenceWindowMs?: number;
   }>;
   addListener(
     eventName: 'dictationEvent',
@@ -67,18 +72,18 @@ export function sanitizeLanguageTag(value: unknown): string | undefined {
   return languageTag;
 }
 
-/** Apply defaults and fail-safe bounds before untrusted WebView values reach Android. */
+/** Bound WebView values before they reach Android's speech recognizer. */
 export function sanitizeStartDictationOptions(options: StartDictationOptions): StartDictationOptions {
   const languageTag = sanitizeLanguageTag(options.languageTag);
   return {
     requestId: options.requestId,
     ...(languageTag ? { languageTag } : {}),
     silenceWindowMs: sanitizeSilenceWindowMs(options.silenceWindowMs),
+    ...(options.testMode === true ? { testMode: true } : {}),
   };
 }
 
 type RegisteredSpeechRecognitionPlugin = Plugin & SpeechRecognitionPlugin;
-
 const nativeSpeechRecognition = registerPlugin<RegisteredSpeechRecognitionPlugin>('SpeechRecognition');
 
 /** Android SpeechRecognizer stays the sole recognition engine for this surface. */
@@ -86,6 +91,8 @@ export const speechRecognition: SpeechRecognitionPlugin = {
   getCapabilities: () => nativeSpeechRecognition.getCapabilities(),
   startDictation: (options) => nativeSpeechRecognition.startDictation(sanitizeStartDictationOptions(options)),
   stopDictation: (options) => nativeSpeechRecognition.stopDictation(options),
+  cancelDictation: (options) => nativeSpeechRecognition.cancelDictation(options),
+  injectTestDictationEvent: (options) => nativeSpeechRecognition.injectTestDictationEvent(options),
   addListener: (eventName, listener) => nativeSpeechRecognition.addListener(eventName, listener),
   removeAllListeners: () => nativeSpeechRecognition.removeAllListeners(),
 };

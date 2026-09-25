@@ -38,15 +38,19 @@ function makeDocumentPlugin(files: Record<string, Uint8Array>) {
 
 function makeSpeechPlugin() {
   let dictationListener: ((event: NativeDictationEvent) => void) | undefined;
+  let lastDictationListener: ((event: NativeDictationEvent) => void) | undefined;
   const plugin = {
     getCapabilities: vi.fn(async () => ({ speechRecognitionAvailable: true, microphonePermissionGranted: false })),
     startDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, started: true })),
     stopDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, stopped: true })),
+    cancelDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, cancelled: true })),
     addListener: vi.fn(async (_name: string, listener: (event: NativeDictationEvent) => void) => {
       dictationListener = listener;
+      lastDictationListener = listener;
       return { remove: vi.fn(async () => { dictationListener = undefined; }) };
     }),
     emitDictation(event: NativeDictationEvent) { dictationListener?.(event); },
+    emitLateDictation(event: NativeDictationEvent) { lastDictationListener?.(event); },
   };
   return plugin;
 }
@@ -158,19 +162,57 @@ describe('Android platform input adapter', () => {
       { nextRequestId: () => 'dictation-1' },
     );
 
-    const session = await service.startDictation((event) => events.push(event), {
-      languageTag: 'fr-FR',
-      silenceWindowMs: 9_000,
-    });
+    const session = await service.startDictation((event) => events.push(event), { languageTag: 'fr-FR', silenceWindowMs: 7_000 });
     await session.stop();
 
     expect(speech.addListener.mock.invocationCallOrder[0]).toBeLessThan(speech.startDictation.mock.invocationCallOrder[0]);
     expect(events).toEqual([{ requestId: 'dictation-1', type: 'partial', text: 'café' }]);
-    expect(speech.startDictation).toHaveBeenCalledWith({
-      requestId: 'dictation-1',
-      languageTag: 'fr-FR',
-      silenceWindowMs: 9_000,
-    });
+    expect(speech.startDictation).toHaveBeenCalledWith({ requestId: 'dictation-1', languageTag: 'fr-FR', silenceWindowMs: 7_000 });
     expect(speech.stopDictation).toHaveBeenCalledWith({ requestId: 'dictation-1' });
+  });
+
+  it('cancels a request and drops even a late queued partial or final event', async () => {
+    const documents = makeDocumentPlugin({});
+    const speech = makeSpeechPlugin();
+    const events: NativeDictationEvent[] = [];
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      speech as unknown as SpeechRecognitionPlugin,
+      { nextRequestId: () => 'dictation-cancel-1' },
+    );
+
+    const session = await service.startDictation((event) => events.push(event));
+    speech.emitDictation({ requestId: 'dictation-cancel-1', type: 'partial', text: 'draft preview' });
+    await session.cancel();
+    speech.emitLateDictation({ requestId: 'dictation-cancel-1', type: 'result', text: 'must be ignored' });
+
+    expect(events).toEqual([{ requestId: 'dictation-cancel-1', type: 'partial', text: 'draft preview' }]);
+    expect(speech.cancelDictation).toHaveBeenCalledWith({ requestId: 'dictation-cancel-1' });
+    expect(speech.stopDictation).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending native start without allowing its eventual session or events through', async () => {
+    const documents = makeDocumentPlugin({});
+    const speech = makeSpeechPlugin();
+    let resolveNativeStart!: (response: { requestId: string; started: boolean }) => void;
+    speech.startDictation.mockImplementation(({ requestId }) => new Promise((resolve) => {
+      resolveNativeStart = resolve;
+    }));
+    const events: NativeDictationEvent[] = [];
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      speech as unknown as SpeechRecognitionPlugin,
+      { nextRequestId: () => 'dictation-pending-cancel' },
+    );
+    const pendingStart = service.startDictation((event) => events.push(event));
+    await vi.waitFor(() => expect(speech.startDictation).toHaveBeenCalledTimes(1));
+
+    await service.cancelDictation('dictation-pending-cancel');
+    resolveNativeStart({ requestId: 'dictation-pending-cancel', started: true });
+
+    await expect(pendingStart).rejects.toMatchObject({ code: 'dictation-cancelled' });
+    speech.emitLateDictation({ requestId: 'dictation-pending-cancel', type: 'partial', text: 'late' });
+    expect(events).toEqual([]);
+    expect(speech.cancelDictation).toHaveBeenCalledWith({ requestId: 'dictation-pending-cancel' });
   });
 });

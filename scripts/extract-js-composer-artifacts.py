@@ -21,13 +21,42 @@ REQUIRED_NAMES = {
     "composer-post-send-terminal.json",
     "inline-dictation-preview.png",
     "composer-focus-trace.json",
+    "composer-recording.png",
+    "composer-recording-geometry.json",
+    "composer-recording-after-restart.png",
+    "composer-recording-after-restart-geometry.json",
+    "composer-cancel.png",
+    "composer-cancel-geometry.json",
+    "composer-background.png",
+    "composer-background-geometry.json",
+    "composer-transcribing.png",
+    "composer-transcribing-geometry.json",
+    "composer-review.png",
+    "composer-review-geometry.json",
+    "composer-dictation-send.json",
 }
 OPTIONAL_NAMES = {
+    "composer-recording-before-fix.png",
+    "composer-mode-ime-failure.png",
+    "composer-mode-ime-failure.json",
     "composer-focus-failure.png",
     "composer-focus-failure.json",
     "composer-focus-failure-logcat.txt",
 }
 EXPECTED_NAMES = REQUIRED_NAMES | OPTIONAL_NAMES
+FAILURE_SCREENSHOTS = {
+    "composer-keyboard.png",
+    "inline-dictation-preview.png",
+    "composer-recording.png",
+    "composer-recording-after-restart.png",
+    "composer-cancel.png",
+    "composer-background.png",
+    "composer-transcribing.png",
+    "composer-review.png",
+    "composer-recording-before-fix.png",
+    "composer-focus-failure.png",
+    "composer-mode-ime-failure.png",
+}
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
@@ -36,7 +65,8 @@ class ExtractionFailure(ValueError):
 
 
 def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
-                 expected_terminal_marker: str | None = None) -> dict[str, bytes]:
+                 expected_terminal_marker: str | None = None,
+                 expected_dictation_marker: str | None = None) -> dict[str, bytes]:
     assets: dict[str, dict[str, object]] = {}
     for line in log_text.splitlines():
         if TAG not in line:
@@ -77,19 +107,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         else:
             raise ExtractionFailure(f"unknown artifact record {kind!r} for {name}")
 
-    failure_artifact_names = {
-        "composer-focus-failure.png",
-        "composer-focus-failure.json",
-        "composer-focus-failure-logcat.txt",
-    }
-    if validate_layout:
-        required_names = REQUIRED_NAMES
-    elif failure_artifact_names.intersection(assets):
-        required_names = failure_artifact_names | {"composer-focus-trace.json"}
-    else:
-        required_names = {"composer-keyboard.png"}
+    required_names = REQUIRED_NAMES if validate_layout else set()
     if not required_names.issubset(assets) or set(assets) - EXPECTED_NAMES:
         raise ExtractionFailure(f"expected at least {sorted(required_names)} without extras, found {sorted(assets)}")
+    if not validate_layout and not (FAILURE_SCREENSHOTS & set(assets)):
+        raise ExtractionFailure("failure-mode extraction must preserve a composer screenshot")
 
     decoded: dict[str, bytes] = {}
     for name, asset in assets.items():
@@ -108,16 +130,14 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png", "inline-dictation-preview.png",
-                 "composer-focus-failure.png"):
+    for name in (name for name in decoded if name.endswith(".png")):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
-    screenshot = decoded.get("composer-keyboard.png")
-    if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
-        raise ExtractionFailure("keyboard screenshot is not a non-empty PNG")
-    if validate_layout and screenshot is None:
-        raise ExtractionFailure("keyboard screenshot is missing")
+    focus_failure_screenshot = decoded.get("composer-focus-failure.png")
+    if focus_failure_screenshot is not None and (
+            not focus_failure_screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(focus_failure_screenshot) < 1024):
+        raise ExtractionFailure("composer focus failure screenshot is not a non-empty PNG")
     geometry_bytes = decoded.get("composer-keyboard-geometry.json")
     if geometry_bytes is None:
         if validate_layout:
@@ -210,6 +230,16 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send terminal text was not captured from the rendered xterm buffer")
         if post_send.get("sentMarkerAbsentFromSubmittedCommand") is not True:
             raise ExtractionFailure("post-send marker may be a command echo rather than terminal output")
+        try:
+            send_to_visible_latency = int(post_send["sendToVisibleOutputLatencyMs"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("post-send terminal record is missing a valid Send-to-visible-output latency") from error
+        if send_to_visible_latency < 0:
+            raise ExtractionFailure("Send-to-visible-output latency cannot be negative")
+        if post_send.get("sendToVisibleOutputTiming") != (
+            "Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen"
+        ):
+            raise ExtractionFailure("post-send latency does not identify its packaged visible-output measurement")
         recorded_marker = post_send.get("expectedMarker")
         if not isinstance(recorded_marker, str) or not recorded_marker:
             raise ExtractionFailure("post-send terminal record is missing its expected marker")
@@ -265,7 +295,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("composer focus trace does not contain tap attempts")
         post_attach_attempts = [
             attempt for attempt in focus_attempts
-            if isinstance(attempt, dict) and attempt.get("stage") == "post-inline-dictation-attach"
+            if isinstance(attempt, dict)
+            and attempt.get("stage") in {"uncertain-session-after-attach", "post-inline-dictation-attach"}
         ]
         if not post_attach_attempts or len(post_attach_attempts) > max_attempts:
             raise ExtractionFailure("composer focus trace is missing the bounded post-attach tap sequence")
@@ -282,28 +313,169 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("composer focus trace contains a malformed tap-attempt record")
             if attempt["attempt"] < 1 or attempt["attempt"] > max_attempts:
                 raise ExtractionFailure("composer focus trace exceeds its configured bounded tap-attempt limit")
-            if not isinstance(attempt.get("tap"), dict) or not isinstance(attempt.get("before"), dict) \
-                    or not isinstance(attempt.get("after"), dict):
+            tap = attempt.get("tap")
+            before = attempt.get("before")
+            after = attempt.get("after")
+            if not isinstance(tap, dict) or not isinstance(before, dict) or not isinstance(after, dict):
                 raise ExtractionFailure("composer focus trace is missing target bounds or active-element snapshots")
-            if not isinstance(attempt.get("nativeImeVisibleBefore"), bool) \
-                    or not isinstance(attempt.get("nativeImeVisibleAfter"), bool):
+            if (not isinstance(attempt.get("nativeImeVisibleBefore"), bool)
+                    or not isinstance(attempt.get("nativeImeVisibleAfter"), bool)):
                 raise ExtractionFailure("composer focus trace is missing Android IME visibility around a tap")
-            if "nativeImeVisibleAfterImeWait" in attempt \
-                    and not isinstance(attempt["nativeImeVisibleAfterImeWait"], bool):
+            if "nativeImeVisibleAfterImeWait" in attempt and not isinstance(attempt["nativeImeVisibleAfterImeWait"], bool):
                 raise ExtractionFailure("composer focus trace has an invalid post-IME wait observation")
-        if "composer-focus-failure.png" in decoded:
+        if focus_failure_screenshot is not None:
             raise ExtractionFailure("packaged composer run contains a failure-state focus screenshot")
+        if "composer-recording-before-fix.png" in decoded:
+            raise ExtractionFailure("accepted composer run contains the pre-fix recording screenshot")
+        if "composer-mode-ime-failure.png" in decoded or "composer-mode-ime-failure.json" in decoded:
+            raise ExtractionFailure("accepted composer run contains an IME-hidden state failure capture")
+        for state in ("recording", "cancel", "background", "transcribing", "review"):
+            geometry_name = f"composer-{state}-geometry.json"
+            try:
+                mode_geometry = json.loads(decoded[geometry_name])
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ExtractionFailure(f"{geometry_name} is invalid JSON: {error}") from error
+            if not isinstance(mode_geometry, dict) or mode_geometry.get("runId") != run_id:
+                raise ExtractionFailure(f"{geometry_name} does not identify this run")
+            if mode_geometry.get("state") != state:
+                raise ExtractionFailure(f"{geometry_name} does not identify the {state} composer state")
+            if mode_geometry.get("androidImeVisible") is not True or mode_geometry.get("keyboardVisible") is not True:
+                raise ExtractionFailure(f"{state} screenshot does not prove the Android keyboard was visible")
+            if mode_geometry.get("draftFocused") is not True:
+                raise ExtractionFailure(f"{state} screenshot does not prove the composer draft retained focus")
+            if mode_geometry.get("activeElementTestId") != "prompt-draft":
+                raise ExtractionFailure(f"{state} screenshot does not identify the composer draft as document.activeElement")
+            if mode_geometry.get("draftReadOnly") is not False:
+                raise ExtractionFailure(f"{state} screenshot changed the textarea editability and could hide the IME")
+            if mode_geometry.get("expectedDraftMatches") is not True:
+                raise ExtractionFailure(f"{state} screenshot does not prove the expected target draft was retained")
+            expected_locked = state in ("recording", "transcribing")
+            if mode_geometry.get("draftEditingLocked") is not expected_locked:
+                raise ExtractionFailure(f"{state} screenshot does not show the expected draft input lock")
+            expected_presentation = "focus-anchor" if expected_locked else "editor"
+            if mode_geometry.get("draftPresentation") != expected_presentation:
+                raise ExtractionFailure(f"{state} screenshot does not show the expected visible editor presentation")
+            if expected_locked:
+                if (mode_geometry.get("draftOpacity") != "0" or mode_geometry.get("draftAriaHidden") is True
+                        or "read only while dictating" not in str(mode_geometry.get("draftAriaLabel", ""))
+                        or mode_geometry.get("draftEditingLocked") is not True
+                        or "composer-status" not in str(mode_geometry.get("draftDescribedBy", ""))
+                        or mode_geometry.get("recordingModeVisible") is not True
+                        or not str(mode_geometry.get("recordingModeLabel", "")).strip()
+                        or mode_geometry.get("composerStatusAccessible") is not True
+                        or mode_geometry.get("cancelAccessible") is not True):
+                    raise ExtractionFailure(f"{state} screenshot does not retain an accessible focus anchor beside the visible recording surface")
+                if state == "recording":
+                    if (mode_geometry.get("previewVisible") is not True
+                            or mode_geometry.get("previewLive") is not True
+                            or mode_geometry.get("stopAccessible") is not True
+                            or "discard this dictated phrase" not in str(mode_geometry.get("previewText", ""))
+                            or "composer-recording-preview" not in str(mode_geometry.get("draftDescribedBy", ""))):
+                        raise ExtractionFailure("recording screenshot does not expose the live preview and accessible Stop control")
+                elif mode_geometry.get("transcribingStatusAccessible") is not True:
+                    raise ExtractionFailure("transcribing screenshot does not expose its accessible live status")
+            elif state == "review" and mode_geometry.get("reviewVisible") is not True:
+                raise ExtractionFailure("review screenshot does not show the editable review surface")
+            elif state in ("cancel", "background") and mode_geometry.get("recordingModeVisible") is not False:
+                raise ExtractionFailure(f"{state} screenshot still shows a recording surface")
+            viewport = mode_geometry.get("visualViewport")
+            if not isinstance(viewport, dict):
+                raise ExtractionFailure(f"{geometry_name} is missing the visible keyboard viewport")
+            try:
+                mode_height = float(viewport["height"])
+                mode_width = float(viewport["width"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"{geometry_name} has invalid viewport bounds") from error
+            required_rects = ["draft", "status", "actions"]
+            if state == "review":
+                required_rects.append("review")
+                required_rects.append("send")
+            elif state in ("cancel", "background"):
+                required_rects.append("send")
+                if mode_geometry.get("recordingMode") is not None:
+                    raise ExtractionFailure(f"{state} screenshot still exposes the recording surface")
+                if state == "cancel" and "original draft was restored" not in str(mode_geometry.get("statusText", "")):
+                    raise ExtractionFailure("cancel screenshot does not state that the original draft was restored")
+            else:
+                required_rects.append("recordingMode")
+            if state in ("recording", "transcribing") and mode_geometry.get("send") is not None:
+                raise ExtractionFailure(f"{state} screenshot exposes Send before the draft is ready for review")
+            if state == "recording":
+                required_rects.extend(("timer", "preview", "cancel", "stop"))
+            elif state == "transcribing":
+                required_rects.append("cancel")
+            for rect_name in required_rects:
+                rect = mode_geometry.get(rect_name)
+                if not isinstance(rect, dict):
+                    raise ExtractionFailure(f"{state} screenshot is missing the {rect_name} bounds")
+                try:
+                    top = float(rect["top"])
+                    bottom = float(rect["bottom"])
+                    left = float(rect["left"])
+                    right = float(rect["right"])
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ExtractionFailure(f"{geometry_name} has invalid bounds for {rect_name}") from error
+                if top < 0 or bottom > mode_height + 0.5 or left < 0 or right > mode_width + 0.5:
+                    raise ExtractionFailure(f"{rect_name} is clipped in the keyboard-up {state} screenshot")
+            draft_bounds = mode_geometry["draft"]
+            if expected_locked and (float(draft_bounds["right"]) - float(draft_bounds["left"]) > 1.0
+                                    or float(draft_bounds["bottom"]) - float(draft_bounds["top"]) > 1.0):
+                raise ExtractionFailure(f"{state} screenshot still renders the full textarea instead of the focus anchor")
+        restart_capture_names = {
+            "composer-recording-after-restart.png",
+            "composer-recording-after-restart-geometry.json",
+        }
+        if restart_capture_names & set(decoded) and not restart_capture_names.issubset(decoded):
+            raise ExtractionFailure("natural-restart recording screenshot and geometry must be captured together")
+        if restart_capture_names.issubset(decoded):
+            try:
+                restart_geometry = json.loads(decoded["composer-recording-after-restart-geometry.json"])
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ExtractionFailure(f"composer-recording-after-restart-geometry.json is invalid: {error}") from error
+            if not isinstance(restart_geometry, dict) or restart_geometry.get("runId") != run_id:
+                raise ExtractionFailure("natural-restart recording geometry does not identify this run")
+            if (restart_geometry.get("state") != "recording-after-restart"
+                    or restart_geometry.get("dictationState") != "recording"
+                    or restart_geometry.get("androidImeVisible") is not True
+                    or restart_geometry.get("keyboardVisible") is not True
+                    or restart_geometry.get("draftFocused") is not True
+                    or restart_geometry.get("activeElementTestId") != "prompt-draft"
+                    or restart_geometry.get("expectedDraftMatches") is not True
+                    or restart_geometry.get("recordingModeVisible") is not True
+                    or restart_geometry.get("previewVisible") is not True
+                    or restart_geometry.get("stopAccessible") is not True):
+                raise ExtractionFailure("natural-restart capture does not prove active recording, preview, and Stop")
+        try:
+            dictation_send = json.loads(decoded["composer-dictation-send.json"])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer-dictation-send.json is invalid JSON: {error}") from error
+        if not isinstance(dictation_send, dict) or dictation_send.get("runId") != run_id:
+            raise ExtractionFailure("dictated Send evidence does not identify this packaged run")
+        if (dictation_send.get("stage") != "dictation-explicit-send"
+                or dictation_send.get("dictationState") != "idle"
+                or not isinstance(dictation_send.get("acknowledgedWrites"), int)
+                or dictation_send["acknowledgedWrites"] != 2
+                or dictation_send.get("draft") != ""
+                or not isinstance(dictation_send.get("deliveryStatus"), str)
+                or "Sent to the terminal" not in dictation_send["deliveryStatus"]):
+            raise ExtractionFailure("dictated Send evidence does not prove an explicit Send from the reviewed draft")
+        recorded_dictation_marker = dictation_send.get("marker")
+        if (not isinstance(recorded_dictation_marker, str) or not recorded_dictation_marker
+                or expected_dictation_marker is None or recorded_dictation_marker != expected_dictation_marker):
+            raise ExtractionFailure("dictated Send evidence does not match this packaged journey")
     return decoded
 
 
 def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = True,
-            expected_terminal_marker: str | None = None) -> list[str]:
+            expected_terminal_marker: str | None = None,
+            expected_dictation_marker: str | None = None) -> list[str]:
     try:
         log_text = logcat.read_text(encoding="utf-8", errors="replace")
     except OSError as error:
         raise ExtractionFailure(f"could not read Android logcat {logcat}: {error}") from error
     artifacts = parse_assets(log_text, run_id, validate_layout=validate_layout,
-                             expected_terminal_marker=expected_terminal_marker)
+                             expected_terminal_marker=expected_terminal_marker,
+                             expected_dictation_marker=expected_dictation_marker)
     output.mkdir(parents=True, exist_ok=True)
     for name, payload in artifacts.items():
         (output / name).write_bytes(payload)
@@ -313,6 +485,7 @@ def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = 
 def self_test() -> None:
     run_id = "js2857-self-test"
     marker = "PS2857_SENT_js2857-self-test"
+    dictation_marker = "PS2857_DICTATION_EDITED_js2857-self-test"
     png = b"\x89PNG\r\n\x1a\n" + b"fixture" * 200
     post_send = json.dumps({
         "stage": "after-send",
@@ -322,6 +495,8 @@ def self_test() -> None:
         "visibleTerminalText": f"command output\n{marker}",
         "terminalDomText": f"command output\n{marker}",
         "sentMarkerAbsentFromSubmittedCommand": True,
+        "sendToVisibleOutputLatencyMs": 120,
+        "sendToVisibleOutputTiming": "Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen",
         "appTerminalDeliveryCount": 1,
         "appTerminalMissingRefCount": 0,
         "terminalWriteCount": 1,
@@ -330,13 +505,74 @@ def self_test() -> None:
         "keyboardVisible": False,
         "deliveryStatus": "Sent to the terminal.",
     }).encode()
+    dictation_send = json.dumps({
+        "stage": "dictation-explicit-send",
+        "runId": run_id,
+        "marker": dictation_marker,
+        "dictationState": "idle",
+        "acknowledgedWrites": 2,
+        "draft": "",
+        "deliveryStatus": "Sent to the terminal.",
+    }).encode()
+    one_write_dictation_send_value = json.loads(dictation_send)
+    one_write_dictation_send_value["acknowledgedWrites"] = 1
+    one_write_dictation_send = json.dumps(one_write_dictation_send_value).encode()
+    def mode_geometry_payload(state: str) -> bytes:
+        rect = {"top": 10.0, "bottom": 60.0, "left": 5.0, "right": 395.0}
+        recording = state.startswith("recording")
+        anchored = recording or state == "transcribing"
+        draft_rect = {"top": 10.0, "bottom": 11.0, "left": 5.0, "right": 6.0} if anchored else rect
+        payload = {
+            "runId": run_id,
+            "state": state,
+            "dictationState": "recording" if recording else "transcribing" if state == "transcribing"
+            else "review" if state == "review" else "idle",
+            "androidImeVisible": True,
+            "keyboardVisible": True,
+            "draftFocused": True,
+            "activeElementTestId": "prompt-draft",
+            "draftReadOnly": False,
+            "draftEditingLocked": anchored,
+            "expectedDraftMatches": True,
+            "statusText": "Dictation cancelled. Your original draft was restored." if state == "cancel" else "",
+            "draftPresentation": "focus-anchor" if anchored else "editor",
+            "draftOpacity": "0" if anchored else "1",
+            "draftAriaHidden": False,
+            "draftAriaLabel": "Dictation draft, read only while dictating" if anchored else "Prompt draft",
+            "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if state == "transcribing" else "",
+            "recordingModeVisible": anchored,
+            "recordingModeLabel": "Recording prompt" if anchored else "",
+            "previewVisible": recording,
+            "previewLive": recording,
+            "previewText": "discard this dictated phrase" if recording else "",
+            "cancelAccessible": anchored,
+            "stopAccessible": recording,
+            "transcribingStatusAccessible": state == "transcribing",
+            "composerStatusAccessible": True,
+            "reviewVisible": state == "review",
+            "visualViewport": {"height": 240.0, "width": 400.0},
+            "draft": draft_rect,
+            "status": rect,
+            "actions": rect,
+        }
+        if anchored:
+            payload["recordingMode"] = rect
+            payload["cancel"] = rect
+        if state in ("cancel", "background"):
+            payload["send"] = rect
+        if recording:
+            payload.update({"timer": rect, "preview": rect, "stop": rect})
+        if state == "review":
+            payload["review"] = rect
+            payload["send"] = rect
+        return json.dumps(payload).encode()
     focus_trace = json.dumps({
         "runId": run_id,
         "androidApi": 35,
         "maxAttempts": 2,
         "forcedFirstPostAttachMiss": False,
         "attempts": [{
-            "stage": "post-inline-dictation-attach",
+            "stage": "uncertain-session-after-attach",
             "attempt": 1,
             "requestedSelector": "[data-testid=prompt-draft]",
             "before": {"activeElement": {"id": "xterm-helper-textarea"}},
@@ -356,6 +592,12 @@ def self_test() -> None:
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
+    negative_latency_value = json.loads(post_send)
+    negative_latency_value["sendToVisibleOutputLatencyMs"] = -1
+    negative_latency_post_send = json.dumps(negative_latency_value).encode()
+    missing_latency_value = json.loads(post_send)
+    del missing_latency_value["sendToVisibleOutputLatencyMs"]
+    missing_latency_post_send = json.dumps(missing_latency_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
                          send_bottom: float = 218.0, terminal_height: float = 60.0) -> bytes:
         return json.dumps({
@@ -378,14 +620,28 @@ def self_test() -> None:
     geometry = geometry_payload()
 
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
-                   inline_preview_bytes: bytes = png, focus_trace_bytes: bytes = focus_trace) -> list[str]:
+                   dictation_send_bytes: bytes = dictation_send,
+                   inline_preview_bytes: bytes = png) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
             ("inline-dictation-preview.png", inline_preview_bytes),
-            ("composer-focus-trace.json", focus_trace_bytes),
+            ("composer-focus-trace.json", focus_trace),
+            ("composer-recording.png", png),
+            ("composer-recording-geometry.json", mode_geometry_payload("recording")),
+            ("composer-cancel.png", png),
+            ("composer-cancel-geometry.json", mode_geometry_payload("cancel")),
+            ("composer-background.png", png),
+            ("composer-background-geometry.json", mode_geometry_payload("background")),
+            ("composer-transcribing.png", png),
+            ("composer-transcribing-geometry.json", mode_geometry_payload("transcribing")),
+            ("composer-review.png", png),
+            ("composer-review-geometry.json", mode_geometry_payload("review")),
+            ("composer-recording-after-restart.png", png),
+            ("composer-recording-after-restart-geometry.json", mode_geometry_payload("recording-after-restart")),
+            ("composer-dictation-send.json", dictation_send_bytes),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -398,10 +654,9 @@ def self_test() -> None:
         return lines
 
     lines = make_lines()
-    extracted = parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)
-    assert extracted["composer-keyboard.png"] == png
-    assert extracted["inline-dictation-preview.png"] == png
-    print("PASS: keyboard, post-send, and inline dictation screenshots extract with matching SHA-256")
+    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker,
+                        expected_dictation_marker=dictation_marker)["inline-dictation-preview.png"] == png
+    print("PASS: keyboard, inline dictation, composer-state, and post-send artifacts extract with complete chunks and matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -414,44 +669,64 @@ def self_test() -> None:
         ("status bar overlap", make_lines(geometry_payload(app_bar_top=0))),
         ("terminal context hidden", make_lines(geometry_payload(terminal_height=30))),
         ("post-send marker missing from rendered terminal", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"wrong-marker"))),
+        ("dictated Send reports only the body write", make_lines(dictation_send_bytes=one_write_dictation_send)),
         ("post-send screenshot missing", [line for line in lines if "composer-post-send.png" not in line]),
         ("post-send terminal record missing", [line for line in lines if "composer-post-send-terminal.json" not in line]),
         ("post-send marker belongs to another journey", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"PS2857_SENT_other"))),
         ("post-send text source is not the rendered xterm buffer", make_lines(post_send_bytes=post_send.replace(b"xterm-active-buffer-after-render", b"unverified-dom-text"))),
         ("post-send terminal scrolled below the viewport", make_lines(post_send_bytes=clipped_post_send)),
         ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
-        ("inline screenshot is ASCII run-as error text",
+        ("post-send output latency missing", make_lines(post_send_bytes=missing_latency_post_send)),
+        ("post-send output latency negative", make_lines(post_send_bytes=negative_latency_post_send)),
+        ("inline dictation screenshot is ASCII run-as error text",
          make_lines(inline_preview_bytes=b"run-as: unknown package: com.pocketshell.app.i2857inline\n")),
     ):
         try:
-            parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)
+            parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker,
+                         expected_dictation_marker=dictation_marker)
         except ExtractionFailure:
             print(f"PASS: {label} fails closed")
         else:
             raise AssertionError(f"{label} unexpectedly passed")
+    incomplete_restart_capture = [
+        line for line in lines if "composer-recording-after-restart-geometry.json" not in line
+    ]
+    try:
+        parse_assets("\n".join(incomplete_restart_capture), run_id, expected_terminal_marker=marker,
+                     expected_dictation_marker=dictation_marker)
+    except ExtractionFailure:
+        print("PASS: natural-restart recording screenshot requires its same-run geometry")
+    else:
+        raise AssertionError("natural-restart recording screenshot passed without geometry")
     focus_failure_lines = list(lines)
     for name, payload in (
         ("composer-focus-failure.png", png),
-        ("composer-focus-failure.json", json.dumps({"stage": "post-inline-dictation-attach"}).encode()),
+        ("composer-focus-failure.json", json.dumps({"stage": "uncertain-session-after-attach"}).encode()),
         ("composer-focus-failure-logcat.txt", b"ImeTracker: hide request did not complete\n"),
     ):
         encoded = base64.b64encode(payload).decode()
         digest = hashlib.sha256(payload).hexdigest()
-        focus_failure_lines.extend((
-            f"I/PS2857Asset: BEGIN|{run_id}|{name}|1|{digest}",
-            f"I/PS2857Asset: DATA|{run_id}|{name}|0|{encoded}",
-            f"I/PS2857Asset: END|{run_id}|{name}",
-        ))
+        focus_failure_lines.append(f"I/PS2857Asset: BEGIN|{run_id}|{name}|1|{digest}")
+        focus_failure_lines.append(f"I/PS2857Asset: DATA|{run_id}|{name}|0|{encoded}")
+        focus_failure_lines.append(f"I/PS2857Asset: END|{run_id}|{name}")
     try:
-        parse_assets("\n".join(focus_failure_lines), run_id, expected_terminal_marker=marker)
+        parse_assets("\n".join(focus_failure_lines), run_id, expected_terminal_marker=marker,
+                     expected_dictation_marker=dictation_marker)
     except ExtractionFailure:
-        print("PASS: accepted composer evidence rejects retained focus-failure artifacts")
+        print("PASS: packaged acceptance rejects retained focus-failure artifacts")
     else:
-        raise AssertionError("focus failure screenshot unexpectedly passed accepted extraction")
+        raise AssertionError("focus failure screenshot unexpectedly passed strict packaged acceptance")
     retained_failure = parse_assets("\n".join(focus_failure_lines), run_id, validate_layout=False)
     assert retained_failure["composer-focus-failure.png"] == png
     assert b"ImeTracker" in retained_failure["composer-focus-failure-logcat.txt"]
-    print("PASS: failure extraction retains contemporaneous focus screenshot, state, logcat, and tap trace")
+    print("PASS: failure-mode extraction retains contemporaneous focus screenshot, state, and Android logs")
+    recording_failure_lines = [
+        line for line in lines
+        if line.startswith("I/PS2857Asset: ") and line.split("|", 4)[2] == "composer-recording.png"
+    ]
+    retained_recording_failure = parse_assets("\n".join(recording_failure_lines), run_id, validate_layout=False)
+    assert retained_recording_failure["composer-recording.png"] == png
+    print("PASS: failure-mode extraction preserves a recording screenshot when timeout occurs before other captures")
     broken_layout = make_lines(geometry_payload(ime_visible=False, app_bar_top=0))
     assert parse_assets("\n".join(broken_layout), run_id, validate_layout=False)["composer-keyboard.png"] == png
     no_geometry = [line for line in lines if "composer-keyboard-geometry.json" not in line]
@@ -465,6 +740,7 @@ def main() -> int:
     parser.add_argument("--logcat", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--expected-terminal-marker")
+    parser.add_argument("--expected-dictation-marker")
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--preserve-on-failure", action="store_true",
                         help="extract complete hash-checked artifacts without accepting IME bounds")
@@ -480,10 +756,13 @@ def main() -> int:
         parser.error("--run-id, --logcat, and --output-dir are required unless --self-test is used")
     if not args.preserve_on_failure and not args.expected_terminal_marker:
         parser.error("--expected-terminal-marker is required for accepted evidence")
+    if not args.preserve_on_failure and not args.expected_dictation_marker:
+        parser.error("--expected-dictation-marker is required for accepted evidence")
     try:
         names = extract(args.run_id, args.logcat, args.output_dir,
                         validate_layout=not args.preserve_on_failure,
-                        expected_terminal_marker=args.expected_terminal_marker)
+                        expected_terminal_marker=args.expected_terminal_marker,
+                        expected_dictation_marker=args.expected_dictation_marker)
     except ExtractionFailure as error:
         print(f"FAIL: composer artifact extraction: {error}", file=sys.stderr)
         return 1

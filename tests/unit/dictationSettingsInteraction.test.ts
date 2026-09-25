@@ -126,7 +126,7 @@ const productionSettingsScreen = {
 describe('mounted dictation settings controls', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('binds the production Voice template to accessible persisted language and silence controls', async () => {
+  it('binds the production Voice and Advanced templates to accessible persisted settings', async () => {
     const storage = new MemoryStorage();
     vi.stubGlobal('localStorage', storage);
     vi.stubGlobal('document', { activeElement: null });
@@ -142,54 +142,39 @@ describe('mounted dictation settings controls', () => {
     navigation.open('settings-voice');
     await nextTick();
 
-    const language = findByTestId(root, 'setting-dictation-language');
-    const silence = findByTestId(root, 'setting-dictation-silence');
+    const language = findByTestId(root, 'setting-voice-language');
     expect(findByTestId(root, 'voice-settings-screen')).toBeDefined();
-    expect(language?.props.type).toBe('text');
-    expect(language?.props['aria-labelledby']).toBe('dictation-language-label');
-    expect(language?.props['aria-describedby']).toBe('dictation-language-help');
-    expect(language?.props['aria-invalid']).toBe('false');
-    expect(language?.value).toBe('auto');
+    expect(language?.type).toBe('select');
+    expect(language?.props['aria-label']).toBeUndefined();
+    expect(language?.props.value).toBe('auto');
+    expect(descendants(root).some((candidate) => candidate.type === 'label'
+      && textContent(candidate).includes('Dictation language'))).toBe(true);
+
+    (language?.props.onChange as (event: Event) => void)({ target: { value: 'de' } } as unknown as Event);
+    await nextTick();
+    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toMatchObject({
+      voiceLanguage: 'de',
+      voiceSilenceSeconds: 4,
+    });
+
+    navigation.open('settings-advanced');
+    await nextTick();
+    const silence = findByTestId(root, 'setting-voice-silence-seconds');
+    expect(findByTestId(root, 'advanced-settings-screen')).toBeDefined();
+    expect(silence?.type).toBe('input');
     expect(silence?.props.type).toBe('range');
-    expect(silence?.props.min).toBe('2');
-    expect(silence?.props.max).toBe('60');
-    expect(silence?.props.step).toBe('1');
-    expect(silence?.props['aria-label']).toBe('Recognition silence window in seconds');
-    expect(silence?.props['aria-valuetext']).toBe('4 seconds');
-    expect(findByTestId(root, 'dictation-silence-value')).toBeDefined();
-    expect(textContent(findByTestId(root, 'dictation-silence-value')!)).toBe('4 seconds');
-    expect(settingsScreenSource).toMatch(/\.dictation-language-input\s*\{[^}]*min-height:\s*48px/s);
-    expect(settingsScreenSource).toMatch(/\.dictation-silence-range\s*\{[^}]*min-height:\s*48px/s);
+    expect(silence?.props.min).toBe(2);
+    expect(silence?.props.max).toBe(60);
+    expect(silence?.props['aria-label']).toBe('Recognizer silence window in seconds');
+    expect(findByTestId(root, 'voice-silence-value')).toBeDefined();
 
-    language!.value = 'de-DE';
-    language!.dispatchEvent('input', { target: language } as unknown as Event);
-    (language?.props.onChange as (event: Event) => void)({ target: { value: 'de-DE' } } as unknown as Event);
     (silence?.props.onInput as (event: Event) => void)({ target: { value: '9' } } as unknown as Event);
-    (silence?.props.onChange as (event: Event) => void)({ target: { value: '9' } } as unknown as Event);
     await nextTick();
-
     expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toMatchObject({
-      dictationLanguageTag: 'de-DE',
-      dictationSilenceWindowMs: 9_000,
+      voiceLanguage: 'de',
+      voiceSilenceSeconds: 9,
     });
 
-    const voiceLabel = descendants(root).find((candidate) => candidate.type === 'label'
-      && textContent(candidate).includes('Dictation language'));
-    expect(voiceLabel).toBeDefined();
-    expect(descendants(root).find((candidate) => candidate.props.id === 'dictation-language-help')).toBeDefined();
-
-    language!.value = 'en_US';
-    language!.dispatchEvent('input', { target: language } as unknown as Event);
-    (language?.props.onChange as (event: Event) => void)({ target: { value: 'en_US' } } as unknown as Event);
-    await nextTick();
-    const invalidLanguage = findByTestId(root, 'setting-dictation-language');
-    expect(invalidLanguage?.props['aria-invalid']).toBe('true');
-    expect(invalidLanguage?.props['aria-describedby']).toBe('dictation-language-help dictation-language-error');
-    expect(descendants(root).find((candidate) => candidate.props.id === 'dictation-language-error')?.props.role).toBe('alert');
-    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toMatchObject({
-      dictationLanguageTag: 'de-DE',
-      dictationSilenceWindowMs: 9_000,
-    });
     app.unmount();
   });
 });

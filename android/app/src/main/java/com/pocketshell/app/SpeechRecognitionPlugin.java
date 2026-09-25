@@ -2,6 +2,7 @@ package com.pocketshell.app;
 
 import android.Manifest;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
@@ -30,17 +31,19 @@ import java.util.regex.Pattern;
 public final class SpeechRecognitionPlugin extends Plugin {
     private static final long RESTART_DELAY_MS = 300;
     private static final long STOP_TIMEOUT_MS = 2_000;
-    static final long DEFAULT_SILENCE_WINDOW_MS = 4_000;
-    static final long MIN_SILENCE_WINDOW_MS = 2_000;
-    static final long MAX_SILENCE_WINDOW_MS = 60_000;
-    static final long MINIMUM_RECOGNITION_LENGTH_MS = 2_000;
+    static final long DEFAULT_SILENCE_WINDOW_MS = SpeechRecognitionOptions.DEFAULT_SILENCE_WINDOW_MS;
+    static final long MIN_SILENCE_WINDOW_MS = SpeechRecognitionOptions.MIN_SILENCE_WINDOW_MS;
+    static final long MAX_SILENCE_WINDOW_MS = SpeechRecognitionOptions.MAX_SILENCE_WINDOW_MS;
+    static final long MINIMUM_RECOGNITION_LENGTH_MS = SpeechRecognitionOptions.MINIMUM_SPEECH_LENGTH_MS;
     private static final Pattern LANGUAGE_TAG_PATTERN = Pattern.compile("^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$");
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private SpeechRecognizer recognizer;
     private String activeRequestId;
+    private String lastRequestIdForTest;
     private String activeLanguageTag;
-    private long activeSilenceWindowMs = DEFAULT_SILENCE_WINDOW_MS;
+    private long activeSilenceWindowMs = SpeechRecognitionOptions.DEFAULT_SILENCE_WINDOW_MS;
+    private boolean activeTestMode;
     private boolean stopRequested;
     private Runnable scheduledRestart;
     private Runnable stopTimeout;
@@ -62,8 +65,11 @@ public final class SpeechRecognitionPlugin extends Plugin {
             return;
         }
         String languageTag = call.getString("languageTag");
-        Object silenceWindowMs = call.getData().opt("silenceWindowMs");
-        mainHandler.post(() -> beginDictation(call, requestId, languageTag, silenceWindowMs));
+        long silenceWindowMs = call.getData() == null
+                ? SpeechRecognitionOptions.DEFAULT_SILENCE_WINDOW_MS
+                : call.getData().optLong("silenceWindowMs", SpeechRecognitionOptions.DEFAULT_SILENCE_WINDOW_MS);
+        boolean testMode = call.getBoolean("testMode", false) && isDebuggableBuild();
+        mainHandler.post(() -> beginDictation(call, requestId, languageTag, silenceWindowMs, testMode));
     }
 
     @PluginMethod
@@ -76,7 +82,9 @@ public final class SpeechRecognitionPlugin extends Plugin {
             }
             stopRequested = true;
             cancelScheduledRestart();
-            if (recognizer == null) {
+            if (recognizer == null && activeTestMode) {
+                emit("processing", requestId, null, null);
+            } else if (recognizer == null) {
                 finishDictation();
             } else {
                 try {
@@ -90,9 +98,71 @@ public final class SpeechRecognitionPlugin extends Plugin {
         });
     }
 
+    @PluginMethod
+    public void cancelDictation(PluginCall call) {
+        String requestId = call.getString("requestId");
+        if (requestId == null || requestId.trim().isEmpty()) {
+            call.reject("Dictation request ID is required.", "DICTATION_INVALID_REQUEST");
+            return;
+        }
+        mainHandler.post(() -> {
+            if (!requestId.equals(activeRequestId)) {
+                call.resolve(new JSObject().put("requestId", requestId).put("cancelled", false));
+                return;
+            }
+            stopRequested = true;
+            cancelScheduledRestart();
+            finishDictation();
+            call.resolve(new JSObject().put("requestId", requestId).put("cancelled", true));
+        });
+    }
+
+    /** Deterministic event injection for the packaged debug journey only. */
+    @PluginMethod
+    public void injectTestDictationEvent(PluginCall call) {
+        if ((getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) == 0) {
+            call.reject("Test dictation events are available only in debug builds.", "DICTATION_TEST_ONLY");
+            return;
+        }
+        String type = call.getString("type");
+        String text = call.getString("text");
+        String requestId = call.getString("requestId");
+        mainHandler.post(() -> {
+            String eventRequestId = requestId == null || requestId.trim().isEmpty()
+                    ? (activeRequestId == null ? lastRequestIdForTest : activeRequestId)
+                    : requestId;
+            if (eventRequestId == null || eventRequestId.trim().isEmpty()) {
+                call.reject("There is no dictation request to inject an event for.", "DICTATION_TEST_NO_REQUEST");
+                return;
+            }
+            if ("finish".equals(type)) {
+                if (activeRequestId != null && activeRequestId.equals(eventRequestId)) {
+                    if (text != null && !text.isEmpty()) emit("result", eventRequestId, text, null);
+                    finishDictation();
+                } else {
+                    emit("result", eventRequestId, text, null);
+                    emit("stopped", eventRequestId, null, null);
+                }
+            } else if ("partial".equals(type) || "processing".equals(type) || "result".equals(type)
+                    || "ready".equals(type) || "listening".equals(type)) {
+                emit(type, eventRequestId, text, null);
+            } else {
+                call.reject("Unsupported test dictation event.", "DICTATION_TEST_INVALID_EVENT");
+                return;
+            }
+            JSObject result = new JSObject().put("requestId", eventRequestId).put("emitted", true);
+            if (activeTestMode && eventRequestId.equals(activeRequestId)) {
+                result.put("silenceWindowMs", activeSilenceWindowMs);
+                if (activeLanguageTag != null) result.put("languageTag", activeLanguageTag);
+            }
+            call.resolve(result);
+        });
+    }
+
     @PermissionCallback
     private void microphonePermissionResult(PluginCall call) {
         String requestId = call == null ? null : call.getString("requestId");
+        boolean testMode = call != null && call.getBoolean("testMode", false) && isDebuggableBuild();
         if (call == null || requestId == null || !requestId.equals(activeRequestId) || stopRequested) {
             if (call != null) call.reject("Dictation was cancelled before microphone access was granted.", "DICTATION_CANCELLED");
             finishDictation();
@@ -104,7 +174,7 @@ public final class SpeechRecognitionPlugin extends Plugin {
             finishDictation();
             return;
         }
-        startRecognizer(call, requestId, activeLanguageTag);
+        startRecognizer(call, requestId, activeLanguageTag, activeSilenceWindowMs, testMode);
     }
 
     @Override
@@ -112,36 +182,45 @@ public final class SpeechRecognitionPlugin extends Plugin {
         mainHandler.post(this::finishDictation);
     }
 
-    private void beginDictation(PluginCall call, String requestId, String languageTag, Object silenceWindowMs) {
+    private void beginDictation(PluginCall call, String requestId, String languageTag,
+            long silenceWindowMs, boolean testMode) {
         if (activeRequestId != null) {
             call.reject("Another dictation request is already active.", "DICTATION_ALREADY_ACTIVE");
             return;
         }
-        if (!SpeechRecognizer.isRecognitionAvailable(getContext())) {
+        if (!testMode && !SpeechRecognizer.isRecognitionAvailable(getContext())) {
             call.reject("Android speech recognition is not available on this device.", "SPEECH_RECOGNIZER_UNAVAILABLE");
             return;
         }
         activeRequestId = requestId;
+        lastRequestIdForTest = requestId;
         activeLanguageTag = normalizeLanguageTag(languageTag, Locale.getDefault());
-        activeSilenceWindowMs = clampSilenceWindowMs(silenceWindowMs);
+        activeSilenceWindowMs = SpeechRecognitionOptions.clampSilenceWindowMs(silenceWindowMs);
+        activeTestMode = testMode;
         stopRequested = false;
         if (getContext().checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            startRecognizer(call, requestId, activeLanguageTag);
+            startRecognizer(call, requestId, activeLanguageTag, activeSilenceWindowMs, testMode);
             return;
         }
         requestPermissionForAlias("microphone", call, "microphonePermissionResult");
     }
 
-    private void startRecognizer(PluginCall call, String requestId, String languageTag) {
+    private void startRecognizer(PluginCall call, String requestId, String languageTag,
+            long silenceWindowMs, boolean testMode) {
         if (!requestId.equals(activeRequestId) || stopRequested) {
             call.reject("Dictation was cancelled.", "DICTATION_CANCELLED");
             finishDictation();
             return;
         }
+        if (testMode) {
+            call.resolve(new JSObject().put("requestId", requestId).put("started", true));
+            emit("started", requestId, null, null);
+            return;
+        }
         try {
             recognizer = SpeechRecognizer.createSpeechRecognizer(getContext());
             recognizer.setRecognitionListener(new DictationListener(requestId));
-            recognizer.startListening(recognizerIntent(languageTag));
+            recognizer.startListening(recognizerIntent(languageTag, silenceWindowMs));
             call.resolve(new JSObject().put("requestId", requestId).put("started", true));
             emit("started", requestId, null, null);
         } catch (RuntimeException error) {
@@ -150,9 +229,9 @@ public final class SpeechRecognitionPlugin extends Plugin {
         }
     }
 
-    private Intent recognizerIntent(String languageTag) {
+    private Intent recognizerIntent(String languageTag, long silenceWindowMs) {
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        for (Map.Entry<String, Object> extra : recognizerExtras(languageTag, activeSilenceWindowMs).entrySet()) {
+        for (Map.Entry<String, Object> extra : recognizerExtras(languageTag, silenceWindowMs).entrySet()) {
             Object value = extra.getValue();
             if (value instanceof String) intent.putExtra(extra.getKey(), (String) value);
             else if (value instanceof Boolean) intent.putExtra(extra.getKey(), (Boolean) value);
@@ -163,7 +242,7 @@ public final class SpeechRecognitionPlugin extends Plugin {
         return intent;
     }
 
-    /** Build the settings-derived extras as plain values so their policy is testable without a device. */
+    /** Build the recognizer extras as plain values so their policy stays testable without a device. */
     static Map<String, Object> recognizerExtras(String languageTag, Object rawSilenceWindowMs) {
         long silenceWindowMs = clampSilenceWindowMs(rawSilenceWindowMs);
         Map<String, Object> extras = new LinkedHashMap<>();
@@ -184,8 +263,7 @@ public final class SpeechRecognitionPlugin extends Plugin {
         if (!(value instanceof Number)) return DEFAULT_SILENCE_WINDOW_MS;
         double requested = ((Number) value).doubleValue();
         if (Double.isNaN(requested) || Double.isInfinite(requested)) return DEFAULT_SILENCE_WINDOW_MS;
-        long rounded = Math.round(requested);
-        return Math.max(MIN_SILENCE_WINDOW_MS, Math.min(MAX_SILENCE_WINDOW_MS, rounded));
+        return SpeechRecognitionOptions.clampSilenceWindowMs(Math.round(requested));
     }
 
     static String normalizeLanguageTag(String value, Locale fallback) {
@@ -282,7 +360,7 @@ public final class SpeechRecognitionPlugin extends Plugin {
             scheduledRestart = null;
             if (!requestId.equals(activeRequestId) || stopRequested || recognizer == null) return;
             try {
-                recognizer.startListening(recognizerIntent(activeLanguageTag));
+                recognizer.startListening(recognizerIntent(activeLanguageTag, activeSilenceWindowMs));
             } catch (RuntimeException error) {
                 emit("error", requestId, null, "recognizer-restart-failed");
                 finishDictation();
@@ -311,7 +389,8 @@ public final class SpeechRecognitionPlugin extends Plugin {
         String requestId = activeRequestId;
         activeRequestId = null;
         activeLanguageTag = null;
-        activeSilenceWindowMs = DEFAULT_SILENCE_WINDOW_MS;
+        activeSilenceWindowMs = SpeechRecognitionOptions.DEFAULT_SILENCE_WINDOW_MS;
+        activeTestMode = false;
         stopRequested = false;
         if (current != null) {
             try {
@@ -328,5 +407,9 @@ public final class SpeechRecognitionPlugin extends Plugin {
         if (text != null) event.put("text", text);
         if (code != null) event.put("code", code);
         notifyListeners("dictationEvent", event);
+    }
+
+    private boolean isDebuggableBuild() {
+        return (getContext().getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
     }
 }

@@ -11,7 +11,7 @@ export const DESTINATION_INVENTORY: readonly DestinationMapping[] = [
   { oldDestination: 'Hosts', newRoute: 'home', status: 'partial', owner: '#2851/#2856', note: 'One-off SSH form is available; saved host management is pending.' },
   { oldDestination: 'Settings', newRoute: 'settings', status: 'available', owner: '#2861', note: 'Settings index links to the replacement settings and support routes.' },
   { oldDestination: 'TerminalSettings', newRoute: 'settings-terminal', status: 'available', owner: '#2861', note: 'Shared desktop theme registry and terminal font size are applied live.' },
-  { oldDestination: 'VoiceSettings', newRoute: 'settings-voice', status: 'information-only', owner: '#2857', note: 'Dictation controls are pending the voice provider implementation.' },
+  { oldDestination: 'VoiceSettings', newRoute: 'settings-voice', status: 'available', owner: '#2857', note: 'Dictation language is persisted and applied to the next Android recognizer start.' },
   { oldDestination: 'ConnectionSettings', newRoute: 'settings-connections', status: 'available', owner: '#2861', note: 'Background grace is persisted and read when a live connection backgrounds.' },
   { oldDestination: 'AdvancedSettings', newRoute: 'settings-advanced', status: 'information-only', owner: '#2861', note: 'No compatibility toggle is shown until its runtime behavior is implemented.' },
   { oldDestination: 'AccountSync', newRoute: 'settings-account', status: 'information-only', owner: '#2852/#2861', note: 'Sync sign-in and credential handling remain pending.' },
@@ -39,7 +39,7 @@ export const DESTINATION_INVENTORY: readonly DestinationMapping[] = [
   { oldDestination: 'WorkspaceRoots', newRoute: 'pending-workspaces', status: 'planned', owner: '#2851', note: 'Workspace root management is not part of this slice.' },
   { oldDestination: 'AddWorkspaceRoot', newRoute: 'pending-workspaces', status: 'planned', owner: '#2851', note: 'Workspace root registration is not part of this slice.' },
   { oldDestination: 'ClearReports', newRoute: 'diagnostics-clear', status: 'available', owner: '#2861', note: 'Local diagnostics have an explicit confirm-and-clear route.' },
-  { oldDestination: 'Language', newRoute: 'settings-voice', status: 'information-only', owner: '#2857', note: 'Language selection follows the supported recognizer configuration and is pending.' },
+  { oldDestination: 'Language', newRoute: 'settings-voice', status: 'available', owner: '#2857', note: 'The persisted language hint is applied to the next Android recognizer start.' },
   { oldDestination: 'Grace', newRoute: 'settings-connections', status: 'available', owner: '#2861', note: 'Grace duration is chosen inline on the connection settings screen.' },
 ];
 

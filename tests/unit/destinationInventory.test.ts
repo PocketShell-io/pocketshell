@@ -24,7 +24,7 @@ describe('pre-rewrite destination inventory', () => {
     for (const destination of currentDestinations) {
       expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === destination)?.status).toBe('available');
     }
-    expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === 'VoiceSettings')?.status).toBe('information-only');
+    expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === 'VoiceSettings')?.status).toBe('available');
     expect(REQUIRED_OLD_DESTINATIONS.length).toBe(DESTINATION_INVENTORY.length);
   });
 });
