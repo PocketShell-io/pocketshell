@@ -6,14 +6,11 @@ import {
 } from '@pocketshell/core';
 
 export type MobileHotkeysPage = 'main' | 'ctrl';
-export interface MobileHotkeysPoint { left: number; top: number }
-export interface MobileHotkeysRect { left: number; top: number; width: number; height: number }
 
 export interface MobileHotkeysState {
   enabled: boolean;
   paletteOpen: boolean;
   page: MobileHotkeysPage;
-  dragPosition: MobileHotkeysPoint | null;
 }
 
 export interface MobileHotkeysPointerStart {
@@ -21,12 +18,6 @@ export interface MobileHotkeysPointerStart {
   isPrimary: boolean;
   pointerId: number;
   timeStamp: number;
-}
-
-export interface MobileHotkeysDragStart extends MobileHotkeysPointerStart {
-  clientX: number;
-  clientY: number;
-  targetIsControl: boolean;
 }
 
 export interface MobileHotkeysEmitter {
@@ -41,7 +32,7 @@ function isHoldable(key: TerminalKeyId): key is HoldableControlKey {
 }
 
 export function createMobileHotkeysState(enabled: boolean): MobileHotkeysState {
-  return { enabled, paletteOpen: false, page: 'main', dragPosition: null };
+  return { enabled, paletteOpen: false, page: 'main' };
 }
 
 /**
@@ -55,19 +46,10 @@ export function createMobileHotkeysActions(
   holdThresholdMs = DEFAULT_HOLD_THRESHOLD_MS,
 ) {
   let holdPointer: { key: HoldableControlKey; pointerId: number; startedAt: number } | null = null;
-  let dragPointer: {
-    pointerId: number;
-    startX: number;
-    startY: number;
-    startLeft: number;
-    startTop: number;
-  } | null = null;
-
   function setPaletteOpen(open: boolean): void {
     if (open && !state.enabled) return;
     if (state.paletteOpen === open) return;
     state.paletteOpen = open;
-    dragPointer = null;
     if (open) state.page = 'main';
     emitter.paletteChange(open);
   }
@@ -88,7 +70,6 @@ export function createMobileHotkeysActions(
       state.enabled = enabled;
       if (enabled) return;
       holdPointer = null;
-      dragPointer = null;
       setPaletteOpen(false);
     },
     openPalette(): void { setPaletteOpen(true); },
@@ -123,41 +104,6 @@ export function createMobileHotkeysActions(
       if (holdPointer?.pointerId !== pointerId) return;
       sendControlGesture(holdPointer.key, 'cancel');
       holdPointer = null;
-    },
-    beginDrag(start: MobileHotkeysDragStart, bounds: MobileHotkeysRect, card: MobileHotkeysRect): boolean {
-      if (!state.enabled || !state.paletteOpen || start.button !== 0 || !start.isPrimary || start.targetIsControl) return false;
-      dragPointer = {
-        pointerId: start.pointerId,
-        startX: start.clientX,
-        startY: start.clientY,
-        startLeft: card.left - bounds.left,
-        startTop: card.top - bounds.top,
-      };
-      return true;
-    },
-    moveDrag(pointerId: number, clientX: number, clientY: number, bounds: MobileHotkeysRect, card: MobileHotkeysRect): void {
-      if (dragPointer == null || dragPointer.pointerId !== pointerId) return;
-      const maxLeft = Math.max(0, bounds.width - card.width);
-      const maxTop = Math.max(0, bounds.height - card.height);
-      const left = dragPointer.startLeft + clientX - dragPointer.startX;
-      const top = dragPointer.startTop + clientY - dragPointer.startY;
-      state.dragPosition = {
-        left: Math.min(maxLeft, Math.max(0, left)),
-        top: Math.min(maxTop, Math.max(0, top)),
-      };
-    },
-    clampDrag(bounds: MobileHotkeysRect, card: MobileHotkeysRect): void {
-      if (state.dragPosition == null) return;
-      const clamped = {
-        left: Math.min(Math.max(0, bounds.width - card.width), Math.max(0, state.dragPosition.left)),
-        top: Math.min(Math.max(0, bounds.height - card.height), Math.max(0, state.dragPosition.top)),
-      };
-      if (clamped.left !== state.dragPosition.left || clamped.top !== state.dragPosition.top) {
-        state.dragPosition = clamped;
-      }
-    },
-    finishDrag(pointerId: number): void {
-      if (dragPointer?.pointerId === pointerId) dragPointer = null;
     },
   };
 }

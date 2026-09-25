@@ -165,7 +165,6 @@ button { color: inherit; }
   padding: 10px;
 }
 .live-workspace .terminal-slot {
-  position: relative;
   display: flex;
   min-width: 0;
   min-height: max(120px, var(--terminal-min-grid-height, 110px));
@@ -174,8 +173,22 @@ button { color: inherit; }
   overflow: hidden;
 }
 .live-workspace .terminal-slot--hotkeys {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 56px);
-  padding-bottom: 56px;
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 48px);
+}
+.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-main {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 96px);
+}
+.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 148px);
+}
+.live-workspace .terminal-slot--hotkeys.terminal-slot--dictation-status {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 80px);
+}
+.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-main.terminal-slot--dictation-status {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 128px);
+}
+.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl.terminal-slot--dictation-status {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 180px);
 }
 .live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
 .live-workspace .terminal-slot > .terminal-viewport {
@@ -249,48 +262,47 @@ button { color: inherit; }
 .terminal-viewport .xterm { height: 100%; }
 .terminal-viewport .xterm-viewport { overflow-y: auto !important; }
 .panel-footnote { margin: 9px 0 0; color: var(--fg-muted); font-size: var(--fs-100); line-height: 1.45; }
-.terminal-dictation-bar {
-  display: flex;
-  min-width: 0;
-  min-height: 56px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-  border-top: 1px solid var(--border-soft);
-  padding-top: 7px;
-}
-.terminal-dictation-copy { min-width: 0; flex: 1 1 auto; }
-.terminal-dictation-message, .terminal-dictation-preview {
-  overflow: hidden;
-  margin: 0;
-  font-size: var(--fs-100);
-  line-height: 1.4;
-  text-overflow: ellipsis;
-}
-.terminal-dictation-message { color: var(--fg-muted); }
-.terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); white-space: nowrap; }
-.terminal-dictation-bar[data-dictation-tone="success"] .terminal-dictation-message { color: var(--success); }
-.terminal-dictation-bar[data-dictation-tone="warning"] .terminal-dictation-message { color: var(--warning); }
-.terminal-dictation-bar[data-dictation-tone="error"] .terminal-dictation-message { color: var(--error); }
+.terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); }
 .terminal-dictation-button {
   display: inline-flex;
-  min-width: 82px;
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  height: 48px;
   min-height: 48px;
-  flex: 0 0 auto;
+  max-height: 48px;
+  flex: 0 0 48px;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   background: var(--surface-2);
-  padding: 0 11px;
+  padding: 0;
   color: var(--fg);
   font-size: var(--fs-100);
   font-weight: 600;
 }
 .terminal-dictation-button svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.terminal-dictation-button--active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
-.terminal-dictation-button:disabled { opacity: 0.5; }
+.terminal-dictation-button--listening:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-2);
+  color: var(--accent);
+  box-shadow: none;
+}
+.terminal-dictation-button--transcribing:not(:disabled) {
+  border-color: var(--warning);
+  background: var(--surface-2);
+  color: var(--warning);
+  box-shadow: none;
+}
+.terminal-dictation-button:disabled {
+  border-color: transparent;
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  opacity: 1;
+  box-shadow: none;
+}
 .composer-panel { display: grid; gap: 10px; }
 .composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-heading h3 { margin: 0; color: var(--fg); font-size: var(--fs-400); font-weight: 600; line-height: 1.3; }
@@ -627,4 +639,87 @@ button { color: inherit; }
 
 @media (max-width: 460px) {
   .migration-error { align-items: stretch; flex-direction: column; }
+}
+
+@media (max-width: 719px) {
+  /* Catalog rows and active inline status grow the in-flow dock. Compact the
+     composer while these states are visible so xterm keeps its accepted grid. */
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
+    height: 100px;
+    min-height: 100px;
+    max-height: 100px;
+    flex: 0 0 100px;
+    gap: 4px;
+    overflow: hidden;
+    padding: 0;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-heading,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-status { display: none; }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-draft {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 4px 8px;
+    resize: none;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-actions {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    gap: 4px;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-discard,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-insert,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-shared-controls .send {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+  }
+}
+
+@media (max-width: 719px) {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .terminal-panel {
+    gap: 2px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace {
+    gap: 1px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace .terminal-panel {
+    gap: 1px;
+    padding-block: 1px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal {
+    min-height: 18px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal h2 {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal .state-tag {
+    padding: 1px 4px;
+    font-size: 9px;
+    line-height: 1.1;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .home-screen--workspace {
+    padding-block: 0;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace > .composer-panel {
+    height: 96px;
+    min-height: 96px;
+    max-height: 96px;
+    flex: 0 0 96px;
+    gap: 0;
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .terminal-viewport {
+    height: var(--terminal-viewport-dock-cap);
+    min-height: var(--terminal-viewport-dock-cap);
+    max-height: var(--terminal-viewport-dock-cap);
+    flex: 0 0 var(--terminal-viewport-dock-cap);
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid {
+    min-height: calc(var(--terminal-viewport-dock-cap) + var(--terminal-hotkeys-dock-height) + 1px);
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .mobile-hotkeys {
+    margin-top: 1px;
+  }
 }

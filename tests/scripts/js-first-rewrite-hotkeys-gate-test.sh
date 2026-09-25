@@ -43,6 +43,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str) -> 
         ("same-run fast-key JUnit result", "--results-dir android/app/build/outputs/js-hotkeys"),
         ("run-scoped fast-key artifact upload", "name: Upload packaged JS fast-key run evidence"),
         ("fast-key output bundle", "android/app/build/outputs/js-hotkeys/"),
+        ("same-run resize and geometry trace collector", "-s PS2884Asset:I PS2884Geometry:I"),
         ("isolated fixture diagnostics", "docker logs pocketshell-test-agents-2243"),
         ("composer result copy upload", "android/app/build/outputs/js-composer-results/TEST-*.xml"),
         ("composer lane JUnit copy before fastkeys", "composer_results_dir=\"android/app/build/outputs/js-composer-results\""),
@@ -54,6 +55,11 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str) -> 
         ("isolated fixture teardown", "scripts/agents-pool.sh down 2243 2245"),
         ("fast-key runner exact JUnit guard", 'check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"'),
         ("run-scoped Android evidence", "android/app/build/outputs/js-hotkeys/$ARTIFACT_RUN_ID"),
+        ("dictation final byte oracle is read from this run's journey", 'journey.get("dictation")'),
+        ("dictation bytes are checked on the host fixture", 'dictation PTY bytes mismatch'),
+        ("dictation raw byte count is checked", 'dictation raw byte file length mismatch'),
+        ("dictation listening screenshot is uploaded", "fastkeys-dictation-listening-ime-open.png"),
+        ("dictation reattach screenshot is uploaded", "fastkeys-dictation-reattached-ime-open.png"),
     )
     for label, needle in required:
         combined = source + packaged_lanes + packaged_runner
@@ -171,6 +177,36 @@ if "firstDoneMarker" not in journey or "resumedDoneMarker" not in journey:
 if "after-reconnect-loss" not in journey or "after-reconnect-loss" not in extractor \
         or "hotkeyControls" not in journey or "hotkeyControls" not in extractor:
     raise AssertionError("post-reattach loss evidence must capture and validate every live-only hotkey control")
+
+for swipe_contract in (
+    "private void swipeFastKeyIntoView(String selector)",
+    "MAX_CATALOG_SWIPE_ATTEMPTS = 8",
+    "private void injectSwipe(float startX, float startY, float endX, float endY)",
+    "MotionEvent.ACTION_MOVE",
+    "towardEnd ? offsetDelta > 0.5 : offsetDelta < -0.5",
+    "insideContent:r.left>=c.left-0.5",
+):
+    if swipe_contract not in journey:
+        raise AssertionError(f"packaged fast-key journey omits physical catalog swipe proof: {swipe_contract}")
+for mutation in ("container.scrollLeft+=", "container.scrollLeft-=", "container.scrollTop+=", "container.scrollTop-="):
+    if mutation in journey:
+        raise AssertionError(f"catalog reachability may not be faked by mutating scroll position in JS: {mutation}")
+for geometry_contract in ("intersectsComposerPanel", "inlineDictationBarInsideTray"):
+    if geometry_contract not in journey or geometry_contract not in extractor:
+        raise AssertionError(f"fast-key tray evidence omits the no-overlap geometry contract: {geometry_contract}")
+for dictation_contract in (
+    "inlineDictationMicInsideBar",
+    "inlineDictationMicCount",
+    "inlineDictationTargetKey",
+    "sshAttachEpoch",
+    "dictation-final-awaiting-stopped",
+    "dictation-attach-cancel-complete",
+    "dictation-background-cancel-resumed",
+):
+    if dictation_contract not in journey or dictation_contract not in extractor:
+        raise AssertionError(f"combined fast-key journey omits the integrated dictation contract: {dictation_contract}")
+if "validate_dictation_behavior(journey)" not in extractor or "expectedHostHex" not in extractor:
+    raise AssertionError("artifact validator must fail closed on partial/final/Stop/error/reattach dictation behavior")
 
 print("PASS: rewrite CI runs the API 35 fast-key Docker journey, checks exact JUnit, aggregates lane status, and uploads same-run evidence")
 print("PASS: fast-key runner and shared packaged-lanes wrapper parse and preserve focus/IME evidence")

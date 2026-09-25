@@ -15,6 +15,9 @@ const props = defineProps<{
   silenceWindowMs: number;
   insertText: (targetKey: string, text: string) => Promise<boolean>;
 }>();
+const emit = defineEmits<{
+  stateChange: [state: InlineDictationState];
+}>();
 
 const state = ref<InlineDictationState>({
   phase: 'idle',
@@ -26,7 +29,10 @@ const controller = createInlineDictationController({
   startDictation: (onEvent, settings) => platformInput.startDictation(onEvent, settings),
   insertText: (targetKey, text) => props.insertText(targetKey, text),
 });
-const stopWatching = controller.subscribe((next) => { state.value = next; });
+const stopWatching = controller.subscribe((next) => {
+  state.value = next;
+  emit('stateChange', next);
+});
 let appStateListener: PluginListenerHandle | null = null;
 let disposed = false;
 let previousTargetKey = props.targetKey;
@@ -74,11 +80,11 @@ function toggleDictation() {
 }
 
 const buttonText = () => {
-  if (state.value.phase === 'starting') return 'Cancel';
-  if (state.value.phase === 'listening') return 'Stop';
-  if (state.value.phase === 'stopping' || state.value.phase === 'cancelling') return 'Finishing';
-  if (state.value.phase === 'inserting') return 'Inserting';
-  return 'Dictate';
+  if (state.value.phase === 'starting') return 'Cancel terminal dictation';
+  if (state.value.phase === 'listening') return 'Stop terminal dictation';
+  if (state.value.phase === 'stopping' || state.value.phase === 'cancelling') return 'Transcribing terminal speech';
+  if (state.value.phase === 'inserting') return 'Inserting terminal speech';
+  return 'Dictate to terminal';
 };
 
 const buttonDisabled = () => !props.enabled
@@ -86,47 +92,36 @@ const buttonDisabled = () => !props.enabled
   || ['stopping', 'cancelling', 'inserting'].includes(state.value.phase);
 
 const buttonLabel = () => {
-  if (state.value.phase === 'listening') return 'Stop dictation';
-  if (state.value.phase === 'starting') return 'Cancel dictation request';
-  if (buttonDisabled()) return 'Dictation unavailable';
-  return 'Dictate into the terminal';
+  if (state.value.phase === 'listening') return 'Stop terminal dictation';
+  if (state.value.phase === 'starting') return 'Cancel terminal dictation request';
+  if (state.value.phase === 'stopping' || state.value.phase === 'cancelling') return 'Transcribing terminal speech';
+  if (state.value.phase === 'inserting') return 'Inserting terminal speech';
+  if (buttonDisabled()) return 'Terminal dictation unavailable';
+  return 'Dictate to terminal';
 };
 </script>
 
 <template>
-  <div
-    class="terminal-dictation-bar"
-    data-testid="inline-dictation-bar"
-    :data-phase="state.phase"
-    :data-dictation-tone="state.tone"
+  <button
+    class="terminal-dictation-button"
+    :class="{
+      'terminal-dictation-button--listening': state.phase === 'listening',
+      'terminal-dictation-button--transcribing': ['stopping', 'inserting'].includes(state.phase),
+    }"
+    type="button"
+    data-testid="inline-dictation-toggle"
+    :data-mic-state="state.phase === 'listening' ? 'listening' : ['stopping', 'inserting'].includes(state.phase) ? 'transcribing' : buttonDisabled() ? 'disabled' : 'idle'"
+    :aria-label="buttonLabel()"
+    :title="buttonLabel()"
+    :aria-pressed="state.phase === 'listening'"
+    :disabled="buttonDisabled()"
+    @click="toggleDictation"
   >
-    <div class="terminal-dictation-copy">
-      <p class="terminal-dictation-message" data-testid="inline-dictation-status" role="status" aria-live="polite">
-        {{ state.message }}
-      </p>
-      <p v-if="state.preview" class="terminal-dictation-preview" data-testid="inline-dictation-preview" aria-live="off">
-        {{ state.preview }}
-      </p>
-    </div>
-    <button
-      class="terminal-dictation-button"
-      :class="{ 'terminal-dictation-button--active': state.phase === 'listening' || state.phase === 'stopping' }"
-      type="button"
-      data-testid="inline-dictation-toggle"
-      :aria-label="buttonLabel()"
-      :aria-pressed="state.phase === 'listening' || state.phase === 'stopping'"
-      :disabled="buttonDisabled()"
-      @click="toggleDictation"
-    >
-      <svg v-if="state.phase !== 'listening' && state.phase !== 'stopping'" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
-        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-        <path d="M12 19v3M8 22h8" />
-      </svg>
-      <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="6" y="6" width="12" height="12" rx="2" />
-      </svg>
-      <span>{{ buttonText() }}</span>
-    </button>
-  </div>
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <path d="M12 19v3M8 22h8" />
+    </svg>
+    <span class="sr-only">{{ buttonText() }}</span>
+  </button>
 </template>

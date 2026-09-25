@@ -22,8 +22,8 @@ Usage: scripts/connected-js-hotkeys-docker.sh --port 2243|2244|2245 [--session-p
 
 Builds and runs the packaged Android fast-key journey against a healthy agents
 fixture lane, then compares the captured PTY files with an independent SSH
-host-side byte oracle. The run records API 35 IME, Back, palette, and screenshot
-evidence. It uses the shared Gradle-output and Android-device locks.
+host-side byte oracle. The run records API 35 IME, Back, docked tray, key
+reachability, and screenshot evidence. It uses the shared Gradle-output and Android-device locks.
 
 Start an unclaimed lane with scripts/agents-pool.sh up PORT first. This runner
 does not create or tear down Docker state.
@@ -171,7 +171,7 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I > "$asset_logcat" 2>&1 &
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I > "$asset_logcat" 2>&1 &
 asset_logcat_pid=$!
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live fast-key artifact logcat collector'
@@ -208,24 +208,59 @@ stop_asset_logcat
 ssh_remote() { ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"; }
 first_raw="$SESSION_BASE-keys-bytes.raw"
 resumed_raw="$SESSION_BASE-keys-resumed-bytes.raw"
+dictation_raw="$SESSION_BASE-keys-dictation.raw"
 first_hex="$(ssh_remote "od -An -tx1 /tmp/$first_raw | tr -d '[:space:]'")"
 resumed_hex="$(ssh_remote "od -An -tx1 /tmp/$resumed_raw | tr -d '[:space:]'")"
+dictation_oracle="$(python3 - "$evidence_dir/fastkeys-journey.json" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as source:
+    journey = json.load(source)
+dictation = journey.get("dictation")
+if not isinstance(dictation, dict):
+    raise SystemExit("FAIL: integrated dictation evidence is missing")
+raw_file = dictation.get("rawFile")
+expected_hex = dictation.get("expectedHostHex")
+expected_count = dictation.get("expectedByteCount")
+if not isinstance(raw_file, str) or not re.fullmatch(r"/tmp/[A-Za-z0-9._-]+-keys-dictation\.raw", raw_file):
+    raise SystemExit("FAIL: dictation raw file path is unsafe or malformed")
+if not isinstance(expected_hex, str) or not re.fullmatch(r"(?:[0-9a-f]{2})+", expected_hex):
+    raise SystemExit("FAIL: dictation expected host bytes are unsafe or malformed")
+if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count != len(expected_hex) // 2:
+    raise SystemExit("FAIL: dictation byte count does not match the journey manifest")
+print(f"{raw_file}\t{expected_hex}\t{expected_count}")
+PY
+)" || fail 'could not read the integrated dictation host byte oracle'
+IFS=$'\t' read -r dictation_raw_path expected_dictation_hex expected_dictation_count <<< "$dictation_oracle"
+[[ "$dictation_raw_path" == "/tmp/$dictation_raw" ]] || fail "unexpected dictation raw file: ${dictation_raw_path:-<empty>}"
 expected_first='1b5b411b5b421b091b5b5a110303030404040d'
 expected_resumed='1b5b41'
 [[ "$first_hex" == "$expected_first" ]] \
   || fail "remote fast-key PTY bytes mismatch: expected $expected_first, got ${first_hex:-<empty>}"
 [[ "$resumed_hex" == "$expected_resumed" ]] \
   || fail "reattached-session PTY bytes mismatch: expected $expected_resumed, got ${resumed_hex:-<empty>}"
+dictation_hex="$(ssh_remote "od -An -tx1 /tmp/$dictation_raw | tr -d '[:space:]'")"
+[[ "$dictation_hex" == "$expected_dictation_hex" ]] \
+  || fail "dictation PTY bytes mismatch: expected $expected_dictation_hex, got ${dictation_hex:-<empty>}"
 first_count="$(ssh_remote "wc -c < /tmp/$first_raw | tr -d '[:space:]'")"
 resumed_count="$(ssh_remote "wc -c < /tmp/$resumed_raw | tr -d '[:space:]'")"
+dictation_count="$(ssh_remote "wc -c < /tmp/$dictation_raw | tr -d '[:space:]'")"
 [[ "$first_count" == 19 && "$resumed_count" == 3 ]] \
   || fail "remote raw byte file lengths mismatch: first=${first_count:-?} resumed=${resumed_count:-?}"
+[[ "$dictation_count" == "$expected_dictation_count" ]] \
+  || fail "dictation raw byte file length mismatch: expected=$expected_dictation_count got=${dictation_count:-?}"
 {
   printf 'PASS: first live session exact PTY bytes (%s bytes): %s\n' "$first_count" "$first_hex"
   printf 'PASS: reattached live session exact PTY bytes (%s bytes): %s\n' "$resumed_count" "$resumed_hex"
-  printf 'screenshot_sha256='; sha256sum "$evidence_dir/fastkeys-ime-open.png" "$evidence_dir/fastkeys-palette-ime-open.png" \
-    "$evidence_dir/fastkeys-palette-ime-dismissed.png" "$evidence_dir/fastkeys-palette-closed.png" \
-    "$evidence_dir/fastkeys-reconnected-ime-open.png"
+  printf 'PASS: docked dictation exact PTY bytes (%s bytes): %s\n' "$dictation_count" "$dictation_hex"
+  printf 'screenshot_sha256='; sha256sum "$evidence_dir/fastkeys-ime-open.png" "$evidence_dir/fastkeys-tray-main-ime-open.png" \
+    "$evidence_dir/fastkeys-tray-ctrl-ime-open.png" "$evidence_dir/fastkeys-tray-ime-dismissed.png" \
+    "$evidence_dir/fastkeys-tray-closed.png" \
+    "$evidence_dir/fastkeys-reconnected-ime-open.png" \
+    "$evidence_dir/fastkeys-dictation-listening-ime-open.png" \
+    "$evidence_dir/fastkeys-dictation-reattached-ime-open.png"
 } | tee "$evidence_dir/hotkeys-host-oracle.txt"
 
 printf 'Evidence directory: %s\n' "$evidence_dir"

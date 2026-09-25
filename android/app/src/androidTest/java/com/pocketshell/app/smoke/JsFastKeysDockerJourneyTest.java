@@ -19,6 +19,7 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.lifecycle.Lifecycle;
 
 import com.pocketshell.app.MainActivity;
 
@@ -48,6 +49,7 @@ public final class JsFastKeysDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final int ASSET_CHUNK_SIZE = 2_800;
+    private static final int MAX_CATALOG_SWIPE_ATTEMPTS = 8;
 
     private ActivityScenario<MainActivity> scenario;
     private String artifactRunId;
@@ -78,10 +80,14 @@ public final class JsFastKeysDockerJourneyTest {
         assertNotNull("pass the fixture key with sshPrivateKeyBase64", encodedKey);
         assertNotNull("pass a unique fast-key session prefix with sshSessionName", nameBase);
         firstSession = nameBase + "-keys";
+        String dictationTargetSession = nameBase + "-dictation-target";
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        installControlledSpeechAdapter();
         evalString("window.__ps2857CaptureTerminalEvidence = true; window.__ps2884HotkeyWrites = [];"
+                + "window.__ps2884CaptureResizeFitEvidence = true; window.__ps2884ResizeFitEvents = [];"
+                + "window.__ps2884ResizeAckEvents = []; window.__ps2884ResizeFitMarker = 'journey-start';"
                 + "window.__ps2884PointerEvents = []; window.__ps2884FocusEvents = [];"
                 + "for (const type of ['pointerdown','pointerup','pointercancel','click']) window.addEventListener(type, event => {"
                 + "const button=event.target instanceof Element ? event.target.closest('button') : null;"
@@ -101,6 +107,7 @@ public final class JsFastKeysDockerJourneyTest {
         long connectToPromptStartedAt = SystemClock.uptimeMillis();
         connect(host, port, privateKey);
         createSession(firstSession);
+        createSession(dictationTargetSession);
         attachSession(firstSession);
         awaitTerminalResizeIdle();
         awaitJsTrue("!!document.querySelector('[data-testid=prompt-draft]')"
@@ -120,6 +127,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.keyboardVisible === 'true'");
         JSONObject keyboardGeometry = captureGeometry("keyboard-up-compact-row");
         assertHotkeyBarReachable(keyboardGeometry);
+        assertDictationMicReachable(keyboardGeometry);
         assertTrue("keyboard-up screenshot must include visible Android IME", isImeVisible());
         captureScreenshot("fastkeys-ime-open.png");
 
@@ -130,51 +138,89 @@ public final class JsFastKeysDockerJourneyTest {
         awaitHotkeyWrites(2);
         awaitImeVisible(true, 3_000);
         JSONObject afterNavigationTaps = captureGeometry("after-navigation-row-taps");
+        assertDictationMicReachable(afterNavigationTaps);
         assertTrue("quick navigation taps must keep the keyboard row active", afterNavigationTaps.getBoolean("keyboardVisible"));
         assertTrue("quick navigation taps must leave the Android IME open", afterNavigationTaps.getJSONObject("androidIme").getBoolean("visible"));
 
         int resizeAcksBeforePalette = terminalResizeAcks();
-        JSONObject gridBeforePalette = runtimeGrid(captureGeometry("before-palette"));
+        JSONObject beforeTray = captureGeometry("before-fast-keys");
+        JSONObject gridBeforePalette = runtimeGrid(beforeTray);
         tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
         SystemClock.sleep(300);
-        JSONObject paletteGeometry = captureGeometry("palette-open-ime-up");
-        JSONObject gridWithPalette = runtimeGrid(paletteGeometry);
-        assertEquals("opening the floating palette must keep xterm columns", gridBeforePalette.getInt("cols"), gridWithPalette.getInt("cols"));
-        assertEquals("opening the floating palette must keep xterm rows", gridBeforePalette.getInt("rows"), gridWithPalette.getInt("rows"));
-        assertEquals("opening the floating palette must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
-        assertPaletteInsideTerminalSlot(paletteGeometry);
-        captureScreenshot("fastkeys-palette-ime-open.png");
-
-        dragPaletteHeader();
-        JSONObject draggedPalette = captureGeometry("palette-dragged-ime-up");
-        assertPaletteInsideTerminalSlot(draggedPalette);
-        assertTrue("dragging the palette header must move the card", paletteMoved(paletteGeometry, draggedPalette));
+        JSONObject mainTrayGeometry = captureGeometry("fast-keys-main-open-ime-up");
+        JSONObject gridWithMainTray = runtimeGrid(mainTrayGeometry);
+        assertTerminalViewportCap("opening the main fast-key tray", beforeTray, mainTrayGeometry);
+        assertUnchangedTerminalGrid("opening the main fast-key tray", gridBeforePalette, gridWithMainTray);
+        assertAtLeastFiveRows("main fast-key catalog", mainTrayGeometry);
+        assertEquals("opening the main fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
+        assertTrayBelowTerminalViewport(mainTrayGeometry);
+        assertDictationMicReachable(mainTrayGeometry);
+        assertHotkeyBarReachable(mainTrayGeometry);
+        JSONArray mainCatalogKeys = assertCatalogReachable(".mobile-hotkeys__main-keys", 10);
+        JSONObject mainCatalogGeometry = captureGeometry("fast-keys-main-catalog-reachable");
+        assertTerminalViewportCap("scrolling the main fast-key catalog", beforeTray, mainCatalogGeometry);
+        assertDictationMicReachable(mainCatalogGeometry);
+        assertHotkeyBarReachable(mainCatalogGeometry);
+        assertAtLeastFiveRows("scrolled main fast-key catalog", mainCatalogGeometry);
+        captureScreenshot("fastkeys-tray-main-ime-open.png");
 
         sendPaletteKey("escape");
         sendPaletteKey("tab");
         sendPaletteKey("shift-tab");
-        scrollPaletteTo("[data-testid=mobile-hotkeys-open-ctrl-page]");
         tapDomCenter("[data-testid=mobile-hotkeys-open-ctrl-page]");
-        awaitJsTrue("!!document.querySelector('[data-testid=mobile-hotkeys-ctrl-page]')");
-        scrollPaletteTo("[data-key-id='ctrl-q']");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.palettePage === 'ctrl'");
+        JSONObject ctrlTrayGeometry = captureGeometry("fast-keys-ctrl-open-ime-up");
+        assertTerminalViewportCap("opening the Ctrl fast-key tray", beforeTray, ctrlTrayGeometry);
+        assertTrayBelowTerminalViewport(ctrlTrayGeometry);
+        assertDictationMicReachable(ctrlTrayGeometry);
+        assertHotkeyBarReachable(ctrlTrayGeometry);
+        JSONObject gridWithCtrlTray = runtimeGrid(ctrlTrayGeometry);
+        assertUnchangedTerminalGrid("opening the Ctrl fast-key tray", gridBeforePalette, gridWithCtrlTray);
+        assertEquals("opening the Ctrl fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
+        assertTrue("the IME-up Ctrl tray must compact the composer to at most 104dp: " + ctrlTrayGeometry,
+                ctrlTrayGeometry.getJSONObject("composerPanel").getDouble("height") <= 104.1);
+        if (gridWithCtrlTray.getInt("rows") < 5) {
+            throw new AssertionError("Ctrl fast keys must leave at least five terminal rows visible: " + ctrlTrayGeometry);
+        }
+        JSONArray ctrlCatalogKeys = assertCatalogReachable(".mobile-hotkeys__ctrl-grid", 27);
+        journey.put("catalogReachability", new JSONObject()
+                .put("mainKeys", mainCatalogKeys)
+                .put("ctrlKeys", ctrlCatalogKeys));
+        JSONObject ctrlCatalogGeometry = captureGeometry("fast-keys-ctrl-catalog-reachable");
+        assertTerminalViewportCap("scrolling the Ctrl fast-key catalog", beforeTray, ctrlCatalogGeometry);
+        assertDictationMicReachable(ctrlCatalogGeometry);
+        assertHotkeyBarReachable(ctrlCatalogGeometry);
+        captureScreenshot("fastkeys-tray-ctrl-ime-open.png");
         sendPaletteKey("ctrl-q");
         tapDomCenter("[aria-label='Back to terminal hotkeys']");
         awaitJsTrue("!!document.querySelector('[data-testid=mobile-hotkeys-main-page]')");
-        scrollPaletteTo("[data-key-id='ctrl-c']");
         sendControl("ctrl-c", false);
         sendControl("ctrl-c", true);
-        scrollPaletteTo("[data-key-id='ctrl-d']");
         sendControl("ctrl-d", false);
         sendControl("ctrl-d", true);
         cancelControlPress("ctrl-c");
 
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
+        awaitRenderedFrame();
+        JSONObject closedTrayGeometry = captureGeometry("fast-keys-closed-ime-up");
+        assertDictationMicReachable(closedTrayGeometry);
+        assertUnchangedTerminalGrid("closing the fast-key tray", gridBeforePalette, runtimeGrid(closedTrayGeometry));
+        assertEquals("closing the fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
+        assertEquals("closed navigation lane must stay at 48dp", 48,
+                (int) closedTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
+        assertEquals("open main catalog must add one normal-flow row beneath persistent keys", 96,
+                (int) mainTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
+        assertHotkeyBarReachable(closedTrayGeometry);
+
         int writesBeforeEnter = hotkeyWrites().length();
         int pointerEventsBeforeEnter = pointerEventCount();
-        // Measure the actual hotkey tap through the rendered host completion marker.
+        // Enter stays on the one-tap navigation row, outside the open palette.
+        // Measure its physical tap through the rendered host completion marker.
         long tapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
         tapDomCenter("[data-key-id='enter']");
-        assertTrue("compact Enter must receive the tap while the floating palette is open",
+        assertTrue("compact Enter must receive the physical tap after closing the palette",
                 hotkeyClickSince("enter", pointerEventsBeforeEnter));
         awaitHotkeyWrites(writesBeforeEnter + 1);
         awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(firstDone) + ")", 15_000);
@@ -186,27 +232,50 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("firstHotkeyWrites", hotkeyWrites());
         journey.put("firstSessionRawFile", firstRaw);
 
+        exerciseDockedDictation(nameBase, dictationTargetSession);
+
+        // The dictation journey switches sessions and backgrounds/resumes the
+        // app. Re-establish the exact precondition for the layered Back check
+        // instead of assuming either the IME or the palette survived that flow.
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.activeElement?.matches('[data-testid=prompt-draft]') === true");
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        awaitImeVisible(true);
+        JSONObject backLayerPrecondition = captureGeometry("fast-keys-open-ime-up-before-back");
+        assertHotkeyBarReachable(backLayerPrecondition);
+        assertDictationMicReachable(backLayerPrecondition);
+        journey.put("backLayerPrecondition", backLayerPrecondition);
+
         int writesBeforeBack = hotkeyWrites().length();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitImeVisible(false);
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 10_000);
         awaitRenderedFrame();
-        JSONObject paletteAfterImeBack = captureGeometry("palette-open-ime-dismissed");
-        assertPaletteInsideTerminalSlot(paletteAfterImeBack);
+        JSONObject trayAfterImeBack = captureGeometry("fast-keys-open-ime-dismissed");
+        assertTrayBelowTerminalViewport(trayAfterImeBack);
+        assertDictationMicReachable(trayAfterImeBack);
         assertEquals("Android Back dismissing the IME must not send a terminal byte", writesBeforeBack, hotkeyWrites().length());
-        captureScreenshot("fastkeys-palette-ime-dismissed.png");
+        captureScreenshot("fastkeys-tray-ime-dismissed.png");
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
         awaitRenderedFrame();
-        assertTrue("Android Back must render the palette as absent before capturing the closed state",
-                "true".equals(evalRaw("!document.querySelector('[data-testid=mobile-hotkeys-palette]')"
+        assertTrue("Android Back must close the docked tray before capturing the closed state",
+                "true".equals(evalRaw("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'"
+                        + " && !document.querySelector('[data-testid=mobile-hotkeys-main-page]')"
+                        + " && !document.querySelector('[data-testid=mobile-hotkeys-ctrl-page]')"
                         + " && document.querySelector('[data-testid=mobile-hotkeys-launcher]')?.getAttribute('aria-expanded') === 'false'")));
         assertEquals("Android Back closing the palette must not send a terminal byte", writesBeforeBack, hotkeyWrites().length());
-        captureScreenshot("fastkeys-palette-closed.png");
+        captureScreenshot("fastkeys-tray-closed.png");
         JSONObject beforeReconnectGeometry = captureGeometry("before-reconnect");
 
         click("[data-testid=ssh-disconnect]");
@@ -280,6 +349,7 @@ public final class JsFastKeysDockerJourneyTest {
                 && afterReconnectGeometry.getBoolean("keyboardComposerMode"));
         JSONObject reattachedGrid = runtimeGrid(afterReconnectGeometry);
         assertHotkeyBarReachable(afterReconnectGeometry);
+        assertDictationMicReachable(afterReconnectGeometry);
         assertHotkeyBarWithinTerminalPanel(afterReconnectGeometry);
         if (reattachedGrid.getInt("rows") < 5) {
             throw new AssertionError("reattached terminal must retain at least five visible rows; before="
@@ -319,7 +389,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("the reattached live session must emit the expected arrow bytes", expectedFinalWrites.toString(), hotkeyWrites().toString());
         journey.put("allHotkeyWrites", hotkeyWrites());
         journey.put("resumedSessionRawFile", resumedRaw);
-        journey.put("finalGeometry", captureGeometry("reconnected-keybar-ime-up"));
+        JSONObject reconnectedKeybarGeometry = captureGeometry("reconnected-keybar-ime-up");
+        assertDictationMicReachable(reconnectedKeybarGeometry);
+        journey.put("finalGeometry", reconnectedKeybarGeometry);
         journey.put("beforeReconnectGeometry", beforeReconnectGeometry);
         journey.put("afterReconnectGeometry", afterReconnectGeometry);
         assertTrue("resumed session must keep the Android IME open", isImeVisible());
@@ -339,6 +411,367 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("geometryTrace", geometryTrace);
         journey.put("androidApi", Build.VERSION.SDK_INT);
         emitArtifact("fastkeys-journey.json", journey.toString(2).getBytes(StandardCharsets.UTF_8));
+    }
+
+    private void exerciseDockedDictation(String nameBase, String changedSession) throws Exception {
+        JSONObject idle = captureGeometry("dictation-idle-ime-open");
+        assertDictationMicReachable(idle);
+        JSONObject stableGrid = runtimeGrid(idle);
+        int stableResizeAcks;
+        assertAtLeastFiveRows("initial inline dictation state", idle);
+        captureScreenshot("fastkeys-dictation-idle-ime-open.png");
+
+        String rawFile = "/tmp/" + firstSession + "-dictation.raw";
+        String readyMarker = "PS2884_DICTATION_READY_" + nameBase;
+        String doneMarker = "PS2884_DICTATION_DONE_" + nameBase;
+        String marker = "PS2884_DICTATED_" + nameBase;
+        String dictatedText = "printf '%s' '" + marker + "'";
+        String postStopKeyboardText = "z";
+        byte[] dictatedBytes = dictatedText.getBytes(StandardCharsets.UTF_8);
+        int dictatedByteCount = dictatedBytes.length;
+        int expectedHostByteCount = dictatedByteCount + postStopKeyboardText.getBytes(StandardCharsets.UTF_8).length;
+        markResizeFitPhase("dictation-receiver-before");
+        prepareByteCapture(rawFile, expectedHostByteCount, readyMarker, doneMarker);
+        markResizeFitPhase("dictation-receiver-after-command");
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        markResizeFitPhase("dictation-receiver-after-prompt-retap");
+        awaitTerminalResizeIdle();
+        awaitRenderedFrame();
+
+        JSONObject readyGeometry = captureGeometry("dictation-ready-ime-open");
+        assertDictationMicReachable(readyGeometry);
+        assertUnchangedTerminalGrid("preparing the host-side dictation receiver", stableGrid, runtimeGrid(readyGeometry));
+        assertEquals("host-side receiver setup must settle back to the initial terminal viewport height",
+                idle.getJSONObject("terminalViewport").getDouble("height"),
+                readyGeometry.getJSONObject("terminalViewport").getDouble("height"), 0.5);
+        stableResizeAcks = readyGeometry.getInt("resizeAcks");
+        int writesBeforeListening = terminalInputAcknowledgements();
+        String targetBefore = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        assertEquals("one dock tap must start only one native recognizer", 1, controlledSpeechCallCount("startCount"));
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        String requestId = start.getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(dictatedText) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(dictatedText));
+        int writesAfterPartial = terminalInputAcknowledgements();
+        JSONObject listening = captureGeometry("dictation-listening-ime-open");
+        assertTerminalViewportCap("showing a dictation partial", idle, listening);
+        assertDictationMicReachable(listening);
+        assertHotkeyBarReachable(listening);
+        assertEquals("dictation previews must stay local to the dock", writesBeforeListening, terminalInputAcknowledgements());
+        assertDictationStableStage("showing a dictation partial", idle, listening, stableGrid, stableResizeAcks);
+        assertEquals("listening mic keeps its glyph but exposes an explicit Stop action", "Stop terminal dictation",
+                listening.getJSONObject("inlineDictationMic").getString("label"));
+        awaitRenderedFrame();
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
+                + " && document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(dictatedText));
+        captureScreenshot("fastkeys-dictation-listening-ime-open.png");
+
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        tapDomCenter("[data-testid=mobile-hotkeys-open-ctrl-page]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.palettePage === 'ctrl'");
+        JSONObject ctrlListening = captureGeometry("dictation-listening-ctrl-open-ime-open");
+        assertTerminalViewportCap("showing listening status with the Ctrl catalog open", idle, ctrlListening);
+        assertTrayBelowTerminalViewport(ctrlListening);
+        assertDictationMicReachable(ctrlListening);
+        assertHotkeyBarReachable(ctrlListening);
+        assertEquals("opening the Ctrl catalog during dictation must keep the partial preview local",
+                writesBeforeListening, terminalInputAcknowledgements());
+        assertDictationStableStage("showing listening status with the Ctrl catalog open", idle, ctrlListening,
+                stableGrid, stableResizeAcks);
+        awaitRenderedFrame();
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
+                + " && document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(dictatedText));
+        captureScreenshot("fastkeys-dictation-listening-ctrl-ime-open.png");
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'"
+                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        awaitImeVisible(true);
+
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
+        assertEquals("explicit Stop must call the native recognizer once", 1, controlledSpeechCallCount("stopCount"));
+        assertEquals("explicit Stop alone must not insert before a final result", writesBeforeListening,
+                terminalInputAcknowledgements());
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(dictatedText) + "); 'final emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(dictatedText));
+        int writesAfterFinalBeforeStopped = terminalInputAcknowledgements();
+        assertEquals("final recognition remains staged until native stopped", writesBeforeListening,
+                writesAfterFinalBeforeStopped);
+        JSONObject finalAwaitingStopped = captureGeometry("dictation-final-awaiting-stopped");
+        assertTerminalViewportCap("staging final dictation text", idle, finalAwaitingStopped);
+        assertDictationStableStage("staging final dictation text", idle, finalAwaitingStopped, stableGrid,
+                stableResizeAcks);
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (writesBeforeListening + 1), 15_000);
+        int writesAfterStopped = terminalInputAcknowledgements();
+        JSONObject finalInsertedGeometry = captureGeometry("dictation-final-inserted");
+        assertTerminalViewportCap("inserting final dictation text", idle, finalInsertedGeometry);
+        assertDictationMicReachable(finalInsertedGeometry);
+        assertTrue("final dictation insertion must return focus to xterm while keeping the native IME and compact layout active: "
+                        + finalInsertedGeometry,
+                finalInsertedGeometry.getBoolean("keyboardVisible")
+                        && finalInsertedGeometry.getBoolean("keyboardComposerMode")
+                        && finalInsertedGeometry.getJSONObject("androidIme").getBoolean("visible")
+                        && finalInsertedGeometry.getBoolean("terminalViewportFocused")
+                        && finalInsertedGeometry.getBoolean("activeElementInsideTerminal")
+                        && !finalInsertedGeometry.getBoolean("activeElementIsPromptDraft")
+                        && "".equals(finalInsertedGeometry.getString("composerDraftValue")));
+        assertDictationStableStage("inserting final dictation text", idle, finalInsertedGeometry, stableGrid,
+                stableResizeAcks);
+
+        // Type one real character through Android's keyboard after Stop. The host receiver
+        // is still waiting for it, so this proves subsequent text reaches the PTY instead
+        // of silently landing in PromptComposer's separate draft.
+        String draftBeforePostStopInput = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        assertEquals("the command receiver must leave PromptComposer's draft empty", "", draftBeforePostStopInput);
+        int postStopInputChunkStart = Integer.parseInt(evalString("String(window.__ps2857AppTerminalInputChunks?.length ?? 0)"));
+        InstrumentationRegistry.getInstrumentation().sendStringSync(postStopKeyboardText);
+        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(doneMarker) + ")", 15_000);
+        awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
+                + "const chunks=(window.__ps2857AppTerminalInputChunks ?? []).slice(" + postStopInputChunkStart + ");"
+                + "return Number(shell?.dataset.sshTerminalInputAcks) === " + (writesAfterStopped + 1)
+                + " && Number(shell?.dataset.sshTerminalInputPending) === 0"
+                + " && chunks.map(chunk=>chunk.text).join('') === " + JSONObject.quote(postStopKeyboardText)
+                + " && chunks.every(chunk=>chunk.attachEpoch === " + finalInsertedGeometry.getInt("sshAttachEpoch")
+                + " && chunk.phase === 'live');})()", 15_000);
+        int writesAfterPostStopKeyboard = terminalInputAcknowledgements();
+        JSONArray postStopInputChunks = new JSONArray(evalString("JSON.stringify((window.__ps2857AppTerminalInputChunks ?? []).slice("
+                + postStopInputChunkStart + "))"));
+        JSONObject postStopKeyboardGeometry = captureGeometry("dictation-post-stop-keyboard-input");
+        assertTerminalViewportCap("typing after Stop", idle, postStopKeyboardGeometry);
+        assertDictationMicReachable(postStopKeyboardGeometry);
+        assertTrue("post-Stop keyboard input must stay focused in xterm with the IME open: "
+                        + postStopKeyboardGeometry,
+                postStopKeyboardGeometry.getBoolean("keyboardVisible")
+                        && postStopKeyboardGeometry.getBoolean("keyboardComposerMode")
+                        && postStopKeyboardGeometry.getJSONObject("androidIme").getBoolean("visible")
+                        && postStopKeyboardGeometry.getBoolean("terminalViewportFocused")
+                        && postStopKeyboardGeometry.getBoolean("activeElementInsideTerminal")
+                        && !postStopKeyboardGeometry.getBoolean("activeElementIsPromptDraft"));
+        assertEquals("post-Stop keyboard text must not enter the composer draft", draftBeforePostStopInput,
+                postStopKeyboardGeometry.getString("composerDraftValue"));
+        assertDictationStableStage("typing after Stop", idle, postStopKeyboardGeometry, stableGrid,
+                stableResizeAcks);
+        awaitRenderedFrame();
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && !document.querySelector('[data-testid=inline-dictation-preview]')"
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false");
+        captureScreenshot("fastkeys-dictation-stopped-ime-open.png");
+        String expectedHostHex = hex((dictatedText + postStopKeyboardText).getBytes(StandardCharsets.UTF_8));
+        journey.put("dictation", new JSONObject()
+                .put("targetKey", targetBefore)
+                .put("attachEpoch", Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')")))
+                .put("receiverSetupResizeAcks", readyGeometry.getInt("resizeAcks") - idle.getInt("resizeAcks"))
+                .put("resizeAcksAtStableBaseline", stableResizeAcks)
+                .put("requestId", requestId)
+                .put("partialText", dictatedText)
+                .put("finalText", dictatedText)
+                .put("writesBeforePartial", writesBeforeListening)
+                .put("writesAfterPartial", writesAfterPartial)
+                .put("writesAfterStopBeforeFinal", writesBeforeListening)
+                .put("writesAfterFinalBeforeStopped", writesAfterFinalBeforeStopped)
+                .put("writesAfterStopped", writesAfterStopped)
+                .put("writesAfterPostStopKeyboard", writesAfterPostStopKeyboard)
+                .put("explicitStop", true)
+                .put("finalReceived", true)
+                .put("stoppedReceived", true)
+                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
+                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
+                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("rawFile", rawFile)
+                .put("dictatedTextHex", hex(dictatedBytes))
+                .put("postStopKeyboardText", postStopKeyboardText)
+                .put("postStopInputChunks", postStopInputChunks)
+                .put("postStopKeyboardDraftBefore", draftBeforePostStopInput)
+                .put("postStopKeyboardDraftAfter", postStopKeyboardGeometry.getString("composerDraftValue"))
+                .put("postStopTerminalFocused", postStopKeyboardGeometry.getBoolean("activeElementInsideTerminal"))
+                .put("expectedHostHex", expectedHostHex)
+                .put("expectedByteCount", expectedHostByteCount)
+                .put("expectedFinalByteCount", dictatedByteCount)
+                .put("readyMarker", readyMarker)
+                .put("doneMarker", doneMarker));
+
+        int writesBeforeError = terminalInputAcknowledgements();
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        assertEquals("error recovery must start one fresh recognizer", 2, controlledSpeechCallCount("startCount"));
+        String errorRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', 'discard this partial'); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'discard this partial'");
+        evalString("window.__ps2857ControlledSpeech.emit('error', 'NETWORK'); 'error emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'stopping'"
+                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
+        JSONObject errorGeometry = captureGeometry("dictation-error-ime-open");
+        assertTerminalViewportCap("showing recognizer error status", idle, errorGeometry);
+        assertDictationMicReachable(errorGeometry);
+        assertEquals("recognizer errors must discard previews without writing", writesBeforeError, terminalInputAcknowledgements());
+        journey.put("dictationError", new JSONObject().put("requestId", errorRequest)
+                .put("tone", "error").put("writesBefore", writesBeforeError)
+                .put("writesAfter", terminalInputAcknowledgements())
+                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
+                .put("phaseIdle", true).put("previewCleared", true));
+
+        int writesBeforeAttachCancel = terminalInputAcknowledgements();
+        String staleTarget = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        assertEquals("attach cancellation must not create a second recognizer", 3, controlledSpeechCallCount("startCount"));
+        String attachRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on attach'); 'partial emitted'");
+        int oldAttachEpoch = Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')"));
+        attachSession(changedSession);
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey !== "
+                + JSONObject.quote(staleTarget)
+                + " && window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(attachRequest));
+        String changedTarget = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
+        int newAttachEpoch = Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')"));
+        assertTrue("the dictation target identity must change with the attach epoch", newAttachEpoch > oldAttachEpoch
+                && changedTarget.endsWith("/attach-" + newAttachEpoch) && !changedTarget.equals(staleTarget));
+        assertEquals("session attach must stop the pending recognizer", attachRequest,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        evalString("window.__ps2857ControlledSpeech.emit('result', 'late attach result'); 'late result emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        JSONObject attachCancelledGeometry = captureGeometry("dictation-attach-cancel-complete");
+        assertDictationMicReachable(attachCancelledGeometry);
+        captureScreenshot("fastkeys-dictation-attach-cancel.png");
+        assertEquals("late attach results must not write to the new session", writesBeforeAttachCancel,
+                terminalInputAcknowledgements());
+        journey.put("dictationAttachCancel", new JSONObject().put("requestId", attachRequest)
+                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("oldTargetKey", staleTarget).put("newTargetKey", changedTarget)
+                .put("oldAttachEpoch", oldAttachEpoch).put("newAttachEpoch", newAttachEpoch)
+                .put("lateResultEmitted", true).put("stoppedEmitted", true)
+                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
+                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
+                .put("writesBefore", writesBeforeAttachCancel).put("writesAfter", terminalInputAcknowledgements()));
+
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        JSONObject changedSessionGeometry = captureGeometry("dictation-reattached-ime-open");
+        assertDictationMicReachable(changedSessionGeometry);
+        assertTrayBelowTerminalViewport(changedSessionGeometry);
+        assertTrue("dictation reattach must keep at least five xterm rows visible",
+                runtimeGrid(changedSessionGeometry).getInt("rows") >= 5);
+        captureScreenshot("fastkeys-dictation-reattached-ime-open.png");
+
+        int writesBeforeBackgroundCancel = terminalInputAcknowledgements();
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        assertEquals("background cancellation must have one active recognizer", 4, controlledSpeechCallCount("startCount"));
+        String backgroundRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on background'); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'must be cancelled on background'");
+        scenario.moveToState(Lifecycle.State.CREATED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
+        evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result'); 'late result emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        assertEquals("background results must not write after resume", writesBeforeBackgroundCancel,
+                terminalInputAcknowledgements());
+        assertEquals("backgrounding must stop the pending recognizer", backgroundRequest,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        journey.put("dictationBackgroundCancel", new JSONObject().put("requestId", backgroundRequest)
+                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("lateResultEmitted", true).put("stoppedEmitted", true)
+                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
+                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
+                .put("writesBefore", writesBeforeBackgroundCancel).put("writesAfter", terminalInputAcknowledgements()));
+        JSONObject backgroundGeometry = captureGeometry("dictation-background-cancel-resumed");
+        assertDictationMicReachable(backgroundGeometry);
+        attachSession(firstSession);
+    }
+
+    private void assertDictationMicReachable(JSONObject geometry) throws Exception {
+        JSONObject bar = geometry.optJSONObject("inlineDictationBar");
+        JSONObject mic = geometry.optJSONObject("inlineDictationMic");
+        assertNotNull("one inline dictation component must live in the fast-key dock", bar);
+        assertNotNull("the docked dictation component must render its mic/Stop action", mic);
+        assertEquals("the dock must have exactly one inline controller surface", 1,
+                geometry.getInt("inlineDictationBarCount"));
+        assertEquals("the dock must have exactly one mic/Stop target", 1,
+                geometry.getInt("inlineDictationMicCount"));
+        assertTrue("the mic target must be at least 48dp wide and tall: " + mic,
+                mic.getDouble("width") >= 47.9 && mic.getDouble("height") >= 47.9);
+        assertTrue("the mic must stay fully visible above the IME: " + mic, mic.getBoolean("insideViewport"));
+        assertTrue("the mic must stay enabled for the live session: " + mic, !mic.getBoolean("disabled"));
+        assertTrue("the mic must remain inside the fast-key dock: " + geometry,
+                geometry.getBoolean("inlineDictationBarInsideTray") && geometry.getBoolean("inlineDictationMicInsideBar"));
+        JSONArray navigationTargets = geometry.getJSONArray("navigationTargets");
+        JSONObject fastKeysTarget = navigationTargets.getJSONObject(navigationTargets.length() - 1);
+        JSONObject dockBounds = geometry.getJSONObject("mobileHotkeys");
+        double trailingGap = mic.getDouble("left") - fastKeysTarget.getDouble("right");
+        assertTrue("the live-terminal mic must follow the launcher as the last control, with dock slack after it: " + geometry,
+                trailingGap >= -0.5 && trailingGap <= 8.5
+                        && mic.getDouble("right") <= dockBounds.getDouble("right") + 0.5);
+        if (geometry.getBoolean("inlineDictationStatusVisible")) {
+            assertTrue("the dictation status chip must render on one line", geometry.getBoolean("inlineDictationStatusOneLine"));
+            assertTrue("the dictation status chip must be above the persistent key row", geometry.getBoolean("inlineDictationStatusAboveKeybar"));
+            assertTrue("the dictation status chip must stay inside the dock", geometry.getBoolean("inlineDictationStatusInsideBar"));
+        } else {
+            assertEquals("idle default hint must not consume a status row", "idle", geometry.getString("inlineDictationPhase"));
+        }
+        int attachEpoch = geometry.getInt("sshAttachEpoch");
+        assertTrue("dictation target identity must include the current attach epoch: " + geometry,
+                geometry.getString("inlineDictationTargetKey").endsWith("/attach-" + attachEpoch));
+    }
+
+    private void installControlledSpeechAdapter() throws Exception {
+        String installed = evalString("(() => {"
+                + "const cap=window.Capacitor;"
+                + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
+                + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
+                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,startCount:0,stopCount:0,"
+                + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
+                + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
+                + "window.__ps2857ControlledSpeech=state;"
+                + "cap.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
+                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.requestId=options.requestId;"
+                + "return Promise.resolve({requestId:state.requestId,started:true});}"
+                + "if(method==='stopDictation'){state.stopCount+=1;state.stopOptions=JSON.parse(JSON.stringify(options));"
+                + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
+                + "if(method==='getCapabilities')return Promise.resolve({speechRecognitionAvailable:true,microphonePermissionGranted:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech method '+method));};"
+                + "cap.nativeCallback=(plugin,method,options,callback)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativeCallback(plugin,method,options,callback);"
+                + "if(method==='addListener'){state.listener=callback;return Promise.resolve({callbackId:'controlled-dictation'});}"
+                + "if(method==='removeListener')return Promise.resolve({removed:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech callback '+method));};"
+                + "return 'installed';})()");
+        assertEquals("test must replace only the Android speech bridge", "installed", installed);
+    }
+
+    private int terminalInputAcknowledgements() throws Exception {
+        return Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks ?? '0'"));
+    }
+
+    private int controlledSpeechCallCount(String name) throws Exception {
+        return Integer.parseInt(evalString("String(window.__ps2857ControlledSpeech?.[" + JSONObject.quote(name) + "] ?? 0)"));
+    }
+
+    private String hex(byte[] bytes) {
+        StringBuilder result = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) result.append(String.format(java.util.Locale.ROOT, "%02x", value & 0xff));
+        return result.toString();
     }
 
     private void connect(String host, String port, String privateKey) throws Exception {
@@ -380,11 +813,18 @@ public final class JsFastKeysDockerJourneyTest {
     private void prepareByteCapture(String rawPath, int byteCount, String readyMarker, String doneMarker) throws Exception {
         String command = "stty raw -echo; printf '\\r\\n" + readyMarker + "\\r\\n'; dd bs=1 count=" + byteCount
                 + " status=none > " + rawPath + "; stty sane; printf '\\n" + doneMarker + "\\n'";
+        markResizeFitPhase("set-receiver-draft:" + readyMarker);
         setValue("[data-testid=prompt-draft]", command);
+        markResizeFitPhase("send-receiver-command:" + readyMarker);
         click(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
         awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(readyMarker) + ")", 15_000);
         SystemClock.sleep(300);
+        markResizeFitPhase("receiver-ready:" + readyMarker);
+    }
+
+    private void markResizeFitPhase(String phase) throws Exception {
+        evalString("window.__ps2884ResizeFitMarker=" + JSONObject.quote(phase) + "; 'resize marker set'");
     }
 
     private String terminalEvidence(String readyMarker, String doneMarker) throws Exception {
@@ -404,35 +844,39 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void sendPaletteKey(String keyId) throws Exception {
         String selector = "[data-key-id='" + keyId + "']";
-        scrollPaletteTo(selector);
-        assertPaletteActionReachable(selector);
+        swipeFastKeyIntoView(selector);
+        assertCatalogActionReachable(selector, keyId);
         int previous = hotkeyWrites().length();
         tapDomCenter(selector);
         awaitHotkeyWrites(previous + 1);
         awaitImeVisible(true);
-        assertTrue("the hotkeys palette must stay open after key taps", "true".equals(evalRaw(
+        assertTrue("the fast-key tray must stay open after key taps", "true".equals(evalRaw(
                 "document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'")));
     }
 
-    private void assertPaletteActionReachable(String selector) throws Exception {
+    private JSONObject assertCatalogActionReachable(String selector, String keyId) throws Exception {
         JSONObject target = evalJson("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "const content=document.querySelector('.mobile-hotkeys__content');if(!node||!content)return JSON.stringify({missing:true});"
+                + "const content=node?.closest('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');if(!node||!content)return JSON.stringify({missing:true});"
                 + "const r=node.getBoundingClientRect(),c=content.getBoundingClientRect(),v=window.visualViewport;"
-                + "return JSON.stringify({missing:false,width:r.width,height:r.height,"
-                + "insideContent:r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom,"
+                + "const bounds=b=>({left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height});"
+                + "return JSON.stringify({missing:false,width:r.width,height:r.height,targetBounds:bounds(r),contentBounds:bounds(c),"
+                + "insideContent:r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5,"
                 + "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)});})()");
-        assertTrue("palette action must exist before it is tapped: " + target, !target.optBoolean("missing", true));
-        assertTrue("palette action must retain its full 48dp touch-target height: " + target,
+        target.put("keyId", keyId);
+        assertTrue("catalog action must exist before it is tapped: " + target, !target.optBoolean("missing", true));
+        assertTrue("catalog action must retain its full 48dp touch-target height: " + target,
                 target.getDouble("height") >= 47.9);
-        assertTrue("palette action must retain its full 48dp touch-target width: " + target,
+        assertTrue("catalog action must retain its full 48dp touch-target width: " + target,
                 target.getDouble("width") >= 47.9);
-        assertTrue("palette action must be fully visible inside its scroll viewport: " + target,
+        assertTrue("catalog action must be fully visible inside its scroll viewport: " + target,
                 target.getBoolean("insideContent"));
-        assertTrue("palette action must remain inside the visible Android viewport: " + target,
+        assertTrue("catalog action must remain inside the visible Android viewport: " + target,
                 target.getBoolean("insideViewport"));
+        return target;
     }
 
     private void sendControl(String keyId, boolean hold) throws Exception {
+        swipeFastKeyIntoView("[data-key-id='" + keyId + "']");
         int previous = hotkeyWrites().length();
         if (hold) longPressDomCenter("[data-key-id='" + keyId + "']", 700);
         else tapDomCenter("[data-key-id='" + keyId + "']");
@@ -442,6 +886,7 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void cancelControlPress(String keyId) throws Exception {
+        swipeFastKeyIntoView("[data-key-id='" + keyId + "']");
         int beforeCancel = hotkeyWrites().length();
         float[] point = screenPoint("[data-key-id='" + keyId + "']");
         long downTime = SystemClock.uptimeMillis();
@@ -452,53 +897,124 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("pointer cancellation must not send a tap or hold", beforeCancel, hotkeyWrites().length());
     }
 
-    private void dragPaletteHeader() throws Exception {
-        JSONObject before = captureGeometry("palette-before-drag").getJSONObject("palette");
-        JSONObject rect = before.getJSONObject("bounds");
-        float startX = (float) (rect.getDouble("left") + Math.min(110, rect.getDouble("width") / 2));
-        float startY = (float) (rect.getDouble("top") + 25);
-        float[] screen = screenPoint(startX, startY);
-        long downTime = SystemClock.uptimeMillis();
-        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime);
-        SystemClock.sleep(70);
-        injectTouch(MotionEvent.ACTION_MOVE, screen[0] - 22, screen[1] + 14, downTime, SystemClock.uptimeMillis());
-        SystemClock.sleep(60);
-        injectTouch(MotionEvent.ACTION_UP, screen[0] - 22, screen[1] + 14, downTime, SystemClock.uptimeMillis());
-        SystemClock.sleep(250);
+    private JSONArray assertCatalogReachable(String containerSelector, int expectedKeys) throws Exception {
+        JSONArray keyIds = new JSONArray(evalString("JSON.stringify(Array.from(document.querySelectorAll(" + JSONObject.quote(containerSelector + " [data-key-id]")
+                + ")).map(node => node.dataset.keyId))"));
+        assertEquals("the docked catalog must render every offered key", expectedKeys, keyIds.length());
+        List<String> seen = new ArrayList<>();
+        JSONArray reachable = new JSONArray();
+        for (int index = 0; index < keyIds.length(); index += 1) {
+            String keyId = keyIds.getString(index);
+            assertTrue("catalog keys must be unique: " + keyId, !seen.contains(keyId));
+            seen.add(keyId);
+            String selector = containerSelector + " [data-key-id='" + keyId + "']";
+            // This pass proves physical scroll reachability without changing the byte oracle.
+            swipeFastKeyIntoView(selector);
+            reachable.put(assertCatalogActionReachable(selector, keyId));
+        }
+        return reachable;
     }
 
-    private void scrollPaletteTo(String selector) throws Exception {
-        for (int attempt = 0; attempt < 12; attempt += 1) {
-            JSONObject geometry = evalJson("(() => {const target=document.querySelector(" + JSONObject.quote(selector) + ");"
-                    + "const content=document.querySelector('.mobile-hotkeys__content');if(!target||!content)return JSON.stringify({missing:true});"
-                    + "const r=target.getBoundingClientRect(),c=content.getBoundingClientRect();return JSON.stringify({missing:false,"
-                    + "inside:r.top>=c.top&&r.bottom<=c.bottom,top:r.top,bottom:r.bottom,contentTop:c.top,contentBottom:c.bottom});})()");
-            if (geometry.optBoolean("inside")) return;
-            JSONObject content = evalJson("(() => {const r=document.querySelector('.mobile-hotkeys__content')?.getBoundingClientRect();"
-                    + "return JSON.stringify(r?{left:r.left,right:r.right,top:r.top,bottom:r.bottom}:null);})()");
-            assertTrue("palette content must exist to scroll controls into view", !content.isNull("top"));
-            // Start in the content's side padding so a drag never begins on a
-            // key button, whose focus-preserving default could cancel scrolling.
-            float x = (float) (content.getDouble("left") + 4);
-            boolean below = geometry.optDouble("bottom") > content.getDouble("bottom");
-            float travel = (float) Math.min(32, content.getDouble("bottom") - content.getDouble("top") - 16);
-            float startY = (float) (below ? content.getDouble("bottom") - 12 : content.getDouble("top") + 12);
-            float endY = below ? startY - travel : startY + travel;
-            float[] start = screenPoint(x, startY);
-            float[] end = screenPoint(x, endY);
-            long downTime = SystemClock.uptimeMillis();
-            injectTouch(MotionEvent.ACTION_DOWN, start[0], start[1], downTime, downTime);
-            SystemClock.sleep(60);
-            injectTouch(MotionEvent.ACTION_MOVE, end[0], end[1], downTime, SystemClock.uptimeMillis());
-            injectTouch(MotionEvent.ACTION_UP, end[0], end[1], downTime, SystemClock.uptimeMillis());
-            SystemClock.sleep(120);
+    private void swipeFastKeyIntoView(String selector) throws Exception {
+        JSONObject geometry = fastKeyGeometry(selector);
+        assertTrue("the requested fast key must exist inside a docked catalog: " + selector,
+                !geometry.optBoolean("missing", true));
+        for (int attempt = 0; attempt < MAX_CATALOG_SWIPE_ATTEMPTS; attempt += 1) {
+            if (geometry.getBoolean("insideContent") && geometry.getBoolean("insideViewport")) return;
+
+            JSONObject key = geometry.getJSONObject("key");
+            JSONObject container = geometry.getJSONObject("container");
+            boolean horizontal = "horizontal".equals(geometry.getString("axis"));
+            boolean towardEnd = horizontal
+                    ? key.getDouble("right") > container.getDouble("right")
+                    : key.getDouble("bottom") > container.getDouble("bottom");
+            boolean towardStart = horizontal
+                    ? key.getDouble("left") < container.getDouble("left")
+                    : key.getDouble("top") < container.getDouble("top");
+            assertTrue("catalog target must be scrollable into view: " + selector + "; " + geometry,
+                    towardEnd || towardStart);
+
+            JSONObject anchors = geometry.getJSONObject("swipeAnchors");
+            JSONObject anchor = horizontal
+                    ? anchors.getJSONObject(towardEnd ? "right" : "left")
+                    : anchors.getJSONObject("vertical");
+            double dimension = horizontal ? container.getDouble("width") : container.getDouble("height");
+            double overflow = horizontal
+                    ? (towardEnd ? key.getDouble("right") - container.getDouble("right")
+                            : container.getDouble("left") - key.getDouble("left"))
+                    : (towardEnd ? key.getDouble("bottom") - container.getDouble("bottom")
+                            : container.getDouble("top") - key.getDouble("top"));
+            double distance = Math.min(Math.max(48, overflow + 12), dimension * 0.7);
+            double startX = horizontal
+                    ? anchor.getDouble("x")
+                    : container.getDouble("left") + container.getDouble("width") / 2;
+            double startY = horizontal
+                    ? anchor.getDouble("y")
+                    : towardEnd ? container.getDouble("bottom") - 2 : container.getDouble("top") + 2;
+            double endX = startX;
+            double endY = startY;
+            if (horizontal) {
+                endX += towardEnd ? -distance : distance;
+            } else {
+                endY += towardEnd ? -distance : distance;
+            }
+            assertTrue("injected swipe must stay within the catalog viewport: " + geometry,
+                    endX >= container.getDouble("left") + 1
+                            && endX <= container.getDouble("right") - 1
+                            && endY >= container.getDouble("top") + 1
+                            && endY <= container.getDouble("bottom") - 1);
+
+            double beforeOffset = geometry.getDouble(horizontal ? "scrollLeft" : "scrollTop");
+            float[] start = screenPoint((float) startX, (float) startY);
+            float[] end = screenPoint((float) endX, (float) endY);
+            injectSwipe(start[0], start[1], end[0], end[1]);
+            geometry = fastKeyGeometry(selector);
+            double afterOffset = geometry.getDouble(horizontal ? "scrollLeft" : "scrollTop");
+            double offsetDelta = afterOffset - beforeOffset;
+            assertTrue("an Android swipe must move the catalog scroll position: " + geometry,
+                    !geometry.optBoolean("missing", true) && Math.abs(offsetDelta) > 0.5);
+            assertTrue("Android swipe direction must move toward the requested key: " + geometry,
+                    towardEnd ? offsetDelta > 0.5 : offsetDelta < -0.5);
         }
-        JSONObject last = evalJson("(() => {const n=document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "const c=document.querySelector('.mobile-hotkeys__content');const r=n?.getBoundingClientRect(),b=c?.getBoundingClientRect();"
-                + "return JSON.stringify({target:r?{top:r.top,bottom:r.bottom}:null,content:b?{top:b.top,bottom:b.bottom,"
-                + "scrollTop:c.scrollTop,scrollHeight:c.scrollHeight,clientHeight:c.clientHeight}:null,"
-                + "pointerEvents:(window.__ps2884PointerEvents??[]).slice(-16)});})()");
-        throw new AssertionError("could not scroll the requested fast-key control into the visible palette area: " + last);
+        assertTrue("bounded Android swipes must leave the requested 48dp key fully visible: " + selector + "; " + geometry,
+                geometry.getBoolean("insideContent") && geometry.getBoolean("insideViewport"));
+    }
+
+    private JSONObject fastKeyGeometry(String selector) throws Exception {
+        return evalJson("(() => {const target=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "const container=target?.closest('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');"
+                + "if(!target||!container)return JSON.stringify({missing:true});"
+                + "const r=target.getBoundingClientRect(),c=container.getBoundingClientRect(),v=window.visualViewport;"
+                + "const horizontal=container.matches('.mobile-hotkeys__main-keys'),y=c.top+c.height/2;"
+                + "const freeX=fromRight=>{const step=fromRight?-1:1,start=fromRight?c.right-1:c.left+1;"
+                + "for(let x=start;fromRight?x>c.left+1:x<c.right-1;x+=step){if(!document.elementFromPoint(x,y)?.closest('button'))return {x,y};}return null;};"
+                + "const swipeAnchors=horizontal?{left:freeX(false),right:freeX(true),vertical:null}:"
+                + "{left:null,right:null,vertical:{x:c.left+1,y}};"
+                + "return JSON.stringify({missing:false,axis:horizontal?'horizontal':'vertical',"
+                + "insideContent:r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5,"
+                + "insideViewport:r.left>=0&&r.top>=0&&r.bottom<=(v?.height??innerHeight)+0.5&&r.right<=innerWidth+0.5,"
+                + "key:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},"
+                + "container:{left:c.left,right:c.right,top:c.top,bottom:c.bottom,width:c.width,height:c.height},"
+                + "swipeAnchors,scrollLeft:container.scrollLeft,scrollTop:container.scrollTop});})()");
+    }
+
+    private void injectSwipe(float startX, float startY, float endX, float endY) {
+        long downTime = SystemClock.uptimeMillis();
+        injectTouch(MotionEvent.ACTION_DOWN, startX, startY, downTime, downTime);
+        SystemClock.sleep(60);
+        int moveSteps = 4;
+        for (int step = 1; step <= moveSteps; step += 1) {
+            SystemClock.sleep(35);
+            float progress = step / (float) moveSteps;
+            injectTouch(MotionEvent.ACTION_MOVE,
+                    startX + (endX - startX) * progress,
+                    startY + (endY - startY) * progress,
+                    downTime,
+                    SystemClock.uptimeMillis());
+        }
+        SystemClock.sleep(35);
+        injectTouch(MotionEvent.ACTION_UP, endX, endY, downTime, SystemClock.uptimeMillis());
+        SystemClock.sleep(160);
     }
 
     private JSONObject captureGeometry(String stage) throws Exception {
@@ -507,34 +1023,90 @@ public final class JsFastKeysDockerJourneyTest {
                 + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
                 + "const target=n=>{const r=n.getBoundingClientRect();const v=window.visualViewport;return {label:n.getAttribute('aria-label')||'',"
                 + "top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height,disabled:!!n.disabled,"
+                + "micState:n.dataset.micState||'',"
                 + "insideViewport:r.top>=0&&r.left>=0&&r.bottom<=(v?.height??innerHeight)+0.5&&r.right<=innerWidth+0.5};};"
                 + "const shell=document.querySelector('.app-shell');const slot=document.querySelector('[data-testid=terminal-slot]');"
+                + "const tray=document.querySelector('[data-testid=mobile-hotkeys]');const trayRect=rect('[data-testid=mobile-hotkeys]');"
+                + "const slotRect=rect('[data-testid=terminal-slot]');const terminalRect=rect('.terminal-viewport');"
+                + "const composerRect=rect('.composer-panel');"
+                + "const activeElement=document.activeElement;const promptDraft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const inlineDictationBar=rect('[data-testid=inline-dictation-bar]');"
+                + "const inlineDictationBarNode=document.querySelector('[data-testid=inline-dictation-bar]');"
+                + "const inlineDictationMicNode=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const inlineDictationMic=inlineDictationMicNode?target(inlineDictationMicNode):null;"
+                + "const inlineDictationStatusRow=rect('[data-testid=inline-dictation-status-row]');"
+                + "const keybarRect=rect('.mobile-hotkeys__bar');"
+                + "const inlineDictationStatusNode=document.querySelector('[data-testid=inline-dictation-status]');"
+                + "const inlineDictationStatusStyle=inlineDictationStatusNode?getComputedStyle(inlineDictationStatusNode):null;"
+                + "const fitEvents=window.__ps2884ResizeFitEvents??[],ackEvents=window.__ps2884ResizeAckEvents??[];"
+                + "const fitCursor=window.__ps2884ResizeFitTraceCursor??0,ackCursor=window.__ps2884ResizeAckTraceCursor??0;"
+                + "const fitEventsSince=fitEvents.slice(fitCursor),ackEventsSince=ackEvents.slice(ackCursor);"
+                + "window.__ps2884ResizeFitTraceCursor=fitEvents.length;window.__ps2884ResizeAckTraceCursor=ackEvents.length;"
+                + "const inlineDictationStatusOneLine=!!inlineDictationStatusNode&&inlineDictationStatusStyle?.whiteSpace==='nowrap'"
+                + "&&inlineDictationStatusNode.clientHeight>0&&inlineDictationStatusNode.scrollHeight<=inlineDictationStatusNode.clientHeight+1;"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
-                + "[data-testid=mobile-hotkeys-launcher]')).map(target);const palette=document.querySelector('[data-testid=mobile-hotkeys-palette]');"
+                + "[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page],"
+                + "[data-testid=mobile-hotkeys-launcher]')).map(target);"
                 + "const hotkeyControls=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys],"
-                + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-palette],[data-key-id]')).map(node=>({"
+                + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-main-page],"
+                + "[data-testid=mobile-hotkeys-ctrl-page],[data-key-id]')).map(node=>({"
                 + "testId:node.getAttribute('data-testid'),keyId:node.getAttribute('data-key-id'),"
                 + "disabled:'disabled' in node?!!node.disabled:null}));"
                 + "return JSON.stringify({stage:" + JSONObject.quote(stage) + ",androidApi:" + Build.VERSION.SDK_INT + ","
                 + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "terminalViewportFocused:shell?.dataset.terminalViewportFocused==='true',"
+                + "activeElementInsideTerminal:!!activeElement?.closest('.terminal-viewport'),"
+                + "activeElementIsPromptDraft:activeElement===promptDraft,composerDraftValue:promptDraft?.value??'',"
+                + "activeElementTag:activeElement?.tagName?.toLowerCase()??'',"
+                + "fastKeysPage:tray?.dataset.palettePage||'closed',"
                 + "sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "sshAttachEpoch:Number(shell?.dataset.sshAttachEpoch??-1),"
                 + "terminalPanel:rect('.terminal-panel'),terminalSlot:rect('[data-testid=terminal-slot]'),terminalViewport:rect('.terminal-viewport'),"
-                + "mobileHotkeys:rect('[data-testid=mobile-hotkeys]'),navigationTargets:keys,hotkeyControls,"
+                + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
+                + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
+                + "mobileHotkeys:trayRect,navigationTargets:keys,hotkeyControls,"
+                + "mainCatalog:rect('.mobile-hotkeys__main-keys'),ctrlCatalog:rect('.mobile-hotkeys__ctrl-grid'),"
+                + "composerPanel:composerRect,"
+                + "inlineDictationBar,"
+                + "inlineDictationStatusRow,inlineDictationStatusVisible:!!inlineDictationStatusNode,"
+                + "inlineDictationMic,"
+                + "inlineDictationBarCount:document.querySelectorAll('[data-testid=inline-dictation-bar]').length,"
+                + "inlineDictationMicCount:document.querySelectorAll('[data-testid=inline-dictation-toggle]').length,"
+                + "inlineDictationTargetKey:inlineDictationBarNode?.dataset.targetKey??'',"
+                + "inlineDictationPhase:inlineDictationBarNode?.dataset.phase??'',"
+                + "inlineDictationTone:inlineDictationBarNode?.dataset.dictationTone??'',"
+                + "inlineDictationStatusText:inlineDictationStatusNode?.textContent.trim()??'',"
+                + "inlineDictationPreview:inlineDictationStatusNode?.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim()??'',"
+                + "inlineDictationStatusOneLine,"
+                + "inlineDictationStatusInsideBar:inlineDictationStatusRow&&inlineDictationBar?inlineDictationStatusRow.top>=inlineDictationBar.top-0.5"
+                + "&&inlineDictationStatusRow.left>=inlineDictationBar.left-0.5&&inlineDictationStatusRow.bottom<=inlineDictationBar.bottom+0.5"
+                + "&&inlineDictationStatusRow.right<=inlineDictationBar.right+0.5:false,"
+                + "inlineDictationStatusAboveKeybar:inlineDictationStatusRow&&keybarRect?inlineDictationStatusRow.bottom<=keybarRect.top+0.5:false,"
+                + "inlineDictationMicInsideBar:inlineDictationBarNode&&inlineDictationMicNode?(()=>{const b=inlineDictationBarNode.getBoundingClientRect(),m=inlineDictationMicNode.getBoundingClientRect();"
+                + "return m.top>=b.top-0.5&&m.left>=b.left-0.5&&m.bottom<=b.bottom+0.5&&m.right<=b.right+0.5;})():false,"
+                + "inlineDictationBarInsideTray:inlineDictationBar&&trayRect?inlineDictationBar.top>=trayRect.top-0.5"
+                + "&&inlineDictationBar.left>=trayRect.left-0.5&&inlineDictationBar.bottom<=trayRect.bottom+0.5"
+                + "&&inlineDictationBar.right<=trayRect.right+0.5:null,"
                 + "layout:Object.fromEntries(['.app-shell','.screen-content','.home-screen--workspace','.live-workspace','.terminal-panel',"
-                + "'[data-testid=terminal-slot]','.terminal-viewport','.composer-panel'].map(selector=>{const node=document.querySelector(selector);"
+                + "'[data-testid=terminal-slot]','.terminal-viewport','.mobile-hotkeys','.composer-panel'].map(selector=>{const node=document.querySelector(selector);"
                 + "if(!node)return [selector,null];const style=getComputedStyle(node),r=node.getBoundingClientRect();return [selector,{display:style.display,"
                 + "height:r.height,minHeight:style.minHeight,flex:style.flex,padding:style.padding,overflow:style.overflow}];})),"
-                + "palette:palette?{bounds:rect('[data-testid=mobile-hotkeys-palette]'),insideSlot:(()=>{const a=palette.getBoundingClientRect(),b=slot.getBoundingClientRect();"
-                + "return a.top>=b.top-0.5&&a.left>=b.left-0.5&&a.bottom<=b.bottom+0.5&&a.right<=b.right+0.5;})()}:null,"
+                + "fastKeysTray:tray&&trayRect&&slotRect&&terminalRect&&composerRect?{bounds:trayRect,insideSlot:trayRect.top>=slotRect.top-0.5"
+                + "&&trayRect.left>=slotRect.left-0.5&&trayRect.bottom<=slotRect.bottom+0.5&&trayRect.right<=slotRect.right+0.5,"
+                + "belowTerminalViewport:trayRect.top>=terminalRect.bottom-0.5,intersectsTerminalViewport:trayRect.top<terminalRect.bottom"
+                + "&&trayRect.bottom>terminalRect.top,intersectsComposerPanel:trayRect.left<composerRect.right"
+                + "&&trayRect.right>composerRect.left&&trayRect.top<composerRect.bottom&&trayRect.bottom>composerRect.top}:null,"
                 + "runtimeGeometry:window.__ps2875TerminalRuntimeGeometry??null,"
                 + "resizeAcks:Number(shell?.dataset.sshTerminalResizeAcks??0),resizePending:Number(shell?.dataset.sshTerminalResizePending??0),"
                 + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),hotkeyWrites:window.__ps2884HotkeyWrites??[],"
+                + "resizeTraceMarker:window.__ps2884ResizeFitMarker??'',resizeFitEvents:fitEventsSince,resizeAckEvents:ackEventsSince,"
                 + "visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth,"
                 + "offsetTop:window.visualViewport?.offsetTop??0},innerWidth,innerHeight,"
                 + "screenScroll:document.querySelector('.screen-content')?.scrollTop??null,"
                 + "documentScroll:document.scrollingElement?.scrollTop??null});})()");
         dom.put("androidIme", readNativeImeState());
         geometryTrace.put(new JSONObject(dom.toString()));
+        Log.i("PS2884Geometry", "RUN " + artifactRunId + " " + stage + " " + dom);
         return dom;
     }
 
@@ -568,7 +1140,9 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void assertHotkeyBarReachable(JSONObject geometry) throws Exception {
         JSONArray targets = geometry.getJSONArray("navigationTargets");
-        assertEquals("compact hotkey row must expose arrows, Enter, and launcher", 4, targets.length());
+        int expectedTargetCount = "closed".equals(geometry.getString("fastKeysPage")) ? 4 : 5;
+        assertEquals("compact hotkey row must expose navigation, page, launcher, and dictation targets",
+                expectedTargetCount, targets.length());
         List<String> labels = new ArrayList<>();
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
@@ -578,8 +1152,13 @@ public final class JsFastKeysDockerJourneyTest {
             assertTrue("hotkey target must remain above the IME and inside the viewport: " + target, target.getBoolean("insideViewport"));
             assertTrue("live hotkey target must be enabled: " + target, !target.getBoolean("disabled"));
         }
-        assertEquals("compact row keeps all required controls reachable",
-                List.of("Send Up arrow", "Send Down arrow", "Send Enter", "Open terminal hotkeys"), labels);
+        String page = geometry.getString("fastKeysPage");
+        List<String> expected = new ArrayList<>(List.of("Send Up arrow", "Send Down arrow", "Send Enter"));
+        if ("main".equals(page)) expected.add("Open Ctrl plus letter keys");
+        if ("ctrl".equals(page)) expected.add("Back to terminal hotkeys");
+        expected.add("closed".equals(page) ? "Open terminal hotkeys" : "Close terminal hotkeys");
+        assertEquals("persistent row keeps navigation, Fast Keys page, launcher, and trailing mic reachable",
+                expected, labels);
         assertTrue("keyboard geometry must confirm native IME visibility", geometry.getJSONObject("androidIme").getBoolean("visible"));
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
     }
@@ -595,19 +1174,62 @@ public final class JsFastKeysDockerJourneyTest {
         }
     }
 
-    private void assertPaletteInsideTerminalSlot(JSONObject geometry) throws Exception {
-        JSONObject palette = geometry.getJSONObject("palette");
-        assertTrue("floating fast-key palette must stay inside the terminal slot: " + geometry, palette.getBoolean("insideSlot"));
-        JSONObject bounds = palette.getJSONObject("bounds");
-        assertTrue("floating palette must remain visible in the WebView viewport", bounds.getDouble("top") >= 0
+    private void assertTrayBelowTerminalViewport(JSONObject geometry) throws Exception {
+        JSONObject tray = geometry.getJSONObject("fastKeysTray");
+        assertTrue("fast-key lane must stay inside the terminal slot: " + geometry, tray.getBoolean("insideSlot"));
+        assertTrue("fast-key lane must be docked below the xterm viewport: " + geometry, tray.getBoolean("belowTerminalViewport"));
+        assertTrue("fast-key controls must not intersect terminal text: " + geometry, !tray.getBoolean("intersectsTerminalViewport"));
+        assertTrue("fast-key lane must not overlap the composer panel: " + geometry, !tray.getBoolean("intersectsComposerPanel"));
+        if (!geometry.isNull("inlineDictationBar")) {
+            assertTrue("inline dictation must live inside the persistent dock, not as an overlapping extra row: " + geometry,
+                    geometry.getBoolean("inlineDictationBarInsideTray"));
+        }
+        JSONObject bounds = tray.getJSONObject("bounds");
+        assertTrue("docked fast-key lane must remain in the visible WebView viewport", bounds.getDouble("top") >= 0
                 && bounds.getDouble("bottom") <= geometry.getJSONObject("visualViewport").getDouble("height") + 0.5);
     }
 
-    private boolean paletteMoved(JSONObject before, JSONObject after) throws Exception {
-        JSONObject start = before.getJSONObject("palette").getJSONObject("bounds");
-        JSONObject end = after.getJSONObject("palette").getJSONObject("bounds");
-        return Math.abs(start.getDouble("left") - end.getDouble("left")) > 1
-                || Math.abs(start.getDouble("top") - end.getDouble("top")) > 1;
+    private void assertUnchangedTerminalGrid(String action, JSONObject before, JSONObject after) throws Exception {
+        assertEquals(action + " must keep xterm columns; before=" + before + "; after=" + after,
+                before.getInt("cols"), after.getInt("cols"));
+        assertEquals(action + " must keep xterm rows; before=" + before + "; after=" + after,
+                before.getInt("rows"), after.getInt("rows"));
+    }
+
+    private void assertTerminalViewportCap(String action, JSONObject baselineGeometry, JSONObject afterGeometry)
+            throws Exception {
+        JSONObject baselineViewport = baselineGeometry.getJSONObject("terminalViewport");
+        JSONObject afterViewport = afterGeometry.getJSONObject("terminalViewport");
+        int cap = afterGeometry.getInt("terminalViewportDockCapPx");
+        assertEquals(action + " must capture the pre-dock terminal viewport height; before=" + baselineGeometry
+                        + "; after=" + afterGeometry,
+                (int) Math.ceil(baselineViewport.getDouble("height")), cap);
+        assertEquals(action + " must keep the xterm viewport at that height; before=" + baselineGeometry
+                        + "; after=" + afterGeometry,
+                cap, afterViewport.getDouble("height"), 0.5);
+        double dockHeight = afterGeometry.getDouble("terminalHotkeysDockHeightPx");
+        double renderedDockHeight = afterGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height");
+        assertEquals(action + " dock height state must match the rendered dock; after=" + afterGeometry,
+                dockHeight, renderedDockHeight, 0.5);
+        assertTrue(action + " must reserve the capped viewport, rendered dock, and 1px flow gap; after=" + afterGeometry,
+                afterGeometry.getJSONObject("terminalSlot").getDouble("height") + 0.5 >= cap + renderedDockHeight + 1);
+    }
+
+    private void assertDictationStableStage(String action, JSONObject baselineGeometry, JSONObject afterGeometry,
+                                           JSONObject baselineGrid, int baselineResizeAcks) throws Exception {
+        JSONObject afterGrid = runtimeGrid(afterGeometry);
+        assertAtLeastFiveRows(action, afterGeometry);
+        assertUnchangedTerminalGrid(action, baselineGrid, afterGrid);
+        assertEquals(action + " must not request a PTY resize; before=" + baselineGeometry
+                        + "; after=" + afterGeometry,
+                baselineResizeAcks, afterGeometry.getInt("resizeAcks"));
+        assertEquals(action + " must finish with native PTY resize idle; after=" + afterGeometry,
+                0, afterGeometry.getInt("resizePending"));
+    }
+
+    private void assertAtLeastFiveRows(String action, JSONObject geometry) throws Exception {
+        int rows = runtimeGrid(geometry).getInt("rows");
+        assertTrue(action + " must keep at least five terminal rows; geometry=" + geometry, rows >= 5);
     }
 
     private void awaitRenderedFrame() throws Exception {
@@ -709,12 +1331,6 @@ public final class JsFastKeysDockerJourneyTest {
             SystemClock.sleep(15);
         }
         Log.i(ASSET_TAG, "END|" + artifactRunId + "|" + name);
-    }
-
-    private String hex(byte[] bytes) {
-        StringBuilder result = new StringBuilder(bytes.length * 2);
-        for (byte value : bytes) result.append(String.format("%02x", value & 0xff));
-        return result.toString();
     }
 
     private boolean isImeVisible() {

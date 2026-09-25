@@ -1,11 +1,8 @@
 import { createRenderer, defineComponent, h, nextTick, ref, type App } from 'vue';
 import { describe, expect, it } from 'vitest';
+import { HOTKEY_CTRL_PAGE_ROWS, HOTKEY_PALETTE_MAIN_SECTIONS } from '@pocketshell/core';
 import MobileHotkeys from '../../src/components/MobileHotkeys.vue';
-import {
-  createMobileHotkeysActions,
-  createMobileHotkeysState,
-  type MobileHotkeysRect,
-} from '../../src/components/mobileHotkeysModel';
+import { createMobileHotkeysActions, createMobileHotkeysState } from '../../src/components/mobileHotkeysModel';
 
 function makeHarness(enabled = true, holdThresholdMs = 500) {
   const state = createMobileHotkeysState(enabled);
@@ -64,6 +61,41 @@ describe('mobile fast-key behavior', () => {
     expect(paletteChanges).toEqual([true, false, true]);
   });
 
+  it('renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page', async () => {
+    const mounted = mountMobileHotkeys();
+    try {
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));
+      await nextTick();
+
+      const mainPage = findByTestId(mounted.root, 'mobile-hotkeys-main-page');
+      if (!mainPage) throw new Error('The fast keys main page did not mount');
+      expect(mainPage.props).toMatchObject({
+        role: 'group',
+        'aria-label': 'Common terminal key categories',
+      });
+      const sections = findAll(mainPage, (node) => typeof node.props['data-key-section'] === 'string');
+      expect(sections.map((section) => section.props['data-key-section']))
+        .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.map((section) => section.title));
+      expect(sections.flatMap((section) => findAll(section, (node) => node.tag === 'button'
+        && typeof node.props['data-key-id'] === 'string').map((node) => node.props['data-key-id'])))
+        .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map((key) => key.id)));
+
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
+      await nextTick();
+
+      const ctrlPage = findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page');
+      if (!ctrlPage) throw new Error('The Ctrl key page did not mount');
+      const ctrlIds = findAll(ctrlPage, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string')
+        .map((node) => node.props['data-key-id']);
+      expect(ctrlIds).toEqual(HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row.map((key) => key.id)));
+      expect(findAll(ctrlPage, (node) => node.props.role === 'group' && typeof node.props['aria-label'] === 'string')
+        .map((row) => row.props['aria-label']))
+        .toEqual(HOTKEY_CTRL_PAGE_ROWS.map((_, index) => `Ctrl key row ${index + 1}`));
+    } finally {
+      mounted.app.unmount();
+    }
+  });
+
   it('resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap', () => {
     const { sent, actions } = makeHarness();
 
@@ -110,27 +142,6 @@ describe('mobile fast-key behavior', () => {
     expect(state).toMatchObject({ enabled: true, paletteOpen: true, page: 'main' });
   });
 
-  it('drags only from the card surface and clamps the floating palette to the terminal slot', () => {
-    const { state, actions } = makeHarness();
-    actions.togglePalette();
-    const bounds: MobileHotkeysRect = { left: 20, top: 40, width: 300, height: 220 };
-    const card: MobileHotkeysRect = { left: 140, top: 50, width: 160, height: 180 };
-
-    expect(actions.beginDrag({
-      button: 0, isPrimary: true, pointerId: 7, timeStamp: 0, clientX: 50, clientY: 60, targetIsControl: true,
-    }, bounds, card)).toBe(false);
-    expect(actions.beginDrag({
-      button: 0, isPrimary: true, pointerId: 7, timeStamp: 0, clientX: 50, clientY: 60, targetIsControl: false,
-    }, bounds, card)).toBe(true);
-    actions.moveDrag(7, 900, -900, bounds, card);
-    expect(state.dragPosition).toEqual({ left: 140, top: 0 });
-    actions.clampDrag({ ...bounds, width: 100, height: 80 }, card);
-    expect(state.dragPosition).toEqual({ left: 0, top: 0 });
-    actions.finishDrag(7);
-    actions.moveDrag(7, 30, 80, bounds, card);
-    expect(state.dragPosition).toEqual({ left: 0, top: 0 });
-  });
-
   it('provides a direct close action for the app-level Back route', () => {
     const { state, paletteChanges, actions } = makeHarness();
     // The returned close action is the same method exposed by MobileHotkeys.vue.
@@ -139,6 +150,30 @@ describe('mobile fast-key behavior', () => {
     actions.closePalette();
     expect(state.paletteOpen).toBe(false);
     expect(paletteChanges).toEqual([true, false]);
+  });
+
+  it('keeps the persistent status and control slot layout available on both catalog pages', async () => {
+    // Layout-only fixtures for the future #2896 mount; this does not exercise dictation behavior.
+    const mounted = mountMobileHotkeys(true);
+    try {
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-persistent-status')).toBeDefined();
+      expect(findByTestId(mounted.root, 'status-slot-fixture')).toBeDefined();
+      expect(findByTestId(mounted.root, 'control-slot-fixture')).toBeDefined();
+
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));
+      await nextTick();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-main-page')).toBeDefined();
+      expect(findByTestId(mounted.root, 'status-slot-fixture')).toBeDefined();
+      expect(findByTestId(mounted.root, 'control-slot-fixture')).toBeDefined();
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
+      await nextTick();
+
+      expect(findByTestId(mounted.root, 'status-slot-fixture')).toBeDefined();
+      expect(findByTestId(mounted.root, 'control-slot-fixture')).toBeDefined();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page')).toBeDefined();
+    } finally {
+      mounted.app.unmount();
+    }
   });
 
   it('wires the mounted fast-key controls to core bytes and live-state transitions', async () => {
@@ -203,7 +238,7 @@ describe('mobile fast-key behavior', () => {
         ['ctrl-d', [0x04, 0x04]],
       ]);
 
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-palette')).toBeDefined();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-main-page')).toBeDefined();
       const pendingCtrlC = findButton(mounted.root, { 'data-key-id': 'ctrl-c' });
       pointer(pendingCtrlC, 'pointerdown', { pointerId: 99, timeStamp: 8000 });
       mounted.setEnabled(false);
@@ -213,7 +248,7 @@ describe('mobile fast-key behavior', () => {
       const slot = findByTestId(mounted.root, 'mobile-hotkeys');
       expect(slot?.props['data-enabled']).toBe(false);
       expect(slot?.props['data-palette-open']).toBe(false);
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-palette')).toBeUndefined();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page')).toBeUndefined();
       for (const button of findAll(mounted.root, (node) => node.tag === 'button')) {
         expect(button.props.disabled).toBe(true);
       }
@@ -278,7 +313,7 @@ const renderer = createRenderer<TestNode, TestElement>({
   },
 });
 
-function mountMobileHotkeys() {
+function mountMobileHotkeys(withPersistentSlots = false) {
   const root: TestElement = {
     tag: 'root', props: {}, children: [], parent: null, text: '', setPointerCapture: () => {},
   };
@@ -291,7 +326,10 @@ function mountMobileHotkeys() {
       holdThresholdMs: 500,
       onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
       onPaletteChange: (open: boolean) => paletteChanges.push(open),
-    }),
+    }, withPersistentSlots ? {
+      'persistent-status': () => h('span', { 'data-testid': 'status-slot-fixture' }, 'One line of status'),
+      'persistent-controls': () => h('button', { 'data-testid': 'control-slot-fixture', 'aria-label': 'Future control' }, '●'),
+    } : {}),
   });
   const app = renderer.createApp(Host) as App;
   app.mount(root as unknown as Element);
