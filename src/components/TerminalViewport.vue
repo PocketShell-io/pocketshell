@@ -22,6 +22,10 @@ const emit = defineEmits<{
 
 type ComposerSmokeEvidenceWindow = Window & {
   __ps2857CaptureTerminalEvidence?: boolean;
+  __ps2857InjectTerminalTestInput?: (data: string) => boolean;
+  __ps2857TerminalOnDataChunks?: string[];
+  __ps2857TerminalOnDataChars?: number;
+  __ps2857TerminalOnDataDroppedChunks?: number;
   __ps2857TerminalVisibleText?: string;
   __ps2857TerminalWriteCount?: number;
   __ps2857TerminalLastWriteText?: string;
@@ -38,7 +42,22 @@ type ComposerSmokeEvidenceWindow = Window & {
     bufferLength: number;
     cellHeight: number | null;
   };
+  __ps2884CaptureResizeFitEvidence?: boolean;
+  __ps2884ResizeFitMarker?: string;
+  __ps2884ResizeFitEvents?: Array<{
+    atMs: number;
+    marker: string;
+    reason: string;
+    cols: number;
+    rows: number;
+    requestId: number | null;
+    hostWidth: number;
+    hostHeight: number;
+  }>;
 };
+
+const MAX_TERMINAL_INPUT_EVIDENCE_CHUNKS = 128;
+const MAX_TERMINAL_INPUT_EVIDENCE_CHARS = 2_048;
 
 const terminalHost = ref<HTMLDivElement>();
 let terminal: Terminal | undefined;
@@ -46,9 +65,12 @@ let fitAddon: FitAddon | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let renderListener: { dispose(): void } | undefined;
 let writeParsedListener: { dispose(): void } | undefined;
+let terminalTestInputInjector: ((data: string) => boolean) | undefined;
 const resizeReporter = new TerminalGeometryReporter();
 let foregroundRefitFrame = 0;
 let foregroundRefitFrameAfterLayout = 0;
+let visualViewportResizeListener: (() => void) | undefined;
+let windowResizeListener: (() => void) | undefined;
 
 function captureComposerSmokeTerminalText() {
   const evidenceWindow = window as ComposerSmokeEvidenceWindow;
@@ -100,22 +122,66 @@ function captureRequestedTerminalGeometry() {
   };
 }
 
+function captureTerminalInputChunk(data: string) {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (!evidenceWindow.__ps2857CaptureTerminalEvidence || data.length === 0) return;
+
+  const chunks = evidenceWindow.__ps2857TerminalOnDataChunks
+    ?? (evidenceWindow.__ps2857TerminalOnDataChunks = []);
+  const capturedChars = evidenceWindow.__ps2857TerminalOnDataChars ?? 0;
+  const remainingChars = MAX_TERMINAL_INPUT_EVIDENCE_CHARS - capturedChars;
+  if (chunks.length >= MAX_TERMINAL_INPUT_EVIDENCE_CHUNKS || remainingChars <= 0) {
+    evidenceWindow.__ps2857TerminalOnDataDroppedChunks =
+      (evidenceWindow.__ps2857TerminalOnDataDroppedChunks ?? 0) + 1;
+    return;
+  }
+
+  const captured = data.slice(0, remainingChars);
+  chunks.push(captured);
+  evidenceWindow.__ps2857TerminalOnDataChars = capturedChars + captured.length;
+  if (captured.length < data.length) {
+    evidenceWindow.__ps2857TerminalOnDataDroppedChunks =
+      (evidenceWindow.__ps2857TerminalOnDataDroppedChunks ?? 0) + 1;
+  }
+}
+
 const terminalGeometryRequestEvent = 'pocketshell:terminal-geometry-request';
 
-function fitTerminal() {
+function fitTerminal(reason = 'layout-observer') {
   requestAnimationFrame(() => {
     if (!terminal || !fitAddon) return;
     try {
       fitAddon.fit();
       const geometry = { cols: terminal.cols, rows: terminal.rows };
+      let requestId: number | null = null;
       if (!props.enabled) {
         // A fit while disconnected can prepare xterm's local grid, but it
         // cannot acknowledge geometry on the next native PTY generation.
         resizeReporter.reset();
-        return;
+      } else {
+        const request = resizeReporter.request(geometry);
+        if (request) {
+          requestId = request.requestId;
+          emit('resize', request);
+        }
       }
-      const request = resizeReporter.request(geometry);
-      if (request) emit('resize', request);
+      const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+      if (evidenceWindow.__ps2884CaptureResizeFitEvidence) {
+        const events = evidenceWindow.__ps2884ResizeFitEvents
+          ?? (evidenceWindow.__ps2884ResizeFitEvents = []);
+        const hostRect = terminalHost.value?.getBoundingClientRect();
+        events.push({
+          atMs: Math.round(performance.now() * 10) / 10,
+          marker: evidenceWindow.__ps2884ResizeFitMarker ?? 'unmarked',
+          reason,
+          cols: geometry.cols,
+          rows: geometry.rows,
+          requestId,
+          hostWidth: Math.round((hostRect?.width ?? 0) * 10) / 10,
+          hostHeight: Math.round((hostRect?.height ?? 0) * 10) / 10,
+        });
+        if (events.length > 100) events.shift();
+      }
     } catch {
       // The terminal host is not measurable until its containing panel is laid out.
     }
@@ -132,7 +198,7 @@ function refitAfterVisibilityResume() {
       foregroundRefitFrame = 0;
       foregroundRefitFrameAfterLayout = requestAnimationFrame(() => {
         foregroundRefitFrameAfterLayout = 0;
-        if (document.visibilityState === 'visible') fitTerminal();
+        if (document.visibilityState === 'visible') fitTerminal('visibility-resume');
       });
     });
   });
@@ -148,7 +214,7 @@ watch(() => props.enabled, async (enabled) => {
     return;
   }
   await nextTick();
-  fitTerminal();
+  fitTerminal('enabled-state-change');
   const autofocusGate = waitForAttachAutofocusTestGate('terminal-enabled-watcher');
   if (autofocusGate) await autofocusGate;
   if (props.autofocusAllowed !== false) terminal.focus();
@@ -164,7 +230,7 @@ watch(() => [props.theme, props.fontFamily, props.fontSize] as const, async () =
   terminal.options.fontFamily = props.fontFamily;
   terminal.options.fontSize = props.fontSize;
   await nextTick();
-  fitTerminal();
+  fitTerminal('theme-font-change');
 });
 
 onMounted(() => {
@@ -196,23 +262,40 @@ onMounted(() => {
     captureComposerSmokeTerminalText();
   });
   window.addEventListener(terminalGeometryRequestEvent, captureRequestedTerminalGeometry);
-  terminal.onData((data) => emit('input', data));
-  fitTerminal();
-  resizeObserver = new ResizeObserver(fitTerminal);
+  terminal.onData((data) => {
+    captureTerminalInputChunk(data);
+    emit('input', data);
+  });
+  terminalTestInputInjector = (data) => {
+    const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+    if (!evidenceWindow.__ps2857CaptureTerminalEvidence || !terminal) return false;
+    terminal.input(data, true);
+    return true;
+  };
+  (window as ComposerSmokeEvidenceWindow).__ps2857InjectTerminalTestInput = terminalTestInputInjector;
+  fitTerminal('mount');
+  resizeObserver = new ResizeObserver(() => fitTerminal('resize-observer'));
   resizeObserver.observe(terminalHost.value);
-  window.visualViewport?.addEventListener('resize', fitTerminal);
-  window.addEventListener('resize', fitTerminal);
+  visualViewportResizeListener = () => fitTerminal('visual-viewport-resize');
+  windowResizeListener = () => fitTerminal('window-resize');
+  window.visualViewport?.addEventListener('resize', visualViewportResizeListener);
+  window.addEventListener('resize', windowResizeListener);
   document.addEventListener('visibilitychange', refitAfterVisibilityResume);
 });
 
 onBeforeUnmount(() => {
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (evidenceWindow.__ps2857InjectTerminalTestInput === terminalTestInputInjector) {
+    delete evidenceWindow.__ps2857InjectTerminalTestInput;
+  }
+  terminalTestInputInjector = undefined;
   resizeObserver?.disconnect();
   renderListener?.dispose();
   renderListener = undefined;
   writeParsedListener?.dispose();
   writeParsedListener = undefined;
-  window.visualViewport?.removeEventListener('resize', fitTerminal);
-  window.removeEventListener('resize', fitTerminal);
+  if (visualViewportResizeListener) window.visualViewport?.removeEventListener('resize', visualViewportResizeListener);
+  if (windowResizeListener) window.removeEventListener('resize', windowResizeListener);
   document.removeEventListener('visibilitychange', refitAfterVisibilityResume);
   cancelAnimationFrame(foregroundRefitFrame);
   cancelAnimationFrame(foregroundRefitFrameAfterLayout);

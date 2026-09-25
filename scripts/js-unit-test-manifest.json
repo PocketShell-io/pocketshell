@@ -1,35 +1,19 @@
 {
   "schema": 1,
   "testFiles": {
-    "tests/unit/mobileHotkeys.test.ts": {
-      "suite": "mobile fast-key behavior",
+    "tests/unit/appLifecycle.test.ts": {
+      "suite": "native app lifecycle transitions",
       "tests": [
-        "keeps the controls inert off-live and resumes only after an explicit live state",
-        "emits core catalog bytes and keeps the palette open until toggled or closed",
-        "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
-        "closes and cancels a pending hold on live-session loss, then starts on the main page again",
-        "drags only from the card surface and clamps the floating palette to the terminal slot",
-        "provides a direct close action for the app-level Back route",
-        "wires the mounted fast-key controls to core bytes and live-state transitions"
+        "returns to foreground when it arrives before background scheduling resolves"
       ]
     },
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists only shared theme/font policy and supported background grace values",
+        "reads and persists shared appearance, connection, and dictation preferences",
         "degrades malformed or unsupported saved values to safe defaults",
-        "clamps terminal size using the pinned desktop font-size policy"
-      ]
-    },
-    "tests/unit/homeSurface.test.ts": {
-      "suite": "phone workspace destinations",
-      "tests": [
-        "starts at connection setup and opens sessions after a connection is ready",
-        "returns to the live terminal after a session is attached",
-        "keeps host setup and session selection reachable from the live terminal",
-        "backs from the terminal to sessions, then to connection details",
-        "returns to connection setup when disconnected",
-        "closes nested routes before stepping back through a connected workspace"
+        "clamps terminal size using the pinned desktop font-size policy",
+        "normalizes valid language hints and applies the adapter silence bounds"
       ]
     },
     "tests/unit/buildDiagnostics.test.ts": {
@@ -42,16 +26,6 @@
         "fails closed when the recorded shared UI source revision differs",
         "fails closed when the packaged asset bytes differ from the manifest",
         "fails closed when a bundle asset is missing"
-      ]
-    },
-    "tests/unit/sshCapabilityBridge.test.ts": {
-      "suite": "Capacitor SSH resource snapshot bridge",
-      "tests": [
-        "wraps the core request ID in Capacitor method options",
-        "rejects a mismatched request ID instead of accepting an unverified snapshot",
-        "rejects a missing counter instead of accepting an unverified snapshot",
-        "rejects a negative counter instead of accepting an unverified snapshot",
-        "propagates a native bridge rejection"
       ]
     },
     "tests/unit/composerDelivery.test.ts": {
@@ -76,30 +50,18 @@
         "exports only reviewed, normalized diagnostic fields"
       ]
     },
-    "tests/unit/installedDataMigration.test.ts": {
-      "suite": "installed Android data migration",
+    "tests/unit/dictationSettingsInteraction.test.ts": {
+      "suite": "mounted dictation settings controls",
       "tests": [
-        "maps legacy settings only when the JS settings are absent and preserves existing fields",
-        "stages complete history, trust and asset bytes before marking the import complete",
-        "repairs missing JS settings and trust pins from a completed import without rereading native data",
-        "preserves newer JS settings and skips the startup reload when no setting was written",
-        "requests only one reload in the current startup session after writing imported settings",
-        "refuses malformed sync state without staging or marking partial data complete",
-        "imports unrelated data as partial and visibly retains an unavailable encrypted store",
-        "shows an unmappable legacy terminal size on first import and completed-record startup",
-        "marks decrypted native-only credentials partial and offers only opaque legacy host key references",
-        "connects a saved host through an opaque native key reference and keeps passphrases transient",
-        "does not mark complete or write settings when an imported asset hash differs",
-        "refuses conflicting JS trust pins without replacing either fingerprint"
+        "binds the production Voice template to accessible persisted language and silence controls"
       ]
     },
-    "tests/unit/navigation.test.ts": {
-      "suite": "mobile route stack",
+    "tests/unit/dictationStartCancellation.test.ts": {
+      "suite": "prompt composer dictation",
       "tests": [
-        "keeps nested settings and support routes reachable through Back",
-        "retains a selected report ID and resets the stack when returning home",
-        "clears the selected event when opening the whole-log export preview",
-        "does not push the current destination a second time"
+        "stops a pending start once when the mounted composer backgrounds",
+        "starts with saved Voice settings, appends recognition to the draft, and leaves it editable after stop",
+        "stops active recognition on background and retains its latest partial in the session draft"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {
@@ -125,6 +87,95 @@
         "rejects native responses with an unrelated request ID"
       ]
     },
+    "tests/unit/homeSurface.test.ts": {
+      "suite": "phone workspace destinations",
+      "tests": [
+        "starts at connection setup and opens sessions after a connection is ready",
+        "returns to the live terminal after a session is attached",
+        "keeps host setup and session selection reachable from the live terminal",
+        "backs from the terminal to sessions, then to connection details",
+        "returns to connection setup when disconnected",
+        "closes nested routes before stepping back through a connected workspace"
+      ]
+    },
+    "tests/unit/inlineDictation.test.ts": {
+      "suite": "inline terminal dictation",
+      "tests": [
+        "previews partials, buffers final phrases until explicit Stop, then inserts settings-backed safe text once",
+        "inserts multiple final segments but replaces terminal controls so speech cannot press Enter",
+        "ignores final events that arrive after controller cancellation",
+        "stops a start that resolves after cancellation without forwarding its final text",
+        "reports denied microphone access and does not write any text",
+        "does not turn a partial into a terminal write when Stop receives no final result"
+      ]
+    },
+    "tests/unit/installedDataMigration.test.ts": {
+      "suite": "installed Android data migration",
+      "tests": [
+        "maps legacy settings only when the JS settings are absent and preserves existing fields",
+        "stages complete history, trust and asset bytes before marking the import complete",
+        "repairs missing JS settings and trust pins from a completed import without rereading native data",
+        "preserves newer JS settings and skips the startup reload when no setting was written",
+        "requests only one reload in the current startup session after writing imported settings",
+        "refuses malformed sync state without staging or marking partial data complete",
+        "imports unrelated data as partial and visibly retains an unavailable encrypted store",
+        "shows an unmappable legacy terminal size on first import and completed-record startup",
+        "marks decrypted native-only credentials partial and offers only opaque legacy host key references",
+        "connects a saved host through an opaque native key reference and keeps passphrases transient",
+        "does not mark complete or write settings when an imported asset hash differs",
+        "refuses conflicting JS trust pins without replacing either fingerprint"
+      ]
+    },
+    "tests/unit/mobileHotkeys.test.ts": {
+      "suite": "mobile fast-key behavior",
+      "tests": [
+        "keeps the controls inert off-live and resumes only after an explicit live state",
+        "emits core catalog bytes and keeps the palette open until toggled or closed",
+        "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
+        "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
+        "closes and cancels a pending hold on live-session loss, then starts on the main page again",
+        "provides a direct close action for the app-level Back route",
+        "keeps the persistent status and control slot layout available on both catalog pages",
+        "wires the mounted fast-key controls to core bytes and live-state transitions"
+      ]
+    },
+    "tests/unit/navigation.test.ts": {
+      "suite": "mobile route stack",
+      "tests": [
+        "keeps nested settings and support routes reachable through Back",
+        "retains a selected report ID and resets the stack when returning home",
+        "clears the selected event when opening the whole-log export preview",
+        "does not push the current destination a second time"
+      ]
+    },
+    "tests/unit/platformInput.test.ts": {
+      "suite": "Android platform input adapter",
+      "tests": [
+        "reads selected documents in ordered bounded chunks and returns exact attachment bytes",
+        "preserves valid files when one selection is over the shared native transfer limit",
+        "rejects mismatched chunk identity and still releases the native document reference",
+        "materializes incoming shared text and files before delivering the share callback",
+        "registers before starting speech, filters foreign events, and stops the matching request"
+      ]
+    },
+    "tests/unit/speechRecognition.test.ts": {
+      "suite": "Android speech option boundary",
+      "tests": [
+        "uses the 4-second silence default and preserves the explicit auto sentinel",
+        "rounds and clamps the silence window to the supported 2-to-60-second range",
+        "keeps a trimmed BCP-47 hint and defaults malformed untyped values safely"
+      ]
+    },
+    "tests/unit/sshCapabilityBridge.test.ts": {
+      "suite": "Capacitor SSH resource snapshot bridge",
+      "tests": [
+        "wraps the core request ID in Capacitor method options",
+        "rejects a mismatched request ID instead of accepting an unverified snapshot",
+        "rejects a missing counter instead of accepting an unverified snapshot",
+        "rejects a negative counter instead of accepting an unverified snapshot",
+        "propagates a native bridge rejection"
+      ]
+    },
     "tests/unit/terminal-geometry.test.ts": {
       "suite": "terminal geometry resize reporting",
       "tests": [
@@ -138,7 +189,16 @@
     "tests/unit/terminal-viewport-resize.test.ts": {
       "suite": "TerminalViewport resize failure across a route remount",
       "tests": [
-        "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
+        "keeps delayed resize failures isolated after home \u2192 Settings \u2192 home and retries only after the current request fails"
+      ]
+    },
+    "tests/unit/terminalFocus.test.ts": {
+      "suite": "terminal focus after attach",
+      "tests": [
+        "keeps a composer focus acquired while attach focus is waiting for its update",
+        "does not steal focus when a composer tap precedes WebView activeElement",
+        "scopes composer pointer intent to the pending focus request",
+        "still gives the terminal focus when no composer has claimed it"
       ]
     }
   }
