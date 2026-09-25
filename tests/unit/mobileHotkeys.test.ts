@@ -64,14 +64,21 @@ describe('mobile fast-key behavior', () => {
   it('renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page', async () => {
     const mounted = mountMobileHotkeys();
     try {
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')).toBeUndefined();
       click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));
       await nextTick();
+
+      const sheet = findByTestId(mounted.root, 'mobile-hotkeys-sheet');
+      if (!sheet) throw new Error('The on-demand key catalog sheet did not mount');
+      expect(sheet.props).toMatchObject({ role: 'dialog', 'aria-modal': 'false' });
+      expect(findAll(mounted.root, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string'))
+        .toHaveLength(3 + HOTKEY_PALETTE_MAIN_SECTIONS.reduce((count, section) => count + section.keys.length, 0));
 
       const mainPage = findByTestId(mounted.root, 'mobile-hotkeys-main-page');
       if (!mainPage) throw new Error('The fast keys main page did not mount');
       expect(mainPage.props).toMatchObject({
         role: 'group',
-        'aria-label': 'Common terminal key categories',
+        'aria-label': 'Common terminal keys',
       });
       const sections = findAll(mainPage, (node) => typeof node.props['data-key-section'] === 'string');
       expect(sections.map((section) => section.props['data-key-section']))

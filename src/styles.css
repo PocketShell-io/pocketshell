@@ -179,7 +179,7 @@ button { color: inherit; }
   min-height: calc(var(--terminal-min-grid-height, 110px) + 96px);
 }
 .live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 148px);
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 96px);
 }
 .live-workspace .terminal-slot--hotkeys.terminal-slot--dictation-status {
   min-height: calc(var(--terminal-min-grid-height, 110px) + 80px);
@@ -188,7 +188,7 @@ button { color: inherit; }
   min-height: calc(var(--terminal-min-grid-height, 110px) + 128px);
 }
 .live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl.terminal-slot--dictation-status {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 180px);
+  min-height: calc(var(--terminal-min-grid-height, 110px) + 128px);
 }
 .live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
 .live-workspace .terminal-slot > .terminal-viewport {

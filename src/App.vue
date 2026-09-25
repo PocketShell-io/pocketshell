@@ -201,9 +201,7 @@ const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 
     && inlineDictationState.value.message !== 'Tap the microphone to dictate at the terminal cursor.')
 ));
 const mobileHotkeysDockHeight = computed(() => {
-  const catalogHeight = mobileHotkeysPaletteOpen.value
-    ? mobileHotkeysPage.value === 'ctrl' ? 100 : 48
-    : 0;
+  const catalogHeight = mobileHotkeysPaletteOpen.value ? 48 : 0;
   return 48 + catalogHeight + (inlineDictationStatusVisible.value ? 32 : 0);
 });
 watch(
@@ -271,11 +269,11 @@ function recordAttachComposerPointer(event: PointerEvent) {
 }
 
 function recordAttachComposerInteraction(target: Element | null) {
-  if (terminalAttachFocusWindowEpoch.value === 0
-    || terminalAttachFocusWindowEpoch.value !== terminalAttachEpoch.value
-    || homeSurface.value !== 'live'
-    || !isLive.value
-    || !isPromptComposerElement(target)) return;
+  // Keep composer intent for this PTY even if the tap lands just after the
+  // attach focus window closes. TerminalViewport's enabled watcher can still
+  // finish its async autofocus after attachSession has returned to the caller.
+  // A later attach gets a new epoch, so it naturally clears this intent.
+  if (homeSurface.value !== 'live' || !isLive.value || !isPromptComposerElement(target)) return;
   terminalAttachPromptFocusEpoch.value = terminalAttachEpoch.value;
 }
 

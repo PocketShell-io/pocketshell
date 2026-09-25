@@ -17,8 +17,10 @@ from pathlib import Path
 TAG = "PS2884Asset:"
 SCREENSHOTS = {
     "fastkeys-ime-open.png",
-    "fastkeys-tray-main-ime-open.png",
-    "fastkeys-tray-ctrl-ime-open.png",
+    "fastkeys-sheet-main-ime-open.png",
+    "fastkeys-sheet-main-tail-ime-open.png",
+    "fastkeys-sheet-ctrl-ime-open.png",
+    "fastkeys-sheet-ctrl-tail-ime-open.png",
     "fastkeys-tray-ime-dismissed.png",
     "fastkeys-tray-closed.png",
     "fastkeys-reconnected-ime-open.png",
@@ -132,19 +134,15 @@ def validate_docked_dictation_geometry(
         raise ExtractionFailure(f"{label} hides a meaningful dictation status")
     nav = item.get("navigationTargets")
     page = item.get("fastKeysPage")
-    expected_nav_count = 4 if page == "closed" else 5
+    expected_nav_count = 4
     if not isinstance(nav, list) or len(nav) != expected_nav_count:
-        raise ExtractionFailure(f"{label} does not keep arrows, Enter, page control, and launcher visible")
+        raise ExtractionFailure(f"{label} does not keep arrows, Enter, and the persistent catalog launcher visible")
     expected_nav = ("Send Up arrow", "Send Down arrow", "Send Enter")
     for index, target in enumerate(nav):
         if not isinstance(target, dict):
             raise ExtractionFailure(f"{label} persistent terminal navigation is missing a required action")
         if index < 3:
             label_matches = target.get("label") == expected_nav[index]
-        elif page != "closed" and index == 3:
-            label_matches = target.get("label") == (
-                "Open Ctrl plus letter keys" if page == "main" else "Back to terminal hotkeys"
-            )
         else:
             label_matches = target.get("label") == (
                 "Open terminal hotkeys" if page == "closed" else "Close terminal hotkeys"
@@ -690,8 +688,32 @@ def validate_journey(journey: object) -> None:
         raise ExtractionFailure("docked tray geometry is missing bounds")
     if (abs(main_bounds.get("height", 0) - 96) > 0.5
             or abs(closed_bounds.get("height", 0) - 48) > 0.5
-            or abs(ctrl_bounds.get("height", 0) - 148) > 0.5):
-        raise ExtractionFailure("fast-key tray did not keep the 48dp closed, 96dp main, and 148dp Ctrl in-flow heights")
+            or abs(ctrl_bounds.get("height", 0) - 96) > 0.5):
+        raise ExtractionFailure("fast-key tray did not keep the 48dp closed and 96dp catalog-open heights")
+    for label, item in (("main", opened), ("Ctrl", ctrl)):
+        sheet = item.get("catalogSheet")
+        page_action = item.get("catalogPageAction")
+        scroll = item.get("catalogScrollMetrics")
+        if (not isinstance(sheet, dict)
+                or sheet.get("height", 0) < 47.9
+                or item.get("catalogSheetModal") != "false"
+                or item.get("catalogSheetBelowTerminalViewport") is not True
+                or item.get("catalogSheetIntersectsComposer") is not False):
+            raise ExtractionFailure(f"{label} catalog is missing its bounded nonmodal sheet geometry")
+        slot = item.get("terminalSlot")
+        if (not isinstance(slot, dict)
+                or sheet.get("top", -1) < slot.get("top", 0) - 0.5
+                or sheet.get("bottom", 10**9) > slot.get("bottom", 0) + 0.5):
+            raise ExtractionFailure(f"{label} catalog sheet escaped the terminal control lane")
+        if (not isinstance(page_action, dict)
+                or page_action.get("insideCatalogSheet") is not True
+                or page_action.get("insideViewport") is not True
+                or page_action.get("width", 0) < 47.9
+                or page_action.get("height", 0) < 47.9):
+            raise ExtractionFailure(f"{label} catalog page action is not a visible 48dp sheet target")
+        if (not isinstance(scroll, dict)
+                or scroll.get("scrollWidth", 0) <= scroll.get("clientWidth", 0) + 1):
+            raise ExtractionFailure(f"{label} catalog sheet does not prove physical horizontal scrolling")
     before_grid = before.get("runtimeGeometry")
     if not isinstance(before_grid, dict):
         raise ExtractionFailure("fast-key open comparison lacks the initial xterm dimensions")
@@ -809,6 +831,10 @@ def self_test() -> int:
          ] + expected_first_writes()[8:]}, False),
         ("terminal overlap from a docked fast-key tray rejected",
          with_intersecting_tray(sample_journey()), False),
+        ("catalog sheet composer overlap rejected",
+         with_intersecting_catalog_sheet(sample_journey()), False),
+        ("catalog without a physical scroll range rejected",
+         with_non_scrollable_catalog_sheet(sample_journey()), False),
         ("composer overlap from a docked fast-key tray rejected",
          with_intersecting_composer(sample_journey()), False),
         ("separate dictation row outside the dock rejected",
@@ -914,6 +940,12 @@ def sample_journey() -> dict[str, object]:
         "terminalViewportDockCapPx": 0,
         "terminalHotkeysDockHeightPx": 48,
         "mobileHotkeys": {"top": 235, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogSheet": None,
+        "catalogSheetModal": None,
+        "catalogSheetBelowTerminalViewport": False,
+        "catalogSheetIntersectsComposer": False,
+        "catalogPageAction": None,
+        "catalogScrollMetrics": None,
         "visualViewport": {"height": 520, "width": 400, "offsetTop": 0},
         "fastKeysTray": {
             "insideSlot": True,
@@ -965,15 +997,21 @@ def sample_journey() -> dict[str, object]:
         "fastKeysPage": "main",
         "terminalSlot": {"top": 64, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 267},
         "mobileHotkeys": {"top": 235, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 96},
+        "catalogSheet": {"top": 283, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogSheetModal": "false",
+        "catalogSheetBelowTerminalViewport": True,
+        "catalogSheetIntersectsComposer": False,
+        "catalogPageAction": {"label": "Open Ctrl plus letter keys", "width": 48, "height": 48,
+            "insideViewport": True, "insideCatalogSheet": True},
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 720, "scrollLeft": 0},
         "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 96}},
         "terminalViewportDockCapPx": 170,
         "terminalHotkeysDockHeightPx": 96,
         "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 331, "height": 96},
-        "inlineDictationMic": {**base["inlineDictationMic"], "left": 288, "right": 336},
+        "inlineDictationMic": {**base["inlineDictationMic"], "left": 224, "right": 272},
         "navigationTargets": [
             *base["navigationTargets"][:3],
-            {**base["navigationTargets"][3], "label": "Open Ctrl plus letter keys", "left": 168, "right": 224},
-            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 232, "right": 280},
+            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 168, "right": 216},
         ],
         "composerPanel": {"height": 100},
     }
@@ -981,17 +1019,23 @@ def sample_journey() -> dict[str, object]:
     ctrl = {
         **base,
         "fastKeysPage": "ctrl",
-        "terminalSlot": {"top": 64, "bottom": 383, "left": 0, "right": 400, "width": 400, "height": 319},
-        "mobileHotkeys": {"top": 235, "bottom": 383, "left": 0, "right": 400, "width": 400, "height": 148},
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 148}},
+        "terminalSlot": {"top": 64, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 267},
+        "mobileHotkeys": {"top": 235, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 96},
+        "catalogSheet": {"top": 283, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogSheetModal": "false",
+        "catalogSheetBelowTerminalViewport": True,
+        "catalogSheetIntersectsComposer": False,
+        "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
+            "insideViewport": True, "insideCatalogSheet": True},
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 1424, "scrollLeft": 0},
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 96}},
         "terminalViewportDockCapPx": 170,
-        "terminalHotkeysDockHeightPx": 148,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 383, "height": 148},
-        "inlineDictationMic": {**base["inlineDictationMic"], "left": 288, "right": 336},
+        "terminalHotkeysDockHeightPx": 96,
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 331, "height": 96},
+        "inlineDictationMic": {**base["inlineDictationMic"], "left": 224, "right": 272},
         "navigationTargets": [
             *base["navigationTargets"][:3],
-            {**base["navigationTargets"][3], "label": "Back to terminal hotkeys", "left": 168, "right": 224},
-            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 232, "right": 280},
+            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 168, "right": 216},
         ],
         "composerPanel": {"height": 100},
     }
@@ -1331,6 +1375,22 @@ def with_intersecting_composer(journey: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+def with_intersecting_catalog_sheet(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "fast-keys-main-open-ime-up":
+            item["catalogSheetIntersectsComposer"] = True
+    return copied
+
+
+def with_non_scrollable_catalog_sheet(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "fast-keys-ctrl-open-ime-up":
+            item["catalogScrollMetrics"]["scrollWidth"] = item["catalogScrollMetrics"]["clientWidth"]
+    return copied
+
+
 def with_separate_dictation_row(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
@@ -1401,7 +1461,7 @@ def with_under_reserved_terminal_slot(journey: dict[str, object]) -> dict[str, o
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
         if item["stage"] == "fast-keys-ctrl-open-ime-up":
-            item["terminalSlot"]["height"] = 318
+            item["terminalSlot"]["height"] = 260
     return copied
 
 
@@ -1411,11 +1471,18 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
     copied["geometryTrace"].append({
         **ctrl,
         "stage": "dictation-listening-ctrl-open-ime-open",
-        "terminalSlot": {"top": 64, "bottom": 415, "left": 0, "right": 400, "width": 400, "height": 351},
-        "mobileHotkeys": {"top": 235, "bottom": 415, "left": 0, "right": 400, "width": 400, "height": 180},
-        "terminalHotkeysDockHeightPx": 180,
-        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 180}},
-        "inlineDictationBar": {**ctrl["inlineDictationBar"], "bottom": 415, "height": 180},
+        "mobileHotkeys": {"top": 235, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 128},
+        "catalogSheet": {"top": 315, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogSheetModal": "false",
+        "catalogSheetBelowTerminalViewport": True,
+        "catalogSheetIntersectsComposer": False,
+        "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
+            "insideViewport": True, "insideCatalogSheet": True},
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 1424, "scrollLeft": 0},
+        "terminalHotkeysDockHeightPx": 128,
+        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 128}},
+        "terminalSlot": {"top": 64, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 299},
+        "inlineDictationBar": {**ctrl["inlineDictationBar"], "bottom": 363, "height": 128},
         "navigationTargets": [
             {**target, "top": 267, "bottom": 315}
             for target in ctrl["navigationTargets"]
@@ -1431,7 +1498,7 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
         "inlineDictationStatusAboveKeybar": True,
         "inlineDictationMic": {
             **ctrl["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
-            "top": 267, "bottom": 315, "left": 288, "right": 336,
+            "top": 267, "bottom": 315, "left": 224, "right": 272,
         },
     })
     return copied

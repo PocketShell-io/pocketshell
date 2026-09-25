@@ -255,8 +255,9 @@ dictation_count="$(ssh_remote "wc -c < /tmp/$dictation_raw | tr -d '[:space:]'")
   printf 'PASS: first live session exact PTY bytes (%s bytes): %s\n' "$first_count" "$first_hex"
   printf 'PASS: reattached live session exact PTY bytes (%s bytes): %s\n' "$resumed_count" "$resumed_hex"
   printf 'PASS: docked dictation exact PTY bytes (%s bytes): %s\n' "$dictation_count" "$dictation_hex"
-  printf 'screenshot_sha256='; sha256sum "$evidence_dir/fastkeys-ime-open.png" "$evidence_dir/fastkeys-tray-main-ime-open.png" \
-    "$evidence_dir/fastkeys-tray-ctrl-ime-open.png" "$evidence_dir/fastkeys-tray-ime-dismissed.png" \
+  printf 'screenshot_sha256='; sha256sum "$evidence_dir/fastkeys-ime-open.png" "$evidence_dir/fastkeys-sheet-main-ime-open.png" \
+    "$evidence_dir/fastkeys-sheet-main-tail-ime-open.png" "$evidence_dir/fastkeys-sheet-ctrl-ime-open.png" \
+    "$evidence_dir/fastkeys-sheet-ctrl-tail-ime-open.png" "$evidence_dir/fastkeys-tray-ime-dismissed.png" \
     "$evidence_dir/fastkeys-tray-closed.png" \
     "$evidence_dir/fastkeys-reconnected-ime-open.png" \
     "$evidence_dir/fastkeys-dictation-listening-ime-open.png" \

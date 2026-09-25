@@ -60,6 +60,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str) -> 
         ("dictation raw byte count is checked", 'dictation raw byte file length mismatch'),
         ("dictation listening screenshot is uploaded", "fastkeys-dictation-listening-ime-open.png"),
         ("dictation reattach screenshot is uploaded", "fastkeys-dictation-reattached-ime-open.png"),
+        ("catalog sheet front and tail screenshots are hashed for review", "fastkeys-sheet-ctrl-tail-ime-open.png"),
     )
     for label, needle in required:
         combined = source + packaged_lanes + packaged_runner
@@ -177,6 +178,17 @@ if "firstDoneMarker" not in journey or "resumedDoneMarker" not in journey:
 if "after-reconnect-loss" not in journey or "after-reconnect-loss" not in extractor \
         or "hotkeyControls" not in journey or "hotkeyControls" not in extractor:
     raise AssertionError("post-reattach loss evidence must capture and validate every live-only hotkey control")
+
+for sheet_screenshot in (
+    "fastkeys-sheet-main-ime-open.png",
+    "fastkeys-sheet-main-tail-ime-open.png",
+    "fastkeys-sheet-ctrl-ime-open.png",
+    "fastkeys-sheet-ctrl-tail-ime-open.png",
+):
+    if f'captureScreenshot("{sheet_screenshot}")' not in journey or sheet_screenshot not in extractor:
+        raise AssertionError(f"same-run sheet screenshot is not captured and extracted: {sheet_screenshot}")
+if "private void scrollCatalogToStart(String selector)" not in journey:
+    raise AssertionError("catalog sheet screenshots must include the visible first scroll position")
 
 for swipe_contract in (
     "private void swipeFastKeyIntoView(String selector)",
