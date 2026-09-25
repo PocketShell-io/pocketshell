@@ -43,7 +43,9 @@ fi
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
-  --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --force-first-post-attach-tap-miss \
+  --composer-focus-max-attempts 2; then
   composer_status=0
 else
   composer_status=$?
