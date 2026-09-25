@@ -10,7 +10,6 @@ import type {
   DictationEventType,
   NativeDictationEvent,
   SpeechRecognitionPlugin,
-  StartDictationOptions,
 } from '../native/speechRecognition';
 import { documentContent } from '../native/documentContent';
 import { speechRecognition } from '../native/speechRecognition';
@@ -45,11 +44,31 @@ export interface DictationEvent {
   code?: string;
 }
 
+/** Reusable Android recognizer options for composer and inline dictation. */
+export interface DictationStartOptions {
+  languageTag?: string;
+  silenceWindowMs?: number;
+}
+
 export interface PlatformInputServiceOptions {
   nextRequestId?: () => string;
   chunkBytes?: number;
   maxFileBytes?: number;
   maxBatchBytes?: number;
+  dictationTestMode?: () => boolean;
+}
+
+export interface DictationSession {
+  requestId: string;
+  stop: () => Promise<void>;
+  cancel: () => Promise<void>;
+}
+
+interface DictationRequestState {
+  cancelled: boolean;
+  nativeStartRequested: boolean;
+  stopRequested: boolean;
+  listener?: Awaited<ReturnType<SpeechRecognitionPlugin['addListener']>>;
 }
 
 export class PlatformInputError extends Error {
@@ -67,15 +86,16 @@ export class PlatformInputError extends Error {
 export function createPlatformInputService(
   documents: DocumentContentPlugin,
   speech: SpeechRecognitionPlugin,
-  options: PlatformInputServiceOptions = {},
+  serviceOptions: PlatformInputServiceOptions = {},
 ) {
   let requestSequence = 0;
-  const chunkBytes = boundedInteger(options.chunkBytes ?? CHUNK_BYTES, 1, 64 * 1024, 'chunkBytes');
-  const maxFileBytes = boundedInteger(options.maxFileBytes ?? MAX_SFTP_FILE_BYTES, 1, Number.MAX_SAFE_INTEGER, 'maxFileBytes');
-  const maxBatchBytes = boundedInteger(options.maxBatchBytes ?? MAX_PICKED_BATCH_BYTES, maxFileBytes, Number.MAX_SAFE_INTEGER, 'maxBatchBytes');
+  const dictationRequests = new Map<string, DictationRequestState>();
+  const chunkBytes = boundedInteger(serviceOptions.chunkBytes ?? CHUNK_BYTES, 1, 64 * 1024, 'chunkBytes');
+  const maxFileBytes = boundedInteger(serviceOptions.maxFileBytes ?? MAX_SFTP_FILE_BYTES, 1, Number.MAX_SAFE_INTEGER, 'maxFileBytes');
+  const maxBatchBytes = boundedInteger(serviceOptions.maxBatchBytes ?? MAX_PICKED_BATCH_BYTES, maxFileBytes, Number.MAX_SAFE_INTEGER, 'maxBatchBytes');
 
   function nextRequestId(): string {
-    const requestId = options.nextRequestId?.() ?? defaultRequestId(++requestSequence);
+    const requestId = serviceOptions.nextRequestId?.() ?? defaultRequestId(++requestSequence);
     if (typeof requestId !== 'string' || requestId.trim() === '') {
       throw new PlatformInputError('invalid-request-id', 'A non-empty platform request ID is required.');
     }
@@ -164,37 +184,90 @@ export function createPlatformInputService(
 
   async function startDictation(
     onEvent: (event: DictationEvent) => void,
-    settings: Pick<StartDictationOptions, 'languageTag' | 'silenceWindowMs'> = {},
-  ): Promise<{ requestId: string; stop: () => Promise<void> }> {
+    requestedOptions: DictationStartOptions | string = {},
+    onRequestId?: (requestId: string) => void,
+  ): Promise<DictationSession> {
+    const options = typeof requestedOptions === 'string'
+      ? { languageTag: requestedOptions }
+      : requestedOptions;
     const requestId = nextRequestId();
-    let listener: Awaited<ReturnType<SpeechRecognitionPlugin['addListener']>> | undefined;
+    const request: DictationRequestState = { cancelled: false, nativeStartRequested: false, stopRequested: false };
+    dictationRequests.set(requestId, request);
+    onRequestId?.(requestId);
     try {
-      listener = await speech.addListener('dictationEvent', (event: NativeDictationEvent) => {
+      request.listener = await speech.addListener('dictationEvent', (event: NativeDictationEvent) => {
         if (!isDictationEvent(event) || event.requestId !== requestId) return;
+        if (request.cancelled) {
+          if (event.type === 'stopped') void removeDictationRequest(requestId, request);
+          return;
+        }
         onEvent({ ...event });
-        if (event.type === 'stopped') void listener?.remove();
+        if (event.type === 'stopped') void removeDictationRequest(requestId, request);
       });
-      const started = await speech.startDictation({ requestId, ...settings });
+      if (request.cancelled) {
+        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+      }
+      request.nativeStartRequested = true;
+      const started = await speech.startDictation({
+        requestId,
+        ...(options.languageTag ? { languageTag: options.languageTag } : {}),
+        ...(options.silenceWindowMs !== undefined ? { silenceWindowMs: options.silenceWindowMs } : {}),
+        ...(serviceOptions.dictationTestMode?.() === true ? { testMode: true } : {}),
+      });
+      if (request.cancelled) {
+        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+      }
       if (started.requestId !== requestId || started.started !== true) {
         throw new PlatformInputError('invalid-dictation-response', 'Android did not start the requested dictation session.');
       }
     } catch (error) {
-      await listener?.remove();
+      await removeDictationRequest(requestId, request);
+      if (request.cancelled) {
+        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+      }
       throw error;
     }
 
-    let stopRequested = false;
     return {
       requestId,
       stop: async () => {
-        if (stopRequested) return;
-        stopRequested = true;
+        if (request.cancelled || request.stopRequested) return;
+        request.stopRequested = true;
         const stopped = await speech.stopDictation({ requestId });
         if (stopped.requestId !== requestId || stopped.stopped !== true) {
           throw new PlatformInputError('invalid-dictation-response', 'Android stopped a different dictation session.');
         }
       },
+      cancel: () => cancelDictation(requestId),
     };
+  }
+
+  async function cancelDictation(requestId: string): Promise<void> {
+    const request = dictationRequests.get(requestId);
+    if (!request || request.cancelled) return;
+    request.cancelled = true;
+    try {
+      if (request.nativeStartRequested) {
+        const cancelled = await speech.cancelDictation({ requestId });
+        if (cancelled.requestId !== requestId || typeof cancelled.cancelled !== 'boolean') {
+          throw new PlatformInputError('invalid-dictation-response', 'Android cancelled a different dictation session.');
+        }
+      }
+    } finally {
+      // JavaScript cancellation is authoritative for this request. Even if the
+      // narrow native cancel bridge fails, no late result may reach the draft.
+      await removeDictationRequest(requestId, request);
+    }
+  }
+
+  async function removeDictationRequest(
+    requestId: string,
+    request: DictationRequestState,
+  ): Promise<void> {
+    if (dictationRequests.get(requestId) === request) dictationRequests.delete(requestId);
+    const listener = request.listener;
+    request.listener = undefined;
+    await listener?.remove();
   }
 
   async function readDocument(file: NativePickedDocument, maxBytes: number): Promise<Uint8Array> {
@@ -238,10 +311,14 @@ export function createPlatformInputService(
     pickAttachments,
     listenForShares,
     startDictation,
+    cancelDictation,
   };
 }
 
-export const platformInput = createPlatformInputService(documentContent, speechRecognition);
+export const platformInput = createPlatformInputService(documentContent, speechRecognition, {
+  dictationTestMode: () => typeof window !== 'undefined'
+    && (window as Window & { __ps2857DictationTestMode?: boolean }).__ps2857DictationTestMode === true,
+});
 
 function decodeChunk(chunk: NativeDocumentChunk, fileId: string, offset: number, maxBytes: number): Uint8Array {
   if (chunk.fileId !== fileId || chunk.offset !== offset

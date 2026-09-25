@@ -238,7 +238,8 @@ stop_asset_logcat
 
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir" \
-  --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
+  --expected-terminal-marker "PS2857_SENT_$SESSION_BASE" \
+  --expected-dictation-marker "PS2857_DICTATION_EDITED_$SESSION_BASE"
 exec > >(tee -a "$evidence_dir/composer-host-oracle.txt") 2>&1
 inline_preview="$evidence_dir/inline-dictation-preview.png"
 [[ -s "$inline_preview" ]] || fail 'same-run inline dictation screenshot is missing or empty'

@@ -1258,8 +1258,8 @@ onBeforeUnmount(() => {
                 v-if="Capacitor.getPlatform() === 'android'"
                 :enabled="mobileHotkeysEnabled"
                 :target-key="inlineDictationTargetKey"
-                :language-tag="appSettings.dictationLanguageTag"
-                :silence-window-ms="appSettings.dictationSilenceWindowMs"
+                :language-tag="appSettings.voiceLanguage === 'auto' ? '' : appSettings.voiceLanguage"
+                :silence-window-ms="appSettings.voiceSilenceSeconds * 1_000"
                 :insert-text="insertInlineDictationText"
                 @state-change="updateInlineDictationState"
               />
@@ -1273,8 +1273,6 @@ onBeforeUnmount(() => {
           :target-key="composerTargetKey"
           :target-label="connectionSnapshot.selectedSession.name"
           :transport-state="composerTransportState"
-          :dictation-language-tag="appSettings.dictationLanguageTag"
-          :dictation-silence-window-ms="appSettings.dictationSilenceWindowMs"
           :write-pty="writeComposerPty"
         />
       </section>

@@ -1,25 +1,17 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
-import { BACKGROUND_GRACE_OPTIONS, useAppSettings } from '../stores/appSettings';
+import {
+  BACKGROUND_GRACE_OPTIONS,
+  VOICE_LANGUAGE_OPTIONS,
+  VOICE_SILENCE_MAX_SECONDS,
+  VOICE_SILENCE_MIN_SECONDS,
+  useAppSettings,
+} from '../stores/appSettings';
 import { useNavigationStore } from '../stores/navigation';
-import { sanitizeLanguageTag } from '../native/speechRecognition';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@pocketshell/ui';
 import { AppIcon } from '@pocketshell/ui';
 
 const settings = useAppSettings();
 const navigation = useNavigationStore();
-const dictationLanguageDraft = ref(settings.dictationLanguageTag);
-const dictationLanguageError = ref('');
-const dictationSilenceSeconds = ref(settings.dictationSilenceWindowMs / 1_000);
-
-watch(() => settings.dictationLanguageTag, (languageTag) => {
-  dictationLanguageDraft.value = languageTag;
-  dictationLanguageError.value = '';
-});
-
-watch(() => settings.dictationSilenceWindowMs, (milliseconds) => {
-  dictationSilenceSeconds.value = milliseconds / 1_000;
-});
 
 function setTerminalFontSize(event: Event) {
   settings.setTerminalFontSize((event.target as HTMLInputElement).value);
@@ -33,25 +25,12 @@ function setGracePeriod(event: Event) {
   settings.setBackgroundGraceMs(Number((event.target as HTMLSelectElement).value));
 }
 
-function setDictationLanguageTag(event: Event) {
-  const value = (event.target as HTMLInputElement).value;
-  const languageTag = sanitizeLanguageTag(value);
-  if (languageTag === undefined) {
-    dictationLanguageDraft.value = settings.dictationLanguageTag;
-    dictationLanguageError.value = 'Enter “auto” or a valid BCP-47 language tag, such as en-US.';
-    return;
-  }
-  settings.setDictationLanguageTag(languageTag);
-  dictationLanguageDraft.value = languageTag;
-  dictationLanguageError.value = '';
+function setVoiceLanguage(event: Event) {
+  settings.setVoiceLanguage((event.target as HTMLSelectElement).value);
 }
 
-function updateDictationSilenceDraft(event: Event) {
-  dictationSilenceSeconds.value = Number((event.target as HTMLInputElement).value);
-}
-
-function setDictationSilenceWindow(event: Event) {
-  settings.setDictationSilenceWindowMs(Number((event.target as HTMLInputElement).value) * 1_000);
+function setVoiceSilence(event: Event) {
+  settings.setVoiceSilenceSeconds(Number((event.target as HTMLInputElement).value));
 }
 </script>
 
@@ -151,53 +130,13 @@ function setDictationSilenceWindow(event: Event) {
     <section class="panel settings-panel" aria-labelledby="voice-settings-title">
       <p class="eyebrow">SETTINGS · INPUT</p>
       <h1 id="voice-settings-title">Voice</h1>
-      <p class="settings-copy">Choose how Android recognizes speech. PocketShell asks for microphone access only when you start dictating.</p>
-      <label class="settings-control settings-control--stacked">
-        <span>
-          <strong id="dictation-language-label">Dictation language</strong>
-          <small id="dictation-language-help">Use auto for the device language, or enter a BCP-47 tag supported by Android’s speech recognizer.</small>
-        </span>
-        <input
-          v-model="dictationLanguageDraft"
-          class="dictation-language-input"
-          data-testid="setting-dictation-language"
-          type="text"
-          inputmode="text"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-          maxlength="64"
-          placeholder="auto or en-US"
-          aria-labelledby="dictation-language-label"
-          :aria-describedby="dictationLanguageError ? 'dictation-language-help dictation-language-error' : 'dictation-language-help'"
-          :aria-invalid="dictationLanguageError ? 'true' : 'false'"
-          @change="setDictationLanguageTag"
-        />
-        <span v-if="dictationLanguageError" id="dictation-language-error" class="dictation-setting-error" role="alert">{{ dictationLanguageError }}</span>
+      <label class="settings-control" data-testid="voice-language-control">
+        <span><strong>Dictation language</strong><small>Choose a language hint for Android's system speech recognizer.</small></span>
+        <select :value="settings.voiceLanguage" data-testid="setting-voice-language" @change="setVoiceLanguage">
+          <option v-for="option in VOICE_LANGUAGE_OPTIONS" :key="option.code" :value="option.code">{{ option.label }}</option>
+        </select>
       </label>
-      <label class="settings-control settings-control--stacked">
-        <span>
-          <strong>Recognition silence window</strong>
-          <small>How long Android waits through a pause before returning a transcript. Dictation keeps listening until you tap Stop.</small>
-        </span>
-        <span class="dictation-silence-control">
-          <input
-            class="dictation-silence-range"
-            data-testid="setting-dictation-silence"
-            type="range"
-            min="2"
-            max="60"
-            step="1"
-            :value="dictationSilenceSeconds"
-            :aria-valuetext="`${dictationSilenceSeconds} seconds`"
-            aria-label="Recognition silence window in seconds"
-            @input="updateDictationSilenceDraft"
-            @change="setDictationSilenceWindow"
-          />
-          <output data-testid="dictation-silence-value" aria-live="polite">{{ dictationSilenceSeconds }} seconds</output>
-        </span>
-      </label>
-      <p class="settings-note">The silence window is saved on this device. The transcript always remains an editable draft until you choose Send.</p>
+      <p class="settings-note">Microphone access is requested only when you start dictating. Dictation always stops into an editable draft for review.</p>
     </section>
   </main>
 
@@ -205,7 +144,25 @@ function setDictationSilenceWindow(event: Event) {
     <section class="panel settings-panel" aria-labelledby="advanced-settings-title">
       <p class="eyebrow">SETTINGS · COMPATIBILITY</p>
       <h1 id="advanced-settings-title">Advanced</h1>
-      <p class="settings-copy">Compatibility options will appear here only when their behavior is implemented and tested.</p>
+      <p class="settings-copy">Compatibility options appear here only when their behavior is implemented and tested.</p>
+      <label class="settings-control settings-control--stacked" data-testid="voice-silence-control">
+        <span><strong>Recognizer silence window</strong><small>How long Android's recognizer waits through a pause before treating speech as complete. Dictation stays open until you tap Stop.</small></span>
+        <span class="voice-silence-control__value">
+          <input
+            id="voice-silence-seconds"
+            data-testid="setting-voice-silence-seconds"
+            type="range"
+            :min="VOICE_SILENCE_MIN_SECONDS"
+            :max="VOICE_SILENCE_MAX_SECONDS"
+            step="1"
+            :value="settings.voiceSilenceSeconds"
+            aria-label="Recognizer silence window in seconds"
+            @input="setVoiceSilence"
+          />
+          <output for="voice-silence-seconds" data-testid="voice-silence-value">{{ settings.voiceSilenceSeconds }} s</output>
+        </span>
+      </label>
+      <p class="settings-note">This setting is saved on this device and applies the next time dictation starts. Android providers may treat silence timing as advisory.</p>
       <button class="settings-link" type="button" data-testid="open-account-sync" @click="navigation.open('settings-account')">
         <span class="settings-link__icon"><AppIcon name="folder" /></span>
         <span><strong>Account sync</strong><small>Not connected · sync work is pending</small></span>
@@ -228,48 +185,21 @@ function setDictationSilenceWindow(event: Event) {
 </template>
 
 <style scoped>
-.dictation-language-input {
-  width: 100%;
-  min-height: 48px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  padding: 0 11px;
-  color: var(--fg);
-  font: 16px var(--font-ui);
-}
-
-.dictation-language-input:focus-visible,
-.dictation-silence-range:focus-visible {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent-soft);
-  outline-offset: 1px;
-}
-
-.dictation-setting-error {
-  color: var(--error);
-  font-size: var(--fs-200);
-  line-height: 1.45;
-}
-
-.dictation-silence-control {
-  display: grid !important;
-  grid-template-columns: minmax(0, 1fr) auto;
+.voice-silence-control__value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
   align-items: center;
-  gap: 12px !important;
+  gap: 12px;
 }
 
-.dictation-silence-range {
+.voice-silence-control__value input {
   width: 100%;
-  min-height: 48px;
-  margin: 0;
   accent-color: var(--accent);
 }
 
-.dictation-silence-control output {
-  min-width: 82px;
+.voice-silence-control__value output {
   color: var(--fg);
-  font: 600 var(--fs-200)/1.2 var(--font-mono);
+  font: 600 var(--fs-300)/1.2 var(--font-mono);
   text-align: right;
 }
 </style>

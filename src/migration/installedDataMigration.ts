@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { reactive } from 'vue';
+import { normalizeVoiceLanguage, normalizeVoiceSilenceSeconds } from '../stores/appSettings';
 import {
   installedDataMigrationNative,
   type NativeAssetChunk,
@@ -258,9 +259,23 @@ export function prepareLocalStorageWrites(
     settings.backgroundGraceMs = grace;
   }
 
+  const oldVoiceLanguage = readLegacySetting(snapshot, 'voice_language');
+  if (oldVoiceLanguage !== undefined && !hasOwn(settings, 'voiceLanguage')) {
+    settings.voiceLanguage = normalizeVoiceLanguage(oldVoiceLanguage);
+  }
+
+  const oldVoiceSilenceSeconds = readLegacySetting(snapshot, 'voice_silence_seconds');
+  if (oldVoiceSilenceSeconds !== undefined && !hasOwn(settings, 'voiceSilenceSeconds')) {
+    settings.voiceSilenceSeconds = normalizeVoiceSilenceSeconds(oldVoiceSilenceSeconds);
+  }
+
   const settingsChanged = settings.terminalFontSize !== originalSettings.terminalFontSize
-    || settings.backgroundGraceMs !== originalSettings.backgroundGraceMs;
-  const settingsWrite = settingsChanged || (serialized === null && (oldFontPx !== undefined || oldGrace !== undefined))
+    || settings.backgroundGraceMs !== originalSettings.backgroundGraceMs
+    || settings.voiceLanguage !== originalSettings.voiceLanguage
+    || settings.voiceSilenceSeconds !== originalSettings.voiceSilenceSeconds;
+  const settingsWrite = settingsChanged || (serialized === null && (
+    oldFontPx !== undefined || oldGrace !== undefined || oldVoiceLanguage !== undefined || oldVoiceSilenceSeconds !== undefined
+  ))
     ? JSON.stringify(settings)
     : undefined;
 

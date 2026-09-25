@@ -59,6 +59,7 @@ public final class JsComposerDockerJourneyTest {
     private int composerFocusMaxAttempts = 2;
     private final JSONArray focusTapAttempts = new JSONArray();
     private JSONObject lastPhysicalTapEvidence;
+    private JSONObject lastDictationTestEvent = new JSONObject();
     private boolean focusTraceEmitted;
     private boolean focusFailureCaptured;
 
@@ -104,7 +105,6 @@ public final class JsComposerDockerJourneyTest {
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         setVoicePreferencesForComposerJourney();
-        installControlledSpeechAdapter();
         evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
@@ -119,7 +119,8 @@ public final class JsComposerDockerJourneyTest {
         attachSession(bytesSession);
         verifyNestedAndroidBackKeepsLiveSession();
 
-        exerciseComposerDictation(nameBase, bytesSession, artifactRunId);
+        exerciseComposerDictationMode(artifactRunId, nameBase);
+        installControlledSpeechAdapter();
         exerciseInlineTerminalDictation(nameBase, bytesSession, uncertainSession, artifactRunId);
 
         String sentMarker = "PS2857_SENT_" + nameBase;
@@ -132,10 +133,10 @@ public final class JsComposerDockerJourneyTest {
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
         assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
-        tapComposerAction(".composer-shared-controls .send");
+        long sendTouchUpUptimeMs = tapComposerAction(".composer-shared-controls .send");
+        long sendToVisibleOutputLatencyMs = waitForTerminalMarkerOrCaptureWindow(sentMarker, sendTouchUpUptimeMs);
         awaitDeliveredAndCleared();
-        waitForTerminalMarkerOrCaptureWindow(sentMarker);
-        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand);
+        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
 
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
@@ -287,10 +288,14 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         tapDomCenter("[data-testid=open-voice-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-voice'");
-        setValue("[data-testid=setting-dictation-language]", "de-DE");
-        setValue("[data-testid=setting-dictation-silence]", "9");
-        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationLanguageTag === 'de-DE'"
-                + " && JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationSilenceWindowMs === 9000");
+        setValue("[data-testid=setting-voice-language]", "de");
+        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').voiceLanguage === 'de'");
+        tapDomCenter("[aria-label=Back]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        tapDomCenter("[data-testid=open-advanced-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-advanced'");
+        setValue("[data-testid=setting-voice-silence-seconds]", "9");
+        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').voiceSilenceSeconds === 9");
         tapDomCenter("[aria-label=Back]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         tapDomCenter("[aria-label=Back]");
@@ -324,42 +329,6 @@ public final class JsComposerDockerJourneyTest {
         assertEquals("test must replace only the speech bridge", "installed", installed);
     }
 
-    private void exerciseComposerDictation(String nameBase, String sessionName, String artifactRunId) throws Exception {
-        String dictatedMarker = "PS2857_DICTATION_" + nameBase;
-        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
-        String dictatedCommand = "printf '%s' '" + dictatedMarker + "' > /tmp/" + sessionName + "-dictation.marker";
-        String editedCommand = dictatedCommand.replace(dictatedMarker, editedMarker);
-
-        setComposerDraft("");
-        tapComposerAction("[data-testid=composer-dictate]");
-        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Stop dictation'"
-                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === true");
-        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
-        assertEquals("the composer must pass the saved language into Android speech", "de-DE", start.getString("languageTag"));
-        assertEquals("the composer must pass the saved silence window into Android speech", 9_000,
-                start.getInt("silenceWindowMs"));
-        String requestId = start.getString("requestId");
-
-        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(dictatedCommand) + "); 'partial emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
-        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(dictatedCommand) + "); 'result emitted'");
-        // The text area is disabled during recognition, so stop through the visible
-        // control instead of trying to focus the draft again to reopen the IME.
-        tapDomCenter("[data-testid=composer-dictate]");
-        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Dictate'"
-                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === false"
-                + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
-
-        setComposerDraft(editedCommand);
-        String speechEvidence = evalString("JSON.stringify({start:window.__ps2857ControlledSpeech.startOptions,"
-                + "stop:window.__ps2857ControlledSpeech.stopOptions,draft:document.querySelector('[data-testid=prompt-draft]')?.value})");
-        Log.i("PS2857Dictation", "RUN|" + artifactRunId + "|" + speechEvidence);
-        tapComposerAction(".composer-shared-controls .send");
-        awaitDeliveredAndCleared();
-    }
-
     private void exerciseInlineTerminalDictation(String nameBase, String sessionName, String targetChangeSession,
             String artifactRunId) throws Exception {
         awaitJsTrue("!!document.querySelector('[data-testid=inline-dictation-toggle]')"
@@ -374,7 +343,7 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.textContent.includes('Stop')");
         JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
-        assertEquals("inline dictation must use the saved Voice language", "de-DE", start.getString("languageTag"));
+        assertEquals("inline dictation must use the saved Voice language", "de", start.getString("languageTag"));
         assertEquals("inline dictation must use the saved Voice silence window", 9_000,
                 start.getInt("silenceWindowMs"));
         String requestId = start.getString("requestId");
@@ -534,6 +503,351 @@ public final class JsComposerDockerJourneyTest {
         });
         assertTrue("same-run inline dictation preview screenshot must be captured", saved.get());
         emitArtifact(runId, "inline-dictation-preview.png", artifact.get());
+    }
+
+    private void exerciseComposerDictationMode(String runId, String nameBase) throws Exception {
+        grantMicrophonePermissionForJourney();
+        evalString("window.__ps2857DictationTestMode = true; 'debug dictation test mode enabled'");
+        String original = "keep this typed draft " + nameBase;
+        setComposerDraft(original);
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        JSONObject nativeOptions = new JSONObject(injectDictationTestEvent("partial", "discard this dictated phrase"));
+        JSONObject savedVoiceSettings = new JSONObject(evalString("JSON.stringify(JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}'))"));
+        long expectedSilenceWindowMs = Math.round(savedVoiceSettings.optDouble("voiceSilenceSeconds", 4.0) * 1_000.0);
+        assertEquals("the native adapter must receive the persisted silence setting on this start",
+                expectedSilenceWindowMs, nativeOptions.getLong("silenceWindowMs"));
+        String expectedLanguage = savedVoiceSettings.optString("voiceLanguage", "auto");
+        if ("auto".equals(expectedLanguage)) {
+            assertTrue("auto-detect must omit a fixed language hint", !nativeOptions.has("languageTag"));
+        } else {
+            assertEquals("the native adapter must receive the persisted language hint on this start",
+                    expectedLanguage, nativeOptions.getString("languageTag"));
+        }
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('discard this dictated phrase')");
+        String recordingPredicate = "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const style=draft&&getComputedStyle(draft);const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
+                + "return draft?.classList.contains('composer-draft--dictation-anchor')===true"
+                + " && style?.display!=='none' && style?.visibility!=='hidden' && style?.opacity==='0'"
+                + " && draft?.getAttribute('aria-hidden')!=='true' && draft?.getAttribute('aria-readonly')==='true'"
+                + " && draft?.getAttribute('aria-label')==='Dictation draft, read only while dictating'"
+                + " && draft?.getBoundingClientRect().width<=1 && draft?.getBoundingClientRect().height<=1"
+                + " && mode?.getClientRects().length>0 && preview?.textContent.includes('discard this dictated phrase')"
+                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.textContent.includes('Cancel')"
+                + " && mode.querySelector('[data-testid=composer-recording-stop]')?.textContent.includes('Stop');})()";
+        try {
+            awaitJsTrue(recordingPredicate, 10_000);
+        } catch (AssertionError predicateFailure) {
+            try {
+                recordComposerModeState(runId, "recording", original + " discard this dictated phrase");
+            } catch (Exception | AssertionError evidenceFailure) {
+                predicateFailure.addSuppressed(evidenceFailure);
+            }
+            throw predicateFailure;
+        }
+        recordComposerModeState(runId, "recording", original + " discard this dictated phrase");
+        assertTrue("recording surface must identify its animation as capture state rather than microphone volume",
+                "true".equals(evalRaw("document.querySelector('[data-testid=composer-recording-mode]')?.textContent.includes('Recording prompt')"
+                        + " && document.querySelector('.recording-mode__waveform')?.getAttribute('aria-label').includes('not volume')")));
+        String timer = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
+        assertTrue("recording mode must show a formatted elapsed timer", timer.matches("\\d{2}:\\d{2}"));
+
+        tapDomCenter("[data-testid=composer-recording-cancel]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original));
+        awaitImeVisible(true);
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        recordComposerModeState(runId, "cancel", original);
+        injectDictationTestEvent("partial", "late partial after Cancel must be ignored");
+        SystemClock.sleep(250);
+        assertEquals("Cancel must restore the original draft and ignore later native partials", original,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        injectDictationTestEvent("partial", "background must discard this partial");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('background must discard this partial')");
+        scenario.moveToState(Lifecycle.State.CREATED);
+        SystemClock.sleep(250);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original));
+        injectDictationTestEvent("result", "late final after background must be ignored");
+        SystemClock.sleep(250);
+        assertEquals("background cancellation must restore the original draft and reject late final events", original,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        recordComposerModeState(runId, "background", original);
+
+        setComposerDraft("");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        String dictationCommand = "printf '%s' 'PS2857_DICTATION_" + nameBase
+                + "' > /tmp/" + nameBase + "-bytes-dictation.marker";
+        injectDictationTestEvent("partial", dictationCommand);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes(" + JSONObject.quote(dictationCommand) + ")");
+        String timerBeforeNaturalPause = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
+        injectDictationTestEvent("processing", null);
+        String recordingAfterEndpoint = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
+                + "return composer?.dataset.dictationState==='recording' && !!stop && !stop.disabled"
+                + " && composer.dataset.acknowledgedWrites==='0';})()";
+        try {
+            awaitJsTrue(recordingAfterEndpoint, 5_000);
+        } catch (AssertionError pauseFailure) {
+            try {
+                recordComposerModeState(runId, "recording", dictationCommand);
+            } catch (Exception | AssertionError evidenceFailure) {
+                pauseFailure.addSuppressed(evidenceFailure);
+            }
+            throw pauseFailure;
+        }
+        // A normal end-of-speech produces results and then a fresh ready/listening
+        // pair. Keep the recording controls and timer through that restart.
+        injectDictationTestEvent("result", null);
+        injectDictationTestEvent("ready", null);
+        injectDictationTestEvent("listening", null);
+        SystemClock.sleep(1_200);
+        String resumedRecording = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
+                + "const timer=document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim()??'';"
+                + "return composer?.dataset.dictationState==='recording' && !!stop && !stop.disabled"
+                + " && timer!==" + JSONObject.quote(timerBeforeNaturalPause)
+                + " && composer.dataset.acknowledgedWrites==='0';})()";
+        try {
+            awaitJsTrue(resumedRecording, 5_000);
+        } catch (AssertionError restartFailure) {
+            try {
+                recordComposerModeState(runId, "recording", dictationCommand);
+            } catch (Exception | AssertionError evidenceFailure) {
+                restartFailure.addSuppressed(evidenceFailure);
+            }
+            throw restartFailure;
+        }
+        recordComposerModeState(runId, "recording-after-restart", dictationCommand);
+        tapDomCenter("[data-testid=composer-recording-stop]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'", 10_000);
+        awaitImeVisible(true);
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        recordComposerModeState(runId, "transcribing", dictationCommand);
+        assertTrue("Stop must enter transcribing without sending the draft", "true".equals(evalRaw(
+                "document.querySelector('[data-testid=composer-status]')?.textContent.includes('not be sent automatically')"
+                        + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'")));
+        injectDictationTestEvent("finish", null);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
+                + " && document.querySelector('[data-testid=composer-dictation-review]')"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.readOnly === false"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.getAttribute('aria-readonly') === 'false'", 10_000);
+        recordComposerModeState(runId, "review", dictationCommand);
+        assertEquals("Stop must keep recognized text in the editable review draft", dictationCommand,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+
+        String editedCommand = dictationCommand.replace("PS2857_DICTATION_", "PS2857_DICTATION_EDITED_");
+        setComposerDraft(editedCommand);
+        assertEquals("review draft must accept edits before delivery", editedCommand,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        assertEquals("dictated text must not reach the terminal before explicit Send", "0",
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
+        awaitComposerReadyToSend(runId, editedCommand);
+        tapDomCenter(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+        // A completed one-line submit acknowledges the body and Enter as separate PTY writes.
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '2'");
+        String sendEvidence = evalString("JSON.stringify({stage:'dictation-explicit-send',runId:"
+                + JSONObject.quote(runId) + ",marker:" + JSONObject.quote(editedMarker)
+                + ",dictationState:document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState??'',"
+                + "acknowledgedWrites:Number(document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites??0),"
+                + "draft:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
+                + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim()??''})");
+        byte[] sendEvidenceBytes = sendEvidence.getBytes(StandardCharsets.UTF_8);
+        emitArtifact(runId, "composer-dictation-send.json", sendEvidenceBytes);
+        JSONObject sent = new JSONObject(sendEvidence);
+        assertTrue("only the explicit Send action may deliver the reviewed transcript",
+                sent.getInt("acknowledgedWrites") == 2 && sent.getString("draft").isEmpty()
+                        && sent.getString("dictationState").equals("idle")
+                        && sent.getString("deliveryStatus").contains("Sent to the terminal"));
+        assertTrue("debug event injection must be reset after the packaged composer journey",
+                "true".equals(evalRaw("(window.__ps2857DictationTestMode = false) === false")));
+    }
+
+    private void awaitComposerReadyToSend(String runId, String expectedDraft) throws Exception {
+        String expression = "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const send=document.querySelector('.composer-shared-controls .send');"
+                + "return shell?.dataset.sshPhase==='live' && composer?.dataset.transportState==='connected'"
+                + " && composer?.dataset.dictationState==='review' && draft?.value==="
+                + JSONObject.quote(expectedDraft) + " && !!send && !send.disabled;})()";
+        try {
+            awaitJsTrue(expression, 30_000);
+        } catch (AssertionError notReady) {
+            String state = evalString("(() => {const rect=(node)=>{if(!node)return null;const r=node.getBoundingClientRect();"
+                    + "return {x:r.x,y:r.y,width:r.width,height:r.height};};"
+                    + "const shell=document.querySelector('.app-shell');const composer=document.querySelector('[data-testid=prompt-composer]');"
+                    + "const draft=document.querySelector('[data-testid=prompt-draft]');const send=document.querySelector('.composer-shared-controls .send');"
+                    + "return JSON.stringify({stage:'dictation-send-readiness-timeout',runId:" + JSONObject.quote(runId)
+                    + ",sshPhase:shell?.dataset.sshPhase??'',transportState:composer?.dataset.transportState??'',"
+                    + "dictationState:composer?.dataset.dictationState??'',sendDisabled:send?.disabled??null,send:rect(send),"
+                    + "draft:draft?.value??'',draftFocused:document.activeElement===draft,keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                    + "acknowledgedWrites:Number(composer?.dataset.acknowledgedWrites??0),status:document.querySelector('[data-testid=composer-status]')?.textContent.trim()??'',"
+                    + "pageText:document.body.innerText});})() ");
+            try {
+                emitCurrentScreen(runId, "composer-send-readiness-timeout.png");
+                emitArtifact(runId, "composer-send-readiness-timeout.json", state.getBytes(StandardCharsets.UTF_8));
+            } catch (Exception evidenceFailure) {
+                notReady.addSuppressed(evidenceFailure);
+            }
+            throw new AssertionError("composer did not reconnect and enable Send within 30 seconds: " + state, notReady);
+        }
+    }
+
+    private void recordComposerModeState(String runId, String state, String expectedDraft) throws Exception {
+        awaitWebViewVisualState();
+        String report = evalString("(() => {const rect=(selector)=>{const node=document.querySelector(selector);"
+                + "if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
+                + "const composerStatus=document.querySelector('[data-testid=composer-status]');"
+                + "const cancelButton=document.querySelector('[data-testid=composer-recording-cancel]');"
+                + "const stopButton=document.querySelector('[data-testid=composer-recording-stop]');"
+                + "const transcribingStatus=mode?.querySelector('[role=status][aria-live=polite]');"
+                + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",state:" + JSONObject.quote(state)
+                + ",dictationState:composer?.dataset.dictationState??'',"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
+                + "draftFocused:document.activeElement===draft,activeElementTestId:document.activeElement?.getAttribute('data-testid')??'',"
+                + "draftReadOnly:!!draft?.readOnly,draft:rect('[data-testid=prompt-draft]'),"
+                + "draftPresentation:draft?.classList.contains('composer-draft--dictation-anchor')?'focus-anchor':'editor',"
+                + "draftClassName:draft?.className??'',draftDisplay:draft?getComputedStyle(draft).display:null,"
+                + "draftVisibility:draft?getComputedStyle(draft).visibility:null,"
+                + "draftOpacity:draft?getComputedStyle(draft).opacity:null,draftAriaHidden:draft?.getAttribute('aria-hidden')==='true',"
+                + "draftAriaLabel:draft?.getAttribute('aria-label')??'',"
+                + "draftDescribedBy:draft?.getAttribute('aria-describedby')??'',"
+                + "draftEditingLocked:draft?.getAttribute('aria-readonly')==='true',"
+                + "expectedDraftMatches:draft?.value===" + JSONObject.quote(expectedDraft) + ","
+                + "recordingModeVisible:!!mode&&getComputedStyle(mode).display!=='none'&&mode.getClientRects().length>0,"
+                + "recordingModeLabel:mode?.getAttribute('aria-label')??'',"
+                + "previewVisible:!!preview&&preview.getClientRects().length>0&&getComputedStyle(preview).display!=='none',"
+                + "previewLive:preview?.getAttribute('aria-live')==='polite',"
+                + "previewText:preview?.textContent.trim()??'',"
+                + "cancelAccessible:!!cancelButton&&(cancelButton.textContent??'').includes('Cancel')&&cancelButton.getClientRects().length>0,"
+                + "stopAccessible:!!stopButton&&(stopButton.getAttribute('aria-label')??'').includes('Stop dictation')"
+                + "&&(stopButton.textContent??'').includes('Stop')&&stopButton.getClientRects().length>0,"
+                + "transcribingStatusAccessible:!!transcribingStatus&&transcribingStatus.getClientRects().length>0,"
+                + "composerStatusAccessible:composerStatus?.getAttribute('role')==='status'&&composerStatus?.getAttribute('aria-live')==='polite',"
+                + "reviewVisible:!!document.querySelector('[data-testid=composer-dictation-review]')"
+                + "&&getComputedStyle(document.querySelector('[data-testid=composer-dictation-review]')).display!=='none',"
+                + "recordingMode:rect('[data-testid=composer-recording-mode]'),timer:rect('[data-testid=composer-recording-timer]'),"
+                + "preview:rect('[data-testid=composer-recording-preview]'),review:rect('[data-testid=composer-dictation-review]'),"
+                + "status:rect('[data-testid=composer-status]'),actions:rect('[data-testid=composer-actions]'),"
+                + "cancel:rect('[data-testid=composer-recording-cancel]'),stop:rect('[data-testid=composer-recording-stop]'),"
+                + "send:rect('.composer-shared-controls .send'),visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth},"
+                + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??null,documentScrollTop:document.scrollingElement?.scrollTop??null,"
+                + "statusText:document.querySelector('[data-testid=composer-status]')?.textContent.trim()??'',"
+                + "waveformLabel:mode?.querySelector('.recording-mode__waveform')?.getAttribute('aria-label')??null});})() ");
+        JSONObject measured = new JSONObject(report).put("androidImeVisible", isImeVisible());
+        measured.put("lastDictationTestEvent", lastDictationTestEvent);
+        byte[] geometry = measured.toString().getBytes(StandardCharsets.UTF_8);
+        emitCurrentScreen(runId, "composer-" + state + ".png");
+        emitArtifact(runId, "composer-" + state + "-geometry.json", geometry);
+        if (!measured.getBoolean("androidImeVisible")) {
+            emitCurrentScreen(runId, "composer-mode-ime-failure.png");
+            emitArtifact(runId, "composer-mode-ime-failure.json", geometry);
+            throw new AssertionError("the Android keyboard must remain visible for the " + state + " screenshot; state="
+                    + measured);
+        }
+        String expectedPhase = state.equals("cancel") || state.equals("background") ? "idle"
+                : state.startsWith("recording") ? "recording" : state;
+        assertEquals("composer phase must match the " + state + " screenshot", expectedPhase, measured.getString("dictationState"));
+        assertTrue("state screenshot must retain the expected draft text", measured.getBoolean("expectedDraftMatches"));
+        assertTrue("keyboard-up composer screenshot must retain visible IME evidence", measured.getBoolean("androidImeVisible")
+                && measured.getBoolean("keyboardVisible"));
+        assertTrue("dictation screenshots must keep the composer draft as the active element",
+                measured.getBoolean("draftFocused") && "prompt-draft".equals(measured.getString("activeElementTestId")));
+        boolean dictationBusy = state.startsWith("recording") || state.equals("transcribing");
+        assertEquals("busy dictation must replace the visible editor with its accessible focus anchor",
+                dictationBusy ? "focus-anchor" : "editor", measured.getString("draftPresentation"));
+        assertTrue("the focused dictation draft anchor must stay in the accessibility tree",
+                !measured.getBoolean("draftAriaHidden")
+                        && (!dictationBusy || measured.getString("draftAriaLabel").contains("read only while dictating")));
+        if (dictationBusy) {
+            assertTrue("busy dictation must show its recording/transcribing surface while hiding the editor visually",
+                    measured.getBoolean("recordingModeVisible")
+                            && measured.getJSONObject("draft").getDouble("width") <= 1.0
+                            && measured.getJSONObject("draft").getDouble("height") <= 1.0);
+            assertTrue("visible dictation mode and status must have accessible names and live semantics",
+                    !measured.getString("recordingModeLabel").isEmpty()
+                            && measured.getBoolean("composerStatusAccessible")
+                            && measured.getString("draftDescribedBy").contains("composer-status")
+                            && measured.getBoolean("cancelAccessible"));
+            if (state.startsWith("recording")) {
+                assertTrue("recording preview and Stop control must be visible and accessible",
+                        measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
+                                && measured.getBoolean("stopAccessible")
+                                && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
+            } else {
+                assertTrue("transcribing state must expose an accessible live status",
+                        measured.getBoolean("transcribingStatusAccessible"));
+            }
+        } else {
+            assertTrue("idle and review must retain the ordinary composer textarea",
+                    state.equals("review") ? measured.getBoolean("reviewVisible") : !measured.getBoolean("recordingModeVisible"));
+        }
+    }
+
+    private void grantMicrophonePermissionForJourney() throws Exception {
+        String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        ParcelFileDescriptor command = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .executeShellCommand("pm grant " + packageName + " android.permission.RECORD_AUDIO");
+        if (command != null) command.close();
+    }
+
+    private String injectDictationTestEvent(String type, String text) throws Exception {
+        String options = new JSONObject().put("type", type).put("text", text).toString();
+        evalString("window.__ps2857DictationTestInjection = null; (() => {"
+                + "const plugin = window.Capacitor?.Plugins?.SpeechRecognition;"
+                + "if (!plugin?.injectTestDictationEvent) throw new Error('debug speech adapter injection is unavailable');"
+                + "plugin.injectTestDictationEvent(JSON.parse(" + JSONObject.quote(options) + "))"
+                + ".then(result => window.__ps2857DictationTestInjection = JSON.stringify(result))"
+                + ".catch(error => window.__ps2857DictationTestInjection = 'ERROR: ' + String(error));"
+                + "return 'queued';})()");
+        awaitJsTrue("typeof window.__ps2857DictationTestInjection === 'string'");
+        String result = evalString("window.__ps2857DictationTestInjection");
+        JSONObject nativeResult = new JSONObject(result);
+        assertTrue("debug speech adapter must inject a deterministic event: " + result,
+                nativeResult.optBoolean("emitted"));
+        lastDictationTestEvent = new JSONObject()
+                .put("type", type)
+                .put("text", text == null ? "" : text)
+                .put("requestId", nativeResult.optString("requestId", ""));
+        evalString("window.__ps2857DictationTestInjection = null; 'cleared'");
+        return result;
+    }
+
+    private void emitCurrentScreen(String runId, String name) throws Exception {
+        AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            if (screenshot == null) return;
+            try {
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                if (screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded)) {
+                    screenshotArtifact.set(encoded.toByteArray());
+                }
+            } finally {
+                screenshot.recycle();
+            }
+        });
+        if (screenshotArtifact.get() != null) emitArtifact(runId, name, screenshotArtifact.get());
     }
 
     private void awaitDeliveredAndCleared() throws Exception {
@@ -922,17 +1236,17 @@ public final class JsComposerDockerJourneyTest {
         }
     }
 
-    private void tapComposerAction(String selector) throws Exception {
-        tapComposerAction(selector, "composer-action:" + selector);
+    private long tapComposerAction(String selector) throws Exception {
+        return tapComposerAction(selector, "composer-action:" + selector);
     }
 
-    private void tapComposerAction(String selector, String focusStage) throws Exception {
+    private long tapComposerAction(String selector, String focusStage) throws Exception {
         ensureImeVisible(focusStage);
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
-        tapDomCenter(selector);
+        return tapDomCenter(selector);
     }
 
-    private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
+    private long waitForTerminalMarkerOrCaptureWindow(String marker, long sendTouchUpUptimeMs) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
         String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
         try {
@@ -966,9 +1280,11 @@ public final class JsComposerDockerJourneyTest {
                 + "documentScroll:document.scrollingElement?.scrollTop});})()");
             throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
         }
+        return SystemClock.uptimeMillis() - sendTouchUpUptimeMs;
     }
 
-    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
+    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand,
+            long sendToVisibleOutputLatencyMs) throws Exception {
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
@@ -997,6 +1313,8 @@ public final class JsComposerDockerJourneyTest {
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
                 + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
+                + ",sendToVisibleOutputLatencyMs:" + sendToVisibleOutputLatencyMs
+                + ",sendToVisibleOutputTiming:'Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen'"
                 + ",captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
                 + "terminalEvidenceSource:'xterm-active-buffer-after-render',visibleTerminalText:visibleText,terminalDomText:terminalDomText,"
                 + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,appTerminalMissingRefCount:window.__ps2857AppTerminalMissingRefCount??0,"
@@ -1207,7 +1525,7 @@ public final class JsComposerDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
-    private void tapDomCenter(String selector) throws Exception {
+    private long tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
                 + "const height=window.visualViewport?.height ?? innerHeight;const x=rect.left+rect.width/2,y=rect.top+rect.height/2;"
@@ -1273,6 +1591,7 @@ public final class JsComposerDockerJourneyTest {
         lastPhysicalTapEvidence = new JSONObject(point.toString()).put("nativeMapping", nativeMapping.get())
                 .put("screenX", screen[0]).put("screenY", screen[1]).put("touchDownUptimeMs", downTime)
                 .put("touchUpUptimeMs", upTime).put("downInjected", downInjected).put("upInjected", upInjected);
+        return upTime;
     }
 
     private void awaitJsTrue(String expression) throws Exception {

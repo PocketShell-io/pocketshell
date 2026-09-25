@@ -10,10 +10,12 @@
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists shared appearance, connection, and dictation preferences",
+        "reads and persists only shared theme/font policy and supported background grace values",
         "degrades malformed or unsupported saved values to safe defaults",
         "clamps terminal size using the pinned desktop font-size policy",
-        "normalizes valid language hints and applies the adapter silence bounds"
+        "persists a supported recognizer language and clamps the silence window to the 2–60 second range",
+        "preserves language and silence settings written by the earlier JS rewrite",
+        "uses the Kotlin-aligned automatic language and four-second silence defaults"
       ]
     },
     "tests/unit/buildDiagnostics.test.ts": {
@@ -53,15 +55,7 @@
     "tests/unit/dictationSettingsInteraction.test.ts": {
       "suite": "mounted dictation settings controls",
       "tests": [
-        "binds the production Voice template to accessible persisted language and silence controls"
-      ]
-    },
-    "tests/unit/dictationStartCancellation.test.ts": {
-      "suite": "prompt composer dictation",
-      "tests": [
-        "stops a pending start once when the mounted composer backgrounds",
-        "starts with saved Voice settings, appends recognition to the draft, and leaves it editable after stop",
-        "stops active recognition on background and retains its latest partial in the session draft"
+        "binds the production Voice and Advanced templates to accessible persisted settings"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {
@@ -155,7 +149,9 @@
         "preserves valid files when one selection is over the shared native transfer limit",
         "rejects mismatched chunk identity and still releases the native document reference",
         "materializes incoming shared text and files before delivering the share callback",
-        "registers before starting speech, filters foreign events, and stops the matching request"
+        "registers before starting speech, filters foreign events, and stops the matching request",
+        "cancels a request and drops even a late queued partial or final event",
+        "cancels a pending native start without allowing its eventual session or events through"
       ]
     },
     "tests/unit/speechRecognition.test.ts": {
@@ -189,7 +185,7 @@
     "tests/unit/terminal-viewport-resize.test.ts": {
       "suite": "TerminalViewport resize failure across a route remount",
       "tests": [
-        "keeps delayed resize failures isolated after home \u2192 Settings \u2192 home and retries only after the current request fails"
+        "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
       ]
     },
     "tests/unit/terminalFocus.test.ts": {
@@ -199,6 +195,14 @@
         "does not steal focus when a composer tap precedes WebView activeElement",
         "scopes composer pointer intent to the pending focus request",
         "still gives the terminal focus when no composer has claimed it"
+      ]
+    },
+    "tests/unit/composerDictationCancellation.test.ts": {
+      "suite": "composer dictation cancellation",
+      "tests": [
+        "cancels a pending start on background, restores the base draft, and rejects late partials",
+        "uses the latest persisted voice settings on the next composer start",
+        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop"
       ]
     }
   }
