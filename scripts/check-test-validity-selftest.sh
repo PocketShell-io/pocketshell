@@ -33,12 +33,9 @@ FIX_TAG="selftest_$$"
 TEST_FIX_DIR="app2/src/test/java/com/pocketshell/next/$FIX_TAG"
 ANDROID_FIX_DIR="app2/src/androidTest/java/com/pocketshell/next/$FIX_TAG"
 SRC_FIX_DIR="app2/src/main/java/com/pocketshell/next/$FIX_TAG"
-# J1 asks "is this journey-shaped androidTest class OUTSIDE the wholesale
-# journey root?", and since the rewrite that root IS app2/src/androidTest — so
-# a fixture planted in ANDROID_FIX_DIR is by definition wired and J1 correctly
-# stays silent. The J1 fixtures therefore need a scanned androidTest root that
-# is NOT the journey root; shared/ui-kit/src/androidTest is one
-# (collect_android_test_files walks every shared/*/src/androidTest).
+# J1's legacy app2 red/green fixtures exercise the retained wholesale suite
+# path. A separate synthetic checker self-test exercises the JS package-lane
+# dispatch path without mutating real Android sources.
 J1_OUTSIDE_FIX_DIR="shared/ui-kit/src/androidTest/java/com/pocketshell/uikit/$FIX_TAG"
 # TIMING1's original runTest fixture lives under app/tmux. Its #2026
 # plain-JUnit deadline-pump fixtures live under the two exact new roots so the
@@ -230,6 +227,7 @@ _fixture_signature() {
       "$TIMING_PREFS_FIX_DIR" \
       -type f -printf '%p|%s|%T@\n' 2>/dev/null | sort
     printf 'REG:%s\n' "${VETTED_SEAM_REGISTRY:-<default>}"
+    printf 'J1MODE:%s\n' "${CHECK_TEST_VALIDITY_J1_MODE:-auto}"
     [[ -n "${VETTED_SEAM_REGISTRY:-}" && -f "${VETTED_SEAM_REGISTRY}" ]] \
       && printf 'REGSIG:%s\n' "$(cksum "$VETTED_SEAM_REGISTRY")"
   } | cksum
@@ -485,10 +483,17 @@ MUTATED_GUARD=""
 rm -f "$ANDROID_FIX_DIR/C1StaleBaselineTest.kt"
 
 # --------------------------------------------------------------------------
-# J1 — androidTest E2e/Docker class outside the wholesale journey root.
+# J1 — preserve app2's wholesale scan and prove JS package-lane selectors.
 # --------------------------------------------------------------------------
 echo
-echo "[J1] unwired androidTest journey class"
+echo "[J1] app2 legacy path and JS packaged dispatch"
+
+cat > "$ANDROID_FIX_DIR/J1LegacyWiredE2eTest.kt" <<'KT'
+package com.pocketshell.next.validityselftest
+class J1LegacyWiredE2eTest {
+    fun journey() {}
+}
+KT
 
 # BAD: a new journey-shaped androidTest class that is not wired into
 # the wholesale journey root and has no local reason for staying out.
@@ -512,9 +517,18 @@ class J1GoodJustifiedDockerTest {
 }
 KT
 
+export CHECK_TEST_VALIDITY_J1_MODE=app2
 assert_report present "J1BadUnwiredE2eTest" "J1 — NEW" "J1 fires on an unwired androidTest journey"
 assert_report absent  "J1GoodJustifiedDockerTest" "J1 — NEW" "J1 spares a local journey-root justification"
+assert_report present "J1LegacyWiredE2eTest" "J1 — WIRED" "legacy app2 path still recognizes its wholesale connected-test root"
 assert_exit 1 "J1 unwired androidTest journey hard-fails the guard"
+unset CHECK_TEST_VALIDITY_J1_MODE
+
+if "$REPO_ROOT/scripts/check-js-first-android-journeys.py" --self-test; then
+  note_pass "JS lane dispatch, missing selector/method, unjustified, issue-justified, and legacy app2 J1 self-tests"
+else
+  note_fail "JS lane dispatch / legacy app2 J1 synthetic self-tests"
+fi
 
 # Remove the BAD J1 so advisory checks can still prove guard-mode exit 0 when
 # no hard-fail smells remain.
