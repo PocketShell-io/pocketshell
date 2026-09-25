@@ -150,6 +150,8 @@ public final class JsFastKeysDockerJourneyTest {
         SystemClock.sleep(300);
         JSONObject mainTrayGeometry = captureGeometry("fast-keys-main-open-ime-up");
         JSONObject gridWithMainTray = runtimeGrid(mainTrayGeometry);
+        assertCatalogSheetGeometry(mainTrayGeometry, "main");
+        assertCatalogPageActionReachable(mainTrayGeometry);
         assertTerminalViewportCap("opening the main fast-key tray", beforeTray, mainTrayGeometry);
         assertUnchangedTerminalGrid("opening the main fast-key tray", gridBeforePalette, gridWithMainTray);
         assertAtLeastFiveRows("main fast-key catalog", mainTrayGeometry);
@@ -163,7 +165,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertDictationMicReachable(mainCatalogGeometry);
         assertHotkeyBarReachable(mainCatalogGeometry);
         assertAtLeastFiveRows("scrolled main fast-key catalog", mainCatalogGeometry);
-        captureScreenshot("fastkeys-tray-main-ime-open.png");
+        captureScreenshot("fastkeys-sheet-main-tail-ime-open.png");
+        scrollCatalogToStart(".mobile-hotkeys__main-keys");
+        captureScreenshot("fastkeys-sheet-main-ime-open.png");
 
         sendPaletteKey("escape");
         sendPaletteKey("tab");
@@ -171,6 +175,8 @@ public final class JsFastKeysDockerJourneyTest {
         tapDomCenter("[data-testid=mobile-hotkeys-open-ctrl-page]");
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.palettePage === 'ctrl'");
         JSONObject ctrlTrayGeometry = captureGeometry("fast-keys-ctrl-open-ime-up");
+        assertCatalogSheetGeometry(ctrlTrayGeometry, "ctrl");
+        assertCatalogPageActionReachable(ctrlTrayGeometry);
         assertTerminalViewportCap("opening the Ctrl fast-key tray", beforeTray, ctrlTrayGeometry);
         assertTrayBelowTerminalViewport(ctrlTrayGeometry);
         assertDictationMicReachable(ctrlTrayGeometry);
@@ -191,7 +197,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertTerminalViewportCap("scrolling the Ctrl fast-key catalog", beforeTray, ctrlCatalogGeometry);
         assertDictationMicReachable(ctrlCatalogGeometry);
         assertHotkeyBarReachable(ctrlCatalogGeometry);
-        captureScreenshot("fastkeys-tray-ctrl-ime-open.png");
+        captureScreenshot("fastkeys-sheet-ctrl-tail-ime-open.png");
+        scrollCatalogToStart(".mobile-hotkeys__ctrl-grid");
+        captureScreenshot("fastkeys-sheet-ctrl-ime-open.png");
         sendPaletteKey("ctrl-q");
         tapDomCenter("[aria-label='Back to terminal hotkeys']");
         awaitJsTrue("!!document.querySelector('[data-testid=mobile-hotkeys-main-page]')");
@@ -242,8 +250,22 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                + " && document.activeElement?.matches('[data-testid=prompt-draft]') === true");
+        String recoveryFocusPredicate = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.activeElement?.matches('[data-testid=prompt-draft]') === true";
+        try {
+            awaitJsTrue(recoveryFocusPredicate);
+        } catch (AssertionError focusFailure) {
+            String focusState = evalString("JSON.stringify({keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
+                    + "keyboardComposerMode:document.querySelector('.app-shell')?.dataset.keyboardComposerMode??null,"
+                    + "activeElement:document.activeElement?.outerHTML?.slice(0,240)??null,"
+                    + "draft:document.querySelector('[data-testid=prompt-draft]')?.outerHTML?.slice(0,360)??null,"
+                    + "draftFocused:document.activeElement===document.querySelector('[data-testid=prompt-draft]'),"
+                    + "visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth},"
+                    + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-24)})");
+            JSONObject recoveryGeometry = captureGeometry("post-dictation-session-return-focus-failure");
+            throw new AssertionError("post-dictation focus recovery failed; AndroidImeVisible=" + isImeVisible()
+                    + "; DOM=" + focusState + "; geometry=" + recoveryGeometry, focusFailure);
+        }
         tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
         awaitImeVisible(true);
@@ -915,6 +937,14 @@ public final class JsFastKeysDockerJourneyTest {
         return reachable;
     }
 
+    private void scrollCatalogToStart(String selector) throws Exception {
+        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if(!node)throw new Error('missing catalog scroller '+" + JSONObject.quote(selector) + ");"
+                + "node.scrollLeft=0;return String(node.scrollLeft);})()");
+        awaitRenderedFrame();
+        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ")?.scrollLeft === 0");
+    }
+
     private void swipeFastKeyIntoView(String selector) throws Exception {
         JSONObject geometry = fastKeyGeometry(selector);
         assertTrue("the requested fast key must exist inside a docked catalog: " + selector,
@@ -985,7 +1015,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const container=target?.closest('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');"
                 + "if(!target||!container)return JSON.stringify({missing:true});"
                 + "const r=target.getBoundingClientRect(),c=container.getBoundingClientRect(),v=window.visualViewport;"
-                + "const horizontal=container.matches('.mobile-hotkeys__main-keys'),y=c.top+c.height/2;"
+                + "const horizontal=container.matches('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid'),y=c.top+c.height/2;"
                 + "const freeX=fromRight=>{const step=fromRight?-1:1,start=fromRight?c.right-1:c.left+1;"
                 + "for(let x=start;fromRight?x>c.left+1:x<c.right-1;x+=step){if(!document.elementFromPoint(x,y)?.closest('button'))return {x,y};}return null;};"
                 + "const swipeAnchors=horizontal?{left:freeX(false),right:freeX(true),vertical:null}:"
@@ -1028,6 +1058,14 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const shell=document.querySelector('.app-shell');const slot=document.querySelector('[data-testid=terminal-slot]');"
                 + "const tray=document.querySelector('[data-testid=mobile-hotkeys]');const trayRect=rect('[data-testid=mobile-hotkeys]');"
                 + "const slotRect=rect('[data-testid=terminal-slot]');const terminalRect=rect('.terminal-viewport');"
+                + "const catalogSheetNode=document.querySelector('[data-testid=mobile-hotkeys-sheet]');"
+                + "const catalogSheet=rect('[data-testid=mobile-hotkeys-sheet]');"
+                + "const pageActionNode=document.querySelector('[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page]');"
+                + "const pageAction=pageActionNode?target(pageActionNode):null;"
+                + "const catalogScroller=tray?.querySelector('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');"
+                + "const catalogScrollMetrics=catalogScroller?{clientWidth:catalogScroller.clientWidth,scrollWidth:catalogScroller.scrollWidth,scrollLeft:catalogScroller.scrollLeft}:null;"
+                + "const overlaps=(a,b)=>!!a&&!!b&&a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;"
+                + "const sheetInside=pageActionNode&&catalogSheet?(()=>{const a=pageActionNode.getBoundingClientRect();return a.left>=catalogSheet.left-0.5&&a.right<=catalogSheet.right+0.5&&a.top>=catalogSheet.top-0.5&&a.bottom<=catalogSheet.bottom+0.5;})():false;"
                 + "const composerRect=rect('.composer-panel');"
                 + "const activeElement=document.activeElement;const promptDraft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const inlineDictationBar=rect('[data-testid=inline-dictation-bar]');"
@@ -1045,7 +1083,6 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationStatusOneLine=!!inlineDictationStatusNode&&inlineDictationStatusStyle?.whiteSpace==='nowrap'"
                 + "&&inlineDictationStatusNode.clientHeight>0&&inlineDictationStatusNode.scrollHeight<=inlineDictationStatusNode.clientHeight+1;"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
-                + "[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page],"
                 + "[data-testid=mobile-hotkeys-launcher]')).map(target);"
                 + "const hotkeyControls=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys],"
                 + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-main-page],"
@@ -1065,6 +1102,10 @@ public final class JsFastKeysDockerJourneyTest {
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
                 + "mobileHotkeys:trayRect,navigationTargets:keys,hotkeyControls,"
+                + "catalogSheet,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,"
+                + "catalogSheetBelowTerminalViewport:!!catalogSheet&&!!terminalRect&&catalogSheet.top>=terminalRect.bottom-0.5,"
+                + "catalogSheetIntersectsComposer:overlaps(catalogSheet,composerRect),catalogPageAction:pageAction?{...pageAction,insideCatalogSheet:!!sheetInside}:null,"
+                + "catalogScrollMetrics,"
                 + "mainCatalog:rect('.mobile-hotkeys__main-keys'),ctrlCatalog:rect('.mobile-hotkeys__ctrl-grid'),"
                 + "composerPanel:composerRect,"
                 + "inlineDictationBar,"
@@ -1140,8 +1181,8 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void assertHotkeyBarReachable(JSONObject geometry) throws Exception {
         JSONArray targets = geometry.getJSONArray("navigationTargets");
-        int expectedTargetCount = "closed".equals(geometry.getString("fastKeysPage")) ? 4 : 5;
-        assertEquals("compact hotkey row must expose navigation, page, launcher, and dictation targets",
+        int expectedTargetCount = 4;
+        assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
         List<String> labels = new ArrayList<>();
         for (int index = 0; index < targets.length(); index += 1) {
@@ -1154,13 +1195,37 @@ public final class JsFastKeysDockerJourneyTest {
         }
         String page = geometry.getString("fastKeysPage");
         List<String> expected = new ArrayList<>(List.of("Send Up arrow", "Send Down arrow", "Send Enter"));
-        if ("main".equals(page)) expected.add("Open Ctrl plus letter keys");
-        if ("ctrl".equals(page)) expected.add("Back to terminal hotkeys");
         expected.add("closed".equals(page) ? "Open terminal hotkeys" : "Close terminal hotkeys");
         assertEquals("persistent row keeps navigation, Fast Keys page, launcher, and trailing mic reachable",
                 expected, labels);
         assertTrue("keyboard geometry must confirm native IME visibility", geometry.getJSONObject("androidIme").getBoolean("visible"));
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
+    }
+
+    private void assertCatalogSheetGeometry(JSONObject geometry, String page) throws Exception {
+        JSONObject sheet = geometry.optJSONObject("catalogSheet");
+        assertNotNull("the full key catalog must render in its on-demand sheet", sheet);
+        assertTrue("the catalog sheet must have a visible 48dp row: " + geometry, sheet.getDouble("height") >= 47.9);
+        assertTrue("the catalog sheet must remain within the terminal slot: " + geometry,
+                sheet.getDouble("top") >= geometry.getJSONObject("terminalSlot").getDouble("top") - 0.5
+                        && sheet.getDouble("bottom") <= geometry.getJSONObject("terminalSlot").getDouble("bottom") + 0.5);
+        assertTrue("the catalog sheet must not overlap xterm or composer: " + geometry,
+                geometry.getBoolean("catalogSheetBelowTerminalViewport")
+                        && !geometry.getBoolean("catalogSheetIntersectsComposer"));
+        assertTrue("catalog sheet must use a nonmodal terminal-context surface: " + geometry,
+                "false".equals(geometry.getString("catalogSheetModal")));
+        JSONObject scroll = geometry.getJSONObject("catalogScrollMetrics");
+        assertTrue("the " + page + " catalog must expose keys through physical horizontal scrolling: " + geometry,
+                scroll.getDouble("scrollWidth") > scroll.getDouble("clientWidth") + 1);
+    }
+
+    private void assertCatalogPageActionReachable(JSONObject geometry) throws Exception {
+        JSONObject action = geometry.optJSONObject("catalogPageAction");
+        assertNotNull("catalog sheet must expose its page action", action);
+        assertTrue("catalog page action must meet the 48dp touch target: " + action,
+                action.getDouble("width") >= 47.9 && action.getDouble("height") >= 47.9);
+        assertTrue("catalog page action must remain visible above the IME: " + action,
+                action.getBoolean("insideViewport") && action.getBoolean("insideCatalogSheet"));
     }
 
     private void assertHotkeyBarWithinTerminalPanel(JSONObject geometry) throws Exception {

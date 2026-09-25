@@ -11,8 +11,8 @@ import { AppIcon } from '@pocketshell/ui';
 import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkeysPage } from './mobileHotkeysModel';
 import type { InlineDictationState } from '../session/inlineDictation';
 
-// The dock stays in normal flow below xterm. Navigation keys remain fixed
-// while either catalog scrolls in its own row beneath them.
+// Keep the one-tap keys in the terminal flow. The full catalog is a compact,
+// on-demand surface with an independent horizontal scroll area.
 const initialDictationState: InlineDictationState = {
   phase: 'idle',
   preview: '',
@@ -206,9 +206,10 @@ defineExpose({
             v-for="key in SESSION_BAR_NAV_KEYS"
             :key="key.id"
             class="mobile-hotkeys__key mobile-hotkeys__key--navigation"
+            :class="{ 'mobile-hotkeys__key--enter': key.id === 'enter' }"
             type="button"
             :data-key-id="key.id"
-            :aria-label="`Send ${key.id === 'arrow-up' ? 'Up arrow' : key.id === 'arrow-down' ? 'Down arrow' : key.label}`"
+            :aria-label="key.id === 'arrow-up' ? 'Send Up arrow' : key.id === 'arrow-down' ? 'Send Down arrow' : 'Send Enter'"
             :disabled="!enabled"
             @click="sendKey(key.id)"
           >
@@ -216,28 +217,6 @@ defineExpose({
           </button>
         </div>
 
-        <button
-          v-if="paletteOpen && page === 'main'"
-          class="mobile-hotkeys__header-button mobile-hotkeys__ctrl-page-button"
-          type="button"
-          data-testid="mobile-hotkeys-open-ctrl-page"
-          aria-label="Open Ctrl plus letter keys"
-          :disabled="!enabled"
-          @click="showCtrlPage"
-        >
-          Ctrl+…
-        </button>
-        <button
-          v-if="paletteOpen && page === 'ctrl'"
-          class="mobile-hotkeys__header-button mobile-hotkeys__ctrl-page-button"
-          type="button"
-          data-testid="mobile-hotkeys-back-main-page"
-          aria-label="Back to terminal hotkeys"
-          :disabled="!enabled"
-          @click="showMainPage"
-        >
-          <AppIcon name="arrow-left" aria-hidden="true" />
-        </button>
         <button
           class="mobile-hotkeys__launcher"
           type="button"
@@ -265,73 +244,103 @@ defineExpose({
         </div>
       </div>
 
-      <div
-        v-if="paletteOpen && page === 'main'"
-        class="mobile-hotkeys__main-keys"
-        data-testid="mobile-hotkeys-main-page"
-        id="mobile-hotkeys-main-page"
-        role="group"
-        aria-label="Common terminal key categories"
-      >
-        <section
-          v-for="section in HOTKEY_PALETTE_MAIN_SECTIONS"
-          :key="section.title"
-          class="mobile-hotkeys__main-section"
-          role="group"
-          :aria-label="section.title"
-          :data-key-section="section.title"
-        >
-          <span class="sr-only">{{ section.title }}</span>
-          <button
-            v-for="key in section.keys"
-            :key="key.id"
-            class="mobile-hotkeys__key mobile-hotkeys__key--palette"
-            :class="{ 'mobile-hotkeys__key--holdable': key.id === 'ctrl-c' || key.id === 'ctrl-d' }"
-            type="button"
-            :data-key-id="key.id"
-            :aria-label="accessibleKeyName(key)"
-            :disabled="!enabled"
-            @pointerdown="beginControlPointer($event, key.id)"
-            @pointerup="finishControlPointer"
-            @pointercancel="cancelControlPointer"
-            @lostpointercapture="cancelControlPointer"
-            @click="onPaletteKeyClick($event, key.id)"
-          >
-            <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
-            <small v-if="key.id === 'ctrl-c' || key.id === 'ctrl-d'">hold ×2</small>
-          </button>
-        </section>
-      </div>
-
-      <div
-        v-if="paletteOpen && page === 'ctrl'"
-        id="mobile-hotkeys-ctrl-page"
-        class="mobile-hotkeys__ctrl-grid"
-        data-testid="mobile-hotkeys-ctrl-page"
-        role="group"
-        aria-label="QWERTY Ctrl keys"
+      <section
+        v-if="paletteOpen"
+        class="mobile-hotkeys__sheet"
+        data-testid="mobile-hotkeys-sheet"
+        role="dialog"
+        aria-modal="false"
+        :aria-labelledby="page === 'ctrl' ? 'mobile-hotkeys-ctrl-title' : 'mobile-hotkeys-main-title'"
       >
         <div
-          v-for="(row, rowIndex) in HOTKEY_CTRL_PAGE_ROWS"
-          :key="rowIndex"
-          class="mobile-hotkeys__ctrl-row"
+          v-if="page === 'main'"
+          class="mobile-hotkeys__catalog-scroll mobile-hotkeys__main-keys"
+          data-testid="mobile-hotkeys-main-page"
+          id="mobile-hotkeys-main-page"
           role="group"
-          :aria-label="`Ctrl key row ${rowIndex + 1}`"
+          aria-label="Common terminal keys"
         >
+          <span id="mobile-hotkeys-main-title" class="mobile-hotkeys__sheet-title">Terminal keys</span>
           <button
-            v-for="key in row"
-            :key="key.id"
-            class="mobile-hotkeys__key mobile-hotkeys__key--ctrl"
+            class="mobile-hotkeys__page-action"
             type="button"
-            :data-key-id="key.id"
-            :aria-label="accessibleKeyName(key)"
+            data-testid="mobile-hotkeys-open-ctrl-page"
+            aria-label="Open Ctrl plus letter keys"
             :disabled="!enabled"
-            @click="sendKey(key.id)"
+            @click="showCtrlPage"
           >
-            <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+            Ctrl+…
           </button>
+          <section
+            v-for="section in HOTKEY_PALETTE_MAIN_SECTIONS"
+            :key="section.title"
+            class="mobile-hotkeys__main-section"
+            role="group"
+            :aria-label="section.title"
+            :data-key-section="section.title"
+          >
+            <button
+              v-for="key in section.keys"
+              :key="key.id"
+              class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
+              :class="{ 'mobile-hotkeys__key--holdable': key.id === 'ctrl-c' || key.id === 'ctrl-d' }"
+              type="button"
+              :data-key-id="key.id"
+              :aria-label="accessibleKeyName(key)"
+              :disabled="!enabled"
+              @pointerdown="beginControlPointer($event, key.id)"
+              @pointerup="finishControlPointer"
+              @pointercancel="cancelControlPointer"
+              @lostpointercapture="cancelControlPointer"
+              @click="onPaletteKeyClick($event, key.id)"
+            >
+              <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+              <small v-if="key.id === 'ctrl-c' || key.id === 'ctrl-d'">hold ×2</small>
+            </button>
+          </section>
         </div>
-      </div>
+
+        <div
+          v-else
+          class="mobile-hotkeys__catalog-scroll mobile-hotkeys__ctrl-grid"
+          id="mobile-hotkeys-ctrl-page"
+          data-testid="mobile-hotkeys-ctrl-page"
+          role="group"
+          aria-label="QWERTY Ctrl keys"
+        >
+          <span id="mobile-hotkeys-ctrl-title" class="mobile-hotkeys__sheet-title">Ctrl keys</span>
+          <button
+            class="mobile-hotkeys__page-action"
+            type="button"
+            data-testid="mobile-hotkeys-back-main-page"
+            aria-label="Back to terminal hotkeys"
+            :disabled="!enabled"
+            @click="showMainPage"
+          >
+            <AppIcon name="arrow-left" aria-hidden="true" />
+          </button>
+          <div
+            v-for="(row, rowIndex) in HOTKEY_CTRL_PAGE_ROWS"
+            :key="rowIndex"
+            class="mobile-hotkeys__ctrl-row"
+            role="group"
+            :aria-label="`Ctrl key row ${rowIndex + 1}`"
+          >
+            <button
+              v-for="key in row"
+              :key="key.id"
+              class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
+              type="button"
+              :data-key-id="key.id"
+              :aria-label="accessibleKeyName(key)"
+              :disabled="!enabled"
+              @click="sendKey(key.id)"
+            >
+              <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+            </button>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -346,11 +355,11 @@ defineExpose({
   overflow: hidden;
   color: var(--fg);
 }
-.mobile-hotkeys--main-open { height: 96px; }
-.mobile-hotkeys--ctrl-open { height: 148px; }
+.mobile-hotkeys--main-open,
+.mobile-hotkeys--ctrl-open { height: 96px; }
 .mobile-hotkeys--dictation-status-open { height: 80px; }
-.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open { height: 128px; }
-.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 180px; }
+.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
+.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 128px; }
 .mobile-hotkeys__dictation-dock { display: flex; min-width: 0; height: 100%; flex: 0 0 auto; flex-direction: column; }
 .mobile-hotkeys__dictation-status-row { display: flex; min-width: 0; height: 32px; flex: 0 0 32px; align-items: center; padding: 2px 4px; }
 .mobile-hotkeys__dictation-status {
@@ -378,13 +387,10 @@ defineExpose({
 .mobile-hotkeys__dictation-status[data-dictation-tone="success"] .terminal-dictation-preview { color: var(--success); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="error"] .terminal-dictation-preview { color: var(--error); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="warning"] .terminal-dictation-preview { color: var(--warning); }
-.mobile-hotkeys__bar + .mobile-hotkeys__main-keys,
-.mobile-hotkeys__bar + .mobile-hotkeys__ctrl-grid { margin-top: 0; }
 
 .mobile-hotkeys button { color: inherit; font: inherit; }
 .mobile-hotkeys button:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 2px; }
 .mobile-hotkeys button:disabled { cursor: default; opacity: var(--disabled-opacity); }
-
 .mobile-hotkeys__bar {
   display: flex;
   width: 100%;
@@ -397,16 +403,16 @@ defineExpose({
   border-top: 1px solid var(--border-soft);
   background: var(--surface);
 }
-
 .mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; gap: var(--sp-1); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
-.mobile-hotkeys__header-button {
+.mobile-hotkeys__page-action {
   display: inline-flex;
   width: 48px;
   min-width: 48px;
   height: 48px;
   min-height: 48px;
+  flex: 0 0 48px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-soft);
@@ -416,48 +422,81 @@ defineExpose({
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-
 .mobile-hotkeys__key:hover:not(:disabled),
 .mobile-hotkeys__launcher:hover:not(:disabled),
-.mobile-hotkeys__header-button:hover:not(:disabled) {
+.mobile-hotkeys__page-action:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--state-hover);
 }
-
 .mobile-hotkeys__key:active:not(:disabled),
-.mobile-hotkeys__launcher[aria-expanded="true"] {
+.mobile-hotkeys__launcher[aria-expanded="true"],
+.mobile-hotkeys__page-action:active:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
+.mobile-hotkeys__key--navigation { font: 600 18px/1 var(--font-mono); }
+.mobile-hotkeys__key--enter { margin-left: var(--sp-1); border-left-color: var(--border-strong); font: 600 var(--fs-200)/1 var(--font-ui); }
+.mobile-hotkeys__launcher { margin-left: var(--sp-1); }
+.mobile-hotkeys__launcher :deep(svg),
+.mobile-hotkeys__page-action :deep(svg) { width: 18px; height: 18px; }
 
-.mobile-hotkeys__key--navigation { flex: 0 0 48px; font: 600 18px/1 var(--font-mono); }
-.mobile-hotkeys__key--navigation[data-key-id="enter"] { font: 600 var(--fs-200)/1 var(--font-ui); }
+.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: var(--sp-1); }
+.mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
+.mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-hotkeys__persistent-controls,
+.mobile-hotkeys__persistent-accessory { display: flex; min-width: 48px; flex: 0 0 auto; align-items: center; justify-content: flex-end; }
+.mobile-hotkeys__persistent-controls :deep(button),
+.mobile-hotkeys__persistent-accessory :deep(button) {
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
+  flex: 0 0 48px;
+  padding: 0;
+}
 
-.mobile-hotkeys__launcher { flex: 0 0 48px; }
-.mobile-hotkeys__launcher :deep(svg) { width: 18px; height: 18px; }
-.mobile-hotkeys__header-button :deep(svg) { width: 18px; height: 18px; }
-.mobile-hotkeys__title { flex: 0 0 auto; color: var(--fg-secondary); font-size: var(--fs-100); font-weight: var(--fw-medium); }
-
-.mobile-hotkeys__main-keys {
-  display: flex;
+.mobile-hotkeys__sheet {
+  width: 100%;
   min-width: 0;
   height: 48px;
-  flex: 1 1 auto;
+  min-height: 48px;
+  flex: 0 0 48px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--r-md) var(--r-md) 0 0;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border), inset 0 1px 0 var(--border-strong), 0 -1px 0 var(--border-soft);
+}
+.mobile-hotkeys__catalog-scroll {
+  display: flex;
+  width: 100%;
+  height: 48px;
+  min-width: 0;
   align-items: center;
   gap: var(--sp-1);
   overflow-x: auto;
   overflow-y: hidden;
+  padding: 0 var(--sp-1);
   touch-action: pan-x;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
-.mobile-hotkeys__main-keys::-webkit-scrollbar { display: none; }
+.mobile-hotkeys__catalog-scroll::-webkit-scrollbar { display: none; }
+.mobile-hotkeys__sheet-title {
+  flex: 0 0 auto;
+  padding: 0 var(--sp-2);
+  color: var(--fg-secondary);
+  font-size: var(--fs-100);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+}
+.mobile-hotkeys__page-action { font: 500 var(--fs-100)/1 var(--font-mono); }
 .mobile-hotkeys__main-section { display: flex; height: 48px; flex: 0 0 auto; align-items: center; gap: var(--sp-1); }
 .mobile-hotkeys__main-section + .mobile-hotkeys__main-section { border-left: 1px solid var(--border-soft); padding-left: var(--sp-1); }
-.mobile-hotkeys__key--palette,
-.mobile-hotkeys__key--ctrl { flex-direction: column; gap: 1px; padding: 2px; font: 500 12px/1.1 var(--font-mono); }
-.mobile-hotkeys__key--palette { flex: 0 0 auto; }
-.mobile-hotkeys__key--palette small { color: var(--fg-secondary); font: 10px/1 var(--font-ui); }
+.mobile-hotkeys__ctrl-row { display: contents; }
+.mobile-hotkeys__key--catalog { flex-direction: column; gap: 1px; padding: 2px; font: 500 12px/1.1 var(--font-mono); }
 .mobile-hotkeys__keycap {
   display: inline-block;
   min-width: 1.6em;
@@ -471,52 +510,15 @@ defineExpose({
   font-family: var(--font-mono);
   line-height: 1.35;
 }
-.mobile-hotkeys__key--holdable {
-  min-width: 58px;
-  /* Keep Android's long-press selection/callout from cancelling pointerup. */
-  touch-action: none;
-  user-select: none;
-  -webkit-touch-callout: none;
-}
+.mobile-hotkeys__key--catalog small { color: var(--fg-secondary); font: 9px/1 var(--font-ui); white-space: nowrap; }
+.mobile-hotkeys__key--holdable { min-width: 58px; flex-basis: 58px; touch-action: none; user-select: none; -webkit-touch-callout: none; }
 
-.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-start; gap: var(--sp-1); }
-.mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
-.mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mobile-hotkeys__persistent-controls { display: flex; min-width: 48px; flex: 0 0 auto; align-items: center; justify-content: flex-end; }
-.mobile-hotkeys__persistent-controls :deep(button) {
-  width: 48px;
-  min-width: 48px;
-  max-width: 48px;
-  height: 48px;
-  min-height: 48px;
-  max-height: 48px;
-  flex: 0 0 48px;
-  padding: 0;
-}
-.mobile-hotkeys__persistent-accessory { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-start; }
-
-.mobile-hotkeys__ctrl-page-button { flex: 0 0 56px; font-size: var(--fs-100); font-weight: var(--fw-medium); }
-
-.mobile-hotkeys__ctrl-grid {
-  display: grid;
-  height: 100px;
-  min-height: 0;
-  flex: 0 0 100px;
-  align-content: start;
-  gap: var(--sp-1);
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 0 var(--sp-1);
-  touch-action: pan-y;
-  -webkit-overflow-scrolling: touch;
-}
-.mobile-hotkeys__ctrl-row { display: flex; min-height: 48px; justify-content: center; gap: var(--sp-1); }
-.mobile-hotkeys__key--ctrl { width: 100%; max-width: 56px; flex: 1 1 48px; }
-
-@media (max-width: 360px) {
-  .mobile-hotkeys__bar { gap: 2px; }
-  .mobile-hotkeys__navigation { gap: 2px; }
-  .mobile-hotkeys__main-section { gap: 2px; }
-  .mobile-hotkeys__persistent-slots { gap: 2px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
 }
 </style>
