@@ -19,6 +19,7 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
+    testTransformMode: { web: ['**/tests/unit/snippetBar.test.ts'] },
     include: ['tests/unit/**/*.test.ts'],
   },
 });
