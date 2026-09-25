@@ -17,8 +17,10 @@ from pathlib import Path
 TAG = "PS2884Asset:"
 SCREENSHOTS = {
     "fastkeys-ime-open.png",
+    "fastkeys-row-closed-ime-open.png",
     "fastkeys-sheet-main-ime-open.png",
     "fastkeys-sheet-main-tail-ime-open.png",
+    "fastkeys-main-composer-actions-ime-open.png",
     "fastkeys-sheet-ctrl-ime-open.png",
     "fastkeys-sheet-ctrl-tail-ime-open.png",
     "fastkeys-tray-ime-dismissed.png",
@@ -27,11 +29,25 @@ SCREENSHOTS = {
     "fastkeys-dictation-idle-ime-open.png",
     "fastkeys-dictation-listening-ime-open.png",
     "fastkeys-dictation-listening-ctrl-ime-open.png",
+    "fastkeys-dictation-transcribing-ime-open.png",
     "fastkeys-dictation-stopped-ime-open.png",
+    "fastkeys-dictation-error-ime-open.png",
     "fastkeys-dictation-attach-cancel.png",
     "fastkeys-dictation-reattached-ime-open.png",
 }
-REQUIRED_ASSETS = SCREENSHOTS | {"fastkeys-journey.json"}
+VIEWPORT_SCREENSHOTS = {
+    "fastkeys-row-closed-ime-open-viewport.png",
+    "fastkeys-sheet-main-ime-open-viewport.png",
+    "fastkeys-sheet-main-tail-ime-open-viewport.png",
+    "fastkeys-sheet-ctrl-ime-open-viewport.png",
+    "fastkeys-sheet-ctrl-tail-ime-open-viewport.png",
+    "fastkeys-main-composer-actions-ime-open-viewport.png",
+    "fastkeys-dictation-listening-ime-open-viewport.png",
+    "fastkeys-dictation-stopped-ime-open-viewport.png",
+    "fastkeys-dictation-error-ime-open-viewport.png",
+    "fastkeys-reconnected-ime-open-viewport.png",
+}
+REQUIRED_ASSETS = SCREENSHOTS | VIEWPORT_SCREENSHOTS | {"fastkeys-journey.json"}
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
@@ -61,12 +77,94 @@ TIMING_FIELDS = (
     "reconnectTapToVisibleOutputMs",
 )
 
+MOBILE_HOTKEYS_BASE_HEIGHT_PX = 49
+INLINE_DICTATION_STATUS_ROW_HEIGHT_PX = 16
+CATALOG_SHEET_HEIGHT_PX = 144
+ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX = 144
+API35_ACCEPTED_TERMINAL_GRID = (38, 6)
+# WebView can round shared rectangle edges apart by a tiny fraction; larger overlaps remain failures.
+TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01
+
 EXPECTED_MAIN_KEY_IDS = (
     "arrow-left", "arrow-right", "escape", "tab", "shift-tab",
     "ctrl-b", "ctrl-c", "ctrl-d", "ctrl-q", "ctrl-x",
 )
 EXPECTED_CTRL_KEY_IDS = tuple(f"ctrl-{letter}" for row in ("qwert", "yuiop", "asdfg", "hjkl", "zxcvb", "nm")
                               for letter in row) + ("ctrl-backslash",)
+
+
+def validate_composer_actions(
+    item: dict[str, object], label: str, *, require_all_enabled: bool,
+    require_ime_clearance_for_targets: bool = False,
+) -> None:
+    row = item.get("composerActionRow")
+    actions = item.get("composerActions")
+    viewport = item.get("visualViewport")
+    if (not isinstance(row, dict) or not isinstance(actions, list) or len(actions) != 4
+            or not isinstance(viewport, dict)):
+        raise ExtractionFailure(f"{label} geometry lacks the four composer actions and viewport bounds")
+    ime_edge = item.get("imeEdgeCssY", viewport.get("height", 0) + viewport.get("offsetTop", 0))
+    if row.get("bottom", 10**9) > ime_edge - 4:
+        raise ExtractionFailure(f"{label} composer action row does not keep 4px of clearance above the IME viewport")
+    expected = {"discard", "dictate", "insert", "send"}
+    seen: set[str] = set()
+    enabled = 0
+    for action in actions:
+        if not isinstance(action, dict):
+            raise ExtractionFailure(f"{label} composer action geometry is malformed")
+        name = action.get("action")
+        if not isinstance(name, str) or name not in expected or name in seen:
+            raise ExtractionFailure(f"{label} composer action set is duplicated or incomplete")
+        seen.add(name)
+        if (action.get("width", 0) < 47.9 or action.get("height", 0) < 47.9
+                or action.get("insideViewport") is not True or action.get("insideComposerPanel") is not True
+                or action.get("top", 10**9) < row.get("top", 0) - 0.5
+                or action.get("bottom", 10**9) > row.get("bottom", 0) + 0.5):
+            raise ExtractionFailure(f"{label} composer action {name} is clipped or below its 48dp target")
+        if require_ime_clearance_for_targets and action.get("bottom", 10**9) > ime_edge - 4:
+            raise ExtractionFailure(f"{label} composer action {name} hit target does not clear the IME edge by 4px")
+        if action.get("disabled") is not True:
+            enabled += 1
+            if action.get("hitTarget") is not True:
+                raise ExtractionFailure(f"{label} enabled composer action {name} does not receive its measured touch target")
+        if require_all_enabled and action.get("disabled") is not False:
+            raise ExtractionFailure(f"{label} staged composer action {name} is not enabled")
+    if seen != expected or enabled == 0:
+        raise ExtractionFailure(f"{label} composer does not expose the complete tappable action row")
+
+
+def validate_compact_status_composer(item: dict[str, object], label: str) -> None:
+    panel = item.get("composerPanel")
+    draft = item.get("composerDraft")
+    row = item.get("composerActionRow")
+    viewport = item.get("visualViewport")
+    if not all(isinstance(rect, dict) for rect in (panel, draft, row, viewport)):
+        raise ExtractionFailure(f"{label} lacks compact composer bounds for the status row")
+    assert isinstance(panel, dict) and isinstance(draft, dict) and isinstance(row, dict) and isinstance(viewport, dict)
+    ime_edge = item.get("imeEdgeCssY", viewport.get("height", 0) + viewport.get("offsetTop", 0))
+    if (abs(panel.get("height", 0) - 80) > 0.5
+            or abs(draft.get("height", 0) - 25) > 0.5
+            or abs(row.get("height", 0) - 48) > 0.5
+            or draft.get("top", 10**9) < panel.get("top", 0) - 0.5
+            or row.get("top", 0) - draft.get("bottom", 10**9) < 2
+            or row.get("bottom", 10**9) > panel.get("bottom", 0) + 0.5
+            or panel.get("bottom", 10**9) > viewport.get("height", 0) + 0.5
+            or row.get("bottom", 10**9) > ime_edge - 4):
+        raise ExtractionFailure(f"{label} does not fit the 25px editor and 48px action row in its 80px panel")
+    page = item.get("fastKeysPage")
+    if page in {"main", "ctrl"}:
+        sheet = item.get("catalogSheet")
+        if (not isinstance(sheet, dict) or sheet.get("bottom", 10**9) > panel.get("top", 0) + 0.5
+                or item.get("catalogSheetIntersectsComposer") is not False):
+            raise ExtractionFailure(f"{label} catalog sheet overlaps the compact composer")
+    else:
+        tray = item.get("fastKeysTray")
+        dock = tray.get("bounds") if isinstance(tray, dict) else None
+        if not isinstance(dock, dict) or dock.get("bottom", 10**9) > panel.get("top", 0) + 0.5:
+            raise ExtractionFailure(f"{label} dock overlaps the compact composer")
+    validate_composer_actions(
+        item, label, require_all_enabled=False, require_ime_clearance_for_targets=True,
+    )
 
 
 def format_timing_summary(journey: dict[str, object]) -> str:
@@ -89,13 +187,22 @@ def validate_docked_dictation_geometry(
     dock_bounds = dock.get("bounds") if isinstance(dock, dict) else None
     rendered_dock_height = dock_bounds.get("height") if isinstance(dock_bounds, dict) else None
     declared_dock_height = item.get("terminalHotkeysDockHeightPx")
-    should_preserve_grid = item.get("fastKeysPage") in {"main", "ctrl"} or item.get("inlineDictationStatusVisible") is True
+    keyboard_up_terminal = (item.get("keyboardVisible") is True
+                            and item.get("keyboardComposerMode") is True
+                            and item.get("sshPhase") == "live")
+    should_preserve_grid = (item.get("fastKeysPage") in {"main", "ctrl"}
+                            or item.get("inlineDictationStatusVisible") is True
+                            or keyboard_up_terminal)
+    expected_cap = (min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(viewport_height))
+                    if isinstance(viewport_height, (int, float)) and not isinstance(viewport_height, bool)
+                    else None)
     if should_preserve_grid and (
         isinstance(cap, bool) or not isinstance(cap, (int, float)) or cap <= 0
         or isinstance(viewport_height, bool) or not isinstance(viewport_height, (int, float))
+        or cap is None or abs(cap - expected_cap) > 0.5
         or abs(viewport_height - cap) > 0.5
     ):
-        raise ExtractionFailure(f"{label} did not cap the terminal viewport at its pre-dock keyboard-up height")
+        raise ExtractionFailure(f"{label} did not apply the min(144px, measured viewport) keyboard-up cap")
     if should_preserve_grid and (
         isinstance(slot_height, bool) or not isinstance(slot_height, (int, float))
         or isinstance(rendered_dock_height, bool) or not isinstance(rendered_dock_height, (int, float))
@@ -109,26 +216,92 @@ def validate_docked_dictation_geometry(
     mobile_hotkeys = item.get("mobileHotkeys")
     if not isinstance(bar, dict) or not isinstance(mic, dict):
         raise ExtractionFailure(f"{label} does not contain the docked dictation bar and mic")
+    page = item.get("fastKeysPage")
+    expected_dock_height = (MOBILE_HOTKEYS_BASE_HEIGHT_PX
+                            + (CATALOG_SHEET_HEIGHT_PX if page in {"main", "ctrl"} else 0)
+                            + (INLINE_DICTATION_STATUS_ROW_HEIGHT_PX
+                               if item.get("inlineDictationStatusVisible") is True else 0))
+    if (not isinstance(mobile_hotkeys, dict)
+            or abs(mobile_hotkeys.get("height", 0) - expected_dock_height) > 0.5):
+        raise ExtractionFailure(f"{label} dock height does not match the persistent row, catalog, and status placement")
+    if page in {"main", "ctrl"}:
+        sheet = item.get("catalogSheet")
+        scroller = item.get("catalogScrollerBounds")
+        if (item.get("catalogScrollerInsideSheet") is not True
+                or not isinstance(sheet, dict) or not isinstance(scroller, dict)
+                or scroller.get("top", -1) < sheet.get("top", 0) - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
+                or scroller.get("bottom", 10**9) > sheet.get("bottom", 0) + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
+                or scroller.get("left", -1) < sheet.get("left", 0) - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
+                or scroller.get("right", 10**9) > sheet.get("right", 0) + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
+                or abs(scroller.get("height", 0) - (sheet.get("height", 0) - 48)) > 1):
+            raise ExtractionFailure(f"{label} visible catalog scroller is clipped by the 144px sheet")
+    tray_bounds = dock.get("bounds") if isinstance(dock, dict) else None
+    terminal_panel = item.get("terminalPanel")
+    if (not isinstance(tray_bounds, dict) or not isinstance(terminal_panel, dict)
+            or dock.get("insideTerminalPanel") is not True
+            or tray_bounds.get("top", -1) < terminal_panel.get("top", 0)
+            or tray_bounds.get("bottom", 10**9) > terminal_panel.get("bottom", 0)):
+        raise ExtractionFailure(f"{label} dock extends outside the clipped terminal panel")
+    if (not isinstance(viewport, dict)
+            or tray_bounds.get("top", -1)
+            < viewport.get("bottom", 0) - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX):
+        raise ExtractionFailure(f"{label} dock overlaps the measured terminal viewport")
+    terminal_panel = item.get("terminalPanel")
+    if (not isinstance(slot, dict) or not isinstance(terminal_panel, dict)
+            or item.get("terminalSlotInsideTerminalPanel") is not True
+            or slot.get("top", -1) < terminal_panel.get("top", 0) - 0.5
+            or slot.get("bottom", 10**9) > terminal_panel.get("bottom", 0) + 0.5):
+        raise ExtractionFailure(f"{label} terminal slot extends beyond its clipped panel")
+    keybar = item.get("keybarClientRect")
+    if not isinstance(keybar, dict):
+        raise ExtractionFailure(f"{label} does not include persistent terminal-key geometry")
     if item.get("inlineDictationBarCount") != 1 or item.get("inlineDictationMicCount") != 1:
         raise ExtractionFailure(f"{label} must contain exactly one inline dictation bar and mic")
     if (isinstance(mic.get("width"), bool) or not isinstance(mic.get("width"), (int, float))
             or mic["width"] < 47.9 or isinstance(mic.get("height"), bool)
             or not isinstance(mic.get("height"), (int, float)) or mic["height"] < 47.9):
         raise ExtractionFailure(f"{label} mic target is smaller than 48dp")
+    if mic.get("visibleLabel", "") != "":
+        raise ExtractionFailure(f"{label} persistent microphone adds a visible caption to the compact controls row")
     if mic.get("insideViewport") is not True:
         raise ExtractionFailure(f"{label} mic target is clipped")
+    if (mic.get("visibleWidthInKeybar", 0) < 47.9
+            or mic.get("visibleHeightInKeybar", 0) < 47.9):
+        raise ExtractionFailure(f"{label} microphone clipped hit target is below 48dp")
+    if (mic.get("left", -1) < keybar.get("left", 0) - 0.5
+            or mic.get("right", 10**9) > keybar.get("right", 0) + 0.5
+            or mic.get("top", -1) < keybar.get("top", 0) - 0.5
+            or mic.get("bottom", 10**9) > keybar.get("bottom", 0) + 0.5
+            or item.get("inlineDictationMicInsideKeybar") is not True):
+        raise ExtractionFailure(f"{label} microphone is outside the persistent key row")
     if mic.get("disabled") is not (True if allow_disabled_mic else False):
         raise ExtractionFailure(f"{label} mic enabled state does not match its dictation phase")
     if item.get("inlineDictationBarInsideTray") is not True or item.get("inlineDictationMicInsideBar") is not True:
         raise ExtractionFailure(f"{label} dictation action is outside the persistent dock")
+    row_metrics = item.get("persistentRowMetrics")
+    if (not isinstance(row_metrics, dict)
+            or isinstance(row_metrics.get("clientWidth"), bool)
+            or not isinstance(row_metrics.get("clientWidth"), (int, float))
+            or isinstance(row_metrics.get("scrollWidth"), bool)
+            or not isinstance(row_metrics.get("scrollWidth"), (int, float))
+            or row_metrics.get("scrollWidth") > row_metrics.get("clientWidth") + 0.5
+            or row_metrics.get("scrollable") is not (row_metrics["scrollWidth"] > row_metrics["clientWidth"] + 1)):
+        raise ExtractionFailure(f"{label} live-width persistent row is clipped or lacks consistent responsive geometry")
+    viewport_width = item.get("visualViewport", {}).get("width") if isinstance(item.get("visualViewport"), dict) else None
+    if isinstance(viewport_width, (int, float)) and viewport_width >= 400 and row_metrics["scrollWidth"] > row_metrics["clientWidth"] + 1:
+        raise ExtractionFailure(f"{label} 412px persistent row unexpectedly requires horizontal scrolling")
     if item.get("inlineDictationStatusVisible") is True:
+        validate_compact_status_composer(item, label)
         status_row = item.get("inlineDictationStatusRow")
+        expected_placement = item.get("inlineDictationStatusAboveKeybar") is True
         if (item.get("inlineDictationStatusOneLine") is not True
                 or item.get("inlineDictationStatusInsideBar") is not True
-                or item.get("inlineDictationStatusAboveKeybar") is not True
+                or item.get("inlineDictationStatusInsideSheetHeader") is not False
+                or not expected_placement
                 or not isinstance(status_row, dict)
-                or abs(status_row.get("height", 0) - 32) > 1):
-            raise ExtractionFailure(f"{label} status chip is not a single row above the persistent keys")
+                or abs(status_row.get("height", 0) - INLINE_DICTATION_STATUS_ROW_HEIGHT_PX) > 0.5
+                or status_row.get("bottom", 10**9) > keybar.get("top", 0) + 0.5):
+            raise ExtractionFailure(f"{label} status is not a 16px one-line row above the persistent keys")
     elif (item.get("inlineDictationPhase") != "idle" or item.get("inlineDictationTone") != "quiet"
           or item.get("inlineDictationStatusText") != ""):
         raise ExtractionFailure(f"{label} hides a meaningful dictation status")
@@ -145,13 +318,23 @@ def validate_docked_dictation_geometry(
             label_matches = target.get("label") == expected_nav[index]
         else:
             label_matches = target.get("label") == (
-                "Open terminal hotkeys" if page == "closed" else "Close terminal hotkeys"
+                "More terminal keys" if page == "closed" else "Close terminal keys"
             )
         if not label_matches:
             raise ExtractionFailure(f"{label} persistent terminal navigation is missing a required action")
         if (target.get("disabled") is not False or target.get("insideViewport") is not True
-                or target.get("width", 0) < 47.9 or target.get("height", 0) < 47.9):
+                or target.get("width", 0) < 47.9 or target.get("height", 0) < 47.9
+                or target.get("visibleWidthInKeybar", 0) < 47.9
+                or target.get("visibleHeightInKeybar", 0) < 47.9):
             raise ExtractionFailure(f"{label} persistent terminal key is clipped, disabled, or below 48dp")
+    divider = item.get("enterDivider")
+    if (not isinstance(divider, dict) or len(nav) < 3
+            or abs(divider.get("width", 0) - 1) > 0.5
+            or abs(divider.get("height", 0) - 24) > 0.5
+            or abs(divider.get("top", 10**9) - (nav[0].get("top", 0) + 12)) > 0.5
+            or divider.get("left", -10**9) < nav[1].get("right", 0) - 0.5
+            or divider.get("right", 10**9) > nav[2].get("left", 0) + 0.5):
+        raise ExtractionFailure(f"{label} does not preserve the Kotlin 1x24px Enter divider between 48px keys")
     if (not isinstance(mobile_hotkeys, dict)
             or isinstance(nav[-1].get("right"), bool) or not isinstance(nav[-1].get("right"), (int, float))
             or isinstance(mic.get("left"), bool) or not isinstance(mic.get("left"), (int, float))
@@ -333,7 +516,7 @@ def parse_assets(log_text: str, run_id: str) -> dict[str, bytes]:
             raise ExtractionFailure(f"asset {name} hash does not match its manifest")
         decoded[name] = payload
 
-    for name in SCREENSHOTS:
+    for name in SCREENSHOTS | VIEWPORT_SCREENSHOTS:
         payload = decoded[name]
         if len(payload) < 1024 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ExtractionFailure(f"{name} is not a full non-empty PNG")
@@ -350,6 +533,25 @@ def validate_journey(journey: object) -> None:
         raise ExtractionFailure("journey evidence must be a JSON object")
     if not isinstance(journey.get("androidApi"), int) or journey["androidApi"] < 35:
         raise ExtractionFailure("journey evidence does not prove API 35+")
+    narrow_row = journey.get("narrowToolbarReachability")
+    narrow_targets = narrow_row.get("targets") if isinstance(narrow_row, dict) else None
+    if (not isinstance(narrow_row, dict)
+            or abs(narrow_row.get("clientWidth", 0) - 330) > 1
+            or narrow_row.get("scrollable") is not False
+            or narrow_row.get("scrollWidth", 10**9) > narrow_row.get("clientWidth", 0) + 1
+            or narrow_row.get("ptyWritesBefore") != narrow_row.get("ptyWritesAfter")
+            or not isinstance(narrow_targets, list)
+            or len(narrow_targets) != 5
+            or any(not isinstance(target, dict)
+                   or target.get("width", 0) < 47.9 or target.get("height", 0) < 47.9
+                   or target.get("visibleWidth", 0) < 47.9 or target.get("visibleHeight", 0) < 47.9
+                   or target.get("hitTarget") is not True
+                   or target.get("insideToolbar") is not True or target.get("disabled") is True
+                   for target in narrow_targets)
+            or {target.get("label") for target in narrow_targets if isinstance(target, dict)}
+               < {"Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate to terminal"}
+           ):
+        raise ExtractionFailure("330px dock does not prove reachable 48dp navigation, launcher, and dictation controls")
     validate_dictation_behavior(journey)
     if journey.get("firstHotkeyWrites") != expected_first_writes():
         raise ExtractionFailure("mounted app write trace does not match the expected first-session key payloads")
@@ -453,6 +655,7 @@ def validate_journey(journey: object) -> None:
         "after-navigation-row-taps",
         "before-fast-keys",
         "fast-keys-main-open-ime-up",
+        "fast-keys-main-composer-actions-ime-up",
         "fast-keys-main-catalog-reachable",
         "fast-keys-ctrl-open-ime-up",
         "fast-keys-ctrl-catalog-reachable",
@@ -495,6 +698,15 @@ def validate_journey(journey: object) -> None:
         grid = item.get("runtimeGeometry")
         if not isinstance(grid, dict) or grid.get("rows", 0) < 5:
             raise ExtractionFailure(f"{stage_name} leaves fewer than five terminal rows visible")
+        visible_rows = item.get("visibleTerminalRows")
+        cell_height = grid.get("cellHeight")
+        viewport = item.get("terminalViewport")
+        viewport_height = viewport.get("height") if isinstance(viewport, dict) else None
+        if (isinstance(visible_rows, bool) or not isinstance(visible_rows, int) or visible_rows < 5
+                or isinstance(cell_height, bool) or not isinstance(cell_height, (int, float)) or cell_height <= 0
+                or isinstance(viewport_height, bool) or not isinstance(viewport_height, (int, float))
+                or visible_rows != math.floor((viewport_height - 8) / cell_height)):
+            raise ExtractionFailure(f"{stage_name} does not prove five physical xterm rows in its measured viewport")
         validate_docked_dictation_geometry(
             item,
             stage_name,
@@ -503,10 +715,11 @@ def validate_journey(journey: object) -> None:
         tray_geometry = item.get("fastKeysTray")
         if (not isinstance(tray_geometry, dict)
                 or tray_geometry.get("insideSlot") is not True
+                or tray_geometry.get("insideTerminalPanel") is not True
                 or tray_geometry.get("belowTerminalViewport") is not True
                 or tray_geometry.get("intersectsTerminalViewport") is not False
                 or tray_geometry.get("intersectsComposerPanel") is not False):
-            raise ExtractionFailure(f"{stage_name} dock overlaps xterm or composer, or leaves normal flow")
+            raise ExtractionFailure(f"{stage_name} dock overlaps its clipped terminal panel, xterm, or composer")
 
     dictation = journey["dictation"]
     assert isinstance(dictation, dict)
@@ -573,7 +786,7 @@ def validate_journey(journey: object) -> None:
     if (isinstance(idle_viewport_height, bool)
             or not isinstance(idle_viewport_height, (int, float))):
         raise ExtractionFailure("dictation journey lacks its measured initial viewport height")
-    expected_viewport_cap = math.ceil(idle_viewport_height)
+    expected_viewport_cap = min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(idle_viewport_height))
     ready = by_name["dictation-ready-ime-open"]
     ready_grid = ready.get("runtimeGeometry")
     ready_viewport = ready.get("terminalViewport")
@@ -620,9 +833,39 @@ def validate_journey(journey: object) -> None:
                 or (active_status and abs(by_name[stage_name].get("terminalViewportDockCapPx", 0)
                                           - expected_viewport_cap) > 0.5)):
             raise ExtractionFailure(f"dictation state {stage_name} changed the accepted PTY grid or sent a resize")
+    keyboard_grid = by_name["keyboard-up-compact-row"].get("runtimeGeometry")
+    if (not isinstance(grid_anchor, dict) or not isinstance(keyboard_grid, dict)
+            or (grid_anchor.get("cols"), grid_anchor.get("rows"))
+            != (keyboard_grid.get("cols"), keyboard_grid.get("rows"))):
+        raise ExtractionFailure("dictation baseline changed the accepted keyboard-up PTY grid")
+    for stage_name in ("dictation-reattached-ime-open", "dictation-background-cancel-resumed",
+                       "after-reconnect", "reconnected-keybar-ime-up"):
+        grid = by_name[stage_name].get("runtimeGeometry")
+        if (not isinstance(grid, dict) or not isinstance(keyboard_grid, dict)
+                or (grid.get("cols"), grid.get("rows")) != (keyboard_grid.get("cols"), keyboard_grid.get("rows"))):
+            raise ExtractionFailure(f"reattached state {stage_name} changed the accepted keyboard-up PTY grid")
     keyboard = by_name["keyboard-up-compact-row"]
     if keyboard.get("keyboardVisible") is not True:
         raise ExtractionFailure("keyboard-up DOM geometry says the keyboard is hidden")
+    keyboard_viewport = keyboard.get("terminalViewport")
+    if not isinstance(keyboard_viewport, dict) or not isinstance(keyboard_grid, dict):
+        raise ExtractionFailure("keyboard-up baseline lacks its measured viewport or xterm grid")
+    accepted_keyboard_cap = min(
+        ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX,
+        math.floor(keyboard_viewport.get("height", 0)),
+    )
+    if abs(keyboard.get("terminalViewportDockCapPx", 0) - accepted_keyboard_cap) > 0.5:
+        raise ExtractionFailure("keyboard-up baseline did not establish the min(144px, measured viewport) cap")
+    if (journey.get("androidApi") == 35
+            and accepted_keyboard_cap == ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX
+            and (keyboard_grid.get("cols"), keyboard_grid.get("rows")) != API35_ACCEPTED_TERMINAL_GRID):
+        raise ExtractionFailure("API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid")
+    for stage_name in ("after-navigation-row-taps", "before-fast-keys", "fast-keys-main-open-ime-up",
+                       "fast-keys-ctrl-open-ime-up", "fast-keys-closed-ime-up"):
+        grid = by_name[stage_name].get("runtimeGeometry")
+        if (not isinstance(grid, dict)
+                or (grid.get("cols"), grid.get("rows")) != (keyboard_grid.get("cols"), keyboard_grid.get("rows"))):
+            raise ExtractionFailure(f"keyboard-up stage {stage_name} changed the accepted PTY grid")
     ime = keyboard.get("androidIme")
     targets = keyboard.get("navigationTargets")
     if not isinstance(ime, dict) or ime.get("visible") is not True or ime.get("imeBottomDp", 0) <= 0:
@@ -674,10 +917,11 @@ def validate_journey(journey: object) -> None:
         tray = item.get("fastKeysTray")
         if (not isinstance(tray, dict)
                 or tray.get("insideSlot") is not True
+                or tray.get("insideTerminalPanel") is not True
                 or tray.get("belowTerminalViewport") is not True
                 or tray.get("intersectsTerminalViewport") is not False
                 or tray.get("intersectsComposerPanel") is not False):
-            raise ExtractionFailure(f"{label} is not docked outside the terminal viewport")
+            raise ExtractionFailure(f"{label} is not contained by the terminal panel and outside the terminal viewport")
         if (item.get("inlineDictationBar") is not None
                 and item.get("inlineDictationBarInsideTray") is not True):
             raise ExtractionFailure(f"{label} has a separate dictation row outside the persistent dock")
@@ -686,16 +930,17 @@ def validate_journey(journey: object) -> None:
     closed_bounds = closed["fastKeysTray"].get("bounds", {})
     if any(not isinstance(bounds, dict) for bounds in (main_bounds, ctrl_bounds, closed_bounds)):
         raise ExtractionFailure("docked tray geometry is missing bounds")
-    if (abs(main_bounds.get("height", 0) - 96) > 0.5
-            or abs(closed_bounds.get("height", 0) - 48) > 0.5
-            or abs(ctrl_bounds.get("height", 0) - 96) > 0.5):
-        raise ExtractionFailure("fast-key tray did not keep the 48dp closed and 96dp catalog-open heights")
+    if (abs(main_bounds.get("height", 0) - (MOBILE_HOTKEYS_BASE_HEIGHT_PX + CATALOG_SHEET_HEIGHT_PX)) > 0.5
+            or abs(closed_bounds.get("height", 0) - MOBILE_HOTKEYS_BASE_HEIGHT_PX) > 0.5
+            or abs(ctrl_bounds.get("height", 0) - (MOBILE_HOTKEYS_BASE_HEIGHT_PX + CATALOG_SHEET_HEIGHT_PX)) > 0.5):
+        raise ExtractionFailure("fast-key tray did not reserve both 48px rows and the 144px in-flow catalog")
     for label, item in (("main", opened), ("Ctrl", ctrl)):
         sheet = item.get("catalogSheet")
         page_action = item.get("catalogPageAction")
         scroll = item.get("catalogScrollMetrics")
         if (not isinstance(sheet, dict)
-                or sheet.get("height", 0) < 47.9
+                or abs(sheet.get("height", 0) - 144) > 0.5
+                or item.get("catalogScrollerInsideSheet") is not True
                 or item.get("catalogSheetModal") != "false"
                 or item.get("catalogSheetBelowTerminalViewport") is not True
                 or item.get("catalogSheetIntersectsComposer") is not False):
@@ -711,12 +956,32 @@ def validate_journey(journey: object) -> None:
                 or page_action.get("width", 0) < 47.9
                 or page_action.get("height", 0) < 47.9):
             raise ExtractionFailure(f"{label} catalog page action is not a visible 48dp sheet target")
+        expected_title = "Terminal keys" if label == "main" else "Ctrl keys"
+        title = item.get("catalogTitle")
+        if (not isinstance(title, dict) or title.get("text") != expected_title or title.get("fits") is not True
+                or item.get("catalogHeaderControlsDoNotOverlap") is not True):
+            raise ExtractionFailure(f"{label} catalog title, optional dictation line, and page action do not fit the header")
+        expected_scroller = ".mobile-hotkeys__main-keys" if label == "main" else ".mobile-hotkeys__ctrl-grid"
+        if item.get("catalogScrollerSelector") != expected_scroller:
+            raise ExtractionFailure(f"{label} catalog evidence does not measure {expected_scroller}")
         if (not isinstance(scroll, dict)
-                or scroll.get("scrollWidth", 0) <= scroll.get("clientWidth", 0) + 1):
-            raise ExtractionFailure(f"{label} catalog sheet does not prove physical horizontal scrolling")
+                or scroll.get("scrollWidth", 0) > scroll.get("clientWidth", 0) + 1):
+            raise ExtractionFailure(f"{label} key targets overflow the compact catalog width")
+        if label == "Ctrl":
+            if (scroll.get("axis") != "vertical"
+                    or scroll.get("scrollHeight", 0) <= scroll.get("clientHeight", 0) + 1):
+                raise ExtractionFailure("Ctrl catalog does not prove physical vertical reachability")
+        elif (abs(scroll.get("clientHeight", 0) - 96) > 1
+              or scroll.get("axis") != "grid"
+              or scroll.get("scrollHeight", 0) > scroll.get("clientHeight", 0) + 1):
+            raise ExtractionFailure("the main catalog does not fit exactly two visible 48dp grid rows")
     before_grid = before.get("runtimeGeometry")
     if not isinstance(before_grid, dict):
         raise ExtractionFailure("fast-key open comparison lacks the initial xterm dimensions")
+    if (not isinstance(keyboard_grid, dict)
+            or (before_grid.get("cols"), before_grid.get("rows"))
+            != (keyboard_grid.get("cols"), keyboard_grid.get("rows"))):
+        raise ExtractionFailure("pre-fast-key geometry changed the accepted keyboard-up xterm grid")
     baseline_viewport = before.get("terminalViewport")
     if not isinstance(baseline_viewport, dict):
         raise ExtractionFailure("fast-key open comparison lacks the pre-dock terminal viewport height")
@@ -724,7 +989,8 @@ def validate_journey(journey: object) -> None:
     if (isinstance(baseline_viewport_height, bool)
             or not isinstance(baseline_viewport_height, (int, float))):
         raise ExtractionFailure("fast-key open comparison lacks a measured terminal viewport height")
-    expected_viewport_cap = math.ceil(baseline_viewport_height)
+    expected_viewport_cap = min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX,
+                                math.floor(baseline_viewport_height))
     for label, item in (("main open", opened), ("Ctrl open", ctrl), ("close", closed)):
         grid = item.get("runtimeGeometry")
         if not isinstance(grid, dict):
@@ -752,6 +1018,19 @@ def validate_journey(journey: object) -> None:
         raise ExtractionFailure("IME-up main tray did not compact the composer to 104dp or less")
     if ctrl.get("runtimeGeometry", {}).get("rows", 0) < 5:
         raise ExtractionFailure("IME-up Ctrl tray leaves fewer than five xterm rows")
+    if opened.get("runtimeGeometry", {}).get("rows", 0) < 5:
+        raise ExtractionFailure("IME-up main tray leaves fewer than five xterm rows")
+    validate_composer_actions(
+        by_name["fast-keys-main-composer-actions-ime-up"],
+        "IME-up main catalog with staged draft",
+        require_all_enabled=True,
+    )
+    validate_composer_actions(ctrl, "IME-up Ctrl catalog", require_all_enabled=False)
+    validate_composer_actions(
+        by_name["dictation-listening-ctrl-open-ime-open"],
+        "IME-up Ctrl catalog while inline dictation is listening",
+        require_all_enabled=False,
+    )
 
     main_reachable = by_name["fast-keys-main-catalog-reachable"]
     ctrl_reachable = by_name["fast-keys-ctrl-catalog-reachable"]
@@ -817,6 +1096,11 @@ def extract(log_path: Path, output_dir: Path, run_id: str) -> None:
 def self_test() -> int:
     samples = [
         ("complete key action stream accepted", {**sample_journey(), "androidApi": 35}, True),
+        ("API 35 keyboard-up baseline locks 144px and the 38x6 PTY grid", sample_journey(), True),
+        ("API 35 144px viewport with a 38x7 PTY grid rejected",
+         with_api35_extra_keyboard_row(sample_journey()), False),
+        ("API 35 172px keyboard-up viewport cap rejected",
+         with_api35_expanded_keyboard_viewport(sample_journey()), False),
         ("missing IME proof rejected", {**sample_journey(), "geometryTrace": []}, False),
         ("reattach focus race without an early tap rejected",
          {**sample_journey(), "reattachEarlyPromptTapWhileHeld": {"activeElement": "BODY"}}, False),
@@ -831,18 +1115,32 @@ def self_test() -> int:
          ] + expected_first_writes()[8:]}, False),
         ("terminal overlap from a docked fast-key tray rejected",
          with_intersecting_tray(sample_journey()), False),
+        ("terminal viewport contact within the 0.01px CSS rounding epsilon accepted",
+         with_terminal_viewport_overlap(sample_journey(), 0.005), True),
+        ("terminal viewport overlap greater than 0.01px CSS rejected",
+         with_terminal_viewport_overlap(sample_journey(), 0.0101), False),
         ("catalog sheet composer overlap rejected",
          with_intersecting_catalog_sheet(sample_journey()), False),
-        ("catalog without a physical scroll range rejected",
+        ("Ctrl catalog without vertical physical scroll range rejected",
          with_non_scrollable_catalog_sheet(sample_journey()), False),
+        ("clipped catalog title rejected",
+         with_clipped_catalog_title(sample_journey()), False),
+        ("overlapping catalog header content rejected",
+         with_overlapping_catalog_header(sample_journey()), False),
         ("composer overlap from a docked fast-key tray rejected",
          with_intersecting_composer(sample_journey()), False),
         ("separate dictation row outside the dock rejected",
          with_separate_dictation_row(sample_journey()), False),
         ("missing integrated dictation mic rejected",
          with_missing_dictation_mic(sample_journey()), False),
+        ("visible inline mic caption rejected",
+         with_visible_dictation_caption(sample_journey()), False),
         ("mic separated from the persistent control cluster rejected",
          with_far_right_dictation_mic(sample_journey()), False),
+        ("missing Kotlin Enter divider rejected",
+         with_missing_enter_divider(sample_journey()), False),
+        ("live-width toolbar overflow rejected",
+         with_live_row_overflow(sample_journey()), False),
         ("Back layering without the native IME rejected",
          with_invalid_back_layer_precondition(sample_journey(), keyboard_visible=False), False),
         ("Back layering with the dock closed rejected",
@@ -853,6 +1151,28 @@ def self_test() -> int:
          with_uncapped_catalog_viewport(sample_journey()), False),
         ("terminal slot without full dock capacity rejected",
          with_under_reserved_terminal_slot(sample_journey()), False),
+        ("fractional dock overflow past the terminal panel clip rejected",
+         with_fractional_terminal_panel_overflow(sample_journey()), False),
+        ("Ctrl-listening terminal slot extending 10.333px past its panel rejected",
+         with_ctrl_listening_terminal_slot_outside_panel(sample_journey()), False),
+        ("catalog scroller contact within the 0.01px CSS rounding epsilon accepted",
+         with_fractional_catalog_scroller_overflow(sample_journey(), 0.005), True),
+        ("catalog scroller overflow above the 0.01px CSS rounding epsilon rejected",
+         with_fractional_catalog_scroller_overflow(sample_journey(), 0.0101), False),
+        ("fractional catalog scroller overflow past the sheet rejected",
+         with_fractional_catalog_scroller_overflow(sample_journey()), False),
+        ("composer action row without the 4px IME viewport gap rejected",
+         with_composer_action_gap(sample_journey()), False),
+        ("Ctrl catalog during dictation without the 4px composer action gap rejected",
+         with_ctrl_dictation_action_gap(sample_journey()), False),
+        ("status composer action row without its 2px editor gap rejected",
+         with_short_status_action_gap(sample_journey()), False),
+        ("status Send target without 4px IME clearance rejected",
+         with_status_send_target_ime_gap(sample_journey()), False),
+        ("status composer with less than a 25px editor rejected",
+         with_short_status_composer_draft(sample_journey()), False),
+        ("dictation status shrinking the pre-dock viewport cap rejected",
+         with_status_cap_reclaim(sample_journey()), False),
         ("Ctrl catalog and listening status reserve the full dock height",
          sample_journey(), True),
         ("traced receiver setup resizes settle before the stable dictation baseline",
@@ -892,6 +1212,12 @@ def self_test() -> int:
          with_undersized_ctrl_key(sample_journey()), False),
         ("resized PTY on fast-key open rejected",
          with_changed_tray_resize(sample_journey()), False),
+        ("fractional terminal viewport cap rounds down",
+         with_fractional_viewport_baselines(sample_journey()), True),
+        ("ceil-rounded fast-key cap rejected for fractional viewport",
+         with_ceil_cap_for_fractional_viewport(sample_journey(), "fast-keys-main-open-ime-up"), False),
+        ("ceil-rounded dictation cap rejected for fractional viewport",
+         with_ceil_cap_for_fractional_viewport(sample_journey(), "dictation-listening-ime-open"), False),
         ("stale live controls after reattached-session loss rejected",
          with_live_hotkeys_after_reconnect_loss(sample_journey()), False),
     ]
@@ -929,38 +1255,55 @@ def self_test() -> int:
 
 def sample_journey() -> dict[str, object]:
     base = {
-        "runtimeGeometry": {"cols": 50, "rows": 20},
+        "runtimeGeometry": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+        "visibleTerminalRows": 6,
+        "terminalInputAcks": 3,
+        "hotkeyWrites": [],
         "resizeAcks": 4,
         "resizeFitEvents": [],
         "resizeAckEvents": [],
         "keyboardVisible": True,
         "sshPhase": "live",
-        "terminalSlot": {"top": 64, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 219},
-        "terminalViewport": {"top": 64, "bottom": 234, "left": 0, "right": 400, "width": 400, "height": 170},
-        "terminalViewportDockCapPx": 0,
-        "terminalHotkeysDockHeightPx": 48,
-        "mobileHotkeys": {"top": 235, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 48},
+        "terminalSlot": {"top": 64, "bottom": 258, "left": 0, "right": 400, "width": 400, "height": 194},
+        "terminalViewport": {"top": 64, "bottom": 208, "left": 0, "right": 400, "width": 400, "height": 144},
+        "terminalPanel": {"top": 48, "bottom": 252, "left": 0, "right": 400, "width": 400, "height": 204},
+        "terminalSlotInsideTerminalPanel": True,
+        "terminalViewportDockCapPx": 144,
+        "terminalHotkeysDockHeightPx": 49,
+        "mobileHotkeys": {"top": 208, "bottom": 257, "left": 0, "right": 400, "width": 400, "height": 49},
         "catalogSheet": None,
         "catalogSheetModal": None,
         "catalogSheetBelowTerminalViewport": False,
         "catalogSheetIntersectsComposer": False,
         "catalogPageAction": None,
         "catalogScrollMetrics": None,
+        "catalogScrollerBounds": None,
+        "catalogScrollerInsideSheet": False,
+        "catalogScrollerSelector": None,
+        "catalogTitle": None,
+        "catalogHeader": None,
+        "catalogHeaderControlsDoNotOverlap": False,
+        "dictationSheetHeader": None,
+        "inlineDictationStatusInsideSheetHeader": False,
         "visualViewport": {"height": 520, "width": 400, "offsetTop": 0},
         "fastKeysTray": {
             "insideSlot": True,
+            "insideTerminalPanel": True,
             "belowTerminalViewport": True,
             "intersectsTerminalViewport": False,
             "intersectsComposerPanel": False,
-            "bounds": {"height": 48},
+            "bounds": {"height": 49},
         },
         "fastKeysPage": "closed",
+        "keyboardComposerMode": True,
         "sshAttachEpoch": 2,
-        "inlineDictationBar": {"top": 235, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 48},
+        "inlineDictationBar": {"top": 208, "bottom": 257, "left": 0, "right": 400, "width": 400, "height": 49},
         "inlineDictationMic": {
-            "label": "Dictate to terminal", "top": 235, "bottom": 283, "left": 224, "right": 272,
+            "label": "Dictate to terminal", "top": 208, "bottom": 256, "left": 235, "right": 283,
             "width": 48, "height": 48, "insideViewport": True, "disabled": False, "micState": "idle",
+            "visibleLabel": "",
         },
+        "persistentRowMetrics": {"clientWidth": 400, "scrollWidth": 384, "scrollLeft": 0, "scrollable": False},
         "inlineDictationBarCount": 1,
         "inlineDictationMicCount": 1,
         "inlineDictationTargetKey": "testuser@fixture:22/first/attach-2",
@@ -973,15 +1316,16 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusOneLine": False,
         "inlineDictationStatusInsideBar": False,
         "inlineDictationStatusAboveKeybar": False,
+        "enterDivider": {"top": 220, "bottom": 244, "left": 120, "right": 121, "width": 1, "height": 24},
         "inlineDictationMicInsideBar": True,
         "inlineDictationBarInsideTray": True,
         "androidIme": {"visible": True, "imeBottomDp": 260},
         "navigationTargets": [
-            {"label": label, "top": 235, "bottom": 283, "left": left, "right": left + 48,
+            {"label": label, "top": 208, "bottom": 256, "left": left, "right": left + 48,
              "width": 48, "height": 48, "insideViewport": True, "disabled": False}
             for label, left in zip(
-                ("Send Up arrow", "Send Down arrow", "Send Enter", "Open terminal hotkeys"),
-                (0, 56, 112, 168),
+                ("Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys"),
+                (8, 64, 129, 185),
             )
         ],
         "hotkeyControls": [
@@ -990,81 +1334,115 @@ def sample_journey() -> dict[str, object]:
         ],
     }
     dismissed = {**base, "keyboardVisible": False, "androidIme": {"visible": False, "imeBottomDp": 0}}
+    action_panel = {"top": 427, "bottom": 516, "left": 0, "right": 400, "width": 400, "height": 89}
+    action_row = {"top": 468, "bottom": 516, "left": 0, "right": 400, "width": 400, "height": 48}
+    composer_actions = [
+        {"action": name, "label": label, "testId": test_id, "text": label, "top": 468, "bottom": 516,
+         "left": left, "right": left + 48, "width": 48, "height": 48, "disabled": disabled,
+         "insideViewport": True, "insideComposerPanel": True, "hitTarget": not disabled}
+        for name, label, test_id, left, disabled in (
+            ("discard", "Discard", "composer-discard", 0, True),
+            ("dictate", "Dictate", "composer-dictate", 88, False),
+            ("insert", "Insert", "composer-insert", 176, True),
+            ("send", "Send", "", 264, True),
+        )
+    ]
     main_open = {
         **base,
         "homeSurface": "live",
         "keyboardComposerMode": True,
         "fastKeysPage": "main",
-        "terminalSlot": {"top": 64, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 267},
-        "mobileHotkeys": {"top": 235, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 96},
-        "catalogSheet": {"top": 283, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 48},
+        "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
+        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
+        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
         "catalogSheetModal": "false",
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
         "catalogPageAction": {"label": "Open Ctrl plus letter keys", "width": 48, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 720, "scrollLeft": 0},
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 96}},
-        "terminalViewportDockCapPx": 170,
-        "terminalHotkeysDockHeightPx": 96,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 331, "height": 96},
-        "inlineDictationMic": {**base["inlineDictationMic"], "left": 224, "right": 272},
+        "catalogTitle": {"text": "Terminal keys", "fits": True, "width": 80, "height": 18},
+        "catalogHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogHeaderControlsDoNotOverlap": True,
+        "catalogScrollerSelector": ".mobile-hotkeys__main-keys",
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
+            "clientHeight": 96, "scrollHeight": 96, "scrollTop": 0, "axis": "grid"},
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 192}},
+        "terminalViewportDockCapPx": 144,
+        "terminalHotkeysDockHeightPx": 192,
+        "inlineDictationBar": {**base["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
+        "inlineDictationMic": {**base["inlineDictationMic"], "left": 235, "right": 283},
         "navigationTargets": [
             *base["navigationTargets"][:3],
-            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 168, "right": 216},
+            {**base["navigationTargets"][3], "label": "Close terminal keys", "left": 185, "right": 233},
         ],
-        "composerPanel": {"height": 100},
+        "composerPanel": action_panel,
+        "composerActionRow": action_row,
+        "composerActions": composer_actions,
+    }
+    dictation_idle = {
+        **base,
+        "visibleTerminalRows": 6,
+        "terminalViewport": {"top": 64, "bottom": 208, "left": 0, "right": 400, "width": 400, "height": 144},
     }
     dismissed = {**main_open, "keyboardVisible": False, "androidIme": {"visible": False, "imeBottomDp": 0}}
     ctrl = {
         **base,
         "fastKeysPage": "ctrl",
-        "terminalSlot": {"top": 64, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 267},
-        "mobileHotkeys": {"top": 235, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 96},
-        "catalogSheet": {"top": 283, "bottom": 331, "left": 0, "right": 400, "width": 400, "height": 48},
+        "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
+        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
+        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
         "catalogSheetModal": "false",
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
         "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 1424, "scrollLeft": 0},
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 96}},
-        "terminalViewportDockCapPx": 170,
-        "terminalHotkeysDockHeightPx": 96,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 331, "height": 96},
-        "inlineDictationMic": {**base["inlineDictationMic"], "left": 224, "right": 272},
+        "catalogTitle": {"text": "Ctrl keys", "fits": True, "width": 60, "height": 18},
+        "catalogHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogHeaderControlsDoNotOverlap": True,
+        "catalogScrollerSelector": ".mobile-hotkeys__ctrl-grid",
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
+            "clientHeight": 96, "scrollHeight": 312, "scrollTop": 0, "axis": "vertical"},
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 192}},
+        "terminalViewportDockCapPx": 144,
+        "terminalHotkeysDockHeightPx": 192,
+        "inlineDictationBar": {**base["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
+        "inlineDictationMic": {**base["inlineDictationMic"], "left": 235, "right": 283},
         "navigationTargets": [
             *base["navigationTargets"][:3],
-            {**base["navigationTargets"][3], "label": "Close terminal hotkeys", "left": 168, "right": 216},
+            {**base["navigationTargets"][3], "label": "Close terminal keys", "left": 185, "right": 233},
         ],
-        "composerPanel": {"height": 100},
+        "composerPanel": action_panel,
+        "composerActionRow": action_row,
+        "composerActions": composer_actions,
     }
     reattached = {
-        **base,
+        **dictation_idle,
         "keyboardComposerMode": True,
-        "runtimeGeometry": {"cols": 37, "rows": 5, "cellHeight": 23.6},
+        "runtimeGeometry": {"cols": 38, "rows": 6, "cellHeight": 22.6},
     }
     dictate_text = "echo test"
     dictate_hex = dictate_text.encode("utf-8").hex()
     listening = {
-        **base,
+        **dictation_idle,
         "inlineDictationPhase": "listening",
         "inlineDictationPreview": dictate_text,
         "inlineDictationStatusText": f"Listening · {dictate_text}",
-        "inlineDictationStatusRow": {"top": 235, "bottom": 267, "left": 0, "right": 400, "width": 400, "height": 32},
+        "inlineDictationStatusRow": {"top": 203, "bottom": 235, "left": 0, "right": 400, "width": 400, "height": 32},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
+        "inlineDictationStatusInsideSheetHeader": False,
+        "dictationSheetHeader": None,
         "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
         "terminalHotkeysDockHeightPx": 80,
-        "terminalViewportDockCapPx": 170,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 315, "height": 80},
+        "terminalViewportDockCapPx": 144,
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
         "inlineDictationMic": {**base["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
-            "top": 267, "bottom": 315},
+            "top": 235, "bottom": 283},
     }
     final_pending = {
-        **base,
+        **dictation_idle,
         "inlineDictationPhase": "stopping",
         "inlineDictationPreview": dictate_text,
         "inlineDictationStatusText": f"Transcribing · {dictate_text}",
@@ -1075,13 +1453,13 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusAboveKeybar": True,
         "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
         "terminalHotkeysDockHeightPx": 80,
-        "terminalViewportDockCapPx": 170,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 315, "height": 80},
+        "terminalViewportDockCapPx": 144,
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
         "inlineDictationMic": {**base["inlineDictationMic"], "disabled": True, "micState": "transcribing",
-            "top": 267, "bottom": 315},
+            "top": 235, "bottom": 283},
     }
     final_inserted = {
-        **base,
+        **dictation_idle,
         "inlineDictationTone": "success",
         "inlineDictationStatusText": "Inserted at the cursor. Press Enter to run.",
         "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
@@ -1091,9 +1469,9 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusAboveKeybar": True,
         "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
         "terminalHotkeysDockHeightPx": 80,
-        "terminalViewportDockCapPx": 170,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 315, "height": 80},
-        "inlineDictationMic": {**base["inlineDictationMic"], "top": 267, "bottom": 315},
+        "terminalViewportDockCapPx": 144,
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
+        "inlineDictationMic": {**base["inlineDictationMic"], "top": 235, "bottom": 283},
         "terminalViewportFocused": True,
         "activeElementInsideTerminal": True,
         "activeElementIsPromptDraft": False,
@@ -1105,7 +1483,7 @@ def sample_journey() -> dict[str, object]:
         "stage": "dictation-post-stop-keyboard-input",
     }
     error = {
-        **base,
+        **dictation_idle,
         "inlineDictationTone": "error",
         "inlineDictationStatusText": "Dictation failed: network",
         "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
@@ -1115,19 +1493,19 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusAboveKeybar": True,
         "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
         "terminalHotkeysDockHeightPx": 80,
-        "terminalViewportDockCapPx": 170,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 315, "height": 80},
-        "inlineDictationMic": {**base["inlineDictationMic"], "top": 267, "bottom": 315},
+        "terminalViewportDockCapPx": 144,
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
+        "inlineDictationMic": {**base["inlineDictationMic"], "top": 235, "bottom": 283},
     }
     for status_stage in (listening, final_pending, final_inserted, post_stop, error):
         status_stage["terminalSlot"] = {
-            "top": 64, "bottom": 315, "left": 0, "right": 400, "width": 400, "height": 251,
+            "top": 64, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 219,
         }
         status_stage["mobileHotkeys"] = {
-            "top": 235, "bottom": 315, "left": 0, "right": 400, "width": 400, "height": 80,
+            "top": 203, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 80,
         }
         status_stage["navigationTargets"] = [
-            {**target, "top": 267, "bottom": 315}
+            {**target, "top": 235, "bottom": 283}
             for target in base["navigationTargets"]
         ]
     changed_target = "testuser@fixture:22/second/attach-3"
@@ -1217,6 +1595,22 @@ def sample_journey() -> dict[str, object]:
     }
     journey = {
         "androidApi": 35,
+        "narrowToolbarReachability": {
+            "clientWidth": 330,
+            "scrollWidth": 330,
+            "maxScrollLeft": 0,
+            "scrollable": False,
+            "ptyWritesBefore": 2,
+            "ptyWritesAfter": 2,
+            "targets": [
+                {"label": label, "width": 48, "height": 48, "visibleWidth": 48, "visibleHeight": 48,
+                 "hitTarget": True, "insideToolbar": True, "disabled": False}
+                for label in (
+                    "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys",
+                    "Dictate to terminal",
+                )
+            ],
+        },
         "connectToPromptMs": 1100,
         "tapToVisibleOutputMs": 80,
         "reconnectTapToVisibleOutputMs": 45,
@@ -1280,14 +1674,19 @@ def sample_journey() -> dict[str, object]:
             {"stage": "after-navigation-row-taps", **base},
             {"stage": "before-fast-keys", **base},
             {"stage": "fast-keys-main-open-ime-up", **main_open},
+            {"stage": "fast-keys-main-composer-actions-ime-up", **main_open,
+             "composerActions": [
+                 {**action, "disabled": False, "hitTarget": True}
+                 for action in composer_actions
+             ]},
             {"stage": "fast-keys-main-catalog-reachable", **main_open},
             {"stage": "fast-keys-ctrl-open-ime-up", **ctrl},
             {"stage": "fast-keys-ctrl-catalog-reachable", **ctrl},
             {"stage": "fast-keys-closed-ime-up", **base},
             {"stage": "fast-keys-open-ime-dismissed", **dismissed},
             {"stage": "fast-keys-open-ime-up-before-back", **main_open},
-            {"stage": "dictation-idle-ime-open", **base},
-            {"stage": "dictation-ready-ime-open", **base},
+            {"stage": "dictation-idle-ime-open", **dictation_idle},
+            {"stage": "dictation-ready-ime-open", **dictation_idle},
             {"stage": "dictation-listening-ime-open", **listening},
             {"stage": "dictation-final-awaiting-stopped", **final_pending},
             {"stage": "dictation-final-inserted", **final_inserted},
@@ -1297,11 +1696,168 @@ def sample_journey() -> dict[str, object]:
             {"stage": "dictation-reattached-ime-open", **dictation_reattached},
             {"stage": "dictation-background-cancel-resumed", **dictation_reattached},
             {"stage": "after-reconnect", **reattached},
-            {"stage": "reconnected-keybar-ime-up", **base},
+            {"stage": "reconnected-keybar-ime-up", **dictation_idle},
             lost,
         ],
     }
-    return with_ctrl_dictation_status(journey)
+    return with_android_dock_containment(with_ctrl_dictation_status(journey))
+
+
+def with_android_dock_containment(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied.get("geometryTrace", []):
+        if not isinstance(item, dict) or not isinstance(item.get("inlineDictationBar"), dict):
+            continue
+        page = item.get("fastKeysPage")
+        status_visible = item.get("inlineDictationStatusVisible") is True
+        viewport = item.get("terminalViewport")
+        if not isinstance(viewport, dict):
+            continue
+        cap = item.get("terminalViewportDockCapPx")
+        viewport_height = cap if isinstance(cap, (int, float)) and cap > 0 else viewport.get("height", 138)
+        viewport_top = viewport.get("top", 64)
+        viewport["height"] = viewport_height
+        viewport["bottom"] = viewport_top + viewport_height
+        if isinstance(item.get("runtimeGeometry"), dict):
+            cell_height = item["runtimeGeometry"].get("cellHeight", 23.6)
+            item["visibleTerminalRows"] = math.floor((viewport_height - 8) / cell_height)
+        top = viewport["bottom"]
+        dock_height = (MOBILE_HOTKEYS_BASE_HEIGHT_PX
+                       + (CATALOG_SHEET_HEIGHT_PX if page in {"main", "ctrl"} else 0)
+                       + (INLINE_DICTATION_STATUS_ROW_HEIGHT_PX if status_visible else 0))
+        status_top = top + 1
+        row_top = status_top + (INLINE_DICTATION_STATUS_ROW_HEIGHT_PX if status_visible else 0)
+        right = 391
+        left = 20
+        width = right - left
+        bottom = top + dock_height
+        item["mobileHotkeys"] = {
+            "top": top, "bottom": bottom, "left": left, "right": right,
+            "width": width, "height": dock_height,
+        }
+        item["terminalHotkeysDockHeightPx"] = dock_height
+        item["inlineDictationBar"] = {
+            "top": top, "bottom": bottom, "left": left, "right": right,
+            "width": width, "height": dock_height,
+        }
+        tray = item.get("fastKeysTray")
+        if isinstance(tray, dict):
+            tray["bounds"] = {
+                "top": top, "bottom": bottom, "left": left, "right": right,
+                "width": width, "height": dock_height,
+            }
+        slot = item.get("terminalSlot")
+        if isinstance(slot, dict):
+            slot_bottom = bottom + 1
+            slot["bottom"] = slot_bottom
+            slot["height"] = slot_bottom - slot.get("top", 64)
+        panel = item.get("terminalPanel")
+        if isinstance(panel, dict):
+            panel["bottom"] = bottom + 1
+            panel["height"] = panel["bottom"] - panel.get("top", 48)
+        item["terminalSlotInsideTerminalPanel"] = bool(
+            isinstance(slot, dict) and isinstance(panel, dict)
+            and slot.get("top", -1) >= panel.get("top", 0) - 0.5
+            and slot.get("bottom", 10**9) <= panel.get("bottom", 0) + 0.5
+        )
+        if isinstance(tray, dict):
+            tray["insideTerminalPanel"] = bool(
+                isinstance(panel, dict)
+                and top >= panel.get("top", 0) - 0.5
+                and bottom <= panel.get("bottom", 0) + 0.5
+            )
+        if page in {"main", "ctrl"}:
+            sheet_top = row_top + 48
+            item["catalogSheet"] = {
+                "top": sheet_top, "bottom": bottom, "left": left, "right": right,
+                "width": width, "height": 144,
+            }
+            item["catalogHeader"] = {
+                "top": sheet_top, "bottom": sheet_top + 48,
+                "left": left, "right": right, "width": width, "height": 48,
+            }
+            item["catalogScrollerBounds"] = {
+                "top": sheet_top + 48, "bottom": bottom,
+                "left": left, "right": right, "width": width, "height": bottom - sheet_top - 48,
+            }
+            item["catalogScrollerInsideSheet"] = True
+            item["catalogScrollMetrics"]["clientWidth"] = width
+            item["catalogScrollMetrics"]["scrollWidth"] = width
+        if status_visible:
+            item["inlineDictationStatusRow"] = {
+                "top": status_top, "bottom": status_top + INLINE_DICTATION_STATUS_ROW_HEIGHT_PX,
+                "left": left, "right": right, "width": width,
+                "height": INLINE_DICTATION_STATUS_ROW_HEIGHT_PX,
+            }
+            item["inlineDictationStatusAboveKeybar"] = True
+            item["inlineDictationStatusInsideSheetHeader"] = False
+        item["keybarRect"] = {
+            "top": row_top, "bottom": row_top + 48,
+            "left": left, "right": right, "width": width, "height": 48,
+        }
+        item["keybarClientRect"] = item["keybarRect"].copy()
+        item["navigationTargets"] = [
+            {**target, "left": control_left, "right": control_left + 48,
+             "top": row_top, "bottom": row_top + 48,
+             "visibleWidthInKeybar": 48, "visibleHeightInKeybar": 48}
+            for target, control_left in zip(item.get("navigationTargets", []),
+                                            (left + 8, left + 64, left + 129, left + 185))
+        ]
+        item["enterDivider"] = {
+            "left": left + 120, "right": left + 121,
+            "top": row_top + 12, "bottom": row_top + 36,
+            "width": 1, "height": 24,
+        }
+        item["inlineDictationMic"] = {
+            **item["inlineDictationMic"], "left": left + 235, "right": left + 283,
+            "top": row_top, "bottom": row_top + 48,
+            "visibleWidthInKeybar": 48, "visibleHeightInKeybar": 48,
+        }
+        item["persistentRowMetrics"] = {
+            "clientWidth": width, "scrollWidth": width, "scrollLeft": 0, "scrollable": False,
+        }
+        item["inlineDictationMicInsideBar"] = True
+        item["inlineDictationMicInsideKeybar"] = True
+        if isinstance(item.get("catalogHeader"), dict):
+            item["catalogHeaderControlsDoNotOverlap"] = True
+        if status_visible:
+            composer_top = bottom + 1
+            composer_bottom = composer_top + 80
+            visual_viewport = item.get("visualViewport")
+            if isinstance(visual_viewport, dict):
+                visual_viewport["height"] = max(visual_viewport.get("height", 0), composer_top + 80)
+            item["composerPanel"] = {
+                "top": composer_top, "bottom": composer_bottom, "left": 0, "right": 400,
+                "width": 400, "height": 80,
+            }
+            item["composerDraft"] = {
+                "top": composer_top, "bottom": composer_top + 25, "left": 1, "right": 399,
+                "width": 398, "height": 25,
+            }
+            action_row_top = composer_top + 27.5
+            action_row_bottom = action_row_top + 48
+            item["composerActionRow"] = {
+                "top": action_row_top, "bottom": action_row_bottom, "left": 0, "right": 400,
+                "width": 400, "height": 48,
+            }
+            item["composerActions"] = [
+                {"action": action, "label": label, "testId": test_id, "text": label,
+                 "top": action_row_top + (0.381 if action == "send" else 0),
+                 "bottom": action_row_bottom + (0.381 if action == "send" else 0),
+                 "left": action_left, "right": action_left + 48, "width": 48, "height": 48,
+                 "disabled": disabled, "insideViewport": True, "insideComposerPanel": True,
+                 "hitTarget": not disabled}
+                for action, label, test_id, action_left, disabled in (
+                    ("discard", "Discard", "composer-discard", 0, True),
+                    ("dictate", "Dictate", "composer-dictate", 88, False),
+                    ("insert", "Insert", "composer-insert", 176, True),
+                    ("send", "Send", "", 264, True),
+                )
+            ]
+        visual_viewport = item.get("visualViewport")
+        if isinstance(visual_viewport, dict):
+            item["imeEdgeCssY"] = visual_viewport.get("offsetTop", 0) + visual_viewport.get("height", 0)
+    return copied
 
 
 def with_changed_tray_resize(journey: dict[str, object]) -> dict[str, object]:
@@ -1312,18 +1868,109 @@ def with_changed_tray_resize(journey: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+def with_api35_extra_keyboard_row(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    keyboard = next(item for item in copied["geometryTrace"] if item["stage"] == "keyboard-up-compact-row")
+    keyboard["runtimeGeometry"]["rows"] = 7
+    return copied
+
+
+def with_api35_expanded_keyboard_viewport(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    keyboard = next(item for item in copied["geometryTrace"] if item["stage"] == "keyboard-up-compact-row")
+    viewport = keyboard["terminalViewport"]
+    viewport["height"] = 172
+    viewport["bottom"] = viewport["top"] + 172
+    keyboard["terminalViewportDockCapPx"] = 172
+    keyboard["runtimeGeometry"]["rows"] = 7
+    keyboard["visibleTerminalRows"] = math.floor((172 - 8) / keyboard["runtimeGeometry"]["cellHeight"])
+    return with_android_dock_containment(copied)
+
+
+def with_fractional_viewport_baselines(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for stage_name, viewport_height in (
+        ("before-fast-keys", 144.4),
+        ("dictation-idle-ime-open", 144.4),
+        ("dictation-ready-ime-open", 144.4),
+    ):
+        item = next(item for item in copied["geometryTrace"] if item["stage"] == stage_name)
+        viewport = item["terminalViewport"]
+        old_height = viewport["height"]
+        delta = viewport_height - old_height
+        viewport["height"] = viewport_height
+        viewport["bottom"] = viewport["top"] + viewport_height
+        cell_height = item["runtimeGeometry"]["cellHeight"]
+        item["visibleTerminalRows"] = math.floor((viewport_height - 8) / cell_height)
+        if abs(delta) > 0.001:
+            for field in ("terminalSlot", "terminalPanel", "mobileHotkeys", "catalogSheet", "catalogHeader",
+                          "catalogScrollerBounds", "inlineDictationBar", "enterDivider",
+                          "inlineDictationStatusRow", "keybarRect", "keybarClientRect", "inlineDictationMic"):
+                rect = item.get(field)
+                if isinstance(rect, dict):
+                    for edge in ("top", "bottom"):
+                        if isinstance(rect.get(edge), (int, float)):
+                            rect[edge] += delta
+            tray_bounds = item.get("fastKeysTray", {}).get("bounds")
+            if isinstance(tray_bounds, dict):
+                for edge in ("top", "bottom"):
+                    tray_bounds[edge] += delta
+            for field in ("navigationTargets",):
+                for rect in item.get(field, []):
+                    if isinstance(rect, dict):
+                        for edge in ("top", "bottom"):
+                            if isinstance(rect.get(edge), (int, float)):
+                                rect[edge] += delta
+    return copied
+
+
+def with_ceil_cap_for_fractional_viewport(journey: dict[str, object], stage_name: str) -> dict[str, object]:
+    copied = with_fractional_viewport_baselines(journey)
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == stage_name)
+    item["terminalViewportDockCapPx"] = 139
+    return copied
+
+
+def with_fractional_terminal_panel_overflow(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
+    item["terminalPanel"]["bottom"] = item["fastKeysTray"]["bounds"]["bottom"] - 0.619
+    return copied
+
+
+def with_ctrl_listening_terminal_slot_outside_panel(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ctrl-open-ime-open")
+    panel = item["terminalPanel"]
+    slot = item["terminalSlot"]
+    slot["bottom"] = panel["bottom"] + 10.333
+    slot["height"] = slot["bottom"] - slot["top"]
+    item["terminalSlotInsideTerminalPanel"] = False
+    return copied
+
+
+def with_fractional_catalog_scroller_overflow(
+    journey: dict[str, object], overflow_px: float = 0.619,
+) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
+    item["catalogScrollerBounds"]["bottom"] = item["catalogSheet"]["bottom"] + overflow_px
+    return copied
+
+
 def with_receiver_setup_resize_events(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     ready = next(item for item in copied["geometryTrace"] if item["stage"] == "dictation-ready-ime-open")
     fit_events = []
     ack_events = []
-    dimensions = ((50, 19), (49, 24), (50, 20))
+    dimensions = ((38, 5), (39, 7), (38, 6))
     for index, (cols, rows) in enumerate(dimensions):
         request_id = 101 + index
         at_ms = 10.0 + index * 2
         fit_events.append({
             "atMs": at_ms, "marker": "send-receiver-command:fixture", "reason": "resize-observer",
-            "cols": cols, "rows": rows, "requestId": request_id, "hostWidth": 400, "hostHeight": 170,
+            "cols": cols, "rows": rows, "requestId": request_id, "hostWidth": 400, "hostHeight": 138,
         })
         ack_events.append({
             "atMs": at_ms + 1, "marker": "send-receiver-command:fixture", "requestId": request_id,
@@ -1367,6 +2014,16 @@ def with_intersecting_tray(journey: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+def with_terminal_viewport_overlap(journey: dict[str, object], overlap_px: float) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "fast-keys-main-open-ime-up")
+    bounds = item["fastKeysTray"]["bounds"]
+    bounds["top"] = item["terminalViewport"]["bottom"] - overlap_px
+    bounds["bottom"] -= overlap_px
+    return copied
+
+
 def with_intersecting_composer(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
@@ -1387,7 +2044,23 @@ def with_non_scrollable_catalog_sheet(journey: dict[str, object]) -> dict[str, o
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
         if item["stage"] == "fast-keys-ctrl-open-ime-up":
-            item["catalogScrollMetrics"]["scrollWidth"] = item["catalogScrollMetrics"]["clientWidth"]
+            item["catalogScrollMetrics"]["scrollHeight"] = item["catalogScrollMetrics"]["clientHeight"]
+    return copied
+
+
+def with_clipped_catalog_title(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "fast-keys-main-open-ime-up":
+            item["catalogTitle"]["fits"] = False
+    return copied
+
+
+def with_overlapping_catalog_header(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "fast-keys-main-open-ime-up":
+            item["catalogHeaderControlsDoNotOverlap"] = False
     return copied
 
 
@@ -1409,12 +2082,37 @@ def with_missing_dictation_mic(journey: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+def with_visible_dictation_caption(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item.get("stage") == "dictation-listening-ime-open":
+            item["inlineDictationMic"]["visibleLabel"] = "Stop"
+    return copied
+
+
 def with_far_right_dictation_mic(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
         if item["stage"] == "dictation-idle-ime-open":
             item["inlineDictationMic"]["left"] = item["mobileHotkeys"]["right"] - 48
             item["inlineDictationMic"]["right"] = item["mobileHotkeys"]["right"]
+    return copied
+
+
+def with_missing_enter_divider(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item.get("stage") == "fast-keys-main-open-ime-up":
+            item["enterDivider"] = None
+    return copied
+
+
+def with_live_row_overflow(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "dictation-idle-ime-open":
+            item["persistentRowMetrics"]["scrollWidth"] = item["persistentRowMetrics"]["clientWidth"] + 6
+            item["persistentRowMetrics"]["scrollable"] = True
     return copied
 
 
@@ -1465,40 +2163,107 @@ def with_under_reserved_terminal_slot(journey: dict[str, object]) -> dict[str, o
     return copied
 
 
+def with_composer_action_gap(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "fast-keys-main-composer-actions-ime-up":
+            item["composerActionRow"]["bottom"] = item["visualViewport"]["height"] - 3
+    return copied
+
+
+def with_ctrl_dictation_action_gap(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ctrl-open-ime-open")
+    item["composerActionRow"]["bottom"] = item["visualViewport"]["height"] - 3
+    return copied
+
+
+def with_short_status_composer_draft(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ime-open")
+    item["composerDraft"]["height"] = 24
+    return copied
+
+
+def with_short_status_action_gap(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ime-open")
+    draft_bottom = item["composerDraft"]["bottom"]
+    row_top = draft_bottom + 1.5
+    row_bottom = row_top + 48
+    item["composerActionRow"]["top"] = row_top
+    item["composerActionRow"]["bottom"] = row_bottom
+    for action in item["composerActions"]:
+        action["top"] = row_top
+        action["bottom"] = row_bottom
+    return copied
+
+
+def with_status_send_target_ime_gap(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ime-open")
+    row = item["composerActionRow"]
+    edge = item["imeEdgeCssY"]
+    row["bottom"] = edge - 4
+    row["height"] = row["bottom"] - row["top"]
+    for action in item["composerActions"]:
+        action["bottom"] = row["bottom"]
+        action["top"] = action["bottom"] - 48
+    send = next(action for action in item["composerActions"] if action["action"] == "send")
+    send["bottom"] = edge - 3.619
+    send["top"] = send["bottom"] - 48
+    return copied
+
+
+def with_status_cap_reclaim(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"]
+                if item["stage"] == "dictation-listening-ime-open")
+    item["terminalViewportDockCapPx"] = 138
+    item["terminalViewport"]["height"] = 138
+    item["terminalViewport"]["bottom"] = item["terminalViewport"]["top"] + 138
+    item["visibleTerminalRows"] = math.floor((138 - 8) / item["runtimeGeometry"]["cellHeight"])
+    return copied
+
+
 def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     ctrl = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-ctrl-open-ime-up")
     copied["geometryTrace"].append({
         **ctrl,
         "stage": "dictation-listening-ctrl-open-ime-open",
-        "mobileHotkeys": {"top": 235, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 128},
-        "catalogSheet": {"top": 315, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 48},
+        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
+        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
         "catalogSheetModal": "false",
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
         "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 1424, "scrollLeft": 0},
-        "terminalHotkeysDockHeightPx": 128,
-        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 128}},
-        "terminalSlot": {"top": 64, "bottom": 363, "left": 0, "right": 400, "width": 400, "height": 299},
-        "inlineDictationBar": {**ctrl["inlineDictationBar"], "bottom": 363, "height": 128},
-        "navigationTargets": [
-            {**target, "top": 267, "bottom": 315}
-            for target in ctrl["navigationTargets"]
-        ],
+        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
+            "clientHeight": 96, "scrollHeight": 312, "scrollTop": 0, "axis": "vertical"},
+        "terminalViewportDockCapPx": 144,
+        "terminalHotkeysDockHeightPx": 192,
+        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 192}},
+        "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
+        "inlineDictationBar": {**ctrl["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
+        "dictationSheetHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
         "inlineDictationPhase": "listening",
         "inlineDictationTone": "quiet",
         "inlineDictationStatusText": "Listening · echo test",
         "inlineDictationPreview": "echo test",
-        "inlineDictationStatusRow": {"top": 235, "bottom": 267, "left": 0, "right": 400, "width": 400, "height": 32},
+        "inlineDictationStatusRow": {"top": 262, "bottom": 288, "left": 89, "right": 336, "width": 247, "height": 26},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
-        "inlineDictationStatusAboveKeybar": True,
+        "inlineDictationStatusAboveKeybar": False,
+        "inlineDictationStatusInsideSheetHeader": True,
         "inlineDictationMic": {
             **ctrl["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
-            "top": 267, "bottom": 315, "left": 224, "right": 272,
+            "top": 203, "bottom": 251, "left": 235, "right": 283,
         },
     })
     return copied

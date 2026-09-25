@@ -62,15 +62,29 @@ describe('mobile fast-key behavior', () => {
   });
 
   it('renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page', async () => {
-    const mounted = mountMobileHotkeys();
+      const mounted = mountMobileHotkeys();
     try {
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')).toBeUndefined();
+      const launcher = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' });
+      expect(launcher.props['aria-label']).toBe('More terminal keys');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-enter-divider')).toBeDefined();
+      const navigationParts = findAll(findByTestId(mounted.root, 'mobile-hotkeys-navigation')!, (node) =>
+        node.props['data-testid'] === 'mobile-hotkeys-enter-divider'
+        || (node.tag === 'button' && typeof node.props['data-key-id'] === 'string'));
+      expect(navigationParts.map((node) => node.props['data-key-id'] ?? node.props['data-testid']))
+        .toEqual(['arrow-up', 'arrow-down', 'mobile-hotkeys-enter-divider', 'enter']);
       click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));
       await nextTick();
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }).props['aria-label'])
+        .toBe('Close terminal keys');
 
       const sheet = findByTestId(mounted.root, 'mobile-hotkeys-sheet');
       if (!sheet) throw new Error('The on-demand key catalog sheet did not mount');
       expect(sheet.props).toMatchObject({ role: 'dialog', 'aria-modal': 'false' });
+      expect(sheet.props['aria-labelledby']).toBe('mobile-hotkeys-main-title');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Terminal keys');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.props.class).toBe('mobile-hotkeys__sheet-title');
       expect(findAll(mounted.root, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string'))
         .toHaveLength(3 + HOTKEY_PALETTE_MAIN_SECTIONS.reduce((count, section) => count + section.keys.length, 0));
 
@@ -80,24 +94,67 @@ describe('mobile fast-key behavior', () => {
         role: 'group',
         'aria-label': 'Common terminal keys',
       });
-      const sections = findAll(mainPage, (node) => typeof node.props['data-key-section'] === 'string');
-      expect(sections.map((section) => section.props['data-key-section']))
-        .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.map((section) => section.title));
-      expect(sections.flatMap((section) => findAll(section, (node) => node.tag === 'button'
-        && typeof node.props['data-key-id'] === 'string').map((node) => node.props['data-key-id'])))
+      expect(mainPage.props.class).toContain('mobile-hotkeys__main-keys');
+      const mainKeys = findAll(mainPage, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string');
+      expect(mainKeys.map((key) => key.props['data-key-id']))
         .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map((key) => key.id)));
+      expect(mainKeys.map((key) => key.props['data-key-section']))
+        .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map(() => section.title)));
 
       click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
       await nextTick();
 
       const ctrlPage = findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page');
       if (!ctrlPage) throw new Error('The Ctrl key page did not mount');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')?.props['aria-labelledby'])
+        .toBe('mobile-hotkeys-ctrl-title');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Ctrl keys');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.props.class).toBe('mobile-hotkeys__sheet-title');
       const ctrlIds = findAll(ctrlPage, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string')
         .map((node) => node.props['data-key-id']);
       expect(ctrlIds).toEqual(HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row.map((key) => key.id)));
       expect(findAll(ctrlPage, (node) => node.props.role === 'group' && typeof node.props['aria-label'] === 'string')
         .map((row) => row.props['aria-label']))
         .toEqual(HOTKEY_CTRL_PAGE_ROWS.map((_, index) => `Ctrl key row ${index + 1}`));
+    } finally {
+      mounted.app.unmount();
+    }
+  });
+
+  it('keeps active dictation status above the persistent controls on both catalog pages', async () => {
+    const mounted = mountMobileHotkeys(false, true, true);
+    try {
+      const dock = findByTestId(mounted.root, 'inline-dictation-bar');
+      const closedDockChildren = dock?.children.filter((child) => 'tag' in child).map((child) => child.props.class);
+      expect(closedDockChildren).toEqual([
+        'mobile-hotkeys__dictation-status-row',
+        'mobile-hotkeys__bar',
+      ]);
+      const statusRow = findByTestId(mounted.root, 'inline-dictation-status-row');
+      expect(statusRow?.parent).toBe(dock);
+      expect(findByTestId(mounted.root, 'inline-dictation-status')?.props).toMatchObject({
+        role: 'status', 'aria-live': 'polite',
+      });
+      expect(findByTestId(mounted.root, 'inline-dictation-mode-selector')).toBeUndefined();
+
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));
+      await nextTick();
+      const dockChildren = dock?.children.filter((child) => 'tag' in child).map((child) => child.props.class);
+      expect(dockChildren).toEqual([
+        'mobile-hotkeys__dictation-status-row',
+        'mobile-hotkeys__bar',
+        'mobile-hotkeys__sheet',
+      ]);
+      const sheetHeader = findByTestId(mounted.root, 'mobile-hotkeys-sheet')?.children
+        .find((child) => 'tag' in child && child.props.class === 'mobile-hotkeys__sheet-header');
+      if (!sheetHeader || !('tag' in sheetHeader)) throw new Error('Catalog header disappeared');
+      expect(sheetHeader?.children).not.toContain(statusRow);
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-navigation')).toBeDefined();
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
+      await nextTick();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page')).toBeDefined();
+      expect(findByTestId(mounted.root, 'inline-dictation-preview')?.text).toBe('git status');
+      expect(mounted.sent).toEqual([]);
     } finally {
       mounted.app.unmount();
     }
@@ -200,7 +257,7 @@ describe('mobile fast-key behavior', () => {
       click(findButton(mounted.root, { 'aria-label': 'Back to terminal hotkeys' }));
       await nextTick();
       expect(findByTestId(mounted.root, 'mobile-hotkeys-main-page')).toBeDefined();
-      click(findButton(mounted.root, { 'aria-label': 'Close terminal hotkeys' }));
+      click(findButton(mounted.root, { 'aria-label': 'Close terminal keys' }));
       await nextTick();
 
       expect(mounted.paletteChanges).toEqual([true, false]);
@@ -320,7 +377,7 @@ const renderer = createRenderer<TestNode, TestElement>({
   },
 });
 
-function mountMobileHotkeys(withPersistentSlots = false) {
+function mountMobileHotkeys(withPersistentSlots = false, dictationAvailable = false, activeDictationStatus = false) {
   const root: TestElement = {
     tag: 'root', props: {}, children: [], parent: null, text: '', setPointerCapture: () => {},
   };
@@ -330,6 +387,13 @@ function mountMobileHotkeys(withPersistentSlots = false) {
   const Host = defineComponent({
     setup: () => () => h(MobileHotkeys, {
       enabled: enabled.value,
+      dictationAvailable,
+      dictationState: activeDictationStatus ? {
+        phase: 'listening',
+        preview: 'git status',
+        message: '',
+        tone: 'quiet',
+      } : undefined,
       holdThresholdMs: 500,
       onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
       onPaletteChange: (open: boolean) => paletteChanges.push(open),

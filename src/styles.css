@@ -173,22 +173,7 @@ button { color: inherit; }
   overflow: hidden;
 }
 .live-workspace .terminal-slot--hotkeys {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 48px);
-}
-.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-main {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 96px);
-}
-.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 96px);
-}
-.live-workspace .terminal-slot--hotkeys.terminal-slot--dictation-status {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 80px);
-}
-.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-main.terminal-slot--dictation-status {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 128px);
-}
-.live-workspace .terminal-slot--hotkeys.terminal-slot--fast-keys-ctrl.terminal-slot--dictation-status {
-  min-height: calc(var(--terminal-min-grid-height, 110px) + 128px);
+  min-height: calc(var(--terminal-min-grid-height, 110px) + var(--terminal-hotkeys-dock-height, 48px));
 }
 .live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
 .live-workspace .terminal-slot > .terminal-viewport {
@@ -274,34 +259,37 @@ button { color: inherit; }
   flex: 0 0 48px;
   align-items: center;
   justify-content: center;
-  gap: 0;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--r-md);
-  background: var(--surface-2);
+  background: transparent;
   padding: 0;
-  color: var(--fg);
-  font-size: var(--fs-100);
-  font-weight: 600;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.terminal-dictation-button svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
-.terminal-dictation-button--listening:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--surface-2);
+.terminal-dictation-button svg { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.terminal-dictation-button:hover:not(:disabled) { background: var(--state-hover); color: var(--fg); }
+.terminal-dictation-button[data-mic-state="starting"],
+.terminal-dictation-button[data-mic-state="listening"] {
+  background: var(--state-selected);
   color: var(--accent);
-  box-shadow: none;
 }
-.terminal-dictation-button--transcribing:not(:disabled) {
-  border-color: var(--warning);
-  background: var(--surface-2);
+.terminal-dictation-button[data-mic-state="transcribing"] {
+  background: var(--state-selected);
   color: var(--warning);
-  box-shadow: none;
+}
+.terminal-dictation-button[data-mic-state="error"] {
+  background: var(--state-selected);
+  color: var(--error);
 }
 .terminal-dictation-button:disabled {
-  border-color: transparent;
-  background: var(--surface-2);
+  background: transparent;
   color: var(--fg-muted);
   opacity: 1;
-  box-shadow: none;
+}
+.terminal-dictation-button:disabled[data-mic-state="transcribing"] {
+  background: var(--state-selected);
+  color: var(--warning);
 }
 .composer-panel { display: grid; gap: 10px; }
 .composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -592,7 +580,15 @@ button { color: inherit; }
   .app-shell[data-keyboard-composer-mode="true"] .session-context__host { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .workspace-nav-button { width: 48px; min-width: 48px; height: 48px; }
   .app-shell[data-keyboard-composer-mode="true"] .home-screen--workspace { gap: 5px; padding: 4px 7px 3px; }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .home-screen--workspace {
+    padding-top: 0;
+  }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace { gap: 5px; }
+  .app-shell[data-keyboard-visible="true"][data-keyboard-composer-mode="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace {
+    /* The slot already budgets the full viewport and dock; give that space to
+       the terminal panel instead of leaving a gap that clips the dock. */
+    gap: 0;
+  }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-heading--terminal { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-viewport {
@@ -642,8 +638,8 @@ button { color: inherit; }
 }
 
 @media (max-width: 719px) {
-  /* Catalog rows and active inline status grow the in-flow dock. Compact the
-     composer while these states are visible so xterm keeps its accepted grid. */
+  /* Inline dictation adds one 16px status line above the existing terminal
+     controls. The composer gives up that row only while status is visible. */
   .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
     height: 100px;
     min-height: 100px;
@@ -652,6 +648,17 @@ button { color: inherit; }
     gap: 4px;
     overflow: hidden;
     padding: 0;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace .terminal-panel {
+    padding-top: 0;
+    padding-bottom: 1px;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace .panel-heading--terminal {
+    display: none;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
+    gap: 0;
+    padding-bottom: 4px;
   }
   .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-heading,
   .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-status { display: none; }
@@ -682,7 +689,7 @@ button { color: inherit; }
     gap: 2px;
   }
   .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace {
-    gap: 1px;
+    gap: 0;
   }
   .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace .terminal-panel {
     gap: 1px;
@@ -703,12 +710,24 @@ button { color: inherit; }
   .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .home-screen--workspace {
     padding-block: 0;
   }
-  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace > .composer-panel {
-    height: 96px;
-    min-height: 96px;
-    max-height: 96px;
-    flex: 0 0 96px;
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace > .composer-panel {
+    height: 80px;
+    min-height: 80px;
+    max-height: 80px;
+    flex: 0 0 80px;
     gap: 0;
+    padding: 0;
+  }
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace .composer-draft {
+    height: 25px;
+    min-height: 25px;
+    max-height: 25px;
+    padding: 2px 8px;
+    font: 14px/20px var(--font-mono);
+    resize: none;
+  }
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace .composer-actions {
+    margin-top: -2px;
   }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .terminal-viewport {
     height: var(--terminal-viewport-dock-cap);
@@ -717,9 +736,10 @@ button { color: inherit; }
     flex: 0 0 var(--terminal-viewport-dock-cap);
   }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid {
+    /* Keep a one-pixel trailing containment slot after the dock. */
     min-height: calc(var(--terminal-viewport-dock-cap) + var(--terminal-hotkeys-dock-height) + 1px);
   }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .mobile-hotkeys {
-    margin-top: 1px;
+    margin-top: 0;
   }
 }
