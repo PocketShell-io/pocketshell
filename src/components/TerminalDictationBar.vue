@@ -79,14 +79,6 @@ function toggleDictation() {
   }
 }
 
-const buttonText = () => {
-  if (state.value.phase === 'starting') return 'Cancel terminal dictation';
-  if (state.value.phase === 'listening') return 'Stop terminal dictation';
-  if (state.value.phase === 'stopping' || state.value.phase === 'cancelling') return 'Transcribing terminal speech';
-  if (state.value.phase === 'inserting') return 'Inserting terminal speech';
-  return 'Dictate to terminal';
-};
-
 const buttonDisabled = () => !props.enabled
   || !props.targetKey
   || ['stopping', 'cancelling', 'inserting'].includes(state.value.phase);
@@ -99,21 +91,26 @@ const buttonLabel = () => {
   if (buttonDisabled()) return 'Terminal dictation unavailable';
   return 'Dictate to terminal';
 };
+
+const buttonState = () => {
+  if (state.value.phase === 'listening') return 'listening';
+  if (state.value.phase === 'starting') return 'starting';
+  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'transcribing';
+  if (state.value.tone === 'error') return 'error';
+  return buttonDisabled() ? 'disabled' : 'idle';
+};
 </script>
 
 <template>
   <button
     class="terminal-dictation-button"
-    :class="{
-      'terminal-dictation-button--listening': state.phase === 'listening',
-      'terminal-dictation-button--transcribing': ['stopping', 'inserting'].includes(state.phase),
-    }"
     type="button"
     data-testid="inline-dictation-toggle"
-    :data-mic-state="state.phase === 'listening' ? 'listening' : ['stopping', 'inserting'].includes(state.phase) ? 'transcribing' : buttonDisabled() ? 'disabled' : 'idle'"
+    :data-mic-state="buttonState()"
     :aria-label="buttonLabel()"
     :title="buttonLabel()"
     :aria-pressed="state.phase === 'listening'"
+    :aria-busy="['stopping', 'cancelling', 'inserting'].includes(state.phase)"
     :disabled="buttonDisabled()"
     @click="toggleDictation"
   >
@@ -122,6 +119,5 @@ const buttonLabel = () => {
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <path d="M12 19v3M8 22h8" />
     </svg>
-    <span class="sr-only">{{ buttonText() }}</span>
   </button>
 </template>

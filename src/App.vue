@@ -123,8 +123,11 @@ const promptComposerHasFocus = ref(false);
 const mobileHotkeysHasFocus = ref(false);
 const terminalViewportHasFocus = ref(false);
 const terminalViewportDockCapPx = ref<number | null>(null);
+const terminalViewportDockBaseCapPx = ref<number | null>(null);
 const mobileHotkeysPaletteOpen = ref(false);
 const mobileHotkeysPage = ref<'main' | 'ctrl'>('main');
+const inlineDictationStatusRowHeightPx = 16;
+const terminalViewportDockPreferredCapPx = 144;
 const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
@@ -201,23 +204,38 @@ const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 
     && inlineDictationState.value.message !== 'Tap the microphone to dictate at the terminal cursor.')
 ));
 const mobileHotkeysDockHeight = computed(() => {
-  const catalogHeight = mobileHotkeysPaletteOpen.value ? 48 : 0;
-  return 48 + catalogHeight + (inlineDictationStatusVisible.value ? 32 : 0);
+  const dictationStatusRowHeight = Capacitor.getPlatform() === 'android' && inlineDictationStatusVisible.value
+    ? inlineDictationStatusRowHeightPx
+    : 0;
+  const catalogHeight = mobileHotkeysPaletteOpen.value ? 144 : 0;
+  const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
+  return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
 });
 watch(
-  () => [keyboardVisible.value, mobileHotkeysPaletteOpen.value, inlineDictationStatusVisible.value] as const,
-  ([imeOpen, paletteOpen, dictationStatusOpen]) => {
-    if (!paletteOpen && !dictationStatusOpen) {
+  () => [keyboardVisible.value, keyboardComposerMode.value, mobileHotkeysPaletteOpen.value,
+    inlineDictationStatusVisible.value] as const,
+  ([imeOpen, keyboardMode, paletteOpen, dictationStatusOpen]) => {
+    const androidKeyboardUp = Capacitor.getPlatform() === 'android' && imeOpen && keyboardMode;
+    if (!paletteOpen && !dictationStatusOpen && !androidKeyboardUp) {
       terminalViewportDockCapPx.value = null;
+      terminalViewportDockBaseCapPx.value = null;
       return;
     }
-    if (!imeOpen || terminalViewportDockCapPx.value !== null) return;
-    // Capture before Vue applies the larger in-flow dock. Keeping this viewport
-    // height fixed lets the composer give space to the dock without refitting
-    // xterm to a different SSH PTY grid.
-    const viewport = document.querySelector<HTMLElement>('.terminal-slot > .terminal-viewport');
-    const height = viewport?.getBoundingClientRect().height ?? 0;
-    if (height > 0) terminalViewportDockCapPx.value = Math.ceil(height);
+    if (!imeOpen) return;
+    // Establish the accepted Android terminal grid as soon as the keyboard-up
+    // composer is active, before a fast-key catalog or dictation status opens.
+    // A smaller measured viewport wins; larger API 35 viewports stay capped at
+    // the approved 144px/38×6 budget across dock, status, and reattach states.
+    if (terminalViewportDockBaseCapPx.value === null) {
+      const viewport = document.querySelector<HTMLElement>('.terminal-slot > .terminal-viewport');
+      const height = viewport?.getBoundingClientRect().height ?? 0;
+      if (height > 0) {
+        terminalViewportDockBaseCapPx.value = Math.min(terminalViewportDockPreferredCapPx, Math.floor(height));
+      }
+    }
+    if (terminalViewportDockBaseCapPx.value !== null) {
+      terminalViewportDockCapPx.value = terminalViewportDockBaseCapPx.value;
+    }
   },
   { flush: 'sync' },
 );
