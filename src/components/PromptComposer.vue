@@ -13,6 +13,8 @@ const props = defineProps<{
   targetKey: string;
   targetLabel: string;
   transportState: 'connected' | 'lost' | 'closed';
+  dictationLanguageTag: string;
+  dictationSilenceWindowMs: number;
   writePty: PtyWriteEffect;
 }>();
 
@@ -168,6 +170,10 @@ async function toggleDictation() {
   try {
     const session = await platformInput.startDictation(
       (event) => handleDictationEvent(targetKey, event),
+      {
+        languageTag: props.dictationLanguageTag,
+        silenceWindowMs: props.dictationSilenceWindowMs,
+      },
     );
     dictationSession = session;
     dictationStarting.value = false;
@@ -293,6 +299,8 @@ function discardDraft() {
       <button class="composer-insert" type="button" data-testid="composer-dictate"
         :disabled="dictationStarting || sendingIntent !== null || !targetKey"
         :aria-pressed="dictationActive"
+        :aria-label="dictationActive ? 'Stop prompt dictation' : 'Dictate into prompt draft'"
+        :title="dictationActive ? 'Stop prompt dictation' : 'Dictate into prompt draft'"
         @click="toggleDictation">{{ dictationStarting ? 'Starting…' : dictationActive ? 'Stop dictation' : 'Dictate' }}</button>
       <button class="composer-insert" type="button" data-testid="composer-insert" :disabled="!canDeliver"
         @click="deliver('insert')">Insert</button>

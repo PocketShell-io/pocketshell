@@ -1,6 +1,7 @@
 import { createRenderer, getCurrentInstance, h, ssrContextKey } from 'vue';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { useComposerDrafts } from '../../src/stores/composerDrafts';
 
 const mocks = vi.hoisted(() => ({
   appStateListener: undefined as ((state: { isActive: boolean }) => void) | undefined,
@@ -15,6 +16,8 @@ vi.mock('../../src/session/platformInput', () => ({
 }));
 
 import PromptComposer from '../../src/components/PromptComposer.vue';
+
+let renderedSetupState: Record<string, unknown> | undefined;
 
 interface HostNode {
   type: string;
@@ -72,6 +75,7 @@ const mountedPromptComposer = {
   ...PromptComposer,
   render() {
     const internalInstance = getCurrentInstance() as unknown as { setupState?: Record<string, unknown> } | null;
+    renderedSetupState = internalInstance?.setupState;
     const toggleDictation = internalInstance?.setupState?.toggleDictation as (() => Promise<void>) | undefined;
     return h('button', {
       'data-testid': 'composer-dictate',
@@ -94,10 +98,12 @@ async function flushPromises() {
   await Promise.resolve();
 }
 
-describe('pending dictation start cancellation', () => {
+describe('prompt composer dictation', () => {
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     mocks.appStateListener = undefined;
+    renderedSetupState = undefined;
   });
 
   it('stops a pending start once when the mounted composer backgrounds', async () => {
@@ -146,6 +152,115 @@ describe('pending dictation start cancellation', () => {
     await starting;
 
     expect(stop).toHaveBeenCalledTimes(1);
+    app.unmount();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts with saved Voice settings, appends recognition to the draft, and leaves it editable after stop', async () => {
+    mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
+      mocks.appStateListener = listener;
+      return { remove: vi.fn(async () => {}) };
+    });
+
+    const pinia = createPinia();
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft('host/session', 'review the deployment');
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const stop = vi.fn(async () => {
+      dictationEvent?.({ requestId: 'dictation-live', type: 'result', text: 'and report failures' });
+      dictationEvent?.({ requestId: 'dictation-live', type: 'stopped' });
+    });
+    mocks.startDictation.mockImplementation(async (onEvent: typeof dictationEvent) => {
+      dictationEvent = onEvent;
+      return { requestId: 'dictation-live', stop };
+    });
+
+    const root = node('root');
+    const app = renderer.createApp(mountedPromptComposer, {
+      targetKey: 'host/session',
+      targetLabel: 'session',
+      transportState: 'connected',
+      dictationLanguageTag: 'de-DE',
+      dictationSilenceWindowMs: 9_000,
+      writePty: vi.fn(async () => ({ ok: true })),
+    });
+    app.use(pinia);
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+
+    const dictate = findByTestId(root, 'composer-dictate');
+    const onClick = dictate?.props.onClick as (() => Promise<void>) | undefined;
+    expect(onClick).toBeTypeOf('function');
+    await onClick?.();
+
+    expect(mocks.startDictation).toHaveBeenCalledWith(expect.any(Function), {
+      languageTag: 'de-DE',
+      silenceWindowMs: 9_000,
+    });
+    dictationEvent?.({ requestId: 'dictation-live', type: 'partial', text: 'and report' });
+    expect(drafts.draftFor('host/session')).toBe('review the deployment and report');
+    expect(renderedSetupState?.dictationActive).toBe(true);
+
+    await onClick?.();
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(drafts.draftFor('host/session')).toBe('review the deployment and report failures');
+    expect(renderedSetupState?.dictationActive).toBe(false);
+
+    class TextAreaStub { value = 'review the deployment and report failures, then summarize'; }
+    vi.stubGlobal('HTMLTextAreaElement', TextAreaStub);
+    const setDraft = renderedSetupState?.setDraft as ((event: Event) => void) | undefined;
+    setDraft?.({ target: new TextAreaStub() } as unknown as Event);
+    expect(drafts.draftFor('host/session')).toBe('review the deployment and report failures, then summarize');
+
+    app.unmount();
+  });
+
+  it('stops active recognition on background and retains its latest partial in the session draft', async () => {
+    mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
+      mocks.appStateListener = listener;
+      return { remove: vi.fn(async () => {}) };
+    });
+    const pinia = createPinia();
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft('host/session', 'inspect');
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const stop = vi.fn(async () => {
+      dictationEvent?.({ requestId: 'dictation-background', type: 'stopped' });
+    });
+    mocks.startDictation.mockImplementation(async (onEvent: typeof dictationEvent) => {
+      dictationEvent = onEvent;
+      return { requestId: 'dictation-background', stop };
+    });
+
+    const root = node('root');
+    const app = renderer.createApp(mountedPromptComposer, {
+      targetKey: 'host/session',
+      targetLabel: 'session',
+      transportState: 'connected',
+      dictationLanguageTag: 'auto',
+      dictationSilenceWindowMs: 4_000,
+      writePty: vi.fn(async () => ({ ok: true })),
+    });
+    app.use(pinia);
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+
+    const dictate = findByTestId(root, 'composer-dictate');
+    const onClick = dictate?.props.onClick as (() => Promise<void>) | undefined;
+    await onClick?.();
+    expect(mocks.startDictation).toHaveBeenCalledWith(expect.any(Function), {
+      languageTag: 'auto',
+      silenceWindowMs: 4_000,
+    });
+    dictationEvent?.({ requestId: 'dictation-background', type: 'partial', text: 'the service logs' });
+    mocks.appStateListener?.({ isActive: false });
+    await flushPromises();
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(renderedSetupState?.dictationActive).toBe(false);
+    expect(drafts.draftFor('host/session')).toBe('inspect the service logs');
     app.unmount();
     expect(stop).toHaveBeenCalledTimes(1);
   });

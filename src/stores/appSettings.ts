@@ -1,5 +1,10 @@
 import { defineStore } from 'pinia';
 import { parseFontSize, parseThemeChoice, THEME_CHOICE_DEFAULT } from '@pocketshell/ui';
+import {
+  DEFAULT_SPEECH_SILENCE_WINDOW_MS,
+  sanitizeLanguageTag,
+  sanitizeSilenceWindowMs,
+} from '../native/speechRecognition';
 
 export const SETTINGS_STORAGE_KEY = 'pocketshell.js.settings.v1';
 
@@ -13,12 +18,16 @@ export interface AppSettings {
   themeChoice: string;
   terminalFontSize: number;
   backgroundGraceMs: number;
+  dictationLanguageTag: string;
+  dictationSilenceWindowMs: number;
 }
 
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   themeChoice: THEME_CHOICE_DEFAULT,
   terminalFontSize: 16,
   backgroundGraceMs: 90_000,
+  dictationLanguageTag: 'auto',
+  dictationSilenceWindowMs: DEFAULT_SPEECH_SILENCE_WINDOW_MS,
 };
 
 export interface SettingsStorage {
@@ -47,6 +56,8 @@ export function parseAppSettings(raw: unknown): AppSettings {
     backgroundGraceMs: isGracePeriod(input.backgroundGraceMs)
       ? input.backgroundGraceMs
       : DEFAULT_APP_SETTINGS.backgroundGraceMs,
+    dictationLanguageTag: sanitizeLanguageTag(input.dictationLanguageTag) ?? DEFAULT_APP_SETTINGS.dictationLanguageTag,
+    dictationSilenceWindowMs: sanitizeSilenceWindowMs(input.dictationSilenceWindowMs),
   };
 }
 
@@ -87,6 +98,17 @@ export const useAppSettings = defineStore('appSettings', {
     setBackgroundGraceMs(milliseconds: unknown) {
       if (!isGracePeriod(milliseconds)) return;
       this.backgroundGraceMs = milliseconds;
+      this.persist();
+    },
+    setDictationLanguageTag(languageTag: unknown) {
+      const parsed = sanitizeLanguageTag(languageTag);
+      if (parsed === undefined) return;
+      this.dictationLanguageTag = parsed;
+      this.persist();
+    },
+    setDictationSilenceWindowMs(milliseconds: unknown) {
+      if (typeof milliseconds !== 'number' || !Number.isFinite(milliseconds)) return;
+      this.dictationSilenceWindowMs = sanitizeSilenceWindowMs(milliseconds);
       this.persist();
     },
     persist() {

@@ -73,6 +73,11 @@ def require_contract(source: str, packaged_script: str) -> None:
     usage = packaged_script.index("scripts/connected-js-usage-ports.sh")
     composer = packaged_script.index("scripts/connected-js-composer-docker.sh")
     lifecycle = packaged_script.index("scripts/connected-js-lifecycle.sh")
+    if lifecycle >= composer:
+        raise AssertionError("composer journey must run after the smoke/lifecycle portion of the API 35 script")
+    if "--force-first-post-attach-tap-miss" not in packaged_script \
+            or "--composer-focus-max-attempts 2" not in packaged_script:
+        raise AssertionError("composer CI lane must exercise the forced physical miss and bounded two-tap recovery")
     fastkeys = packaged_script.index("scripts/connected-js-hotkeys-docker.sh")
     if not lifecycle < usage < composer < fastkeys:
         raise AssertionError("usage/ports and composer must run before the fast-key journey")
@@ -186,6 +191,16 @@ for label, damaged in (
         "",
         1,
     )),
+    ("forced physical first-miss control", packaged_lanes.replace(
+        "  --force-first-post-attach-tap-miss \\\n",
+        "",
+        1,
+    )),
+    ("two-tap recovery bound", packaged_lanes.replace(
+        "  --composer-focus-max-attempts 2; then",
+        "; then",
+        1,
+    )),
     ("composer artifact path", workflow.replace(
         "            android/app/build/outputs/js-composer/\n",
         "            android/app/build/outputs/other/\n",
@@ -193,10 +208,10 @@ for label, damaged in (
     )),
 ):
     try:
-        if label == "composer invocation":
-            require_contract(workflow, damaged)
-        else:
+        if label == "composer artifact path":
             require_contract(damaged, packaged_lanes)
+        else:
+            require_contract(workflow, damaged)
     except (AssertionError, ValueError):
         print(f"PASS: missing {label} fails the rewrite composer workflow contract")
     else:
@@ -337,6 +352,12 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(f"{label}: usage/ports run identity was not forwarded: {trace_lines[2]!r}")
         if "--session-prefix js2891-run-1" not in trace_lines[3]:
             raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[3]!r}")
+        if "--force-first-post-attach-tap-miss" not in trace_lines[3] \
+                or "--composer-focus-max-attempts 2" not in trace_lines[3]:
+            raise AssertionError(
+                f"{label}: composer CI gate did not require bounded recovery from a physical post-attach miss: "
+                f"{trace_lines[3]!r}"
+            )
         if "--session-prefix js2884-run-1" not in trace_lines[4]:
             raise AssertionError(f"{label}: fast-key session identity was not forwarded: {trace_lines[4]!r}")
         if runtime_capture.read_text().splitlines() != [

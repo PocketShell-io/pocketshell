@@ -10,6 +10,7 @@ import type {
   DictationEventType,
   NativeDictationEvent,
   SpeechRecognitionPlugin,
+  StartDictationOptions,
 } from '../native/speechRecognition';
 import { documentContent } from '../native/documentContent';
 import { speechRecognition } from '../native/speechRecognition';
@@ -163,7 +164,7 @@ export function createPlatformInputService(
 
   async function startDictation(
     onEvent: (event: DictationEvent) => void,
-    languageTag?: string,
+    settings: Pick<StartDictationOptions, 'languageTag' | 'silenceWindowMs'> = {},
   ): Promise<{ requestId: string; stop: () => Promise<void> }> {
     const requestId = nextRequestId();
     let listener: Awaited<ReturnType<SpeechRecognitionPlugin['addListener']>> | undefined;
@@ -173,7 +174,7 @@ export function createPlatformInputService(
         onEvent({ ...event });
         if (event.type === 'stopped') void listener?.remove();
       });
-      const started = await speech.startDictation({ requestId, ...(languageTag ? { languageTag } : {}) });
+      const started = await speech.startDictation({ requestId, ...settings });
       if (started.requestId !== requestId || started.started !== true) {
         throw new PlatformInputError('invalid-dictation-response', 'Android did not start the requested dictation session.');
       }

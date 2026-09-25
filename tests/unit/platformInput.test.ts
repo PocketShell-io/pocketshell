@@ -158,12 +158,19 @@ describe('Android platform input adapter', () => {
       { nextRequestId: () => 'dictation-1' },
     );
 
-    const session = await service.startDictation((event) => events.push(event), 'fr-FR');
+    const session = await service.startDictation((event) => events.push(event), {
+      languageTag: 'fr-FR',
+      silenceWindowMs: 9_000,
+    });
     await session.stop();
 
     expect(speech.addListener.mock.invocationCallOrder[0]).toBeLessThan(speech.startDictation.mock.invocationCallOrder[0]);
     expect(events).toEqual([{ requestId: 'dictation-1', type: 'partial', text: 'café' }]);
-    expect(speech.startDictation).toHaveBeenCalledWith({ requestId: 'dictation-1', languageTag: 'fr-FR' });
+    expect(speech.startDictation).toHaveBeenCalledWith({
+      requestId: 'dictation-1',
+      languageTag: 'fr-FR',
+      silenceWindowMs: 9_000,
+    });
     expect(speech.stopDictation).toHaveBeenCalledWith({ requestId: 'dictation-1' });
   });
 });

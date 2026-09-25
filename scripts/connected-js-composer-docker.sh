@@ -75,6 +75,7 @@ fi
 ARTIFACT_RUN_ID="${SESSION_BASE}-$(date +%s%N)"
 evidence_dir="$ROOT_DIR/android/app/build/outputs/js-composer/$ARTIFACT_RUN_ID"
 mkdir -p "$evidence_dir"
+started_epoch="$(date +%s)"
 cat > "$evidence_dir/composer-run-metadata.txt" <<EOF
 run_id=$ARTIFACT_RUN_ID
 session_prefix=$SESSION_BASE
@@ -82,6 +83,7 @@ docker_port=$PORT
 app_suffix=$SUFFIX
 started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
+: > "$evidence_dir/composer-host-oracle.txt"
 [[ -x "$ADB" ]] || fail "adb is missing or not executable: $ADB"
 [[ -f "$ROOT_DIR/tests/docker/test_key" ]] || fail 'Docker fixture test key is missing'
 
@@ -186,6 +188,7 @@ finish_composer_run() {
   {
     printf 'exit_code=%s\n' "$exit_status"
     printf 'finished_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'duration_seconds=%s\n' "$(( $(date +%s) - started_epoch ))"
   } >> "$evidence_dir/composer-run-metadata.txt"
   pocketshell_release_all
   exit "$exit_status"
@@ -226,11 +229,6 @@ else
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --preserve-on-failure \
     --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
     --output-dir "$evidence_dir" || true
-  for diagnostic in diagnostics-logcat.txt diagnostics-input-method.txt diagnostics-screen.png; do
-    if [[ -f "$RESULTS_DIR/$diagnostic" ]]; then
-      cp -- "$RESULTS_DIR/$diagnostic" "$evidence_dir/wrapper-$diagnostic"
-    fi
-  done
   exit "$test_exit_code"
 fi
 
@@ -241,8 +239,22 @@ stop_asset_logcat
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir" \
   --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
-sha256sum "$evidence_dir/composer-keyboard.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
-sha256sum "$evidence_dir/composer-post-send.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
+exec > >(tee -a "$evidence_dir/composer-host-oracle.txt") 2>&1
+inline_preview="$evidence_dir/inline-dictation-preview.png"
+[[ -s "$inline_preview" ]] || fail 'same-run inline dictation screenshot is missing or empty'
+file "$inline_preview"
+python3 - "$inline_preview" <<'PY'
+from pathlib import Path
+import sys
+
+payload = Path(sys.argv[1]).read_bytes()
+if len(payload) < 1024 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+    raise SystemExit("FAIL: inline dictation evidence is not a non-empty PNG")
+print(f"PASS: validated inline dictation PNG ({len(payload)} bytes)")
+PY
+sha256sum "$evidence_dir/composer-keyboard.png"
+sha256sum "$evidence_dir/composer-post-send.png"
+sha256sum "$inline_preview"
 
 ssh_remote() {
   ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
@@ -256,27 +268,80 @@ multiline_hex="$(ssh_remote "od -An -tx1 /tmp/$bytes_session-multiline.raw | tr 
   || fail "remote Unicode bytes mismatch: expected 636166c3a920f09fa7aa, got ${unicode_hex:-<empty>}"
 [[ "$multiline_hex" == '1b5b3230307e616c7068610aceb26574610af09f99821b5b3230317e' ]] \
   || fail "remote bracketed multiline bytes mismatch: expected 1b5b3230307e616c7068610aceb26574610af09f99821b5b3230317e, got ${multiline_hex:-<empty>}"
-printf 'PASS: remote Unicode PTY bytes %s\n' "$unicode_hex" | tee -a "$evidence_dir/composer-host-oracle.txt"
-printf 'PASS: remote multiline PTY bytes %s\n' "$multiline_hex" | tee -a "$evidence_dir/composer-host-oracle.txt"
+printf 'PASS: remote Unicode PTY bytes %s\n' "$unicode_hex"
+printf 'PASS: remote multiline PTY bytes %s\n' "$multiline_hex"
 
 sent_marker="PS2857_SENT_$SESSION_BASE"
 sent_output_marker="$(ssh_remote "cat /tmp/$bytes_session-sent-output.marker | tr -d '\\n'")"
 [[ "$sent_output_marker" == "$sent_marker" ]] \
   || fail "remote sent-output marker mismatch: expected $sent_marker, got ${sent_output_marker:-<empty>}"
-printf 'PASS: host PTY output contained %s\n' "$sent_output_marker" | tee -a "$evidence_dir/composer-host-oracle.txt"
+printf 'PASS: host PTY output contained %s\n' "$sent_output_marker"
+
+dictation_marker="PS2857_DICTATION_EDITED_$SESSION_BASE"
+dictation_output_marker="$(ssh_remote "cat /tmp/$bytes_session-dictation.marker | tr -d '\\n'")"
+[[ "$dictation_output_marker" == "$dictation_marker" ]] \
+  || fail "edited composer dictation did not reach the host PTY exactly: expected $dictation_marker, got ${dictation_output_marker:-<empty>}"
+dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$dictation_capture" == *"$dictation_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the edited dictation text'
+printf 'PASS: edited controlled-recognition text reached Docker PTY and host capture as %s\n' "$dictation_marker"
+
+inline_marker="PS2857_INLINE_$SESSION_BASE"
+inline_file_state='absent'
+for attempt in $(seq 1 30); do
+  inline_file_state="$(ssh_remote "if test -f /tmp/$bytes_session-inline-submitted.marker; then printf present; else printf absent; fi")"
+  [[ "$inline_file_state" == present ]] && break
+  sleep 0.2
+done
+[[ "$inline_file_state" == present ]] || fail 'explicit Enter did not execute the inserted inline dictation command'
+inline_hex="$(ssh_remote "cat /tmp/$bytes_session-inline-utf8.hex")"
+[[ "$inline_hex" == '636166c3a920f09fa7aa' ]] \
+  || fail "inline dictation Unicode bytes mismatch: expected 636166c3a920f09fa7aa, got ${inline_hex:-<empty>}"
+inline_submitted_marker="$(ssh_remote "cat /tmp/$bytes_session-inline-submitted.marker | tr -d '\\n'")"
+[[ "$inline_submitted_marker" == "$inline_marker" ]] \
+  || fail "inline dictation marker mismatch: expected $inline_marker, got ${inline_submitted_marker:-<empty>}"
+inline_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$inline_capture" == *"$inline_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the inline dictation command'
+echo "PASS: explicit-stop inline dictation reached the host as exact UTF-8 bytes $inline_hex and executed only after Enter"
+
+background_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+background_uncertain_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$uncertain_session' --bytes 4096")"
+for marker in "PS2857_BG_PARTIAL_$SESSION_BASE" "PS2857_BG_LATE_$SESSION_BASE"; do
+  [[ "$background_capture" != *"$marker"* ]] || fail "background-cancelled transcript marker reached the bytes-session PTY: $marker"
+  [[ "$background_uncertain_capture" != *"$marker"* ]] || fail "background-cancelled transcript marker reached the uncertain-session PTY: $marker"
+done
+background_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-inline-background.marker; then printf present; else printf absent; fi")"
+[[ "$background_file_state" == absent ]] || fail 'late background transcript executed on the host after app resume'
+background_recovery_marker="PS2857_BG_RECOVERY_$SESSION_BASE"
+background_recovery_output="$(ssh_remote "cat /tmp/$bytes_session-inline-background-recovery.marker | tr -d '\\n'")"
+[[ "$background_recovery_output" == "$background_recovery_marker" ]] \
+  || fail "fresh dictation did not recover after background cancellation: expected $background_recovery_marker, got ${background_recovery_output:-<empty>}"
+[[ "$background_capture" == *"$background_recovery_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the post-background recovery dictation'
+printf 'PASS: background appStateChange cancelled partial/late text; fresh dictation reached Docker PTY as %s\n' \
+  "$background_recovery_marker"
+
+target_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$uncertain_session' --bytes 4096")"
+target_bytes_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+for marker in "PS2857_TARGET_PARTIAL_$SESSION_BASE" "PS2857_TARGET_LATE_$SESSION_BASE"; do
+  [[ "$target_capture" != *"$marker"* ]] || fail "target-change-cancelled transcript marker reached the target PTY: $marker"
+  [[ "$target_bytes_capture" != *"$marker"* ]] || fail "target-change-cancelled transcript marker reached the original bytes-session PTY: $marker"
+done
+target_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-inline-target-change.marker; then printf present; else printf absent; fi")"
+[[ "$target_file_state" == absent ]] || fail 'late transcript executed after switching the live target session'
+printf 'PASS: live target change cancelled partial/late text before either PTY accepted a write\n'
 
 insert_marker="PS2857_INSERT_$SESSION_BASE"
 insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
 [[ "$insert_capture" == *"$insert_marker"* ]] || fail 'remote PTY history did not contain the inserted prompt line'
 insert_file_state="$(ssh_remote "if test -e /tmp/$bytes_session-insert.marker; then printf present; else printf absent; fi")"
 [[ "$insert_file_state" == absent ]] || fail 'Insert executed the command instead of leaving it at the prompt'
-printf 'PASS: app Xterm and remote PTY history contain the inserted %s prompt line; marker file is absent\n' "$insert_marker" \
-  | tee -a "$evidence_dir/composer-host-oracle.txt"
+printf 'PASS: app Xterm and remote PTY history contain the inserted %s prompt line; marker file is absent\n' "$insert_marker"
 
 uncertain_marker="PS2857_UNCERTAIN_$SESSION_BASE"
 uncertain_file_state="$(ssh_remote "if test -e /tmp/$uncertain_session-uncertain.marker; then printf present; else printf absent; fi")"
 [[ "$uncertain_file_state" == absent ]] || fail 'uncertain delivery command ran after the transport drop'
-printf 'PASS: uncertain command %s was not replayed after reconnect\n' "$uncertain_marker" \
-  | tee -a "$evidence_dir/composer-host-oracle.txt"
+printf 'PASS: uncertain command %s was not replayed after reconnect\n' "$uncertain_marker"
 
 printf 'Evidence directory: %s\n' "$evidence_dir"

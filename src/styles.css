@@ -249,6 +249,48 @@ button { color: inherit; }
 .terminal-viewport .xterm { height: 100%; }
 .terminal-viewport .xterm-viewport { overflow-y: auto !important; }
 .panel-footnote { margin: 9px 0 0; color: var(--fg-muted); font-size: var(--fs-100); line-height: 1.45; }
+.terminal-dictation-bar {
+  display: flex;
+  min-width: 0;
+  min-height: 56px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 7px;
+}
+.terminal-dictation-copy { min-width: 0; flex: 1 1 auto; }
+.terminal-dictation-message, .terminal-dictation-preview {
+  overflow: hidden;
+  margin: 0;
+  font-size: var(--fs-100);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+}
+.terminal-dictation-message { color: var(--fg-muted); }
+.terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); white-space: nowrap; }
+.terminal-dictation-bar[data-dictation-tone="success"] .terminal-dictation-message { color: var(--success); }
+.terminal-dictation-bar[data-dictation-tone="warning"] .terminal-dictation-message { color: var(--warning); }
+.terminal-dictation-bar[data-dictation-tone="error"] .terminal-dictation-message { color: var(--error); }
+.terminal-dictation-button {
+  display: inline-flex;
+  min-width: 82px;
+  min-height: 48px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: 0 11px;
+  color: var(--fg);
+  font-size: var(--fs-100);
+  font-weight: 600;
+}
+.terminal-dictation-button svg { width: 18px; height: 18px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.terminal-dictation-button--active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.terminal-dictation-button:disabled { opacity: 0.5; }
 .composer-panel { display: grid; gap: 10px; }
 .composer-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-heading h3 { margin: 0; color: var(--fg); font-size: var(--fs-400); font-weight: 600; line-height: 1.3; }

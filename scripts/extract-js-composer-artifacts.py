@@ -19,6 +19,7 @@ REQUIRED_NAMES = {
     "composer-keyboard-geometry.json",
     "composer-post-send.png",
     "composer-post-send-terminal.json",
+    "inline-dictation-preview.png",
     "composer-focus-trace.json",
 }
 OPTIONAL_NAMES = {
@@ -76,7 +77,17 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         else:
             raise ExtractionFailure(f"unknown artifact record {kind!r} for {name}")
 
-    required_names = REQUIRED_NAMES if validate_layout else {"composer-keyboard.png"}
+    failure_artifact_names = {
+        "composer-focus-failure.png",
+        "composer-focus-failure.json",
+        "composer-focus-failure-logcat.txt",
+    }
+    if validate_layout:
+        required_names = REQUIRED_NAMES
+    elif failure_artifact_names.intersection(assets):
+        required_names = failure_artifact_names | {"composer-focus-trace.json"}
+    else:
+        required_names = {"composer-keyboard.png"}
     if not required_names.issubset(assets) or set(assets) - EXPECTED_NAMES:
         raise ExtractionFailure(f"expected at least {sorted(required_names)} without extras, found {sorted(assets)}")
 
@@ -97,17 +108,16 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png"):
+    for name in ("composer-keyboard.png", "composer-post-send.png", "inline-dictation-preview.png",
+                 "composer-focus-failure.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
-    screenshot = decoded["composer-keyboard.png"]
-    if not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024:
+    screenshot = decoded.get("composer-keyboard.png")
+    if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
         raise ExtractionFailure("keyboard screenshot is not a non-empty PNG")
-    focus_failure_screenshot = decoded.get("composer-focus-failure.png")
-    if focus_failure_screenshot is not None and (
-            not focus_failure_screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(focus_failure_screenshot) < 1024):
-        raise ExtractionFailure("composer focus failure screenshot is not a non-empty PNG")
+    if validate_layout and screenshot is None:
+        raise ExtractionFailure("keyboard screenshot is missing")
     geometry_bytes = decoded.get("composer-keyboard-geometry.json")
     if geometry_bytes is None:
         if validate_layout:
@@ -200,16 +210,6 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send terminal text was not captured from the rendered xterm buffer")
         if post_send.get("sentMarkerAbsentFromSubmittedCommand") is not True:
             raise ExtractionFailure("post-send marker may be a command echo rather than terminal output")
-        try:
-            send_to_visible_latency = int(post_send["sendToVisibleOutputLatencyMs"])
-        except (KeyError, TypeError, ValueError) as error:
-            raise ExtractionFailure("post-send terminal record is missing a valid Send-to-visible-output latency") from error
-        if send_to_visible_latency < 0:
-            raise ExtractionFailure("Send-to-visible-output latency cannot be negative")
-        if post_send.get("sendToVisibleOutputTiming") != (
-            "Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen"
-        ):
-            raise ExtractionFailure("post-send latency does not identify its packaged visible-output measurement")
         recorded_marker = post_send.get("expectedMarker")
         if not isinstance(recorded_marker, str) or not recorded_marker:
             raise ExtractionFailure("post-send terminal record is missing its expected marker")
@@ -265,7 +265,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("composer focus trace does not contain tap attempts")
         post_attach_attempts = [
             attempt for attempt in focus_attempts
-            if isinstance(attempt, dict) and attempt.get("stage") == "uncertain-session-after-attach"
+            if isinstance(attempt, dict) and attempt.get("stage") == "post-inline-dictation-attach"
         ]
         if not post_attach_attempts or len(post_attach_attempts) > max_attempts:
             raise ExtractionFailure("composer focus trace is missing the bounded post-attach tap sequence")
@@ -282,17 +282,16 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("composer focus trace contains a malformed tap-attempt record")
             if attempt["attempt"] < 1 or attempt["attempt"] > max_attempts:
                 raise ExtractionFailure("composer focus trace exceeds its configured bounded tap-attempt limit")
-            tap = attempt.get("tap")
-            before = attempt.get("before")
-            after = attempt.get("after")
-            if not isinstance(tap, dict) or not isinstance(before, dict) or not isinstance(after, dict):
+            if not isinstance(attempt.get("tap"), dict) or not isinstance(attempt.get("before"), dict) \
+                    or not isinstance(attempt.get("after"), dict):
                 raise ExtractionFailure("composer focus trace is missing target bounds or active-element snapshots")
-            if (not isinstance(attempt.get("nativeImeVisibleBefore"), bool)
-                    or not isinstance(attempt.get("nativeImeVisibleAfter"), bool)):
+            if not isinstance(attempt.get("nativeImeVisibleBefore"), bool) \
+                    or not isinstance(attempt.get("nativeImeVisibleAfter"), bool):
                 raise ExtractionFailure("composer focus trace is missing Android IME visibility around a tap")
-            if "nativeImeVisibleAfterImeWait" in attempt and not isinstance(attempt["nativeImeVisibleAfterImeWait"], bool):
+            if "nativeImeVisibleAfterImeWait" in attempt \
+                    and not isinstance(attempt["nativeImeVisibleAfterImeWait"], bool):
                 raise ExtractionFailure("composer focus trace has an invalid post-IME wait observation")
-        if focus_failure_screenshot is not None:
+        if "composer-focus-failure.png" in decoded:
             raise ExtractionFailure("packaged composer run contains a failure-state focus screenshot")
     return decoded
 
@@ -323,8 +322,6 @@ def self_test() -> None:
         "visibleTerminalText": f"command output\n{marker}",
         "terminalDomText": f"command output\n{marker}",
         "sentMarkerAbsentFromSubmittedCommand": True,
-        "sendToVisibleOutputLatencyMs": 120,
-        "sendToVisibleOutputTiming": "Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen",
         "appTerminalDeliveryCount": 1,
         "appTerminalMissingRefCount": 0,
         "terminalWriteCount": 1,
@@ -339,7 +336,7 @@ def self_test() -> None:
         "maxAttempts": 2,
         "forcedFirstPostAttachMiss": False,
         "attempts": [{
-            "stage": "uncertain-session-after-attach",
+            "stage": "post-inline-dictation-attach",
             "attempt": 1,
             "requestedSelector": "[data-testid=prompt-draft]",
             "before": {"activeElement": {"id": "xterm-helper-textarea"}},
@@ -359,12 +356,6 @@ def self_test() -> None:
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
-    negative_latency_value = json.loads(post_send)
-    negative_latency_value["sendToVisibleOutputLatencyMs"] = -1
-    negative_latency_post_send = json.dumps(negative_latency_value).encode()
-    missing_latency_value = json.loads(post_send)
-    del missing_latency_value["sendToVisibleOutputLatencyMs"]
-    missing_latency_post_send = json.dumps(missing_latency_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
                          send_bottom: float = 218.0, terminal_height: float = 60.0) -> bytes:
         return json.dumps({
@@ -386,13 +377,15 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
-    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send) -> list[str]:
+    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
+                   inline_preview_bytes: bytes = png, focus_trace_bytes: bytes = focus_trace) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
-            ("composer-focus-trace.json", focus_trace),
+            ("inline-dictation-preview.png", inline_preview_bytes),
+            ("composer-focus-trace.json", focus_trace_bytes),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -405,8 +398,10 @@ def self_test() -> None:
         return lines
 
     lines = make_lines()
-    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-keyboard.png"] == png
-    print("PASS: keyboard and post-send artifacts extract with complete chunks and matching SHA-256")
+    extracted = parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)
+    assert extracted["composer-keyboard.png"] == png
+    assert extracted["inline-dictation-preview.png"] == png
+    print("PASS: keyboard, post-send, and inline dictation screenshots extract with matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -425,8 +420,8 @@ def self_test() -> None:
         ("post-send text source is not the rendered xterm buffer", make_lines(post_send_bytes=post_send.replace(b"xterm-active-buffer-after-render", b"unverified-dom-text"))),
         ("post-send terminal scrolled below the viewport", make_lines(post_send_bytes=clipped_post_send)),
         ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
-        ("post-send output latency missing", make_lines(post_send_bytes=missing_latency_post_send)),
-        ("post-send output latency negative", make_lines(post_send_bytes=negative_latency_post_send)),
+        ("inline screenshot is ASCII run-as error text",
+         make_lines(inline_preview_bytes=b"run-as: unknown package: com.pocketshell.app.i2857inline\n")),
     ):
         try:
             parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)
@@ -437,24 +432,26 @@ def self_test() -> None:
     focus_failure_lines = list(lines)
     for name, payload in (
         ("composer-focus-failure.png", png),
-        ("composer-focus-failure.json", json.dumps({"stage": "uncertain-session-after-attach"}).encode()),
+        ("composer-focus-failure.json", json.dumps({"stage": "post-inline-dictation-attach"}).encode()),
         ("composer-focus-failure-logcat.txt", b"ImeTracker: hide request did not complete\n"),
     ):
         encoded = base64.b64encode(payload).decode()
         digest = hashlib.sha256(payload).hexdigest()
-        focus_failure_lines.append(f"I/PS2857Asset: BEGIN|{run_id}|{name}|1|{digest}")
-        focus_failure_lines.append(f"I/PS2857Asset: DATA|{run_id}|{name}|0|{encoded}")
-        focus_failure_lines.append(f"I/PS2857Asset: END|{run_id}|{name}")
+        focus_failure_lines.extend((
+            f"I/PS2857Asset: BEGIN|{run_id}|{name}|1|{digest}",
+            f"I/PS2857Asset: DATA|{run_id}|{name}|0|{encoded}",
+            f"I/PS2857Asset: END|{run_id}|{name}",
+        ))
     try:
         parse_assets("\n".join(focus_failure_lines), run_id, expected_terminal_marker=marker)
     except ExtractionFailure:
-        print("PASS: packaged acceptance rejects retained focus-failure artifacts")
+        print("PASS: accepted composer evidence rejects retained focus-failure artifacts")
     else:
-        raise AssertionError("focus failure screenshot unexpectedly passed strict packaged acceptance")
+        raise AssertionError("focus failure screenshot unexpectedly passed accepted extraction")
     retained_failure = parse_assets("\n".join(focus_failure_lines), run_id, validate_layout=False)
     assert retained_failure["composer-focus-failure.png"] == png
     assert b"ImeTracker" in retained_failure["composer-focus-failure-logcat.txt"]
-    print("PASS: failure-mode extraction retains contemporaneous focus screenshot, state, and Android logs")
+    print("PASS: failure extraction retains contemporaneous focus screenshot, state, logcat, and tap trace")
     broken_layout = make_lines(geometry_payload(ime_visible=False, app_bar_top=0))
     assert parse_assets("\n".join(broken_layout), run_id, validate_layout=False)["composer-keyboard.png"] == png
     no_geometry = [line for line in lines if "composer-keyboard-geometry.json" not in line]

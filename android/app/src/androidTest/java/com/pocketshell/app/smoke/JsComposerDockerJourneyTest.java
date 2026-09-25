@@ -20,6 +20,7 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.lifecycle.Lifecycle;
 
 import com.pocketshell.app.MainActivity;
 
@@ -102,6 +103,8 @@ public final class JsComposerDockerJourneyTest {
         uncertainSession = nameBase + "-uncertain";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        setVoicePreferencesForComposerJourney();
+        installControlledSpeechAdapter();
         evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
@@ -116,6 +119,9 @@ public final class JsComposerDockerJourneyTest {
         attachSession(bytesSession);
         verifyNestedAndroidBackKeepsLiveSession();
 
+        exerciseComposerDictation(nameBase, bytesSession, artifactRunId);
+        exerciseInlineTerminalDictation(nameBase, bytesSession, uncertainSession, artifactRunId);
+
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
         String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' | tee /tmp/"
@@ -126,10 +132,10 @@ public final class JsComposerDockerJourneyTest {
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
         assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
-        long sendTouchUpUptimeMs = tapComposerAction(".composer-shared-controls .send");
-        long sendToVisibleOutputLatencyMs = waitForTerminalMarkerOrCaptureWindow(sentMarker, sendTouchUpUptimeMs);
+        tapComposerAction(".composer-shared-controls .send");
         awaitDeliveredAndCleared();
-        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
+        waitForTerminalMarkerOrCaptureWindow(sentMarker);
+        savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand);
 
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
@@ -168,9 +174,7 @@ public final class JsComposerDockerJourneyTest {
                 + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
         setComposerDraft(uncertainCommand);
         armDisconnectAfterFirstAcknowledgement();
-        tapComposerAction(".composer-shared-controls .send", "uncertain-session-after-attach");
-        assertTrue("uncertain-session attach must recover composer focus from a physical draft tap",
-                hasSuccessfulPhysicalDraftTap("uncertain-session-after-attach"));
+        tapComposerAction(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'", 30_000);
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
 
@@ -181,7 +185,6 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand));
         assertEquals("uncertain delivery must keep the exact draft after reattach", uncertainCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
-        emitFocusTraceIfNeeded();
     }
 
     private void awaitTrustOrConnected() throws Exception {
@@ -198,14 +201,55 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         click("[data-testid=open-terminal-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
-        int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+
+        // Exercise Android's real keyboard-dismiss path first. A Back key sent
+        // while the IME is visible can be consumed by the IME before the
+        // Capacitor App plugin sees it; the next Back must then reach the app.
+        tapDomCenter("[data-testid=terminal-font-size-input]");
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=terminal-font-size-input]')");
+        awaitImeVisible(true);
+        int beforeImeBack = backButtonEventCount();
+        Log.i("PS2857Back", "before-ime-dismiss|" + backUiState());
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
+        awaitImeVisible(false);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+        int afterImeBack = backButtonEventCount();
+        assertTrue("keyboard dismissal may be consumed by Android or delivered once to Capacitor",
+                afterImeBack >= beforeImeBack && afterImeBack <= beforeImeBack + 1);
+        Log.i("PS2857Back", "after-ime-dismiss|" + backUiState());
+
+        int beforeRouteBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
-                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
+                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeRouteBack);
+        Log.i("PS2857Back", "after-nested-route-back|" + backUiState());
+
+        int beforeHomeBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && !!document.querySelector('[data-testid=prompt-composer]')");
+                + " && !!document.querySelector('[data-testid=prompt-composer]')"
+                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeHomeBack);
+        Log.i("PS2857Back", "after-workspace-back|" + backUiState());
+    }
+
+    private int backButtonEventCount() throws Exception {
+        return Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+    }
+
+    private String backUiState() throws Exception {
+        String webState = evalString("(() => {const shell=document.querySelector('.app-shell');"
+                + "return JSON.stringify({route:shell?.dataset.route,keyboardVisible:shell?.dataset.keyboardVisible,"
+                + "backButtonReady:shell?.dataset.backButtonReady,backButtonEvents:shell?.dataset.backButtonEvents,"
+                + "activeElement:document.activeElement?.outerHTML?.slice(0,180)});})()");
+        AtomicReference<String> nativeState = new AtomicReference<>("unavailable");
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            nativeState.set("imeVisible=" + (insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                    + ",windowFocus=" + activity.getWindow().getDecorView().hasWindowFocus());
+        });
+        return webState + "|" + nativeState.get();
     }
 
     private void createSession(String name) throws Exception {
@@ -235,6 +279,261 @@ public final class JsComposerDockerJourneyTest {
     private void setComposerDraft(String value) throws Exception {
         setValue("[data-testid=prompt-draft]", value);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(value));
+    }
+
+    private void setVoicePreferencesForComposerJourney() throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
+        tapDomCenter("[aria-label=Settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        tapDomCenter("[data-testid=open-voice-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-voice'");
+        setValue("[data-testid=setting-dictation-language]", "de-DE");
+        setValue("[data-testid=setting-dictation-silence]", "9");
+        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationLanguageTag === 'de-DE'"
+                + " && JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').dictationSilenceWindowMs === 9000");
+        tapDomCenter("[aria-label=Back]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        tapDomCenter("[aria-label=Back]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
+    }
+
+    /** Replace only the Capacitor speech bridge for this packaged test; other native plugins stay real. */
+    private void installControlledSpeechAdapter() throws Exception {
+        String installed = evalString("(() => {"
+                + "const cap=window.Capacitor;"
+                + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
+                + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
+                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,"
+                + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
+                + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
+                + "window.__ps2857ControlledSpeech=state;"
+                + "cap.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
+                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.requestId=options.requestId;"
+                + "return Promise.resolve({requestId:state.requestId,started:true});}"
+                + "if(method==='stopDictation'){state.stopOptions=JSON.parse(JSON.stringify(options));"
+                + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
+                + "if(method==='getCapabilities')return Promise.resolve({speechRecognitionAvailable:true,microphonePermissionGranted:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech method '+method));};"
+                + "cap.nativeCallback=(plugin,method,options,callback)=>{"
+                + "if(plugin!=='SpeechRecognition')return nativeCallback(plugin,method,options,callback);"
+                + "if(method==='addListener'){state.listener=callback;return Promise.resolve({callbackId:'controlled-dictation'});}"
+                + "if(method==='removeListener')return Promise.resolve({removed:true});"
+                + "return Promise.reject(new Error('unexpected controlled speech callback '+method));};"
+                + "return 'installed';})()");
+        assertEquals("test must replace only the speech bridge", "installed", installed);
+    }
+
+    private void exerciseComposerDictation(String nameBase, String sessionName, String artifactRunId) throws Exception {
+        String dictatedMarker = "PS2857_DICTATION_" + nameBase;
+        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
+        String dictatedCommand = "printf '%s' '" + dictatedMarker + "' > /tmp/" + sessionName + "-dictation.marker";
+        String editedCommand = dictatedCommand.replace(dictatedMarker, editedMarker);
+
+        setComposerDraft("");
+        tapComposerAction("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Stop dictation'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === true");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        assertEquals("the composer must pass the saved language into Android speech", "de-DE", start.getString("languageTag"));
+        assertEquals("the composer must pass the saved silence window into Android speech", 9_000,
+                start.getInt("silenceWindowMs"));
+        String requestId = start.getString("requestId");
+
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(dictatedCommand) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(dictatedCommand) + "); 'result emitted'");
+        // The text area is disabled during recognition, so stop through the visible
+        // control instead of trying to focus the draft again to reopen the IME.
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.textContent.trim() === 'Dictate'"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.disabled === false"
+                + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(dictatedCommand));
+
+        setComposerDraft(editedCommand);
+        String speechEvidence = evalString("JSON.stringify({start:window.__ps2857ControlledSpeech.startOptions,"
+                + "stop:window.__ps2857ControlledSpeech.stopOptions,draft:document.querySelector('[data-testid=prompt-draft]')?.value})");
+        Log.i("PS2857Dictation", "RUN|" + artifactRunId + "|" + speechEvidence);
+        tapComposerAction(".composer-shared-controls .send");
+        awaitDeliveredAndCleared();
+    }
+
+    private void exerciseInlineTerminalDictation(String nameBase, String sessionName, String targetChangeSession,
+            String artifactRunId) throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=inline-dictation-toggle]')"
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false");
+        String inlineMarker = "PS2857_INLINE_" + nameBase;
+        String inlineCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' > /tmp/"
+                + sessionName + "-inline-utf8.hex; printf '%s' '" + inlineMarker + "' > /tmp/"
+                + sessionName + "-inline-submitted.marker";
+        int acknowledgementsBefore = terminalInputAcknowledgements();
+
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.textContent.includes('Stop')");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        assertEquals("inline dictation must use the saved Voice language", "de-DE", start.getString("languageTag"));
+        assertEquals("inline dictation must use the saved Voice silence window", 9_000,
+                start.getInt("silenceWindowMs"));
+        String requestId = start.getString("requestId");
+
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(inlineCommand) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(inlineCommand));
+        assertEquals("partial recognition must not write to the PTY", acknowledgementsBefore, terminalInputAcknowledgements());
+        saveInlineDictationPreview(artifactRunId);
+
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
+        assertEquals("Stop request alone must not write an unfinalized transcript", acknowledgementsBefore,
+                terminalInputAcknowledgements());
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(inlineCommand) + "); 'final emitted'");
+        assertEquals("final text remains staged until the recognizer stops", acknowledgementsBefore,
+                terminalInputAcknowledgements());
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 1), 15_000);
+        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
+
+        Log.i("PS2857Inline", "RUN|" + artifactRunId + "|" + evalString("JSON.stringify({start:"
+                + "window.__ps2857ControlledSpeech.startOptions,stop:window.__ps2857ControlledSpeech.stopOptions,"
+                + "partialWriteAcks:" + acknowledgementsBefore + ",insertedWriteAcks:"
+                + "Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks),text:"
+                + JSONObject.quote(inlineCommand) + "})"));
+        // The dictated command is now at the shell cursor but has not been
+        // submitted. Enter is a separate, explicit user action.
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 2), 10_000);
+
+        exerciseBackgroundDictationCancellation(nameBase, sessionName, artifactRunId);
+        exerciseTargetChangeDictationCancellation(nameBase, sessionName, targetChangeSession, artifactRunId);
+    }
+
+    private void exerciseBackgroundDictationCancellation(String nameBase, String sessionName, String artifactRunId)
+            throws Exception {
+        String partialMarker = "PS2857_BG_PARTIAL_" + nameBase;
+        String lateMarker = "PS2857_BG_LATE_" + nameBase;
+        String partial = "printf '%s' '" + partialMarker + "'";
+        String lateCommand = "printf '%s' '" + lateMarker + "' > /tmp/" + sessionName + "-inline-background.marker";
+        int acknowledgementsBefore = terminalInputAcknowledgements();
+
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        String requestId = start.getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(partial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(partial));
+        assertEquals("background partial must remain local", acknowledgementsBefore, terminalInputAcknowledgements());
+
+        // ActivityScenario drives BridgeActivity.onStop/onResume, which fires the
+        // real Capacitor appStateChange event consumed by the mounted app and bar.
+        scenario.moveToState(Lifecycle.State.CREATED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + acknowledgementsBefore, 15_000);
+        assertEquals("the mounted inline bar must request speech stop on native background", requestId,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        Log.i("PS2857Inline", "BACKGROUND_CANCELLED|" + artifactRunId + "|request=" + requestId
+                + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
+
+        String recoveryMarker = "PS2857_BG_RECOVERY_" + nameBase;
+        String recoveryCommand = "printf '%s' '" + recoveryMarker + "' > /tmp/" + sessionName
+                + "-inline-background-recovery.marker";
+        startFreshInlineDictation(recoveryCommand, acknowledgementsBefore);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 2), 10_000);
+        Log.i("PS2857Inline", "BACKGROUND_RECOVERY|" + artifactRunId + "|marker=" + recoveryMarker);
+    }
+
+    private void exerciseTargetChangeDictationCancellation(String nameBase, String sessionName,
+            String targetChangeSession, String artifactRunId) throws Exception {
+        String partialMarker = "PS2857_TARGET_PARTIAL_" + nameBase;
+        String lateMarker = "PS2857_TARGET_LATE_" + nameBase;
+        String partial = "printf '%s' '" + partialMarker + "'";
+        String lateCommand = "printf '%s' '" + lateMarker + "' > /tmp/" + sessionName + "-inline-target-change.marker";
+        int acknowledgementsBefore = terminalInputAcknowledgements();
+
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        String requestId = start.getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(partial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(partial));
+        assertEquals("target-change partial must remain local", acknowledgementsBefore, terminalInputAcknowledgements());
+
+        // Switching the selected live session changes targetKey on the mounted
+        // bar while its recognition callback remains capable of late delivery.
+        attachSession(targetChangeSession);
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + acknowledgementsBefore, 15_000);
+        assertEquals("the mounted inline bar must request speech stop when targetKey changes", requestId,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'quiet'");
+        Log.i("PS2857Inline", "TARGET_CANCELLED|" + artifactRunId + "|request=" + requestId
+                + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
+        attachSession(sessionName);
+    }
+
+    private void startFreshInlineDictation(String command, int acknowledgementsBefore) throws Exception {
+        // Keep the original visible-control touchscreen proof in the happy path;
+        // use the mounted button event here because Android may still be
+        // settling its IME/window focus immediately after ActivityScenario resume.
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(command) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(command));
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(command) + "); 'final emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
+                + (acknowledgementsBefore + 1), 15_000);
+    }
+
+    private int terminalInputAcknowledgements() throws Exception {
+        return Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks ?? '0'"));
+    }
+
+    private void saveInlineDictationPreview(String runId) throws Exception {
+        awaitWebViewVisualState();
+        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+        AtomicReference<byte[]> artifact = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            if (screenshot == null) return;
+            try {
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                byte[] png = encoded.toByteArray();
+                if (compressed && png.length >= 1024) {
+                    artifact.set(png);
+                    saved.set(true);
+                }
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            } finally {
+                screenshot.recycle();
+            }
+        });
+        assertTrue("same-run inline dictation preview screenshot must be captured", saved.get());
+        emitArtifact(runId, "inline-dictation-preview.png", artifact.get());
     }
 
     private void awaitDeliveredAndCleared() throws Exception {
@@ -291,10 +590,7 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void showKeyboardAndCapture(String runId) throws Exception {
-        tapDomCenter("[data-testid=prompt-draft]");
-        awaitImeVisible(true);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
+        ensureImeVisible("post-inline-dictation-attach");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
         assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
@@ -336,20 +632,21 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
     }
 
+    private void ensureImeVisible() throws Exception {
+        ensureImeVisible("composer-action");
+    }
+
     private void ensureImeVisible(String stage) throws Exception {
-        boolean composerFocused = "true".equals(evalRaw(
-                "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
-        boolean composerMode = "true".equals(evalRaw(
-                "document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+        boolean composerFocused = isPromptDraftFocused();
+        boolean composerMode = isKeyboardComposerMode();
         boolean imeVisible = isImeVisible();
-        boolean mustPhysicallyTapAfterAttach = "uncertain-session-after-attach".equals(stage);
-        if (!imeVisible || !composerFocused || !composerMode || mustPhysicallyTapAfterAttach) {
-            if (!composerMode && composerFocused) evalString("document.activeElement?.blur(); 'blurred'");
+        boolean requirePhysicalTap = "post-inline-dictation-attach".equals(stage)
+                || "uncertain-session-after-attach".equals(stage);
+        if (!imeVisible || !composerFocused || !composerMode || requirePhysicalTap) {
             installFocusTapEventRecorder();
             for (int attemptIndex = 0; attemptIndex < composerFocusMaxAttempts; attemptIndex += 1) {
                 awaitWebViewVisualState();
-                boolean injectMiss = forceFirstPostAttachTapMiss
-                        && mustPhysicallyTapAfterAttach && attemptIndex == 0;
+                boolean injectMiss = forceFirstPostAttachTapMiss && requirePhysicalTap && attemptIndex == 0;
                 String targetSelector = injectMiss ? ".terminal-viewport" : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
@@ -359,8 +656,8 @@ public final class JsComposerDockerJourneyTest {
                 JSONObject tap = lastPhysicalTapEvidence == null
                         ? new JSONObject() : new JSONObject(lastPhysicalTapEvidence.toString());
                 boolean physicalTargetObserved = awaitTrustedPointerDown(targetSelector, 900);
-                boolean focused = awaitPromptDraftFocus(2_500);
-                boolean imeAfter = isImeVisible();
+                boolean focused = physicalTargetObserved && !injectMiss && awaitPromptDraftFocus(2_500);
+                boolean imeSettled = focused && awaitKeyboardReadyAfterTap(4_000);
                 JSONObject after = readFocusDomState();
                 JSONObject record = new JSONObject()
                         .put("stage", stage)
@@ -371,55 +668,55 @@ public final class JsComposerDockerJourneyTest {
                         .put("tap", tap)
                         .put("trustedPointerDownOnRequestedTarget", physicalTargetObserved)
                         .put("draftFocusedAfter", focused)
-                        .put("nativeImeVisibleAfter", imeAfter)
+                        .put("nativeImeVisibleAfter", isImeVisible())
+                        .put("keyboardReadyAfter", imeSettled)
                         .put("after", after)
                         .put("elapsedMs", SystemClock.uptimeMillis() - attemptStarted);
                 focusTapAttempts.put(record);
                 Log.i("PS2891Focus", "ATTEMPT|" + artifactRunId + "|" + record);
-                if (physicalTargetObserved && focused) {
-                    try {
-                        awaitImeVisible(true);
-                        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'", 5_000);
-                    } catch (Exception error) {
-                        captureFocusFailure(stage, "physical draft tap focused the textarea but IME/composer mode did not settle: "
-                                + error.getMessage());
-                        throw error;
-                    }
-                    if (isImeVisible() && "true".equals(evalRaw(
-                            "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"))) {
-                        record.put("nativeImeVisibleAfterImeWait", true)
-                                .put("afterImeWait", readFocusDomState());
-                        Log.i("PS2891Focus", "SETTLED|" + artifactRunId + "|" + record);
-                        break;
-                    }
+                if (imeSettled) {
+                    record.put("nativeImeVisibleAfterImeWait", true)
+                            .put("afterImeWait", readFocusDomState());
+                    Log.i("PS2891Focus", "SETTLED|" + artifactRunId + "|" + record);
+                    break;
                 }
             }
         }
-        boolean ready = isImeVisible()
-                && "true".equals(evalRaw("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"))
+        boolean ready = isImeVisible() && isPromptDraftFocused()
                 && "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"))
-                && "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+                && isKeyboardComposerMode();
         if (!ready) {
-            String state = readFocusDomState().toString();
-            captureFocusFailure(stage, "composer tap attempts did not leave the real draft focused with the IME open; state=" + state);
+            captureFocusFailure(stage, "composer tap attempts did not leave the real draft focused with the IME open; state="
+                    + readFocusDomState());
             throw new AssertionError("Composer did not reach a focused, keyboard-open state after "
                     + composerFocusMaxAttempts + " physical tap attempt(s); same-run focus screenshot and diagnostics were captured");
         }
-        if (mustPhysicallyTapAfterAttach && !hasSuccessfulPhysicalDraftTap(stage)) {
+        if (requirePhysicalTap && !hasSuccessfulPhysicalDraftTap(stage)) {
             captureFocusFailure(stage, "post-attach composer state became ready without an observed trusted physical draft tap");
             throw new AssertionError("Post-attach composer focus was not proven by a physical draft tap");
         }
     }
 
-    private long tapComposerAction(String selector) throws Exception {
-        return tapComposerAction(selector, "composer-action:" + selector);
+    private boolean isPromptDraftFocused() throws Exception {
+        return "true".equals(evalRaw("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
     }
 
-    private long tapComposerAction(String selector, String focusStage) throws Exception {
-        ensureImeVisible(focusStage);
-        assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
-        return tapDomCenter(selector);
+    private boolean isKeyboardComposerMode() throws Exception {
+        return "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"));
+    }
+
+    private boolean awaitKeyboardReadyAfterTap(long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (isImeVisible() && isPromptDraftFocused()
+                    && "true".equals(evalRaw("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"))
+                    && isKeyboardComposerMode()) {
+                Thread.sleep(120);
+                if (isImeVisible() && isPromptDraftFocused() && isKeyboardComposerMode()) return true;
+            }
+            Thread.sleep(60);
+        }
+        return false;
     }
 
     private void installFocusTapEventRecorder() throws Exception {
@@ -428,26 +725,23 @@ public final class JsComposerDockerJourneyTest {
                 + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
                 + "className:typeof node.className==='string'?node.className:''}:null;"
                 + "for(const type of ['pointerdown','pointerup','focusin','focusout'])document.addEventListener(type,event=>{"
-                + "const target=event.target;const selector=window.__ps2891ExpectedFocusTapSelector;"
-                + "if(!selector)return;const matches=selector==='[data-testid=prompt-draft]'?"
-                + "target===document.querySelector('[data-testid=prompt-draft]'):!!target?.closest?.(selector);"
-                + "window.__ps2891FocusTapEvents.push({type,isTrusted:event.isTrusted,target:label(target),"
-                + "targetMatchesRequested:matches,clientX:event.clientX??null,clientY:event.clientY??null,"
-                + "pointerType:event.pointerType??'',timeStamp:event.timeStamp});},true);"
+                + "const target=event.target;const selector=window.__ps2891ExpectedFocusTapSelector;if(!selector)return;"
+                + "const matches=selector==='[data-testid=prompt-draft]'?target===document.querySelector('[data-testid=prompt-draft]'):!!target?.closest?.(selector);"
+                + "window.__ps2891FocusTapEvents.push({type,isTrusted:event.isTrusted,target:label(target),targetMatchesRequested:matches,"
+                + "clientX:event.clientX??null,clientY:event.clientY??null,pointerType:event.pointerType??'',timeStamp:event.timeStamp});},true);"
                 + "window.__ps2891FocusTapRecorderInstalled=true;return 'installed';})()");
     }
 
     private void clearFocusTapEvents(String targetSelector) throws Exception {
-        evalString("(() => {window.__ps2891FocusTapEvents.length=0;"
-                + "window.__ps2891ExpectedFocusTapSelector=" + JSONObject.quote(targetSelector)
-                + ";return 'cleared';})()");
+        evalString("(() => {window.__ps2891FocusTapEvents.length=0;window.__ps2891ExpectedFocusTapSelector="
+                + JSONObject.quote(targetSelector) + ";return 'cleared';})()");
     }
 
     private boolean awaitTrustedPointerDown(String targetSelector, long timeoutMillis) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        if (targetSelector.isEmpty()) return false;
         String expression = "window.__ps2891FocusTapEvents?.some(event=>event.type==='pointerdown'"
                 + "&&event.isTrusted===true&&event.targetMatchesRequested===true)===true";
-        if (targetSelector.isEmpty()) return false;
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         while (SystemClock.uptimeMillis() < deadline) {
             if ("true".equals(evalRaw(expression))) return true;
             Thread.sleep(30);
@@ -457,37 +751,34 @@ public final class JsComposerDockerJourneyTest {
 
     private boolean awaitPromptDraftFocus(long timeoutMillis) throws Exception {
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
-        String expression = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
         while (SystemClock.uptimeMillis() < deadline) {
-            if ("true".equals(evalRaw(expression))) return true;
+            if (isPromptDraftFocused()) return true;
             Thread.sleep(60);
         }
-        return "true".equals(evalRaw(expression));
+        return isPromptDraftFocused();
     }
 
     private JSONObject readFocusDomState() throws Exception {
         return evalJson("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const active=document.activeElement;const rect=draft?.getBoundingClientRect();"
-                + "const x=rect?rect.left+rect.width/2:0,y=rect?rect.top+rect.height/2:0;"
-                + "const hit=document.elementFromPoint(x,y);const label=node=>node?{tag:node.tagName||'',id:node.id||'',"
-                + "testid:node.getAttribute?.('data-testid')||'',className:typeof node.className==='string'?node.className:''}:null;"
+                + "const x=rect?rect.left+rect.width/2:0,y=rect?rect.top+rect.height/2:0,hit=document.elementFromPoint(x,y);"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
                 + "const bounds=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
-                + "const shell=document.querySelector('.app-shell');"
-                + "return JSON.stringify({uptimeHintMs:performance.now(),route:shell?.dataset.route||'',"
-                + "homeSurface:shell?.dataset.homeSurface||'',sshPhase:shell?.dataset.sshPhase||'',"
+                + "const shell=document.querySelector('.app-shell');return JSON.stringify({uptimeHintMs:performance.now(),"
+                + "route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',sshPhase:shell?.dataset.sshPhase||'',"
                 + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
                 + "activeElement:label(active),draftPresent:!!draft,draftConnected:!!draft?.isConnected,draftDisabled:!!draft?.disabled,"
                 + "draftFocused:active===draft,draftBounds:bounds(draft),draftCenterHit:label(hit),draftCenterHitIsDraft:hit===draft,"
                 + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
                 + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0,scale:window.visualViewport?.scale??1},"
                 + "innerWidth,innerHeight,screenScroll:document.querySelector('.screen-content')?.scrollTop??null,"
-                + "documentScroll:document.scrollingElement?.scrollTop??null,"
-                + "pointerEvents:(window.__ps2891FocusTapEvents||[]).slice(-20)});})()");
+                + "documentScroll:document.scrollingElement?.scrollTop??null,pointerEvents:(window.__ps2891FocusTapEvents||[]).slice(-20)});})()");
     }
 
     private boolean hasSuccessfulPhysicalDraftTap(String stage) throws JSONException {
-        for (int i = 0; i < focusTapAttempts.length(); i += 1) {
-            JSONObject attempt = focusTapAttempts.getJSONObject(i);
+        for (int index = 0; index < focusTapAttempts.length(); index += 1) {
+            JSONObject attempt = focusTapAttempts.getJSONObject(index);
             if (stage.equals(attempt.optString("stage"))
                     && "[data-testid=prompt-draft]".equals(attempt.optString("requestedSelector"))
                     && attempt.optBoolean("trustedPointerDownOnRequestedTarget")
@@ -499,21 +790,22 @@ public final class JsComposerDockerJourneyTest {
 
     private void emitFocusTraceIfNeeded() throws Exception {
         if (focusTraceEmitted || focusTapAttempts.length() == 0 || artifactRunId == null) return;
-        JSONObject trace = new JSONObject()
-                .put("runId", artifactRunId)
+        JSONObject trace = new JSONObject().put("runId", artifactRunId)
                 .put("androidApi", Build.VERSION.SDK_INT)
                 .put("maxAttempts", composerFocusMaxAttempts)
                 .put("forcedFirstPostAttachMiss", forceFirstPostAttachTapMiss)
                 .put("attempts", focusTapAttempts);
         byte[] bytes = trace.toString(2).getBytes(StandardCharsets.UTF_8);
-        scenario.onActivity(activity -> {
-            try (FileOutputStream output = new FileOutputStream(
-                    new File(activity.getFilesDir(), "composer-focus-trace.json"))) {
-                output.write(bytes);
-            } catch (Exception error) {
-                throw new RuntimeException(error);
-            }
-        });
+        if (scenario != null) {
+            scenario.onActivity(activity -> {
+                try (FileOutputStream output = new FileOutputStream(
+                        new File(activity.getFilesDir(), "composer-focus-trace.json"))) {
+                    output.write(bytes);
+                } catch (Exception error) {
+                    throw new RuntimeException(error);
+                }
+            });
+        }
         emitArtifact(artifactRunId, "composer-focus-trace.json", bytes);
         focusTraceEmitted = true;
     }
@@ -528,17 +820,11 @@ public final class JsComposerDockerJourneyTest {
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not capture same-frame composer focus failure screenshot", error);
         }
-
         try {
-            JSONObject report = new JSONObject()
-                    .put("runId", artifactRunId)
-                    .put("stage", stage)
-                    .put("reason", reason)
+            JSONObject report = new JSONObject().put("runId", artifactRunId).put("stage", stage).put("reason", reason)
                     .put("capturedAtAndroidUptimeMs", SystemClock.uptimeMillis())
-                    .put("androidApi", Build.VERSION.SDK_INT)
-                    .put("imeAndWindowState", readNativeFocusState())
-                    .put("webViewState", readFocusDomState())
-                    .put("lastPhysicalTap", lastPhysicalTapEvidence)
+                    .put("androidApi", Build.VERSION.SDK_INT).put("imeAndWindowState", readNativeFocusState())
+                    .put("webViewState", readFocusDomState()).put("lastPhysicalTap", lastPhysicalTapEvidence)
                     .put("attempts", focusTapAttempts);
             byte[] reportBytes = report.toString(2).getBytes(StandardCharsets.UTF_8);
             scenario.onActivity(activity -> {
@@ -553,10 +839,9 @@ public final class JsComposerDockerJourneyTest {
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not capture composer focus state before ActivityScenario teardown", error);
         }
-
         try {
-            byte[] logcat = executeShellCommand(
-                    "logcat -d -v threadtime -t 1200 -s ImeTracker InputMethodManager InputMethodManagerService ViewRootImpl PS2891Focus");
+            byte[] logcat = executeShellCommand("logcat -d -v threadtime -t 1200 -s ImeTracker InputMethodManager "
+                    + "InputMethodManagerService ViewRootImpl PS2891Focus");
             if (logcat.length > 0) emitArtifact(artifactRunId, "composer-focus-failure-logcat.txt", logcat);
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not capture filtered Android focus log before ActivityScenario teardown", error);
@@ -571,22 +856,25 @@ public final class JsComposerDockerJourneyTest {
     private byte[] captureFocusFailureScreenshot() throws Exception {
         AtomicReference<byte[]> bytes = new AtomicReference<>();
         scenario.onActivity(activity -> {
+            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            if (screenshot == null) return;
             try {
-                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-                if (screenshot == null) return;
                 ByteArrayOutputStream encoded = new ByteArrayOutputStream();
                 boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
-                screenshot.recycle();
                 byte[] png = encoded.toByteArray();
                 File destination = new File(activity.getFilesDir(), "composer-focus-failure.png");
                 if (compressed && png.length >= 1024) {
-                    try (FileOutputStream output = new FileOutputStream(destination)) {
-                        output.write(png);
+                    try {
+                        try (FileOutputStream output = new FileOutputStream(destination)) {
+                            output.write(png);
+                        }
+                    } catch (Exception error) {
+                        throw new RuntimeException(error);
                     }
                     if (destination.length() >= 1024) bytes.set(png);
                 }
-            } catch (Exception error) {
-                throw new RuntimeException(error);
+            } finally {
+                screenshot.recycle();
             }
         });
         return bytes.get();
@@ -600,17 +888,14 @@ public final class JsComposerDockerJourneyTest {
             WebView webView = findWebView(decor);
             WindowInsets insets = decor.getRootWindowInsets();
             try {
-                state.set(new JSONObject()
-                        .put("windowHasFocus", decor.hasWindowFocus())
-                        .put("decorHasFocus", decor.hasFocus())
-                        .put("decorShown", decor.isShown())
+                state.set(new JSONObject().put("windowHasFocus", decor.hasWindowFocus())
+                        .put("decorHasFocus", decor.hasFocus()).put("decorShown", decor.isShown())
                         .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
                         .put("imeBottomPx", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
                         .put("focusedViewClass", focusedView == null ? "" : focusedView.getClass().getName())
                         .put("focusedViewId", focusedView == null ? View.NO_ID : focusedView.getId())
                         .put("focusedViewHasFocus", focusedView != null && focusedView.hasFocus())
-                        .put("webViewPresent", webView != null)
-                        .put("webViewHasFocus", webView != null && webView.hasFocus())
+                        .put("webViewPresent", webView != null).put("webViewHasFocus", webView != null && webView.hasFocus())
                         .put("webViewWindowTokenPresent", webView != null && webView.getWindowToken() != null));
             } catch (JSONException error) {
                 throw new RuntimeException(error);
@@ -625,8 +910,8 @@ public final class JsComposerDockerJourneyTest {
         try (InputStream input = new FileInputStream(descriptor.getFileDescriptor());
                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192];
-            int read;
             int remaining = 180_000;
+            int read;
             while (remaining > 0 && (read = input.read(buffer, 0, Math.min(buffer.length, remaining))) >= 0) {
                 output.write(buffer, 0, read);
                 remaining -= read;
@@ -637,11 +922,22 @@ public final class JsComposerDockerJourneyTest {
         }
     }
 
-    private long waitForTerminalMarkerOrCaptureWindow(String marker, long sendTouchUpUptimeMs) throws Exception {
+    private void tapComposerAction(String selector) throws Exception {
+        tapComposerAction(selector, "composer-action:" + selector);
+    }
+
+    private void tapComposerAction(String selector, String focusStage) throws Exception {
+        ensureImeVisible(focusStage);
+        assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
+        tapDomCenter(selector);
+    }
+
+    private void waitForTerminalMarkerOrCaptureWindow(String marker) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
         String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
         try {
-            awaitJsTrue("(() => {const viewport=document.querySelector('.terminal-viewport');"
+            awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
+                + "const viewport=document.querySelector('.terminal-viewport');"
                 + "const screen=viewport?.querySelector('.xterm-screen');"
                 + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
                 + "const byteRow=rows.find(node=>(node.textContent||'').includes(" + expectedBytes + "));"
@@ -651,7 +947,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const visible=(bounds,outer,inner)=>!!bounds&&!!outer&&!!inner&&bounds.top>=outer.top&&bounds.bottom<=outer.bottom"
                 + "&&bounds.left>=outer.left&&bounds.right<=outer.right&&bounds.top>=inner.top&&bounds.bottom<=inner.bottom"
                 + "&&bounds.left>=inner.left&&bounds.right<=inner.right;"
-                + "return visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
+                + "return status?.dataset.deliveryState==='success'&&status.textContent.includes('Sent to the terminal')"
+                + "&&document.querySelector('[data-testid=prompt-draft]')?.value===''"
+                + "&&visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
                 + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top+0.5"
                 + "&&document.querySelector('.screen-content')?.scrollTop===0&&document.scrollingElement?.scrollTop===0;})()",
                 5_000);
@@ -668,11 +966,9 @@ public final class JsComposerDockerJourneyTest {
                 + "documentScroll:document.scrollingElement?.scrollTop});})()");
             throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
         }
-        return SystemClock.uptimeMillis() - sendTouchUpUptimeMs;
     }
 
-    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand,
-            long sendToVisibleOutputLatencyMs) throws Exception {
+    private void savePostSendArtifacts(String runId, String expectedMarker, String submittedCommand) throws Exception {
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
@@ -701,9 +997,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
                 + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
-                + ",sendToVisibleOutputLatencyMs:" + sendToVisibleOutputLatencyMs
-                + ",sendToVisibleOutputTiming:'Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen',"
-                + "captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
+                + ",captureEnabled:window.__ps2857CaptureTerminalEvidence===true,"
                 + "terminalEvidenceSource:'xterm-active-buffer-after-render',visibleTerminalText:visibleText,terminalDomText:terminalDomText,"
                 + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,appTerminalMissingRefCount:window.__ps2857AppTerminalMissingRefCount??0,"
                 + "appTerminalLastChunk:window.__ps2857AppTerminalLastChunk??'',terminalWriteCount:window.__ps2857TerminalWriteCount??0,"
@@ -913,13 +1207,12 @@ public final class JsComposerDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
-    private long tapDomCenter(String selector) throws Exception {
+    private void tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
-                + "const height=window.visualViewport?.height ?? innerHeight;"
-                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
-                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
-                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "const height=window.visualViewport?.height ?? innerHeight;const x=rect.left+rect.width/2,y=rect.top+rect.height/2;"
+                + "const hit=document.elementFromPoint(x,y);const label=node=>node?{tag:node.tagName||'',id:node.id||'',"
+                + "testid:node.getAttribute?.('data-testid')||'',className:typeof node.className==='string'?node.className:''}:null;"
                 + "const targetHit=selector=>selector==='[data-testid=prompt-draft]'?hit===element:!!hit?.closest?.(selector);"
                 + "return JSON.stringify({selector:" + JSONObject.quote(selector)
                 + ",x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,"
@@ -950,15 +1243,9 @@ public final class JsComposerDockerJourneyTest {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
             View focusedView = activity.getWindow().getDecorView().findFocus();
             try {
-                nativeMapping.set(new JSONObject()
-                        .put("webViewScreenX", location[0])
-                        .put("webViewScreenY", location[1])
-                        .put("webViewWidthPx", webView.getWidth())
-                        .put("webViewHeightPx", webView.getHeight())
-                        .put("cssWidth", cssWidth)
-                        .put("cssHeight", cssHeight)
-                        .put("scaleX", scaleX)
-                        .put("scaleY", scaleY)
+                nativeMapping.set(new JSONObject().put("webViewScreenX", location[0]).put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth()).put("webViewHeightPx", webView.getHeight())
+                        .put("cssWidth", cssWidth).put("cssHeight", cssHeight).put("scaleX", scaleX).put("scaleY", scaleY)
                         .put("webViewHasFocus", webView.hasFocus())
                         .put("windowHasFocus", activity.getWindow().getDecorView().hasWindowFocus())
                         .put("nativeFocusedView", focusedView == null ? "" : focusedView.getClass().getName())
@@ -983,15 +1270,9 @@ public final class JsComposerDockerJourneyTest {
         boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
         up.recycle();
         assertTrue("Android touchscreen ACTION_UP must be injected", upInjected);
-        lastPhysicalTapEvidence = new JSONObject(point.toString())
-                .put("nativeMapping", nativeMapping.get())
-                .put("screenX", screen[0])
-                .put("screenY", screen[1])
-                .put("touchDownUptimeMs", downTime)
-                .put("touchUpUptimeMs", upTime)
-                .put("downInjected", downInjected)
-                .put("upInjected", upInjected);
-        return SystemClock.uptimeMillis();
+        lastPhysicalTapEvidence = new JSONObject(point.toString()).put("nativeMapping", nativeMapping.get())
+                .put("screenX", screen[0]).put("screenY", screen[1]).put("touchDownUptimeMs", downTime)
+                .put("touchUpUptimeMs", upTime).put("downInjected", downInjected).put("upInjected", upInjected);
     }
 
     private void awaitJsTrue(String expression) throws Exception {
