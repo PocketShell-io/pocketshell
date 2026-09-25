@@ -42,6 +42,23 @@
         "propagates a native bridge rejection"
       ]
     },
+    "tests/unit/usagePolicyAdapter.test.ts": {
+      "suite": "host usage adapter",
+      "tests": [
+        "runs the canonical host command on the active generation and parses provider quota states",
+        "reports command, timeout, and cross-generation failures rather than returning empty usage",
+        "keeps provider schema failures distinct from an unavailable command",
+        "parses the packaged Docker fixture states that the Usage screen displays"
+      ]
+    },
+    "tests/unit/portPolicyAdapter.test.ts": {
+      "suite": "native-backed port discovery and tunnel adapter",
+      "tests": [
+        "runs the listener and cwd probes through the current SSH generation",
+        "uses JS desired-port policy and native socket effects, then restores manual intent after reconnect",
+        "closes auto tunnels only after bounded successful misses and closes all owned handles"
+      ]
+    },
     "tests/unit/composerDelivery.test.ts": {
       "suite": "composer delivery adapter and per-target drafts",
       "tests": [
@@ -103,7 +120,8 @@
         "keeps nested settings and support routes reachable through Back",
         "retains a selected report ID and resets the stack when returning home",
         "clears the selected event when opening the whole-log export preview",
-        "does not push the current destination a second time"
+        "does not push the current destination a second time",
+        "keeps usage and port tools as Settings child routes without changing the live home destination"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {

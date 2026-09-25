@@ -41,6 +41,8 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("single packaged-lanes wrapper invocation", "script: scripts/ci-js-first-packaged-lanes.sh"),
         ("exact result guard", "scripts/check-js-composer-journey-results.py"),
         ("run-scoped artifact output", "android/app/build/outputs/js-composer/"),
+        ("usage/ports result guard", "scripts/check-js-usage-ports-results.py"),
+        ("usage/ports run-scoped artifacts", "android/app/build/outputs/js-usage-ports/"),
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
         ("artifact uploader", "uses: actions/upload-artifact@v6"),
         ("JUnit upload", "android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml"),
@@ -53,7 +55,7 @@ def require_contract(source: str, packaged_script: str) -> None:
     for label, needle in required:
         if needle not in source:
             raise AssertionError(f"workflow is missing {label}: {needle}")
-    action_start = source.index("- name: Run packaged JS smoke suite on API 35")
+    action_start = source.index("- name: Run packaged JS journeys on API 35")
     action_end = source.index("\n      - name:", action_start + 8)
     emulator_action = source[action_start:action_end]
     for needle in (
@@ -68,22 +70,28 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper omits the smoke lane")
     if "--port 2222" not in packaged_script or "--container pocketshell-test-agents" not in packaged_script:
         raise AssertionError("packaged wrapper changed the lifecycle Docker fixture contract")
+    usage = packaged_script.index("scripts/connected-js-usage-ports.sh")
     composer = packaged_script.index("scripts/connected-js-composer-docker.sh")
     lifecycle = packaged_script.index("scripts/connected-js-lifecycle.sh")
-    if lifecycle >= composer:
-        raise AssertionError("composer journey must run after the smoke/lifecycle portion of the API 35 script")
-    for lane in ("smoke_status", "lifecycle_status", "composer_status", "copy_status"):
+    if not lifecycle < usage < composer:
+        raise AssertionError("usage/ports must run after lifecycle and before the composer journey")
+    if "--run-id \"js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script:
+        raise AssertionError("usage/ports run identity is not forwarded to the packaged journey")
+    for lane in ("smoke_status", "lifecycle_status", "usage_status", "composer_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
         raise AssertionError("packaged wrapper must copy smoke JUnit evidence")
     if "android/app/build/outputs/js-smoke-results" not in packaged_script:
         raise AssertionError("packaged wrapper must save the smoke JUnit copy under its upload path")
-    guard_start = source.index("- name: Assert the packaged JS composer journey executed exactly once")
+    guard_start = source.index("- name: Assert packaged JS composer and Usage/Ports journeys executed exactly once")
     guard_end = source.index("- name:", guard_start + 8)
     guard = source[guard_start:guard_end]
     if "if: always()" not in guard or "--results-dir android/app/build/outputs/androidTest-results/connected/debug" not in guard:
         raise AssertionError("the exact JUnit result guard must run after the emulator step even when it fails")
+    if "scripts/check-js-usage-ports-results.py \\" not in guard or \
+       'js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results' not in guard:
+        raise AssertionError("the usage/ports result guard must check the preserved same-run JUnit report")
     upload_start = source.index("- name: Upload packaged JS composer run evidence")
     upload_end = source.index("- name:", upload_start + 8)
     upload = source[upload_start:upload_end]
@@ -184,7 +192,7 @@ for label, damaged in (
 
 # The emulator action splits multiline scripts across child shells. Require
 # exactly one executable wrapper invocation so all lane statuses share one Bash.
-section_start = workflow.index("- name: Run packaged JS smoke suite on API 35")
+section_start = workflow.index("- name: Run packaged JS journeys on API 35")
 section_end = workflow.index("\n      - name:", section_start + 8)
 section = workflow[section_start:section_end]
 script_lines = [line.strip() for line in section.splitlines() if re.match(r"\s+script:", line)]
@@ -195,7 +203,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
-                            composer: int = 0, omit_junit: bool = False,
+                            usage: int = 0, composer: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
         fixture = Path(temporary)
@@ -236,6 +244,13 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "exit \"$FIXTURE_LIFECYCLE_STATUS\"\n"
         )
         fake_lifecycle.chmod(0o755)
+        fake_usage = fake_scripts / "connected-js-usage-ports.sh"
+        fake_usage.write_text(
+            "#!/bin/bash\n"
+            "printf 'usage-ports\\t%s\\t%s\\n' \"$FIXTURE_USAGE_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
+            "exit \"$FIXTURE_USAGE_STATUS\"\n"
+        )
+        fake_usage.chmod(0o755)
         fake_composer = fake_scripts / "connected-js-composer-docker.sh"
         fake_composer.write_text(
             "#!/bin/bash\n"
@@ -254,6 +269,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_RUNTIME_CAPTURE": str(runtime_capture),
             "FIXTURE_SMOKE_STATUS": str(smoke),
             "FIXTURE_LIFECYCLE_STATUS": str(lifecycle),
+            "FIXTURE_USAGE_STATUS": str(usage),
             "FIXTURE_COMPOSER_STATUS": str(composer),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
@@ -270,21 +286,23 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         expected_copy = 31 if fail_junit_copy else (1 if omit_junit else 0)
         expected_summary = (
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
-            f"composer={composer} smoke-junit-copy={expected_copy}"
+            f"usage-ports={usage} composer={composer} smoke-junit-copy={expected_copy}"
         )
-        expected_exit = 1 if any((smoke, lifecycle, composer, expected_copy)) else 0
+        expected_exit = 1 if any((smoke, lifecycle, usage, composer, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
         trace_lines = trace.read_text().splitlines()
-        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "composer"]:
+        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "composer"]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
             raise AssertionError(f"{label}: lifecycle run identity was not forwarded: {trace_lines[1]!r}")
-        if "--session-prefix js2891-run-1" not in trace_lines[2]:
-            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[2]!r}")
+        if "--run-id js2859-run-1" not in trace_lines[2]:
+            raise AssertionError(f"{label}: usage/ports run identity was not forwarded: {trace_lines[2]!r}")
+        if "--session-prefix js2891-run-1" not in trace_lines[3]:
+            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[3]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -304,6 +322,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
 exercise_packaged_lanes("success")
 exercise_packaged_lanes("smoke failure is fail-closed", smoke=17)
 exercise_packaged_lanes("lifecycle failure is fail-closed", lifecycle=19)
+exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)
 exercise_packaged_lanes("composer failure is fail-closed", composer=23)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
@@ -435,6 +454,6 @@ if "--preserve-on-failure" not in runner or '--output-dir "$evidence_dir"' not i
 if 'tee "$evidence_dir/composer-gradle.log"' not in runner:
     raise AssertionError("composer runner does not retain its packaged Gradle output")
 
-print("PASS: rewrite composer CI invokes the isolated API 35 journey after lifecycle, validates exact JUnit, and uploads run-scoped evidence")
+print("PASS: rewrite composer and Usage/Ports CI run on API 35, validate exact JUnit, and upload run-scoped evidence")
 print("PASS: packaged lanes execute fail-closed in one shell and preserve the captured Node/pnpm runtime")
 PY

@@ -45,6 +45,16 @@ function setGracePeriod(event: Event) {
         <span><strong>Connections</strong><small>Background grace period</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
+      <button class="settings-link" type="button" data-testid="open-ports" @click="navigation.open('ports')">
+        <span class="settings-link__icon"><AppIcon name="arrow-right-left" /></span>
+        <span><strong>Port forwarding</strong><small>Find remote services and open local tunnels</small></span>
+        <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
+      </button>
+      <button class="settings-link" type="button" data-testid="open-usage" @click="navigation.open('usage')">
+        <span class="settings-link__icon"><AppIcon name="bar-chart-2" /></span>
+        <span><strong>Provider usage</strong><small>Quota and login status from the connected host</small></span>
+        <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
+      </button>
       <button class="settings-link" type="button" data-testid="open-voice-settings" @click="navigation.open('settings-voice')">
         <span class="settings-link__icon"><AppIcon name="tool" /></span>
         <span><strong>Voice</strong><small>Dictation settings</small></span>
