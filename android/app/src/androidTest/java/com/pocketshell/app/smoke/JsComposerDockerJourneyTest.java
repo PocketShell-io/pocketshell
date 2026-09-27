@@ -271,22 +271,26 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
         awaitImeVisible(false);
         Log.i("PS2857Back", "after-settings-surface-tap|" + backUiState());
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        SystemClock.sleep(250);
 
         int beforeRouteBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
-                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeRouteBack);
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeRouteBack);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        SystemClock.sleep(250);
         Log.i("PS2857Back", "after-nested-route-back|" + backUiState());
 
         int beforeHomeBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         try {
+            awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeHomeBack);
             awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
                     + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                     + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                     + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')"
-                    + " && !document.querySelector('[data-testid=prompt-composer]')"
-                    + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeHomeBack);
+                    + " && !document.querySelector('[data-testid=prompt-composer]')");
         } catch (AssertionError backFailure) {
             try {
                 emitBackState("workspace-failure");
@@ -1199,6 +1203,48 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
                 + ".map(row => row.textContent || '').join('').includes(" + JSONObject.quote(insertMarker) + ")", 10_000);
 
+        awaitConnectedLivePromptTarget("before-transcribing-insert-case");
+        String transcribingInsertMarker = "PS2857_DICTATION_TRANSCRIBING_INSERT_" + nameBase;
+        String transcribingInsertCommand = "printf '%s' '" + transcribingInsertMarker + "' > /tmp/" + bytesSession
+                + "-dictation-transcribing-insert.marker";
+        String transcribingInsertPreview = "Extract the key details from these logs.";
+        setComposerDraft("");
+        String transcribingInsertWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
+        injectDictationTestEvent("partial", transcribingInsertPreview);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(transcribingInsertPreview));
+        tapDomCenter("[data-testid=composer-recording-stop]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
+        String frozenInsertTimer = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
+        assertTrue("transcribing must keep the stopped recording timer visible", frozenInsertTimer.matches("\\d{2}:\\d{2}"));
+        SystemClock.sleep(750);
+        assertEquals("Stop must freeze the elapsed prompt dictation timer after its physical tap completes", frozenInsertTimer,
+                evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''"));
+        injectDictationTestEvent("partial", transcribingInsertCommand);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(transcribingInsertCommand));
+        assertEquals("transcribing-time Insert must not write while its visible transcript updates",
+                transcribingInsertWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        recordComposerModeState(runId, "transcribing-insert", transcribingInsertCommand,
+                Integer.parseInt(transcribingInsertWriteBaseline));
+        captureHostBeforeExplicitAction("transcribing-insert", transcribingInsertCommand);
+        tapDomCenter("[data-testid=composer-insert]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Insert')");
+        injectDictationTestEvent("finish", null);
+        awaitInsertedAndCleared();
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '1'");
+        tapDomCenter("[data-testid=composer-close]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+        tapDomCenter("[data-key-id=enter]");
+        awaitJsTrue("Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
+                + ".map(row => row.textContent || '').join('').includes(" + JSONObject.quote(transcribingInsertMarker) + ")", 10_000);
+
         awaitConnectedLivePromptTarget("before-transcribing-send-case");
         String transcribingSendMarker = "PS2857_DICTATION_TRANSCRIBING_SEND_" + nameBase;
         String transcribingSendCommand = "printf '%s' '" + transcribingSendMarker + "' > /tmp/" + bytesSession
@@ -1490,6 +1536,7 @@ public final class JsComposerDockerJourneyTest {
                 + "sheetFullyVisible:!!panelBounds&&panelBounds.top>=0&&panelBounds.bottom<=viewport.height+0.5,"
                 + "draftText:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
                 + "dictatePromptText:dictateLabel,"
+                + "dictatePromptGlyphPresent:!!buttons.dictate?.querySelector(\"svg[aria-hidden='true'] path[d^='M12 2a3']\"),"
                 + "dictatePromptAccessibleName:buttons.dictate?.getAttribute('aria-label')??'',"
                 + "dictatePromptVisible:dictateVisible,"
                 + "dictatePromptBounds:dictateRect?{top:dictateRect.top,bottom:dictateRect.bottom,left:dictateRect.left,right:dictateRect.right,width:dictateRect.width,height:dictateRect.height}:null,"
@@ -1500,7 +1547,7 @@ public final class JsComposerDockerJourneyTest {
         titleState.put("runId", runId);
         titleState.put("expectedComposerHeading", "Prompt Composer");
         titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt");
-        titleState.put("expectedDictatePromptVisibleLabel", "Dictate");
+        titleState.put("expectedDictatePromptVisibleLabel", "");
         titleState.put("expectedSessionChrome", bytesSession);
         emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-title.png");
@@ -1509,12 +1556,15 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("buttons").getBoolean("dictate")
                         && titleState.getJSONObject("buttons").getBoolean("insert")
                         && titleState.getJSONObject("buttons").getBoolean("send")
-                        && "Dictate".equals(titleState.getString("dictatePromptText"))
+                        && titleState.getString("dictatePromptText").isEmpty()
                         && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
+                        && titleState.getBoolean("dictatePromptGlyphPresent")
                         && titleState.getBoolean("dictatePromptVisible")
                         && titleState.getBoolean("dictatePromptEnabled")
-                        && titleState.getJSONObject("dictatePromptBounds").getDouble("width") >= 70.0
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("width") >= 48.0
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("width") < 49.0
                         && titleState.getJSONObject("dictatePromptBounds").getDouble("height") >= 48.0
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("height") < 49.0
                         && titleState.getDouble("screenScrollTop") == 0
                         && titleState.getDouble("documentScrollTop") == 0);
         assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
@@ -1664,6 +1714,8 @@ public final class JsComposerDockerJourneyTest {
                 + "dictationSendAccessible:!!dictationSendButton&&(dictationSendButton.textContent??'').includes('Send')"
                 + "&&dictationSendButton.getClientRects().length>0,dictationSendEnabled:!!dictationSendButton&&!dictationSendButton.disabled,"
                 + "timerAccessible:timer?.getAttribute('aria-label')==='Recording elapsed time',"
+                + "timerVisible:!!timer&&timer.getClientRects().length>0&&getComputedStyle(timer).display!=='none',"
+                + "timerText:timer?.textContent.trim()??'',"
                 + "timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"
                 + "&&timerRect.top<waveformRect.bottom&&timerRect.right<waveformRect.left,"
                 + "recordingControlsAccessible:actionRow?.getAttribute('role')==='group'"
@@ -1760,16 +1812,21 @@ public final class JsComposerDockerJourneyTest {
                                 && Math.abs(measured.getJSONObject("stop").getDouble("height") - 48.0) < 0.5
                                 && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
             } else {
-                assertEquals("transcribing actions must match Kotlin: Cancel and explicit Send",
-                        "composer-recording-cancel,composer-dictation-send",
+                assertEquals("transcribing actions must match Kotlin: Cancel, Insert, and Send",
+                        "composer-recording-cancel,composer-insert,composer-dictation-send",
                         measured.getString("actionOrder"));
                 assertEquals("transcribing Cancel must be distinct from recording Discard", "Cancel",
                         measured.getString("cancelText"));
                 assertEquals("transcribing Cancel must explain that it restores the original draft",
                         "Cancel dictation and restore the original draft", measured.getString("cancelAriaLabel"));
-                assertTrue("transcribing state must expose accessible status and Send while hiding Insert",
+                assertTrue("transcribing state must expose its timer, live preview, Insert, and Send",
                         measured.getBoolean("transcribingStatusAccessible")
-                                && !measured.getBoolean("insertAccessible")
+                                && measured.getBoolean("timerAccessible") && measured.getBoolean("timerVisible")
+                                && measured.getString("timerText").matches("\\d{2}:\\d{2}")
+                                && measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
+                                && measured.getBoolean("previewAccessible")
+                                && measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
+                                && measured.getJSONObject("insert").getDouble("height") >= 47.9
                                 && measured.getBoolean("dictationSendAccessible")
                                 && measured.getBoolean("dictationSendEnabled")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);

@@ -1765,7 +1765,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const savedStyle=tray.getAttribute('style'),savedScrollLeft=bar.scrollLeft;"
                 + "tray.style.width='330px';tray.style.maxWidth='330px';tray.style.minWidth='0';"
                 + "bar.scrollLeft=0;const clientWidth=bar.clientWidth,scrollWidth=bar.scrollWidth;"
-                + "const targets=Array.from(bar.querySelectorAll('button')).map(node=>{node.scrollIntoView({block:'nearest',inline:'nearest'});"
+                + "const targets=Array.from(bar.querySelectorAll('button')).map(node=>{"
                 + "const r=node.getBoundingClientRect(),b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
                 + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
@@ -1775,7 +1775,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "visibleWidth,visibleHeight,hitTarget:!!hit&&(hit===node||node.contains(hit)),"
                 + "disabled:!!node.disabled};});"
                 + "const destination=tray.querySelector('[data-testid=inline-dictation-destination]');"
-                + "let terminalDestination=null,finalMic=null;if(destination){destination.scrollIntoView({block:'nearest',inline:'nearest'});"
+                + "let terminalDestination=null,finalMic=null;if(destination){"
                 + "const r=destination.getBoundingClientRect(),b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
                 + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
                 + "terminalDestination={text:destination.textContent.trim(),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,"
@@ -1792,6 +1792,8 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("narrow toolbar overflow state must match its measured scroll range: " + result,
                 result.getDouble("scrollWidth") > result.getDouble("clientWidth") + 1,
                 result.getBoolean("scrollable"));
+        assertTrue("at 330px the persistent dock must fit without scrolling any 48dp control out of view: " + result,
+                !result.getBoolean("scrollable") && result.getDouble("maxScrollLeft") <= 1);
         JSONArray targets = result.getJSONArray("targets");
         assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
         assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer"));

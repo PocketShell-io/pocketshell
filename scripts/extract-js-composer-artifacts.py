@@ -39,6 +39,8 @@ REQUIRED_NAMES = {
     "composer-recording-insert-geometry.json",
     "composer-transcribing-send.png",
     "composer-transcribing-send-geometry.json",
+    "composer-transcribing-insert.png",
+    "composer-transcribing-insert-geometry.json",
     "composer-back-workspace-restored.png",
     "composer-back-workspace-restored.json",
     "composer-route.png",
@@ -82,6 +84,7 @@ FAILURE_SCREENSHOTS = {
     "composer-mode-ime-failure.png",
     "composer-recording-insert.png",
     "composer-transcribing-send.png",
+    "composer-transcribing-insert.png",
     "composer-back-workspace-failure.png",
     "composer-title.png",
     "composer-launcher-before-reopen.png",
@@ -376,10 +379,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("composerHeading") != "Prompt Composer"
                 or title_state.get("expectedComposerHeading") != "Prompt Composer"
                 or title_state.get("sheetFullyVisible") is not True
-                or title_state.get("dictatePromptText") != "Dictate"
-                or title_state.get("expectedDictatePromptVisibleLabel") != "Dictate"
+                or title_state.get("dictatePromptText") != ""
+                or title_state.get("expectedDictatePromptVisibleLabel") != ""
                 or title_state.get("expectedDictatePromptAccessibleName") != "Dictate prompt"
                 or title_state.get("dictatePromptAccessibleName") != "Dictate prompt"
+                or title_state.get("dictatePromptGlyphPresent") is not True
                 or title_state.get("dictatePromptVisible") is not True
                 or title_state.get("dictatePromptEnabled") is not True
                 or not isinstance(panel, dict) or not isinstance(scrim, dict) or not isinstance(viewport, dict)
@@ -409,7 +413,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             viewport_height = float(viewport["height"])
         except (KeyError, TypeError, ValueError) as error:
             raise ExtractionFailure("composer title report has invalid Dictate prompt bounds") from error
-        if (dictate_width < 70.0 or dictate_height < 48.0
+        if (dictate_width < 48.0 or dictate_width >= 49.0 or dictate_height < 48.0 or dictate_height >= 49.0
                 or abs((dictate_right - dictate_left) - dictate_width) >= 0.5
                 or abs((dictate_bottom - dictate_top) - dictate_height) >= 0.5
                 or dictate_top < max(0.0, panel_top) or dictate_bottom > min(viewport_height, panel_bottom) + 0.5
@@ -697,7 +701,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("accepted composer run contains the pre-fix recording screenshot")
         if "composer-mode-ime-failure.png" in decoded or "composer-mode-ime-failure.json" in decoded:
             raise ExtractionFailure("accepted composer run contains an IME-hidden state failure capture")
-        for state in ("recording", "recording-insert", "cancel", "background", "transcribing", "transcribing-send", "review"):
+        for state in ("recording", "recording-insert", "cancel", "background", "transcribing", "transcribing-insert", "transcribing-send", "review"):
             geometry_name = f"composer-{state}-geometry.json"
             try:
                 mode_geometry = json.loads(decoded[geometry_name])
@@ -715,7 +719,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure(f"{state} screenshot does not identify the active prompt dictation mode")
             if state == "review" and "Transcript ready" not in str(mode_geometry.get("reviewText", "")):
                 raise ExtractionFailure("review screenshot does not identify the transcript as ready for editing")
-            if state in ("recording-insert", "transcribing-send"):
+            if state in ("recording-insert", "transcribing-insert", "transcribing-send"):
                 acknowledged_writes = mode_geometry.get("acknowledgedWrites")
                 writes_before_action = mode_geometry.get("acknowledgedWritesBeforeAction")
                 if (type(acknowledged_writes) is not int or type(writes_before_action) is not int
@@ -783,8 +787,19 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         raise ExtractionFailure("recording screenshot does not prove the icon-only, enabled 48dp Stop control and live preview")
                 elif (mode_geometry.get("cancelText") != "Cancel"
                         or mode_geometry.get("cancelAriaLabel") != "Cancel dictation and restore the original draft"
-                        or mode_geometry.get("transcribingStatusAccessible") is not True):
-                    raise ExtractionFailure("transcribing screenshot does not expose Cancel and its accessible live status")
+                        or mode_geometry.get("transcribingStatusAccessible") is not True
+                        or mode_geometry.get("insertAccessible") is not True
+                        or mode_geometry.get("insertEnabled") is not True
+                        or mode_geometry.get("dictationSendAccessible") is not True
+                        or mode_geometry.get("dictationSendEnabled") is not True
+                        or mode_geometry.get("timerAccessible") is not True
+                        or mode_geometry.get("timerVisible") is not True
+                        or not re.fullmatch(r"\d{2}:\d{2}", str(mode_geometry.get("timerText", "")))
+                        or mode_geometry.get("previewVisible") is not True
+                        or mode_geometry.get("previewLive") is not True
+                        or mode_geometry.get("previewAccessible") is not True
+                        or not str(mode_geometry.get("previewText", "")).strip()):
+                    raise ExtractionFailure("transcribing screenshot does not expose Cancel, timer, live preview, Insert, and Send")
             elif state == "review" and (
                     mode_geometry.get("reviewVisible") is not True
                     or mode_geometry.get("reviewEditable") is not True
@@ -827,15 +842,16 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     required_rects.append("insert")
                     expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
                 else:
-                    if mode_geometry.get("insertAccessible") is True:
-                        raise ExtractionFailure(f"{state} screenshot exposes Insert during Kotlin-aligned transcribing")
-                    expected_actions = "composer-recording-cancel,composer-dictation-send"
+                    if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
+                        raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Insert during transcribing")
+                    required_rects.append("insert")
+                    expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send"
                 if mode_geometry.get("actionOrder") != expected_actions:
                     raise ExtractionFailure(f"{state} screenshot action order does not match the Kotlin composer")
             if state.startswith("recording"):
                 required_rects.extend(("timer", "waveform", "preview", "recordingActions", "stop"))
             elif state.startswith("transcribing"):
-                required_rects.append("recordingMode")
+                required_rects.extend(("recordingMode", "timer", "preview"))
             for rect_name in required_rects:
                 rect = mode_geometry.get(rect_name)
                 if not isinstance(rect, dict):
@@ -990,14 +1006,15 @@ def self_test() -> None:
         "sheetFullyVisible": True,
         "composerHeading": "Prompt Composer",
         "expectedComposerHeading": "Prompt Composer",
-        "dictatePromptText": "Dictate",
-        "expectedDictatePromptVisibleLabel": "Dictate",
+        "dictatePromptText": "",
+        "expectedDictatePromptVisibleLabel": "",
+        "dictatePromptGlyphPresent": True,
         "expectedDictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptVisible": True,
         "dictatePromptEnabled": True,
-        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 300.0, "right": 396.0,
-                                 "width": 96.0, "height": 48.0},
+        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 348.0, "right": 396.0,
+                                 "width": 48.0, "height": 48.0},
         "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
         "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
         "viewport": {"width": 412.0, "height": 915.0},
@@ -1146,8 +1163,8 @@ def self_test() -> None:
             else "Your draft stays in the composer until you tap Insert or Send." if recording else "",
             "reviewText": "Transcript ready. Edit the draft before choosing Insert or Send." if state == "review" else "",
             "reviewEditable": state == "review",
-            "acknowledgedWrites": 1 if state == "transcribing-send" else 0,
-            "acknowledgedWritesBeforeAction": 1 if state == "transcribing-send" else 0,
+            "acknowledgedWrites": 1 if state in ("transcribing-send", "transcribing-insert") else 0,
+            "acknowledgedWritesBeforeAction": 1 if state in ("transcribing-send", "transcribing-insert") else 0,
             "draftPresentation": "focus-anchor" if anchored else "editor",
             "draftOpacity": "0" if anchored else "1",
             "draftAriaHidden": False,
@@ -1155,11 +1172,13 @@ def self_test() -> None:
             "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if transcribing else "",
             "recordingModeVisible": anchored,
             "recordingModeLabel": "Prompt dictation recording" if recording else "Transcribing prompt" if transcribing else "",
-            "previewVisible": recording,
-            "previewLive": recording,
-            "previewAccessible": recording,
-            "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert" else "discard this dictated phrase" if recording else "",
-            "timerAccessible": recording,
+            "previewVisible": anchored,
+            "previewLive": anchored,
+            "previewAccessible": anchored,
+            "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert" else "transcript in progress" if transcribing else "discard this dictated phrase" if recording else "",
+            "timerAccessible": anchored,
+            "timerVisible": anchored,
+            "timerText": "00:12" if anchored else "",
             "timerBesideWaveform": recording,
             "recordingControlsAccessible": anchored,
             "recordingControlsSeparate": anchored,
@@ -1172,8 +1191,8 @@ def self_test() -> None:
             "stopVisible": recording,
             "stopEnabled": recording,
             "stopGlyphPresent": recording,
-            "insertAccessible": recording,
-            "insertEnabled": recording,
+            "insertAccessible": anchored,
+            "insertEnabled": anchored,
             "dictationSendAccessible": anchored,
             "dictationSendEnabled": anchored,
             "transcribingStatusAccessible": transcribing,
@@ -1203,16 +1222,17 @@ def self_test() -> None:
             payload["recordingActions"] = rect
             payload["actionOrder"] = (
                 "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
-                if recording else "composer-recording-cancel,composer-dictation-send"
+                if recording else "composer-recording-cancel,composer-insert,composer-dictation-send"
             )
-            if recording:
-                payload["insert"] = rect
+            payload["insert"] = rect
         if state in ("cancel", "background"):
             payload["send"] = rect
         if recording:
             payload.update({"timer": timer_rect, "waveform": waveform_rect, "preview": rect,
                             "stop": {"top": 10.0, "bottom": 58.0, "left": 347.0, "right": 395.0,
                                      "width": 48.0, "height": 48.0}})
+        elif transcribing:
+            payload.update({"timer": timer_rect, "preview": rect})
         if state == "review":
             payload["review"] = rect
             payload["send"] = rect
@@ -1456,6 +1476,8 @@ def self_test() -> None:
             ("composer-transcribing-geometry.json", mode_geometry_payload("transcribing")),
             ("composer-transcribing-send.png", png),
             ("composer-transcribing-send-geometry.json", transcribing_send_geometry_bytes or mode_geometry_payload("transcribing-send")),
+            ("composer-transcribing-insert.png", png),
+            ("composer-transcribing-insert-geometry.json", mode_geometry_payload("transcribing-insert")),
             ("composer-review.png", png),
             ("composer-review-geometry.json", review_geometry_bytes or mode_geometry_payload("review")),
             ("composer-recording-after-restart.png", png),

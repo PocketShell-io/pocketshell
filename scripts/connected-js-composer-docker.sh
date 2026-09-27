@@ -336,6 +336,15 @@ dictation_insert_capture="$(ssh_remote "a capture --workspace /home/testuser --t
   || fail 'independent host PTY capture did not contain the recording-time Insert command'
 printf 'PASS: recording-time Insert reached the host and ran only after explicit Enter as %s\n' "$dictation_insert_marker"
 
+transcribing_insert_marker="PS2857_DICTATION_TRANSCRIBING_INSERT_$SESSION_BASE"
+transcribing_insert_output="$(ssh_remote "cat /tmp/$bytes_session-dictation-transcribing-insert.marker | tr -d '\\n'")"
+[[ "$transcribing_insert_output" == "$transcribing_insert_marker" ]] \
+  || fail "transcribing-time Insert command was not executed exactly after explicit Enter: expected $transcribing_insert_marker, got ${transcribing_insert_output:-<empty>}"
+transcribing_insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$transcribing_insert_capture" == *"$transcribing_insert_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the transcribing-time Insert command'
+printf 'PASS: transcribing-time Insert reached the host and ran only after explicit Enter as %s\n' "$transcribing_insert_marker"
+
 transcribing_send_marker="PS2857_DICTATION_TRANSCRIBING_SEND_$SESSION_BASE"
 transcribing_send_output="$(ssh_remote "cat /tmp/$bytes_session-dictation-transcribing-send.marker | tr -d '\\n'")"
 [[ "$transcribing_send_output" == "$transcribing_send_marker" ]] \

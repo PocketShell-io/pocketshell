@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 
-STAGES = ("recording-insert", "transcribing-send", "stop-review")
+STAGES = ("recording-insert", "transcribing-insert", "transcribing-send", "stop-review")
 
 
 class OracleFailure(ValueError):

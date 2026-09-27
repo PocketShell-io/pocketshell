@@ -66,12 +66,13 @@ def require_dictate_prompt_journey(source: str) -> None:
         'const inlineMic=document.querySelector(\'[data-testid=inline-dictation-toggle]\')',
         '"Dictate to terminal".equals(state.getString("inlineMicLabel"))',
         'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt")',
-        'titleState.put("expectedDictatePromptVisibleLabel", "Dictate")',
-        '"Dictate".equals(titleState.getString("dictatePromptText"))',
+        'titleState.put("expectedDictatePromptVisibleLabel", "")',
+        'titleState.getString("dictatePromptText").isEmpty()',
+        'titleState.getBoolean("dictatePromptGlyphPresent")',
         'titleState.getString("dictatePromptAccessibleName")',
         'titleState.getBoolean("dictatePromptVisible")',
         'titleState.getBoolean("dictatePromptEnabled")',
-        'getDouble("width") >= 70.0',
+        'getDouble("width") >= 48.0',
         'getDouble("height") >= 48.0',
         'emitCurrentScreen(runId, "composer-title.png")',
         'emitArtifact(runId, "composer-title.json"',
@@ -238,6 +239,9 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
         'route_state.get("inlineMicLabel") != "Dictate to terminal"',
         'mode_geometry.get("cancelText") != "Cancel"',
         'mode_geometry.get("timerBesideWaveform") is not True',
+        'mode_geometry.get("timerVisible") is not True',
+        'mode_geometry.get("insertAccessible") is not True',
+        'mode_geometry.get("previewVisible") is not True',
         '_timer_sits_beside_waveform(mode_geometry.get("timer"), mode_geometry.get("waveform"))',
         'mode_geometry.get("previewAccessible") is not True',
         'mode_geometry.get("recordingControlsSeparate") is not True',
@@ -264,7 +268,7 @@ def require_obvious_prompt_dictation_mode() -> None:
         "'Prompt dictation'",
         "<h3 id=\"composer-title\">{{ composerTitle }}</h3>",
         'title="Dictate a prompt" aria-label="Dictate prompt"',
-        "<span>Dictate</span>",
+        '<DictationMicIcon :size="20" />',
         "composer-recording-preview composer-status",
         "Prompt dictation draft, read only during capture",
     )
@@ -276,7 +280,7 @@ def require_obvious_prompt_dictation_mode() -> None:
             raise AssertionError(f"prompt dictation feedback is not phase-specific: {needle}")
     unit_evidence = (
         "places the mobile Dictate prompt microphone in the composer action row",
-        "expect(textContent(mic!)).toBe('Dictate')",
+        "expect(textContent(mic!)).toBe('')",
         "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation')",
         "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation')",
         "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop'])",
@@ -298,6 +302,7 @@ require_obvious_prompt_dictation_mode()
 def require_pre_action_host_byte_oracle() -> None:
     for stage, action in (
         ("recording-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
+        ("transcribing-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
         ("transcribing-send", 'tapDomCenter("[data-testid=composer-dictation-send]")'),
     ):
         before = journey.index(f'captureHostBeforeExplicitAction("{stage}",')
@@ -315,7 +320,7 @@ def require_pre_action_host_byte_oracle() -> None:
     ):
         if needle not in host_oracle:
             raise AssertionError(f"host oracle is missing independent pre-action PTY evidence: {needle}")
-    if '"recording-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
+    if '"recording-insert", "transcribing-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
         raise AssertionError("host-byte checker does not require every pre-action stage")
     for needle in (
         '"ptyWriteObserved") is not False',
