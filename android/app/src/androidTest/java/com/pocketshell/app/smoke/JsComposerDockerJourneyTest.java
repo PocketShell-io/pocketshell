@@ -363,13 +363,45 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void setComposerDraft(String value) throws Exception {
+        boolean openedComposer = false;
         if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            evalString("window.__ps2857PromptDictateStable = null; 'reset physical target stability samples'");
             tapDomCenter("[data-testid=prompt-composer-launcher]");
             awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
                     + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+            openedComposer = true;
         }
         setValue("[data-testid=prompt-draft]", value);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(value));
+        if (openedComposer) awaitPromptDictateTargetSettled();
+    }
+
+    private void awaitPromptDictateTargetSettled() throws Exception {
+        awaitNativeWindowFocus(true);
+        String settled = "(() => {const key='__ps2857PromptDictateStable';"
+                + "const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "const button=panel?.querySelector('[data-testid=composer-dictate]');"
+                + "if(!panel||!button)return false;"
+                + "const panelStyle=getComputedStyle(panel),buttonStyle=getComputedStyle(button);"
+                + "const panelRect=panel.getBoundingClientRect(),buttonRect=button.getBoundingClientRect();"
+                + "const viewport={width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight};"
+                + "const x=buttonRect.left+buttonRect.width/2,y=buttonRect.top+buttonRect.height/2;"
+                + "const hit=document.elementFromPoint(x,y);"
+                + "const visible=panel.getAttribute('role')==='dialog'&&panel.getAttribute('aria-modal')==='true'"
+                + "&&panel.getClientRects().length>0&&panelStyle.display!=='none'&&panelStyle.visibility==='visible'"
+                + "&&Number(panelStyle.opacity)>0.95&&panelRect.top<viewport.height&&panelRect.bottom>0"
+                + "&&button.getClientRects().length>0&&buttonStyle.display!=='none'&&buttonStyle.visibility==='visible'"
+                + "&&Number(buttonStyle.opacity)>0.95&&!button.disabled&&buttonRect.width>=48&&buttonRect.height>=48"
+                + "&&buttonRect.left>=0&&buttonRect.top>=0&&buttonRect.right<=viewport.width"
+                + "&&buttonRect.bottom<=viewport.height;"
+                + "const hitTested=!!hit?.closest?.('[data-testid=composer-dictate]');"
+                + "const geometry=[panelRect.left,panelRect.top,panelRect.width,panelRect.height,buttonRect.left,buttonRect.top,"
+                + "buttonRect.width,buttonRect.height,viewport.width,viewport.height];"
+                + "const previous=window[key];const same=previous&&geometry.every((value,index)=>Math.abs(value-previous.geometry[index])<0.25);"
+                + "const samples=same?previous.samples+1:1;window[key]={geometry,samples};"
+                + "const moving=panel.getAnimations({subtree:true}).some(animation=>animation.playState==='running');"
+                + "return visible&&hitTested&&!moving&&samples>=3;})()";
+        awaitJsTrue(settled, 8_000);
     }
 
     private void openComposerAfterInlineWithEvidence(String runId) throws Exception {

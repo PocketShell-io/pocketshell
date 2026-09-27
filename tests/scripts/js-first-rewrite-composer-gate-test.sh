@@ -89,6 +89,33 @@ def require_dictate_prompt_journey(source: str) -> None:
 require_dictate_prompt_journey(journey)
 
 
+def require_open_composer_physical_target_settles(source: str) -> None:
+    set_draft = source[source.index("private void setComposerDraft("):source.index("private void awaitPromptDictateTargetSettled(")]
+    if "if (openedComposer) awaitPromptDictateTargetSettled();" not in set_draft:
+        raise AssertionError("a newly opened composer must settle its physical Dictate target before the next tap")
+    start = source.index("private void awaitPromptDictateTargetSettled(")
+    end = source.index("private void openComposerAfterInlineWithEvidence(", start)
+    settle = source[start:end]
+    required = (
+        "awaitNativeWindowFocus(true)",
+        "panel.getAttribute('role')==='dialog'",
+        "panel.getAttribute('aria-modal')==='true'",
+        "button.getClientRects().length>0",
+        "buttonRect.width>=48&&buttonRect.height>=48",
+        "buttonRect.bottom<=viewport.height",
+        "document.elementFromPoint(x,y)",
+        "hit?.closest?.('[data-testid=composer-dictate]')",
+        "Math.abs(value-previous.geometry[index])<0.25",
+        "samples>=3",
+    )
+    for needle in required:
+        if needle not in settle:
+            raise AssertionError(f"composer Dictate physical target settling is missing: {needle}")
+
+
+require_open_composer_physical_target_settles(journey)
+
+
 def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
     required = (
         "stop?.innerText.trim()===''",
