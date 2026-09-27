@@ -259,6 +259,7 @@
         "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",
         "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
         "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
+        "stops 'transcribing' capture before the explicit 'insert' delivery and freezes the visible transcript",
         "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
       ]
     }

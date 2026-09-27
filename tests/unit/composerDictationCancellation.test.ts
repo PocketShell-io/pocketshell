@@ -282,6 +282,8 @@ describe('composer dictation cancellation', () => {
     expect(transcribingPreview?.props.id).toBe('composer-recording-preview');
     expect(transcribingPreview?.props['aria-live']).toBe('polite');
     expect(textContent(transcribingPreview!)).toBe('Waiting for transcript…');
+    expect(findByTestId(root, 'composer-recording-timer')).toBeDefined();
+    expect(findByTestId(root, 'composer-recording-timer')?.props['aria-label']).toBe('Recording elapsed time');
 
     app.unmount();
   });
@@ -321,7 +323,7 @@ describe('composer dictation cancellation', () => {
       title: 'Dictate a prompt',
       disabled: false,
     });
-    expect(textContent(mic!)).toBe('Dictate');
+    expect(textContent(mic!)).toBe('');
     expect(findByTestId(portal, 'composer-insert')?.parent).toBe(actions);
     expect(send).toBeDefined();
     expect(isDescendantOf(send!, actions!)).toBe(true);
@@ -337,14 +339,16 @@ describe('composer dictation cancellation', () => {
   it('pins the production composer mic and shared dictation action styles to the Kotlin hierarchy', () => {
     const composerStyles = styleSource(promptComposerSource, 'PromptComposer');
     const mic = cssRule(composerStyles, '.composer-dictate--mic');
+    expect(mic).toContain('width: 48px');
     expect(mic).toContain('min-width: 48px');
     expect(mic).toContain('height: 48px');
-    expect(mic).toContain('flex: 0 0 auto');
+    expect(mic).toContain('flex: 0 0 48px');
+    expect(mic).toContain('border-radius: 50%');
     expect(mic).toContain('border: 1px solid var(--border-strong)');
-    expect(mic).toContain('border-radius: 24px');
     expect(mic).toContain('background: var(--surface-2)');
-    expect(mic).toContain('font: var(--fw-semibold) var(--fs-200)/1 var(--font-ui)');
-    expect(promptComposerSource).toContain('<span>Dictate</span>');
+    expect(mic).toContain('color: var(--fg)');
+    expect(promptComposerSource).toContain('<DictationMicIcon :size="20" />');
+    expect(promptComposerSource).not.toContain('<span>Dictate</span>');
 
     const send = cssRule(composerStyles, '.composer-recording-action--send');
     expect(send).toContain('border-color: var(--accent-dim)');
@@ -566,6 +570,7 @@ describe('composer dictation cancellation', () => {
   it.each([
     { phase: 'recording', intent: 'insert' },
     { phase: 'recording', intent: 'submit' },
+    { phase: 'transcribing', intent: 'insert' },
     { phase: 'transcribing', intent: 'submit' },
   ] as const)('stops $phase capture before the explicit $intent delivery and freezes the visible transcript', async ({ phase, intent }) => {
     mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
@@ -640,11 +645,11 @@ describe('composer dictation cancellation', () => {
       expect(composerState(root)).toBe('transcribing');
       expect(findAll(findByTestId(root, 'composer-recording-actions')!, (child) => child.type === 'button')
         .map((child) => child.props['data-testid']))
-        .toEqual(['composer-recording-cancel', 'composer-dictation-send']);
+        .toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send']);
       expect(textContent(findByTestId(root, 'composer-recording-cancel')!)).toBe('Cancel');
       expect(findByTestId(root, 'composer-recording-cancel')?.props['aria-label'])
         .toBe('Cancel dictation and restore the original draft');
-      expect(findByTestId(root, 'composer-insert')).toBeUndefined();
+      expect(findByTestId(root, 'composer-insert')).toBeDefined();
       expect(writePty).not.toHaveBeenCalled();
     }
 

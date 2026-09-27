@@ -20,9 +20,16 @@ defineProps<{
       </div>
     </div>
 
+    <div v-else-if="state === 'transcribing'" class="recording-mode__transcribing-row" role="status" aria-live="polite">
+      <span class="recording-mode__spinner" aria-hidden="true"></span>
+      <span>Transcribing prompt…</span>
+      <time data-testid="composer-recording-timer" aria-label="Recording elapsed time">
+        {{ elapsedLabel }}
+      </time>
+    </div>
     <div v-else class="recording-mode__progress" role="status" aria-live="polite">
       <span class="recording-mode__spinner" aria-hidden="true"></span>
-      <span>{{ state === 'starting' ? 'Requesting microphone access…' : 'Transcribing prompt…' }}</span>
+      <span>Requesting microphone access…</span>
     </div>
     <p v-if="state === 'recording' || state === 'transcribing'" id="composer-recording-preview"
       class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
@@ -107,6 +114,23 @@ defineProps<{
   gap: var(--sp-2);
   color: var(--fg-secondary);
   font-size: var(--fs-200);
+}
+.recording-mode__transcribing-row {
+  display: flex;
+  min-width: 0;
+  min-height: 32px;
+  align-items: center;
+  gap: var(--sp-2);
+  color: var(--fg-secondary);
+  font-size: var(--fs-200);
+}
+.recording-mode__transcribing-row > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recording-mode__transcribing-row time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--accent);
+  font: 600 var(--fs-300)/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 .recording-mode__spinner {
   width: 16px;

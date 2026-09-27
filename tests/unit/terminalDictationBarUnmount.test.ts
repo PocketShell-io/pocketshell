@@ -1,6 +1,8 @@
 import { compile, createRenderer, getCurrentInstance, ssrContextKey, type App, type VNode } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DictationEvent, DictationSession } from '../../src/session/platformInput';
+import DictationMicIcon from '../../src/components/DictationMicIcon.vue';
+import dictationMicIconSource from '../../src/components/DictationMicIcon.vue?raw';
 import terminalDictationBarSource from '../../src/components/TerminalDictationBar.vue?raw';
 
 const mocks = vi.hoisted(() => ({
@@ -20,6 +22,16 @@ import TerminalDictationBar from '../../src/components/TerminalDictationBar.vue'
 const terminalDictationTemplate = terminalDictationBarSource.match(/<template>([\s\S]*)<\/template>/)?.[1];
 if (!terminalDictationTemplate) throw new Error('TerminalDictationBar production template is missing');
 const compiledTerminalDictationTemplate = compile(terminalDictationTemplate, { hoistStatic: false }) as unknown as (
+  context: object,
+  cache: unknown[],
+  props: object,
+  setup: object,
+  data: object,
+  options: object,
+) => VNode;
+const dictationMicIconTemplate = dictationMicIconSource.match(/<template>([\s\S]*)<\/template>/)?.[1];
+if (!dictationMicIconTemplate) throw new Error('DictationMicIcon production template is missing');
+const compiledDictationMicIconTemplate = compile(dictationMicIconTemplate, { hoistStatic: false }) as unknown as (
   context: object,
   cache: unknown[],
   props: object,
@@ -79,6 +91,18 @@ const renderer = createRenderer<HostNode, HostNode>({
 
 const mountedDictationBar = {
   ...TerminalDictationBar,
+  components: {
+    DictationMicIcon: {
+      ...DictationMicIcon,
+      render() {
+        const internal = getCurrentInstance() as unknown as {
+          props?: object;
+        } | null;
+        const props = internal?.props ?? {};
+        return compiledDictationMicIconTemplate(props, [], props, props, props, props);
+      },
+    },
+  },
   render() {
     const internal = getCurrentInstance() as unknown as {
       setupState?: object;
@@ -103,6 +127,12 @@ function findByTestId(root: HostNode, testId: string): HostNode | undefined {
     if (match) return match;
   }
   return undefined;
+}
+
+function findAllByType(root: HostNode, type: string): HostNode[] {
+  const matches = root.type === type ? [root] : [];
+  for (const child of root.children) matches.push(...findAllByType(child, type));
+  return matches;
 }
 
 async function flushPromises() {
@@ -145,8 +175,9 @@ describe('terminal dictation bar lifecycle', () => {
     expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
     expect(toggle?.props['data-mic-state']).toBe('idle');
     expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Dictate');
-    expect(toggle?.children[0]?.type).toBe('svg');
-    expect(toggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
+    const idleMicSvg = findAllByType(toggle!, 'svg')[0];
+    expect(idleMicSvg?.props['aria-hidden']).toBe('true');
+    expect(idleMicSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
       .toEqual([
         'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z',
         'M19 10v2a7 7 0 0 1-14 0v-2',
@@ -161,10 +192,12 @@ describe('terminal dictation bar lifecycle', () => {
     expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
     expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Stop');
-    expect(listeningToggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
+    const stopSvg = findAllByType(listeningToggle!, 'svg')[0];
+    expect(stopSvg?.props['aria-hidden']).toBe('true');
+    expect(stopSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
       .toEqual(['M7 7h10v10H7z']);
-    expect(listeningToggle?.children[0]?.children.find((child) => child.type === 'path')?.props.style)
-      .toEqual({ fill: 'currentColor', stroke: 'none' });
+    expect(stopSvg?.children.find((child) => child.type === 'path')?.props)
+      .toMatchObject({ fill: 'currentColor', stroke: 'none' });
 
     app.unmount();
     recognitionEvent?.({ requestId: 'inline-glyph-1', type: 'stopped' });

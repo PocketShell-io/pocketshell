@@ -477,11 +477,11 @@ defineExpose({
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   touch-action: pan-x;
-  padding-inline: 4px;
+  padding-inline: 2px;
   background: transparent;
 }
 .mobile-hotkeys__bar::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
+.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
@@ -539,7 +539,7 @@ defineExpose({
 }
 .mobile-hotkeys__composer-label { white-space: nowrap; }
 .mobile-hotkeys__launcher {
-  margin-left: 4px;
+  margin-left: 2px;
   border-color: transparent;
   background: transparent;
   color: var(--fg-secondary);

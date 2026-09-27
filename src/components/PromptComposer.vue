@@ -9,6 +9,7 @@ import { platformInput, type DictationEvent, type DictationSession } from '../se
 import { useAppSettings, VOICE_LANGUAGE_AUTO } from '../stores/appSettings';
 import { useComposerDrafts } from '../stores/composerDrafts';
 import ComposerRecordingMode from './ComposerRecordingMode.vue';
+import DictationMicIcon from './DictationMicIcon.vue';
 
 const props = withDefaults(defineProps<{
   targetKey: string;
@@ -555,12 +556,7 @@ function startPromptDictation() {
           <button v-if="mobileSheet" class="composer-dictate composer-dictate--mic" type="button"
             data-testid="composer-dictate" :disabled="sendingIntent !== null || !targetKey"
             title="Dictate a prompt" aria-label="Dictate prompt" @click="startPromptDictation">
-            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="9" y="2" width="6" height="12" rx="3" />
-              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
-            </svg>
-            <span>Dictate</span>
+            <DictationMicIcon :size="20" />
           </button>
         </template>
 
@@ -573,7 +569,8 @@ function startPromptDictation() {
             @click="activeDictation && cancelDictation(activeDictation)">
             {{ dictationPhase === 'recording' ? 'Discard' : 'Cancel' }}
           </button>
-          <button v-if="dictationPhase === 'recording'" class="composer-recording-action composer-recording-action--insert"
+          <button v-if="dictationPhase === 'recording' || dictationPhase === 'transcribing'"
+            class="composer-recording-action composer-recording-action--insert"
             type="button" data-testid="composer-insert" :disabled="!canDeliver || sendingIntent !== null"
             @click="deliver('insert')">
             Insert
@@ -665,18 +662,17 @@ function startPromptDictation() {
 .composer-draft-row--dictating { display: block; height: 1px; overflow: visible; }
 .composer-dictate--mic {
   display: inline-flex;
+  width: 48px;
   min-width: 48px;
   height: 48px;
-  flex: 0 0 auto;
+  flex: 0 0 48px;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-2);
   border: 1px solid var(--border-strong);
-  border-radius: 24px;
+  border-radius: 50%;
   background: var(--surface-2);
   color: var(--fg);
-  padding: 0 var(--sp-3);
-  font: var(--fw-semibold) var(--fs-200)/1 var(--font-ui);
+  padding: 0;
 }
 .composer-dictate--mic:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
 .composer-dictate--mic:disabled { opacity: var(--disabled-opacity); }
