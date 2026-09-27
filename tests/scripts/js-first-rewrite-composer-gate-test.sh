@@ -6,6 +6,7 @@ WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-composer-artifacts.py"
 JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsComposerDockerJourneyTest.java"
+USAGE_PORTS_JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
 PROMPT_COMPOSER="$ROOT_DIR/src/components/PromptComposer.vue"
 RECORDING_MODE="$ROOT_DIR/src/components/ComposerRecordingMode.vue"
 DICTATION_UNIT_TEST="$ROOT_DIR/tests/unit/composerDictationCancellation.test.ts"
@@ -15,6 +16,7 @@ TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
 [[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -f "$JOURNEY" \
+  && -f "$USAGE_PORTS_JOURNEY" \
   && -f "$PROMPT_COMPOSER" && -f "$RECORDING_MODE" && -f "$DICTATION_UNIT_TEST" \
   && -x "$HOST_ORACLE" && -x "$HOST_ORACLE_CHECKER" \
   && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
@@ -24,7 +26,7 @@ PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" \
-  "$JOURNEY" "$PROMPT_COMPOSER" "$RECORDING_MODE" "$DICTATION_UNIT_TEST" \
+  "$JOURNEY" "$USAGE_PORTS_JOURNEY" "$PROMPT_COMPOSER" "$RECORDING_MODE" "$DICTATION_UNIT_TEST" \
   "$HOST_ORACLE" "$HOST_ORACLE_CHECKER" <<'PY'
 import ast
 import os
@@ -35,11 +37,13 @@ import tempfile
 from pathlib import Path
 
 workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path, \
-    prompt_composer_path, recording_mode_path, dictation_unit_test_path, host_oracle_path, host_oracle_checker_path = map(Path, sys.argv[1:])
+    usage_ports_journey_path, prompt_composer_path, recording_mode_path, dictation_unit_test_path, \
+    host_oracle_path, host_oracle_checker_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
 journey = journey_path.read_text()
+usage_ports_journey = usage_ports_journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 extractor = extractor_path.read_text()
 prompt_composer = prompt_composer_path.read_text()
@@ -114,6 +118,64 @@ def require_open_composer_physical_target_settles(source: str) -> None:
 
 
 require_open_composer_physical_target_settles(journey)
+
+def require_usage_ports_composer_opener(source: str) -> None:
+    helper_start = source.index("private void openComposerIfClosedAndAwaitTransport()")
+    helper_end = source.index("private void awaitTerminalReady()", helper_start)
+    helper = source[helper_start:helper_end]
+    required = (
+        'if (!"true".equals(evalString("!!document.querySelector(\'[data-testid=prompt-composer]\')")))',
+        'click("[data-testid=prompt-composer-launcher]")',
+        "getAttribute('role') === 'dialog'",
+        "getAttribute('aria-modal') === 'true'",
+        "dataset.transportState === 'connected'",
+    )
+    for needle in required:
+        if needle not in helper:
+            raise AssertionError(f"Usage/Ports composer helper is missing {needle}")
+    positions = [helper.index(needle) for needle in required]
+    if positions != sorted(positions):
+        raise AssertionError("Usage/Ports must open the composer when closed, await its modal dialog, then await connected transport")
+
+    send_start = source.index("private void sendComposerCommandAndAwaitMarker(")
+    send_end = source.index("private void openComposerIfClosedAndAwaitTransport()", send_start)
+    send_helper = source[send_start:send_end]
+    ensure_composer = send_helper.index("openComposerIfClosedAndAwaitTransport();")
+    draft_write = send_helper.index('setValue("[data-testid=prompt-draft]", command);')
+    send_click = send_helper.index('click(".composer-shared-controls .send");')
+    if not ensure_composer < draft_write < send_click:
+        raise AssertionError("Usage/Ports cleanup must open and ready the composer before writing or sending the command")
+
+
+require_usage_ports_composer_opener(usage_ports_journey)
+
+missing_launcher = usage_ports_journey.replace(
+    'click("[data-testid=prompt-composer-launcher]");',
+    "",
+    1,
+)
+try:
+    require_usage_ports_composer_opener(missing_launcher)
+except (AssertionError, ValueError):
+    print("PASS: removing the Usage/Ports composer launcher tap fails its gate contract")
+else:
+    raise AssertionError("Usage/Ports helper gate missed a removed composer launcher tap")
+
+helper_start = usage_ports_journey.index("private void openComposerIfClosedAndAwaitTransport()")
+helper_end = usage_ports_journey.index("private void awaitTerminalReady()", helper_start)
+helper = usage_ports_journey[helper_start:helper_end]
+dialog_start = helper.index("getAttribute('role') === 'dialog'")
+transport_start = helper.index("dataset.transportState === 'connected'")
+dialog_wait = helper[dialog_start:transport_start]
+transport_wait = helper[transport_start:]
+reordered_helper = helper[:dialog_start] + transport_wait + dialog_wait
+transport_before_dialog = usage_ports_journey.replace(helper, reordered_helper, 1)
+try:
+    require_usage_ports_composer_opener(transport_before_dialog)
+except (AssertionError, ValueError):
+    print("PASS: checking Usage/Ports transport before the dialog fails its gate contract")
+else:
+    raise AssertionError("Usage/Ports helper gate missed transport checked before opening the dialog")
 
 
 def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:

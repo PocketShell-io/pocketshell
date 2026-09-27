@@ -380,7 +380,7 @@ public final class UsagePortsDockerJourneyTest {
         JSONObject before = terminalInputStats();
         assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'");
+        openComposerIfClosedAndAwaitTransport();
         setValue("[data-testid=prompt-draft]", command);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(command));
         click(".composer-shared-controls .send");
@@ -393,6 +393,15 @@ public final class UsagePortsDockerJourneyTest {
         assertEquals("terminal input must remain drained after " + checkpoint, 0, after.getInt("pending"));
         assertEquals("terminal input failures must remain unchanged after " + checkpoint,
                 before.getInt("failureCount"), after.getInt("failureCount"));
+    }
+
+    private void openComposerIfClosedAndAwaitTransport() throws Exception {
+        if (!"true".equals(evalString("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            click("[data-testid=prompt-composer-launcher]");
+        }
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'");
     }
 
     private void awaitTerminalReady() throws Exception {
