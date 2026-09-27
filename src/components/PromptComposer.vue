@@ -500,13 +500,13 @@ function startPromptDictation() {
         <button v-if="mobileSheet && (dictationPhase === 'idle' || dictationPhase === 'review')"
           class="composer-dictate composer-dictate--sheet" type="button" data-testid="composer-dictate"
           :disabled="sendingIntent !== null || !targetKey" :aria-pressed="dictationPhase === 'review'"
-          aria-label="Start prompt dictation" @click="startPromptDictation">
+          aria-label="Dictate prompt" @click="startPromptDictation">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <rect x="9" y="2" width="6" height="12" rx="3" />
             <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
           </svg>
-          <span>Dictate</span>
+          <span>Dictate prompt</span>
         </button>
       </div>
 
@@ -612,7 +612,7 @@ function startPromptDictation() {
 .composer-panel--sheet .composer-sheet-close svg { width: 18px; height: 18px; }
 .composer-panel--sheet .composer-draft-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
+  grid-template-columns: minmax(0, 1fr) 104px;
   align-items: stretch;
   gap: 10px;
 }
@@ -624,7 +624,7 @@ function startPromptDictation() {
 .composer-draft-row--dictating { display: block; height: 1px; overflow: visible; }
 .composer-dictate--sheet {
   display: grid;
-  min-width: 72px;
+  min-width: 104px;
   min-height: 72px;
   align-content: center;
   justify-items: center;

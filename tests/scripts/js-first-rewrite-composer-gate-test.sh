@@ -5,16 +5,17 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-composer-artifacts.py"
+JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsComposerDockerJourneyTest.java"
 TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
-[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -f "$JOURNEY" && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
   printf 'FAIL: rewrite composer gate inputs are missing\n' >&2
   exit 1
 }
 
 bash -n "$RUNNER"
-python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
+python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" "$JOURNEY" <<'PY'
 import ast
 import os
 import re
@@ -23,16 +24,40 @@ import sys
 import tempfile
 from pathlib import Path
 
-workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path = map(Path, sys.argv[1:])
+workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
+journey = journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 ast.parse(extractor_path.read_text(), filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
 subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
 if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
     raise AssertionError("disk preflight does not invoke the tested toolcache-preservation helper")
+
+
+def require_dictate_prompt_journey(source: str) -> None:
+    required = (
+        'titleState.put("expectedDictatePromptLabel", "Dictate prompt")',
+        'titleState.getString("dictatePromptText")',
+        'titleState.getString("dictatePromptAccessibleName")',
+        'emitCurrentScreen(runId, "composer-title.png")',
+        'emitArtifact(runId, "composer-title.json"',
+    )
+    for needle in required:
+        if needle not in source:
+            raise AssertionError(f"composer journey is missing the visible Dictate prompt contract: {needle}")
+    start = source.index("private void exerciseComposerDictationMode")
+    end = source.index("private void awaitComposerReadyToSend", start)
+    dictation_method = source[start:end]
+    title_assertion = dictation_method.index("assertGenericComposerTitleAndSessionChrome(runId);")
+    action_tap = dictation_method.index('tapDomCenter("[data-testid=composer-dictate]")')
+    if title_assertion >= action_tap:
+        raise AssertionError("composer journey must verify the visible Dictate prompt action before tapping it")
+
+
+require_dictate_prompt_journey(journey)
 
 
 def require_contract(source: str, packaged_script: str) -> None:

@@ -1010,9 +1010,9 @@ public final class JsComposerDockerJourneyTest {
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         checkpoint("dictation-ime-open");
-        checkpoint("dictation-before-mic-tap");
+        checkpoint("dictation-before-prompt-action-tap");
         tapDomCenter("[data-testid=composer-dictate]");
-        checkpoint("dictation-mic-tapped");
+        checkpoint("dictation-prompt-action-tapped");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         checkpoint("dictation-recording-visible");
         checkpoint("dictation-before-ime-dismiss");
@@ -1352,6 +1352,8 @@ public final class JsComposerDockerJourneyTest {
                 + "const panelBounds=rect(composer);const scrimBounds=rect(scrim);"
                 + "const buttons={dictate:document.querySelector('[data-testid=composer-dictate]'),"
                 + "insert:document.querySelector('[data-testid=composer-insert]'),send:document.querySelector('.composer-shared-controls .send')};"
+                + "const dictateLabel=buttons.dictate?(buttons.dictate.textContent||'').replace(/\\s+/g,' ').trim():'';"
+                + "const dictateRect=buttons.dictate?.getBoundingClientRect();"
                 + "return JSON.stringify({state:composer?.dataset.dictationState??'',"
                 + "composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
@@ -1360,11 +1362,16 @@ public final class JsComposerDockerJourneyTest {
                 + "panelBounds,scrimBounds,viewport,keyboardVisible:shell?.dataset.keyboardVisible==='true',"
                 + "sheetFullyVisible:!!panelBounds&&panelBounds.top>=0&&panelBounds.bottom<=viewport.height+0.5,"
                 + "draftText:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
+                + "dictatePromptText:dictateLabel,"
+                + "dictatePromptAccessibleName:buttons.dictate?.getAttribute('aria-label')??'',"
+                + "dictatePromptBounds:dictateRect?{top:dictateRect.top,bottom:dictateRect.bottom,left:dictateRect.left,right:dictateRect.right,width:dictateRect.width,height:dictateRect.height}:null,"
+                + "dictatePromptEnabled:!!buttons.dictate&&!buttons.dictate.disabled,"
                 + "buttons:Object.fromEntries(Object.entries(buttons).map(([name,node])=>[name,!!node&&node.getClientRects().length>0&&!node.disabled])),"
                 + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??0,"
                 + "documentScrollTop:document.documentElement.scrollTop??0});})()"));
         titleState.put("runId", runId);
         titleState.put("expectedComposerHeading", "Prompt Composer");
+        titleState.put("expectedDictatePromptLabel", "Dictate prompt");
         titleState.put("expectedSessionChrome", bytesSession);
         emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-title.png");
@@ -1373,6 +1380,10 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("buttons").getBoolean("dictate")
                         && titleState.getJSONObject("buttons").getBoolean("insert")
                         && titleState.getJSONObject("buttons").getBoolean("send")
+                        && "Dictate prompt".equals(titleState.getString("dictatePromptText"))
+                        && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
+                        && titleState.getBoolean("dictatePromptEnabled")
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("height") >= 47.9
                         && titleState.getDouble("screenScrollTop") == 0
                         && titleState.getDouble("documentScrollTop") == 0);
         assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
@@ -1490,6 +1501,11 @@ public final class JsComposerDockerJourneyTest {
             measured.put("nativeLifecycle", lastBackgroundLifecycleTrace);
         }
         byte[] geometry = measured.toString().getBytes(StandardCharsets.UTF_8);
+        // The DOM report can observe a just-committed Vue state one frame
+        // before Android's screenshot surface catches up (notably Stop ->
+        // review). Wait for a fresh WebView visual commit after sampling it so
+        // the screenshot and its same-run geometry show the same composer mode.
+        awaitWebViewVisualState();
         emitCurrentScreen(runId, "composer-" + state + ".png");
         emitArtifact(runId, "composer-" + state + "-geometry.json", geometry);
         if (measured.getBoolean("androidImeVisible") || measured.getBoolean("keyboardVisible")) {

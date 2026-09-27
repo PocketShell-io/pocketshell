@@ -79,6 +79,7 @@ FAILURE_SCREENSHOTS = {
     "composer-recording-insert.png",
     "composer-transcribing-send.png",
     "composer-back-workspace-failure.png",
+    "composer-title.png",
     "composer-launcher-before-reopen.png",
     "composer-launcher-after-reopen.png",
     "composer-launcher-before-uncertain-first-attach.png",
@@ -283,6 +284,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("composerHeading") != "Prompt Composer"
                 or title_state.get("expectedComposerHeading") != "Prompt Composer"
                 or title_state.get("sheetFullyVisible") is not True
+                or title_state.get("dictatePromptText") != "Dictate prompt"
+                or title_state.get("expectedDictatePromptLabel") != "Dictate prompt"
+                or title_state.get("dictatePromptAccessibleName") != "Dictate prompt"
+                or title_state.get("dictatePromptEnabled") is not True
                 or not isinstance(panel, dict) or not isinstance(scrim, dict) or not isinstance(viewport, dict)
                 or not isinstance(viewport.get("width"), (int, float))
                 or not isinstance(viewport.get("height"), (int, float))
@@ -294,6 +299,24 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or any(buttons.get(name) is not True for name in ("dictate", "insert", "send"))
                 or title_state.get("screenScrollTop") != 0 or title_state.get("documentScrollTop") != 0):
             raise ExtractionFailure("composer title report does not prove a fully visible idle sheet and generic heading")
+        dictate_bounds = title_state.get("dictatePromptBounds")
+        try:
+            dictate_top = float(dictate_bounds["top"])
+            dictate_bottom = float(dictate_bounds["bottom"])
+            dictate_left = float(dictate_bounds["left"])
+            dictate_right = float(dictate_bounds["right"])
+            panel_top = float(panel["top"])
+            panel_bottom = float(panel["bottom"])
+            panel_left = float(panel["left"])
+            panel_right = float(panel["right"])
+            viewport_width = float(viewport["width"])
+            viewport_height = float(viewport["height"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("composer title report has invalid Dictate prompt bounds") from error
+        if (dictate_bottom - dictate_top < 47.9 or dictate_right <= dictate_left
+                or dictate_top < max(0.0, panel_top) or dictate_bottom > min(viewport_height, panel_bottom) + 0.5
+                or dictate_left < max(0.0, panel_left) or dictate_right > min(viewport_width, panel_right) + 0.5):
+            raise ExtractionFailure("Dictate prompt is clipped or below the 48dp touch-target minimum")
         terminal_heading = title_state.get("terminalHeading")
         expected_session = title_state.get("expectedSessionChrome")
         if (not isinstance(terminal_heading, str) or not isinstance(expected_session, str)
@@ -832,6 +855,11 @@ def self_test() -> None:
         "sheetFullyVisible": True,
         "composerHeading": "Prompt Composer",
         "expectedComposerHeading": "Prompt Composer",
+        "dictatePromptText": "Dictate prompt",
+        "expectedDictatePromptLabel": "Dictate prompt",
+        "dictatePromptAccessibleName": "Dictate prompt",
+        "dictatePromptEnabled": True,
+        "dictatePromptBounds": {"top": 660.0, "bottom": 732.0, "left": 280.0, "right": 390.0},
         "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
         "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
         "viewport": {"width": 412.0, "height": 915.0},
@@ -1097,6 +1125,15 @@ def self_test() -> None:
     session_leaked_title_value = json.loads(title_state)
     session_leaked_title_value["composerHeading"] = "Compose for testuser:js2857-self-test-bytes"
     session_leaked_title_state = json.dumps(session_leaked_title_value).encode()
+    ambiguous_dictate_text_value = json.loads(title_state)
+    ambiguous_dictate_text_value["dictatePromptText"] = "Dictate"
+    ambiguous_dictate_text = json.dumps(ambiguous_dictate_text_value).encode()
+    ambiguous_dictate_accessibility_value = json.loads(title_state)
+    ambiguous_dictate_accessibility_value["dictatePromptAccessibleName"] = "Start dictation"
+    ambiguous_dictate_accessibility = json.dumps(ambiguous_dictate_accessibility_value).encode()
+    clipped_dictate_prompt_value = json.loads(title_state)
+    clipped_dictate_prompt_value["dictatePromptBounds"]["right"] = 420.0
+    clipped_dictate_prompt = json.dumps(clipped_dictate_prompt_value).encode()
     offscreen_title_value = json.loads(title_state)
     offscreen_title_value["sheetFullyVisible"] = False
     offscreen_title_value["panelBounds"]["top"] = 914.0
@@ -1257,6 +1294,11 @@ def self_test() -> None:
         ("recording copy omits Insert delivery", make_lines(recording_insert_geometry_bytes=misleading_recording_copy_geometry)),
         ("recording restore action is labeled Discard", make_lines(recording_insert_geometry_bytes=discard_labeled_recording_action_geometry)),
         ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
+        ("composer dictation entry does not name its prompt destination",
+         make_lines(title_state_bytes=ambiguous_dictate_text)),
+        ("composer dictation entry has an ambiguous accessible name",
+         make_lines(title_state_bytes=ambiguous_dictate_accessibility)),
+        ("Dictate prompt is clipped or below 48dp", make_lines(title_state_bytes=clipped_dictate_prompt)),
         ("idle composer title screenshot captured before the sheet was painted",
          make_lines(title_state_bytes=offscreen_title_state)),
         ("inline dictation screenshot is ASCII run-as error text",
@@ -1308,6 +1350,13 @@ def self_test() -> None:
     retained_recording_failure = parse_assets("\n".join(recording_failure_lines), run_id, validate_layout=False)
     assert retained_recording_failure["composer-recording.png"] == png
     print("PASS: failure-mode extraction preserves a recording screenshot when timeout occurs before other captures")
+    title_failure_lines = [
+        line for line in lines
+        if line.startswith("I/PS2857Asset: ") and line.split("|", 4)[2] in ("composer-title.png", "composer-title.json")
+    ]
+    retained_title_failure = parse_assets("\n".join(title_failure_lines), run_id, validate_layout=False)
+    assert retained_title_failure["composer-title.png"] == png
+    print("PASS: failure-mode extraction preserves the idle composer entry screenshot and report")
     broken_layout = make_lines(geometry_payload(ime_visible=False, app_bar_top=0))
     assert parse_assets("\n".join(broken_layout), run_id, validate_layout=False)["composer-keyboard.png"] == png
     no_geometry = [line for line in lines if "composer-keyboard-geometry.json" not in line]
