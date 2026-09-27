@@ -497,17 +497,6 @@ function startPromptDictation() {
           @beforeinput="blockDraftEditsDuringDictation"
           @input="setDraft"
         />
-        <button v-if="mobileSheet && (dictationPhase === 'idle' || dictationPhase === 'review')"
-          class="composer-dictate composer-dictate--sheet" type="button" data-testid="composer-dictate"
-          :disabled="sendingIntent !== null || !targetKey" :aria-pressed="dictationPhase === 'review'"
-          aria-label="Dictate prompt" @click="startPromptDictation">
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <rect x="9" y="2" width="6" height="12" rx="3" />
-            <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
-          </svg>
-          <span>Dictate prompt</span>
-        </button>
       </div>
 
       <ComposerRecordingMode
@@ -552,6 +541,15 @@ function startPromptDictation() {
             :discard-armed="false"
             @send="deliver('submit')"
           />
+          <button v-if="mobileSheet" class="composer-dictate composer-dictate--mic" type="button"
+            data-testid="composer-dictate" :disabled="sendingIntent !== null || !targetKey"
+            :aria-pressed="dictationPhase === 'review'" aria-label="Dictate prompt" @click="startPromptDictation">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+            </svg>
+          </button>
         </template>
       </div>
     </section>
@@ -612,7 +610,7 @@ function startPromptDictation() {
 .composer-panel--sheet .composer-sheet-close svg { width: 18px; height: 18px; }
 .composer-panel--sheet .composer-draft-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 104px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
   gap: 10px;
 }
@@ -622,22 +620,21 @@ function startPromptDictation() {
   resize: vertical;
 }
 .composer-draft-row--dictating { display: block; height: 1px; overflow: visible; }
-.composer-dictate--sheet {
-  display: grid;
-  min-width: 104px;
-  min-height: 72px;
-  align-content: center;
-  justify-items: center;
-  gap: 4px;
+.composer-dictate--mic {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
+  border-radius: 50%;
   background: var(--surface-2);
   color: var(--fg);
-  font-size: var(--fs-100);
-  font-weight: 600;
+  padding: 0;
 }
-.composer-dictate--sheet:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.composer-dictate--sheet:disabled { opacity: var(--disabled-opacity); }
+.composer-dictate--mic:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
+.composer-dictate--mic:disabled { opacity: var(--disabled-opacity); }
 .composer-panel--sheet .composer-status { min-height: 16px; }
 .composer-panel--sheet .composer-actions { min-height: 48px; gap: 6px; }
 .composer-panel--sheet .composer-discard,

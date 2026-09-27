@@ -61,7 +61,9 @@ const emit = defineEmits<{
         type="button" data-testid="composer-recording-stop"
         aria-label="Stop dictation and keep the recognized text in the editable draft"
         :disabled="sending" @click="emit('stop')">
-        Stop
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
+        </svg>
       </button>
     </div>
   </section>
@@ -179,13 +181,18 @@ const emit = defineEmits<{
 }
 .recording-mode__button--cancel { color: var(--fg-secondary); }
 .recording-mode__button--stop {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
   border-color: var(--accent);
-  color: var(--accent);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
 }
 .recording-mode__button--send {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--bg);
+  border-color: var(--accent-dim);
+  background: var(--surface-2);
+  color: var(--accent);
 }
 .recording-mode__button:disabled { opacity: var(--disabled-opacity); }
 .recording-mode__button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

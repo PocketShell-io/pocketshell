@@ -249,6 +249,8 @@
       "suite": "composer dictation cancellation",
       "tests": [
         "labels the recording restore action Cancel and restores the original draft",
+        "places the mobile Dictate prompt microphone in the composer action row",
+        "pins the production composer mic and recording action styles to the Kotlin hierarchy",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",
         "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",

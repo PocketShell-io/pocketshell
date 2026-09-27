@@ -1036,6 +1036,9 @@ public final class JsComposerDockerJourneyTest {
         String recordingPredicate = "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const style=draft&&getComputedStyle(draft);const mode=document.querySelector('[data-testid=composer-recording-mode]');"
                 + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
+                + "const stop=mode?.querySelector('[data-testid=composer-recording-stop]');"
+                + "const stopStyle=stop&&getComputedStyle(stop);const stopRect=stop?.getBoundingClientRect();"
+                + "const stopGlyph=stop?.querySelector(\"svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']\");"
                 + "return draft?.classList.contains('composer-draft--dictation-anchor')===true"
                 + " && style?.display!=='none' && style?.visibility!=='hidden' && style?.opacity==='0'"
                 + " && draft?.getAttribute('aria-hidden')!=='true' && draft?.getAttribute('aria-readonly')==='true'"
@@ -1045,7 +1048,12 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')"
                 + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.textContent.trim()==='Cancel'"
                 + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.getAttribute('aria-label')==='Cancel dictation and restore the original draft'"
-                + " && mode.querySelector('[data-testid=composer-recording-stop]')?.textContent.includes('Stop');})()";
+                + " && stop?.innerText.trim()===''"
+                + " && stop?.getAttribute('aria-label')==='Stop dictation and keep the recognized text in the editable draft'"
+                + " && !!stop&&stop.getClientRects().length>0&&stopStyle?.display!=='none'"
+                + " && stopStyle?.visibility!=='hidden'&&Number(stopStyle?.opacity??0)>0.95&&!stop.disabled"
+                + " && !!stopRect&&Math.abs(stopRect.width-48.0)<0.5&&Math.abs(stopRect.height-48.0)<0.5"
+                + " && !!stopGlyph;})()";
         try {
             awaitJsTrue(recordingPredicate, 10_000);
         } catch (AssertionError predicateFailure) {
@@ -1352,8 +1360,11 @@ public final class JsComposerDockerJourneyTest {
                 + "const panelBounds=rect(composer);const scrimBounds=rect(scrim);"
                 + "const buttons={dictate:document.querySelector('[data-testid=composer-dictate]'),"
                 + "insert:document.querySelector('[data-testid=composer-insert]'),send:document.querySelector('.composer-shared-controls .send')};"
-                + "const dictateLabel=buttons.dictate?(buttons.dictate.textContent||'').replace(/\\s+/g,' ').trim():'';"
+                + "const dictateLabel=buttons.dictate?(buttons.dictate.innerText||'').replace(/\\s+/g,' ').trim():'';"
                 + "const dictateRect=buttons.dictate?.getBoundingClientRect();"
+                + "const dictateStyle=buttons.dictate?getComputedStyle(buttons.dictate):null;"
+                + "const dictateVisible=!!buttons.dictate&&!!dictateRect&&buttons.dictate.getClientRects().length>0"
+                + "&&dictateStyle?.display!=='none'&&dictateStyle?.visibility!=='hidden'&&Number(dictateStyle?.opacity??0)>0.95;"
                 + "return JSON.stringify({state:composer?.dataset.dictationState??'',"
                 + "composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
@@ -1364,6 +1375,7 @@ public final class JsComposerDockerJourneyTest {
                 + "draftText:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
                 + "dictatePromptText:dictateLabel,"
                 + "dictatePromptAccessibleName:buttons.dictate?.getAttribute('aria-label')??'',"
+                + "dictatePromptVisible:dictateVisible,"
                 + "dictatePromptBounds:dictateRect?{top:dictateRect.top,bottom:dictateRect.bottom,left:dictateRect.left,right:dictateRect.right,width:dictateRect.width,height:dictateRect.height}:null,"
                 + "dictatePromptEnabled:!!buttons.dictate&&!buttons.dictate.disabled,"
                 + "buttons:Object.fromEntries(Object.entries(buttons).map(([name,node])=>[name,!!node&&node.getClientRects().length>0&&!node.disabled])),"
@@ -1371,7 +1383,7 @@ public final class JsComposerDockerJourneyTest {
                 + "documentScrollTop:document.documentElement.scrollTop??0});})()"));
         titleState.put("runId", runId);
         titleState.put("expectedComposerHeading", "Prompt Composer");
-        titleState.put("expectedDictatePromptLabel", "Dictate prompt");
+        titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt");
         titleState.put("expectedSessionChrome", bytesSession);
         emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-title.png");
@@ -1380,10 +1392,12 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("buttons").getBoolean("dictate")
                         && titleState.getJSONObject("buttons").getBoolean("insert")
                         && titleState.getJSONObject("buttons").getBoolean("send")
-                        && "Dictate prompt".equals(titleState.getString("dictatePromptText"))
+                        && titleState.getString("dictatePromptText").isEmpty()
                         && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
+                        && titleState.getBoolean("dictatePromptVisible")
                         && titleState.getBoolean("dictatePromptEnabled")
-                        && titleState.getJSONObject("dictatePromptBounds").getDouble("height") >= 47.9
+                        && Math.abs(titleState.getJSONObject("dictatePromptBounds").getDouble("width") - 48.0) < 0.5
+                        && Math.abs(titleState.getJSONObject("dictatePromptBounds").getDouble("height") - 48.0) < 0.5
                         && titleState.getDouble("screenScrollTop") == 0
                         && titleState.getDouble("documentScrollTop") == 0);
         assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
@@ -1447,6 +1461,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const transcribingStatus=mode?.querySelector('[role=status][aria-live=polite]');"
                 + "const cancelText=(cancelButton?.textContent??'').trim();"
                 + "const cancelAriaLabel=cancelButton?.getAttribute('aria-label')??'';"
+                + "const stopText=(stopButton?.innerText??'').trim();"
+                + "const stopAccessibleName=stopButton?.getAttribute('aria-label')??'';"
+                + "const stopStyle=stopButton?getComputedStyle(stopButton):null;"
                 + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",state:" + JSONObject.quote(state)
                 + ",composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
@@ -1471,8 +1488,11 @@ public final class JsComposerDockerJourneyTest {
                 + "previewText:preview?.textContent.trim()??'',"
                 + "cancelText,cancelAriaLabel,cancelAccessible:!!cancelButton&&cancelText==='Cancel'"
                 + "&&cancelAriaLabel==='Cancel dictation and restore the original draft'&&cancelButton.getClientRects().length>0,"
-                + "stopAccessible:!!stopButton&&(stopButton.getAttribute('aria-label')??'').includes('Stop dictation')"
-                + "&&(stopButton.textContent??'').includes('Stop')&&stopButton.getClientRects().length>0,"
+                + "stopText,stopAccessibleName,"
+                + "stopVisible:!!stopButton&&stopButton.getClientRects().length>0&&stopStyle?.display!=='none'"
+                + "&&stopStyle?.visibility!=='hidden'&&Number(stopStyle?.opacity??0)>0.95,"
+                + "stopEnabled:!!stopButton&&!stopButton.disabled,"
+                + "stopGlyphPresent:!!stopButton?.querySelector(\"svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']\"),"
                 + "insertAccessible:!!insertButton&&(insertButton.textContent??'').trim()==='Insert'&&insertButton.getClientRects().length>0,"
                 + "insertEnabled:!!insertButton&&!insertButton.disabled,"
                 + "dictationSendAccessible:!!dictationSendButton&&(dictationSendButton.textContent??'').includes('Send')"
@@ -1550,10 +1570,15 @@ public final class JsComposerDockerJourneyTest {
                                 && measured.getJSONObject("insert").getDouble("height") >= 47.9
                                 && measured.getBoolean("dictationSendAccessible") && measured.getBoolean("dictationSendEnabled")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
-                assertTrue("recording preview and trailing Stop-keep-text control must be visible, accessible, and at least 48dp tall",
+                assertTrue("recording preview and trailing icon-only Stop control must be visible, enabled, accessible, and 48dp square",
                         measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
-                                && measured.getBoolean("stopAccessible")
-                                && measured.getJSONObject("stop").getDouble("height") >= 47.9
+                                && measured.getString("stopText").isEmpty()
+                                && "Stop dictation and keep the recognized text in the editable draft".equals(
+                                        measured.getString("stopAccessibleName"))
+                                && measured.getBoolean("stopVisible") && measured.getBoolean("stopEnabled")
+                                && measured.getBoolean("stopGlyphPresent")
+                                && Math.abs(measured.getJSONObject("stop").getDouble("width") - 48.0) < 0.5
+                                && Math.abs(measured.getJSONObject("stop").getDouble("height") - 48.0) < 0.5
                                 && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
             } else {
                 assertEquals("transcribing actions must match Kotlin: Cancel and explicit Send",

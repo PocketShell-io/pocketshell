@@ -30,7 +30,8 @@ runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
 journey = journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
-ast.parse(extractor_path.read_text(), filename=str(extractor_path))
+extractor = extractor_path.read_text()
+ast.parse(extractor, filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
 subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
 if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
@@ -39,25 +40,63 @@ if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
 
 def require_dictate_prompt_journey(source: str) -> None:
     required = (
-        'titleState.put("expectedDictatePromptLabel", "Dictate prompt")',
-        'titleState.getString("dictatePromptText")',
+        'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt")',
+        'titleState.getString("dictatePromptText").isEmpty()',
         'titleState.getString("dictatePromptAccessibleName")',
+        'titleState.getBoolean("dictatePromptVisible")',
+        'titleState.getBoolean("dictatePromptEnabled")',
+        'getDouble("width") - 48.0',
+        'getDouble("height") - 48.0',
         'emitCurrentScreen(runId, "composer-title.png")',
         'emitArtifact(runId, "composer-title.json"',
     )
     for needle in required:
         if needle not in source:
-            raise AssertionError(f"composer journey is missing the visible Dictate prompt contract: {needle}")
+            raise AssertionError(f"composer journey is missing the icon-only 48dp Dictate prompt contract: {needle}")
     start = source.index("private void exerciseComposerDictationMode")
     end = source.index("private void awaitComposerReadyToSend", start)
     dictation_method = source[start:end]
     title_assertion = dictation_method.index("assertGenericComposerTitleAndSessionChrome(runId);")
     action_tap = dictation_method.index('tapDomCenter("[data-testid=composer-dictate]")')
     if title_assertion >= action_tap:
-        raise AssertionError("composer journey must verify the visible Dictate prompt action before tapping it")
+        raise AssertionError("composer journey must verify the Dictate prompt mic before tapping it")
 
 
 require_dictate_prompt_journey(journey)
+
+
+def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
+    required = (
+        "stop?.innerText.trim()===''",
+        "stop?.getAttribute('aria-label')==='Stop dictation and keep the recognized text in the editable draft'",
+        "Math.abs(stopRect.width-48.0)<0.5",
+        "Math.abs(stopRect.height-48.0)<0.5",
+        "!!stopGlyph",
+        '"stopText,stopAccessibleName,"',
+        '"stopVisible:!!stopButton',
+        '"stopEnabled:!!stopButton&&!stopButton.disabled,"',
+        "svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']",
+        '"stopGlyphPresent:!!stopButton?.querySelector(',
+    )
+    for needle in required:
+        if needle not in source:
+            raise AssertionError(f"composer journey is missing icon-only Stop evidence: {needle}")
+    if "textContent.includes('Stop')" in source:
+        raise AssertionError("composer journey must not require visible Stop text")
+    extractor_cases = (
+        '"recording Stop exposes visible label text"',
+        '"recording Stop has the wrong accessible name"',
+        '"recording Stop is hidden"',
+        '"recording Stop is disabled"',
+        '"recording Stop omits the square SVG glyph"',
+        '"recording Stop bounds are not 48dp square"',
+    )
+    for needle in extractor_cases:
+        if needle not in extractor_source:
+            raise AssertionError(f"composer artifact extractor lacks a Stop regression case: {needle}")
+
+
+require_icon_only_stop_contract(journey, extractor)
 
 
 def require_contract(source: str, packaged_script: str) -> None:

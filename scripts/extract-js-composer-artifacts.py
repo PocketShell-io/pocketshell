@@ -8,6 +8,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -90,6 +91,28 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 class ExtractionFailure(ValueError):
     pass
+
+
+STOP_ACCESSIBLE_NAME = "Stop dictation and keep the recognized text in the editable draft"
+
+
+def _has_48dp_square_bounds(bounds: object) -> bool:
+    if not isinstance(bounds, dict):
+        return False
+    try:
+        top = float(bounds["top"])
+        bottom = float(bounds["bottom"])
+        left = float(bounds["left"])
+        right = float(bounds["right"])
+        width = float(bounds["width"])
+        height = float(bounds["height"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    values = (top, bottom, left, right, width, height)
+    return (all(math.isfinite(value) for value in values)
+            and abs(width - 48.0) < 0.5 and abs(height - 48.0) < 0.5
+            and abs((right - left) - width) < 0.5
+            and abs((bottom - top) - height) < 0.5)
 
 
 def _validate_launcher_tap_evidence(launcher_before: object, launcher_after: object,
@@ -284,9 +307,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("composerHeading") != "Prompt Composer"
                 or title_state.get("expectedComposerHeading") != "Prompt Composer"
                 or title_state.get("sheetFullyVisible") is not True
-                or title_state.get("dictatePromptText") != "Dictate prompt"
-                or title_state.get("expectedDictatePromptLabel") != "Dictate prompt"
+                or title_state.get("dictatePromptText") != ""
+                or title_state.get("expectedDictatePromptAccessibleName") != "Dictate prompt"
                 or title_state.get("dictatePromptAccessibleName") != "Dictate prompt"
+                or title_state.get("dictatePromptVisible") is not True
                 or title_state.get("dictatePromptEnabled") is not True
                 or not isinstance(panel, dict) or not isinstance(scrim, dict) or not isinstance(viewport, dict)
                 or not isinstance(viewport.get("width"), (int, float))
@@ -305,6 +329,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             dictate_bottom = float(dictate_bounds["bottom"])
             dictate_left = float(dictate_bounds["left"])
             dictate_right = float(dictate_bounds["right"])
+            dictate_width = float(dictate_bounds["width"])
+            dictate_height = float(dictate_bounds["height"])
             panel_top = float(panel["top"])
             panel_bottom = float(panel["bottom"])
             panel_left = float(panel["left"])
@@ -313,10 +339,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             viewport_height = float(viewport["height"])
         except (KeyError, TypeError, ValueError) as error:
             raise ExtractionFailure("composer title report has invalid Dictate prompt bounds") from error
-        if (dictate_bottom - dictate_top < 47.9 or dictate_right <= dictate_left
+        if (abs(dictate_width - 48.0) >= 0.5 or abs(dictate_height - 48.0) >= 0.5
+                or abs((dictate_right - dictate_left) - dictate_width) >= 0.5
+                or abs((dictate_bottom - dictate_top) - dictate_height) >= 0.5
                 or dictate_top < max(0.0, panel_top) or dictate_bottom > min(viewport_height, panel_bottom) + 0.5
                 or dictate_left < max(0.0, panel_left) or dictate_right > min(viewport_width, panel_right) + 0.5):
-            raise ExtractionFailure("Dictate prompt is clipped or below the 48dp touch-target minimum")
+            raise ExtractionFailure("Dictate prompt mic is clipped or does not have 48dp bounds")
         terminal_heading = title_state.get("terminalHeading")
         expected_session = title_state.get("expectedSessionChrome")
         if (not isinstance(terminal_heading, str) or not isinstance(expected_session, str)
@@ -664,10 +692,15 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 if state.startswith("recording"):
                     if (mode_geometry.get("previewVisible") is not True
                             or mode_geometry.get("previewLive") is not True
-                            or mode_geometry.get("stopAccessible") is not True
+                            or mode_geometry.get("stopText") != ""
+                            or mode_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
+                            or mode_geometry.get("stopVisible") is not True
+                            or mode_geometry.get("stopEnabled") is not True
+                            or mode_geometry.get("stopGlyphPresent") is not True
+                            or not _has_48dp_square_bounds(mode_geometry.get("stop"))
                             or not str(mode_geometry.get("previewText", "")).strip()
                             or "composer-recording-preview" not in str(mode_geometry.get("draftDescribedBy", ""))):
-                        raise ExtractionFailure("recording screenshot does not expose the live preview and accessible Stop control")
+                        raise ExtractionFailure("recording screenshot does not prove the icon-only, enabled 48dp Stop control and live preview")
                 elif mode_geometry.get("transcribingStatusAccessible") is not True:
                     raise ExtractionFailure("transcribing screenshot does not expose its accessible live status")
             elif state == "review" and mode_geometry.get("reviewVisible") is not True:
@@ -753,7 +786,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     or restart_geometry.get("expectedDraftMatches") is not True
                     or restart_geometry.get("recordingModeVisible") is not True
                     or restart_geometry.get("previewVisible") is not True
-                    or restart_geometry.get("stopAccessible") is not True):
+                    or restart_geometry.get("stopText") != ""
+                    or restart_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
+                    or restart_geometry.get("stopVisible") is not True
+                    or restart_geometry.get("stopEnabled") is not True
+                    or restart_geometry.get("stopGlyphPresent") is not True
+                    or not _has_48dp_square_bounds(restart_geometry.get("stop"))):
                 raise ExtractionFailure("natural-restart capture does not prove active recording, preview, and Stop")
         try:
             dictation_send = json.loads(decoded["composer-dictation-send.json"])
@@ -855,11 +893,13 @@ def self_test() -> None:
         "sheetFullyVisible": True,
         "composerHeading": "Prompt Composer",
         "expectedComposerHeading": "Prompt Composer",
-        "dictatePromptText": "Dictate prompt",
-        "expectedDictatePromptLabel": "Dictate prompt",
+        "dictatePromptText": "",
+        "expectedDictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptAccessibleName": "Dictate prompt",
+        "dictatePromptVisible": True,
         "dictatePromptEnabled": True,
-        "dictatePromptBounds": {"top": 660.0, "bottom": 732.0, "left": 280.0, "right": 390.0},
+        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 348.0, "right": 396.0,
+                                 "width": 48.0, "height": 48.0},
         "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
         "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
         "viewport": {"width": 412.0, "height": 915.0},
@@ -987,7 +1027,11 @@ def self_test() -> None:
             "cancelAccessible": anchored,
             "cancelText": "Cancel" if anchored else "",
             "cancelAriaLabel": "Cancel dictation and restore the original draft" if anchored else "",
-            "stopAccessible": recording,
+            "stopText": "",
+            "stopAccessibleName": STOP_ACCESSIBLE_NAME if recording else "",
+            "stopVisible": recording,
+            "stopEnabled": recording,
+            "stopGlyphPresent": recording,
             "insertAccessible": recording,
             "insertEnabled": recording,
             "dictationSendAccessible": anchored,
@@ -1025,7 +1069,9 @@ def self_test() -> None:
         if state in ("cancel", "background"):
             payload["send"] = rect
         if recording:
-            payload.update({"timer": rect, "preview": rect, "stop": rect})
+            payload.update({"timer": rect, "preview": rect,
+                            "stop": {"top": 10.0, "bottom": 58.0, "left": 347.0, "right": 395.0,
+                                     "width": 48.0, "height": 48.0}})
         if state == "review":
             payload["review"] = rect
             payload["send"] = rect
@@ -1100,6 +1146,24 @@ def self_test() -> None:
     misleading_recording_copy = json.loads(mode_geometry_payload("recording-insert"))
     misleading_recording_copy["statusText"] = "Nothing is sent until you review and tap Send."
     misleading_recording_copy_geometry = json.dumps(misleading_recording_copy).encode()
+    visible_stop_text_value = json.loads(mode_geometry_payload("recording"))
+    visible_stop_text_value["stopText"] = "Stop"
+    visible_stop_text_geometry = json.dumps(visible_stop_text_value).encode()
+    wrong_stop_accessibility_value = json.loads(mode_geometry_payload("recording"))
+    wrong_stop_accessibility_value["stopAccessibleName"] = "Stop dictation"
+    wrong_stop_accessibility_geometry = json.dumps(wrong_stop_accessibility_value).encode()
+    hidden_stop_value = json.loads(mode_geometry_payload("recording"))
+    hidden_stop_value["stopVisible"] = False
+    hidden_stop_geometry = json.dumps(hidden_stop_value).encode()
+    disabled_stop_value = json.loads(mode_geometry_payload("recording"))
+    disabled_stop_value["stopEnabled"] = False
+    disabled_stop_geometry = json.dumps(disabled_stop_value).encode()
+    missing_stop_glyph_value = json.loads(mode_geometry_payload("recording"))
+    missing_stop_glyph_value["stopGlyphPresent"] = False
+    missing_stop_glyph_geometry = json.dumps(missing_stop_glyph_value).encode()
+    wrong_stop_size_value = json.loads(mode_geometry_payload("recording"))
+    wrong_stop_size_value["stop"]["width"] = 47.0
+    wrong_stop_size_geometry = json.dumps(wrong_stop_size_value).encode()
     discard_labeled_recording_action = json.loads(mode_geometry_payload("recording-insert"))
     discard_labeled_recording_action["cancelText"] = "Discard"
     discard_labeled_recording_action["cancelAriaLabel"] = "Discard dictation and restore the original draft"
@@ -1126,14 +1190,23 @@ def self_test() -> None:
     session_leaked_title_value["composerHeading"] = "Compose for testuser:js2857-self-test-bytes"
     session_leaked_title_state = json.dumps(session_leaked_title_value).encode()
     ambiguous_dictate_text_value = json.loads(title_state)
-    ambiguous_dictate_text_value["dictatePromptText"] = "Dictate"
+    ambiguous_dictate_text_value["dictatePromptText"] = "Dictate prompt"
     ambiguous_dictate_text = json.dumps(ambiguous_dictate_text_value).encode()
     ambiguous_dictate_accessibility_value = json.loads(title_state)
     ambiguous_dictate_accessibility_value["dictatePromptAccessibleName"] = "Start dictation"
     ambiguous_dictate_accessibility = json.dumps(ambiguous_dictate_accessibility_value).encode()
     clipped_dictate_prompt_value = json.loads(title_state)
-    clipped_dictate_prompt_value["dictatePromptBounds"]["right"] = 420.0
+    clipped_dictate_prompt_value["dictatePromptBounds"].update({"left": 376.0, "right": 424.0})
     clipped_dictate_prompt = json.dumps(clipped_dictate_prompt_value).encode()
+    wrong_size_dictate_value = json.loads(title_state)
+    wrong_size_dictate_value["dictatePromptBounds"]["width"] = 47.0
+    wrong_size_dictate = json.dumps(wrong_size_dictate_value).encode()
+    hidden_dictate_value = json.loads(title_state)
+    hidden_dictate_value["dictatePromptVisible"] = False
+    hidden_dictate = json.dumps(hidden_dictate_value).encode()
+    disabled_dictate_value = json.loads(title_state)
+    disabled_dictate_value["dictatePromptEnabled"] = False
+    disabled_dictate = json.dumps(disabled_dictate_value).encode()
     offscreen_title_value = json.loads(title_state)
     offscreen_title_value["sheetFullyVisible"] = False
     offscreen_title_value["panelBounds"]["top"] = 914.0
@@ -1185,6 +1258,7 @@ def self_test() -> None:
                    launcher_before_uncertain_bytes: bytes = launcher_before_ime,
                    launcher_after_uncertain_bytes: bytes = launcher_after,
                    background_geometry_bytes: bytes | None = None,
+                   recording_geometry_bytes: bytes | None = None,
                    recording_insert_geometry_bytes: bytes | None = None,
                    transcribing_send_geometry_bytes: bytes | None = None,
                    inline_preview_bytes: bytes = png) -> list[str]:
@@ -1208,7 +1282,7 @@ def self_test() -> None:
             ("inline-dictation-preview.png", inline_preview_bytes),
             ("composer-focus-trace.json", focus_trace_bytes),
             ("composer-recording.png", png),
-            ("composer-recording-geometry.json", mode_geometry_payload("recording")),
+            ("composer-recording-geometry.json", recording_geometry_bytes or mode_geometry_payload("recording")),
             ("composer-recording-insert.png", png),
             ("composer-recording-insert-geometry.json", recording_insert_geometry_bytes or mode_geometry_payload("recording-insert")),
             ("composer-cancel.png", png),
@@ -1292,13 +1366,26 @@ def self_test() -> None:
         ("transcribing-time Send writes before the explicit action",
          make_lines(transcribing_send_geometry_bytes=early_send_writes_geometry)),
         ("recording copy omits Insert delivery", make_lines(recording_insert_geometry_bytes=misleading_recording_copy_geometry)),
+        ("recording Stop exposes visible label text",
+         make_lines(recording_geometry_bytes=visible_stop_text_geometry)),
+        ("recording Stop has the wrong accessible name",
+         make_lines(recording_geometry_bytes=wrong_stop_accessibility_geometry)),
+        ("recording Stop is hidden", make_lines(recording_geometry_bytes=hidden_stop_geometry)),
+        ("recording Stop is disabled", make_lines(recording_geometry_bytes=disabled_stop_geometry)),
+        ("recording Stop omits the square SVG glyph",
+         make_lines(recording_geometry_bytes=missing_stop_glyph_geometry)),
+        ("recording Stop bounds are not 48dp square",
+         make_lines(recording_geometry_bytes=wrong_stop_size_geometry)),
         ("recording restore action is labeled Discard", make_lines(recording_insert_geometry_bytes=discard_labeled_recording_action_geometry)),
         ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
-        ("composer dictation entry does not name its prompt destination",
+        ("composer mic shows visible label text",
          make_lines(title_state_bytes=ambiguous_dictate_text)),
         ("composer dictation entry has an ambiguous accessible name",
          make_lines(title_state_bytes=ambiguous_dictate_accessibility)),
-        ("Dictate prompt is clipped or below 48dp", make_lines(title_state_bytes=clipped_dictate_prompt)),
+        ("composer mic is clipped", make_lines(title_state_bytes=clipped_dictate_prompt)),
+        ("composer mic does not have 48dp bounds", make_lines(title_state_bytes=wrong_size_dictate)),
+        ("composer mic is hidden", make_lines(title_state_bytes=hidden_dictate)),
+        ("composer mic is disabled", make_lines(title_state_bytes=disabled_dictate)),
         ("idle composer title screenshot captured before the sheet was painted",
          make_lines(title_state_bytes=offscreen_title_state)),
         ("inline dictation screenshot is ASCII run-as error text",
