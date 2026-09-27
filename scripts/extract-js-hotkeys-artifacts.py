@@ -896,8 +896,12 @@ def validate_journey(journey: object) -> None:
             or resumed.get("resizeAcks", 0) <= background_resize.get("resizeAcksBeforeResume", 0)
             or resumed.get("resizeStatus") != f"{resumed_grid.get('cols')} × {resumed_grid.get('rows')} accepted by SSH"):
         raise ExtractionFailure("IME-hidden resume lacks a settled accepted PTY resize checkpoint")
-    resume_fit = next((event for event in resumed.get("resizeFitEvents", [])
-                       if isinstance(event, dict) and event.get("reason") == "enabled-state-change"
+    resume_fit_events = resumed.get("resizeFitEvents")
+    if not isinstance(resume_fit_events, list):
+        resume_fit_events = []
+    resume_fit = next((event for event in reversed(resume_fit_events)
+                       if isinstance(event, dict)
+                       and isinstance(event.get("reason"), str) and event["reason"].strip()
                        and event.get("cols") == resumed_grid.get("cols")
                        and event.get("rows") == resumed_grid.get("rows")
                        and isinstance(event.get("requestId"), int)
@@ -1414,6 +1418,10 @@ def self_test() -> int:
          with_receiver_setup_resize_events(sample_journey()), True),
         ("unmatched receiver setup resize ACK rejected",
          with_unmatched_receiver_setup_ack(sample_journey()), False),
+        ("IME-hidden ResizeObserver fit with matching accepted native PTY resize ACK accepted",
+         with_background_resume_resize_observer_fit(sample_journey()), True),
+        ("IME-hidden resume with an unmatched native PTY resize ACK rejected",
+         with_unmatched_background_resume_resize_ack(sample_journey()), False),
         ("PTY resize ACK after the stable dictation baseline rejected",
          with_dictation_resize_after_baseline(sample_journey()), False),
         ("undersized integrated mic target rejected",
@@ -2481,6 +2489,26 @@ def with_unmatched_receiver_setup_ack(journey: dict[str, object]) -> dict[str, o
     copied = with_receiver_setup_resize_events(journey)
     ready = next(item for item in copied["geometryTrace"] if item["stage"] == "dictation-ready-ime-open")
     ready["resizeAckEvents"][0]["requestId"] = 999
+    return copied
+
+
+def with_background_resume_resize_observer_fit(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    resumed = next(item for item in copied["geometryTrace"]
+                   if item["stage"] == "dictation-background-cancel-resumed")
+    resumed["resizeFitEvents"] = [
+        {"reason": "resize-observer", "cols": 37, "rows": 24, "requestId": 5, "atMs": 120},
+        {"reason": "enabled-state-change", "cols": 37, "rows": 24, "requestId": None, "atMs": 122},
+        {"reason": "resize-observer", "cols": 37, "rows": 24, "requestId": None, "atMs": 123},
+    ]
+    return copied
+
+
+def with_unmatched_background_resume_resize_ack(journey: dict[str, object]) -> dict[str, object]:
+    copied = with_background_resume_resize_observer_fit(journey)
+    resumed = next(item for item in copied["geometryTrace"]
+                   if item["stage"] == "dictation-background-cancel-resumed")
+    resumed["resizeAckEvents"][0]["requestId"] = 999
     return copied
 
 

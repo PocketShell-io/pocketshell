@@ -107,6 +107,8 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("clipped hit-area intersection is checked", "visibleHeightInKeybar"),
         ("narrow-toolbar scroll checks visible hit-area intersection", "visibleHeight\""),
         ("dictation raw byte count is checked", 'dictation raw byte file length mismatch'),
+        ("IME-hidden ResizeObserver fit stays bound to its accepted PTY ACK", "IME-hidden ResizeObserver fit with matching accepted native PTY resize ACK accepted"),
+        ("IME-hidden resume rejects an unmatched native PTY ACK", "IME-hidden resume with an unmatched native PTY resize ACK rejected"),
         ("dictation listening screenshot is uploaded", "fastkeys-dictation-listening-ime-open.png"),
         ("dictation transcribing screenshot is uploaded", "fastkeys-dictation-transcribing-ime-open.png"),
         ("dictation stopped screenshot is uploaded", "fastkeys-dictation-stopped-ime-open.png"),
