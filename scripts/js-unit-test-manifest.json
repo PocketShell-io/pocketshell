@@ -169,6 +169,15 @@
         "keeps usage and port tools as Settings child routes without changing the live home destination"
       ]
     },
+    "tests/unit/sessionAgentMetadata.test.ts": {
+      "suite": "session agent metadata projection",
+      "tests": [
+        "uses the pinned HostCliCore row for known host-reported identities",
+        "shows only the three fresh host-reported states",
+        "does not infer identity and suppresses non-reported or unknown state",
+        "keeps A→B→A chrome bound to the selected host id when metadata arrives late"
+      ]
+    },
     "tests/unit/filesWorkspace.test.ts": {
       "suite": "SFTP file workspace policy and byte-I/O adapter",
       "tests": [

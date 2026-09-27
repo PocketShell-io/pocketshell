@@ -942,6 +942,98 @@ def _self_test() -> int:
             print(f"FAIL: native grace timestamp mutation probe {index}: {label}", file=sys.stderr)
             return 1
     print("PASS: exact output/history, native resize, physical socket close timing, and host transport timeline guards (32/32)")
+    tag_a, tag_b, tag_c = "metadata-a", "metadata-b", "metadata-c"
+    rows = {
+        tag: {"tag": tag, "id": f"00000000-0000-4000-8000-00000000000{index}"}
+        for index, tag in enumerate((tag_a, tag_b, tag_c), 1)
+    }
+    metadata_rows = [
+        {
+            "stage": "initial-a-unknown", "rowPresent": True, "rowId": rows[tag_a]["id"], "tag": tag_a,
+            "agent": "", "rowIdentity": "", "rowState": "", "rowIdentityAria": "", "rowStateAria": "",
+            "selectedAgent": "", "selectedState": "", "contextIdentity": "", "contextState": "",
+            "contextIdentityAria": "", "contextStateAria": "",
+        },
+        {
+            "stage": "initial-b-unknown", "rowPresent": True, "rowId": rows[tag_b]["id"], "tag": tag_b,
+            "agent": "", "rowIdentity": "", "rowState": "", "rowIdentityAria": "", "rowStateAria": "",
+            "selectedAgent": "", "selectedState": "", "contextIdentity": "", "contextState": "",
+            "contextIdentityAria": "", "contextStateAria": "",
+        },
+        {"stage": "initial-c-unknown", "rowPresent": True, "rowId": rows[tag_c]["id"], "tag": tag_c, "agent": "",
+         "rowIdentity": "", "rowState": "", "rowIdentityAria": "", "rowStateAria": ""},
+        {
+            "stage": "late-a-reported", "rowPresent": True, "rowId": rows[tag_a]["id"], "tag": tag_a,
+            "agent": "claude", "state": "waiting", "source": "reported", "rowIdentity": "Claude Code",
+            "rowState": "Waiting", "rowIdentityAria": "Claude Code agent", "rowStateAria": "Agent state: Waiting",
+            "selectedTag": tag_a, "selectedAgent": "Claude Code", "selectedState": "waiting",
+            "contextIdentity": "Claude Code", "contextState": "Waiting",
+            "contextIdentityAria": "Claude Code agent", "contextStateAria": "Agent state: Waiting",
+        },
+        {
+            "stage": "list-a-and-b-reported", "rowPresent": True, "rowId": rows[tag_b]["id"], "tag": tag_b,
+            "agent": "codex", "state": "idle", "source": "reported", "rowIdentity": "Codex", "rowState": "Idle",
+            "rowIdentityAria": "Codex agent", "rowStateAria": "Agent state: Idle",
+            "selectedTag": tag_b, "selectedAgent": "Codex", "selectedState": "idle",
+            "contextIdentity": "Codex", "contextState": "Idle",
+            "contextIdentityAria": "Codex agent", "contextStateAria": "Agent state: Idle",
+            "otherSession": {"tag": tag_a, "agent": "claude", "state": "waiting", "source": "reported",
+                              "identity": "Claude Code", "stateLabel": "Waiting",
+                              "identityAria": "Claude Code agent", "stateAria": "Agent state: Waiting"},
+        },
+        {
+            "stage": "selected-b-codex-idle", "rowPresent": False, "tag": tag_b, "selectedTag": tag_b,
+            "agent": "codex", "state": "idle", "source": "reported", "selectedKind": "codex",
+            "selectedAgent": "Codex", "selectedState": "idle", "contextIdentity": "Codex", "contextState": "Idle",
+            "contextIdentityAria": "Codex agent", "contextStateAria": "Agent state: Idle",
+        },
+        {
+            "stage": "selected-a-claude-waiting", "rowPresent": False, "tag": tag_a, "selectedTag": tag_a,
+            "agent": "claude", "state": "waiting", "source": "reported", "selectedKind": "claude",
+            "selectedAgent": "Claude Code", "selectedState": "waiting", "contextIdentity": "Claude Code",
+            "contextState": "Waiting", "contextIdentityAria": "Claude Code agent",
+            "contextStateAria": "Agent state: Waiting",
+        },
+        {
+            "stage": "selected-c-unknown", "rowPresent": False, "tag": tag_c, "selectedTag": tag_c,
+            "agent": "", "source": "heuristic", "rowIdentity": "", "rowState": "", "selectedKind": "",
+            "selectedAgent": "", "selectedState": "", "contextIdentity": "", "contextState": "",
+            "rowIdentityAria": "", "rowStateAria": "", "contextIdentityAria": "", "contextStateAria": "",
+        },
+    ]
+    screenshot_expectations = {
+        "agent-list-a-b-reported.png": (tag_b, "sessions-list"),
+        "agent-selected-codex-idle.png": (tag_b, "selected-terminal"),
+        "agent-selected-claude-waiting.png": (tag_a, "selected-terminal"),
+        "agent-selected-unknown-shell.png": (tag_c, "selected-terminal"),
+    }
+    screenshot_records: list[dict[str, Any]] = []
+    png_header = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1080, 2400) + b"\x08\x02\x00\x00\x00"
+    with tempfile.TemporaryDirectory(prefix="pocketshell-agent-metadata-self-test-") as temporary:
+        directory = Path(temporary)
+        for name, (tag, surface) in screenshot_expectations.items():
+            data = png_header + bytes(1_024)
+            (directory / name).write_bytes(data)
+            screenshot_records.append({
+                "file": name, "tag": tag, "surface": surface, "width": 1080, "height": 2400,
+                "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "capturedAtEpochMs": 1,
+            })
+        metadata_summary = {"agentMetadata": metadata_rows, "agentMetadataScreenshots": screenshot_records}
+        try:
+            _validate_agent_metadata(metadata_summary, rows, directory)
+        except EvidenceFailure as error:
+            print(f"FAIL: host agent metadata positive evidence probe: {error}", file=sys.stderr)
+            return 1
+        wrong_target = json.loads(json.dumps(metadata_summary))
+        next(record for record in wrong_target["agentMetadata"] if record["stage"] == "selected-b-codex-idle")["selectedTag"] = tag_a
+        try:
+            _validate_agent_metadata(wrong_target, rows, directory)
+        except EvidenceFailure:
+            print("ok [agent metadata] host-reported A/B states, unknown C, target binding, and full-screen artifact set pass")
+            print("ok [agent metadata mutation] B evidence carrying A's selected tag is rejected")
+        else:
+            print("FAIL: agent metadata checker accepted B evidence carrying A's selected tag", file=sys.stderr)
+            return 1
     return 0
 
 
@@ -1370,6 +1462,8 @@ def validate(
     if len(set(identities)) != 3:
         raise EvidenceFailure("A, B, and C must have distinct host session identities")
 
+    agent_metadata, agent_screenshots = _validate_agent_metadata(summary, rows, artifact_directory)
+
     checkpoints = summary.get("checkpoints")
     if not isinstance(checkpoints, list):
         raise EvidenceFailure("packaged journey is missing checkpoint evidence")
@@ -1549,6 +1643,53 @@ def validate(
     if not isinstance(host_rows, list):
         raise EvidenceFailure("independent a snapshot did not return a row array")
 
+    raw_session_list = _run([
+        "docker", "exec", "-u", "testuser", "-e", "HOME=/home/testuser", container,
+        "/usr/local/bin/pocketshell-real", "sessions", "list", "--json",
+    ])
+    session_list_path = artifact_directory / "host-pocketshell-sessions-list.json"
+    session_list_path.write_text(raw_session_list, encoding="utf-8")
+    try:
+        host_listing = json.loads(raw_session_list)
+    except json.JSONDecodeError as error:
+        raise EvidenceFailure(f"independent pocketshell sessions list was malformed: {error}") from error
+    if not isinstance(host_listing, dict) or host_listing.get("schema") != 3 or not isinstance(host_listing.get("sessions"), list):
+        raise EvidenceFailure("independent pocketshell sessions list did not return schema-3 session rows")
+
+    host_metadata_rows: dict[str, dict[str, Any]] = {}
+    for letter in "abc":
+        tag = f"{run_id}-{letter}"
+        expected = rows[tag]
+        matches = [
+            row for row in host_listing["sessions"]
+            if isinstance(row, dict)
+            and row.get("id") == expected.get("id")
+            and row.get("workspace") == expected.get("workspace")
+            and row.get("tag") == tag
+        ]
+        if len(matches) != 1:
+            raise EvidenceFailure(
+                f"independent pocketshell session list must contain exactly one matching row for {tag}; found {len(matches)}"
+            )
+        host_row = matches[0]
+        host_metadata_rows[tag] = host_row
+        if letter == "a":
+            expected_agent, expected_state = "claude", "waiting"
+        elif letter == "b":
+            expected_agent, expected_state = "codex", "idle"
+        else:
+            expected_agent, expected_state = None, None
+        if host_row.get("agent") != expected_agent:
+            raise EvidenceFailure(f"independent host CLI reported agent {host_row.get('agent')!r} for {tag}, expected {expected_agent!r}")
+        if letter in "ab":
+            if host_row.get("agent_state") != expected_state or host_row.get("agent_state_source") != "reported":
+                raise EvidenceFailure(
+                    f"independent host CLI did not report fresh {expected_state} state for {tag}: "
+                    f"{host_row.get('agent_state')!r}/{host_row.get('agent_state_source')!r}"
+                )
+        elif host_row.get("agent_state_source") == "reported":
+            raise EvidenceFailure("plain-shell C unexpectedly carried a host-reported agent state")
+
     joined_rows: list[dict[str, Any]] = []
     captures: dict[str, str] = {}
     for tag in sorted(expected_tags):
@@ -1601,6 +1742,10 @@ def validate(
         "source": "independent Docker exec: /usr/bin/a snapshot --json, a capture --bytes 65536 by session UUID, and a capture --screen --plain by session UUID",
         "matchedRows": joined_rows,
         "captures": captures,
+        "agentMetadata": agent_metadata,
+        "agentMetadataScreenshots": agent_screenshots,
+        "independentSessionList": session_list_path.name,
+        "independentAgentRows": host_metadata_rows,
         "packagedCheckpoints": sorted(expected_names),
         "screenshotMarkerOcr": screenshot_marker_evidence,
         "nativeGraceExpiry": native_expiry,
@@ -1616,6 +1761,181 @@ def validate(
     oracle_path = host_evidence_directory / "host-oracle-summary.json"
     oracle_path.write_text(json.dumps(oracle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return oracle
+
+
+def _validate_agent_metadata(
+    summary: dict[str, Any], rows: dict[str, dict[str, Any]], artifact_directory: Path
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    evidence = summary.get("agentMetadata")
+    if not isinstance(evidence, list):
+        raise EvidenceFailure("packaged agent journey metadata evidence is missing")
+    by_stage = {
+        item.get("stage"): item for item in evidence
+        if isinstance(item, dict) and isinstance(item.get("stage"), str)
+    }
+    required_stages = {
+        "initial-a-unknown",
+        "initial-b-unknown",
+        "initial-c-unknown",
+        "late-a-reported",
+        "list-a-and-b-reported",
+        "selected-b-codex-idle",
+        "selected-a-claude-waiting",
+        "selected-c-unknown",
+    }
+    if not required_stages.issubset(by_stage):
+        raise EvidenceFailure(f"packaged agent metadata evidence lacks stages: {sorted(required_stages - set(by_stage))}")
+
+    def field(record: dict[str, Any], key: str, expected: Any, label: str) -> None:
+        if record.get(key) != expected:
+            raise EvidenceFailure(f"{label} expected {key}={expected!r}, got {record.get(key)!r}")
+
+    tag_a = rows[next(tag for tag in rows if tag.endswith("-a"))]["tag"]
+    tag_b = rows[next(tag for tag in rows if tag.endswith("-b"))]["tag"]
+    tag_c = rows[next(tag for tag in rows if tag.endswith("-c"))]["tag"]
+    ids = {row["tag"]: row["id"] for row in rows.values()}
+
+    for letter, tag in (("a", tag_a), ("b", tag_b)):
+        initial = by_stage[f"initial-{letter}-unknown"]
+        field(initial, "rowPresent", True, f"initial {letter.upper()} session row")
+        field(initial, "rowId", ids[tag], f"initial {letter.upper()} session ID")
+        field(initial, "tag", tag, f"initial {letter.upper()} metadata")
+        field(initial, "agent", "", f"initial {letter.upper()} metadata")
+        field(initial, "rowIdentity", "", f"initial {letter.upper()} UI")
+        field(initial, "rowState", "", f"initial {letter.upper()} UI")
+        field(initial, "rowIdentityAria", "", f"initial {letter.upper()} accessibility")
+        field(initial, "rowStateAria", "", f"initial {letter.upper()} accessibility")
+        field(initial, "selectedAgent", "", f"initial {letter.upper()} selected chrome")
+        field(initial, "selectedState", "", f"initial {letter.upper()} selected chrome")
+        field(initial, "contextIdentity", "", f"initial {letter.upper()} selected chrome")
+        field(initial, "contextState", "", f"initial {letter.upper()} selected chrome")
+        field(initial, "contextIdentityAria", "", f"initial {letter.upper()} accessibility")
+        field(initial, "contextStateAria", "", f"initial {letter.upper()} accessibility")
+        if initial.get("source") == "reported":
+            raise EvidenceFailure(f"new plain-shell session {tag} unexpectedly reported agent state before metadata arrived")
+
+    initial_c = by_stage["initial-c-unknown"]
+    field(initial_c, "rowPresent", True, "initial C session row")
+    field(initial_c, "tag", tag_c, "initial C metadata")
+    field(initial_c, "agent", "", "initial C metadata")
+    if initial_c.get("source") == "reported":
+        raise EvidenceFailure("plain-shell C reported an agent state before its unknown metadata check")
+    field(initial_c, "rowIdentity", "", "initial C UI")
+    field(initial_c, "rowState", "", "initial C UI")
+    field(initial_c, "rowIdentityAria", "", "initial C accessibility")
+    field(initial_c, "rowStateAria", "", "initial C accessibility")
+
+    late_a = by_stage["late-a-reported"]
+    field(late_a, "rowPresent", True, "late A metadata")
+    field(late_a, "rowId", ids[tag_a], "late A metadata")
+    field(late_a, "tag", tag_a, "late A metadata")
+    field(late_a, "agent", "claude", "late A host row")
+    field(late_a, "state", "waiting", "late A host row")
+    field(late_a, "source", "reported", "late A host row")
+    field(late_a, "rowIdentity", "Claude Code", "late A session-list identity")
+    field(late_a, "rowState", "Waiting", "late A session-list state")
+    field(late_a, "rowIdentityAria", "Claude Code agent", "late A identity accessibility")
+    field(late_a, "rowStateAria", "Agent state: Waiting", "late A state accessibility")
+    field(late_a, "selectedTag", tag_a, "late A selected target")
+    field(late_a, "selectedAgent", "Claude Code", "late A selected context")
+    field(late_a, "selectedState", "waiting", "late A selected context")
+    field(late_a, "contextIdentity", "Claude Code", "late A selected chrome")
+    field(late_a, "contextState", "Waiting", "late A selected chrome")
+    field(late_a, "contextIdentityAria", "Claude Code agent", "late A selected accessibility")
+    field(late_a, "contextStateAria", "Agent state: Waiting", "late A selected accessibility")
+
+    list_rows = by_stage["list-a-and-b-reported"]
+    field(list_rows, "rowPresent", True, "A/B session list")
+    field(list_rows, "rowId", ids[tag_b], "B session list row")
+    field(list_rows, "tag", tag_b, "B session list row")
+    field(list_rows, "agent", "codex", "B session list row")
+    field(list_rows, "state", "idle", "B session list row")
+    field(list_rows, "source", "reported", "B session list row")
+    field(list_rows, "rowIdentity", "Codex", "B session-list identity")
+    field(list_rows, "rowState", "Idle", "B session-list state")
+    field(list_rows, "rowIdentityAria", "Codex agent", "B identity accessibility")
+    field(list_rows, "rowStateAria", "Agent state: Idle", "B state accessibility")
+    field(list_rows, "selectedTag", tag_b, "B selected list target")
+    field(list_rows, "selectedAgent", "Codex", "B selected list context")
+    field(list_rows, "selectedState", "idle", "B selected list context")
+    field(list_rows, "contextIdentity", "Codex", "B selected list chrome")
+    field(list_rows, "contextState", "Idle", "B selected list chrome")
+    field(list_rows, "contextIdentityAria", "Codex agent", "B selected accessibility")
+    field(list_rows, "contextStateAria", "Agent state: Idle", "B selected accessibility")
+    other = list_rows.get("otherSession")
+    if not isinstance(other, dict):
+        raise EvidenceFailure("session list evidence omitted A while B was selected")
+    field(other, "tag", tag_a, "other A session-list row")
+    field(other, "agent", "claude", "other A session-list row")
+    field(other, "state", "waiting", "other A session-list row")
+    field(other, "source", "reported", "other A session-list row")
+    field(other, "identity", "Claude Code", "other A session-list identity")
+    field(other, "stateLabel", "Waiting", "other A session-list state")
+    field(other, "identityAria", "Claude Code agent", "other A identity accessibility")
+    field(other, "stateAria", "Agent state: Waiting", "other A state accessibility")
+
+    for stage, tag, agent, state, identity, label in (
+        ("selected-b-codex-idle", tag_b, "codex", "idle", "Codex", "Idle"),
+        ("selected-a-claude-waiting", tag_a, "claude", "waiting", "Claude Code", "Waiting"),
+    ):
+        record = by_stage[stage]
+        field(record, "rowPresent", False, f"{stage} live terminal surface")
+        field(record, "tag", tag, f"{stage} target")
+        field(record, "selectedTag", tag, f"{stage} target")
+        field(record, "agent", agent, f"{stage} selected host identity")
+        field(record, "state", state, f"{stage} selected host state")
+        field(record, "source", "reported", f"{stage} selected host state source")
+        field(record, "selectedKind", agent, f"{stage} selected kind")
+        field(record, "selectedAgent", identity, f"{stage} selected chrome identity")
+        field(record, "selectedState", state, f"{stage} selected chrome state")
+        field(record, "contextIdentity", identity, f"{stage} selected app-bar identity")
+        field(record, "contextState", label, f"{stage} selected app-bar state")
+        field(record, "contextIdentityAria", identity + " agent", f"{stage} app-bar identity accessibility")
+        field(record, "contextStateAria", "Agent state: " + label, f"{stage} app-bar state accessibility")
+
+    unknown_c = by_stage["selected-c-unknown"]
+    field(unknown_c, "rowPresent", False, "selected C live terminal surface")
+    field(unknown_c, "tag", tag_c, "selected C target")
+    field(unknown_c, "selectedTag", tag_c, "selected C target")
+    for key in ("agent", "rowIdentity", "rowState", "rowIdentityAria", "rowStateAria", "selectedKind", "selectedAgent",
+                "selectedState", "contextIdentity", "contextState", "contextIdentityAria", "contextStateAria"):
+        field(unknown_c, key, "", "selected C unknown metadata")
+    if unknown_c.get("source") == "reported":
+        raise EvidenceFailure("selected C has no identity but claims a reported state")
+
+    screenshot_records = summary.get("agentMetadataScreenshots")
+    expected_screenshots = {
+        "agent-list-a-b-reported.png": (tag_b, "sessions-list"),
+        "agent-selected-codex-idle.png": (tag_b, "selected-terminal"),
+        "agent-selected-claude-waiting.png": (tag_a, "selected-terminal"),
+        "agent-selected-unknown-shell.png": (tag_c, "selected-terminal"),
+    }
+    if not isinstance(screenshot_records, list):
+        raise EvidenceFailure("same-run full-device agent screenshots are missing")
+    by_file = {
+        item.get("file"): item for item in screenshot_records
+        if isinstance(item, dict) and isinstance(item.get("file"), str)
+    }
+    if set(by_file) != set(expected_screenshots):
+        raise EvidenceFailure(f"full-device screenshot set differs from expected: {sorted(by_file)}")
+    for filename, (tag, surface) in expected_screenshots.items():
+        record = by_file[filename]
+        field(record, "tag", tag, f"{filename} target")
+        field(record, "surface", surface, f"{filename} surface")
+        path = artifact_directory / filename
+        width, height = _png_dimensions(path)
+        if width < 500 or height < 900:
+            raise EvidenceFailure(f"agent screenshot is not full-device sized ({width}x{height}): {filename}")
+        data = path.read_bytes()
+        if len(data) <= 1_000:
+            raise EvidenceFailure(f"agent screenshot is empty or truncated: {filename}")
+        field(record, "width", width, f"{filename} dimensions")
+        field(record, "height", height, f"{filename} dimensions")
+        field(record, "bytes", len(data), f"{filename} byte count")
+        field(record, "sha256", hashlib.sha256(data).hexdigest(), f"{filename} digest")
+        if not isinstance(record.get("capturedAtEpochMs"), int):
+            raise EvidenceFailure(f"{filename} is missing its same-run capture timestamp")
+    return by_stage, [by_file[name] for name in sorted(by_file)]
 
 
 def _validate_checkpoint(

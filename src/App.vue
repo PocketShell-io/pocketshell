@@ -53,6 +53,8 @@ import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
 import FileWorkspaceScreen from './components/FileWorkspaceScreen.vue';
 import { hostSnippets } from './stores/hostSnippets';
+import SessionAgentMetadata from './components/SessionAgentMetadata.vue';
+import { projectSessionAgentPresentation, resolveSelectedSessionRow } from './session/agentMetadata';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
@@ -187,6 +189,11 @@ const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
 });
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
+const selectedSessionRow = computed(() => resolveSelectedSessionRow(
+  connectionSnapshot.value?.selectedSession,
+  sessions.value,
+));
+const selectedSessionAgentPresentation = computed(() => projectSessionAgentPresentation(selectedSessionRow.value));
 const fileConnection = computed(() => {
   const snapshot = connectionSnapshot.value;
   return snapshot?.connectionId && snapshot.generationId
@@ -219,6 +226,12 @@ function navigateHomeSurface(action: HomeSurfaceAction) {
     document.activeElement.blur();
   }
   homeSurface.value = transitionHomeSurface(homeSurface.value, action);
+}
+
+function isSelectedSession(session: SessionRow): boolean {
+  const selected = selectedSessionRow.value;
+  if (!selected?.id || session.id !== selected.id) return false;
+  return sessions.value.filter((candidate) => candidate.id === selected.id).length === 1;
 }
 
 function openSettings(): void {
@@ -1008,6 +1021,10 @@ onBeforeUnmount(() => {
     :data-ssh-selected-session-id="connectionSnapshot?.selectedSession?.id ?? ''"
     :data-ssh-selected-workspace="connectionSnapshot?.selectedSession?.workspace ?? ''"
     :data-ssh-selected-tag="connectionSnapshot?.selectedSession?.tag ?? ''"
+    :data-ssh-selected-agent-kind="selectedSessionRow?.agent ?? ''"
+    :data-ssh-selected-agent="selectedSessionAgentPresentation.identity?.label ?? ''"
+    :data-ssh-selected-agent-state="selectedSessionAgentPresentation.state ?? ''"
+    :data-ssh-selected-agent-state-source="selectedSessionRow?.agentStateSource ?? ''"
     :data-ssh-retry-attempt="connectionSnapshot?.retryAttempt ?? 0"
     :data-ssh-terminal-input-pending="terminalInputPending"
     :data-ssh-terminal-input-acks="terminalInputAckCount"
@@ -1026,6 +1043,11 @@ onBeforeUnmount(() => {
           <div class="session-context__copy">
             <span class="session-context__title">{{ connectionSnapshot.selectedSession?.name || 'PocketShell' }}</span>
             <span class="session-context__host">{{ hostDraft.username }}@{{ hostDraft.hostname }}</span>
+            <SessionAgentMetadata
+              v-if="selectedSessionRow"
+              class="session-context__agent"
+              :session="selectedSessionRow"
+            />
           </div>
         </div>
         <nav class="workspace-navigation" aria-label="Session destinations">
@@ -1282,12 +1304,18 @@ onBeforeUnmount(() => {
                 :data-session-id="session.id ?? ''"
                 :data-session-workspace="session.workspace ?? ''"
                 :data-session-tag="session.tag ?? ''"
-                :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
+                :data-session-agent="session.agent ?? ''"
+                :data-session-agent-state="session.agentState ?? ''"
+                :data-session-agent-state-source="session.agentStateSource ?? ''"
+                :aria-current="isSelectedSession(session) ? 'true' : undefined"
                 @click="attachSession(session)"
               >
-                <span class="session-name">{{ session.name }}</span>
+                <span class="session-row__title">
+                  <span class="session-name">{{ session.name }}</span>
+                  <SessionAgentMetadata :session="session" />
+                </span>
                 <span class="session-meta">{{ session.workspace || session.engine || 'remote session' }}</span>
-                <span class="session-attach">{{ connectionSnapshot?.selectedSession?.name === session.name && isLive ? 'Attached' : 'Attach' }}</span>
+                <span class="session-attach">{{ isSelectedSession(session) && isLive ? 'Attached' : 'Attach' }}</span>
               </button>
             </li>
           </ul>
