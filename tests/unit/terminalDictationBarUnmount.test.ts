@@ -1,6 +1,7 @@
-import { createRenderer, getCurrentInstance, h, ssrContextKey, type App } from 'vue';
+import { compile, createRenderer, getCurrentInstance, ssrContextKey, type App, type VNode } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DictationEvent, DictationSession } from '../../src/session/platformInput';
+import terminalDictationBarSource from '../../src/components/TerminalDictationBar.vue?raw';
 
 const mocks = vi.hoisted(() => ({
   addListener: vi.fn(),
@@ -15,6 +16,17 @@ vi.mock('../../src/session/platformInput', () => ({
 }));
 
 import TerminalDictationBar from '../../src/components/TerminalDictationBar.vue';
+
+const terminalDictationTemplate = terminalDictationBarSource.match(/<template>([\s\S]*)<\/template>/)?.[1];
+if (!terminalDictationTemplate) throw new Error('TerminalDictationBar production template is missing');
+const compiledTerminalDictationTemplate = compile(terminalDictationTemplate, { hoistStatic: false }) as unknown as (
+  context: object,
+  cache: unknown[],
+  props: object,
+  setup: object,
+  data: object,
+  options: object,
+) => VNode;
 
 interface HostNode {
   type: string;
@@ -68,9 +80,19 @@ const renderer = createRenderer<HostNode, HostNode>({
 const mountedDictationBar = {
   ...TerminalDictationBar,
   render() {
-    const internal = getCurrentInstance() as unknown as { setupState?: Record<string, unknown> } | null;
-    const toggleDictation = internal?.setupState?.toggleDictation as (() => void) | undefined;
-    return h('button', { 'data-testid': 'inline-dictation-toggle', onClick: toggleDictation });
+    const internal = getCurrentInstance() as unknown as {
+      setupState?: object;
+      renderCache?: unknown[];
+    } | null;
+    const setup = internal?.setupState ?? {};
+    return compiledTerminalDictationTemplate(
+      setup,
+      internal?.renderCache ?? [],
+      setup,
+      setup,
+      setup,
+      setup,
+    );
   },
 };
 
@@ -91,6 +113,60 @@ async function flushPromises() {
 describe('terminal dictation bar lifecycle', () => {
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('shows the microphone while idle and a Stop glyph while listening', async () => {
+    let recognitionEvent: ((event: DictationEvent) => void) | undefined;
+    const session: DictationSession = {
+      requestId: 'inline-glyph-1',
+      stop: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {}),
+    };
+    mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
+    mocks.startDictation.mockImplementation(async (onEvent: (event: DictationEvent) => void) => {
+      recognitionEvent = onEvent;
+      onEvent({ requestId: 'inline-glyph-1', type: 'started' });
+      return session;
+    });
+
+    const root = node('root');
+    const app = renderer.createApp(mountedDictationBar, {
+      enabled: true,
+      targetKey: 'host/session-1',
+      languageTag: 'auto',
+      silenceWindowMs: 4_000,
+      insertText: vi.fn(async () => true),
+    }) as App;
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+
+    const toggle = findByTestId(root, 'inline-dictation-toggle');
+    expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
+    expect(toggle?.props['data-mic-state']).toBe('idle');
+    expect(toggle?.children[0]?.type).toBe('svg');
+    expect(toggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
+      .toEqual([
+        'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z',
+        'M19 10v2a7 7 0 0 1-14 0v-2',
+        'M12 19v3M8 22h8',
+      ]);
+
+    (toggle?.props.onClick as (() => void) | undefined)?.();
+    await flushPromises();
+
+    const listeningToggle = findByTestId(root, 'inline-dictation-toggle');
+    expect(listeningToggle?.props['data-mic-state']).toBe('listening');
+    expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
+    expect(listeningToggle?.props['aria-pressed']).toBe(true);
+    expect(listeningToggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
+      .toEqual(['M7 7h10v10H7z']);
+    expect(listeningToggle?.children[0]?.children.find((child) => child.type === 'path')?.props.style)
+      .toEqual({ fill: 'currentColor', stroke: 'none' });
+
+    app.unmount();
+    recognitionEvent?.({ requestId: 'inline-glyph-1', type: 'stopped' });
+    await flushPromises();
   });
 
   it('cancels on unmount, clears parent state, and ignores late transcript events', async () => {

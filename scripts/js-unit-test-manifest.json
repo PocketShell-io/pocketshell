@@ -242,6 +242,7 @@
     "tests/unit/terminalDictationBarUnmount.test.ts": {
       "suite": "terminal dictation bar lifecycle",
       "tests": [
+        "shows the microphone while idle and a Stop glyph while listening",
         "cancels on unmount, clears parent state, and ignores late transcript events"
       ]
     },
