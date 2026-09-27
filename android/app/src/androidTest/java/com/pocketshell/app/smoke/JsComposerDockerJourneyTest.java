@@ -382,6 +382,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void awaitPromptDictateTargetSettled() throws Exception {
         awaitNativeWindowFocus(true);
+        evalString("window.__ps2857PromptDictateStable = null; 'reset physical Dictate target stability samples'");
         String settled = "(() => {const key='__ps2857PromptDictateStable';"
                 + "const panel=document.querySelector('[data-testid=prompt-composer]');"
                 + "const button=panel?.querySelector('[data-testid=composer-dictate]');"
@@ -1175,6 +1176,9 @@ public final class JsComposerDockerJourneyTest {
         String insertPreview = "Review the terminal output carefully.";
         setComposerDraft("");
         String insertWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        checkpoint("dictation-insert-waiting-for-post-resume-target");
+        awaitPromptDictateTargetSettled();
+        checkpoint("dictation-insert-post-resume-target-settled");
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
@@ -1458,32 +1462,49 @@ public final class JsComposerDockerJourneyTest {
         String report = evalString("(() => {const shell=document.querySelector('.app-shell');"
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
-                + "const label=document.querySelector('[data-testid=mobile-hotkeys-launcher-label]');"
+                + "const promptIcon=launcher?.querySelector('svg');const promptIconStyle=promptIcon?getComputedStyle(promptIcon):null;"
                 + "const inlineMic=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const inlineMicIcon=inlineMic?.querySelector('svg');const inlineMicIconStyle=inlineMicIcon?getComputedStyle(inlineMicIcon):null;"
                 + "const visible=node=>!!node&&node.getClientRects().length>0"
                 + "&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';"
+                + "const bounds=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const promptBounds=bounds(launcher),inlineMicBounds=bounds(inlineMic);"
+                + "const hitCenter=node=>{if(!node)return false;const r=node.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return !!hit&&(hit===node||node.contains(hit));};"
                 + "return JSON.stringify({route:shell?.dataset.route??'',homeSurface:shell?.dataset.homeSurface??'',"
                 + "sshPhase:shell?.dataset.sshPhase??'',keyboardVisible:shell?.dataset.keyboardVisible==='true',"
                 + "viewport:{width:window.visualViewport?.width??window.innerWidth,height:window.visualViewport?.height??window.innerHeight},"
                 + "composerPresent:!!composer,launcherVisible:visible(launcher),launcherEnabled:!!launcher&&!launcher.disabled,"
-                + "promptLabel:label?.textContent.trim()??'',inlineMicVisible:visible(inlineMic),"
+                + "promptAccessibleName:launcher?.getAttribute('aria-label')??'',promptTitle:launcher?.getAttribute('title')??'',"
+                + "promptIconVisible:!!promptIcon&&visible(promptIcon)&&Number.parseFloat(promptIconStyle?.opacity??'1')>0"
+                + "&&promptIcon.getBoundingClientRect().width>0&&promptIcon.getBoundingClientRect().height>0,"
+                + "promptCenterHit:hitCenter(launcher),inlineMicVisible:visible(inlineMic),"
                 + "inlineMicEnabled:!!inlineMic&&!inlineMic.disabled,inlineMicLabel:inlineMic?.getAttribute('aria-label')??'',"
+                + "inlineMicTitle:inlineMic?.getAttribute('title')??'',"
+                + "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)&&Number.parseFloat(inlineMicIconStyle?.opacity??'1')>0"
+                + "&&inlineMicIcon.getBoundingClientRect().width>0&&inlineMicIcon.getBoundingClientRect().height>0,"
+                + "inlineMicCenterHit:hitCenter(inlineMic),"
+                + "targetsSeparated:!!promptBounds&&!!inlineMicBounds&&promptBounds.right<=inlineMicBounds.left,"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
-                + "promptBounds:(()=>{if(!launcher)return null;const r=launcher.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};})(),"
-                + "inlineMicBounds:(()=>{if(!inlineMic)return null;const r=inlineMic.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};})()});})() ");
+                + "promptBounds,inlineMicBounds});})() ");
         JSONObject state = new JSONObject(report).put("runId", runId)
-                .put("expectedPromptLabel", "Prompt")
+                .put("expectedPromptAccessibleName", "Open prompt composer")
                 .put("expectedInlineMicLabel", "Dictate to terminal")
                 .put("expectedSession", bytesSession);
         emitArtifact(runId, "composer-route.json", state.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-route.png");
-        assertTrue("idle terminal must expose Prompt separately from inline terminal dictation: " + state,
+        assertTrue("idle terminal must expose an accessible Prompt composer separately from terminal dictation: " + state,
                 "home".equals(state.getString("route")) && "live".equals(state.getString("homeSurface"))
                         && "live".equals(state.getString("sshPhase")) && !state.getBoolean("keyboardVisible")
                         && !state.getBoolean("composerPresent") && state.getBoolean("launcherVisible")
-                        && state.getBoolean("launcherEnabled") && "Prompt".equals(state.getString("promptLabel"))
+                        && state.getBoolean("launcherEnabled")
+                        && "Open prompt composer".equals(state.getString("promptAccessibleName"))
+                        && "Open prompt composer".equals(state.getString("promptTitle"))
+                        && state.getBoolean("promptIconVisible") && state.getBoolean("promptCenterHit")
                         && state.getBoolean("inlineMicVisible") && state.getBoolean("inlineMicEnabled")
                         && "Dictate to terminal".equals(state.getString("inlineMicLabel"))
+                        && "Dictate to terminal".equals(state.getString("inlineMicTitle"))
+                        && state.getBoolean("inlineMicIconVisible") && state.getBoolean("inlineMicCenterHit")
+                        && state.getBoolean("targetsSeparated")
                         && state.getString("terminalHeading").contains(bytesSession)
                         && state.getJSONObject("promptBounds").getDouble("width") >= 48.0
                         && state.getJSONObject("promptBounds").getDouble("height") >= 48.0
@@ -2615,6 +2636,8 @@ public final class JsComposerDockerJourneyTest {
                 + "testid:document.activeElement?.getAttribute?.('data-testid')||''},disabled:!!element.disabled});})()");
         assertTrue("WebView touch target must exist", !point.optBoolean("missing"));
         assertTrue("WebView touch target must be enabled", !point.optBoolean("disabled"));
+        assertTrue("WebView touch target center must hit the requested DOM target: " + point,
+                point.getBoolean("centerHitMatchesTarget"));
         assertTrue("WebView touch target must be visibly inside the Android viewport: " + point,
                 point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("height") + 0.5
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);

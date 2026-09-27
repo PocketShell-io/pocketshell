@@ -547,8 +547,12 @@ public final class JsFastKeysDockerJourneyTest {
         assertHotkeyBarReachable(listening);
         assertEquals("dictation previews must stay local to the dock", writesBeforeListening, terminalInputAcknowledgements());
         assertDictationStableStage("showing a dictation partial", idle, listening, stableGrid, stableResizeAcks);
-        assertEquals("listening mic retains its visible terminal destination caption", "Terminal",
-                listening.getJSONObject("inlineDictationMic").getString("visibleLabel"));
+        JSONObject listeningMic = listening.getJSONObject("inlineDictationMic");
+        assertEquals("listening exposes an accessible Stop action", "Stop terminal dictation",
+                listeningMic.getString("label"));
+        assertEquals("listening mic title matches its accessible action", "Stop terminal dictation",
+                listeningMic.getString("title"));
+        assertTrue("listening keeps a visible mic/Stop icon in its reachable target", listeningMic.getBoolean("iconVisible"));
         awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
                 + " && document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
@@ -886,20 +890,11 @@ public final class JsFastKeysDockerJourneyTest {
         String expectedMicState = "listening".equals(phase) ? "listening"
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
-        String expectedVisibleAction = "listening".equals(phase) ? "Stop"
-                : "starting".equals(phase) ? "Cancel" : transcribing ? "Wait" : "Dictate";
-        assertEquals("persistent dictation mic names its terminal destination without sharing composer dictation: " + geometry,
-                "Terminal", mic.getString("visibleLabel"));
-        assertEquals("the inline terminal control shows its current action as text: " + geometry,
-                expectedVisibleAction, mic.getString("actionText"));
-        JSONObject destination = geometry.getJSONObject("terminalDictationDestination");
-        assertEquals("inline dictation destination stays visibly distinct from the Prompt launcher: " + geometry,
-                "Terminal", destination.getString("text"));
-        assertTrue("terminal dictation destination remains fully visible inside the keybar: " + geometry,
-                destination.getBoolean("insideKeybar") && destination.getBoolean("insideViewport")
-                        && destination.getBoolean("fits"));
         assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
                 expectedAccessibleLabel, mic.getString("label"));
+        assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
+                expectedAccessibleLabel, mic.getString("title"));
+        assertTrue("inline dictation keeps a visible mic/Stop icon: " + geometry, mic.getBoolean("iconVisible"));
         assertEquals("only the listening mic is exposed as pressed: " + geometry,
                 "listening".equals(phase), mic.getBoolean("pressed"));
         assertEquals("inline dictation exposes its idle/listening/transcribing/error state: " + geometry,
@@ -914,6 +909,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("the live-terminal mic must follow the launcher as the last control, with dock slack after it: " + geometry,
                 trailingGap >= -0.5 && trailingGap <= 8.5
                         && mic.getDouble("right") <= dockBounds.getDouble("right") + 0.5);
+        boolean shouldShowStatus = !"idle".equals(phase) || !"quiet".equals(tone);
+        assertEquals("listening/transcribing/error states expose a status strip above the row: " + geometry,
+                shouldShowStatus, geometry.getBoolean("inlineDictationStatusVisible"));
         if (geometry.getBoolean("inlineDictationStatusVisible")) {
             assertTrue("the dictation status chip must render on one line", geometry.getBoolean("inlineDictationStatusOneLine"));
             assertTrue("the dictation status chip must stay inside the dock", geometry.getBoolean("inlineDictationStatusInsideBar"));
@@ -1398,7 +1396,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const visibleWidthInKeybar=clip?Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left)):null;"
                 + "const visibleHeightInKeybar=clip?Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top)):null;"
                 + "const x=r.left+r.width/2,y=r.top+r.height/2;"
-                + "const hit=document.elementFromPoint(x,y);return {label:n.getAttribute('aria-label')||'',"
+                + "const hit=document.elementFromPoint(x,y);return {label:n.getAttribute('aria-label')||'',title:n.title||'',"
                 + "top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height,disabled:!!n.disabled,"
                 + "visibleWidthInKeybar,visibleHeightInKeybar,"
                 + "pressed:n.getAttribute('aria-pressed')==='true',checked:n.getAttribute('aria-checked')==='true',"
@@ -1432,20 +1430,22 @@ public final class JsFastKeysDockerJourneyTest {
                 + "borderTopWidth:s.borderTopWidth,borderRightWidth:s.borderRightWidth,borderBottomWidth:s.borderBottomWidth,borderLeftWidth:s.borderLeftWidth,boxShadow:s.boxShadow};})():null;"
                 + "const promptComposerLauncherNode=document.querySelector('[data-testid=prompt-composer-launcher]');"
                 + "const promptComposerIconNode=promptComposerLauncherNode?.querySelector('svg');"
-                + "const promptComposerLabelNode=promptComposerLauncherNode?.querySelector('[data-testid=mobile-hotkeys-launcher-label]');"
                 + "const measuredBounds=node=>{if(!node)return null;const r=node.getBoundingClientRect();"
                 + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
                 + "const promptComposerBounds=measuredBounds(promptComposerLauncherNode);"
                 + "const promptComposerIconBounds=measuredBounds(promptComposerIconNode);"
-                + "const promptComposerLabelBounds=measuredBounds(promptComposerLabelNode);"
+                + "const promptComposerIconStyle=promptComposerIconNode?getComputedStyle(promptComposerIconNode):null;"
                 + "const insideBounds=(outer,inner)=>!!outer&&!!inner&&inner.left>=outer.left-0.5&&inner.right<=outer.right+0.5"
                 + "&&inner.top>=outer.top-0.5&&inner.bottom<=outer.bottom+0.5;"
                 + "const promptComposerLauncher=promptComposerLauncherNode?{...target(promptComposerLauncherNode),"
-                + "iconBounds:promptComposerIconBounds,labelBounds:promptComposerLabelBounds,"
+                + "iconBounds:promptComposerIconBounds,"
+                + "title:promptComposerLauncherNode.getAttribute('title')??'',"
                 + "iconComputedWidth:promptComposerIconNode?getComputedStyle(promptComposerIconNode).width:'',"
                 + "iconComputedHeight:promptComposerIconNode?getComputedStyle(promptComposerIconNode).height:'',"
-                + "visibleLabel:promptComposerLabelNode?.textContent.trim()??'',"
-                + "contentsInside:insideBounds(promptComposerBounds,promptComposerIconBounds)&&insideBounds(promptComposerBounds,promptComposerLabelBounds)}:null;"
+                + "iconVisible:!!promptComposerIconNode&&promptComposerIconStyle?.display!=='none'"
+                + "&&promptComposerIconStyle?.visibility!=='hidden'&&Number.parseFloat(promptComposerIconStyle?.opacity??'1')>0"
+                + "&&!!promptComposerIconBounds&&promptComposerIconBounds.width>0&&promptComposerIconBounds.height>0,"
+                + "iconInside:insideBounds(promptComposerBounds,promptComposerIconBounds)}:null;"
                 + "const pageActionNode=tray?.querySelector(tray.dataset.palettePage==='ctrl'?'[data-testid=mobile-hotkeys-back-main-page]':'[data-testid=mobile-hotkeys-open-ctrl-page]');"
                 + "const pageAction=pageActionNode?target(pageActionNode):null;"
                 + "const catalogTabsNode=tray?.querySelector('.mobile-hotkeys__page-tabs');"
@@ -1498,9 +1498,15 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationBar=rect('[data-testid=inline-dictation-bar]');"
                 + "const inlineDictationBarNode=document.querySelector('[data-testid=inline-dictation-bar]');"
                 + "const inlineDictationMicNode=document.querySelector('[data-testid=inline-dictation-toggle]');"
-                + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),visibleLabel:"
-                + "inlineDictationMicNode.parentElement?.querySelector('[data-testid=inline-dictation-destination]')?.textContent.trim()??'',"
-                + "actionText:inlineDictationMicNode.querySelector('[data-testid=inline-dictation-action-label]')?.textContent.trim()??''}:null;"
+                + "const inlineDictationMicIcon=inlineDictationMicNode?.querySelector('svg');"
+                + "const inlineDictationMicIconStyle=inlineDictationMicIcon?getComputedStyle(inlineDictationMicIcon):null;"
+                + "const inlineDictationMicIconRect=inlineDictationMicIcon?.getBoundingClientRect();"
+                + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),"
+                + "title:inlineDictationMicNode.getAttribute('title')??'',"
+                + "iconBounds:inlineDictationMicIconRect?{top:inlineDictationMicIconRect.top,bottom:inlineDictationMicIconRect.bottom,left:inlineDictationMicIconRect.left,right:inlineDictationMicIconRect.right,width:inlineDictationMicIconRect.width,height:inlineDictationMicIconRect.height}:null,"
+                + "iconVisible:!!inlineDictationMicIcon&&inlineDictationMicIconStyle?.display!=='none'"
+                + "&&inlineDictationMicIconStyle?.visibility!=='hidden'&&Number.parseFloat(inlineDictationMicIconStyle?.opacity??'1')>0"
+                + "&&inlineDictationMicIcon.getBoundingClientRect().width>0&&inlineDictationMicIcon.getBoundingClientRect().height>0}:null;"
                 + "const enterDivider=rect('[data-testid=mobile-hotkeys-enter-divider]');"
                 + "const inlineDictationStatusRow=rect('[data-testid=inline-dictation-status-row]');"
                 + "const dictationSheetHeader=rect('.mobile-hotkeys__sheet-header');"
@@ -1508,16 +1514,6 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const keybarNode=document.querySelector('.mobile-hotkeys__bar');"
                 + "const keybarClientRect=keybarNode?(()=>{const r=keybarNode.getBoundingClientRect(),left=r.left+keybarNode.clientLeft,top=r.top+keybarNode.clientTop;"
                 + "return {left,top,right:left+keybarNode.clientWidth,bottom:top+keybarNode.clientHeight,width:keybarNode.clientWidth,height:keybarNode.clientHeight};})():null;"
-                + "const inlineDictationDestinationNode=document.querySelector('[data-testid=inline-dictation-destination]');"
-                + "const inlineDictationDestinationBounds=inlineDictationDestinationNode?.getBoundingClientRect();"
-                + "const terminalDictationDestination=inlineDictationDestinationNode&&inlineDictationDestinationBounds&&keybarClientRect?{"
-                + "text:inlineDictationDestinationNode.textContent.trim(),top:inlineDictationDestinationBounds.top,bottom:inlineDictationDestinationBounds.bottom,"
-                + "left:inlineDictationDestinationBounds.left,right:inlineDictationDestinationBounds.right,width:inlineDictationDestinationBounds.width,height:inlineDictationDestinationBounds.height,"
-                + "fits:inlineDictationDestinationNode.scrollWidth<=inlineDictationDestinationNode.clientWidth+1,"
-                + "insideKeybar:inlineDictationDestinationBounds.left>=keybarClientRect.left-0.5&&inlineDictationDestinationBounds.right<=keybarClientRect.right+0.5"
-                + "&&inlineDictationDestinationBounds.top>=keybarClientRect.top-0.5&&inlineDictationDestinationBounds.bottom<=keybarClientRect.bottom+0.5,"
-                + "insideViewport:inlineDictationDestinationBounds.left>=0&&inlineDictationDestinationBounds.right<=innerWidth+0.5"
-                + "&&inlineDictationDestinationBounds.top>=0&&inlineDictationDestinationBounds.bottom<=(window.visualViewport?.height??innerHeight)+0.5}:null;"
                 + "const persistentRowMetrics=keybarNode?{clientWidth:keybarNode.clientWidth,scrollWidth:keybarNode.scrollWidth,scrollLeft:keybarNode.scrollLeft,"
                 + "scrollable:keybarNode.scrollWidth>keybarNode.clientWidth+1}:null;"
                 + "const inlineDictationStatusNode=document.querySelector('[data-testid=inline-dictation-status]');"
@@ -1573,7 +1569,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "catalogScroller?.matches('.mobile-hotkeys__main-keys')?'.mobile-hotkeys__main-keys':null,catalogScrollMetrics,"
                 + "mainCatalog:rect('.mobile-hotkeys__main-keys'),ctrlCatalog:rect('.mobile-hotkeys__ctrl-grid'),"
                 + "composerPanel:composerRect,composerDraft:composerDraftRect,composerActionRow,composerActions,"
-                + "inlineDictationBar,keybarRect,keybarClientRect,terminalDictationDestination,"
+                + "inlineDictationBar,keybarRect,keybarClientRect,"
                 + "inlineDictationStatusRow,inlineDictationStatusVisible:!!inlineDictationStatusNode,"
                 + "dictationSheetHeader,inlineDictationStatusInsideSheetHeader:inlineDictationStatusRow&&dictationSheetHeader?inlineDictationStatusRow.top>=dictationSheetHeader.top-0.5"
                 + "&&inlineDictationStatusRow.left>=dictationSheetHeader.left-0.5&&inlineDictationStatusRow.bottom<=dictationSheetHeader.bottom+0.5"
@@ -1702,22 +1698,22 @@ public final class JsFastKeysDockerJourneyTest {
                         && !composeLauncher.getBoolean("disabled")
                         && "Open prompt composer".equals(composeLauncher.getString("label")));
         JSONObject promptIconBounds = composeLauncher.optJSONObject("iconBounds");
-        JSONObject promptLabelBounds = composeLauncher.optJSONObject("labelBounds");
         assertNotNull("Prompt icon must expose its computed SVG bounds", promptIconBounds);
-        assertNotNull("Prompt label must expose its visible text bounds", promptLabelBounds);
-        assertTrue("Prompt icon and full label must stay inside the 48dp launcher: " + composeLauncher,
-                "Prompt".equals(composeLauncher.getString("visibleLabel"))
-                        && composeLauncher.getDouble("width") <= 48.5
-                        && "14px".equals(composeLauncher.getString("iconComputedWidth"))
-                        && "14px".equals(composeLauncher.getString("iconComputedHeight"))
-                        && promptIconBounds.getDouble("width") <= 14.5
-                        && promptIconBounds.getDouble("height") <= 14.5
-                        && promptIconBounds.getDouble("left") >= composeLauncher.getDouble("left") + 2.5
-                        && promptIconBounds.getDouble("right") <= composeLauncher.getDouble("right") - 2.5
-                        && promptLabelBounds.getDouble("width") <= composeLauncher.getDouble("width") - 5.5
-                        && promptLabelBounds.getDouble("left") >= composeLauncher.getDouble("left") + 2.5
-                        && promptLabelBounds.getDouble("right") <= composeLauncher.getDouble("right") - 2.5
-                        && composeLauncher.getBoolean("contentsInside"));
+        assertEquals("Compose launcher exposes a clear accessible name", "Open prompt composer",
+                composeLauncher.getString("label"));
+        assertEquals("Compose launcher title matches its accessible name", "Open prompt composer",
+                composeLauncher.getString("title"));
+        assertTrue("Compose icon must be visible, 20px, and inside its 48dp launcher: " + composeLauncher,
+                composeLauncher.getBoolean("iconVisible")
+                        && "20px".equals(composeLauncher.getString("iconComputedWidth"))
+                        && "20px".equals(composeLauncher.getString("iconComputedHeight"))
+                        && promptIconBounds.getDouble("width") >= 19.5
+                        && promptIconBounds.getDouble("height") >= 19.5
+                        && promptIconBounds.getDouble("left") >= composeLauncher.getDouble("left")
+                        && promptIconBounds.getDouble("right") <= composeLauncher.getDouble("right")
+                        && promptIconBounds.getDouble("top") >= composeLauncher.getDouble("top")
+                        && promptIconBounds.getDouble("bottom") <= composeLauncher.getDouble("bottom")
+                        && composeLauncher.getBoolean("iconInside"));
         int expectedTargetCount = 4;
         assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
@@ -1765,28 +1761,29 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const savedStyle=tray.getAttribute('style'),savedScrollLeft=bar.scrollLeft;"
                 + "tray.style.width='330px';tray.style.maxWidth='330px';tray.style.minWidth='0';"
                 + "bar.scrollLeft=0;const clientWidth=bar.clientWidth,scrollWidth=bar.scrollWidth;"
-                + "const targets=Array.from(bar.querySelectorAll('button')).map(node=>{"
-                + "const r=node.getBoundingClientRect(),b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
+                + "const b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
                 + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
+                + "const targets=Array.from(bar.querySelectorAll('button')).map(node=>{"
+                + "const r=node.getBoundingClientRect();"
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
                 + "const visibleHeight=Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top));"
-                + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return {label:node.getAttribute('aria-label')||node.textContent.trim(),"
+                + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2),icon=node.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
+                + "return {label:node.getAttribute('aria-label')||node.textContent.trim(),title:node.getAttribute('title')||'',"
+                + "iconVisible:!!icon&&iconStyle?.display!=='none'&&iconStyle?.visibility!=='hidden'"
+                + "&&Number.parseFloat(iconStyle?.opacity??'1')>0&&icon.getBoundingClientRect().width>0&&icon.getBoundingClientRect().height>0,"
                 + "left:r.left,right:r.right,width:r.width,height:r.height,insideToolbar:r.left>=clip.left-0.5&&r.right<=clip.right+0.5,"
                 + "visibleWidth,visibleHeight,hitTarget:!!hit&&(hit===node||node.contains(hit)),"
                 + "disabled:!!node.disabled};});"
-                + "const destination=tray.querySelector('[data-testid=inline-dictation-destination]');"
-                + "let terminalDestination=null,finalMic=null;if(destination){"
-                + "const r=destination.getBoundingClientRect(),b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
-                + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
-                + "terminalDestination={text:destination.textContent.trim(),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,"
-                + "insideToolbar:r.left>=clip.left-0.5&&r.right<=clip.right+0.5&&r.top>=clip.top-0.5&&r.bottom<=clip.bottom+0.5};"
-                + "const mic=bar.querySelector('[data-testid=inline-dictation-toggle]'),m=mic?.getBoundingClientRect();if(m){const hit=document.elementFromPoint(m.left+m.width/2,m.top+m.height/2);"
+                + "const mic=bar.querySelector('[data-testid=inline-dictation-toggle]'),m=mic?.getBoundingClientRect();let finalMic=null;if(m){const hit=document.elementFromPoint(m.left+m.width/2,m.top+m.height/2),icon=mic.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
                 + "finalMic={left:m.left,right:m.right,top:m.top,bottom:m.bottom,width:m.width,height:m.height,"
+                + "label:mic.getAttribute('aria-label')||'',title:mic.getAttribute('title')||'',"
+                + "iconVisible:!!icon&&iconStyle?.display!=='none'&&iconStyle?.visibility!=='hidden'"
+                + "&&Number.parseFloat(iconStyle?.opacity??'1')>0&&icon.getBoundingClientRect().width>0&&icon.getBoundingClientRect().height>0,"
                 + "insideToolbar:m.left>=clip.left-0.5&&m.right<=clip.right+0.5&&m.top>=clip.top-0.5&&m.bottom<=clip.bottom+0.5,"
-                + "hitTarget:!!hit&&(hit===mic||mic.contains(hit))};}}"
+                + "hitTarget:!!hit&&(hit===mic||mic.contains(hit))};}"
                 + "const maxScrollLeft=bar.scrollWidth-bar.clientWidth;"
                 + "if(savedStyle===null)tray.removeAttribute('style');else tray.setAttribute('style',savedStyle);bar.scrollLeft=savedScrollLeft;"
-                + "return JSON.stringify({clientWidth,clientHeight:bar.clientHeight,scrollWidth,maxScrollLeft,scrollable:scrollWidth>clientWidth+1,targets,terminalDestination,finalMic});"
+                + "return JSON.stringify({clientWidth,clientHeight:bar.clientHeight,scrollWidth,maxScrollLeft,scrollable:scrollWidth>clientWidth+1,targets,finalMic});"
                 + "})()"));
         assertTrue("narrow-width probe must find the persistent toolbar: " + result, !result.optBoolean("missing"));
         assertEquals("narrow toolbar overflow state must match its measured scroll range: " + result,
@@ -1797,6 +1794,9 @@ public final class JsFastKeysDockerJourneyTest {
         JSONArray targets = result.getJSONArray("targets");
         assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
         assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer"));
+        assertEquals("narrow dock exposes the Kotlin-parity accessible control order",
+                List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate to terminal"),
+                narrowToolbarLabels(targets));
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
             assertTrue("narrow toolbar target remains >=48dp and scroll-reachable: " + target,
@@ -1804,21 +1804,30 @@ public final class JsFastKeysDockerJourneyTest {
                             && target.getDouble("visibleWidth") >= 47.9 && target.getDouble("visibleHeight") >= 47.9
                             && target.getBoolean("hitTarget") && target.getBoolean("insideToolbar")
                             && !target.getBoolean("disabled"));
+            assertTrue("narrow dock control title, when present, matches its accessible name: " + target,
+                    target.getString("title").isEmpty() || target.getString("label").equals(target.getString("title")));
         }
-        JSONObject terminalDestination = result.getJSONObject("terminalDestination");
-        assertEquals("narrow-width inline caption visibly names its terminal destination", "Terminal",
-                terminalDestination.getString("text"));
-        assertTrue("narrow-width terminal destination label remains fully readable after scrolling: " + result,
-                terminalDestination.getDouble("width") > 0 && terminalDestination.getBoolean("insideToolbar"));
+        assertTrue("narrow dock keeps the Compose icon visible", targets.getJSONObject(0).getBoolean("iconVisible"));
         JSONObject finalMic = result.getJSONObject("finalMic");
         assertTrue("narrow-width terminal dictation remains a fully visible 48dp hit target: " + result,
                 finalMic.getDouble("width") >= 47.9 && finalMic.getDouble("height") >= 47.9
-                        && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget"));
+                        && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget")
+                        && finalMic.getBoolean("iconVisible")
+                        && "Dictate to terminal".equals(finalMic.getString("label"))
+                        && finalMic.getString("label").equals(finalMic.getString("title")));
         int writesAfter = hotkeyWrites().length();
         assertEquals("testing the narrow toolbar must not write bytes to the PTY", writesBefore, writesAfter);
         result.put("ptyWritesBefore", writesBefore);
         result.put("ptyWritesAfter", writesAfter);
         return result;
+    }
+
+    private List<String> narrowToolbarLabels(JSONArray targets) throws Exception {
+        List<String> labels = new ArrayList<>();
+        for (int index = 0; index < targets.length(); index += 1) {
+            labels.add(targets.getJSONObject(index).getString("label"));
+        }
+        return labels;
     }
 
     private void assertCatalogSheetGeometry(JSONObject geometry, String page) throws Exception {

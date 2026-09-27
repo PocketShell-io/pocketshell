@@ -323,11 +323,19 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or route_state.get("sshPhase") != "live" or route_state.get("keyboardVisible") is not False
                 or route_state.get("composerPresent") is not False
                 or route_state.get("launcherVisible") is not True or route_state.get("launcherEnabled") is not True
-                or route_state.get("promptLabel") != "Prompt" or route_state.get("expectedPromptLabel") != "Prompt"
+                or route_state.get("promptAccessibleName") != "Open prompt composer"
+                or route_state.get("expectedPromptAccessibleName") != "Open prompt composer"
+                or route_state.get("promptTitle") != "Open prompt composer"
+                or route_state.get("promptIconVisible") is not True
+                or route_state.get("promptCenterHit") is not True
                 or route_state.get("inlineMicVisible") is not True or route_state.get("inlineMicEnabled") is not True
                 or route_state.get("inlineMicLabel") != "Dictate to terminal"
-                or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"):
-            raise ExtractionFailure("idle terminal evidence does not distinguish Prompt access from inline terminal dictation")
+                or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"
+                or route_state.get("inlineMicTitle") != "Dictate to terminal"
+                or route_state.get("inlineMicIconVisible") is not True
+                or route_state.get("inlineMicCenterHit") is not True
+                or route_state.get("targetsSeparated") is not True):
+            raise ExtractionFailure("idle terminal evidence does not prove accessible, separate Prompt and terminal dictation controls")
         route_session = route_state.get("expectedSession")
         route_heading = route_state.get("terminalHeading")
         if (not isinstance(route_session, str) or not route_session or not isinstance(route_heading, str)
@@ -344,6 +352,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         if (not all(math.isfinite(value) for value in (route_viewport_width, route_viewport_height))
                 or route_viewport_width <= 0 or route_viewport_height <= 0):
             raise ExtractionFailure("idle terminal route evidence has invalid viewport bounds")
+        route_bounds: dict[str, dict[str, float]] = {}
         for label in ("promptBounds", "inlineMicBounds"):
             bounds = route_state.get(label)
             if not isinstance(bounds, dict):
@@ -361,6 +370,9 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             if (width < 48.0 or height < 48.0 or top < -0.5 or left < -0.5
                     or bottom > route_viewport_height + 0.5 or right > route_viewport_width + 0.5):
                 raise ExtractionFailure(f"idle terminal {label} is clipped or below the 48dp touch target")
+            route_bounds[label] = {"top": top, "bottom": bottom, "left": left, "right": right}
+        if route_bounds["promptBounds"]["right"] > route_bounds["inlineMicBounds"]["left"]:
+            raise ExtractionFailure("idle terminal Prompt and inline dictation bounds overlap or are out of order")
 
         title_bytes = decoded.get("composer-title.json")
         if title_bytes is None or "composer-title.png" not in decoded:
@@ -1034,22 +1046,57 @@ def self_test() -> None:
         "composerPresent": False,
         "launcherVisible": True,
         "launcherEnabled": True,
-        "promptLabel": "Prompt",
-        "expectedPromptLabel": "Prompt",
+        "promptAccessibleName": "Open prompt composer",
+        "expectedPromptAccessibleName": "Open prompt composer",
+        "promptTitle": "Open prompt composer",
+        "promptIconVisible": True,
+        "promptCenterHit": True,
         "inlineMicVisible": True,
         "inlineMicEnabled": True,
         "inlineMicLabel": "Dictate to terminal",
         "expectedInlineMicLabel": "Dictate to terminal",
+        "inlineMicTitle": "Dictate to terminal",
+        "inlineMicIconVisible": True,
+        "inlineMicCenterHit": True,
+        "targetsSeparated": True,
         "terminalHeading": f"{run_id}-bytes",
         "expectedSession": f"{run_id}-bytes",
-        "promptBounds": {"top": 700.0, "bottom": 748.0, "left": 280.0, "right": 360.0,
-                         "width": 80.0, "height": 48.0},
+        "promptBounds": {"top": 700.0, "bottom": 748.0, "left": 312.0, "right": 360.0,
+                         "width": 48.0, "height": 48.0},
         "inlineMicBounds": {"top": 700.0, "bottom": 748.0, "left": 360.0, "right": 408.0,
                             "width": 48.0, "height": 48.0},
     }).encode()
     confused_route_state_value = json.loads(route_state)
     confused_route_state_value["inlineMicLabel"] = "Dictate prompt"
     confused_route_state = json.dumps(confused_route_state_value).encode()
+    unnamed_prompt_route_value = json.loads(route_state)
+    unnamed_prompt_route_value["promptAccessibleName"] = ""
+    unnamed_prompt_route = json.dumps(unnamed_prompt_route_value).encode()
+    mismatched_prompt_title_value = json.loads(route_state)
+    mismatched_prompt_title_value["promptTitle"] = "Open terminal"
+    mismatched_prompt_title = json.dumps(mismatched_prompt_title_value).encode()
+    hidden_prompt_icon_value = json.loads(route_state)
+    hidden_prompt_icon_value["promptIconVisible"] = False
+    hidden_prompt_icon = json.dumps(hidden_prompt_icon_value).encode()
+    missed_prompt_center_value = json.loads(route_state)
+    missed_prompt_center_value["promptCenterHit"] = False
+    missed_prompt_center = json.dumps(missed_prompt_center_value).encode()
+    mismatched_inline_mic_title_value = json.loads(route_state)
+    mismatched_inline_mic_title_value["inlineMicTitle"] = "Dictate prompt"
+    mismatched_inline_mic_title = json.dumps(mismatched_inline_mic_title_value).encode()
+    hidden_inline_mic_icon_value = json.loads(route_state)
+    hidden_inline_mic_icon_value["inlineMicIconVisible"] = False
+    hidden_inline_mic_icon = json.dumps(hidden_inline_mic_icon_value).encode()
+    missed_inline_mic_center_value = json.loads(route_state)
+    missed_inline_mic_center_value["inlineMicCenterHit"] = False
+    missed_inline_mic_center = json.dumps(missed_inline_mic_center_value).encode()
+    unseparated_route_value = json.loads(route_state)
+    unseparated_route_value["targetsSeparated"] = False
+    unseparated_route = json.dumps(unseparated_route_value).encode()
+    overlapping_route_value = json.loads(route_state)
+    overlapping_route_value["inlineMicBounds"]["left"] = 340.0
+    overlapping_route_value["inlineMicBounds"]["right"] = 388.0
+    overlapping_route = json.dumps(overlapping_route_value).encode()
     small_route_prompt_value = json.loads(route_state)
     small_route_prompt_value["promptBounds"]["width"] = 47.0
     small_route_prompt = json.dumps(small_route_prompt_value).encode()
@@ -1519,6 +1566,20 @@ def self_test() -> None:
         ("missing idle-terminal route evidence", [line for line in lines if "composer-route.json" not in line]),
         ("route confuses prompt dictation with terminal dictation",
          make_lines(route_state_bytes=confused_route_state)),
+        ("Prompt composer has no accessible name", make_lines(route_state_bytes=unnamed_prompt_route)),
+        ("Prompt composer has the wrong title", make_lines(route_state_bytes=mismatched_prompt_title)),
+        ("Prompt composer icon is hidden", make_lines(route_state_bytes=hidden_prompt_icon)),
+        ("Prompt composer center misses its target", make_lines(route_state_bytes=missed_prompt_center)),
+        ("terminal dictation mic has the wrong title",
+         make_lines(route_state_bytes=mismatched_inline_mic_title)),
+        ("terminal dictation mic icon is hidden",
+         make_lines(route_state_bytes=hidden_inline_mic_icon)),
+        ("terminal dictation mic center misses its target",
+         make_lines(route_state_bytes=missed_inline_mic_center)),
+        ("Prompt and terminal dictation are not marked as separate",
+         make_lines(route_state_bytes=unseparated_route)),
+        ("Prompt and terminal dictation bounds overlap",
+         make_lines(route_state_bytes=overlapping_route)),
         ("idle Prompt entry is below the 48dp touch target", make_lines(route_state_bytes=small_route_prompt)),
         ("idle inline terminal mic is clipped", make_lines(route_state_bytes=clipped_route_mic)),
         ("forced first miss closes Composer and removes its retry target",

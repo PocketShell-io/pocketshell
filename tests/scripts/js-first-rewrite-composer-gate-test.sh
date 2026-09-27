@@ -94,6 +94,63 @@ def require_dictate_prompt_journey(source: str) -> None:
 require_dictate_prompt_journey(journey)
 
 
+def require_icon_only_terminal_route_contract(source: str, extractor_source: str) -> None:
+    start = source.index("private void capturePromptComposerRoute(")
+    end = source.index("private void ", start + len("private void "))
+    route_capture = source[start:end]
+    journey_evidence = (
+        "promptAccessibleName:launcher?.getAttribute('aria-label')??''",
+        "promptTitle:launcher?.getAttribute('title')??''",
+        "promptIconVisible:!!promptIcon&&visible(promptIcon)",
+        "promptCenterHit:hitCenter(launcher)",
+        "inlineMicTitle:inlineMic?.getAttribute('title')??''",
+        "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)",
+        "inlineMicCenterHit:hitCenter(inlineMic)",
+        "targetsSeparated:!!promptBounds&&!!inlineMicBounds&&promptBounds.right<=inlineMicBounds.left",
+        '"Open prompt composer".equals(state.getString("promptAccessibleName"))',
+        '"Open prompt composer".equals(state.getString("promptTitle"))',
+        '.put("expectedPromptAccessibleName", "Open prompt composer")',
+        '"Dictate to terminal".equals(state.getString("inlineMicTitle"))',
+        'state.getBoolean("promptIconVisible")',
+        'state.getBoolean("promptCenterHit")',
+        'state.getBoolean("inlineMicIconVisible")',
+        'state.getBoolean("inlineMicCenterHit")',
+        'state.getBoolean("targetsSeparated")',
+    )
+    for needle in journey_evidence:
+        if needle not in route_capture:
+            raise AssertionError(f"icon-only terminal route journey is missing {needle}")
+    if "promptLabel" in route_capture or "expectedPromptLabel" in route_capture:
+        raise AssertionError("terminal Prompt access must use its accessible name and title, without a visible caption")
+
+    extractor_evidence = (
+        'route_state.get("promptAccessibleName") != "Open prompt composer"',
+        'route_state.get("promptTitle") != "Open prompt composer"',
+        'route_state.get("promptIconVisible") is not True',
+        'route_state.get("promptCenterHit") is not True',
+        'route_state.get("inlineMicTitle") != "Dictate to terminal"',
+        'route_state.get("inlineMicIconVisible") is not True',
+        'route_state.get("inlineMicCenterHit") is not True',
+        'route_state.get("targetsSeparated") is not True',
+        'route_bounds["promptBounds"]["right"] > route_bounds["inlineMicBounds"]["left"]',
+        '"Prompt composer has no accessible name"',
+        '"Prompt composer has the wrong title"',
+        '"Prompt composer icon is hidden"',
+        '"Prompt composer center misses its target"',
+        '"terminal dictation mic has the wrong title"',
+        '"terminal dictation mic icon is hidden"',
+        '"terminal dictation mic center misses its target"',
+        '"Prompt and terminal dictation are not marked as separate"',
+        '"Prompt and terminal dictation bounds overlap"',
+    )
+    for needle in extractor_evidence:
+        if needle not in extractor_source:
+            raise AssertionError(f"composer artifact extractor is missing an icon-only route regression check: {needle}")
+
+
+require_icon_only_terminal_route_contract(journey, extractor)
+
+
 def require_open_composer_physical_target_settles(source: str) -> None:
     set_draft = source[source.index("private void setComposerDraft("):source.index("private void awaitPromptDictateTargetSettled(")]
     if "if (openedComposer) awaitPromptDictateTargetSettled();" not in set_draft:

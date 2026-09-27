@@ -107,6 +107,10 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("live keyboard row must not overflow", "live-width persistent row is clipped"),
         ("clipped hit-area intersection is checked", "visibleHeightInKeybar"),
         ("narrow-toolbar scroll checks visible hit-area intersection", "visibleHeight\""),
+        ("dictation target uses a phase-specific accessible name", "expected_terminal_dictation_accessible_name"),
+        ("dictation target checks its mic state", "expected_terminal_dictation_mic_state"),
+        ("dictation target center must receive the tap", 'mic.get("hitTarget") is not True'),
+        ("icon bounds are checked against the button", "icon_is_inside_button"),
         ("dictation raw byte count is checked", 'dictation raw byte file length mismatch'),
         ("IME-hidden ResizeObserver fit stays bound to its accepted PTY ACK", "IME-hidden ResizeObserver fit with matching accepted native PTY resize ACK accepted"),
         ("IME-hidden resume rejects an unmatched native PTY ACK", "IME-hidden resume with an unmatched native PTY resize ACK rejected"),
@@ -205,10 +209,17 @@ if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
         or ".mobile-hotkeys__enter-divider { width: 1px; height: 24px;" not in mobile_hotkeys):
     raise AssertionError("persistent arrows and Enter must keep the Kotlin divider without consuming a hit target")
 if ("mobile-hotkeys-launcher-label" not in mobile_hotkeys
-        or "inline-dictation-destination" not in mobile_hotkeys
-        or "inline-dictation-action-label" not in terminal_dictation
+        or 'class="mobile-hotkeys__composer-label sr-only"' not in mobile_hotkeys
+        or 'class="sr-only" data-testid="inline-dictation-destination" aria-hidden="true"' not in mobile_hotkeys
+        or 'class="terminal-dictation-action sr-only"' not in terminal_dictation
+        or ':aria-label="buttonLabel()"' not in terminal_dictation
+        or any(label not in terminal_dictation for label in (
+            "Dictate to terminal", "Stop terminal dictation", "Cancel terminal dictation request",
+            "Cancelling terminal dictation", "Transcribing terminal speech", "Inserting terminal speech",
+            "Terminal dictation unavailable",
+        ))
         or ".terminal-dictation-button__label" in styles):
-    raise AssertionError("Prompt and terminal dictation actions and destinations must be visible and distinct")
+    raise AssertionError("Prompt and terminal icon controls must keep screen-reader-only copy and phase-specific accessible names")
 if ("More terminal keys" not in mobile_hotkeys
         or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
     raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment with accessible names")
@@ -435,6 +446,32 @@ for dictation_contract in (
         raise AssertionError(f"combined fast-key journey omits the integrated dictation contract: {dictation_contract}")
 if "validate_dictation_behavior(journey)" not in extractor or "expectedHostHex" not in extractor:
     raise AssertionError("artifact validator must fail closed on partial/final/Stop/error/reattach dictation behavior")
+for journey_contract in (
+    "title:n.title",
+    "iconVisible",
+    "iconBounds",
+    "iconComputedWidth",
+    "iconComputedHeight",
+    "iconInside",
+    "pressed:n.getAttribute('aria-pressed')==='true'",
+    "micState:n.dataset.micState||''",
+    "hitTarget:!!hit&&(hit===n||n.contains(hit))",
+):
+    if journey_contract not in journey:
+        raise AssertionError(f"Fast Keys journey omits icon-only dictation evidence: {journey_contract}")
+if ("mic.get(\"title\") != expected_accessible_name" not in extractor
+        or 'mic.get("iconVisible") is not True' not in extractor
+        or 'mic.get("pressed") is not (phase == "listening")' not in extractor):
+    raise AssertionError("artifact validator must enforce accessible labels and the visible mic/Stop state")
+if ("prompt_icon_matches_computed_size" not in extractor
+        or "iconComputedWidth" not in extractor
+        or "iconComputedHeight" not in extractor
+        or "expected_narrow_labels" not in extractor):
+    raise AssertionError("artifact validator must enforce the Prompt icon geometry and six-control narrow-toolbar order")
+if ("Listening ·" not in extractor
+        or 'listening.get("inlineDictationPreview") != dictation.get("partialText")' not in extractor
+        or 'listening.get("inlineDictationStatusVisible") is not True' not in extractor):
+    raise AssertionError("artifact validator must require the active visible status and matching partial preview")
 
 print("PASS: rewrite CI runs the API 35 fast-key Docker journey, checks exact JUnit, aggregates lane status, and uploads same-run evidence")
 print("PASS: fast-key runner and shared packaged-lanes wrapper parse and preserve focus/IME evidence")
