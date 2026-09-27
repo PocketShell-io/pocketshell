@@ -174,7 +174,9 @@ describe('terminal dictation bar lifecycle', () => {
     const toggle = findByTestId(root, 'inline-dictation-toggle');
     expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
     expect(toggle?.props['data-mic-state']).toBe('idle');
-    expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Dictate');
+    const idleAction = findByTestId(root, 'inline-dictation-action-label');
+    expect(idleAction?.text).toBe('Dictate');
+    expect(idleAction?.props.class).toContain('sr-only');
     const idleMicSvg = findAllByType(toggle!, 'svg')[0];
     expect(idleMicSvg?.props['aria-hidden']).toBe('true');
     expect(idleMicSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
@@ -191,7 +193,9 @@ describe('terminal dictation bar lifecycle', () => {
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
     expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
-    expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Stop');
+    const listeningAction = findByTestId(root, 'inline-dictation-action-label');
+    expect(listeningAction?.text).toBe('Stop');
+    expect(listeningAction?.props.class).toContain('sr-only');
     const stopSvg = findAllByType(listeningToggle!, 'svg')[0];
     expect(stopSvg?.props['aria-hidden']).toBe('true');
     expect(stopSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))

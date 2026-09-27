@@ -232,12 +232,12 @@ defineExpose({
           type="button"
           data-testid="prompt-composer-launcher"
           aria-label="Open prompt composer"
-          title="Compose a prompt"
+          title="Open prompt composer"
           :disabled="!enabled"
           @click="emit('openComposer')"
         >
           <AppIcon name="edit-2" aria-hidden="true" />
-          <span class="mobile-hotkeys__composer-label" data-testid="mobile-hotkeys-launcher-label">Prompt</span>
+          <span class="mobile-hotkeys__composer-label sr-only" data-testid="mobile-hotkeys-launcher-label">Prompt</span>
         </button>
 
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
@@ -268,6 +268,7 @@ defineExpose({
           data-testid="mobile-hotkeys-launcher"
           :aria-controls="!paletteOpen ? undefined : page === 'ctrl' ? 'mobile-hotkeys-ctrl-page' : 'mobile-hotkeys-main-page'"
           :aria-label="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
+          :title="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
           :aria-expanded="paletteOpen"
           :disabled="!enabled"
           @click="onLauncherClick"
@@ -284,7 +285,7 @@ defineExpose({
           </div>
           <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
             <slot name="persistent-accessory" />
-            <span v-if="dictationAvailable" class="mobile-hotkeys__dictation-label" data-testid="inline-dictation-destination" aria-hidden="true">Terminal</span>
+            <span v-if="dictationAvailable" class="sr-only" data-testid="inline-dictation-destination" aria-hidden="true">Terminal</span>
           </div>
         </div>
       </div>
@@ -471,7 +472,7 @@ defineExpose({
   height: 48px;
   flex: 0 0 48px;
   align-items: center;
-  gap: 0;
+  gap: var(--sp-1);
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
@@ -481,7 +482,7 @@ defineExpose({
   background: transparent;
 }
 .mobile-hotkeys__bar::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-1); }
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
@@ -513,7 +514,7 @@ defineExpose({
   border-color: var(--accent);
   color: var(--accent);
 }
-.mobile-hotkeys__key--navigation { border-color: transparent; background: transparent; font: 600 18px/1 var(--font-ui); }
+.mobile-hotkeys__key--navigation { border-color: var(--border-soft); background: var(--surface-2); font: 600 18px/1 var(--font-ui); }
 .mobile-hotkeys__key--enter { font: 600 var(--fs-200)/1 var(--font-ui); }
 .mobile-hotkeys__composer-launcher {
   width: 48px;
@@ -539,16 +540,15 @@ defineExpose({
 }
 .mobile-hotkeys__composer-label { white-space: nowrap; }
 .mobile-hotkeys__launcher {
-  margin-left: 2px;
-  border-color: transparent;
-  background: transparent;
+  border-color: var(--border-soft);
+  background: var(--surface-2);
   color: var(--fg-secondary);
 }
-.mobile-hotkeys__launcher[aria-expanded="true"] { background: var(--state-selected); color: var(--accent); }
+.mobile-hotkeys__launcher[aria-expanded="true"] { border-color: var(--accent); background: var(--state-selected); color: var(--accent); }
 .mobile-hotkeys__launcher :deep(svg) { width: 18px; height: 18px; }
-.mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 14px; height: 14px; }
+.mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 20px; height: 20px; }
 
-.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; margin-left: var(--sp-1); }
+.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-controls,
@@ -563,46 +563,22 @@ defineExpose({
   align-items: center;
   justify-content: center;
 }
-.mobile-hotkeys__dictation-label {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  color: var(--fg-secondary);
-  font-size: 10px;
-  font-weight: 500;
-  line-height: 11px;
-  pointer-events: none;
-  text-align: center;
-  white-space: nowrap;
-}
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) {
   align-items: center;
-  justify-content: flex-start;
-  gap: 0;
+  justify-content: center;
   border: 1px solid var(--border-strong);
-  border-radius: var(--r-sm);
+  border-radius: var(--r-md);
   background: var(--surface-2);
-  padding: 3px 2px 12px;
-  flex-direction: column;
+  padding: 0;
+  color: var(--fg-secondary);
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button svg) {
-  width: 14px;
-  height: 14px;
-}
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-action) {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  color: var(--fg);
-  font: 600 11px/12px var(--font-ui);
-  text-align: center;
-  text-overflow: clip;
-  white-space: nowrap;
+  width: 20px;
+  height: 20px;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]),
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {
-  border-color: var(--accent);
+  border-color: var(--accent-dim);
   background: var(--state-selected);
   color: var(--accent);
 }
@@ -753,6 +729,8 @@ defineExpose({
 }
 .mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child {
   scroll-snap-align: end;
+  /* Balance the end snap so both edge keys stay inside fractional WebView bounds. */
+  margin-right: 0.12px;
 }
 .mobile-hotkeys__key--catalog:hover:not(:disabled) {
   border-color: var(--accent-dim);

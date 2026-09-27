@@ -129,7 +129,7 @@ const buttonState = () => {
     @click="toggleDictation"
   >
     <DictationMicIcon :size="20" :stopped="state.phase === 'listening'" />
-    <span class="terminal-dictation-action" data-testid="inline-dictation-action-label" aria-hidden="true">
+    <span class="terminal-dictation-action sr-only" data-testid="inline-dictation-action-label" aria-hidden="true">
       {{ buttonAction() }}
     </span>
   </button>
