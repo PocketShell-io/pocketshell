@@ -145,7 +145,7 @@ describe('terminal dictation bar lifecycle', () => {
     vi.clearAllMocks();
   });
 
-  it('shows the microphone while idle and a Stop glyph while listening', async () => {
+  it('keeps a mic glyph while idle and listening, with accessible action and state tint', async () => {
     let recognitionEvent: ((event: DictationEvent) => void) | undefined;
     const session: DictationSession = {
       requestId: 'inline-glyph-1',
@@ -174,9 +174,6 @@ describe('terminal dictation bar lifecycle', () => {
     const toggle = findByTestId(root, 'inline-dictation-toggle');
     expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
     expect(toggle?.props['data-mic-state']).toBe('idle');
-    const idleAction = findByTestId(root, 'inline-dictation-action-label');
-    expect(idleAction?.text).toBe('Dictate');
-    expect(idleAction?.props.class).toContain('sr-only');
     const idleMicSvg = findAllByType(toggle!, 'svg')[0];
     expect(idleMicSvg?.props['aria-hidden']).toBe('true');
     expect(idleMicSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
@@ -193,15 +190,14 @@ describe('terminal dictation bar lifecycle', () => {
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
     expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
-    const listeningAction = findByTestId(root, 'inline-dictation-action-label');
-    expect(listeningAction?.text).toBe('Stop');
-    expect(listeningAction?.props.class).toContain('sr-only');
-    const stopSvg = findAllByType(listeningToggle!, 'svg')[0];
-    expect(stopSvg?.props['aria-hidden']).toBe('true');
-    expect(stopSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
-      .toEqual(['M7 7h10v10H7z']);
-    expect(stopSvg?.children.find((child) => child.type === 'path')?.props)
-      .toMatchObject({ fill: 'currentColor', stroke: 'none' });
+    expect(listeningToggle?.props['data-mic-state']).toBe('listening');
+    const listeningMicSvg = findAllByType(listeningToggle!, 'svg')[0];
+    expect(listeningMicSvg?.props['aria-hidden']).toBe('true');
+    expect(listeningMicSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
+      .toEqual(idleMicSvg?.children.filter((child) => child.type === 'path').map((path) => path.props.d));
+    expect(findByTestId(root, 'inline-dictation-action-label')).toBeUndefined();
+    expect(terminalDictationBarSource).toContain("if (state.value.phase === 'listening') return 'listening';");
+    expect(terminalDictationBarSource).not.toContain(':stopped="state.phase === \'listening\'"');
 
     app.unmount();
     recognitionEvent?.({ requestId: 'inline-glyph-1', type: 'stopped' });

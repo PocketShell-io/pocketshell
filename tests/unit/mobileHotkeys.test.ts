@@ -146,14 +146,14 @@ describe('mobile fast-key behavior', () => {
     }
   });
 
-  it('offers the Android Compose launcher as an accessible entry to prompt dictation', () => {
+  it('offers the Android Compose launcher as a quiet icon-only entry to prompt dictation', () => {
     const mounted = mountMobileHotkeys(false, false, false, true);
     try {
       const launcher = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
       expect(launcher.props['aria-label']).toBe('Open prompt composer');
       expect(launcher.props.title).toBe('Open prompt composer');
       expect(launcher.props.class).toContain('mobile-hotkeys__composer-launcher');
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')?.props.class).toContain('sr-only');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
       click(launcher);
       expect(mounted.composerOpenRequests()).toBe(1);
       expect(mounted.sent).toEqual([]);
@@ -162,13 +162,11 @@ describe('mobile fast-key behavior', () => {
     }
   });
 
-  it('labels terminal dictation separately from the prompt composer entry', () => {
+  it('keeps the Kotlin dock order and icon-only Compose, keys, and Mic affordances', async () => {
     const mounted = mountMobileHotkeys(false, true, false, true);
     try {
       const prompt = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
       const terminalMic = findButton(mounted.root, { 'data-testid': 'inline-dictation-toggle' });
-      const promptLabel = findByTestId(mounted.root, 'mobile-hotkeys-launcher-label');
-      const destinationLabel = findByTestId(mounted.root, 'inline-dictation-destination');
       const bar = findAll(mounted.root, (node) => node.props.class === 'mobile-hotkeys__bar')[0];
       if (!bar) throw new Error('The persistent terminal bar did not mount');
       const barButtons = findAll(bar, (node) => node.tag === 'button');
@@ -182,16 +180,43 @@ describe('mobile fast-key behavior', () => {
           'inline-dictation-toggle',
         ]);
       expect(terminalMic.props['aria-label']).toBe('Dictate to terminal');
-      expect(promptLabel?.props.class).toContain('sr-only');
-      expect(destinationLabel?.props.class).toContain('sr-only');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
+      expect(findByTestId(mounted.root, 'inline-dictation-destination')).toBeUndefined();
+      expect(findByTestId(mounted.root, 'inline-dictation-action-label')).toBeUndefined();
       expect(prompt.props.title).toBe('Open prompt composer');
-      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }).props.title)
-        .toBe('More terminal keys');
+      const keysButton = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' });
+      expect(keysButton.props.title).toBe('More terminal keys');
+      const keysGlyph = findAll(keysButton, (node) => node.tag === 'svg')[0];
+      expect(keysGlyph?.props.class).toBe('mobile-hotkeys__keys-icon');
+      click(keysButton);
+      await nextTick();
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }).props['aria-label'])
+        .toBe('Close terminal keys');
+      expect(findAll(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }), (node) => node.tag === 'svg')[0])
+        .toBe(keysGlyph);
       expect(prompt.props['aria-label']).not.toBe(terminalMic.props['aria-label']);
       expect(findAll(mounted.root, (node) => node.tag === 'button' && node.props['data-testid'] === 'inline-dictation-toggle'))
         .toHaveLength(1);
     } finally {
       mounted.app.unmount();
+    }
+  });
+
+  it('shows an idle status strip for errors and warnings, not successful insertion feedback', () => {
+    for (const tone of ['success', 'warning', 'error'] as const) {
+      const mounted = mountMobileHotkeys(false, true, {
+        phase: 'idle',
+        preview: '',
+        message: tone === 'success' ? 'Inserted at the cursor.' : 'Dictation failed.',
+        tone,
+      });
+      try {
+        expect(Boolean(findByTestId(mounted.root, 'inline-dictation-status-row'))).toBe(tone !== 'success');
+        expect(findButton(mounted.root, { 'data-testid': 'inline-dictation-toggle' }).props['aria-label'])
+          .toBe('Dictate to terminal');
+      } finally {
+        mounted.app.unmount();
+      }
     }
   });
 

@@ -164,8 +164,9 @@
         "keeps the controls inert off-live and resumes only after an explicit live state",
         "emits core catalog bytes and keeps the palette open until toggled or closed",
         "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
-        "offers the Android Compose launcher as an accessible entry to prompt dictation",
-        "labels terminal dictation separately from the prompt composer entry",
+        "offers the Android Compose launcher as a quiet icon-only entry to prompt dictation",
+        "keeps the Kotlin dock order and icon-only Compose, keys, and Mic affordances",
+        "shows an idle status strip for errors and warnings, not successful insertion feedback",
         "keeps active dictation status above the persistent controls on both catalog pages",
         "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
         "closes and cancels a pending hold on live-session loss, then starts on the main page again",
@@ -242,7 +243,7 @@
     "tests/unit/terminalDictationBarUnmount.test.ts": {
       "suite": "terminal dictation bar lifecycle",
       "tests": [
-        "shows the microphone while idle and a Stop glyph while listening",
+        "keeps a mic glyph while idle and listening, with accessible action and state tint",
         "cancels on unmount, clears parent state, and ignores late transcript events"
       ]
     },

@@ -7,6 +7,7 @@ import static org.junit.Assert.assertTrue;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.InputDevice;
@@ -88,7 +89,8 @@ public final class JsFastKeysDockerJourneyTest {
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
-        installControlledSpeechAdapter();
+        grantMicrophonePermissionForJourney();
+        installNativeSpeechBridgeObserver();
         evalString("window.__ps2857CaptureTerminalEvidence = true; window.__ps2884HotkeyWrites = [];"
                 + "window.__ps2884CaptureResizeFitEvidence = true; window.__ps2884ResizeFitEvents = [];"
                 + "window.__ps2884ResizeAckEvents = []; window.__ps2884ResizeFitMarker = 'journey-start';"
@@ -124,19 +126,87 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer-launcher]')"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
         openPromptComposerSheet();
+        String preservedDraft = "keep this draft across keys " + nameBase;
+        setValue("[data-testid=prompt-draft]", preservedDraft);
         JSONObject promptComposerEntry = evalJson("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
                 + "const mic=document.querySelector('[data-testid=composer-dictate]');const rect=mic?.getBoundingClientRect();"
+                + "const keys=document.querySelector('[data-testid=composer-open-keys]');const keysRect=keys?.getBoundingClientRect();"
                 + "return JSON.stringify({role:panel?.getAttribute('role')??'',modal:panel?.getAttribute('aria-modal')??'',"
                 + "micLabel:mic?.getAttribute('aria-label')??'',micVisible:!!mic&&mic.getClientRects().length>0,"
-                + "micWidth:rect?.width??0,micHeight:rect?.height??0});})()");
+                + "micWidth:rect?.width??0,micHeight:rect?.height??0,keysLabel:keys?.getAttribute('aria-label')??'',"
+                + "keysVisible:!!keys&&keys.getClientRects().length>0,keysWidth:keysRect?.width??0,keysHeight:keysRect?.height??0});})()");
         assertTrue("Compose must open a modal with a reachable prompt dictation action: " + promptComposerEntry,
                 "dialog".equals(promptComposerEntry.optString("role"))
                         && "true".equals(promptComposerEntry.optString("modal"))
                         && "Dictate prompt".equals(promptComposerEntry.optString("micLabel"))
                         && promptComposerEntry.optBoolean("micVisible")
                         && promptComposerEntry.optDouble("micWidth") >= 47.9
-                        && promptComposerEntry.optDouble("micHeight") >= 47.9);
+                        && promptComposerEntry.optDouble("micHeight") >= 47.9
+                        && "More terminal keys".equals(promptComposerEntry.optString("keysLabel"))
+                        && promptComposerEntry.optBoolean("keysVisible")
+                        && promptComposerEntry.optDouble("keysWidth") >= 47.9
+                        && promptComposerEntry.optDouble("keysHeight") >= 47.9);
         journey.put("promptComposerEntry", promptComposerEntry);
+        tapDomCenter("[data-testid=prompt-draft]");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        JSONObject composerKeyboard = captureGeometry("composer-keys-before-ime-open");
+        JSONObject composerKeyboardGrid = runtimeGrid(composerKeyboard);
+        assertEquals("the typed prompt draft must be visible before opening keys", preservedDraft,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        tapDomCenter("[data-testid=composer-open-keys]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitImeVisible(true);
+        awaitTerminalResizeIdle();
+        JSONObject composerKeys = captureGeometry("composer-to-keys-ime-open");
+        assertTrue("More keys from Compose must hand off to the one terminal palette surface with the IME open: " + composerKeys,
+                composerKeys.isNull("composerPanel")
+                        && "main".equals(composerKeys.getString("fastKeysPage"))
+                        && composerKeys.getJSONObject("androidIme").getBoolean("visible")
+                        && composerKeys.getBoolean("keyboardVisible")
+                        && composerKeys.getBoolean("activeElementInsideTerminal")
+                        && !composerKeys.getBoolean("activeElementIsPromptDraft"));
+        assertUnchangedTerminalGrid("composer-to-keys handoff with IME open", composerKeyboardGrid,
+                runtimeGrid(composerKeys));
+        assertHotkeyBarReachable(composerKeys);
+        assertIconOnlyDockContract(composerKeys);
+        captureScreenshot("fastkeys-composer-keys-ime-open.png");
+        tapDomCenter("[data-testid=prompt-composer-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
+        String restoredDraft = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        assertEquals("Compose must reopen with the draft that was present before opening terminal keys",
+                preservedDraft, restoredDraft);
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')");
+        awaitTerminalResizeIdle();
+        awaitRenderedFrame();
+        JSONObject composerReturn = captureGeometry("keys-to-composer-return");
+        assertTrue("the return action must restore the modal composer, draft focus, and Android IME, then close the palette: " + composerReturn,
+                !composerReturn.isNull("composerPanel")
+                        && "closed".equals(composerReturn.getString("fastKeysPage"))
+                        && composerReturn.getBoolean("keyboardVisible")
+                        && composerReturn.getJSONObject("androidIme").getBoolean("visible")
+                        && composerReturn.getBoolean("activeElementIsPromptDraft")
+                        && preservedDraft.equals(composerReturn.getString("composerDraftValue"))
+                        && isImeVisible());
+        captureScreenshot("fastkeys-composer-returned.png");
+        journey.put("composerKeysTransition", new JSONObject()
+                .put("draftBefore", preservedDraft)
+                .put("draftAfterReturn", restoredDraft)
+                .put("composerVisibleDuringKeys", false)
+                .put("paletteOpenDuringKeys", true)
+                .put("imeVisibleDuringKeys", composerKeys.getJSONObject("androidIme").getBoolean("visible"))
+                .put("keyboardVisibleDuringKeys", composerKeys.getBoolean("keyboardVisible"))
+                .put("imeVisibleAfterReturn", composerReturn.getJSONObject("androidIme").getBoolean("visible"))
+                .put("keyboardVisibleAfterReturn", composerReturn.getBoolean("keyboardVisible"))
+                .put("terminalGridBefore", composerKeyboardGrid)
+                .put("terminalGridDuringKeys", runtimeGrid(composerKeys))
+                .put("stableDockControls", composerKeys.getJSONArray("stableDockControls")));
+        setValue("[data-testid=prompt-draft]", "");
         closePromptComposerSheet();
         awaitRenderedFrame();
         journey.put("connectToPromptMs", SystemClock.uptimeMillis() - connectToPromptStartedAt);
@@ -533,10 +603,12 @@ public final class JsFastKeysDockerJourneyTest {
         String targetBefore = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
         tapDomCenter("[data-testid=inline-dictation-toggle]");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
-        assertEquals("one dock tap must start only one native recognizer", 1, controlledSpeechCallCount("startCount"));
-        JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
+        assertEquals("one dock tap must start only one Android speech plugin session", 1, nativeSpeechCallCount("startCount"));
+        JSONObject start = evalJson("JSON.stringify(window.__ps2857NativeSpeechEvidence?.startOptions ?? null)");
         String requestId = start.getString("requestId");
-        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(dictatedText) + "); 'partial emitted'");
+        assertTrue("the packaged path must start the real native plugin in debug event-injection mode", start.optBoolean("testMode"));
+        JSONObject partialInjection = new JSONObject(injectNativeDictationTestEvent("partial", dictatedText));
+        assertEquals("native partial event must target the active request", requestId, partialInjection.getString("requestId"));
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
                 + JSONObject.quote(dictatedText));
         int writesAfterPartial = terminalInputAcknowledgements();
@@ -557,6 +629,9 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
                 + " && document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
                 + JSONObject.quote(dictatedText));
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        assertTrue("listening screenshot must include the visible Android IME", isImeVisible());
         captureScreenshot("fastkeys-dictation-listening-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-dictation-listening-ime-open-viewport.png", listening);
 
@@ -586,11 +661,11 @@ public final class JsFastKeysDockerJourneyTest {
         awaitImeVisible(true);
 
         tapDomCenter("[data-testid=inline-dictation-toggle]");
-        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
-        assertEquals("explicit Stop must call the native recognizer once", 1, controlledSpeechCallCount("stopCount"));
+        awaitJsTrue("window.__ps2857NativeSpeechEvidence?.stopOptions?.requestId === " + JSONObject.quote(requestId));
+        assertEquals("explicit Stop must call the Android speech plugin once", 1, nativeSpeechCallCount("stopCount"));
         assertEquals("explicit Stop alone must not insert before a final result", writesBeforeListening,
                 terminalInputAcknowledgements());
-        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(dictatedText) + "); 'final emitted'");
+        JSONObject finalInjection = new JSONObject(injectNativeDictationTestEvent("result", dictatedText));
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
                 + JSONObject.quote(dictatedText));
         int writesAfterFinalBeforeStopped = terminalInputAcknowledgements();
@@ -603,9 +678,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertDictationStableStage("staging final dictation text", idle, finalAwaitingStopped, stableGrid,
                 stableResizeAcks);
         captureScreenshot("fastkeys-dictation-transcribing-ime-open.png");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        JSONObject finishInjection = new JSONObject(injectNativeDictationTestEvent("finish", null));
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (writesBeforeListening + 1), 15_000);
         int writesAfterStopped = terminalInputAcknowledgements();
@@ -627,13 +702,33 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
                 + "const status=document.querySelector('[data-testid=inline-dictation-status]');"
                 + "const toggle=document.querySelector('[data-testid=inline-dictation-toggle]');"
-                + "return bar?.dataset.phase==='idle'&&(status?.textContent??'').includes('Inserted at the cursor')"
+                + "return bar?.dataset.phase==='idle'&&!status"
                 + "&&!document.querySelector('[data-testid=inline-dictation-preview]')&&toggle?.disabled===false;})()");
         captureScreenshot("fastkeys-dictation-stopped-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-dictation-stopped-ime-open-viewport.png", finalInsertedGeometry);
-        int insertedNativeStartCalls = controlledSpeechCallCount("startCount");
-        int insertedNativeStopCalls = controlledSpeechCallCount("stopCount");
-        String insertedStopRequestId = evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''");
+        int insertedNativeStartCalls = nativeSpeechCallCount("startCount");
+        int insertedNativeStopCalls = nativeSpeechCallCount("stopCount");
+        String insertedStopRequestId = evalString("window.__ps2857NativeSpeechEvidence?.stopOptions?.requestId ?? ''");
+        journey.put("terminalNativeDictation", new JSONObject()
+                .put("bridge", "Capacitor SpeechRecognition plugin")
+                .put("debugTestMode", true)
+                .put("requestId", requestId)
+                .put("startOptions", start)
+                .put("startResult", new JSONObject(evalString("JSON.stringify(window.__ps2857NativeSpeechEvidence?.startResult ?? {})")))
+                .put("stopResult", new JSONObject(evalString("JSON.stringify(window.__ps2857NativeSpeechEvidence?.stopResult ?? {})")))
+                .put("partialInjection", partialInjection)
+                .put("finalInjection", finalInjection)
+                .put("finishInjection", finishInjection)
+                .put("explicitStopRequestId", insertedStopRequestId)
+                .put("finalAndStoppedInjectedThroughNativePlugin", true)
+                .put("startCalls", insertedNativeStartCalls)
+                .put("stopCalls", insertedNativeStopCalls)
+                .put("writesBeforePartial", writesBeforeListening)
+                .put("writesAfterPartial", writesAfterPartial)
+                .put("writesAfterFinalBeforeStopped", writesAfterFinalBeforeStopped)
+                .put("writesAfterStopped", writesAfterStopped));
+        evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+        installControlledSpeechAdapter();
 
         // Keep the host receiver open through the background/resume geometry check; the
         // post-Stop keyboard character completes its exact byte capture afterward.
@@ -856,13 +951,13 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject bar = geometry.optJSONObject("inlineDictationBar");
         JSONObject mic = geometry.optJSONObject("inlineDictationMic");
         assertNotNull("one inline dictation component must live in the fast-key dock", bar);
-        assertNotNull("the docked dictation component must render its mic/Stop action", mic);
+        assertNotNull("the docked dictation component must render its persistent microphone action", mic);
         assertEquals("the dock must have exactly one inline controller surface", 1,
                 geometry.getInt("inlineDictationBarCount"));
-        assertEquals("the dock must have exactly one mic/Stop target", 1,
+        assertEquals("the dock must have exactly one microphone target", 1,
                 geometry.getInt("inlineDictationMicCount"));
-        assertTrue("the mic target must be at least 48dp wide and tall: " + mic,
-                mic.getDouble("width") >= 47.9 && mic.getDouble("height") >= 47.9);
+        assertTrue("the mic target must be exactly 48dp wide and tall: " + mic,
+                Math.abs(mic.getDouble("width") - 48.0) < 0.5 && Math.abs(mic.getDouble("height") - 48.0) < 0.5);
         assertTrue("the mic must stay fully visible above the IME: " + mic, mic.getBoolean("insideViewport"));
         JSONObject keybar = geometry.getJSONObject("keybarClientRect");
         assertTrue("the persistent mic must remain fully inside the key row: " + geometry,
@@ -894,7 +989,10 @@ public final class JsFastKeysDockerJourneyTest {
                 expectedAccessibleLabel, mic.getString("label"));
         assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
                 expectedAccessibleLabel, mic.getString("title"));
-        assertTrue("inline dictation keeps a visible mic/Stop icon: " + geometry, mic.getBoolean("iconVisible"));
+        assertTrue("inline dictation keeps a visible microphone icon: " + geometry, mic.getBoolean("iconVisible"));
+        assertEquals("mic glyph stays constant through idle, listening, transcribing, and error states",
+                "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
+                mic.getJSONArray("iconPaths").toString());
         assertEquals("only the listening mic is exposed as pressed: " + geometry,
                 "listening".equals(phase), mic.getBoolean("pressed"));
         assertEquals("inline dictation exposes its idle/listening/transcribing/error state: " + geometry,
@@ -909,7 +1007,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("the live-terminal mic must follow the launcher as the last control, with dock slack after it: " + geometry,
                 trailingGap >= -0.5 && trailingGap <= 8.5
                         && mic.getDouble("right") <= dockBounds.getDouble("right") + 0.5);
-        boolean shouldShowStatus = !"idle".equals(phase) || !"quiet".equals(tone);
+        boolean shouldShowStatus = !"idle".equals(phase) || "error".equals(tone) || "warning".equals(tone);
         assertEquals("listening/transcribing/error states expose a status strip above the row: " + geometry,
                 shouldShowStatus, geometry.getBoolean("inlineDictationStatusVisible"));
         if (geometry.getBoolean("inlineDictationStatusVisible")) {
@@ -943,12 +1041,61 @@ public final class JsFastKeysDockerJourneyTest {
                 geometry.getString("inlineDictationTargetKey").endsWith("/attach-" + attachEpoch));
     }
 
+    private void grantMicrophonePermissionForJourney() throws Exception {
+        String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        ParcelFileDescriptor command = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .executeShellCommand("pm grant " + packageName + " android.permission.RECORD_AUDIO");
+        if (command != null) command.close();
+    }
+
+    private void installNativeSpeechBridgeObserver() throws Exception {
+        String installed = evalString("(() => {"
+                + "const cap=window.Capacitor;"
+                + "if(!cap||typeof cap.nativePromise!=='function')return 'missing-capacitor-bridge';"
+                + "const nativePromise=cap.nativePromise.bind(cap);"
+                + "const state={startOptions:null,stopOptions:null,startResult:null,stopResult:null,startCount:0,stopCount:0};"
+                + "window.__ps2857NativeSpeechEvidence=state;window.__ps2857DictationTestMode=true;"
+                + "cap.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin!=='SpeechRecognition'||!['startDictation','stopDictation'].includes(method))return nativePromise(plugin,method,options);"
+                + "const copied=JSON.parse(JSON.stringify(options));"
+                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=copied;state.stopOptions=null;state.startResult=null;}"
+                + "else{state.stopCount+=1;state.stopOptions=copied;state.stopResult=null;}"
+                + "return nativePromise(plugin,method,options).then(result=>{"
+                + "if(method==='startDictation')state.startResult=JSON.parse(JSON.stringify(result));"
+                + "else state.stopResult=JSON.parse(JSON.stringify(result));return result;});};"
+                + "return 'observing-native-speech-bridge';})()");
+        assertEquals("test must observe and delegate the real Android speech bridge", "observing-native-speech-bridge", installed);
+    }
+
+    private String injectNativeDictationTestEvent(String type, String text) throws Exception {
+        JSONObject options = new JSONObject().put("type", type);
+        if (text != null) options.put("text", text);
+        evalString("window.__ps2897NativeDictationInjection = null; (() => {"
+                + "const plugin=window.Capacitor?.Plugins?.SpeechRecognition;"
+                + "if(!plugin?.injectTestDictationEvent)throw new Error('native debug dictation injection is unavailable');"
+                + "plugin.injectTestDictationEvent(JSON.parse(" + JSONObject.quote(options.toString()) + "))"
+                + ".then(result=>window.__ps2897NativeDictationInjection=JSON.stringify(result))"
+                + ".catch(error=>window.__ps2897NativeDictationInjection='ERROR: '+String(error));return 'queued';})()");
+        awaitJsTrue("typeof window.__ps2897NativeDictationInjection === 'string'");
+        String result = evalString("window.__ps2897NativeDictationInjection");
+        JSONObject response = new JSONObject(result);
+        assertTrue("Android's packaged SpeechRecognition plugin must emit an injected event: " + response,
+                response.optBoolean("emitted"));
+        evalString("window.__ps2897NativeDictationInjection = null; 'cleared'");
+        return response.toString();
+    }
+
+    private int nativeSpeechCallCount(String name) throws Exception {
+        return Integer.parseInt(evalString("String(window.__ps2857NativeSpeechEvidence?.["
+                + JSONObject.quote(name) + "] ?? 0)"));
+    }
+
     private void installControlledSpeechAdapter() throws Exception {
         String installed = evalString("(() => {"
                 + "const cap=window.Capacitor;"
                 + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
                 + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
-                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,startCount:0,stopCount:0,"
+                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,startCount:1,stopCount:1,"
                 + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
                 + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
                 + "window.__ps2857ControlledSpeech=state;"
@@ -1506,7 +1653,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "iconBounds:inlineDictationMicIconRect?{top:inlineDictationMicIconRect.top,bottom:inlineDictationMicIconRect.bottom,left:inlineDictationMicIconRect.left,right:inlineDictationMicIconRect.right,width:inlineDictationMicIconRect.width,height:inlineDictationMicIconRect.height}:null,"
                 + "iconVisible:!!inlineDictationMicIcon&&inlineDictationMicIconStyle?.display!=='none'"
                 + "&&inlineDictationMicIconStyle?.visibility!=='hidden'&&Number.parseFloat(inlineDictationMicIconStyle?.opacity??'1')>0"
-                + "&&inlineDictationMicIcon.getBoundingClientRect().width>0&&inlineDictationMicIcon.getBoundingClientRect().height>0}:null;"
+                + "&&inlineDictationMicIcon.getBoundingClientRect().width>0&&inlineDictationMicIcon.getBoundingClientRect().height>0,"
+                + "iconPaths:Array.from(inlineDictationMicIcon?.querySelectorAll('path')??[]).map(path=>path.getAttribute('d'))}:null;"
                 + "const enterDivider=rect('[data-testid=mobile-hotkeys-enter-divider]');"
                 + "const inlineDictationStatusRow=rect('[data-testid=inline-dictation-status-row]');"
                 + "const dictationSheetHeader=rect('.mobile-hotkeys__sheet-header');"
@@ -1529,6 +1677,10 @@ public final class JsFastKeysDockerJourneyTest {
                 + "&&inlineDictationStatusNode.clientHeight>0&&inlineDictationStatusNode.scrollHeight<=inlineDictationStatusNode.clientHeight+1;"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
                 + "[data-testid=mobile-hotkeys-launcher]')).map(target);"
+                + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-key-id=arrow-up]',"
+                + "'[data-key-id=arrow-down]','[data-key-id=enter]','[data-testid=mobile-hotkeys-launcher]',"
+                + "'[data-testid=inline-dictation-toggle]'].map(selector=>document.querySelector(selector)).filter(Boolean).map(node=>({"
+                + "...target(node),visibleText:node.textContent.trim(),iconCount:node.querySelectorAll('svg').length}));"
                 + "const hotkeyControls=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys],"
                 + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-main-page],"
                 + "[data-testid=mobile-hotkeys-ctrl-page],[data-key-id]')).map(node=>({"
@@ -1556,7 +1708,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "left:catalogScrollerRect.left,right:catalogScrollerRect.right,width:catalogScrollerRect.width,height:catalogScrollerRect.height}:null,"
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
-                + "mobileHotkeys:trayRect,navigationTargets:keys,promptComposerLauncher,enterDivider,persistentRowMetrics,hotkeyControls,"
+                + "mobileHotkeys:trayRect,navigationTargets:keys,stableDockControls,promptComposerLauncher,enterDivider,persistentRowMetrics,hotkeyControls,"
                 + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,catalogSurfaceStyle,"
                 + "visibleTerminalRows,runtimeGeometry,"
                 + "catalogSheetBelowTerminalViewport:!!catalogSheet&&!!terminalRect&&catalogSheet.top>=terminalRect.bottom,"
@@ -1751,6 +1903,31 @@ public final class JsFastKeysDockerJourneyTest {
                 expected, labels);
         assertTrue("keyboard geometry must confirm native IME visibility", geometry.getJSONObject("androidIme").getBoolean("visible"));
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
+    }
+
+    private void assertIconOnlyDockContract(JSONObject geometry) throws Exception {
+        JSONArray controls = geometry.getJSONArray("stableDockControls");
+        assertEquals("the mobile dock keeps Compose, arrows, Enter, More keys, and Mic in Kotlin order", 6, controls.length());
+        List<String> expected = List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
+                "Close terminal keys", "Dictate to terminal");
+        for (int index = 0; index < controls.length(); index += 1) {
+            JSONObject control = controls.getJSONObject(index);
+            assertEquals("dock control accessibility name follows its slot", expected.get(index), control.getString("label"));
+            assertTrue("Kotlin dock control stays in its 48dp touch slot: " + control,
+                    Math.abs(control.getDouble("width") - 48.0) < 0.5
+                            && Math.abs(control.getDouble("height") - 48.0) < 0.5
+                            && control.getBoolean("insideViewport") && control.getBoolean("hitTarget"));
+        }
+        for (int index : List.of(0, 4, 5)) {
+            JSONObject iconControl = controls.getJSONObject(index);
+            assertEquals("compose, keys, and mic controls carry no competing visible row text", "",
+                    iconControl.getString("visibleText"));
+            assertEquals("icon-only dock action has one visual glyph", 1, iconControl.getInt("iconCount"));
+        }
+        JSONObject mic = geometry.getJSONObject("inlineDictationMic");
+        assertEquals("Mic accessible action remains stable in the idle phase", "Dictate to terminal", mic.getString("label"));
+        assertEquals("the idle mic remains the microphone icon", "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
+                mic.getJSONArray("iconPaths").toString());
     }
 
     private JSONObject verifyNarrowToolbarReachability() throws Exception {

@@ -33,6 +33,7 @@ checker = checker_path.read_text()
 journey = journey_path.read_text()
 mobile_hotkeys = mobile_hotkeys_path.read_text()
 terminal_dictation = mobile_hotkeys_path.with_name("TerminalDictationBar.vue").read_text()
+prompt_composer = mobile_hotkeys_path.with_name("PromptComposer.vue").read_text()
 app = app_path.read_text()
 unit_test_manifest = (app_path.parent.parent / "scripts/js-unit-test-manifest.json").read_text()
 unit_test = (app_path.parent.parent / "tests/unit/mobileHotkeys.test.ts").read_text()
@@ -208,21 +209,57 @@ if '.mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-dock {\n  bo
 if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
         or ".mobile-hotkeys__enter-divider { width: 1px; height: 24px;" not in mobile_hotkeys):
     raise AssertionError("persistent arrows and Enter must keep the Kotlin divider without consuming a hit target")
-if ("mobile-hotkeys-launcher-label" not in mobile_hotkeys
-        or 'class="mobile-hotkeys__composer-label sr-only"' not in mobile_hotkeys
-        or 'class="sr-only" data-testid="inline-dictation-destination" aria-hidden="true"' not in mobile_hotkeys
-        or 'class="terminal-dictation-action sr-only"' not in terminal_dictation
+if ('aria-label="Open prompt composer"' not in mobile_hotkeys
+        or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
+        or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
+        or 'class="terminal-dictation-action sr-only"' in terminal_dictation
         or ':aria-label="buttonLabel()"' not in terminal_dictation
+        or '<DictationMicIcon :size="20" />' not in terminal_dictation
         or any(label not in terminal_dictation for label in (
             "Dictate to terminal", "Stop terminal dictation", "Cancel terminal dictation request",
             "Cancelling terminal dictation", "Transcribing terminal speech", "Inserting terminal speech",
             "Terminal dictation unavailable",
         ))
         or ".terminal-dictation-button__label" in styles):
-    raise AssertionError("Prompt and terminal icon controls must keep screen-reader-only copy and phase-specific accessible names")
+    raise AssertionError("Compose, More keys, and terminal mic must stay icon-only with accessible names and a stable mic glyph")
 if ("More terminal keys" not in mobile_hotkeys
+        or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
+        or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
         or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
-    raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment with accessible names")
+    raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment without changing their glyphs")
+if ("openKeys: [];" not in prompt_composer
+        or 'data-testid="composer-open-keys" aria-label="More terminal keys"' not in prompt_composer
+        or "@pointerdown.prevent @click=\"requestTerminalKeys\"" not in prompt_composer
+        or "width: 48px;" not in prompt_composer or "height: 48px;" not in prompt_composer
+        or "async function openTerminalKeysFromComposer()" not in app
+        or "mobilePromptComposerOpen.value = false;" not in app
+        or "mobileHotkeys.value?.openPalette();" not in app
+        or "await nextTick();" not in app
+        or "terminal.value?.focus();" not in app):
+    raise AssertionError("composer-to-keys must be an accessible 48px alternate-surface handoff with a return path")
+if ("inlineDictationState.value.phase !== 'idle'" not in app
+        or "inlineDictationState.value.tone === 'error'" not in app
+        or "inlineDictationState.value.tone === 'warning'" not in app
+        or "inlineDictationState.value.tone !== 'quiet'" in app):
+    raise AssertionError("only active, error, or warning terminal dictation states may reserve the Kotlin status row")
+if ("composerKeysTransition" not in journey
+        or "terminalGridBefore" not in journey
+        or "terminalGridDuringKeys" not in journey
+        or '"imeVisibleAfterReturn"' not in journey
+        or '"keyboardVisibleAfterReturn"' not in journey
+        or "fastkeys-composer-keys-ime-open.png" not in journey
+        or "fastkeys-composer-returned.png" not in journey
+        or "terminalNativeDictation" not in journey
+        or "installNativeSpeechBridgeObserver()" not in journey
+        or "finalAndStoppedInjectedThroughNativePlugin" not in journey):
+    raise AssertionError("packaged journey must capture the composer/keys return cycle and native terminal dictation path")
+if ("validate_composer_alternate_surface(" not in extractor
+        or 'stage_name in {"composer-keys-before-ime-open", "keys-to-composer-return"}' not in extractor
+        or '"imeVisibleAfterReturn"' not in extractor
+        or '"keyboardVisibleAfterReturn"' not in extractor
+        or "must show the modal composer alone" not in extractor
+        or "composer and key catalog competing for input rejected" not in extractor):
+    raise AssertionError("artifact validation must check only the visible controls on each alternate input surface")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
         ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
     raise AssertionError("Android catalog without visible dictation status must reserve its 145px compact dock")

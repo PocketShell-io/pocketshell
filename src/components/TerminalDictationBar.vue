@@ -99,13 +99,6 @@ const buttonLabel = () => {
   return 'Dictate to terminal';
 };
 
-const buttonAction = () => {
-  if (state.value.phase === 'starting') return 'Cancel';
-  if (state.value.phase === 'listening') return 'Stop';
-  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
-  return 'Dictate';
-};
-
 const buttonState = () => {
   if (state.value.phase === 'listening') return 'listening';
   if (state.value.phase === 'starting') return 'starting';
@@ -128,9 +121,6 @@ const buttonState = () => {
     :disabled="buttonDisabled()"
     @click="toggleDictation"
   >
-    <DictationMicIcon :size="20" :stopped="state.phase === 'listening'" />
-    <span class="terminal-dictation-action sr-only" data-testid="inline-dictation-action-label" aria-hidden="true">
-      {{ buttonAction() }}
-    </span>
+    <DictationMicIcon :size="20" />
   </button>
 </template>

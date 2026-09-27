@@ -13,12 +13,6 @@ import type { InlineDictationState } from '../session/inlineDictation';
 
 // Keep the one-tap keys in the terminal flow. The full catalog is a compact,
 // on-demand grid with its own vertical scroll area.
-const initialDictationState: InlineDictationState = {
-  phase: 'idle',
-  preview: '',
-  message: 'Tap the microphone to dictate at the terminal cursor.',
-  tone: 'quiet',
-};
 
 const props = withDefaults(defineProps<{
   /** Only a live PTY accepts key bytes. Reconnecting and attached states stay disabled. */
@@ -86,8 +80,8 @@ const hasPersistentControls = computed(() => Boolean(slots['persistent-controls'
 const hasPersistentAccessory = computed(() => Boolean(slots['persistent-accessory']));
 const dictationStatusVisible = computed(() => props.dictationAvailable && (
   props.dictationState.phase !== 'idle'
-  || props.dictationState.tone !== 'quiet'
-  || (props.dictationState.message !== '' && props.dictationState.message !== initialDictationState.message)
+  || props.dictationState.tone === 'error'
+  || props.dictationState.tone === 'warning'
 ));
 const sendKey = actions.sendKey;
 let keyboardPointer: { id: number; button: Element } | null = null;
@@ -237,7 +231,6 @@ defineExpose({
           @click="emit('openComposer')"
         >
           <AppIcon name="edit-2" aria-hidden="true" />
-          <span class="mobile-hotkeys__composer-label sr-only" data-testid="mobile-hotkeys-launcher-label">Prompt</span>
         </button>
 
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
@@ -273,7 +266,11 @@ defineExpose({
           :disabled="!enabled"
           @click="onLauncherClick"
         >
-          <AppIcon :name="paletteOpen ? 'close' : 'terminal'" aria-hidden="true" />
+          <svg class="mobile-hotkeys__keys-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" aria-hidden="true" focusable="false">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="M7 9h.01M10.5 9h.01M14 9h.01M17.5 9h.01M7 12h.01M10.5 12h.01M14 12h.01M17.5 12h.01M8.5 15.5h7" />
+          </svg>
         </button>
 
         <div v-if="hasPersistentStatus || hasPersistentControls || hasPersistentAccessory || dictationAvailable" class="mobile-hotkeys__persistent-slots">
@@ -285,7 +282,6 @@ defineExpose({
           </div>
           <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
             <slot name="persistent-accessory" />
-            <span v-if="dictationAvailable" class="sr-only" data-testid="inline-dictation-destination" aria-hidden="true">Terminal</span>
           </div>
         </div>
       </div>
@@ -520,8 +516,7 @@ defineExpose({
   width: 48px;
   min-width: 48px;
   flex: 0 0 48px;
-  flex-direction: column;
-  gap: 1px;
+  flex-direction: row;
   border-color: var(--accent);
   background: var(--accent);
   padding: 0;
@@ -538,14 +533,14 @@ defineExpose({
   background: var(--accent);
   color: var(--on-accent);
 }
-.mobile-hotkeys__composer-label { white-space: nowrap; }
 .mobile-hotkeys__launcher {
   border-color: var(--border-soft);
   background: var(--surface-2);
   color: var(--fg-secondary);
 }
 .mobile-hotkeys__launcher[aria-expanded="true"] { border-color: var(--accent); background: var(--state-selected); color: var(--accent); }
-.mobile-hotkeys__launcher :deep(svg) { width: 18px; height: 18px; }
+.mobile-hotkeys__launcher :deep(svg),
+.mobile-hotkeys__keys-icon { width: 20px; height: 20px; }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 20px; height: 20px; }
 
 .mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; }

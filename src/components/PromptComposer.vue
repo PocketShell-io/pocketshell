@@ -22,7 +22,10 @@ const props = withDefaults(defineProps<{
   mobileSheet: false,
   open: false,
 });
-const emit = defineEmits<{ openChange: [open: boolean] }>();
+const emit = defineEmits<{
+  openChange: [open: boolean];
+  openKeys: [];
+}>();
 
 type DictationPhase = 'idle' | 'starting' | 'recording' | 'transcribing' | 'review';
 
@@ -125,7 +128,15 @@ watch(() => props.targetKey, () => {
 watch(() => props.open, (open, previousOpen) => {
   if (!props.mobileSheet) return;
   if (open) {
-    void nextTick(() => sheetCloseButton.value?.focus({ preventScroll: true }));
+    void nextTick(() => {
+      if (props.mobileSheet && draftInput.value) {
+        draftInput.value.focus({ preventScroll: true });
+        const cursor = draftInput.value.value.length;
+        draftInput.value.setSelectionRange(cursor, cursor);
+      } else {
+        sheetCloseButton.value?.focus({ preventScroll: true });
+      }
+    });
   } else if (previousOpen) {
     const operation = activeDictation.value;
     if (operation) cancelDictation(operation, false);
@@ -458,6 +469,11 @@ function requestClose() {
   emit('openChange', false);
 }
 
+function requestTerminalKeys() {
+  if (!props.mobileSheet || !props.open || dictationBusy.value || sendingIntent.value !== null) return;
+  emit('openKeys');
+}
+
 function startPromptDictation() {
   // Start native recognition directly from the microphone tap, then dismiss
   // Android's IME so the recording state and its Stop/Cancel actions have room.
@@ -484,6 +500,15 @@ function startPromptDictation() {
         <span class="state-tag" :class="transportState === 'connected' ? 'state-tag--success' : 'state-tag--muted'">
           {{ transportState === 'connected' ? 'READY' : transportState === 'lost' ? 'RECONNECTING' : 'NO PTY' }}
         </span>
+        <button v-if="mobileSheet && !dictationBusy" class="composer-open-keys" type="button"
+          data-testid="composer-open-keys" aria-label="More terminal keys" title="More terminal keys"
+          :disabled="sendingIntent !== null" @pointerdown.prevent @click="requestTerminalKeys">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round"
+            stroke-linejoin="round" stroke-width="1.8" aria-hidden="true" focusable="false">
+            <rect x="3" y="5" width="18" height="14" rx="2" />
+            <path d="M7 9h.01M10.5 9h.01M14 9h.01M17.5 9h.01M7 12h.01M10.5 12h.01M14 12h.01M17.5 12h.01M8.5 15.5h7" />
+          </svg>
+        </button>
         <button v-if="mobileSheet && !dictationBusy" ref="sheetCloseButton" class="composer-sheet-close" type="button"
           data-testid="composer-close" aria-label="Close prompt composer" @click="requestClose">
           <AppIcon name="close" aria-hidden="true" />
@@ -635,18 +660,23 @@ function startPromptDictation() {
 .composer-panel--sheet .composer-heading { min-height: 48px; gap: 8px; }
 .composer-panel--sheet .composer-heading__copy { min-width: 0; flex: 1 1 auto; }
 .composer-panel--sheet .composer-heading h3 { overflow: hidden; font-size: var(--fs-300); text-overflow: ellipsis; white-space: nowrap; }
+.composer-panel--sheet .composer-open-keys,
 .composer-panel--sheet .composer-sheet-close {
   display: inline-flex;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 44px;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
   align-items: center;
   justify-content: center;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-soft);
   border-radius: 50%;
-  background: transparent;
+  background: var(--surface-2);
   color: var(--fg-secondary);
 }
+.composer-panel--sheet .composer-open-keys:hover:not(:disabled),
+.composer-panel--sheet .composer-sheet-close:hover:not(:disabled) { border-color: var(--border-strong); color: var(--fg); }
+.composer-panel--sheet .composer-open-keys:disabled { opacity: var(--disabled-opacity); }
+.composer-panel--sheet .composer-open-keys svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
 .composer-panel--sheet .composer-sheet-close svg { width: 18px; height: 18px; }
 .composer-panel--sheet .composer-draft-row {
   display: grid;

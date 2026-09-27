@@ -25,6 +25,8 @@ SCREENSHOTS = {
     "fastkeys-tray-ime-dismissed.png",
     "fastkeys-tray-closed.png",
     "fastkeys-reconnected-ime-open.png",
+    "fastkeys-composer-keys-ime-open.png",
+    "fastkeys-composer-returned.png",
     "fastkeys-dictation-idle-ime-open.png",
     "fastkeys-dictation-listening-ime-open.png",
     "fastkeys-dictation-listening-ctrl-ime-open.png",
@@ -163,6 +165,33 @@ def prompt_icon_matches_computed_size(launcher: object, icon: object) -> bool:
         and abs(icon.get("width", 0) - computed_width) <= 0.5
         and abs(icon.get("height", 0) - computed_height) <= 0.5
     )
+
+
+def validate_composer_alternate_surface(
+    item: dict[str, object], label: str, expected_draft: object,
+) -> None:
+    panel = item.get("composerPanel")
+    dock = item.get("fastKeysTray")
+    dock_bounds = dock.get("bounds") if isinstance(dock, dict) else None
+    panel_covers_dock = (
+        isinstance(panel, dict) and isinstance(dock_bounds, dict)
+        and panel.get("left", 10**9) <= dock_bounds.get("left", 0) + 0.5
+        and panel.get("right", -1) >= dock_bounds.get("right", 10**9) - 0.5
+        and panel.get("top", 10**9) <= dock_bounds.get("top", 0) + 0.5
+        and panel.get("bottom", -1) >= dock_bounds.get("bottom", 10**9) - 0.5
+    )
+    ime = item.get("androidIme")
+    if (not isinstance(expected_draft, str) or not expected_draft
+            or not isinstance(panel, dict) or not panel_covers_dock
+            or not isinstance(dock, dict) or dock.get("intersectsComposerPanel") is not True
+            or item.get("fastKeysPage") != "closed" or item.get("catalogSheet") is not None
+            or item.get("keyboardVisible") is not True or item.get("keyboardComposerMode") is not True
+            or not isinstance(ime, dict) or ime.get("visible") is not True
+            or item.get("activeElementIsPromptDraft") is not True
+            or item.get("composerDraftValue") != expected_draft):
+        raise ExtractionFailure(
+            f"{label} must show the modal composer alone, covering the dock while preserving its draft and IME"
+        )
 
 
 def validate_docked_dictation_geometry(
@@ -343,7 +372,8 @@ def validate_docked_dictation_geometry(
         if phase == "listening" and (not status_text.startswith("Listening ·")
                                       or not item.get("inlineDictationPreview")):
             raise ExtractionFailure(f"{label} listening state lacks a visible partial preview")
-    elif (item.get("inlineDictationPhase") != "idle" or item.get("inlineDictationTone") != "quiet"
+    elif (item.get("inlineDictationPhase") != "idle"
+          or item.get("inlineDictationTone") not in {"quiet", "success"}
           or item.get("inlineDictationStatusText") != ""):
         raise ExtractionFailure(f"{label} hides a meaningful dictation status")
     nav = item.get("navigationTargets")
@@ -639,6 +669,68 @@ def validate_journey(journey: object) -> None:
             or composer_entry.get("micWidth", 0) < 47.9
             or composer_entry.get("micHeight", 0) < 47.9):
         raise ExtractionFailure("prompt composer entry does not prove a reachable dictation action in the modal composer")
+    if (composer_entry.get("keysLabel") != "More terminal keys"
+            or composer_entry.get("keysVisible") is not True
+            or composer_entry.get("keysWidth", 0) < 47.9
+            or composer_entry.get("keysHeight", 0) < 47.9):
+        raise ExtractionFailure("mobile composer does not expose its measured 48dp More terminal keys handoff")
+    transition = journey.get("composerKeysTransition")
+    controls = transition.get("stableDockControls") if isinstance(transition, dict) else None
+    expected_dock_labels = (
+        "Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
+        "Close terminal keys", "Dictate to terminal",
+    )
+    before_grid = transition.get("terminalGridBefore") if isinstance(transition, dict) else None
+    keys_grid = transition.get("terminalGridDuringKeys") if isinstance(transition, dict) else None
+    if (not isinstance(transition, dict)
+            or not isinstance(transition.get("draftBefore"), str)
+            or not transition["draftBefore"]
+            or transition.get("draftAfterReturn") != transition.get("draftBefore")
+            or transition.get("composerVisibleDuringKeys") is not False
+            or transition.get("paletteOpenDuringKeys") is not True
+            or transition.get("imeVisibleDuringKeys") is not True
+            or transition.get("keyboardVisibleDuringKeys") is not True
+            or transition.get("imeVisibleAfterReturn") is not True
+            or transition.get("keyboardVisibleAfterReturn") is not True
+            or not isinstance(before_grid, dict) or before_grid != keys_grid
+            or not isinstance(controls, list) or len(controls) != 6
+            or tuple(control.get("label") for control in controls if isinstance(control, dict)) != expected_dock_labels
+            or any(not isinstance(control, dict)
+                   or abs(control.get("width", 0) - 48) >= 0.5
+                   or abs(control.get("height", 0) - 48) >= 0.5
+                   or control.get("insideViewport") is not True
+                   or control.get("hitTarget") is not True
+                   for control in controls)
+            or any(controls[index].get("visibleText") != "" or controls[index].get("iconCount") != 1
+                   for index in (0, 4, 5))):
+        raise ExtractionFailure("composer-to-keys journey does not prove a draft-preserving exclusive 48dp dock handoff with stable PTY grid")
+    native_dictation = journey.get("terminalNativeDictation")
+    if not isinstance(native_dictation, dict):
+        raise ExtractionFailure("journey is missing the terminal bar's actual Android speech bridge proof")
+    native_start = native_dictation.get("startOptions")
+    native_start_result = native_dictation.get("startResult")
+    native_stop_result = native_dictation.get("stopResult")
+    native_events = [native_dictation.get(name) for name in ("partialInjection", "finalInjection", "finishInjection")]
+    request_id = native_dictation.get("requestId")
+    write_counts = [native_dictation.get(name) for name in (
+        "writesBeforePartial", "writesAfterPartial", "writesAfterFinalBeforeStopped", "writesAfterStopped")]
+    if (native_dictation.get("bridge") != "Capacitor SpeechRecognition plugin"
+            or native_dictation.get("debugTestMode") is not True
+            or not isinstance(request_id, str) or not request_id
+            or not isinstance(native_start, dict) or native_start.get("requestId") != request_id
+            or native_start.get("testMode") is not True
+            or not isinstance(native_start_result, dict)
+            or native_start_result.get("requestId") != request_id or native_start_result.get("started") is not True
+            or not isinstance(native_stop_result, dict)
+            or native_stop_result.get("requestId") != request_id or native_stop_result.get("stopped") is not True
+            or native_dictation.get("explicitStopRequestId") != request_id
+            or native_dictation.get("startCalls") != 1 or native_dictation.get("stopCalls") != 1
+            or any(not isinstance(event, dict) or event.get("emitted") is not True or event.get("requestId") != request_id
+                   for event in native_events)
+            or any(isinstance(value, bool) or not isinstance(value, int) for value in write_counts)
+            or write_counts[0] != write_counts[1] or write_counts[0] != write_counts[2]
+            or write_counts[3] != write_counts[0] + 1):
+        raise ExtractionFailure("terminal dictation did not traverse the native Android speech plugin with partial/final gating through explicit Stop")
     narrow_row = journey.get("narrowToolbarReachability")
     narrow_targets = narrow_row.get("targets") if isinstance(narrow_row, dict) else None
     narrow_mic = narrow_row.get("finalMic") if isinstance(narrow_row, dict) else None
@@ -770,6 +862,9 @@ def validate_journey(journey: object) -> None:
     by_name = {item.get("stage"): item for item in stages if isinstance(item, dict)}
     required_stages = {
         "keyboard-up-compact-row",
+        "composer-keys-before-ime-open",
+        "composer-to-keys-ime-open",
+        "keys-to-composer-return",
         "after-navigation-row-taps",
         "before-fast-keys",
         "fast-keys-main-open-ime-up",
@@ -797,6 +892,26 @@ def validate_journey(journey: object) -> None:
     }
     if not required_stages.issubset(by_name):
         raise ExtractionFailure(f"missing geometry stages: {sorted(required_stages - set(by_name))}")
+    transition = journey["composerKeysTransition"]
+    assert isinstance(transition, dict)
+    validate_composer_alternate_surface(
+        by_name["composer-keys-before-ime-open"],
+        "composer entry before More keys",
+        transition.get("draftBefore"),
+    )
+    validate_composer_alternate_surface(
+        by_name["keys-to-composer-return"],
+        "composer return after More keys",
+        transition.get("draftAfterReturn"),
+    )
+    composer_to_keys = by_name["composer-to-keys-ime-open"]
+    if (composer_to_keys.get("composerPanel") is not None
+            or composer_to_keys.get("fastKeysPage") != "main"
+            or composer_to_keys.get("keyboardVisible") is not True
+            or composer_to_keys.get("androidIme", {}).get("visible") is not True
+            or composer_to_keys.get("activeElementInsideTerminal") is not True
+            or composer_to_keys.get("activeElementIsPromptDraft") is not False):
+        raise ExtractionFailure("More keys must transfer focus to the terminal palette without leaving the composer open")
     back_precondition = by_name["fast-keys-open-ime-up-before-back"]
     if (back_precondition.get("sshPhase") != "live"
             or back_precondition.get("homeSurface") != "live"
@@ -825,6 +940,8 @@ def validate_journey(journey: object) -> None:
                 or isinstance(viewport_height, bool) or not isinstance(viewport_height, (int, float))
                 or visible_rows != math.floor((viewport_height - 8) / cell_height)):
             raise ExtractionFailure(f"{stage_name} does not prove five physical xterm rows in its measured viewport")
+        if stage_name in {"composer-keys-before-ime-open", "keys-to-composer-return"}:
+            continue
         validate_docked_dictation_geometry(
             item,
             stage_name,
@@ -861,8 +978,8 @@ def validate_journey(journey: object) -> None:
     final_inserted = by_name["dictation-final-inserted"]
     if (final_inserted.get("inlineDictationPhase") != "idle"
             or final_inserted.get("inlineDictationTone") != "success"
-            or "Inserted at the cursor" not in final_inserted.get("inlineDictationStatusText", "")
-            or final_inserted.get("inlineDictationStatusVisible") is not True
+            or final_inserted.get("inlineDictationStatusText") != ""
+            or final_inserted.get("inlineDictationStatusVisible") is not False
             or final_inserted.get("keyboardVisible") is not True
             or final_inserted.get("keyboardComposerMode") is not True
             or final_inserted.get("androidIme", {}).get("visible") is not True
@@ -1471,6 +1588,10 @@ def self_test() -> int:
          with_overlapping_catalog_header(sample_journey()), False),
         ("composer overlap from a docked fast-key tray rejected",
          with_intersecting_composer(sample_journey()), False),
+        ("composer and key catalog competing for input rejected",
+         with_composer_and_keys_competing(sample_journey()), False),
+        ("composer return without a visible Android keyboard rejected",
+         with_hidden_returned_composer_ime(sample_journey()), False),
         ("separate dictation row outside the dock rejected",
          with_separate_dictation_row(sample_journey()), False),
         ("missing integrated dictation mic rejected",
@@ -1953,17 +2074,11 @@ def sample_journey() -> dict[str, object]:
     final_inserted = {
         **dictation_idle,
         "inlineDictationTone": "success",
-        "inlineDictationStatusText": "Inserted at the cursor. Press Enter to run.",
-        "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
-        "inlineDictationStatusVisible": True,
-        "inlineDictationStatusOneLine": True,
-        "inlineDictationStatusInsideBar": True,
-        "inlineDictationStatusAboveKeybar": True,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
-        "terminalHotkeysDockHeightPx": 81,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 49}},
+        "terminalHotkeysDockHeightPx": 49,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
-        "inlineDictationMic": {**base["inlineDictationMic"], "top": 235, "bottom": 283},
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 257, "height": 49},
+        "inlineDictationMic": {**base["inlineDictationMic"], "top": 208, "bottom": 256},
         "terminalViewportFocused": True,
         "activeElementInsideTerminal": True,
         "activeElementIsPromptDraft": False,
@@ -2132,11 +2247,72 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationMicCount": 0,
         "inlineDictationTargetKey": "",
     }
+    composer_surface = {
+        **base,
+        "composerPanel": {"top": 200, "bottom": 303, "left": 0, "right": 400,
+                          "width": 400, "height": 103},
+        "fastKeysTray": {**base["fastKeysTray"], "intersectsComposerPanel": True},
+        "fastKeysPage": "closed",
+        "keyboardVisible": True,
+        "keyboardComposerMode": True,
+        "activeElementIsPromptDraft": True,
+        "composerDraftValue": "keep this prompt",
+        "androidIme": {"visible": True, "imeBottomDp": 260},
+    }
+    composer_to_keys = {
+        **main_open,
+        "composerPanel": None,
+        "activeElementInsideTerminal": True,
+        "activeElementIsPromptDraft": False,
+        "keyboardVisible": True,
+        "keyboardComposerMode": True,
+        "androidIme": {"visible": True, "imeBottomDp": 260},
+    }
     journey = {
         "androidApi": 35,
         "promptComposerEntry": {
             "role": "dialog", "modal": "true", "micLabel": "Dictate prompt",
             "micVisible": True, "micWidth": 48, "micHeight": 48,
+            "keysLabel": "More terminal keys", "keysVisible": True, "keysWidth": 48, "keysHeight": 48,
+        },
+        "composerKeysTransition": {
+            "draftBefore": "keep this prompt",
+            "draftAfterReturn": "keep this prompt",
+            "composerVisibleDuringKeys": False,
+            "paletteOpenDuringKeys": True,
+            "imeVisibleDuringKeys": True,
+            "keyboardVisibleDuringKeys": True,
+            "imeVisibleAfterReturn": True,
+            "keyboardVisibleAfterReturn": True,
+            "terminalGridBefore": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+            "terminalGridDuringKeys": {"cols": 38, "rows": 6, "cellHeight": 22.6},
+            "stableDockControls": [
+                {"label": label, "width": 48, "height": 48, "insideViewport": True,
+                 "hitTarget": True, "visibleText": "" if index in (0, 4, 5) else label,
+                 "iconCount": 1 if index in (0, 4, 5) else 0}
+                for index, label in enumerate((
+                    "Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
+                    "Close terminal keys", "Dictate to terminal",
+                ))
+            ],
+        },
+        "terminalNativeDictation": {
+            "bridge": "Capacitor SpeechRecognition plugin",
+            "debugTestMode": True,
+            "requestId": "native-terminal-request",
+            "startOptions": {"requestId": "native-terminal-request", "testMode": True, "silenceWindowMs": 4000},
+            "startResult": {"requestId": "native-terminal-request", "started": True},
+            "stopResult": {"requestId": "native-terminal-request", "stopped": True},
+            "partialInjection": {"requestId": "native-terminal-request", "emitted": True},
+            "finalInjection": {"requestId": "native-terminal-request", "emitted": True},
+            "finishInjection": {"requestId": "native-terminal-request", "emitted": True},
+            "explicitStopRequestId": "native-terminal-request",
+            "startCalls": 1,
+            "stopCalls": 1,
+            "writesBeforePartial": 4,
+            "writesAfterPartial": 4,
+            "writesAfterFinalBeforeStopped": 4,
+            "writesAfterStopped": 5,
         },
         "narrowToolbarReachability": {
             "clientWidth": 330,
@@ -2230,6 +2406,9 @@ def sample_journey() -> dict[str, object]:
         },
         "geometryTrace": [
             {"stage": "keyboard-up-compact-row", **base},
+            {"stage": "composer-keys-before-ime-open", **composer_surface},
+            {"stage": "composer-to-keys-ime-open", **composer_to_keys},
+            {"stage": "keys-to-composer-return", **composer_surface},
             {"stage": "after-navigation-row-taps", **base},
             {"stage": "before-fast-keys", **base},
             {"stage": "fast-keys-main-open-ime-up", **main_open},
@@ -2668,6 +2847,22 @@ def with_intersecting_composer(journey: dict[str, object]) -> dict[str, object]:
     for item in copied["geometryTrace"]:
         if item["stage"] == "fast-keys-ctrl-open-ime-up":
             item["fastKeysTray"]["intersectsComposerPanel"] = True
+    return copied
+
+
+def with_composer_and_keys_competing(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "keys-to-composer-return":
+            item["fastKeysPage"] = "main"
+            item["catalogSheet"] = {"top": 100, "bottom": 250, "left": 0, "right": 400}
+            item["fastKeysTray"]["intersectsComposerPanel"] = True
+    return copied
+
+
+def with_hidden_returned_composer_ime(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    copied["composerKeysTransition"]["imeVisibleAfterReturn"] = False
     return copied
 
 

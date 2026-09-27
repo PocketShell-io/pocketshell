@@ -64,6 +64,7 @@ interface TerminalViewportHandle {
 
 interface MobileHotkeysHandle {
   closePalette(): void;
+  openPalette(): void;
 }
 
 type ComposerSmokeEvidenceWindow = Window & {
@@ -227,9 +228,8 @@ const inlineDictationTargetKey = computed(() => composerTargetKey.value
   : '');
 const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 'android' && (
   inlineDictationState.value.phase !== 'idle'
-  || inlineDictationState.value.tone !== 'quiet'
-  || (inlineDictationState.value.message !== ''
-    && inlineDictationState.value.message !== 'Tap the microphone to dictate at the terminal cursor.')
+  || inlineDictationState.value.tone === 'error'
+  || inlineDictationState.value.tone === 'warning'
 ));
 const mobileHotkeysDockHeight = computed(() => {
   const dictationStatusRowHeight = Capacitor.getPlatform() === 'android' && inlineDictationStatusVisible.value
@@ -496,6 +496,18 @@ watch(() => navigation.route, (route) => {
 function openPromptComposer() {
   mobileHotkeys.value?.closePalette();
   mobilePromptComposerOpen.value = true;
+}
+
+async function openTerminalKeysFromComposer() {
+  if (!mobilePromptComposerOpen.value || !isLive.value) return;
+  // The composer and catalog are alternate input surfaces. Keep the draft in
+  // its per-PTY store, close the modal, then transfer focus to xterm so the
+  // palette can stay open above Android's keyboard without a second composer.
+  mobilePromptComposerOpen.value = false;
+  await nextTick();
+  mobileHotkeys.value?.openPalette();
+  await nextTick();
+  terminal.value?.focus();
 }
 
 function setMobilePromptComposerOpen(open: boolean) {
@@ -1589,6 +1601,7 @@ onBeforeUnmount(() => {
           :mobile-sheet="Capacitor.getPlatform() === 'android'"
           :open="mobilePromptComposerOpen"
           @open-change="setMobilePromptComposerOpen"
+          @open-keys="openTerminalKeysFromComposer"
         />
       </section>
     </main>
