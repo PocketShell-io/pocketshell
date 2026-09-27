@@ -1035,6 +1035,8 @@ def validate_journey(journey: object) -> None:
         launcher = item.get("promptComposerLauncher")
         if (not isinstance(launcher, dict) or launcher.get("label") != "Open prompt composer"
                 or launcher.get("width", 0) < 47.9 or launcher.get("height", 0) < 47.9
+                or launcher.get("width", 0) > 48.5
+                or launcher.get("visibleLabel") != "Prompt" or launcher.get("contentsInside") is not True
                 or launcher.get("visibleWidthInKeybar", 0) < 47.9
                 or launcher.get("visibleHeightInKeybar", 0) < 47.9
                 or launcher.get("insideViewport") is not True or launcher.get("hitTarget") is not True
@@ -1275,6 +1277,8 @@ def self_test() -> int:
          with_second_catalog_row(sample_journey()), False),
         ("catalog page without the prompt composer launcher rejected",
          with_missing_prompt_composer_launcher(sample_journey()), False),
+        ("oversized Prompt control rejected",
+         with_oversized_prompt_composer_launcher(sample_journey()), False),
         ("catalog page hiding the terminal heading rejected",
          with_hidden_terminal_heading(sample_journey()), False),
         ("catalog page with fewer than five measured terminal rows rejected",
@@ -1556,9 +1560,10 @@ def sample_journey() -> dict[str, object]:
         },
         "persistentRowMetrics": {"clientWidth": 400, "scrollWidth": 384, "scrollLeft": 0, "scrollable": False},
         "promptComposerLauncher": {
-            "label": "Open prompt composer", "top": 208, "bottom": 256, "left": 8, "right": 76,
-            "width": 68, "height": 48, "visibleWidthInKeybar": 68, "visibleHeightInKeybar": 48,
+            "label": "Open prompt composer", "top": 208, "bottom": 256, "left": 8, "right": 56,
+            "width": 48, "height": 48, "visibleWidthInKeybar": 48, "visibleHeightInKeybar": 48,
             "insideViewport": True, "hitTarget": True, "disabled": False,
+            "visibleLabel": "Prompt", "contentsInside": True,
         },
         "inlineDictationBarCount": 1,
         "inlineDictationMicCount": 1,
@@ -2144,12 +2149,12 @@ def with_android_dock_containment(journey: dict[str, object]) -> dict[str, objec
             item["promptComposerLauncher"] = {
                 **prompt_launcher,
                 "left": left + 4,
-                "right": left + 72,
+                "right": left + 52,
                 "top": row_top,
                 "bottom": row_top + 48,
-                "width": 68,
+                "width": 48,
                 "height": 48,
-                "visibleWidthInKeybar": 68,
+                "visibleWidthInKeybar": 48,
                 "visibleHeightInKeybar": 48,
                 "insideViewport": True,
                 "hitTarget": True,
@@ -2160,21 +2165,21 @@ def with_android_dock_containment(journey: dict[str, object]) -> dict[str, objec
              "top": row_top, "bottom": row_top + 48,
              "visibleWidthInKeybar": 48, "visibleHeightInKeybar": 48}
             for target, control_left in zip(item.get("navigationTargets", []),
-                                            (left + 72, left + 124, left + 181, left + 233))
+                                            (left + 52, left + 104, left + 161, left + 213))
         ]
         item["enterDivider"] = {
-            "left": left + 176, "right": left + 177,
+            "left": left + 156, "right": left + 157,
             "top": row_top + 12, "bottom": row_top + 36,
             "width": 1, "height": 24,
         }
         item["inlineDictationMic"] = {
-            **item["inlineDictationMic"], "left": left + 285, "right": left + 333,
+            **item["inlineDictationMic"], "left": left + 265, "right": left + 313,
             "top": row_top, "bottom": row_top + 48,
             "visibleWidthInKeybar": 48, "visibleHeightInKeybar": 48,
         }
         item["terminalDictationDestination"] = {
             **item["terminalDictationDestination"],
-            "left": left + 337, "right": left + 377,
+            "left": left + 317, "right": left + 357,
             "top": row_top + 16, "bottom": row_top + 32,
             "width": 40, "height": 16, "fits": True,
             "insideKeybar": True, "insideViewport": True,
@@ -2426,6 +2431,13 @@ def with_missing_prompt_composer_launcher(journey: dict[str, object]) -> dict[st
     copied = json.loads(json.dumps(journey))
     item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
     item.pop("promptComposerLauncher", None)
+    return copied
+
+
+def with_oversized_prompt_composer_launcher(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
+    item["promptComposerLauncher"]["width"] = 60
     return copied
 
 

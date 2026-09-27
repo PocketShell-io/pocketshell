@@ -91,6 +91,7 @@ describe('mobile fast-key behavior', () => {
 
       const mainPage = findByTestId(mounted.root, 'mobile-hotkeys-main-page');
       if (!mainPage) throw new Error('The fast keys main page did not mount');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-open-ctrl-page')?.text.trim()).toBe('Ctrl+…');
       expect(mainPage.props).toMatchObject({
         role: 'group',
         'aria-label': 'Common terminal keys',
@@ -135,6 +136,7 @@ describe('mobile fast-key behavior', () => {
       const launcher = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
       expect(launcher.props['aria-label']).toBe('Open prompt composer');
       expect(launcher.props.title).toBe('Compose a prompt');
+      expect(launcher.props.class).toContain('mobile-hotkeys__composer-launcher');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')?.text).toBe('Prompt');
       click(launcher);
       expect(mounted.composerOpenRequests()).toBe(1);

@@ -1606,8 +1606,9 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject promptLabelBounds = composeLauncher.optJSONObject("labelBounds");
         assertNotNull("Prompt icon must expose its computed SVG bounds", promptIconBounds);
         assertNotNull("Prompt label must expose its visible text bounds", promptLabelBounds);
-        assertTrue("Prompt icon and full label must stay inside the 60dp launcher: " + composeLauncher,
+        assertTrue("Prompt icon and full label must stay inside the 48dp launcher: " + composeLauncher,
                 "Prompt".equals(composeLauncher.getString("visibleLabel"))
+                        && composeLauncher.getDouble("width") <= 48.5
                         && "14px".equals(composeLauncher.getString("iconComputedWidth"))
                         && "14px".equals(composeLauncher.getString("iconComputedHeight"))
                         && promptIconBounds.getDouble("width") <= 14.5

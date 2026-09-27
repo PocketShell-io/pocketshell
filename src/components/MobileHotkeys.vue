@@ -307,7 +307,7 @@ defineExpose({
             :disabled="!enabled"
             @click="showCtrlPage"
           >
-            Ctrl letters
+            Ctrl+…
           </button>
           <button
             v-else
@@ -513,23 +513,26 @@ defineExpose({
 .mobile-hotkeys__key--navigation { border-color: transparent; background: transparent; font: 600 18px/1 var(--font-ui); }
 .mobile-hotkeys__key--enter { font: 600 var(--fs-200)/1 var(--font-ui); }
 .mobile-hotkeys__composer-launcher {
-  width: 60px;
-  min-width: 60px;
-  flex: 0 0 60px;
+  width: 48px;
+  min-width: 48px;
+  flex: 0 0 48px;
   flex-direction: column;
   gap: 1px;
   border-color: var(--accent);
   background: var(--accent);
-  padding: 0 2px;
-  color: var(--bg);
+  padding: 0;
   font-size: var(--fs-100);
   font-weight: 600;
+}
+.mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher {
+  color: var(--on-accent);
+  font: 600 var(--fs-100)/var(--lh-100) var(--font-ui);
 }
 .mobile-hotkeys__composer-launcher:hover:not(:disabled),
 .mobile-hotkeys__composer-launcher:active:not(:disabled) {
   border-color: var(--accent);
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
 }
 .mobile-hotkeys__composer-label { white-space: nowrap; }
 .mobile-hotkeys__launcher {
@@ -597,7 +600,9 @@ defineExpose({
   flex: 0 0 144px;
   flex-direction: column;
   overflow: hidden;
-  box-shadow: inset 0 1px 0 var(--border-soft);
+  border-radius: var(--r-lg);
+  box-shadow: inset 0 1px 0 var(--border-soft), inset 1px 0 0 var(--border-soft),
+    inset -1px 0 0 var(--border-soft), inset 0 -1px 0 var(--border-soft);
   background: var(--surface);
 }
 .mobile-hotkeys__sheet-header {
