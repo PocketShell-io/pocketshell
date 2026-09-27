@@ -549,6 +549,15 @@ describe('composer dictation cancellation', () => {
     expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation');
     expect(drafts.draftFor('host/pause-session')).toBe('keep typed recognized phrase');
     expect(findByTestId(root, 'prompt-draft')?.props['aria-readonly']).toBe('false');
+    const review = findByTestId(root, 'composer-dictation-review');
+    expect(textContent(review!)).toBe('Transcript ready. Edit it, then choose Insert or Send.');
+    expect(review?.props.role).toBe('status');
+    expect(review?.props['aria-live']).toBe('polite');
+    const reviewStatus = findByTestId(root, 'composer-status');
+    expect(textContent(reviewStatus!)).toBe('');
+    expect(String(reviewStatus?.props.class)).toContain('composer-status--review-empty');
+    expect(cssRule(styleSource(promptComposerSource, 'PromptComposer'), '.composer-status--review-empty'))
+      .toContain('display: none;');
     expect(writePty).not.toHaveBeenCalled();
 
     app.unmount();

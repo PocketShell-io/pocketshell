@@ -76,6 +76,15 @@ const dictationBusy = computed(() => dictationPhase.value === 'starting'
 const composerTitle = computed(() => dictationPhase.value === 'review'
   ? 'Review dictation'
   : dictationBusy.value ? 'Prompt dictation' : 'Prompt Composer');
+const composerReviewStatusEmpty = computed(() => dictationPhase.value === 'review'
+  && statusTone.value === 'quiet'
+  && statusText.value.length === 0);
+const composerStatusText = computed(() => {
+  if (composerReviewStatusEmpty.value) return '';
+  return statusText.value || (props.transportState === 'connected'
+    ? 'Insert leaves the line at the terminal prompt. Send presses Enter.'
+    : 'Reconnect or attach a live session to send input.');
+});
 const elapsedLabel = computed(() => {
   const totalSeconds = Math.floor(elapsedMs.value / 1_000);
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
@@ -249,7 +258,7 @@ function handleDictationEvent(operation: ActiveDictation, event: DictationEvent)
     operation.resolveFinished('stopped');
     if (!operation.deliveryChosen && statusTone.value !== 'error') {
       statusTone.value = 'quiet';
-      statusText.value = 'Dictation ready for review.';
+      statusText.value = '';
     }
   }
 }
@@ -508,14 +517,18 @@ function startPromptDictation() {
         :elapsed-label="elapsedLabel"
         :live-preview="dictationPreview"
       />
-      <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review">
+      <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review"
+        role="status" aria-live="polite">
         Transcript ready. Edit it, then choose Insert or Send.
       </p>
 
-      <p id="composer-status" class="composer-status" :class="{ 'composer-status--dictation': dictationBusy }"
+      <p id="composer-status" class="composer-status" :class="{
+          'composer-status--dictation': dictationBusy,
+          'composer-status--review-empty': composerReviewStatusEmpty,
+        }"
         role="status" aria-live="polite" data-testid="composer-status"
         :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
-        {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
+        {{ composerStatusText }}
       </p>
 
       <div class="composer-actions" :class="{ 'composer-actions--dictation': dictationBusy }"
@@ -722,6 +735,8 @@ function startPromptDictation() {
   font-size: var(--fs-100);
   line-height: 1.4;
 }
+
+.composer-status--review-empty { display: none; }
 
 .composer-status--dictation {
   position: absolute;
