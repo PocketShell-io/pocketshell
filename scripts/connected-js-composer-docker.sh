@@ -202,7 +202,9 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2857Asset:I > "$asset_logcat" 2>&1 &
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s \
+  PS2857Asset:I PS2857Checkpoint:I PS2857Watchdog:W PS2857Lifecycle:I PS2857Back:I PS2857Launcher:I \
+  > "$asset_logcat" 2>&1 &
 asset_logcat_pid=$!
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live composer artifact logcat collector'
@@ -263,7 +265,7 @@ ssh_remote() {
 
 bytes_session="$SESSION_BASE-bytes"
 uncertain_session="$SESSION_BASE-uncertain"
-unicode_hex="$(ssh_remote "cat /tmp/$bytes_session-unicode.hex")"
+unicode_hex="$(ssh_remote "cat /tmp/$SESSION_BASE-u")"
 multiline_hex="$(ssh_remote "od -An -tx1 /tmp/$bytes_session-multiline.raw | tr -d '[:space:]'")"
 [[ "$unicode_hex" == '636166c3a920f09fa7aa' ]] \
   || fail "remote Unicode bytes mismatch: expected 636166c3a920f09fa7aa, got ${unicode_hex:-<empty>}"
@@ -273,7 +275,7 @@ printf 'PASS: remote Unicode PTY bytes %s\n' "$unicode_hex"
 printf 'PASS: remote multiline PTY bytes %s\n' "$multiline_hex"
 
 sent_marker="PS2857_SENT_$SESSION_BASE"
-sent_output_marker="$(ssh_remote "cat /tmp/$bytes_session-sent-output.marker | tr -d '\\n'")"
+sent_output_marker="$(ssh_remote "cat /tmp/$SESSION_BASE-s | tr -d '\\n'")"
 [[ "$sent_output_marker" == "$sent_marker" ]] \
   || fail "remote sent-output marker mismatch: expected $sent_marker, got ${sent_output_marker:-<empty>}"
 printf 'PASS: host PTY output contained %s\n' "$sent_output_marker"
@@ -286,6 +288,24 @@ dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$by
 [[ "$dictation_capture" == *"$dictation_marker"* ]] \
   || fail 'independent host PTY capture did not contain the edited dictation text'
 printf 'PASS: edited controlled-recognition text reached Docker PTY and host capture as %s\n' "$dictation_marker"
+
+dictation_insert_marker="PS2857_DICTATION_INSERT_$SESSION_BASE"
+dictation_insert_output="$(ssh_remote "cat /tmp/$bytes_session-dictation-insert.marker | tr -d '\\n'")"
+[[ "$dictation_insert_output" == "$dictation_insert_marker" ]] \
+  || fail "recording-time Insert command was not executed exactly after the explicit Enter: expected $dictation_insert_marker, got ${dictation_insert_output:-<empty>}"
+dictation_insert_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$dictation_insert_capture" == *"$dictation_insert_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the recording-time Insert command'
+printf 'PASS: recording-time Insert reached the host and ran only after explicit Enter as %s\n' "$dictation_insert_marker"
+
+transcribing_send_marker="PS2857_DICTATION_TRANSCRIBING_SEND_$SESSION_BASE"
+transcribing_send_output="$(ssh_remote "cat /tmp/$bytes_session-dictation-transcribing-send.marker | tr -d '\\n'")"
+[[ "$transcribing_send_output" == "$transcribing_send_marker" ]] \
+  || fail "transcribing-time Send command was not executed exactly: expected $transcribing_send_marker, got ${transcribing_send_output:-<empty>}"
+transcribing_send_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$bytes_session' --bytes 4096")"
+[[ "$transcribing_send_capture" == *"$transcribing_send_marker"* ]] \
+  || fail 'independent host PTY capture did not contain the transcribing-time Send command'
+printf 'PASS: transcribing-time Send reached the host as %s\n' "$transcribing_send_marker"
 
 inline_marker="PS2857_INLINE_$SESSION_BASE"
 inline_file_state='absent'

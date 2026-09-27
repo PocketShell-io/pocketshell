@@ -34,6 +34,24 @@ REQUIRED_NAMES = {
     "composer-review.png",
     "composer-review-geometry.json",
     "composer-dictation-send.json",
+    "composer-recording-insert.png",
+    "composer-recording-insert-geometry.json",
+    "composer-transcribing-send.png",
+    "composer-transcribing-send-geometry.json",
+    "composer-back-workspace-restored.png",
+    "composer-back-workspace-restored.json",
+    "composer-title.png",
+    "composer-title.json",
+    "composer-launcher-before-reopen.png",
+    "composer-launcher-before-reopen.json",
+    "composer-launcher-after-reopen.png",
+    "composer-launcher-after-reopen.json",
+    "composer-launcher-before-uncertain-first-attach.png",
+    "composer-launcher-before-uncertain-first-attach.json",
+    "composer-launcher-after-uncertain-first-attach.png",
+    "composer-launcher-after-uncertain-first-attach.json",
+    "composer-launcher-before-uncertain-reattach.json",
+    "composer-launcher-after-uncertain-reattach.json",
 }
 OPTIONAL_NAMES = {
     "composer-recording-before-fix.png",
@@ -42,6 +60,8 @@ OPTIONAL_NAMES = {
     "composer-focus-failure.png",
     "composer-focus-failure.json",
     "composer-focus-failure-logcat.txt",
+    "composer-back-workspace-failure.png",
+    "composer-back-workspace-failure.json",
 }
 EXPECTED_NAMES = REQUIRED_NAMES | OPTIONAL_NAMES
 FAILURE_SCREENSHOTS = {
@@ -56,12 +76,123 @@ FAILURE_SCREENSHOTS = {
     "composer-recording-before-fix.png",
     "composer-focus-failure.png",
     "composer-mode-ime-failure.png",
+    "composer-recording-insert.png",
+    "composer-transcribing-send.png",
+    "composer-back-workspace-failure.png",
+    "composer-launcher-before-reopen.png",
+    "composer-launcher-after-reopen.png",
+    "composer-launcher-before-uncertain-first-attach.png",
+    "composer-launcher-after-uncertain-first-attach.png",
 }
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 
 class ExtractionFailure(ValueError):
     pass
+
+
+def _validate_launcher_tap_evidence(launcher_before: object, launcher_after: object,
+                                   run_id: str, suffix: str) -> None:
+    before_dom = launcher_before.get("dom") if isinstance(launcher_before, dict) else None
+    before_native = launcher_before.get("native") if isinstance(launcher_before, dict) else None
+    after_dom = launcher_after.get("dom") if isinstance(launcher_after, dict) else None
+    after_native = launcher_after.get("native") if isinstance(launcher_after, dict) else None
+    tap = launcher_after.get("physicalTap") if isinstance(launcher_after, dict) else None
+    if (not isinstance(launcher_before, dict) or launcher_before.get("runId") != run_id
+            or not isinstance(before_dom, dict) or before_dom.get("stage") != "before-tap"
+            or before_dom.get("route") != "home" or before_dom.get("homeSurface") != "live"
+            or before_dom.get("sshPhase") != "live" or before_dom.get("composerPresent") is not False
+            or before_dom.get("launcherPresent") is not True or before_dom.get("launcherVisible") is not True
+            or before_dom.get("launcherDisabled") is not False
+            or before_dom.get("centerHitMatchesLauncher") is not True
+            or before_dom.get("documentHasFocus") is not True
+            or not isinstance(before_native, dict) or before_native.get("windowHasFocus") is not True
+            or before_native.get("webViewHasFocus") is not True):
+        raise ExtractionFailure(
+            f"pre-tap launcher report for {suffix} does not prove a visible enabled target in the focused live workspace")
+    keyboard_visible = before_dom.get("keyboardVisible")
+    ime_visible = before_native.get("imeVisible")
+    if keyboard_visible == ime_visible and isinstance(keyboard_visible, bool):
+        viewport = before_dom.get("visualViewport")
+        webview_width = before_native.get("webViewWidthPx")
+        webview_height = before_native.get("webViewHeightPx")
+        if (isinstance(viewport, dict) and isinstance(webview_width, (int, float)) and webview_width > 0
+                and isinstance(webview_height, (int, float)) and webview_height > 0
+                and isinstance(viewport.get("width"), (int, float)) and viewport["width"] > 0
+                and isinstance(viewport.get("height"), (int, float)) and viewport["height"] > 0):
+            scale_x = webview_width / viewport["width"]
+            scale_y = webview_height / viewport["height"]
+            keyboard_matches_native = abs(scale_x - scale_y) <= max(scale_x, scale_y) * 0.02
+        else:
+            keyboard_matches_native = False
+    else:
+        keyboard_matches_native = False
+    if not keyboard_matches_native:
+        raise ExtractionFailure(
+            f"pre-tap keyboard and native IME geometry for {suffix} is missing or inconsistent")
+    if (not isinstance(launcher_after, dict) or launcher_after.get("runId") != run_id
+            or not isinstance(after_dom, dict) or after_dom.get("stage") != "after-tap"
+            or after_dom.get("route") != "home" or after_dom.get("homeSurface") != "live"
+            or after_dom.get("sshPhase") != "live" or after_dom.get("composerPresent") is not True
+            or after_dom.get("composerVisible") is not True or after_dom.get("composerRole") != "dialog"
+            or after_dom.get("composerAriaModal") != "true"
+            or not isinstance(after_dom.get("activeElement"), dict)
+            or after_dom["activeElement"].get("testid") != "prompt-draft"
+            or not isinstance(after_native, dict) or after_native.get("windowHasFocus") is not True
+            or after_native.get("webViewHasFocus") is not True or after_native.get("imeVisible") is not True
+            or not isinstance(tap, dict) or tap.get("downInjected") is not True
+            or tap.get("upInjected") is not True or tap.get("centerHitMatchesTarget") is not True
+            or tap.get("selector") != "[data-testid=prompt-composer-launcher]"
+            or launcher_after.get("openWaitFailure") is not None):
+        raise ExtractionFailure(f"post-tap launcher report for {suffix} does not prove a real touch opened the composer")
+    attempts = launcher_after.get("attempts")
+    if not isinstance(attempts, list) or len(attempts) not in (1, 2):
+        raise ExtractionFailure(f"composer launcher report for {suffix} must retain one or two physical tap attempts")
+    if len(attempts) == 1:
+        if attempts[0].get("attempt") != 1 or attempts[0].get("failure") is not None:
+            raise ExtractionFailure(f"single-tap composer reopen for {suffix} did not open on its first physical tap")
+    else:
+        first = attempts[0]
+        second = attempts[1]
+        if not isinstance(first, dict) or not isinstance(second, dict):
+            raise ExtractionFailure(f"two-tap composer reopen for {suffix} contains malformed attempt evidence")
+        first_state = first.get("state") if isinstance(first, dict) else None
+        first_dom = first_state.get("dom") if isinstance(first_state, dict) else None
+        first_native = first_state.get("native") if isinstance(first_state, dict) else None
+        first_tap = first.get("physicalTap") if isinstance(first, dict) else None
+        second_state = second.get("state") if isinstance(second, dict) else None
+        second_dom = second_state.get("dom") if isinstance(second_state, dict) else None
+        second_tap = second.get("physicalTap") if isinstance(second, dict) else None
+        initial_webview_height = before_native.get("webViewHeightPx")
+        resized_webview_height = first_native.get("webViewHeightPx") if isinstance(first_native, dict) else None
+        if (suffix not in ("uncertain-first-attach", "uncertain-reattach")
+                or first.get("attempt") != 1 or second.get("attempt") != 2
+                or not isinstance(first.get("failure"), str) or not first.get("failure")
+                or launcher_after.get("firstAttemptFailure") != first.get("failure")
+                or not isinstance(first_dom, dict) or first_dom.get("composerPresent") is not False
+                or first_dom.get("route") != "home" or first_dom.get("homeSurface") != "live"
+                or first_dom.get("sshPhase") != "live" or first_dom.get("keyboardVisible") is not True
+                or not isinstance(first_native, dict) or first_native.get("imeVisible") is not True
+                or not isinstance(initial_webview_height, (int, float))
+                or not isinstance(resized_webview_height, (int, float))
+                or resized_webview_height >= initial_webview_height
+                or not isinstance(first_tap, dict) or first_tap.get("downInjected") is not True
+                or first_tap.get("upInjected") is not True
+                or first_tap.get("centerHitMatchesTarget") is not True
+                or not isinstance(second, dict) or second.get("attempt") != 2 or second.get("failure") is not None
+                or not isinstance(second_dom, dict) or second_dom.get("composerPresent") is not True
+                or second.get("failure") is not None or second_tap != tap):
+            raise ExtractionFailure(
+                f"two-tap composer reopen for {suffix} lacks a genuine IME-resize miss followed by a successful physical retry")
+    pointer_events = after_dom.get("pointerEvents")
+    if not isinstance(pointer_events, list):
+        raise ExtractionFailure(f"composer launcher report for {suffix} is missing trusted pointer evidence")
+    trusted = {(event.get("type"), event.get("launcher", {}).get("testid"))
+               for event in pointer_events if isinstance(event, dict) and event.get("isTrusted") is True
+               and isinstance(event.get("launcher"), dict)}
+    if not all((event_type, "prompt-composer-launcher") in trusted
+               for event_type in ("pointerdown", "pointerup", "click")):
+        raise ExtractionFailure(f"composer launcher report for {suffix} lacks trusted physical pointerdown/up/click")
 
 
 def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
@@ -134,6 +265,56 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
+    if validate_layout:
+        title_bytes = decoded.get("composer-title.json")
+        if title_bytes is None or "composer-title.png" not in decoded:
+            raise ExtractionFailure("same-run composer title screenshot and report are required")
+        try:
+            title_state = json.loads(title_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer title JSON is invalid: {error}") from error
+        if not isinstance(title_state, dict) or title_state.get("runId") != run_id:
+            raise ExtractionFailure("composer title report does not identify this packaged run")
+        panel = title_state.get("panelBounds")
+        scrim = title_state.get("scrimBounds")
+        viewport = title_state.get("viewport")
+        buttons = title_state.get("buttons")
+        if (title_state.get("state") != "idle" or title_state.get("composerVisible") is not True
+                or title_state.get("composerHeading") != "Prompt Composer"
+                or title_state.get("expectedComposerHeading") != "Prompt Composer"
+                or title_state.get("sheetFullyVisible") is not True
+                or not isinstance(panel, dict) or not isinstance(scrim, dict) or not isinstance(viewport, dict)
+                or not isinstance(viewport.get("width"), (int, float))
+                or not isinstance(viewport.get("height"), (int, float))
+                or panel.get("top", -1) < 0 or panel.get("bottom", float("inf")) > viewport.get("height", 0) + 0.5
+                or scrim.get("top", 1) > 0.5 or scrim.get("left", 1) > 0.5
+                or scrim.get("bottom", 0) < viewport.get("height", 0) - 0.5
+                or scrim.get("right", 0) < viewport.get("width", 0) - 0.5
+                or not isinstance(buttons, dict)
+                or any(buttons.get(name) is not True for name in ("dictate", "insert", "send"))
+                or title_state.get("screenScrollTop") != 0 or title_state.get("documentScrollTop") != 0):
+            raise ExtractionFailure("composer title report does not prove a fully visible idle sheet and generic heading")
+        terminal_heading = title_state.get("terminalHeading")
+        expected_session = title_state.get("expectedSessionChrome")
+        if (not isinstance(terminal_heading, str) or not isinstance(expected_session, str)
+                or not expected_session or expected_session not in terminal_heading):
+            raise ExtractionFailure("selected session identity is missing from terminal chrome title evidence")
+        try:
+            launcher_before = json.loads(decoded["composer-launcher-before-reopen.json"])
+            launcher_after = json.loads(decoded["composer-launcher-after-reopen.json"])
+            first_attach_before = json.loads(decoded["composer-launcher-before-uncertain-first-attach.json"])
+            first_attach_after = json.loads(decoded["composer-launcher-after-uncertain-first-attach.json"])
+            uncertain_launcher_before = json.loads(decoded["composer-launcher-before-uncertain-reattach.json"])
+            uncertain_launcher_after = json.loads(decoded["composer-launcher-after-uncertain-reattach.json"])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer launcher tap evidence is invalid JSON: {error}") from error
+        for evidence_suffix, launcher_before, launcher_after in (
+            ("reopen", launcher_before, launcher_after),
+            ("uncertain-first-attach", first_attach_before, first_attach_after),
+            ("uncertain-reattach", uncertain_launcher_before, uncertain_launcher_after),
+        ):
+            _validate_launcher_tap_evidence(launcher_before, launcher_after, run_id, evidence_suffix)
+
     focus_failure_screenshot = decoded.get("composer-focus-failure.png")
     if focus_failure_screenshot is not None and (
             not focus_failure_screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(focus_failure_screenshot) < 1024):
@@ -280,6 +461,41 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send terminal viewport is clipped or too small")
         if post_send.get("keyboardVisible") is not False:
             raise ExtractionFailure("post-send terminal screenshot was not captured after the Android keyboard closed")
+        app_bar = post_send.get("appBar")
+        heading = post_send.get("terminalHeading")
+        composer = post_send.get("composer")
+        byte_row = post_send.get("byteOutputRow")
+        marker_row = post_send.get("markerRow")
+        if not all(isinstance(rect, dict) for rect in (app_bar, heading, composer, byte_row, marker_row)):
+            raise ExtractionFailure("post-send capture is missing app bar, terminal heading, output row, or composer bounds")
+        try:
+            app_bar_top = float(app_bar["top"])
+            app_bar_bottom = float(app_bar["bottom"])
+            heading_top = float(heading["top"])
+            heading_bottom = float(heading["bottom"])
+            composer_top = float(composer["top"])
+            composer_bottom = float(composer["bottom"])
+            byte_top = float(byte_row["top"])
+            byte_bottom = float(byte_row["bottom"])
+            marker_top = float(marker_row["top"])
+            marker_bottom = float(marker_row["bottom"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("post-send app bar, heading, composer, or row bounds are invalid") from error
+        if (app_bar_top < 0 or app_bar_bottom > post_height + 0.5 or app_bar_bottom > heading_top
+                or heading_bottom > terminal_top or heading_bottom > composer_top
+                or not isinstance(heading.get("text"), str) or not heading["text"].strip()):
+            raise ExtractionFailure("post-send terminal heading is clipped or hidden behind the composer sheet")
+        if (composer_top < 0 or composer_bottom > post_height + 0.5 or composer_bottom <= composer_top):
+            raise ExtractionFailure("post-send composer sheet is clipped by the viewport")
+        if (byte_top < terminal_top or byte_bottom > terminal_bottom
+                or marker_top < terminal_top or marker_bottom > terminal_bottom
+                or byte_bottom > composer_top or marker_bottom > composer_top
+                or post_send.get("terminalOutputRowVisible") is not True):
+            raise ExtractionFailure("post-send byte and marker output rows are not visible above the composer sheet")
+        if (post_send.get("capturedBeforeScroll") is not True
+                or post_send.get("screenScrollTop") != 0
+                or post_send.get("documentScrollTop") != 0):
+            raise ExtractionFailure("post-send screenshot required scrolling to expose terminal output")
         focus_trace_bytes = decoded.get("composer-focus-trace.json")
         try:
             focus_trace = json.loads(focus_trace_bytes)
@@ -289,8 +505,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("composer focus trace does not identify this packaged run")
         max_attempts = focus_trace.get("maxAttempts")
         focus_attempts = focus_trace.get("attempts")
+        forced_first_miss = focus_trace.get("forcedFirstPostAttachMiss")
         if not isinstance(max_attempts, int) or max_attempts < 1 or max_attempts > 2:
             raise ExtractionFailure("composer focus trace does not retain the bounded tap-attempt limit")
+        if not isinstance(forced_first_miss, bool):
+            raise ExtractionFailure("composer focus trace does not state whether its transient miss was forced")
         if not isinstance(focus_attempts, list):
             raise ExtractionFailure("composer focus trace does not contain tap attempts")
         post_attach_attempts = [
@@ -308,6 +527,34 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             for attempt in post_attach_attempts
         ):
             raise ExtractionFailure("post-attach focus trace has no trusted physical draft tap followed by focus and IME")
+        if forced_first_miss:
+            forced_misses = [attempt for attempt in post_attach_attempts
+                             if attempt.get("attempt") == 1]
+            if not forced_misses:
+                raise ExtractionFailure("forced post-attach focus trace is missing its first transient miss")
+            for miss in forced_misses:
+                after = miss.get("after")
+                if (miss.get("requestedSelector") != "[data-testid=prompt-composer] #composer-title"
+                        or miss.get("trustedPointerDownOnRequestedTarget") is not True
+                        or miss.get("draftFocusedAfter") is not False
+                        or miss.get("inertMissInsideComposer") is not True
+                        or miss.get("dialogStayedOpenAfterMiss") is not True
+                        or miss.get("draftStayedMountedAfterMiss") is not True
+                        or not isinstance(after, dict)
+                        or after.get("composerModal") is not True
+                        or after.get("composerTitlePresent") is not True
+                        or after.get("draftPresent") is not True
+                        or after.get("draftConnected") is not True):
+                    raise ExtractionFailure("forced first miss closed Composer or invalidated its retry target")
+                stage_attempts = [attempt for attempt in post_attach_attempts
+                                  if attempt.get("stage") == miss.get("stage")]
+                if not any(attempt.get("attempt") == 2
+                           and attempt.get("requestedSelector") == "[data-testid=prompt-draft]"
+                           and attempt.get("trustedPointerDownOnRequestedTarget") is True
+                           and attempt.get("draftFocusedAfter") is True
+                           and attempt.get("nativeImeVisibleAfterImeWait") is True
+                           for attempt in stage_attempts):
+                    raise ExtractionFailure("forced first miss has no successful physical draft retry in the same attach stage")
         for attempt in focus_attempts:
             if not isinstance(attempt, dict) or not isinstance(attempt.get("attempt"), int):
                 raise ExtractionFailure("composer focus trace contains a malformed tap-attempt record")
@@ -329,7 +576,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("accepted composer run contains the pre-fix recording screenshot")
         if "composer-mode-ime-failure.png" in decoded or "composer-mode-ime-failure.json" in decoded:
             raise ExtractionFailure("accepted composer run contains an IME-hidden state failure capture")
-        for state in ("recording", "cancel", "background", "transcribing", "review"):
+        for state in ("recording", "recording-insert", "cancel", "background", "transcribing", "transcribing-send", "review"):
             geometry_name = f"composer-{state}-geometry.json"
             try:
                 mode_geometry = json.loads(decoded[geometry_name])
@@ -339,22 +586,46 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure(f"{geometry_name} does not identify this run")
             if mode_geometry.get("state") != state:
                 raise ExtractionFailure(f"{geometry_name} does not identify the {state} composer state")
-            if mode_geometry.get("androidImeVisible") is not True or mode_geometry.get("keyboardVisible") is not True:
-                raise ExtractionFailure(f"{state} screenshot does not prove the Android keyboard was visible")
-            if mode_geometry.get("draftFocused") is not True:
-                raise ExtractionFailure(f"{state} screenshot does not prove the composer draft retained focus")
-            if mode_geometry.get("activeElementTestId") != "prompt-draft":
-                raise ExtractionFailure(f"{state} screenshot does not identify the composer draft as document.activeElement")
+            if state.startswith("recording") and "Your draft stays in the composer until you tap Insert or Send" not in str(mode_geometry.get("statusText", "")):
+                raise ExtractionFailure(f"{state} screenshot has misleading dictation delivery instructions")
+            if state == "review" and "Your draft stays in the composer until you tap Insert or Send" not in str(mode_geometry.get("reviewText", "")):
+                raise ExtractionFailure("review screenshot has misleading dictation delivery instructions")
+            if state in ("recording-insert", "transcribing-send"):
+                acknowledged_writes = mode_geometry.get("acknowledgedWrites")
+                writes_before_action = mode_geometry.get("acknowledgedWritesBeforeAction")
+                if (type(acknowledged_writes) is not int or type(writes_before_action) is not int
+                        or acknowledged_writes != writes_before_action):
+                    raise ExtractionFailure(f"{state} screenshot does not prove the PTY write count stayed unchanged before the explicit action")
+            if state == "background":
+                lifecycle = mode_geometry.get("nativeLifecycle")
+                background = lifecycle.get("background") if isinstance(lifecycle, dict) else None
+                foreground = lifecycle.get("foreground") if isinstance(lifecycle, dict) else None
+                if (not isinstance(lifecycle, dict) or lifecycle.get("runId") != run_id
+                        or lifecycle.get("homeKeyDownInjected") is not True
+                        or lifecycle.get("homeKeyUpInjected") is not True
+                        or not isinstance(background, dict) or background.get("windowFocus") is not False
+                        or background.get("lifecycleState") == "RESUMED"
+                        or not isinstance(foreground, dict) or foreground.get("windowFocus") is not True
+                        or foreground.get("lifecycleState") != "RESUMED"
+                        or "Status: ok" not in str(lifecycle.get("launchOutput", ""))
+                        or lifecycle.get("dictationCancelledAfterResume") is not True
+                        or lifecycle.get("draftRestored") is not True
+                        or lifecycle.get("lateResultIgnored") is not True):
+                    raise ExtractionFailure("background composer evidence does not prove native HOME/resume cancellation and draft restoration")
+            if mode_geometry.get("androidImeVisible") is not False or mode_geometry.get("keyboardVisible") is not False:
+                raise ExtractionFailure(f"{state} modal screenshot does not prove the Android keyboard was dismissed")
+            if mode_geometry.get("composerModal") is not True:
+                raise ExtractionFailure(f"{state} screenshot does not prove the composer is an accessible modal sheet")
             if mode_geometry.get("draftReadOnly") is not False:
-                raise ExtractionFailure(f"{state} screenshot changed the textarea editability and could hide the IME")
+                raise ExtractionFailure(f"{state} screenshot changed the textarea editability")
             if mode_geometry.get("expectedDraftMatches") is not True:
                 raise ExtractionFailure(f"{state} screenshot does not prove the expected target draft was retained")
-            expected_locked = state in ("recording", "transcribing")
+            expected_locked = state.startswith("recording") or state.startswith("transcribing")
             if mode_geometry.get("draftEditingLocked") is not expected_locked:
                 raise ExtractionFailure(f"{state} screenshot does not show the expected draft input lock")
             expected_presentation = "focus-anchor" if expected_locked else "editor"
             if mode_geometry.get("draftPresentation") != expected_presentation:
-                raise ExtractionFailure(f"{state} screenshot does not show the expected visible editor presentation")
+                raise ExtractionFailure(f"{state} screenshot does not show the expected editor presentation")
             if expected_locked:
                 if (mode_geometry.get("draftOpacity") != "0" or mode_geometry.get("draftAriaHidden") is True
                         or "read only while dictating" not in str(mode_geometry.get("draftAriaLabel", ""))
@@ -363,13 +634,15 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         or mode_geometry.get("recordingModeVisible") is not True
                         or not str(mode_geometry.get("recordingModeLabel", "")).strip()
                         or mode_geometry.get("composerStatusAccessible") is not True
-                        or mode_geometry.get("cancelAccessible") is not True):
-                    raise ExtractionFailure(f"{state} screenshot does not retain an accessible focus anchor beside the visible recording surface")
-                if state == "recording":
+                        or mode_geometry.get("cancelAccessible") is not True
+                        or mode_geometry.get("cancelText") != "Cancel"
+                        or mode_geometry.get("cancelAriaLabel") != "Cancel dictation and restore the original draft"):
+                    raise ExtractionFailure(f"{state} screenshot does not retain an accessible draft anchor beside the visible recording surface")
+                if state.startswith("recording"):
                     if (mode_geometry.get("previewVisible") is not True
                             or mode_geometry.get("previewLive") is not True
                             or mode_geometry.get("stopAccessible") is not True
-                            or "discard this dictated phrase" not in str(mode_geometry.get("previewText", ""))
+                            or not str(mode_geometry.get("previewText", "")).strip()
                             or "composer-recording-preview" not in str(mode_geometry.get("draftDescribedBy", ""))):
                         raise ExtractionFailure("recording screenshot does not expose the live preview and accessible Stop control")
                 elif mode_geometry.get("transcribingStatusAccessible") is not True:
@@ -398,12 +671,27 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     raise ExtractionFailure("cancel screenshot does not state that the original draft was restored")
             else:
                 required_rects.append("recordingMode")
-            if state in ("recording", "transcribing") and mode_geometry.get("send") is not None:
-                raise ExtractionFailure(f"{state} screenshot exposes Send before the draft is ready for review")
-            if state == "recording":
-                required_rects.extend(("timer", "preview", "cancel", "stop"))
-            elif state == "transcribing":
-                required_rects.append("cancel")
+            if expected_locked:
+                if mode_geometry.get("cancelAccessible") is not True:
+                    raise ExtractionFailure(f"{state} screenshot does not prove the accessible Cancel action")
+                if mode_geometry.get("dictationSendAccessible") is not True or mode_geometry.get("dictationSendEnabled") is not True:
+                    raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Send during dictation")
+                required_rects.extend(("cancel", "dictationSend"))
+                if state.startswith("recording"):
+                    if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
+                        raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Insert during recording")
+                    required_rects.append("insert")
+                    expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
+                else:
+                    if mode_geometry.get("insertAccessible") is True:
+                        raise ExtractionFailure(f"{state} screenshot exposes Insert during Kotlin-aligned transcribing")
+                    expected_actions = "composer-recording-cancel,composer-dictation-send"
+                if mode_geometry.get("actionOrder") != expected_actions:
+                    raise ExtractionFailure(f"{state} screenshot action order does not match the Kotlin composer")
+            if state.startswith("recording"):
+                required_rects.extend(("timer", "preview", "stop"))
+            elif state.startswith("transcribing"):
+                required_rects.append("recordingMode")
             for rect_name in required_rects:
                 rect = mode_geometry.get(rect_name)
                 if not isinstance(rect, dict):
@@ -416,7 +704,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 except (KeyError, TypeError, ValueError) as error:
                     raise ExtractionFailure(f"{geometry_name} has invalid bounds for {rect_name}") from error
                 if top < 0 or bottom > mode_height + 0.5 or left < 0 or right > mode_width + 0.5:
-                    raise ExtractionFailure(f"{rect_name} is clipped in the keyboard-up {state} screenshot")
+                    raise ExtractionFailure(f"{rect_name} is clipped in the {state} modal screenshot")
             draft_bounds = mode_geometry["draft"]
             if expected_locked and (float(draft_bounds["right"]) - float(draft_bounds["left"]) > 1.0
                                     or float(draft_bounds["bottom"]) - float(draft_bounds["top"]) > 1.0):
@@ -436,10 +724,9 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("natural-restart recording geometry does not identify this run")
             if (restart_geometry.get("state") != "recording-after-restart"
                     or restart_geometry.get("dictationState") != "recording"
-                    or restart_geometry.get("androidImeVisible") is not True
-                    or restart_geometry.get("keyboardVisible") is not True
-                    or restart_geometry.get("draftFocused") is not True
-                    or restart_geometry.get("activeElementTestId") != "prompt-draft"
+                    or restart_geometry.get("androidImeVisible") is not False
+                    or restart_geometry.get("keyboardVisible") is not False
+                    or restart_geometry.get("composerModal") is not True
                     or restart_geometry.get("expectedDraftMatches") is not True
                     or restart_geometry.get("recordingModeVisible") is not True
                     or restart_geometry.get("previewVisible") is not True
@@ -459,6 +746,21 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or not isinstance(dictation_send.get("deliveryStatus"), str)
                 or "Sent to the terminal" not in dictation_send["deliveryStatus"]):
             raise ExtractionFailure("dictated Send evidence does not prove an explicit Send from the reviewed draft")
+
+        back_state_bytes = decoded.get("composer-back-workspace-restored.json")
+        try:
+            back_state = json.loads(back_state_bytes)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer-back-workspace-restored.json is invalid JSON: {error}") from error
+        if (not isinstance(back_state, dict) or back_state.get("runId") != run_id
+                or back_state.get("state") != "workspace-restored"
+                or back_state.get("route") != "home"
+                or back_state.get("homeSurface") != "live"
+                or back_state.get("sshPhase") != "live"
+                or back_state.get("composerLauncherVisible") is not True
+                or back_state.get("composerVisible") is not False
+                or back_state.get("androidImeVisible") is not False):
+            raise ExtractionFailure("Android Back snapshot does not prove home + live PTY + visible prompt composer launcher")
         recorded_dictation_marker = dictation_send.get("marker")
         if (not isinstance(recorded_dictation_marker, str) or not recorded_dictation_marker
                 or expected_dictation_marker is None or recorded_dictation_marker != expected_dictation_marker):
@@ -500,7 +802,16 @@ def self_test() -> None:
         "appTerminalDeliveryCount": 1,
         "appTerminalMissingRefCount": 0,
         "terminalWriteCount": 1,
-        "terminalViewport": {"top": 20.0, "bottom": 100.0, "left": 10.0, "right": 390.0, "height": 80.0},
+        "terminalViewport": {"top": 40.0, "bottom": 120.0, "left": 10.0, "right": 390.0, "height": 80.0},
+        "terminalHeading": {"text": f"{run_id}-bytes", "top": 25.0, "bottom": 35.0, "left": 20.0, "right": 200.0},
+        "appBar": {"top": 0.0, "bottom": 20.0, "left": 0.0, "right": 400.0},
+        "composer": {"top": 105.0, "bottom": 200.0, "left": 0.0, "right": 400.0},
+        "byteOutputRow": {"top": 70.0, "bottom": 85.0, "left": 20.0, "right": 200.0},
+        "markerRow": {"top": 90.0, "bottom": 100.0, "left": 20.0, "right": 200.0},
+        "terminalOutputRowVisible": True,
+        "capturedBeforeScroll": True,
+        "screenScrollTop": 0,
+        "documentScrollTop": 0,
         "visualViewport": {"height": 200.0, "width": 400.0},
         "keyboardVisible": False,
         "deliveryStatus": "Sent to the terminal.",
@@ -514,40 +825,146 @@ def self_test() -> None:
         "draft": "",
         "deliveryStatus": "Sent to the terminal.",
     }).encode()
+    title_state = json.dumps({
+        "runId": run_id,
+        "state": "idle",
+        "composerVisible": True,
+        "sheetFullyVisible": True,
+        "composerHeading": "Prompt Composer",
+        "expectedComposerHeading": "Prompt Composer",
+        "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
+        "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
+        "viewport": {"width": 412.0, "height": 915.0},
+        "buttons": {"dictate": True, "insert": True, "send": True},
+        "screenScrollTop": 0,
+        "documentScrollTop": 0,
+        "terminalHeading": f"{run_id}-bytes",
+        "expectedSessionChrome": f"{run_id}-bytes",
+    }).encode()
+    launcher_before = json.dumps({
+        "runId": run_id,
+        "native": {"windowHasFocus": True, "webViewHasFocus": True, "imeVisible": False,
+                    "webViewWidthPx": 1080, "webViewHeightPx": 2400},
+        "dom": {
+            "stage": "before-tap",
+            "route": "home",
+            "homeSurface": "live",
+            "sshPhase": "live",
+            "composerPresent": False,
+            "launcherPresent": True,
+            "launcherVisible": True,
+            "launcherDisabled": False,
+            "centerHitMatchesLauncher": True,
+            "documentHasFocus": True,
+            "keyboardVisible": False,
+            "visualViewport": {"width": 412.0, "height": 915.0},
+        },
+    }).encode()
+    launcher_before_ime_value = json.loads(launcher_before)
+    launcher_before_ime_value["native"].update({"imeVisible": True, "webViewHeightPx": 1499})
+    launcher_before_ime_value["dom"].update({
+        "keyboardVisible": True,
+        "visualViewport": {"width": 412.0, "height": 572.0},
+    })
+    launcher_before_ime = json.dumps(launcher_before_ime_value).encode()
+    launcher_after = json.dumps({
+        "runId": run_id,
+        "native": {"windowHasFocus": True, "webViewHasFocus": True, "imeVisible": True},
+        "dom": {
+            "stage": "after-tap",
+            "route": "home",
+            "homeSurface": "live",
+            "sshPhase": "live",
+            "composerPresent": True,
+            "composerVisible": True,
+            "composerRole": "dialog",
+            "composerAriaModal": "true",
+            "activeElement": {"testid": "prompt-draft"},
+            "pointerEvents": [
+                {"type": "pointerdown", "isTrusted": True, "launcher": {"testid": "prompt-composer-launcher"}},
+                {"type": "pointerup", "isTrusted": True, "launcher": {"testid": "prompt-composer-launcher"}},
+                {"type": "click", "isTrusted": True, "launcher": {"testid": "prompt-composer-launcher"}},
+            ],
+        },
+        "physicalTap": {
+            "selector": "[data-testid=prompt-composer-launcher]",
+            "centerHitMatchesTarget": True,
+            "downInjected": True,
+            "upInjected": True,
+        },
+        "attempts": [{
+            "attempt": 1,
+            "physicalTap": {
+                "selector": "[data-testid=prompt-composer-launcher]",
+                "centerHitMatchesTarget": True,
+                "downInjected": True,
+                "upInjected": True,
+            },
+            "state": {
+                "native": {"windowHasFocus": True, "webViewHasFocus": True, "imeVisible": True},
+                "dom": {"composerPresent": True},
+            },
+            "failure": None,
+        }],
+        "firstAttemptFailure": None,
+        "openWaitFailure": None,
+    }).encode()
+    back_state = json.dumps({
+        "runId": run_id,
+        "state": "workspace-restored",
+        "route": "home",
+        "homeSurface": "live",
+        "sshPhase": "live",
+        "composerLauncherVisible": True,
+        "composerVisible": False,
+        "androidImeVisible": False,
+    }).encode()
     one_write_dictation_send_value = json.loads(dictation_send)
     one_write_dictation_send_value["acknowledgedWrites"] = 1
     one_write_dictation_send = json.dumps(one_write_dictation_send_value).encode()
     def mode_geometry_payload(state: str) -> bytes:
         rect = {"top": 10.0, "bottom": 60.0, "left": 5.0, "right": 395.0}
         recording = state.startswith("recording")
-        anchored = recording or state == "transcribing"
+        transcribing = state.startswith("transcribing")
+        anchored = recording or transcribing
         draft_rect = {"top": 10.0, "bottom": 11.0, "left": 5.0, "right": 6.0} if anchored else rect
         payload = {
             "runId": run_id,
             "state": state,
-            "dictationState": "recording" if recording else "transcribing" if state == "transcribing"
+            "dictationState": "recording" if recording else "transcribing" if transcribing
             else "review" if state == "review" else "idle",
-            "androidImeVisible": True,
-            "keyboardVisible": True,
-            "draftFocused": True,
-            "activeElementTestId": "prompt-draft",
+            "androidImeVisible": False,
+            "keyboardVisible": False,
+            "composerModal": True,
+            "draftFocused": False,
+            "activeElementTestId": "",
             "draftReadOnly": False,
             "draftEditingLocked": anchored,
             "expectedDraftMatches": True,
-            "statusText": "Dictation cancelled. Your original draft was restored." if state == "cancel" else "",
+            "statusText": "Dictation cancelled. Your original draft was restored." if state == "cancel"
+            else "Your draft stays in the composer until you tap Insert or Send." if recording else "",
+            "reviewText": "Review and edit your dictated text. Your draft stays in the composer until you tap Insert or Send." if state == "review" else "",
+            "acknowledgedWrites": 1 if state == "transcribing-send" else 0,
+            "acknowledgedWritesBeforeAction": 1 if state == "transcribing-send" else 0,
             "draftPresentation": "focus-anchor" if anchored else "editor",
             "draftOpacity": "0" if anchored else "1",
             "draftAriaHidden": False,
             "draftAriaLabel": "Dictation draft, read only while dictating" if anchored else "Prompt draft",
-            "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if state == "transcribing" else "",
+            "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if transcribing else "",
             "recordingModeVisible": anchored,
             "recordingModeLabel": "Recording prompt" if anchored else "",
             "previewVisible": recording,
             "previewLive": recording,
-            "previewText": "discard this dictated phrase" if recording else "",
+            "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert" else "discard this dictated phrase" if recording else "",
             "cancelAccessible": anchored,
+            "cancelText": "Cancel" if anchored else "",
+            "cancelAriaLabel": "Cancel dictation and restore the original draft" if anchored else "",
             "stopAccessible": recording,
-            "transcribingStatusAccessible": state == "transcribing",
+            "insertAccessible": recording,
+            "insertEnabled": recording,
+            "dictationSendAccessible": anchored,
+            "dictationSendEnabled": anchored,
+            "transcribingStatusAccessible": transcribing,
             "composerStatusAccessible": True,
             "reviewVisible": state == "review",
             "visualViewport": {"height": 240.0, "width": 400.0},
@@ -555,9 +972,28 @@ def self_test() -> None:
             "status": rect,
             "actions": rect,
         }
+        if state == "background":
+            payload["nativeLifecycle"] = {
+                "runId": run_id,
+                "homeKeyDownInjected": True,
+                "homeKeyUpInjected": True,
+                "background": {"windowFocus": False, "lifecycleState": "CREATED"},
+                "foreground": {"windowFocus": True, "lifecycleState": "RESUMED"},
+                "launchOutput": "Status: ok",
+                "dictationCancelledAfterResume": True,
+                "draftRestored": True,
+                "lateResultIgnored": True,
+            }
         if anchored:
             payload["recordingMode"] = rect
             payload["cancel"] = rect
+            payload["dictationSend"] = rect
+            payload["actionOrder"] = (
+                "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
+                if recording else "composer-recording-cancel,composer-dictation-send"
+            )
+            if recording:
+                payload["insert"] = rect
         if state in ("cancel", "background"):
             payload["send"] = rect
         if recording:
@@ -585,19 +1021,102 @@ def self_test() -> None:
             "after": {"activeElement": {"id": "prompt-draft"}},
         }],
     }).encode()
+    forced_focus_value = json.loads(focus_trace)
+    forced_focus_value["forcedFirstPostAttachMiss"] = True
+    forced_focus_value["attempts"] = [{
+        "stage": "uncertain-session-after-attach",
+        "attempt": 1,
+        "requestedSelector": "[data-testid=prompt-composer] #composer-title",
+        "before": {"activeElement": {"id": "composer-close"}},
+        "nativeImeVisibleBefore": False,
+        "tap": {"top": 100, "bottom": 150, "screenX": 200, "screenY": 400},
+        "trustedPointerDownOnRequestedTarget": True,
+        "draftFocusedAfter": False,
+        "nativeImeVisibleAfter": False,
+        "inertMissInsideComposer": True,
+        "dialogStayedOpenAfterMiss": True,
+        "draftStayedMountedAfterMiss": True,
+        "after": {"composerPresent": True, "composerModal": True, "composerTitlePresent": True,
+                  "draftPresent": True, "draftConnected": True, "draftFocused": False},
+    }, {
+        "stage": "uncertain-session-after-attach",
+        "attempt": 2,
+        "requestedSelector": "[data-testid=prompt-draft]",
+        "before": {"activeElement": {"id": "composer-close"}},
+        "nativeImeVisibleBefore": False,
+        "tap": {"top": 100, "bottom": 150, "screenX": 200, "screenY": 400},
+        "trustedPointerDownOnRequestedTarget": True,
+        "draftFocusedAfter": True,
+        "nativeImeVisibleAfter": True,
+        "nativeImeVisibleAfterImeWait": True,
+        "after": {"composerPresent": True, "composerModal": True, "composerTitlePresent": True,
+                  "draftPresent": True, "draftConnected": True, "draftFocused": True},
+    }]
+    forced_focus_trace = json.dumps(forced_focus_value).encode()
+    broken_forced_focus_value = json.loads(forced_focus_trace)
+    broken_forced_focus_value["attempts"][0]["requestedSelector"] = ".terminal-viewport"
+    broken_forced_focus_value["attempts"][0]["inertMissInsideComposer"] = False
+    broken_forced_focus_value["attempts"][0]["dialogStayedOpenAfterMiss"] = False
+    broken_forced_focus_value["attempts"][0]["draftStayedMountedAfterMiss"] = False
+    broken_forced_focus_value["attempts"][0]["after"].update({"composerPresent": False, "composerModal": False,
+                                                               "composerTitlePresent": False, "draftPresent": False,
+                                                               "draftConnected": False})
+    broken_forced_focus_trace = json.dumps(broken_forced_focus_value).encode()
     clipped_post_send_value = json.loads(post_send)
     clipped_post_send_value["terminalViewport"]["top"] = 220.0
     clipped_post_send_value["terminalViewport"]["bottom"] = 300.0
     clipped_post_send = json.dumps(clipped_post_send_value).encode()
+    early_send_writes = json.loads(mode_geometry_payload("transcribing-send"))
+    early_send_writes["acknowledgedWrites"] += 1
+    early_send_writes_geometry = json.dumps(early_send_writes).encode()
+    misleading_recording_copy = json.loads(mode_geometry_payload("recording-insert"))
+    misleading_recording_copy["statusText"] = "Nothing is sent until you review and tap Send."
+    misleading_recording_copy_geometry = json.dumps(misleading_recording_copy).encode()
+    discard_labeled_recording_action = json.loads(mode_geometry_payload("recording-insert"))
+    discard_labeled_recording_action["cancelText"] = "Discard"
+    discard_labeled_recording_action["cancelAriaLabel"] = "Discard dictation and restore the original draft"
+    discard_labeled_recording_action_geometry = json.dumps(discard_labeled_recording_action).encode()
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
     negative_latency_value = json.loads(post_send)
     negative_latency_value["sendToVisibleOutputLatencyMs"] = -1
     negative_latency_post_send = json.dumps(negative_latency_value).encode()
+    background_without_resume_value = json.loads(mode_geometry_payload("background"))
+    background_without_resume_value["nativeLifecycle"]["foreground"]["lifecycleState"] = "CREATED"
+    background_without_resume = json.dumps(background_without_resume_value).encode()
     missing_latency_value = json.loads(post_send)
     del missing_latency_value["sendToVisibleOutputLatencyMs"]
     missing_latency_post_send = json.dumps(missing_latency_value).encode()
+    occluded_marker_value = json.loads(post_send)
+    occluded_marker_value["markerRow"]["bottom"] = occluded_marker_value["composer"]["top"] + 1
+    occluded_marker_post_send = json.dumps(occluded_marker_value).encode()
+    clipped_composer_value = json.loads(post_send)
+    clipped_composer_value["composer"]["bottom"] = clipped_composer_value["visualViewport"]["height"] + 1
+    clipped_composer_post_send = json.dumps(clipped_composer_value).encode()
+    session_leaked_title_value = json.loads(title_state)
+    session_leaked_title_value["composerHeading"] = "Compose for testuser:js2857-self-test-bytes"
+    session_leaked_title_state = json.dumps(session_leaked_title_value).encode()
+    offscreen_title_value = json.loads(title_state)
+    offscreen_title_value["sheetFullyVisible"] = False
+    offscreen_title_value["panelBounds"]["top"] = 914.0
+    offscreen_title_value["panelBounds"]["bottom"] = 1329.0
+    offscreen_title_state = json.dumps(offscreen_title_value).encode()
+    untrusted_launcher_after_value = json.loads(launcher_after)
+    untrusted_launcher_after_value["dom"]["pointerEvents"] = []
+    untrusted_launcher_after = json.dumps(untrusted_launcher_after_value).encode()
+    uncertain_launcher_failure_value = json.loads(launcher_after)
+    uncertain_launcher_failure_value["openWaitFailure"] = "composer modal did not open"
+    uncertain_launcher_failure = json.dumps(uncertain_launcher_failure_value).encode()
+    first_attach_launcher_failure_value = json.loads(launcher_after)
+    first_attach_launcher_failure_value["openWaitFailure"] = "composer modal did not open"
+    first_attach_launcher_failure = json.dumps(first_attach_launcher_failure_value).encode()
+    uncertain_ime_mismatch_value = json.loads(launcher_before_ime)
+    uncertain_ime_mismatch_value["dom"]["keyboardVisible"] = False
+    uncertain_ime_mismatch = json.dumps(uncertain_ime_mismatch_value).encode()
+    hidden_ime_geometry_mismatch_value = json.loads(launcher_before)
+    hidden_ime_geometry_mismatch_value["native"]["webViewHeightPx"] = 1499
+    hidden_ime_geometry_mismatch = json.dumps(hidden_ime_geometry_mismatch_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
                          send_bottom: float = 218.0, terminal_height: float = 60.0) -> bytes:
         return json.dumps({
@@ -621,27 +1140,55 @@ def self_test() -> None:
 
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
                    dictation_send_bytes: bytes = dictation_send,
+                   focus_trace_bytes: bytes = focus_trace,
+                   title_state_bytes: bytes = title_state,
+                   launcher_before_bytes: bytes = launcher_before,
+                   launcher_after_bytes: bytes = launcher_after,
+                   launcher_first_attach_after_bytes: bytes = launcher_after,
+                   launcher_before_uncertain_bytes: bytes = launcher_before_ime,
+                   launcher_after_uncertain_bytes: bytes = launcher_after,
+                   background_geometry_bytes: bytes | None = None,
+                   recording_insert_geometry_bytes: bytes | None = None,
+                   transcribing_send_geometry_bytes: bytes | None = None,
                    inline_preview_bytes: bytes = png) -> list[str]:
         source = [
+            ("composer-title.png", png),
+            ("composer-title.json", title_state_bytes),
+            ("composer-launcher-before-reopen.png", png),
+            ("composer-launcher-before-reopen.json", launcher_before_bytes),
+            ("composer-launcher-after-reopen.png", png),
+            ("composer-launcher-after-reopen.json", launcher_after_bytes),
+            ("composer-launcher-before-uncertain-first-attach.png", png),
+            ("composer-launcher-before-uncertain-first-attach.json", launcher_before),
+            ("composer-launcher-after-uncertain-first-attach.png", png),
+            ("composer-launcher-after-uncertain-first-attach.json", launcher_first_attach_after_bytes),
+            ("composer-launcher-before-uncertain-reattach.json", launcher_before_uncertain_bytes),
+            ("composer-launcher-after-uncertain-reattach.json", launcher_after_uncertain_bytes),
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
             ("inline-dictation-preview.png", inline_preview_bytes),
-            ("composer-focus-trace.json", focus_trace),
+            ("composer-focus-trace.json", focus_trace_bytes),
             ("composer-recording.png", png),
             ("composer-recording-geometry.json", mode_geometry_payload("recording")),
+            ("composer-recording-insert.png", png),
+            ("composer-recording-insert-geometry.json", recording_insert_geometry_bytes or mode_geometry_payload("recording-insert")),
             ("composer-cancel.png", png),
             ("composer-cancel-geometry.json", mode_geometry_payload("cancel")),
             ("composer-background.png", png),
-            ("composer-background-geometry.json", mode_geometry_payload("background")),
+            ("composer-background-geometry.json", background_geometry_bytes or mode_geometry_payload("background")),
             ("composer-transcribing.png", png),
             ("composer-transcribing-geometry.json", mode_geometry_payload("transcribing")),
+            ("composer-transcribing-send.png", png),
+            ("composer-transcribing-send-geometry.json", transcribing_send_geometry_bytes or mode_geometry_payload("transcribing-send")),
             ("composer-review.png", png),
             ("composer-review-geometry.json", mode_geometry_payload("review")),
             ("composer-recording-after-restart.png", png),
             ("composer-recording-after-restart-geometry.json", mode_geometry_payload("recording-after-restart")),
             ("composer-dictation-send.json", dictation_send_bytes),
+            ("composer-back-workspace-restored.png", png),
+            ("composer-back-workspace-restored.json", back_state),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -658,9 +1205,23 @@ def self_test() -> None:
                         expected_dictation_marker=dictation_marker)["inline-dictation-preview.png"] == png
     print("PASS: keyboard, inline dictation, composer-state, and post-send artifacts extract with complete chunks and matching SHA-256")
 
+    keyboard_up_reopen_assets = parse_assets(
+        "\n".join(make_lines(launcher_before_bytes=launcher_before_ime)), run_id,
+        expected_terminal_marker=marker, expected_dictation_marker=dictation_marker)
+    assert json.loads(keyboard_up_reopen_assets["composer-launcher-before-reopen.json"])["native"]["imeVisible"] is True
+    print("PASS: composer launcher reopen accepts a keyboard-up state with matching native/WebView geometry")
+
+    forced_focus_assets = parse_assets("\n".join(make_lines(focus_trace_bytes=forced_focus_trace)), run_id,
+                                       expected_terminal_marker=marker,
+                                       expected_dictation_marker=dictation_marker)
+    assert json.loads(forced_focus_assets["composer-focus-trace.json"])["forcedFirstPostAttachMiss"] is True
+    print("PASS: forced Composer miss stays inside the modal and retains a mounted draft for the physical retry")
+
     for label, altered in (
         ("missing artifact", lines[:-1]),
         ("missing focus trace", [line for line in lines if "composer-focus-trace.json" not in line]),
+        ("forced first miss closes Composer and removes its retry target",
+         make_lines(focus_trace_bytes=broken_forced_focus_trace)),
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
         ("bad digest", [line.replace(hashlib.sha256(png).hexdigest(), "0" * 64) for line in lines]),
         ("IME hidden", make_lines(geometry_payload(ime_visible=False))),
@@ -678,6 +1239,26 @@ def self_test() -> None:
         ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
         ("post-send output latency missing", make_lines(post_send_bytes=missing_latency_post_send)),
         ("post-send output latency negative", make_lines(post_send_bytes=negative_latency_post_send)),
+        ("post-send marker row is covered by the composer sheet", make_lines(post_send_bytes=occluded_marker_post_send)),
+        ("post-send composer sheet clipped by viewport", make_lines(post_send_bytes=clipped_composer_post_send)),
+        ("composer launcher has no trusted physical pointer evidence",
+         make_lines(launcher_after_bytes=untrusted_launcher_after)),
+        ("uncertain-session first-attach launcher did not open the composer",
+         make_lines(launcher_first_attach_after_bytes=first_attach_launcher_failure)),
+        ("uncertain-session composer reopen did not open the modal",
+         make_lines(launcher_after_uncertain_bytes=uncertain_launcher_failure)),
+        ("uncertain-session launcher keyboard geometry is inconsistent",
+         make_lines(launcher_before_uncertain_bytes=uncertain_ime_mismatch)),
+        ("keyboard-hidden launcher state has mismatched native/WebView geometry",
+         make_lines(launcher_before_bytes=hidden_ime_geometry_mismatch)),
+        ("background cancellation lacks a native resume", make_lines(background_geometry_bytes=background_without_resume)),
+        ("transcribing-time Send writes before the explicit action",
+         make_lines(transcribing_send_geometry_bytes=early_send_writes_geometry)),
+        ("recording copy omits Insert delivery", make_lines(recording_insert_geometry_bytes=misleading_recording_copy_geometry)),
+        ("recording restore action is labeled Discard", make_lines(recording_insert_geometry_bytes=discard_labeled_recording_action_geometry)),
+        ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
+        ("idle composer title screenshot captured before the sheet was painted",
+         make_lines(title_state_bytes=offscreen_title_state)),
         ("inline dictation screenshot is ASCII run-as error text",
          make_lines(inline_preview_bytes=b"run-as: unknown package: com.pocketshell.app.i2857inline\n")),
     ):

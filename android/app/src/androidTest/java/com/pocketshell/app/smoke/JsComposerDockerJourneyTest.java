@@ -20,7 +20,6 @@ import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.lifecycle.Lifecycle;
 
 import com.pocketshell.app.MainActivity;
 
@@ -42,8 +41,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /** Packaged composer journey against the real agents/aplexer Docker fixture. */
 @RunWith(AndroidJUnit4.class)
@@ -52,6 +56,8 @@ public final class JsComposerDockerJourneyTest {
     private static final long JS_TIMEOUT_SECONDS = 15;
 
     private ActivityScenario<MainActivity> scenario;
+    private MainActivity packagedActivity;
+    private WebView packagedWebView;
     private String bytesSession;
     private String uncertainSession;
     private String artifactRunId;
@@ -62,20 +68,34 @@ public final class JsComposerDockerJourneyTest {
     private JSONObject lastDictationTestEvent = new JSONObject();
     private boolean focusTraceEmitted;
     private boolean focusFailureCaptured;
+    private ScheduledExecutorService journeyWatchdog;
+    private volatile Thread journeyThread;
+    private volatile String journeyCheckpoint = "not-started";
+    private volatile long journeyCheckpointAtMs;
+    private JSONObject lastBackgroundLifecycleTrace;
 
     @Before
     public void launchPackagedShell() {
         scenario = ActivityScenario.launch(MainActivity.class);
+        scenario.onActivity(activity -> {
+            packagedActivity = activity;
+            packagedWebView = findWebView(activity.getWindow().getDecorView());
+        });
+        assertNotNull("packaged Capacitor activity must contain a WebView", packagedWebView);
     }
 
     @After
     public void closeShell() {
+        if (journeyWatchdog != null) journeyWatchdog.shutdownNow();
         try {
             emitFocusTraceIfNeeded();
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
         }
-        if (scenario != null) scenario.close();
+        if (scenario != null) {
+            stopWebAnimationsBeforeScenarioClose();
+            scenario.close();
+        }
     }
 
     @Test
@@ -99,11 +119,13 @@ public final class JsComposerDockerJourneyTest {
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
         assertNotNull("pass unique composer session names with sshSessionName", nameBase);
+        startJourneyWatchdog();
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        checkpoint("build-ready");
         setVoicePreferencesForComposerJourney();
         evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
         setValue("[data-testid=ssh-host]", host);
@@ -113,23 +135,28 @@ public final class JsComposerDockerJourneyTest {
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+        checkpoint("ssh-connected");
 
         createSession(bytesSession);
         createSession(uncertainSession);
         attachSession(bytesSession);
         verifyNestedAndroidBackKeepsLiveSession();
+        checkpoint("nested-back-live-workspace-restored");
 
         exerciseComposerDictationMode(artifactRunId, nameBase);
+        tapDomCenter("[data-testid=composer-close]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+        checkpoint("prompt-composer-closed-before-inline-terminal-dictation");
         installControlledSpeechAdapter();
         exerciseInlineTerminalDictation(nameBase, bytesSession, uncertainSession, artifactRunId);
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
         String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' | tee /tmp/"
-                + bytesSession + "-unicode.hex; printf '\\n%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
-                + "' | tee /tmp/"
-                + bytesSession + "-sent-output.marker";
+                + nameBase + "-u; printf '\\n%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
+                + "' | tee /tmp/" + nameBase + "-s";
         assertTrue("the sent-output marker must not be present verbatim in the command echo", !unicodeCommand.contains(sentMarker));
+        openComposerAfterInlineWithEvidence(artifactRunId);
         setComposerDraft(unicodeCommand);
         showKeyboardAndCapture(artifactRunId);
         assertTrue("Send must be activated while the Android IME is visible", isImeVisible());
@@ -173,6 +200,7 @@ public final class JsComposerDockerJourneyTest {
         String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
         String uncertainCommand = "printf '%s' '" + uncertainMarker + "' > /tmp/" + uncertainSession + "-uncertain.marker\n"
                 + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
+        openComposerWithEvidence(artifactRunId, "uncertain-first-attach", "uncertain-session-first-composer-launcher");
         setComposerDraft(uncertainCommand);
         armDisconnectAfterFirstAcknowledgement();
         tapComposerAction(".composer-shared-controls .send");
@@ -183,7 +211,8 @@ public final class JsComposerDockerJourneyTest {
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
         attachSession(uncertainSession);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand));
+        openComposerWithEvidence(artifactRunId, "uncertain-reattach", "uncertain-session-composer-launcher");
+        setComposerDraft(uncertainCommand);
         assertEquals("uncertain delivery must keep the exact draft after reattach", uncertainCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
     }
@@ -220,6 +249,15 @@ public final class JsComposerDockerJourneyTest {
                 afterImeBack >= beforeImeBack && afterImeBack <= beforeImeBack + 1);
         Log.i("PS2857Back", "after-ime-dismiss|" + backUiState());
 
+        // Tapping an ordinary settings surface models a user leaving the
+        // numeric editor and dismisses any editor-owned PopupWindow before
+        // route Back is sent.
+        tapDomCenter("[data-testid=terminal-settings-screen] .settings-preview");
+        awaitJsTrue("document.activeElement !== document.querySelector('[data-testid=terminal-font-size-input]')"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+        awaitImeVisible(false);
+        Log.i("PS2857Back", "after-settings-surface-tap|" + backUiState());
+
         int beforeRouteBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
@@ -228,11 +266,22 @@ public final class JsComposerDockerJourneyTest {
 
         int beforeHomeBack = backButtonEventCount();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
-                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && !!document.querySelector('[data-testid=prompt-composer]')"
-                + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeHomeBack);
-        Log.i("PS2857Back", "after-workspace-back|" + backUiState());
+        try {
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                    + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')"
+                    + " && !document.querySelector('[data-testid=prompt-composer]')"
+                    + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + beforeHomeBack);
+        } catch (AssertionError backFailure) {
+            try {
+                emitBackState("workspace-failure");
+            } catch (Exception | AssertionError evidenceFailure) {
+                backFailure.addSuppressed(evidenceFailure);
+            }
+            throw backFailure;
+        }
+        emitBackState("workspace-restored");
     }
 
     private int backButtonEventCount() throws Exception {
@@ -241,16 +290,37 @@ public final class JsComposerDockerJourneyTest {
 
     private String backUiState() throws Exception {
         String webState = evalString("(() => {const shell=document.querySelector('.app-shell');"
-                + "return JSON.stringify({route:shell?.dataset.route,keyboardVisible:shell?.dataset.keyboardVisible,"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "return JSON.stringify({route:shell?.dataset.route,homeSurface:shell?.dataset.homeSurface,"
+                + "sshPhase:shell?.dataset.sshPhase,keyboardVisible:shell?.dataset.keyboardVisible,"
                 + "backButtonReady:shell?.dataset.backButtonReady,backButtonEvents:shell?.dataset.backButtonEvents,"
-                + "activeElement:document.activeElement?.outerHTML?.slice(0,180)});})()");
-        AtomicReference<String> nativeState = new AtomicReference<>("unavailable");
-        scenario.onActivity(activity -> {
+                + "composerVisible:!!composer&&composer.getClientRects().length>0,"
+                + "composerModal:composer?.getAttribute('aria-modal')==='true',"
+                + "composerLauncherVisible:!!launcher&&launcher.getClientRects().length>0,"
+                + "activeElementTag:document.activeElement?.tagName??'',"
+                + "activeElementTestId:document.activeElement?.getAttribute('data-testid')??''});})()");
+        AtomicReference<Boolean> imeVisible = new AtomicReference<>(null);
+        AtomicReference<Boolean> windowFocus = new AtomicReference<>(null);
+        onMainActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-            nativeState.set("imeVisible=" + (insets != null && insets.isVisible(WindowInsets.Type.ime()))
-                    + ",windowFocus=" + activity.getWindow().getDecorView().hasWindowFocus());
+            imeVisible.set(insets != null && insets.isVisible(WindowInsets.Type.ime()));
+            windowFocus.set(activity.getWindow().getDecorView().hasWindowFocus());
         });
-        return webState + "|" + nativeState.get();
+        return new JSONObject(webState)
+                .put("androidImeVisible", imeVisible.get())
+                .put("windowFocus", windowFocus.get())
+                .toString();
+    }
+
+    private void emitBackState(String state) throws Exception {
+        String json = new JSONObject(backUiState())
+                .put("runId", artifactRunId)
+                .put("state", state)
+                .toString();
+        Log.i("PS2857Back", state + "|" + json);
+        emitCurrentScreen(artifactRunId, "composer-back-" + state + ".png");
+        emitArtifact(artifactRunId, "composer-back-" + state + ".json", json.getBytes(StandardCharsets.UTF_8));
     }
 
     private void createSession(String name) throws Exception {
@@ -273,13 +343,354 @@ public final class JsComposerDockerJourneyTest {
         String actualName = evalString(match + "?.dataset.sessionName ?? ''");
         click("[data-session-name=" + JSONObject.quote(actualName) + "]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
-        awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer]')");
+        awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer-launcher]')"
+                + " && !document.querySelector('[data-testid=prompt-composer]')");
         awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
     }
 
     private void setComposerDraft(String value) throws Exception {
+        if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            tapDomCenter("[data-testid=prompt-composer-launcher]");
+            awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                    + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+        }
         setValue("[data-testid=prompt-draft]", value);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(value));
+    }
+
+    private void openComposerAfterInlineWithEvidence(String runId) throws Exception {
+        openComposerWithEvidence(runId, "reopen", "unicode-composer-launcher");
+    }
+
+    private void openComposerWithEvidence(String runId, String evidenceSuffix, String checkpointPrefix)
+            throws Exception {
+        String selector = "[data-testid=prompt-composer-launcher]";
+        checkpoint("launcher-ime-geometry-wait-started-" + evidenceSuffix);
+        JSONObject settledImeGeometry = awaitComposerLauncherImeGeometry(evidenceSuffix);
+        Log.i("PS2857Launcher", "SETTLED_IME_GEOMETRY|" + runId + "|" + evidenceSuffix + "|" + settledImeGeometry);
+        checkpoint("launcher-ime-geometry-settled-" + evidenceSuffix);
+        evalString("(() => {const key='__ps2857ComposerLauncherPointerEvents';window[key]=[];"
+                + "if(!window.__ps2857ComposerLauncherRecorderInstalled){"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "for(const type of ['pointerdown','pointerup','click','focusin'])document.addEventListener(type,event=>{"
+                + "const target=event.target;const launcher=target?.closest?.(" + JSONObject.quote(selector) + ");"
+                + "if(!launcher)return;const rect=launcher.getBoundingClientRect();window[key].push({type,isTrusted:event.isTrusted,"
+                + "pointerType:event.pointerType??'',clientX:event.clientX??null,clientY:event.clientY??null,"
+                + "target:label(target),launcher:label(launcher),launcherBounds:{left:rect.left,top:rect.top,right:rect.right,"
+                + "bottom:rect.bottom,width:rect.width,height:rect.height},timeStamp:event.timeStamp});},true);"
+                + "window.__ps2857ComposerLauncherRecorderInstalled=true;}return 'installed';})()");
+
+        JSONObject before = composerLauncherSnapshot("before-tap");
+        emitArtifact(runId, "composer-launcher-before-" + evidenceSuffix + ".json",
+                before.toString().getBytes(StandardCharsets.UTF_8));
+        if ("reopen".equals(evidenceSuffix) || "uncertain-first-attach".equals(evidenceSuffix)) {
+            emitCurrentScreen(runId, "composer-launcher-before-" + evidenceSuffix + ".png");
+        }
+        Log.i("PS2857Launcher", "BEFORE_REOPEN|" + evidenceSuffix + "|" + runId + "|" + before);
+
+        JSONArray attempts = new JSONArray();
+        lastPhysicalTapEvidence = null;
+        String failure = null;
+        String firstAttemptFailure = null;
+        JSONObject afterFirstAttempt = null;
+        try {
+            checkpoint(checkpointPrefix + "-before-physical-tap");
+            tapDomCenter(selector);
+            checkpoint(checkpointPrefix + "-physical-tap-returned");
+            awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                    + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'",
+                    12_000);
+        } catch (Exception | AssertionError error) {
+            failure = error.toString();
+        }
+        afterFirstAttempt = composerLauncherSnapshot("after-first-tap");
+        attempts.put(launcherAttemptEvidence(1, failure, afterFirstAttempt));
+
+        if (failure != null && ("uncertain-reattach".equals(evidenceSuffix)
+                || "uncertain-first-attach".equals(evidenceSuffix))
+                && launcherRetryAfterImeResize(before, afterFirstAttempt)) {
+            firstAttemptFailure = failure;
+            failure = null;
+            lastPhysicalTapEvidence = null;
+            try {
+                checkpoint(checkpointPrefix + "-retry-after-ime-resize-before-physical-tap");
+                tapDomCenter(selector);
+                checkpoint(checkpointPrefix + "-retry-after-ime-resize-physical-tap-returned");
+                awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                        + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'",
+                        12_000);
+            } catch (Exception | AssertionError error) {
+                failure = error.toString();
+            }
+            JSONObject afterRetry = composerLauncherSnapshot("after-resized-tap");
+            attempts.put(launcherAttemptEvidence(2, failure, afterRetry));
+        }
+
+        JSONObject after = composerLauncherSnapshot("after-tap")
+                .put("physicalTap", lastPhysicalTapEvidence == null
+                        ? JSONObject.NULL : new JSONObject(lastPhysicalTapEvidence.toString()))
+                .put("attempts", attempts)
+                .put("firstAttemptFailure", firstAttemptFailure == null ? JSONObject.NULL : firstAttemptFailure)
+                .put("openWaitFailure", failure == null ? JSONObject.NULL : failure);
+        emitArtifact(runId, "composer-launcher-after-" + evidenceSuffix + ".json",
+                after.toString().getBytes(StandardCharsets.UTF_8));
+        if ("reopen".equals(evidenceSuffix) || "uncertain-first-attach".equals(evidenceSuffix)) {
+            emitCurrentScreen(runId, "composer-launcher-after-" + evidenceSuffix + ".png");
+        }
+        Log.i("PS2857Launcher", "AFTER_REOPEN|" + evidenceSuffix + "|" + runId + "|" + after);
+        checkpoint(checkpointPrefix + "-after-physical-tap-evidence");
+        if (failure != null) {
+            throw new AssertionError("physical composer launcher tap did not open the dialog; same-run evidence: "
+                    + after, new AssertionError(failure));
+        }
+    }
+
+    private JSONObject awaitComposerLauncherImeGeometry(String evidenceSuffix) throws Exception {
+        final long timeoutMillis = 8_000;
+        final long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        JSONObject previousCoherent = null;
+        JSONObject latest = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            try {
+                JSONObject sample = composerLauncherSnapshot("ime-geometry-settle", deadline);
+                if (SystemClock.uptimeMillis() >= deadline) {
+                    throw new TimeoutException("complete DOM/native sample arrived after the settle deadline");
+                }
+                latest = sample;
+            } catch (TimeoutException timeout) {
+                throw composerLauncherImeGeometryTimeout(evidenceSuffix, timeoutMillis, latest, timeout);
+            }
+            if (composerLauncherImeGeometryIsCoherent(latest)) {
+                if (previousCoherent != null && composerLauncherImeGeometryIsStable(previousCoherent, latest)) {
+                    if (SystemClock.uptimeMillis() >= deadline) {
+                        throw composerLauncherImeGeometryTimeout(evidenceSuffix, timeoutMillis, latest,
+                                new TimeoutException("second coherent sample completed after the settle deadline"));
+                    }
+                    return latest;
+                }
+                previousCoherent = latest;
+            } else {
+                previousCoherent = null;
+            }
+            long remainingMillis = deadline - SystemClock.uptimeMillis();
+            if (remainingMillis <= 0) break;
+            SystemClock.sleep(Math.min(120, remainingMillis));
+        }
+        throw composerLauncherImeGeometryTimeout(evidenceSuffix, timeoutMillis, latest, null);
+    }
+
+    private AssertionError composerLauncherImeGeometryTimeout(String evidenceSuffix, long timeoutMillis,
+                                                              JSONObject latest, TimeoutException cause) {
+        String message = "Android IME and WebView geometry did not settle to two consecutive coherent samples before "
+                + "the " + evidenceSuffix + " composer launcher baseline within " + timeoutMillis
+                + "ms; last full DOM/native snapshot=" + latest;
+        return cause == null ? new AssertionError(message) : new AssertionError(message, cause);
+    }
+
+    private boolean composerLauncherImeGeometryIsCoherent(JSONObject state) throws JSONException {
+        JSONObject dom = state.getJSONObject("dom");
+        JSONObject nativeState = state.getJSONObject("native");
+        boolean keyboardVisible = dom.optBoolean("keyboardVisible");
+        if (keyboardVisible != nativeState.optBoolean("imeVisible")) return false;
+        if (!keyboardVisible) return true;
+
+        JSONObject viewport = dom.optJSONObject("visualViewport");
+        if (viewport == null) return false;
+        double cssWidth = viewport.optDouble("width");
+        double cssHeight = viewport.optDouble("height");
+        double webViewWidth = nativeState.optDouble("webViewWidthPx");
+        double webViewHeight = nativeState.optDouble("webViewHeightPx");
+        if (cssWidth <= 0 || cssHeight <= 0 || webViewWidth <= 0 || webViewHeight <= 0) return false;
+        double scaleX = webViewWidth / cssWidth;
+        double scaleY = webViewHeight / cssHeight;
+        return Math.abs(scaleX - scaleY) <= Math.max(scaleX, scaleY) * 0.02;
+    }
+
+    private boolean composerLauncherImeGeometryIsStable(JSONObject previous, JSONObject current)
+            throws JSONException {
+        JSONObject previousDom = previous.getJSONObject("dom");
+        JSONObject currentDom = current.getJSONObject("dom");
+        JSONObject previousNative = previous.getJSONObject("native");
+        JSONObject currentNative = current.getJSONObject("native");
+        if (previousDom.optBoolean("keyboardVisible") != currentDom.optBoolean("keyboardVisible")) return false;
+        return approximatelyEqual(previousDom.getJSONObject("visualViewport").optDouble("width"),
+                currentDom.getJSONObject("visualViewport").optDouble("width"), 0.02)
+                && approximatelyEqual(previousDom.getJSONObject("visualViewport").optDouble("height"),
+                        currentDom.getJSONObject("visualViewport").optDouble("height"), 0.02)
+                && approximatelyEqual(previousNative.optDouble("webViewWidthPx"),
+                        currentNative.optDouble("webViewWidthPx"), 0.02)
+                && approximatelyEqual(previousNative.optDouble("webViewHeightPx"),
+                        currentNative.optDouble("webViewHeightPx"), 0.02);
+    }
+
+    private boolean approximatelyEqual(double left, double right, double toleranceFraction) {
+        if (!Double.isFinite(left) || !Double.isFinite(right) || left <= 0 || right <= 0) return false;
+        return Math.abs(left - right) <= Math.max(left, right) * toleranceFraction;
+    }
+
+    private JSONObject launcherAttemptEvidence(int attempt, String failure, JSONObject state) throws JSONException {
+        return new JSONObject().put("attempt", attempt)
+                .put("physicalTap", lastPhysicalTapEvidence == null
+                        ? JSONObject.NULL : new JSONObject(lastPhysicalTapEvidence.toString()))
+                .put("state", state)
+                .put("failure", failure == null ? JSONObject.NULL : failure);
+    }
+
+    private boolean launcherRetryAfterImeResize(JSONObject before, JSONObject state) throws JSONException {
+        JSONObject dom = state.getJSONObject("dom");
+        JSONObject nativeState = state.getJSONObject("native");
+        int initialWebViewHeight = before.getJSONObject("native").optInt("webViewHeightPx");
+        return "home".equals(dom.optString("route"))
+                && "live".equals(dom.optString("homeSurface"))
+                && "live".equals(dom.optString("sshPhase"))
+                && !dom.optBoolean("composerPresent")
+                && dom.optBoolean("launcherPresent")
+                && dom.optBoolean("launcherVisible")
+                && !dom.optBoolean("launcherDisabled")
+                && dom.optBoolean("keyboardVisible")
+                && nativeState.optBoolean("imeVisible")
+                && nativeState.optInt("webViewHeightPx") < initialWebViewHeight;
+    }
+
+    private JSONObject composerLauncherSnapshot(String stage) throws Exception {
+        return composerLauncherSnapshot(stage, 0L);
+    }
+
+    private JSONObject composerLauncherSnapshot(String stage, long deadlineUptimeMillis) throws Exception {
+        String domExpression = "(() => {const shell=document.querySelector('.app-shell');"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const rect=launcher?.getBoundingClientRect();const x=rect?rect.left+rect.width/2:0;"
+                + "const y=rect?rect.top+rect.height/2:0;const hit=launcher?document.elementFromPoint(x,y):null;"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "const bounds=r=>r?{left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}:null;"
+                + "const active=document.activeElement;return JSON.stringify({stage:" + JSONObject.quote(stage)
+                + ",route:shell?.dataset.route??null,homeSurface:shell?.dataset.homeSurface??null,"
+                + "sshPhase:shell?.dataset.sshPhase??null,keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "composerPresent:!!composer,composerVisible:!!composer&&composer.getClientRects().length>0,"
+                + "composerRole:composer?.getAttribute('role')??null,composerAriaModal:composer?.getAttribute('aria-modal')??null,"
+                + "launcherPresent:!!launcher,launcherVisible:!!launcher&&launcher.getClientRects().length>0,"
+                + "launcherDisabled:!launcher||!!launcher.disabled,launcherAriaDisabled:launcher?.getAttribute('aria-disabled')??null,"
+                + "launcherBounds:bounds(rect),launcherCenter:{x,y},centerHit:label(hit),"
+                + "centerHitMatchesLauncher:!!launcher&&!!hit?.closest?.('[data-testid=prompt-composer-launcher]'),"
+                + "activeElement:label(active),documentHasFocus:document.hasFocus(),"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
+                + "innerWidth,innerHeight,pointerEvents:(window.__ps2857ComposerLauncherPointerEvents||[]).slice(-20)});})()";
+        boolean enforceDeadline = deadlineUptimeMillis > 0;
+        JSONObject dom = enforceDeadline
+                ? evalJsonBeforeDeadline(domExpression, deadlineUptimeMillis, "launcher " + stage)
+                : evalJson(domExpression);
+        AtomicReference<JSONObject> nativeState = new AtomicReference<>();
+        Consumer<MainActivity> readNativeState = activity -> {
+            View decor = activity.getWindow().getDecorView();
+            WebView webView = packagedWebView;
+            WindowInsets insets = decor.getRootWindowInsets();
+            int[] location = new int[2];
+            if (webView != null) webView.getLocationOnScreen(location);
+            View focusedView = decor.findFocus();
+            try {
+                nativeState.set(new JSONObject().put("activityClass", activity.getClass().getName())
+                        .put("activityFinishing", activity.isFinishing()).put("activityDestroyed", activity.isDestroyed())
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("windowFocusedView", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("webViewPresent", webView != null).put("webViewHasFocus", webView != null && webView.hasFocus())
+                        .put("webViewScreenX", location[0]).put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView == null ? 0 : webView.getWidth())
+                        .put("webViewHeightPx", webView == null ? 0 : webView.getHeight())
+                        .put("imeVisible", Build.VERSION.SDK_INT >= 30 && insets != null
+                                && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", Build.VERSION.SDK_INT >= 30 && insets != null
+                                ? insets.getInsets(WindowInsets.Type.ime()).bottom : 0));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        };
+        if (enforceDeadline) {
+            onMainActivityBeforeDeadline(readNativeState, deadlineUptimeMillis, "launcher " + stage);
+            if (SystemClock.uptimeMillis() >= deadlineUptimeMillis) {
+                throw new TimeoutException("launcher " + stage + " native sample completed after the settle deadline");
+            }
+        } else {
+            onMainActivity(readNativeState);
+        }
+        return new JSONObject().put("runId", artifactRunId).put("native", nativeState.get()).put("dom", dom);
+    }
+
+    private JSONObject evalJsonBeforeDeadline(String expression, long deadlineUptimeMillis, String context)
+            throws Exception {
+        return new JSONObject(evalStringBeforeDeadline(expression, deadlineUptimeMillis, context));
+    }
+
+    private String evalStringBeforeDeadline(String expression, long deadlineUptimeMillis, String context)
+            throws Exception {
+        String raw = evalRawBeforeDeadline(expression, deadlineUptimeMillis, context);
+        Object decoded = new JSONTokener(raw).nextValue();
+        return decoded == null ? null : decoded.toString();
+    }
+
+    private String evalRawBeforeDeadline(String expression, long deadlineUptimeMillis, String context)
+            throws Exception {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> result = new AtomicReference<>();
+        AtomicLong callbackUptimeMillis = new AtomicLong(Long.MAX_VALUE);
+        WebView webView = packagedWebView;
+        assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+        assertTrue("packaged WebView rejected JavaScript evaluation", webView.post(() ->
+                webView.evaluateJavascript(expression, value -> {
+                    result.set(value);
+                    callbackUptimeMillis.set(SystemClock.uptimeMillis());
+                    latch.countDown();
+                })));
+        long remainingMillis = deadlineUptimeMillis - SystemClock.uptimeMillis();
+        if (remainingMillis <= 0) {
+            throw new TimeoutException(context + " exhausted its geometry settle deadline before awaiting WebView JavaScript");
+        }
+        boolean completed = latch.await(remainingMillis, TimeUnit.MILLISECONDS);
+        long observedAt = SystemClock.uptimeMillis();
+        if (!completed || callbackUptimeMillis.get() >= deadlineUptimeMillis || observedAt >= deadlineUptimeMillis) {
+            throw new TimeoutException(context + " WebView JavaScript did not complete before the geometry settle deadline"
+                    + " (callbackUptimeMillis=" + callbackUptimeMillis.get() + ", observedAt=" + observedAt + ")");
+        }
+        if (result.get() == null || "null".equals(result.get())) {
+            throw new JSONException("JavaScript returned null during " + context + ": " + expression);
+        }
+        return result.get();
+    }
+
+    private void onMainActivityBeforeDeadline(Consumer<MainActivity> action, long deadlineUptimeMillis,
+                                              String context) throws Exception {
+        MainActivity activity = packagedActivity;
+        assertNotNull("packaged MainActivity must remain available during the journey", activity);
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        AtomicLong callbackUptimeMillis = new AtomicLong(Long.MAX_VALUE);
+        activity.runOnUiThread(() -> {
+            try {
+                action.accept(activity);
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                callbackUptimeMillis.set(SystemClock.uptimeMillis());
+                latch.countDown();
+            }
+        });
+        long remainingMillis = deadlineUptimeMillis - SystemClock.uptimeMillis();
+        if (remainingMillis <= 0) {
+            throw new TimeoutException(context + " exhausted its geometry settle deadline before the native sample");
+        }
+        boolean completed = latch.await(remainingMillis, TimeUnit.MILLISECONDS);
+        long observedAt = SystemClock.uptimeMillis();
+        if (!completed || callbackUptimeMillis.get() >= deadlineUptimeMillis || observedAt >= deadlineUptimeMillis) {
+            throw new TimeoutException(context + " Android native snapshot did not complete before the geometry settle deadline"
+                    + " (callbackUptimeMillis=" + callbackUptimeMillis.get() + ", observedAt=" + observedAt + ")");
+        }
+        Throwable callbackFailure = failure.get();
+        if (callbackFailure instanceof Exception) throw (Exception) callbackFailure;
+        if (callbackFailure instanceof Error) throw (Error) callbackFailure;
+        if (callbackFailure != null) throw new RuntimeException(callbackFailure);
     }
 
     private void setVoicePreferencesForComposerJourney() throws Exception {
@@ -331,6 +742,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void exerciseInlineTerminalDictation(String nameBase, String sessionName, String targetChangeSession,
             String artifactRunId) throws Exception {
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
         awaitJsTrue("!!document.querySelector('[data-testid=inline-dictation-toggle]')"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false");
         String inlineMarker = "PS2857_INLINE_" + nameBase;
@@ -339,9 +751,12 @@ public final class JsComposerDockerJourneyTest {
                 + sessionName + "-inline-submitted.marker";
         int acknowledgementsBefore = terminalInputAcknowledgements();
 
+        checkpoint("inline-dictation-before-start-tap");
         tapDomCenter("[data-testid=inline-dictation-toggle]");
+        checkpoint("inline-dictation-start-tap-returned");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
-                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.textContent.includes('Stop')");
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.dataset.micState === 'listening'"
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.getAttribute('aria-label')?.includes('Stop terminal dictation')");
         JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
         assertEquals("inline dictation must use the saved Voice language", "de", start.getString("languageTag"));
         assertEquals("inline dictation must use the saved Voice silence window", 9_000,
@@ -400,12 +815,11 @@ public final class JsComposerDockerJourneyTest {
                 + JSONObject.quote(partial));
         assertEquals("background partial must remain local", acknowledgementsBefore, terminalInputAcknowledgements());
 
-        // ActivityScenario drives BridgeActivity.onStop/onResume, which fires the
-        // real Capacitor appStateChange event consumed by the mounted app and bar.
-        scenario.moveToState(Lifecycle.State.CREATED);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
-        scenario.moveToState(Lifecycle.State.RESUMED);
+        JSONObject backgroundTrace = backgroundAndResumeApp("inline-terminal-dictation");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === "
+                + JSONObject.quote(requestId), 15_000);
+        checkpoint("inline-dictation-background-cancellation-observed");
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
         evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
@@ -413,6 +827,10 @@ public final class JsComposerDockerJourneyTest {
                 + acknowledgementsBefore, 15_000);
         assertEquals("the mounted inline bar must request speech stop on native background", requestId,
                 evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        backgroundTrace.put("dictationCancelledAfterResume", "idle".equals(
+                evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? ''")));
+        backgroundTrace.put("lateResultIgnored", terminalInputAcknowledgements() == acknowledgementsBefore);
+        Log.i("PS2857Lifecycle", "INLINE_BACKGROUND_PROOF|" + artifactRunId + "|" + backgroundTrace);
         Log.i("PS2857Inline", "BACKGROUND_CANCELLED|" + artifactRunId + "|request=" + requestId
                 + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
 
@@ -446,6 +864,9 @@ public final class JsComposerDockerJourneyTest {
         // Switching the selected live session changes targetKey on the mounted
         // bar while its recognition callback remains capable of late delivery.
         attachSession(targetChangeSession);
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === "
+                + JSONObject.quote(requestId), 15_000);
+        checkpoint("inline-dictation-target-change-cancellation-observed");
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
         evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
@@ -484,7 +905,7 @@ public final class JsComposerDockerJourneyTest {
         awaitWebViewVisualState();
         AtomicReference<Boolean> saved = new AtomicReference<>(false);
         AtomicReference<byte[]> artifact = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
             if (screenshot == null) return;
             try {
@@ -505,17 +926,101 @@ public final class JsComposerDockerJourneyTest {
         emitArtifact(runId, "inline-dictation-preview.png", artifact.get());
     }
 
+    private JSONObject backgroundAndResumeApp(String scenarioName) throws Exception {
+        checkpoint("background-before-home-" + scenarioName);
+        android.app.UiAutomation automation = InstrumentationRegistry.getInstrumentation().getUiAutomation();
+        long downTime = SystemClock.uptimeMillis();
+        KeyEvent homeDown = new KeyEvent(downTime, downTime, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HOME, 0);
+        boolean downInjected = automation.injectInputEvent(homeDown, true);
+        assertTrue("Android HOME key down must reach the system", downInjected);
+        SystemClock.sleep(50);
+        long upTime = SystemClock.uptimeMillis();
+        KeyEvent homeUp = new KeyEvent(downTime, upTime, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HOME, 0);
+        boolean upInjected = automation.injectInputEvent(homeUp, true);
+        assertTrue("Android HOME key up must reach the system", upInjected);
+
+        JSONObject background = awaitNativeWindowFocus(false);
+        assertTrue("HOME must background the actual MainActivity before appStateChange cancellation: " + background,
+                !background.getBoolean("windowFocus") && "CREATED".equals(background.getString("lifecycleState"))
+                        && !background.getBoolean("imeVisible"));
+        checkpoint("background-observed-" + scenarioName);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 15_000);
+        checkpoint("app-background-transition-observed-" + scenarioName);
+
+        String targetPackage = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        String component = targetPackage + "/com.pocketshell.app.MainActivity";
+        String launchOutput = new String(executeShellCommand("am start -W -n " + component), StandardCharsets.UTF_8).trim();
+        assertTrue("relaunch the existing PocketShell task after HOME: " + launchOutput,
+                launchOutput.contains("Status: ok"));
+        JSONObject foreground = awaitNativeWindowFocus(true);
+        assertTrue("component launch must return the real MainActivity to RESUMED: " + foreground,
+                foreground.getBoolean("windowFocus") && "RESUMED".equals(foreground.getString("lifecycleState")));
+
+        JSONObject trace = new JSONObject().put("runId", artifactRunId).put("scenario", scenarioName)
+                .put("homeKeyDownInjected", downInjected).put("homeKeyUpInjected", upInjected)
+                .put("background", background).put("foreground", foreground)
+                .put("launchComponent", component).put("launchOutput", launchOutput)
+                .put("homeDownUptimeMs", downTime).put("homeUpUptimeMs", upTime);
+        Log.i("PS2857Lifecycle", "HOME_RESUME|" + artifactRunId + "|" + trace);
+        checkpoint("foreground-observed-" + scenarioName);
+        SystemClock.sleep(250);
+        return trace;
+    }
+
+    private JSONObject awaitNativeWindowFocus(boolean expectedFocus) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + (expectedFocus ? 10_000 : 20_000);
+        JSONObject last = new JSONObject();
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<JSONObject> snapshot = new AtomicReference<>();
+            onMainActivity(activity -> {
+                View decor = activity.getWindow().getDecorView();
+                WindowInsets insets = decor.getRootWindowInsets();
+                try {
+                    snapshot.set(new JSONObject().put("windowFocus", decor.hasWindowFocus())
+                            .put("lifecycleState", activity.getLifecycle().getCurrentState().name())
+                            .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                            .put("capturedAtUptimeMs", SystemClock.uptimeMillis()));
+                } catch (JSONException error) {
+                    throw new RuntimeException(error);
+                }
+            });
+            last = snapshot.get();
+            boolean matchingFocus = last != null && last.optBoolean("windowFocus") == expectedFocus;
+            boolean matchingLifecycle = last != null && (expectedFocus
+                    ? "RESUMED".equals(last.optString("lifecycleState"))
+                    : "CREATED".equals(last.optString("lifecycleState")));
+            boolean matchingIme = expectedFocus || (last != null && !last.optBoolean("imeVisible"));
+            if (matchingFocus && matchingLifecycle && matchingIme) return last;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("PocketShell window/lifecycle did not reach focus=" + expectedFocus
+                + " after native HOME/launch: " + last);
+    }
+
     private void exerciseComposerDictationMode(String runId, String nameBase) throws Exception {
         grantMicrophonePermissionForJourney();
         evalString("window.__ps2857DictationTestMode = true; 'debug dictation test mode enabled'");
         String original = "keep this typed draft " + nameBase;
+        checkpoint("dictation-open-sheet");
         setComposerDraft(original);
+        assertGenericComposerTitleAndSessionChrome(runId);
+        checkpoint("dictation-title-verified");
+        checkpoint("dictation-before-editor-tap");
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        checkpoint("dictation-ime-open");
+        checkpoint("dictation-before-mic-tap");
         tapDomCenter("[data-testid=composer-dictate]");
+        checkpoint("dictation-mic-tapped");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        checkpoint("dictation-recording-visible");
+        checkpoint("dictation-before-ime-dismiss");
+        awaitImeVisible(false);
+        checkpoint("dictation-ime-dismissed");
+        checkpoint("dictation-before-first-native-event");
         JSONObject nativeOptions = new JSONObject(injectDictationTestEvent("partial", "discard this dictated phrase"));
+        checkpoint("dictation-first-native-event-returned");
         JSONObject savedVoiceSettings = new JSONObject(evalString("JSON.stringify(JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}'))"));
         long expectedSilenceWindowMs = Math.round(savedVoiceSettings.optDouble("voiceSilenceSeconds", 4.0) * 1_000.0);
         assertEquals("the native adapter must receive the persisted silence setting on this start",
@@ -537,7 +1042,9 @@ public final class JsComposerDockerJourneyTest {
                 + " && draft?.getAttribute('aria-label')==='Dictation draft, read only while dictating'"
                 + " && draft?.getBoundingClientRect().width<=1 && draft?.getBoundingClientRect().height<=1"
                 + " && mode?.getClientRects().length>0 && preview?.textContent.includes('discard this dictated phrase')"
-                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.textContent.includes('Cancel')"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')"
+                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.textContent.trim()==='Cancel'"
+                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.getAttribute('aria-label')==='Cancel dictation and restore the original draft'"
                 + " && mode.querySelector('[data-testid=composer-recording-stop]')?.textContent.includes('Stop');})()";
         try {
             awaitJsTrue(recordingPredicate, 10_000);
@@ -559,9 +1066,7 @@ public final class JsComposerDockerJourneyTest {
         tapDomCenter("[data-testid=composer-recording-cancel]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original));
-        awaitImeVisible(true);
-        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
-                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitImeVisible(false);
         recordComposerModeState(runId, "cancel", original);
         injectDictationTestEvent("partial", "late partial after Cancel must be ignored");
         SystemClock.sleep(250);
@@ -570,26 +1075,104 @@ public final class JsComposerDockerJourneyTest {
 
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
         injectDictationTestEvent("partial", "background must discard this partial");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('background must discard this partial')");
-        scenario.moveToState(Lifecycle.State.CREATED);
-        SystemClock.sleep(250);
-        scenario.moveToState(Lifecycle.State.RESUMED);
+        JSONObject backgroundTrace = backgroundAndResumeApp("prompt-dictation");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original));
+        backgroundTrace.put("dictationCancelledAfterResume", true);
+        awaitImeVisible(false);
         injectDictationTestEvent("result", "late final after background must be ignored");
         SystemClock.sleep(250);
+        String restoredDraft = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
         assertEquals("background cancellation must restore the original draft and reject late final events", original,
-                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
-        tapDomCenter("[data-testid=prompt-draft]");
-        awaitImeVisible(true);
+                restoredDraft);
+        backgroundTrace.put("draftRestored", original.equals(restoredDraft));
+        backgroundTrace.put("lateResultIgnored", original.equals(restoredDraft));
+        lastBackgroundLifecycleTrace = backgroundTrace;
+        Log.i("PS2857Lifecycle", "PROMPT_BACKGROUND_PROOF|" + runId + "|" + backgroundTrace);
         recordComposerModeState(runId, "background", original);
 
+        awaitConnectedLivePromptTarget("after-home-resume");
+
+        String insertMarker = "PS2857_DICTATION_INSERT_" + nameBase;
+        String insertCommand = "printf '%s' '" + insertMarker + "' > /tmp/" + bytesSession
+                + "-dictation-insert.marker";
+        String insertPreview = "Review the terminal output carefully.";
         setComposerDraft("");
+        String insertWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
-        String dictationCommand = "printf '%s' 'PS2857_DICTATION_" + nameBase
-                + "' > /tmp/" + nameBase + "-bytes-dictation.marker";
+        awaitImeVisible(false);
+        injectDictationTestEvent("partial", insertPreview);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(insertPreview));
+        assertEquals("recording-time Insert must not write to the PTY before the explicit action", insertWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        recordComposerModeState(runId, "recording-insert", insertPreview, Integer.parseInt(insertWriteBaseline));
+        injectDictationTestEvent("partial", insertCommand);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(insertCommand));
+        assertEquals("recording-time Insert must not write while its visible transcript is updated", insertWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        checkpoint("dictation-insert-before-tap");
+        tapDomCenter("[data-testid=composer-insert]");
+        checkpoint("dictation-insert-tap-returned");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Insert')");
+        checkpoint("dictation-insert-transcribing");
+        injectDictationTestEvent("finish", null);
+        awaitInsertedAndCleared();
+        tapDomCenter("[data-testid=composer-close]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+        tapDomCenter("[data-key-id=enter]");
+        awaitJsTrue("Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
+                + ".map(row => row.textContent || '').join('').includes(" + JSONObject.quote(insertMarker) + ")", 10_000);
+
+        awaitConnectedLivePromptTarget("before-transcribing-send-case");
+        String transcribingSendMarker = "PS2857_DICTATION_TRANSCRIBING_SEND_" + nameBase;
+        String transcribingSendCommand = "printf '%s' '" + transcribingSendMarker + "' > /tmp/" + bytesSession
+                + "-dictation-transcribing-send.marker";
+        String transcribingSendPreview = "Summarize this terminal output in two bullets.";
+        setComposerDraft("");
+        String transcribingSendWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
+        injectDictationTestEvent("partial", transcribingSendPreview);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(transcribingSendPreview));
+        assertEquals("transcribing-time Send must not write while recording", transcribingSendWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        tapDomCenter("[data-testid=composer-recording-stop]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
+        assertEquals("transcribing-time Send must not write before the explicit action", transcribingSendWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        recordComposerModeState(runId, "transcribing-send", transcribingSendPreview,
+                Integer.parseInt(transcribingSendWriteBaseline));
+        injectDictationTestEvent("partial", transcribingSendCommand);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(transcribingSendCommand));
+        assertEquals("transcribing-time Send must not write when recognition updates its visible transcript",
+                transcribingSendWriteBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        checkpoint("dictation-transcribing-send-before-tap");
+        tapDomCenter("[data-testid=composer-dictation-send]");
+        checkpoint("dictation-transcribing-send-tap-returned");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
+                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Send')");
+        checkpoint("dictation-transcribing-send-stopping");
+        injectDictationTestEvent("finish", null);
+        awaitDeliveredAndCleared();
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '2'");
+
+        setComposerDraft("");
+        String dictationWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
+        String dictationCommand = "Please summarize the latest terminal output in three bullet points.";
         injectDictationTestEvent("partial", dictationCommand);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes(" + JSONObject.quote(dictationCommand) + ")");
         String timerBeforeNaturalPause = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
@@ -597,7 +1180,7 @@ public final class JsComposerDockerJourneyTest {
         String recordingAfterEndpoint = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
                 + "return composer?.dataset.dictationState==='recording' && !!stop && !stop.disabled"
-                + " && composer.dataset.acknowledgedWrites==='0';})()";
+                + " && composer.dataset.acknowledgedWrites===" + JSONObject.quote(dictationWriteBaseline) + ";})()";
         try {
             awaitJsTrue(recordingAfterEndpoint, 5_000);
         } catch (AssertionError pauseFailure) {
@@ -619,7 +1202,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const timer=document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim()??'';"
                 + "return composer?.dataset.dictationState==='recording' && !!stop && !stop.disabled"
                 + " && timer!==" + JSONObject.quote(timerBeforeNaturalPause)
-                + " && composer.dataset.acknowledgedWrites==='0';})()";
+                + " && composer.dataset.acknowledgedWrites===" + JSONObject.quote(dictationWriteBaseline) + ";})()";
         try {
             awaitJsTrue(resumedRecording, 5_000);
         } catch (AssertionError restartFailure) {
@@ -633,29 +1216,29 @@ public final class JsComposerDockerJourneyTest {
         recordComposerModeState(runId, "recording-after-restart", dictationCommand);
         tapDomCenter("[data-testid=composer-recording-stop]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'", 10_000);
-        awaitImeVisible(true);
-        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
-                + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitImeVisible(false);
         recordComposerModeState(runId, "transcribing", dictationCommand);
         assertTrue("Stop must enter transcribing without sending the draft", "true".equals(evalRaw(
                 "document.querySelector('[data-testid=composer-status]')?.textContent.includes('not be sent automatically')"
-                        + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'")));
+                        + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === "
+                        + JSONObject.quote(dictationWriteBaseline))));
         injectDictationTestEvent("finish", null);
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
                 + " && document.querySelector('[data-testid=composer-dictation-review]')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.readOnly === false"
-                + " && document.querySelector('[data-testid=prompt-draft]')?.getAttribute('aria-readonly') === 'false'", 10_000);
+                + " && document.querySelector('[data-testid=prompt-draft]')?.getAttribute('aria-readonly') === 'false'"
+                + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')", 10_000);
         recordComposerModeState(runId, "review", dictationCommand);
         assertEquals("Stop must keep recognized text in the editable review draft", dictationCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
 
-        String editedCommand = dictationCommand.replace("PS2857_DICTATION_", "PS2857_DICTATION_EDITED_");
+        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
+        String editedCommand = "printf '%s' '" + editedMarker + "' > /tmp/" + bytesSession + "-dictation.marker";
         setComposerDraft(editedCommand);
         assertEquals("review draft must accept edits before delivery", editedCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
-        assertEquals("dictated text must not reach the terminal before explicit Send", "0",
+        assertEquals("dictated text must not reach the terminal before explicit Send", dictationWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
-        String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
         awaitComposerReadyToSend(runId, editedCommand);
         tapDomCenter(".composer-shared-controls .send");
         awaitDeliveredAndCleared();
@@ -709,7 +1292,134 @@ public final class JsComposerDockerJourneyTest {
         }
     }
 
+    private void awaitConnectedLivePromptTarget(String stage) throws Exception {
+        String ready = "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const title=document.querySelector('#terminal-title')?.textContent??'';"
+                + "return shell?.dataset.homeSurface==='live' && shell?.dataset.sshPhase==='live'"
+                + " && (!composer || composer.dataset.transportState==='connected') && title.includes("
+                + JSONObject.quote(bytesSession) + ");})()";
+        checkpoint("dictation-waiting-for-connected-pty-" + stage);
+        try {
+            awaitJsTrue(ready, WAIT_TIMEOUT_MILLIS);
+        } catch (AssertionError failure) {
+            String state = evalString("(() => {const shell=document.querySelector('.app-shell');"
+                    + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                    + "return JSON.stringify({homeSurface:shell?.dataset.homeSurface??'',"
+                    + "sshPhase:shell?.dataset.sshPhase??'',composerPresent:!!composer,"
+                    + "transportState:composer?.dataset.transportState??'',"
+                    + "terminalTitle:document.querySelector('#terminal-title')?.textContent??'',"
+                    + "pageText:document.body.innerText});})()");
+            throw new AssertionError("live PTY did not reconnect for " + stage + ": " + state, failure);
+        }
+        checkpoint("dictation-connected-pty-" + stage);
+    }
+
+    private void stopWebAnimationsBeforeScenarioClose() {
+        WebView webView = packagedWebView;
+        if (webView == null) return;
+        CountDownLatch latch = new CountDownLatch(1);
+        String expression = "(() => {let style=document.getElementById('js-composer-teardown-motion');"
+                + "if(!style){style=document.createElement('style');style.id='js-composer-teardown-motion';"
+                + "document.head.appendChild(style);}style.textContent='*,*::before,*::after{"
+                + "animation:none!important;transition:none!important;scroll-behavior:auto!important}';"
+                + "return 'motion disabled for teardown';})()";
+        if (!webView.post(() -> webView.evaluateJavascript(expression, ignored -> latch.countDown()))) return;
+        try {
+            latch.await(2, TimeUnit.SECONDS);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            Log.w("PS2857Teardown", "interrupted while disabling WebView motion before ActivityScenario close", error);
+        }
+    }
+
+    private void assertGenericComposerTitleAndSessionChrome(String runId) throws Exception {
+        String visibleIdleSheet = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const scrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
+                + "const panel=composer?.getBoundingClientRect();const viewportHeight=window.visualViewport?.height??innerHeight;"
+                + "const style=composer?getComputedStyle(composer):null;"
+                + "return composer?.dataset.dictationState==='idle' && composer.getAttribute('role')==='dialog'"
+                + " && composer.getAttribute('aria-modal')==='true' && !!scrim && scrim.getClientRects().length>0"
+                + " && !!panel && panel.height>=200 && panel.top>=0 && panel.bottom<=viewportHeight+0.5"
+                + " && style?.display!=='none' && style?.visibility!=='hidden' && Number(style?.opacity??0)>0.95;})()";
+        awaitJsTrue(visibleIdleSheet, 15_000);
+        awaitWebViewVisualState();
+        JSONObject titleState = new JSONObject(evalString("(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const scrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
+                + "const shell=document.querySelector('.app-shell');"
+                + "const rect=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const viewport={width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight};"
+                + "const panelBounds=rect(composer);const scrimBounds=rect(scrim);"
+                + "const buttons={dictate:document.querySelector('[data-testid=composer-dictate]'),"
+                + "insert:document.querySelector('[data-testid=composer-insert]'),send:document.querySelector('.composer-shared-controls .send')};"
+                + "return JSON.stringify({state:composer?.dataset.dictationState??'',"
+                + "composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
+                + "composerVisible:!!composer&&composer.getClientRects().length>0,"
+                + "composerRole:composer?.getAttribute('role')??'',composerAriaModal:composer?.getAttribute('aria-modal')??'',"
+                + "panelBounds,scrimBounds,viewport,keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "sheetFullyVisible:!!panelBounds&&panelBounds.top>=0&&panelBounds.bottom<=viewport.height+0.5,"
+                + "draftText:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
+                + "buttons:Object.fromEntries(Object.entries(buttons).map(([name,node])=>[name,!!node&&node.getClientRects().length>0&&!node.disabled])),"
+                + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??0,"
+                + "documentScrollTop:document.documentElement.scrollTop??0});})()"));
+        titleState.put("runId", runId);
+        titleState.put("expectedComposerHeading", "Prompt Composer");
+        titleState.put("expectedSessionChrome", bytesSession);
+        emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
+        emitCurrentScreen(runId, "composer-title.png");
+        assertTrue("idle prompt composer sheet must be fully onscreen when title is captured: " + titleState,
+                titleState.getBoolean("composerVisible") && titleState.getBoolean("sheetFullyVisible")
+                        && titleState.getJSONObject("buttons").getBoolean("dictate")
+                        && titleState.getJSONObject("buttons").getBoolean("insert")
+                        && titleState.getJSONObject("buttons").getBoolean("send")
+                        && titleState.getDouble("screenScrollTop") == 0
+                        && titleState.getDouble("documentScrollTop") == 0);
+        assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
+        assertEquals("mobile sheet title must use the generic composer noun", "Prompt Composer",
+                titleState.getString("composerHeading"));
+        assertTrue("selected session identity must remain in terminal chrome, not the composer title: " + titleState,
+                titleState.getString("terminalHeading").contains(bytesSession));
+    }
+
+    private void startJourneyWatchdog() {
+        journeyThread = Thread.currentThread();
+        checkpoint("test-start");
+        final String runId = artifactRunId;
+        journeyWatchdog = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "composer-journey-watchdog");
+            thread.setDaemon(true);
+            return thread;
+        });
+        journeyWatchdog.scheduleAtFixedRate(() -> {
+            long stuckMillis = SystemClock.elapsedRealtime() - journeyCheckpointAtMs;
+            if (stuckMillis < 30_000) return;
+            Thread blockedThread = journeyThread;
+            if (blockedThread == null) return;
+            StringBuilder stack = new StringBuilder();
+            StackTraceElement[] frames = blockedThread.getStackTrace();
+            for (int index = 0; index < Math.min(frames.length, 12); index++) {
+                if (index > 0) stack.append(" <- ");
+                stack.append(frames[index]);
+            }
+            Log.w("PS2857Watchdog", "runId=" + runId + " checkpoint=" + journeyCheckpoint
+                    + " stuckMs=" + stuckMillis + " thread=" + blockedThread.getName()
+                    + " threadState=" + blockedThread.getState() + " stack=" + stack);
+        }, 30, 30, TimeUnit.SECONDS);
+    }
+
+    private void checkpoint(String name) {
+        journeyCheckpoint = name;
+        journeyCheckpointAtMs = SystemClock.elapsedRealtime();
+        Log.i("PS2857Checkpoint", "runId=" + artifactRunId + " checkpoint=" + name);
+    }
+
     private void recordComposerModeState(String runId, String state, String expectedDraft) throws Exception {
+        recordComposerModeState(runId, state, expectedDraft, null);
+    }
+
+    private void recordComposerModeState(String runId, String state, String expectedDraft,
+                                         Integer acknowledgedWritesBeforeAction) throws Exception {
         awaitWebViewVisualState();
         String report = evalString("(() => {const rect=(selector)=>{const node=document.querySelector(selector);"
                 + "if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
@@ -720,10 +1430,19 @@ public final class JsComposerDockerJourneyTest {
                 + "const composerStatus=document.querySelector('[data-testid=composer-status]');"
                 + "const cancelButton=document.querySelector('[data-testid=composer-recording-cancel]');"
                 + "const stopButton=document.querySelector('[data-testid=composer-recording-stop]');"
+                + "const insertButton=document.querySelector('[data-testid=composer-insert]');"
+                + "const dictationSendButton=document.querySelector('[data-testid=composer-dictation-send]');"
+                + "const actionRow=mode?.querySelector('[data-testid=composer-recording-actions]');"
                 + "const transcribingStatus=mode?.querySelector('[role=status][aria-live=polite]');"
+                + "const cancelText=(cancelButton?.textContent??'').trim();"
+                + "const cancelAriaLabel=cancelButton?.getAttribute('aria-label')??'';"
                 + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",state:" + JSONObject.quote(state)
-                + ",dictationState:composer?.dataset.dictationState??'',"
+                + ",composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
+                + "dictationState:composer?.dataset.dictationState??'',"
+                + "acknowledgedWrites:Number(composer?.dataset.acknowledgedWrites??0),"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
+                + "composerModal:composer?.getAttribute('role')==='dialog'&&composer?.getAttribute('aria-modal')==='true',"
                 + "draftFocused:document.activeElement===draft,activeElementTestId:document.activeElement?.getAttribute('data-testid')??'',"
                 + "draftReadOnly:!!draft?.readOnly,draft:rect('[data-testid=prompt-draft]'),"
                 + "draftPresentation:draft?.classList.contains('composer-draft--dictation-anchor')?'focus-anchor':'editor',"
@@ -739,41 +1458,55 @@ public final class JsComposerDockerJourneyTest {
                 + "previewVisible:!!preview&&preview.getClientRects().length>0&&getComputedStyle(preview).display!=='none',"
                 + "previewLive:preview?.getAttribute('aria-live')==='polite',"
                 + "previewText:preview?.textContent.trim()??'',"
-                + "cancelAccessible:!!cancelButton&&(cancelButton.textContent??'').includes('Cancel')&&cancelButton.getClientRects().length>0,"
+                + "cancelText,cancelAriaLabel,cancelAccessible:!!cancelButton&&cancelText==='Cancel'"
+                + "&&cancelAriaLabel==='Cancel dictation and restore the original draft'&&cancelButton.getClientRects().length>0,"
                 + "stopAccessible:!!stopButton&&(stopButton.getAttribute('aria-label')??'').includes('Stop dictation')"
                 + "&&(stopButton.textContent??'').includes('Stop')&&stopButton.getClientRects().length>0,"
+                + "insertAccessible:!!insertButton&&(insertButton.textContent??'').trim()==='Insert'&&insertButton.getClientRects().length>0,"
+                + "insertEnabled:!!insertButton&&!insertButton.disabled,"
+                + "dictationSendAccessible:!!dictationSendButton&&(dictationSendButton.textContent??'').includes('Send')"
+                + "&&dictationSendButton.getClientRects().length>0,dictationSendEnabled:!!dictationSendButton&&!dictationSendButton.disabled,"
                 + "transcribingStatusAccessible:!!transcribingStatus&&transcribingStatus.getClientRects().length>0,"
+                + "actionOrder:actionRow?Array.from(actionRow.children).map(node=>node.getAttribute('data-testid')).join(','):'',"
                 + "composerStatusAccessible:composerStatus?.getAttribute('role')==='status'&&composerStatus?.getAttribute('aria-live')==='polite',"
+                + "reviewText:document.querySelector('[data-testid=composer-dictation-review]')?.textContent.trim()??'',"
                 + "reviewVisible:!!document.querySelector('[data-testid=composer-dictation-review]')"
                 + "&&getComputedStyle(document.querySelector('[data-testid=composer-dictation-review]')).display!=='none',"
                 + "recordingMode:rect('[data-testid=composer-recording-mode]'),timer:rect('[data-testid=composer-recording-timer]'),"
                 + "preview:rect('[data-testid=composer-recording-preview]'),review:rect('[data-testid=composer-dictation-review]'),"
                 + "status:rect('[data-testid=composer-status]'),actions:rect('[data-testid=composer-actions]'),"
                 + "cancel:rect('[data-testid=composer-recording-cancel]'),stop:rect('[data-testid=composer-recording-stop]'),"
+                + "insert:rect('[data-testid=composer-insert]'),dictationSend:rect('[data-testid=composer-dictation-send]'),"
                 + "send:rect('.composer-shared-controls .send'),visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth},"
                 + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??null,documentScrollTop:document.scrollingElement?.scrollTop??null,"
                 + "statusText:document.querySelector('[data-testid=composer-status]')?.textContent.trim()??'',"
                 + "waveformLabel:mode?.querySelector('.recording-mode__waveform')?.getAttribute('aria-label')??null});})() ");
         JSONObject measured = new JSONObject(report).put("androidImeVisible", isImeVisible());
+        if (acknowledgedWritesBeforeAction != null) {
+            measured.put("acknowledgedWritesBeforeAction", acknowledgedWritesBeforeAction);
+        }
         measured.put("lastDictationTestEvent", lastDictationTestEvent);
+        if ("background".equals(state) && lastBackgroundLifecycleTrace != null) {
+            measured.put("nativeLifecycle", lastBackgroundLifecycleTrace);
+        }
         byte[] geometry = measured.toString().getBytes(StandardCharsets.UTF_8);
         emitCurrentScreen(runId, "composer-" + state + ".png");
         emitArtifact(runId, "composer-" + state + "-geometry.json", geometry);
-        if (!measured.getBoolean("androidImeVisible")) {
+        if (measured.getBoolean("androidImeVisible") || measured.getBoolean("keyboardVisible")) {
             emitCurrentScreen(runId, "composer-mode-ime-failure.png");
             emitArtifact(runId, "composer-mode-ime-failure.json", geometry);
-            throw new AssertionError("the Android keyboard must remain visible for the " + state + " screenshot; state="
+            throw new AssertionError("the Android keyboard must be dismissed during the " + state + " modal dictation state; state="
                     + measured);
         }
         String expectedPhase = state.equals("cancel") || state.equals("background") ? "idle"
-                : state.startsWith("recording") ? "recording" : state;
+                : state.startsWith("recording") ? "recording"
+                        : state.startsWith("transcribing") ? "transcribing" : state;
         assertEquals("composer phase must match the " + state + " screenshot", expectedPhase, measured.getString("dictationState"));
         assertTrue("state screenshot must retain the expected draft text", measured.getBoolean("expectedDraftMatches"));
-        assertTrue("keyboard-up composer screenshot must retain visible IME evidence", measured.getBoolean("androidImeVisible")
-                && measured.getBoolean("keyboardVisible"));
-        assertTrue("dictation screenshots must keep the composer draft as the active element",
-                measured.getBoolean("draftFocused") && "prompt-draft".equals(measured.getString("activeElementTestId")));
-        boolean dictationBusy = state.startsWith("recording") || state.equals("transcribing");
+        assertTrue("dictation mode must be presented in the modal composer sheet", measured.getBoolean("composerModal"));
+        assertTrue("dictation controls must dismiss the IME and keep the sheet unobstructed",
+                !measured.getBoolean("androidImeVisible") && !measured.getBoolean("keyboardVisible"));
+        boolean dictationBusy = state.startsWith("recording") || state.startsWith("transcribing");
         assertEquals("busy dictation must replace the visible editor with its accessible focus anchor",
                 dictationBusy ? "focus-anchor" : "editor", measured.getString("draftPresentation"));
         assertTrue("the focused dictation draft anchor must stay in the accessibility tree",
@@ -789,14 +1522,33 @@ public final class JsComposerDockerJourneyTest {
                             && measured.getBoolean("composerStatusAccessible")
                             && measured.getString("draftDescribedBy").contains("composer-status")
                             && measured.getBoolean("cancelAccessible"));
+            assertEquals("dictation restore control must be labeled Cancel visually", "Cancel", measured.getString("cancelText"));
+            assertEquals("dictation restore control must expose its Cancel restoration action",
+                    "Cancel dictation and restore the original draft", measured.getString("cancelAriaLabel"));
             if (state.startsWith("recording")) {
-                assertTrue("recording preview and Stop control must be visible and accessible",
+                assertEquals("recording actions must follow the Kotlin composer row: Cancel, Insert, Send, Stop",
+                        "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop",
+                        measured.getString("actionOrder"));
+                assertTrue("recording must keep explicit Insert and Send visible, enabled, and at least 48dp tall",
+                        measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
+                                && measured.getJSONObject("insert").getDouble("height") >= 47.9
+                                && measured.getBoolean("dictationSendAccessible") && measured.getBoolean("dictationSendEnabled")
+                                && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
+                assertTrue("recording preview and trailing Stop-keep-text control must be visible, accessible, and at least 48dp tall",
                         measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
                                 && measured.getBoolean("stopAccessible")
+                                && measured.getJSONObject("stop").getDouble("height") >= 47.9
                                 && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
             } else {
-                assertTrue("transcribing state must expose an accessible live status",
-                        measured.getBoolean("transcribingStatusAccessible"));
+                assertEquals("transcribing actions must match Kotlin: Cancel and explicit Send",
+                        "composer-recording-cancel,composer-dictation-send",
+                        measured.getString("actionOrder"));
+                assertTrue("transcribing state must expose accessible status and Send while hiding Insert",
+                        measured.getBoolean("transcribingStatusAccessible")
+                                && !measured.getBoolean("insertAccessible")
+                                && measured.getBoolean("dictationSendAccessible")
+                                && measured.getBoolean("dictationSendEnabled")
+                                && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
             }
         } else {
             assertTrue("idle and review must retain the ordinary composer textarea",
@@ -835,7 +1587,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void emitCurrentScreen(String runId, String name) throws Exception {
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
             if (screenshot == null) return;
             try {
@@ -879,7 +1631,7 @@ public final class JsComposerDockerJourneyTest {
     private boolean saveKeyboardScreenshot(String runId) throws Exception {
         AtomicReference<Boolean> saved = new AtomicReference<>(false);
         AtomicReference<byte[]> artifact = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             try {
                 Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
                 if (screenshot == null) return;
@@ -961,7 +1713,11 @@ public final class JsComposerDockerJourneyTest {
             for (int attemptIndex = 0; attemptIndex < composerFocusMaxAttempts; attemptIndex += 1) {
                 awaitWebViewVisualState();
                 boolean injectMiss = forceFirstPostAttachTapMiss && requirePhysicalTap && attemptIndex == 0;
-                String targetSelector = injectMiss ? ".terminal-viewport" : "[data-testid=prompt-draft]";
+                // Keep the deliberate missed tap inside the modal. A tap through
+                // its scrim closes Composer and makes the next retry target stale.
+                String targetSelector = injectMiss
+                        ? "[data-testid=prompt-composer] #composer-title"
+                        : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
                 boolean imeBefore = isImeVisible();
@@ -986,8 +1742,21 @@ public final class JsComposerDockerJourneyTest {
                         .put("keyboardReadyAfter", imeSettled)
                         .put("after", after)
                         .put("elapsedMs", SystemClock.uptimeMillis() - attemptStarted);
+                boolean injectedMissPreservedRetryTarget = true;
+                if (injectMiss) {
+                    boolean modalStayedOpen = after.optBoolean("composerModal")
+                            && after.optBoolean("composerTitlePresent");
+                    boolean draftStayedMounted = after.optBoolean("draftPresent")
+                            && after.optBoolean("draftConnected");
+                    record.put("inertMissInsideComposer", targetSelector.equals("[data-testid=prompt-composer] #composer-title"))
+                            .put("dialogStayedOpenAfterMiss", modalStayedOpen)
+                            .put("draftStayedMountedAfterMiss", draftStayedMounted);
+                    injectedMissPreservedRetryTarget = physicalTargetObserved && modalStayedOpen && draftStayedMounted;
+                }
                 focusTapAttempts.put(record);
                 Log.i("PS2891Focus", "ATTEMPT|" + artifactRunId + "|" + record);
+                assertTrue("the injected focus miss must hit inert Composer content and preserve its retry target: " + record,
+                        injectedMissPreservedRetryTarget);
                 if (imeSettled) {
                     record.put("nativeImeVisibleAfterImeWait", true)
                             .put("afterImeWait", readFocusDomState());
@@ -1074,6 +1843,8 @@ public final class JsComposerDockerJourneyTest {
 
     private JSONObject readFocusDomState() throws Exception {
         return evalJson("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const title=composer?.querySelector('#composer-title');"
                 + "const active=document.activeElement;const rect=draft?.getBoundingClientRect();"
                 + "const x=rect?rect.left+rect.width/2:0,y=rect?rect.top+rect.height/2:0,hit=document.elementFromPoint(x,y);"
                 + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
@@ -1082,6 +1853,8 @@ public final class JsComposerDockerJourneyTest {
                 + "const shell=document.querySelector('.app-shell');return JSON.stringify({uptimeHintMs:performance.now(),"
                 + "route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',sshPhase:shell?.dataset.sshPhase||'',"
                 + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "composerPresent:!!composer,composerModal:composer?.getAttribute('role')==='dialog'&&composer?.getAttribute('aria-modal')==='true',"
+                + "composerTitlePresent:!!title,"
                 + "activeElement:label(active),draftPresent:!!draft,draftConnected:!!draft?.isConnected,draftDisabled:!!draft?.disabled,"
                 + "draftFocused:active===draft,draftBounds:bounds(draft),draftCenterHit:label(hit),draftCenterHitIsDraft:hit===draft,"
                 + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
@@ -1111,7 +1884,7 @@ public final class JsComposerDockerJourneyTest {
                 .put("attempts", focusTapAttempts);
         byte[] bytes = trace.toString(2).getBytes(StandardCharsets.UTF_8);
         if (scenario != null) {
-            scenario.onActivity(activity -> {
+            onMainActivity(activity -> {
                 try (FileOutputStream output = new FileOutputStream(
                         new File(activity.getFilesDir(), "composer-focus-trace.json"))) {
                     output.write(bytes);
@@ -1141,7 +1914,7 @@ public final class JsComposerDockerJourneyTest {
                     .put("webViewState", readFocusDomState()).put("lastPhysicalTap", lastPhysicalTapEvidence)
                     .put("attempts", focusTapAttempts);
             byte[] reportBytes = report.toString(2).getBytes(StandardCharsets.UTF_8);
-            scenario.onActivity(activity -> {
+            onMainActivity(activity -> {
                 try (FileOutputStream output = new FileOutputStream(
                         new File(activity.getFilesDir(), "composer-focus-failure.json"))) {
                     output.write(reportBytes);
@@ -1169,7 +1942,7 @@ public final class JsComposerDockerJourneyTest {
 
     private byte[] captureFocusFailureScreenshot() throws Exception {
         AtomicReference<byte[]> bytes = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
             if (screenshot == null) return;
             try {
@@ -1196,7 +1969,7 @@ public final class JsComposerDockerJourneyTest {
 
     private JSONObject readNativeFocusState() throws Exception {
         AtomicReference<JSONObject> state = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             View decor = activity.getWindow().getDecorView();
             View focusedView = decor.findFocus();
             WebView webView = findWebView(decor);
@@ -1288,6 +2061,8 @@ public final class JsComposerDockerJourneyTest {
         String report = evalString("(() => {const viewport=document.querySelector('.terminal-viewport');"
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
+                + "const terminalHeading=document.querySelector('#terminal-title');"
+                + "const terminalHeadingRect=terminalHeading?.getBoundingClientRect();"
                 + "const composerRect=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
                 + "const terminalScreenRect=viewport?.querySelector('.xterm-screen')?.getBoundingClientRect();"
                 + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
@@ -1322,6 +2097,8 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalLastWriteText:window.__ps2857TerminalLastWriteText??'',terminalRenderCount:window.__ps2857TerminalRenderCount??0,"
                 + "sentMarkerAbsentFromSubmittedCommand:" + !submittedCommand.contains(expectedMarker) + ","
                 + "terminalViewport:rect?{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null,"
+                + "terminalHeading:terminalHeadingRect?{text:terminalHeading.textContent?.trim()??'',top:terminalHeadingRect.top,"
+                + "bottom:terminalHeadingRect.bottom,left:terminalHeadingRect.left,right:terminalHeadingRect.right}:null,"
                 + "terminalScreen:terminalScreenRect?{top:terminalScreenRect.top,bottom:terminalScreenRect.bottom,left:terminalScreenRect.left,right:terminalScreenRect.right}:null,"
                 + "appBar:appBarRect?{top:appBarRect.top,bottom:appBarRect.bottom,left:appBarRect.left,right:appBarRect.right}:null,"
                 + "composer:composerRect?{top:composerRect.top,bottom:composerRect.bottom,left:composerRect.left,right:composerRect.right}:null,"
@@ -1338,7 +2115,7 @@ public final class JsComposerDockerJourneyTest {
         awaitWebViewVisualState();
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
         AtomicReference<Boolean> saved = new AtomicReference<>(false);
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             try {
                 Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
                 if (screenshot == null) return;
@@ -1375,15 +2152,31 @@ public final class JsComposerDockerJourneyTest {
                 && viewport.getDouble("right") <= visualViewport.getDouble("width") + 0.5
                 && viewport.getDouble("height") >= 48);
         JSONObject appBar = measured.getJSONObject("appBar");
+        JSONObject terminalHeading = measured.getJSONObject("terminalHeading");
         JSONObject composer = measured.getJSONObject("composer");
-        assertTrue("immediate post-send chrome, terminal and composer must remain visible without scrolling",
+        JSONObject byteOutputRow = measured.getJSONObject("byteOutputRow");
+        JSONObject markerRow = measured.getJSONObject("markerRow");
+        double composerTop = composer.getDouble("top");
+        assertTrue("post-send app bar and terminal heading must remain visible above the composer sheet",
                 !measured.getBoolean("keyboardVisible")
                         && appBar.getDouble("top") >= 0
                         && appBar.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
-                && appBar.getDouble("bottom") <= viewport.getDouble("top")
-                && composer.getDouble("top") >= viewport.getDouble("bottom")
-                && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
-                        && measured.getBoolean("capturedBeforeScroll")
+                        && appBar.getDouble("bottom") <= terminalHeading.getDouble("top")
+                        && terminalHeading.getDouble("bottom") <= viewport.getDouble("top")
+                        && terminalHeading.getDouble("bottom") <= composerTop
+                        && !terminalHeading.getString("text").isBlank()
+                        && composer.getDouble("top") >= 0
+                        && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5);
+        assertTrue("post-send byte and marker output rows must remain visible above the composer sheet",
+                        byteOutputRow.getDouble("top") >= viewport.getDouble("top")
+                        && byteOutputRow.getDouble("bottom") <= viewport.getDouble("bottom")
+                        && markerRow.getDouble("top") >= viewport.getDouble("top")
+                        && markerRow.getDouble("bottom") <= viewport.getDouble("bottom")
+                        && byteOutputRow.getDouble("bottom") <= composerTop
+                        && markerRow.getDouble("bottom") <= composerTop
+                        && measured.getBoolean("terminalOutputRowVisible"));
+        assertTrue("post-send terminal and composer must remain visible without scrolling",
+                measured.getBoolean("capturedBeforeScroll")
                         && measured.getDouble("screenScrollTop") == 0
                         && measured.getDouble("documentScrollTop") == 0);
         assertTrue("the app terminal subscription must deliver PTY bytes to its mounted Xterm component",
@@ -1397,7 +2190,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void awaitWebViewVisualState() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             long requestId = SystemClock.uptimeMillis();
@@ -1436,7 +2229,7 @@ public final class JsComposerDockerJourneyTest {
         JSONObject measured = new JSONObject(geometry);
         measured.put("androidImeVisible", isImeVisible());
         AtomicReference<JSONObject> nativeInsets = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
             if (insets == null) return;
             float density = activity.getResources().getDisplayMetrics().density;
@@ -1454,7 +2247,7 @@ public final class JsComposerDockerJourneyTest {
         });
         measured.put("nativeInsets", nativeInsets.get());
         byte[] bytes = measured.toString().getBytes(StandardCharsets.UTF_8);
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             File destination = new File(activity.getFilesDir(), "composer-keyboard-geometry.json");
             try (FileOutputStream output = new FileOutputStream(destination)) {
                 output.write(bytes);
@@ -1492,7 +2285,7 @@ public final class JsComposerDockerJourneyTest {
 
     private boolean isImeVisible() {
         AtomicReference<Boolean> visible = new AtomicReference<>(false);
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
             visible.set(insets != null && Build.VERSION.SDK_INT >= 30 && insets.isVisible(WindowInsets.Type.ime()));
         });
@@ -1546,7 +2339,7 @@ public final class JsComposerDockerJourneyTest {
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onMainActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             int[] location = new int[2];
@@ -1623,17 +2416,22 @@ public final class JsComposerDockerJourneyTest {
     private String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
-            WebView webView = findWebView(activity.getWindow().getDecorView());
-            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
-            webView.evaluateJavascript(expression, value -> {
-                result.set(value);
-                latch.countDown();
-            });
-        });
+        WebView webView = packagedWebView;
+        assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+        assertTrue("packaged WebView rejected JavaScript evaluation", webView.post(() ->
+                webView.evaluateJavascript(expression, value -> {
+                    result.set(value);
+                    latch.countDown();
+                })));
         assertTrue("timed out evaluating packaged WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
         if (result.get() == null || "null".equals(result.get())) throw new JSONException("JavaScript returned null: " + expression);
         return result.get();
+    }
+
+    private void onMainActivity(Consumer<MainActivity> action) {
+        MainActivity activity = packagedActivity;
+        assertNotNull("packaged MainActivity must remain available during the journey", activity);
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> action.accept(activity));
     }
 
     private static WebView findWebView(View view) {

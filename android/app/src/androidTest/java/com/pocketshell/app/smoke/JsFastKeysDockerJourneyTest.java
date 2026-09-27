@@ -105,7 +105,14 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const entries=window.__ps2884FocusEvents;entries.push({type,atMs:Math.round(performance.now()),"
                 + "target:describeFocusNode(event.target),related:describeFocusNode(event.relatedTarget),"
                 + "active:describeFocusNode(document.activeElement),keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible||'false'});"
-                + "if(entries.length>40)entries.shift();},true); 'evidence enabled'");
+                + "if(entries.length>40)entries.shift();},true);"
+                + "window.__ps2884JsDiagnostics={events:[]};const recordJsDiagnostic=(kind,value)=>{const events=window.__ps2884JsDiagnostics.events;"
+                + "events.push({kind,atMs:Math.round(performance.now()),value:String(value).slice(0,500)});if(events.length>30)events.shift();};"
+                + "for(const kind of ['error','warn']){const original=console[kind].bind(console);console[kind]=(...args)=>{"
+                + "recordJsDiagnostic('console.'+kind,args.map(value=>value instanceof Error?value.stack||value.message:value).join(' '));original(...args);};}"
+                + "window.addEventListener('error',event=>recordJsDiagnostic('window.error',event.message+' @ '+event.filename+':'+event.lineno));"
+                + "window.addEventListener('unhandledrejection',event=>recordJsDiagnostic('unhandledrejection',event.reason?.stack||event.reason));"
+                + "'evidence enabled'");
         // SystemClock.uptimeMillis() is Android's monotonic clock. This interval
         // ends after the attached live prompt is present and a rendered frame settles.
         long connectToPromptStartedAt = SystemClock.uptimeMillis();
@@ -114,8 +121,23 @@ public final class JsFastKeysDockerJourneyTest {
         createSession(dictationTargetSession);
         attachSession(firstSession);
         awaitTerminalResizeIdle();
-        awaitJsTrue("!!document.querySelector('[data-testid=prompt-draft]')"
+        awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer-launcher]')"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        openPromptComposerSheet();
+        JSONObject promptComposerEntry = evalJson("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "const mic=document.querySelector('[data-testid=composer-dictate]');const rect=mic?.getBoundingClientRect();"
+                + "return JSON.stringify({role:panel?.getAttribute('role')??'',modal:panel?.getAttribute('aria-modal')??'',"
+                + "micLabel:mic?.getAttribute('aria-label')??'',micVisible:!!mic&&mic.getClientRects().length>0,"
+                + "micWidth:rect?.width??0,micHeight:rect?.height??0});})()");
+        assertTrue("Compose must open a modal with a reachable prompt dictation action: " + promptComposerEntry,
+                "dialog".equals(promptComposerEntry.optString("role"))
+                        && "true".equals(promptComposerEntry.optString("modal"))
+                        && "Start prompt dictation".equals(promptComposerEntry.optString("micLabel"))
+                        && promptComposerEntry.optBoolean("micVisible")
+                        && promptComposerEntry.optDouble("micWidth") >= 47.9
+                        && promptComposerEntry.optDouble("micHeight") >= 47.9);
+        journey.put("promptComposerEntry", promptComposerEntry);
+        closePromptComposerSheet();
         awaitRenderedFrame();
         journey.put("connectToPromptMs", SystemClock.uptimeMillis() - connectToPromptStartedAt);
 
@@ -123,7 +145,7 @@ public final class JsFastKeysDockerJourneyTest {
         String firstReady = "PS2884_READY_" + nameBase;
         String firstDone = "PS2884_DONE_" + nameBase;
         prepareByteCapture(firstRaw, 19, firstReady, firstDone);
-        tapDomCenter("[data-testid=prompt-draft]");
+        tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
@@ -173,7 +195,6 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrayBelowTerminalViewport(mainTrayGeometry);
         assertDictationMicReachable(mainTrayGeometry);
         assertHotkeyBarReachable(mainTrayGeometry);
-        assertComposerActionsReachable(mainTrayGeometry, false);
         JSONArray mainCatalogKeys = assertCatalogReachable(".mobile-hotkeys__main-keys", 10);
         JSONObject mainCatalogGeometry = captureGeometry("fast-keys-main-catalog-reachable");
         assertTerminalViewportCap("scrolling the main fast-key catalog", beforeTray, mainCatalogGeometry);
@@ -185,36 +206,8 @@ public final class JsFastKeysDockerJourneyTest {
         scrollCatalogToStart(".mobile-hotkeys__main-keys");
         JSONObject mainStartGeometry = captureGeometry("fast-keys-main-catalog-open-ime-up");
         assertCatalogSheetGeometry(mainStartGeometry, "main");
-        assertComposerActionsReachable(mainStartGeometry, false);
         captureScreenshot("fastkeys-sheet-main-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-sheet-main-ime-open-viewport.png", mainStartGeometry);
-
-        evalString("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');draft.value='PS2897_ACTION_REACHABILITY';"
-                + "draft.dispatchEvent(new Event('input',{bubbles:true}));return 'composer action probe staged';})()");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === 'PS2897_ACTION_REACHABILITY'"
-                + " && document.querySelector('[data-testid=composer-discard]')?.disabled === false"
-                + " && document.querySelector('[data-testid=composer-insert]')?.disabled === false"
-                + " && document.querySelector('.composer-shared-controls .send')?.disabled === false");
-        awaitRenderedFrame();
-        JSONObject composerActionGeometry = captureGeometry("fast-keys-main-composer-actions-ime-up");
-        assertComposerActionsReachable(composerActionGeometry, true);
-        assertAtLeastFiveRows("main catalog with composer action probe", composerActionGeometry);
-        awaitRenderedFrame();
-        captureScreenshot("fastkeys-main-composer-actions-ime-open.png");
-        awaitRenderedFrame();
-        captureTerminalViewportScreenshot("fastkeys-main-composer-actions-ime-open-viewport.png", composerActionGeometry);
-        int inputAcksBeforeComposerAction = terminalInputAcknowledgements();
-        tapDomCenter("[data-testid=composer-discard]");
-        awaitJsTrue("document.querySelector('[data-testid=composer-discard]')?.textContent.includes('Discard?')");
-        assertTrue("discard tap keeps the keyboard and main key catalog available",
-                isImeVisible() && "main".equals(captureGeometry("composer-discard-confirmation").getString("fastKeysPage")));
-        tapDomCenter("[data-testid=composer-discard]");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
-        awaitImeVisible(true);
-        JSONObject composerActionCleared = captureGeometry("fast-keys-main-composer-actions-cleared-ime-up");
-        assertComposerActionsReachable(composerActionCleared, false);
-        assertEquals("composer action taps must not write to the terminal PTY",
-                inputAcksBeforeComposerAction, terminalInputAcknowledgements());
 
         sendPaletteKey("escape");
         sendPaletteKey("tab");
@@ -228,12 +221,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrayBelowTerminalViewport(ctrlTrayGeometry);
         assertDictationMicReachable(ctrlTrayGeometry);
         assertHotkeyBarReachable(ctrlTrayGeometry);
-        assertComposerActionsReachable(ctrlTrayGeometry, false);
         JSONObject gridWithCtrlTray = runtimeGrid(ctrlTrayGeometry);
         assertUnchangedTerminalGrid("opening the Ctrl fast-key tray", gridBeforePalette, gridWithCtrlTray);
         assertEquals("opening the Ctrl fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
-        assertTrue("the IME-up Ctrl tray must compact the composer to at most 104dp: " + ctrlTrayGeometry,
-                ctrlTrayGeometry.getJSONObject("composerPanel").getDouble("height") <= 104.1);
         if (gridWithCtrlTray.getInt("rows") < 5) {
             throw new AssertionError("Ctrl fast keys must leave at least five terminal rows visible: " + ctrlTrayGeometry);
         }
@@ -250,7 +240,6 @@ public final class JsFastKeysDockerJourneyTest {
         scrollCatalogToStart(".mobile-hotkeys__ctrl-grid");
         JSONObject ctrlStartGeometry = captureGeometry("fast-keys-ctrl-catalog-open-ime-up");
         assertCatalogSheetGeometry(ctrlStartGeometry, "ctrl");
-        assertComposerActionsReachable(ctrlStartGeometry, false);
         captureScreenshot("fastkeys-sheet-ctrl-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-sheet-ctrl-ime-open-viewport.png", ctrlStartGeometry);
         sendPaletteKey("ctrl-q");
@@ -271,7 +260,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("closing the fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
         assertEquals("closed Android navigation lane reserves its key row and containment pixel", 49,
                 (int) closedTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
-        assertEquals("open main catalog adds its bounded sheet below the persistent key row", 193,
+        assertEquals("open main catalog adds its compact two-row rail below the persistent key row", 145,
                 (int) mainTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
         assertHotkeyBarReachable(closedTrayGeometry);
 
@@ -292,6 +281,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("each visible fast-key action must be one typed-byte PTY write", expectedFirstWrites.toString(), hotkeyWrites().toString());
         journey.put("firstHotkeyWrites", hotkeyWrites());
         journey.put("firstSessionRawFile", firstRaw);
+        journey.put("firstSessionGeometryOracleFile", firstRaw + ".geometry");
 
         exerciseDockedDictation(nameBase, dictationTargetSession);
 
@@ -301,10 +291,10 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
-        tapDomCenter("[data-testid=prompt-draft]");
+        tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         String recoveryFocusPredicate = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                + " && document.activeElement?.matches('[data-testid=prompt-draft]') === true";
+                + " && document.activeElement?.classList.contains('xterm-helper-textarea') === true";
         try {
             awaitJsTrue(recoveryFocusPredicate);
         } catch (AssertionError focusFailure) {
@@ -367,7 +357,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.sshAttachFocusPending === 'true'"
-                + " && !!document.querySelector('[data-testid=prompt-draft]')");
+                + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
+        openPromptComposerSheet();
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitPromptFocusedForReattach();
@@ -408,6 +399,9 @@ public final class JsFastKeysDockerJourneyTest {
         earlyPromptTapAfterAttachFinished.put("androidImeVisible", isImeVisible());
         journey.put("reattachEarlyPromptTapWhileHeld", earlyPromptTapWhileAttachHeld);
         journey.put("reattachEarlyPromptTapAfterAttach", earlyPromptTapAfterAttachFinished);
+        closePromptComposerSheet();
+        tapDomCenter(".terminal-viewport");
+        awaitImeVisible(true);
         awaitTerminalResizeIdle();
         try {
             awaitImeVisible(true);
@@ -446,7 +440,7 @@ public final class JsFastKeysDockerJourneyTest {
                     + "; before reconnect=" + beforeReconnectGeometry + "; after reconnect=" + afterReconnectGeometry
                     + "; reconnect failure geometry=" + failureGeometry, error);
         }
-        tapDomCenter("[data-testid=prompt-draft]");
+        tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.enabled === 'true'");
         long reconnectTapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
@@ -518,7 +512,7 @@ public final class JsFastKeysDockerJourneyTest {
         markResizeFitPhase("dictation-receiver-before");
         prepareByteCapture(rawFile, expectedHostByteCount, readyMarker, doneMarker);
         markResizeFitPhase("dictation-receiver-after-command");
-        tapDomCenter("[data-testid=prompt-draft]");
+        tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         markResizeFitPhase("dictation-receiver-after-prompt-retap");
@@ -545,7 +539,6 @@ public final class JsFastKeysDockerJourneyTest {
         int writesAfterPartial = terminalInputAcknowledgements();
         JSONObject listening = captureGeometry("dictation-listening-ime-open");
         assertTerminalViewportCap("showing a dictation partial", idle, listening);
-        assertCompactStatusComposerLayout("listening status", listening);
         assertTrayBelowTerminalViewport(listening);
         assertDictationMicReachable(listening);
         assertHotkeyBarReachable(listening);
@@ -570,7 +563,6 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrayBelowTerminalViewport(ctrlListening);
         assertDictationMicReachable(ctrlListening);
         assertHotkeyBarReachable(ctrlListening);
-        assertCompactStatusComposerLayout("Ctrl catalog while dictation is listening", ctrlListening);
         assertAtLeastFiveRows("Ctrl catalog while inline dictation is listening", ctrlListening);
         assertEquals("opening the Ctrl catalog during dictation must keep the partial preview local",
                 writesBeforeListening, terminalInputAcknowledgements());
@@ -599,7 +591,6 @@ public final class JsFastKeysDockerJourneyTest {
                 writesAfterFinalBeforeStopped);
         JSONObject finalAwaitingStopped = captureGeometry("dictation-final-awaiting-stopped");
         assertTerminalViewportCap("staging final dictation text", idle, finalAwaitingStopped);
-        assertCompactStatusComposerLayout("transcribing status", finalAwaitingStopped);
         assertTrayBelowTerminalViewport(finalAwaitingStopped);
         assertDictationMicReachable(finalAwaitingStopped);
         assertDictationStableStage("staging final dictation text", idle, finalAwaitingStopped, stableGrid,
@@ -613,7 +604,6 @@ public final class JsFastKeysDockerJourneyTest {
         int writesAfterStopped = terminalInputAcknowledgements();
         JSONObject finalInsertedGeometry = captureGeometry("dictation-final-inserted");
         assertTerminalViewportCap("inserting final dictation text", idle, finalInsertedGeometry);
-        assertCompactStatusComposerLayout("final insertion status", finalInsertedGeometry);
         assertTrayBelowTerminalViewport(finalInsertedGeometry);
         assertDictationMicReachable(finalInsertedGeometry);
         assertTrue("final dictation insertion must return focus to xterm while keeping the native IME and compact layout active: "
@@ -627,15 +617,89 @@ public final class JsFastKeysDockerJourneyTest {
                         && "".equals(finalInsertedGeometry.getString("composerDraftValue")));
         assertDictationStableStage("inserting final dictation text", idle, finalInsertedGeometry, stableGrid,
                 stableResizeAcks);
+        awaitJsTrue("(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                + "const status=document.querySelector('[data-testid=inline-dictation-status]');"
+                + "const toggle=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "return bar?.dataset.phase==='idle'&&(status?.textContent??'').includes('Inserted at the cursor')"
+                + "&&!document.querySelector('[data-testid=inline-dictation-preview]')&&toggle?.disabled===false;})()");
+        captureScreenshot("fastkeys-dictation-stopped-ime-open.png");
+        captureTerminalViewportScreenshot("fastkeys-dictation-stopped-ime-open-viewport.png", finalInsertedGeometry);
+        int insertedNativeStartCalls = controlledSpeechCallCount("startCount");
+        int insertedNativeStopCalls = controlledSpeechCallCount("stopCount");
+        String insertedStopRequestId = evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''");
+
+        // Keep the host receiver open through the background/resume geometry check; the
+        // post-Stop keyboard character completes its exact byte capture afterward.
+        String draftBeforePostStopInput = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        assertEquals("the command receiver must leave PromptComposer's draft empty", "", draftBeforePostStopInput);
+        int postStopInputChunkStart = Integer.parseInt(evalString("String(window.__ps2857AppTerminalInputChunks?.length ?? 0)"));
+        int writesBeforeBackgroundCancel = terminalInputAcknowledgements();
+        int resizeAcksBeforeBackgroundResume = terminalResizeAcks();
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        assertEquals("background cancellation must have one active recognizer", 2, controlledSpeechCallCount("startCount"));
+        String backgroundRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on background'); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'must be cancelled on background'");
+        scenario.moveToState(Lifecycle.State.CREATED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
+        awaitTerminalResizeIdle();
+        awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks ?? 0) > "
+                + resizeAcksBeforeBackgroundResume
+                + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim().endsWith('accepted by SSH') === true");
+        evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result'); 'late result emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        assertEquals("background results must not write after resume", writesBeforeBackgroundCancel,
+                terminalInputAcknowledgements());
+        assertEquals("backgrounding must stop the pending recognizer", backgroundRequest,
+                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        int resizeAcksAfterBackgroundResume = terminalResizeAcks();
+        journey.put("dictationBackgroundCancel", new JSONObject().put("requestId", backgroundRequest)
+                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("lateResultEmitted", true).put("stoppedEmitted", true)
+                .put("nativeStartCalls", 2)
+                .put("nativeStopCalls", 2)
+                .put("resizeAcksBeforeResume", resizeAcksBeforeBackgroundResume)
+                .put("resizeAcksAfterResume", resizeAcksAfterBackgroundResume)
+                .put("writesBefore", writesBeforeBackgroundCancel).put("writesAfter", terminalInputAcknowledgements()));
+        JSONObject backgroundGeometry = captureGeometry("dictation-background-cancel-resumed");
+        assertBackgroundResumeGeometryAcknowledged(backgroundGeometry, resizeAcksBeforeBackgroundResume);
+        captureScreenshot("fastkeys-dictation-background-cancel-resumed.png");
+        captureTerminalViewportScreenshot("fastkeys-dictation-background-cancel-resumed-viewport.png", backgroundGeometry);
+        assertDictationMicReachable(backgroundGeometry);
+
+        tapDomCenter(".terminal-viewport");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
+        awaitTerminalResizeIdle();
+        JSONObject postResumeKeyboardGeometry = captureGeometry("dictation-post-resume-ime-open");
+        assertAcceptedKeyboardUpViewport("IME reopening after the hidden resume", postResumeKeyboardGeometry);
+        assertDictationMicReachable(postResumeKeyboardGeometry);
+        assertTrayBelowTerminalViewport(postResumeKeyboardGeometry);
+        assertTrue("reopening the IME must receive a fresh host PTY size acknowledgement",
+                postResumeKeyboardGeometry.getInt("resizeAcks") > backgroundGeometry.getInt("resizeAcks"));
+        assertGridHasAcceptedResizeAck(postResumeKeyboardGeometry, "IME reopening after the hidden resume");
+        captureScreenshot("fastkeys-dictation-post-resume-ime-open.png");
+        captureTerminalViewportScreenshot("fastkeys-dictation-post-resume-ime-open-viewport.png", postResumeKeyboardGeometry);
 
         // Type one real character through Android's keyboard after Stop. The host receiver
         // is still waiting for it, so this proves subsequent text reaches the PTY instead
         // of silently landing in PromptComposer's separate draft.
-        String draftBeforePostStopInput = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
-        assertEquals("the command receiver must leave PromptComposer's draft empty", "", draftBeforePostStopInput);
-        int postStopInputChunkStart = Integer.parseInt(evalString("String(window.__ps2857AppTerminalInputChunks?.length ?? 0)"));
         InstrumentationRegistry.getInstrumentation().sendStringSync(postStopKeyboardText);
-        awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(doneMarker) + ")", 15_000);
+        try {
+            awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(doneMarker) + ")", 15_000);
+        } catch (AssertionError markerFailure) {
+            try {
+                capturePostStopDoneMarkerFailure(readyMarker, doneMarker, postStopInputChunkStart);
+            } catch (Exception | AssertionError evidenceFailure) {
+                markerFailure.addSuppressed(evidenceFailure);
+            }
+            throw markerFailure;
+        }
         awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
                 + "const chunks=(window.__ps2857AppTerminalInputChunks ?? []).slice(" + postStopInputChunkStart + ");"
                 + "return Number(shell?.dataset.sshTerminalInputAcks) === " + (writesAfterStopped + 1)
@@ -648,7 +712,6 @@ public final class JsFastKeysDockerJourneyTest {
                 + postStopInputChunkStart + "))"));
         JSONObject postStopKeyboardGeometry = captureGeometry("dictation-post-stop-keyboard-input");
         assertTerminalViewportCap("typing after Stop", idle, postStopKeyboardGeometry);
-        assertCompactStatusComposerLayout("post-Stop status", postStopKeyboardGeometry);
         assertTrayBelowTerminalViewport(postStopKeyboardGeometry);
         assertDictationMicReachable(postStopKeyboardGeometry);
         assertTrue("post-Stop keyboard input must stay focused in xterm with the IME open: "
@@ -661,15 +724,15 @@ public final class JsFastKeysDockerJourneyTest {
                         && !postStopKeyboardGeometry.getBoolean("activeElementIsPromptDraft"));
         assertEquals("post-Stop keyboard text must not enter the composer draft", draftBeforePostStopInput,
                 postStopKeyboardGeometry.getString("composerDraftValue"));
-        assertDictationStableStage("typing after Stop", idle, postStopKeyboardGeometry, stableGrid,
-                stableResizeAcks);
+        assertDictationStableStage("typing after Stop", postResumeKeyboardGeometry, postStopKeyboardGeometry,
+                runtimeGrid(postResumeKeyboardGeometry), postResumeKeyboardGeometry.getInt("resizeAcks"));
         awaitRenderedFrame();
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
-                + " && !document.querySelector('[data-testid=inline-dictation-preview]')"
-                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false");
-        captureScreenshot("fastkeys-dictation-stopped-ime-open.png");
-        captureTerminalViewportScreenshot("fastkeys-dictation-stopped-ime-open-viewport.png", finalInsertedGeometry);
+        JSONObject postResumeUiState = captureDictationCheckpoint("dictation-post-resume-after-keyboard-input");
+        journey.put("dictationPostResumeUiState", postResumeUiState);
+        awaitJsTrue("(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                + "const toggle=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "return bar?.dataset.phase==='idle'&&toggle?.disabled===false"
+                + "&&!bar.querySelector('[data-testid=inline-dictation-preview]');})()");
         String expectedHostHex = hex((dictatedText + postStopKeyboardText).getBytes(StandardCharsets.UTF_8));
         journey.put("dictation", new JSONObject()
                 .put("targetKey", targetBefore)
@@ -688,10 +751,11 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("explicitStop", true)
                 .put("finalReceived", true)
                 .put("stoppedReceived", true)
-                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
-                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
-                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("nativeStartCalls", insertedNativeStartCalls)
+                .put("nativeStopCalls", insertedNativeStopCalls)
+                .put("stopRequestId", insertedStopRequestId)
                 .put("rawFile", rawFile)
+                .put("geometryOracleFile", rawFile + ".geometry")
                 .put("dictatedTextHex", hex(dictatedBytes))
                 .put("postStopKeyboardText", postStopKeyboardText)
                 .put("postStopInputChunks", postStopInputChunks)
@@ -703,11 +767,10 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("expectedFinalByteCount", dictatedByteCount)
                 .put("readyMarker", readyMarker)
                 .put("doneMarker", doneMarker));
-
         int writesBeforeError = terminalInputAcknowledgements();
         tapDomCenter("[data-testid=inline-dictation-toggle]");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
-        assertEquals("error recovery must start one fresh recognizer", 2, controlledSpeechCallCount("startCount"));
+        assertEquals("error recovery must start one fresh recognizer", 3, controlledSpeechCallCount("startCount"));
         String errorRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
         evalString("window.__ps2857ControlledSpeech.emit('partial', 'discard this partial'); 'partial emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'discard this partial'");
@@ -719,11 +782,10 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
         JSONObject errorGeometry = captureGeometry("dictation-error-ime-open");
         assertTerminalViewportCap("showing recognizer error status", idle, errorGeometry);
-        assertCompactStatusComposerLayout("recognizer error status", errorGeometry);
         assertTrayBelowTerminalViewport(errorGeometry);
         assertDictationMicReachable(errorGeometry);
-        assertDictationStableStage("showing recognizer error status", idle, errorGeometry, stableGrid,
-                stableResizeAcks);
+        assertDictationStableStage("showing recognizer error status", postResumeKeyboardGeometry, errorGeometry,
+                runtimeGrid(postResumeKeyboardGeometry), postResumeKeyboardGeometry.getInt("resizeAcks"));
         captureScreenshot("fastkeys-dictation-error-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-dictation-error-ime-open-viewport.png", errorGeometry);
         assertEquals("recognizer errors must discard previews without writing", writesBeforeError, terminalInputAcknowledgements());
@@ -737,7 +799,7 @@ public final class JsFastKeysDockerJourneyTest {
         String staleTarget = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
         tapDomCenter("[data-testid=inline-dictation-toggle]");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
-        assertEquals("attach cancellation must not create a second recognizer", 3, controlledSpeechCallCount("startCount"));
+        assertEquals("attach cancellation must not create a second recognizer", 4, controlledSpeechCallCount("startCount"));
         String attachRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
         evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on attach'); 'partial emitted'");
         int oldAttachEpoch = Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')"));
@@ -768,7 +830,7 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
                 .put("writesBefore", writesBeforeAttachCancel).put("writesAfter", terminalInputAcknowledgements()));
 
-        tapDomCenter("[data-testid=prompt-draft]");
+        tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         JSONObject changedSessionGeometry = captureGeometry("dictation-reattached-ime-open");
         assertUnchangedTerminalGrid("changed-session dictation reattach", stableGrid,
@@ -780,32 +842,6 @@ public final class JsFastKeysDockerJourneyTest {
                 runtimeGrid(changedSessionGeometry).getInt("rows") >= 5);
         captureScreenshot("fastkeys-dictation-reattached-ime-open.png");
 
-        int writesBeforeBackgroundCancel = terminalInputAcknowledgements();
-        tapDomCenter("[data-testid=inline-dictation-toggle]");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
-        assertEquals("background cancellation must have one active recognizer", 4, controlledSpeechCallCount("startCount"));
-        String backgroundRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
-        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on background'); 'partial emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'must be cancelled on background'");
-        scenario.moveToState(Lifecycle.State.CREATED);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
-        scenario.moveToState(Lifecycle.State.RESUMED);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
-        evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result'); 'late result emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
-        assertEquals("background results must not write after resume", writesBeforeBackgroundCancel,
-                terminalInputAcknowledgements());
-        assertEquals("backgrounding must stop the pending recognizer", backgroundRequest,
-                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
-        journey.put("dictationBackgroundCancel", new JSONObject().put("requestId", backgroundRequest)
-                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
-                .put("lateResultEmitted", true).put("stoppedEmitted", true)
-                .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
-                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
-                .put("writesBefore", writesBeforeBackgroundCancel).put("writesAfter", terminalInputAcknowledgements()));
-        JSONObject backgroundGeometry = captureGeometry("dictation-background-cancel-resumed");
-        assertDictationMicReachable(backgroundGeometry);
         attachSession(firstSession);
     }
 
@@ -959,16 +995,40 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void prepareByteCapture(String rawPath, int byteCount, String readyMarker, String doneMarker) throws Exception {
-        String command = "stty raw -echo; printf '\\r\\n" + readyMarker + "\\r\\n'; dd bs=1 count=" + byteCount
-                + " status=none > " + rawPath + "; stty sane; printf '\\n" + doneMarker + "\\n'";
+        String geometryOraclePath = rawPath + ".geometry";
+        // Keep the receiver's temporary sampler out of the parent interactive
+        // shell's job table. Bash's long Terminated notice can evict DONE from
+        // the 38x6 alternate-screen viewport before the visibility check.
+        String command = "(set +m; stty raw -echo; (while :; do stty size </dev/tty >> " + geometryOraclePath
+                + "; sleep 0.1; done) & ptyGeometryMonitor=$!; printf '\\r\\n" + readyMarker + "\\r\\n'; dd bs=1 count=" + byteCount
+                + " status=none > " + rawPath + "; stty sane; kill \"$ptyGeometryMonitor\" 2>/dev/null || true;"
+                + " wait \"$ptyGeometryMonitor\" 2>/dev/null || true; printf '\\n" + doneMarker + "\\n')";
         markResizeFitPhase("set-receiver-draft:" + readyMarker);
+        openPromptComposerSheet();
         setValue("[data-testid=prompt-draft]", command);
         markResizeFitPhase("send-receiver-command:" + readyMarker);
         click(".composer-shared-controls .send");
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''");
         awaitJsTrue("(window.__ps2857TerminalVisibleText || '').includes(" + JSONObject.quote(readyMarker) + ")", 15_000);
         SystemClock.sleep(300);
+        closePromptComposerSheet();
         markResizeFitPhase("receiver-ready:" + readyMarker);
+    }
+
+    private void openPromptComposerSheet() throws Exception {
+        if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            tapDomCenter("[data-testid=prompt-composer-launcher]");
+        }
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+    }
+
+    private void closePromptComposerSheet() throws Exception {
+        if ("true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            tapDomCenter("[data-testid=composer-close]");
+        }
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+        awaitImeVisible(false);
     }
 
     private void markResizeFitPhase(String phase) throws Exception {
@@ -980,14 +1040,60 @@ public final class JsFastKeysDockerJourneyTest {
                 + ", done=" + JSONObject.quote(doneMarker)
                 + ", app=String(window.__ps2857AppTerminalLastChunk??''), term=String(window.__ps2857TerminalLastWriteText??''), visible=String(window.__ps2857TerminalVisibleText??'');"
                 + "const hex=s=>Array.from(new TextEncoder().encode(s)).map(b=>b.toString(16).padStart(2,'0')).join('');"
+                + "const appTail=app.slice(-1500),termTail=term.slice(-1500);"
                 + "return JSON.stringify({appDeliveries:window.__ps2857AppTerminalDeliveryCount??0,"
                 + "appLastContainsReady:app.includes(ready),appLastContainsDone:app.includes(done),"
-                + "appLastHex:app.includes(ready)?hex(app):'',terminalWrites:window.__ps2857TerminalWriteCount??0,"
+                + "appLastText:appTail,appLastHex:hex(appTail),terminalWrites:window.__ps2857TerminalWriteCount??0,"
                 + "writeCallbacks:window.__ps2857TerminalWriteCallbackCount??0,writeParsedEvents:window.__ps2857TerminalWriteParsedCount??0,"
                 + "renderCount:window.__ps2857TerminalRenderCount??0,renderRange:String(window.__ps2857TerminalLastRenderRange??''),"
                 + "bufferState:String(window.__ps2857TerminalBufferState??''),"
-                + "terminalLastContainsReady:term.includes(ready),terminalLastHex:term.includes(ready)?hex(term):'',"
+                + "terminalLastContainsReady:term.includes(ready),terminalLastContainsDone:term.includes(done),"
+                + "terminalLastWriteText:termTail,terminalLastWriteHex:hex(termTail),"
                 + "visibleContainsReady:visible.includes(ready),visibleContainsDone:visible.includes(done)});})()");
+    }
+
+    private void capturePostStopDoneMarkerFailure(String readyMarker, String doneMarker, int inputChunkStart)
+            throws Exception {
+        captureCurrentDeviceScreenshotDirect("fastkeys-dictation-post-stop-marker-failure.png");
+        JSONObject state = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "const active=document.activeElement;const rows=document.querySelector('.xterm-rows');"
+                + "const chunks=window.__ps2857AppTerminalInputChunks??[];"
+                + "return JSON.stringify({runId:" + JSONObject.quote(artifactRunId)
+                + ",stage:'post-stop-done-marker-timeout',route:shell?.dataset.route??null,"
+                + "homeSurface:shell?.dataset.homeSurface??null,sshPhase:shell?.dataset.sshPhase??null,"
+                + "keyboardVisible:shell?.dataset.keyboardVisible??null,keyboardComposerMode:shell?.dataset.keyboardComposerMode??null,"
+                + "activeElement:{tag:active?.tagName??'',className:typeof active?.className==='string'?active.className:'',"
+                + "testId:active?.getAttribute?.('data-testid')??''},"
+                + "terminalVisibleText:String(window.__ps2857TerminalVisibleText??'').slice(-12000),"
+                + "xtermRowsText:rows?.innerText?.slice(-12000)??'',"
+                + "appLastInputText:String(window.__ps2857AppTerminalLastChunk??''),"
+                + "xtermLastWriteText:String(window.__ps2857TerminalLastWriteText??''),"
+                + "appTerminalDeliveryCount:window.__ps2857AppTerminalDeliveryCount??0,"
+                + "terminalWriteCount:window.__ps2857TerminalWriteCount??0,"
+                + "terminalWriteCallbacks:window.__ps2857TerminalWriteCallbackCount??0,"
+                + "terminalWriteParsedEvents:window.__ps2857TerminalWriteParsedCount??0,"
+                + "terminalInputAcks:Number(shell?.dataset.sshTerminalInputAcks??0),"
+                + "terminalInputPending:Number(shell?.dataset.sshTerminalInputPending??0),"
+                + "terminalInputChunks:chunks.slice(" + inputChunkStart + "),"
+                + "runtimeGeometry:window.__ps2875TerminalRuntimeGeometry??null,"
+                + "expectedReadyMarker:" + JSONObject.quote(readyMarker) + ","
+                + "expectedDoneMarker:" + JSONObject.quote(doneMarker) + "});})()");
+        state.put("terminalEvidence", new JSONObject(terminalEvidence(readyMarker, doneMarker)))
+                .put("geometry", captureGeometry("dictation-post-stop-done-marker-failure"));
+        byte[] json = state.toString(2).getBytes(StandardCharsets.UTF_8);
+        emitArtifact("fastkeys-dictation-post-stop-marker-failure.json", json);
+        Log.i("PS2884DictationFailure", state.toString());
+    }
+
+    private void captureCurrentDeviceScreenshotDirect(String name) throws Exception {
+        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull("full-device failure screenshot must be available for " + name, screenshot);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, output);
+        screenshot.recycle();
+        assertTrue("full-device failure screenshot must be non-empty for " + name,
+                compressed && output.size() >= 1_024);
+        emitArtifact(name, output.toByteArray());
     }
 
     private void sendPaletteKey(String keyId) throws Exception {
@@ -1029,7 +1135,7 @@ public final class JsFastKeysDockerJourneyTest {
         if (hold) longPressDomCenter("[data-key-id='" + keyId + "']", 700);
         else tapDomCenter("[data-key-id='" + keyId + "']");
         awaitHotkeyWrites(previous + 1);
-        awaitJsTrue("document.activeElement?.matches('[data-testid=prompt-draft]') === true", 3_000);
+        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea') === true", 3_000);
         awaitImeVisible(true);
     }
 
@@ -1071,7 +1177,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "if(!node)throw new Error('missing catalog scroller '+" + JSONObject.quote(selector) + ");"
                 + "node.scrollTop=0;node.scrollLeft=0;return String(node.scrollTop);})()");
         awaitRenderedFrame();
-        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ")?.scrollTop === 0");
+        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ")?.scrollTop === 0"
+                + " && document.querySelector(" + JSONObject.quote(selector) + ")?.scrollLeft === 0");
     }
 
     private void swipeFastKeyIntoView(String selector) throws Exception {
@@ -1158,7 +1265,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const r=target.getBoundingClientRect(),c=container.getBoundingClientRect(),v=window.visualViewport;"
                 + "const style=getComputedStyle(container),buttonRects=Array.from(container.querySelectorAll('button[data-key-id]')).map(n=>{const b=n.getBoundingClientRect();"
                 + "return {keyId:n.dataset.keyId,top:b.top,bottom:b.bottom,width:b.width,height:b.height};});"
-                + "const horizontal=container.matches('.mobile-hotkeys__main-keys'),y=c.top+c.height/2;"
+                + "const horizontal=true,y=c.top+c.height/2;"
                 + "const verticalAnchor=(()=>{for(let x=c.left+24;x<c.right-16;x+=4){const hit=document.elementFromPoint(x,y);"
                 + "const insideScroller=!!hit&&(hit===container||container.contains(hit));"
                 + "if(insideScroller&&!hit.closest('button'))return {x,y,insideScroller,clearOfButtons:true};}"
@@ -1219,7 +1326,10 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const runtimeGeometry=window.__ps2875TerminalRuntimeGeometry??null;"
                 + "const visibleTerminalRows=runtimeGeometry&&terminalRect&&runtimeGeometry.cellHeight>0?Math.floor((terminalRect.height-8)/runtimeGeometry.cellHeight):0;"
                 + "const catalogSheetNode=document.querySelector('[data-testid=mobile-hotkeys-sheet]');"
+                + "const catalogSheetRole=catalogSheetNode?.getAttribute('role')??'';"
                 + "const catalogSheet=rect('[data-testid=mobile-hotkeys-sheet]');"
+                + "const promptComposerLauncherNode=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const promptComposerLauncher=promptComposerLauncherNode?target(promptComposerLauncherNode):null;"
                 + "const pageActionNode=document.querySelector('[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page]');"
                 + "const pageAction=pageActionNode?target(pageActionNode):null;"
                 + "const catalogTitleNode=tray?.querySelector('[data-testid=mobile-hotkeys-sheet-title]');"
@@ -1240,7 +1350,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const catalogScrollMetrics=catalogScroller?{clientWidth:catalogScroller.clientWidth,scrollWidth:catalogScroller.scrollWidth,scrollLeft:catalogScroller.scrollLeft,"
                 + "clientHeight:catalogScroller.clientHeight,scrollHeight:catalogScroller.scrollHeight,scrollTop:catalogScroller.scrollTop,"
                 + "rowGap:catalogScrollStyle?.rowGap??'',columnGap:catalogScrollStyle?.columnGap??'',gridAutoRows:catalogScrollStyle?.gridAutoRows??'',buttonRects:catalogButtonRects,"
-                + "axis:catalogScroller.matches('.mobile-hotkeys__ctrl-grid')?'vertical':'grid'}:null;"
+                + "axis:'horizontal'}:null;"
                 + "const overlaps=(a,b)=>!!a&&!!b&&a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;"
                 + "const sheetInside=pageActionNode&&catalogSheet?(()=>{const a=pageActionNode.getBoundingClientRect();return a.left>=catalogSheet.left-0.5&&a.right<=catalogSheet.right+0.5&&a.top>=catalogSheet.top-0.5&&a.bottom<=catalogSheet.bottom+0.5;})():false;"
                 + "const composerRect=rect('.composer-panel');"
@@ -1293,15 +1403,15 @@ public final class JsFastKeysDockerJourneyTest {
                 + "activeElementIsPromptDraft:activeElement===promptDraft,composerDraftValue:promptDraft?.value??'',"
                 + "activeElementTag:activeElement?.tagName?.toLowerCase()??'',"
                 + "fastKeysPage:tray?.dataset.palettePage||'closed',"
-                + "sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "href:location.href,route:shell?.dataset.route||'',sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
                 + "sshAttachEpoch:Number(shell?.dataset.sshAttachEpoch??-1),"
                 + "terminalPanel:terminalPanelRect,terminalSlot:terminalSlotRect,terminalSlotInsideTerminalPanel,terminalViewport:rect('.terminal-viewport'),"
                 + "catalogScrollerInsideSheet,catalogScrollerBounds:catalogScrollerRect?{top:catalogScrollerRect.top,bottom:catalogScrollerRect.bottom,"
                 + "left:catalogScrollerRect.left,right:catalogScrollerRect.right,width:catalogScrollerRect.width,height:catalogScrollerRect.height}:null,"
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
-                + "mobileHotkeys:trayRect,navigationTargets:keys,enterDivider,persistentRowMetrics,hotkeyControls,"
-                + "catalogSheet,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,"
+                + "mobileHotkeys:trayRect,navigationTargets:keys,promptComposerLauncher,enterDivider,persistentRowMetrics,hotkeyControls,"
+                + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,"
                 + "visibleTerminalRows,runtimeGeometry,"
                 + "catalogSheetBelowTerminalViewport:!!catalogSheet&&!!terminalRect&&catalogSheet.top>=terminalRect.bottom,"
                 + "catalogSheetIntersectsComposer:overlaps(catalogSheet,composerRect),catalogPageAction:pageAction?{...pageAction,insideCatalogSheet:!!sheetInside}:null,"
@@ -1340,19 +1450,20 @@ public final class JsFastKeysDockerJourneyTest {
                 + "layout:Object.fromEntries(['.app-shell','.screen-content','.home-screen--workspace','.live-workspace','.terminal-panel','.panel-heading--terminal',"
                 + "'[data-testid=terminal-slot]','.terminal-viewport','.mobile-hotkeys','.composer-panel'].map(selector=>{const node=document.querySelector(selector);"
                 + "if(!node)return [selector,null];const style=getComputedStyle(node),r=node.getBoundingClientRect();return [selector,{display:style.display,"
-                + "height:r.height,minHeight:style.minHeight,flex:style.flex,padding:style.padding,overflow:style.overflow}];})),"
-                + "fastKeysTray:tray&&trayRect&&slotRect&&terminalRect&&composerRect?{bounds:trayRect,insideSlot:trayRect.top>=slotRect.top-0.5"
+                + "top:r.top,bottom:r.bottom,height:r.height,minHeight:style.minHeight,flex:style.flex,padding:style.padding,overflow:style.overflow}];})),"
+                + "fastKeysTray:tray&&trayRect&&slotRect&&terminalRect?{bounds:trayRect,insideSlot:trayRect.top>=slotRect.top-0.5"
                 + "&&trayRect.left>=slotRect.left-0.5&&trayRect.bottom<=slotRect.bottom+0.5&&trayRect.right<=slotRect.right+0.5,"
                 + "insideTerminalPanel:trayRect.top>=rect('.terminal-panel').top"
                 + "&&trayRect.bottom<=rect('.terminal-panel').bottom,"
                 + "belowTerminalViewport:trayRect.top-terminalRect.bottom>=-" + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                 + ",intersectsTerminalViewport:trayRect.top-terminalRect.bottom<-" + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
-                + "&&trayRect.bottom>terminalRect.top,intersectsComposerPanel:trayRect.left<composerRect.right"
+                + "&&trayRect.bottom>terminalRect.top,intersectsComposerPanel:!!composerRect&&trayRect.left<composerRect.right"
                 + "&&trayRect.right>composerRect.left&&trayRect.top<composerRect.bottom&&trayRect.bottom>composerRect.top}:null,"
                 + "resizeAcks:Number(shell?.dataset.sshTerminalResizeAcks??0),resizePending:Number(shell?.dataset.sshTerminalResizePending??0),"
                 + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),hotkeyWrites:window.__ps2884HotkeyWrites??[],"
                 + "terminalInputAcks:Number(shell?.dataset.sshTerminalInputAcks??0),"
                 + "resizeTraceMarker:window.__ps2884ResizeFitMarker??'',resizeFitEvents:fitEventsSince,resizeAckEvents:ackEventsSince,"
+                + "resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()??'',"
                 + "visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth,"
                 + "offsetTop:window.visualViewport?.offsetTop??0},"
                 + "imeEdgeCssY:(window.visualViewport?.offsetTop??0)+(window.visualViewport?.height??innerHeight),innerWidth,innerHeight,"
@@ -1362,6 +1473,30 @@ public final class JsFastKeysDockerJourneyTest {
         geometryTrace.put(new JSONObject(dom.toString()));
         Log.i("PS2884Geometry", "RUN " + artifactRunId + " " + stage + " " + dom);
         return dom;
+    }
+
+    private JSONObject captureDictationCheckpoint(String stage) throws Exception {
+        JSONObject state = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                + "const status=document.querySelector('[data-testid=inline-dictation-status]');"
+                + "const toggle=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const active=document.activeElement;return JSON.stringify({stage:" + JSONObject.quote(stage)
+                + ",href:location.href,route:shell?.dataset.route??null,homeSurface:shell?.dataset.homeSurface??null,"
+                + "sshPhase:shell?.dataset.sshPhase??null,sshAttachEpoch:shell?.dataset.sshAttachEpoch??null,"
+                + "selectedSession:shell?.dataset.sshSelectedSession??null,keyboardVisible:shell?.dataset.keyboardVisible??null,"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode??null,terminalViewportFocused:shell?.dataset.terminalViewportFocused??null,"
+                + "activeElement:active?.outerHTML?.slice(0,240)??null,inlineDictationBarPresent:!!bar,"
+                + "dictationPhase:bar?.dataset.phase??null,dictationTone:bar?.dataset.dictationTone??null,"
+                + "dictationTargetKey:bar?.dataset.targetKey??null,dictationStatusPresent:!!status,"
+                + "dictationStatusText:status?.textContent?.trim()??null,"
+                + "dictationPreview:status?.querySelector('[data-testid=inline-dictation-preview]')?.textContent?.trim()??null,"
+                + "dictationTogglePresent:!!toggle,dictationToggleDisabled:toggle?.disabled??null,"
+                + "resizeAcks:Number(shell?.dataset.sshTerminalResizeAcks??0),resizePending:Number(shell?.dataset.sshTerminalResizePending??0),"
+                + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.textContent?.trim()??null,"
+                + "jsDiagnostics:window.__ps2884JsDiagnostics?.events?.slice(-20)??[]});})()")
+                .put("nativeIme", readNativeImeState());
+        Log.i("PS2884Geometry", "CHECKPOINT " + artifactRunId + " " + stage + " " + state);
+        return state;
     }
 
     private JSONObject readNativeImeState() throws Exception {
@@ -1405,6 +1540,15 @@ public final class JsFastKeysDockerJourneyTest {
             assertTrue("the 412px review layout keeps all persistent controls inline without scrolling: " + rowMetrics,
                     rowMetrics.getDouble("scrollWidth") <= rowMetrics.getDouble("clientWidth") + 1);
         }
+        JSONObject composeLauncher = geometry.optJSONObject("promptComposerLauncher");
+        assertNotNull("the Android toolbar must keep first-class prompt dictation one tap away", composeLauncher);
+        assertTrue("prompt composer launcher must remain a measured 48dp hit target above the IME: " + composeLauncher,
+                composeLauncher.getDouble("width") >= 47.9 && composeLauncher.getDouble("height") >= 47.9
+                        && composeLauncher.getDouble("visibleWidthInKeybar") >= 47.9
+                        && composeLauncher.getDouble("visibleHeightInKeybar") >= 47.9
+                        && composeLauncher.getBoolean("insideViewport") && composeLauncher.getBoolean("hitTarget")
+                        && !composeLauncher.getBoolean("disabled")
+                        && "Open prompt composer".equals(composeLauncher.getString("label")));
         int expectedTargetCount = 4;
         assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
@@ -1469,7 +1613,8 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("a 330px toolbar must keep every persistent key inline without overflow: " + result,
                 !result.getBoolean("scrollable") && result.getDouble("scrollWidth") <= result.getDouble("clientWidth") + 1);
         JSONArray targets = result.getJSONArray("targets");
-        assertEquals("narrow-width toolbar keeps navigation, launcher, and mic reachable", 5, targets.length());
+        assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
+        assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer"));
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
             assertTrue("narrow toolbar target remains >=48dp and scroll-reachable: " + target,
@@ -1486,30 +1631,36 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void assertCatalogSheetGeometry(JSONObject geometry, String page) throws Exception {
+        assertEquals("the packaged fast-key evidence must come from the API 35 device", 35,
+                geometry.getInt("androidApi"));
+        assertTrue("both catalog pages must be measured with the native keyboard open", geometry.getBoolean("keyboardVisible")
+                && geometry.getJSONObject("androidIme").getBoolean("visible")
+                && geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
         JSONObject sheet = geometry.optJSONObject("catalogSheet");
-        assertNotNull("the full key catalog must render in its on-demand sheet", sheet);
-        assertEquals("the on-demand Terminal keys surface must fit one header plus two 48dp key rows: " + geometry,
-                144, sheet.getDouble("height"), 0.5);
+        assertNotNull("the key catalog must render as a compact terminal rail", sheet);
+        assertEquals("the in-flow catalog must fit one 48dp title row and one 48dp key rail: " + geometry,
+                96, sheet.getDouble("height"), 0.5);
         JSONObject dock = geometry.getJSONObject("mobileHotkeys");
         assertEquals("the open terminal dock reserves the key row, optional status, and bounded catalog: " + geometry,
-                geometry.getBoolean("inlineDictationStatusVisible") ? 209 : 193,
+                geometry.getBoolean("inlineDictationStatusVisible") ? 161 : 145,
                 dock.getDouble("height"), 0.5);
         JSONObject terminalPanel = geometry.getJSONObject("terminalPanel");
         JSONObject terminalSlot = geometry.getJSONObject("terminalSlot");
         assertTrue("catalog state must keep its terminal slot within the clipped panel: " + geometry,
                 terminalSlot.getDouble("top") >= terminalPanel.getDouble("top") - 0.5
                         && terminalSlot.getDouble("bottom") <= terminalPanel.getDouble("bottom") + 0.5);
-        assertTrue("the catalog sheet must remain within the terminal slot: " + geometry,
+        assertTrue("the in-flow catalog must remain within the terminal slot: " + geometry,
                 sheet.getDouble("top") >= geometry.getJSONObject("terminalSlot").getDouble("top") - 0.5
                         && sheet.getDouble("bottom") <= geometry.getJSONObject("terminalSlot").getDouble("bottom") + 0.5);
-        assertTrue("the catalog sheet must not overlap xterm or composer: " + geometry,
+        assertTrue("the catalog rail must not overlap xterm or composer: " + geometry,
                 geometry.getBoolean("catalogSheetBelowTerminalViewport")
                         && !geometry.getBoolean("catalogSheetIntersectsComposer"));
         JSONObject terminalHeading = geometry.getJSONObject("layout").getJSONObject(".panel-heading--terminal");
-        assertEquals("the titled key sheet replaces redundant terminal panel chrome while open", "none",
-                terminalHeading.getString("display"));
-        assertTrue("catalog sheet must use a nonmodal terminal-context surface: " + geometry,
-                "false".equals(geometry.getString("catalogSheetModal")));
+        assertTrue("the terminal title stays in the hierarchy while fast keys are open",
+                !"none".equals(terminalHeading.getString("display")) && terminalHeading.getDouble("height") >= 24);
+        assertEquals("catalog remains a terminal-context region, not a floating dialog", "region",
+                geometry.getString("catalogSheetRole"));
+        assertTrue("in-flow catalog must not claim modal semantics", geometry.isNull("catalogSheetModal"));
         JSONObject title = geometry.getJSONObject("catalogTitle");
         assertEquals("catalog title must match the selected key page", "main".equals(page) ? "Terminal keys" : "Ctrl keys",
                 title.getString("text"));
@@ -1520,118 +1671,28 @@ public final class JsFastKeysDockerJourneyTest {
                 geometry.getBoolean("catalogHeaderControlsDoNotOverlap"));
         JSONObject scroll = geometry.getJSONObject("catalogScrollMetrics");
         JSONObject scroller = geometry.getJSONObject("catalogScrollerBounds");
-        assertTrue("catalog scroller must remain fully inside the 144dp sheet after border sizing: " + geometry,
+        assertTrue("catalog scroller must remain fully inside the 96dp rail after border sizing: " + geometry,
                 geometry.getBoolean("catalogScrollerInsideSheet")
                         && scroller.getDouble("top") >= sheet.getDouble("top") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("bottom") <= sheet.getDouble("bottom") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("left") >= sheet.getDouble("left") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("right") <= sheet.getDouble("right") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
-                        && Math.abs(scroller.getDouble("height") - 96) <= 1);
-        assertTrue("the " + page + " catalog must fit its 48dp targets without horizontal scrolling: " + geometry,
-                scroll.getDouble("scrollWidth") <= scroll.getDouble("clientWidth") + 1);
-        if ("ctrl".equals(page)) {
-            assertEquals("the Ctrl catalog must scroll vertically", "vertical", scroll.getString("axis"));
-            assertTrue("the QWERTY Ctrl catalog must use bounded vertical scrolling: " + geometry,
-                    scroll.getDouble("scrollHeight") > scroll.getDouble("clientHeight") + 1);
-        } else {
-            assertEquals("the main catalog must fit as a compact grid", "grid", scroll.getString("axis"));
-            assertEquals("the ten common keys must fit in exactly two visible 48dp grid rows: " + geometry,
-                    96, scroll.getDouble("clientHeight"), 1.0);
-            assertTrue("the ten common keys must not force an additional catalog row: " + geometry,
-                    scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
-        }
-    }
-
-    private void assertComposerActionsReachable(JSONObject geometry, boolean requireAllEnabled) throws Exception {
-        assertComposerActionsReachable(geometry, requireAllEnabled, true);
-    }
-
-    private void assertComposerActionsReachable(JSONObject geometry, boolean requireAllEnabled,
-                                                boolean requireCatalogOpen) throws Exception {
-        JSONArray actions = geometry.optJSONArray("composerActions");
-        assertNotNull("the keyboard-up composer must expose its action buttons: " + geometry, actions);
-        assertEquals("composer retains Discard, Dictate, Insert, and Send actions", 4, actions.length());
-        JSONObject panel = geometry.getJSONObject("composerPanel");
-        JSONObject row = geometry.getJSONObject("composerActionRow");
+                        && Math.abs(scroller.getDouble("height") - 48) <= 1);
+        assertEquals("both key pages must use the same horizontal rail", "horizontal", scroll.getString("axis"));
+        assertEquals("the " + page + " catalog keeps one visible 48dp row: " + geometry,
+                48, scroll.getDouble("clientHeight"), 1.0);
+        assertTrue("the " + page + " catalog must scroll horizontally to keep its 48dp targets reachable: " + geometry,
+                scroll.getDouble("scrollWidth") > scroll.getDouble("clientWidth") + 1);
+        assertTrue("the " + page + " catalog must not grow into a second row: " + geometry,
+                scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
+        assertTrue("the terminal heading and at least five terminal rows remain visible: " + geometry,
+                !"none".equals(terminalHeading.getString("display")) && terminalHeading.getDouble("height") >= 24
+                        && terminalHeading.getDouble("bottom") <= geometry.getJSONObject("terminalViewport").getDouble("top") + 0.5
+                        && geometry.getInt("visibleTerminalRows") >= 5 && runtimeGrid(geometry).getInt("rows") >= 5);
         JSONObject viewport = geometry.getJSONObject("visualViewport");
-        double imeEdgeCssY = geometry.optDouble("imeEdgeCssY",
-                viewport.getDouble("height") + viewport.optDouble("offsetTop", 0));
-        String composerGeometry = "panel=" + panel + "; draft=" + geometry.optJSONObject("composerDraft")
-                + "; actionRow=" + row + "; actionTargets=" + actions + "; visualViewport=" + viewport
-                + "; imeEdgeCssY=" + imeEdgeCssY + "; nativeIme=" + geometry.optJSONObject("androidIme");
-        assertTrue("composer panel remains above the visible IME edge: " + composerGeometry,
-                panel.getDouble("bottom") <= imeEdgeCssY + 0.5);
-        assertTrue("composer actions keep a 4px gap above the visible IME edge: " + composerGeometry,
-                row.getDouble("bottom") <= imeEdgeCssY - 4);
-        int enabledTargets = 0;
-        for (int index = 0; index < actions.length(); index += 1) {
-            JSONObject action = actions.getJSONObject(index);
-            assertTrue("composer action keeps a 48dp target: " + composerGeometry + "; action=" + action,
-                    action.getDouble("width") >= 47.9 && action.getDouble("height") >= 47.9);
-            assertTrue("composer action is fully inside the visible viewport, action row, and composer: "
-                            + composerGeometry + "; action=" + action,
-                    action.getBoolean("insideViewport") && action.getBoolean("insideComposerPanel")
-                            && action.getDouble("top") >= row.getDouble("top") - 0.5
-                            && action.getDouble("bottom") <= row.getDouble("bottom") + 0.5);
-            if (!action.getBoolean("disabled")) {
-                enabledTargets += 1;
-                assertTrue("enabled composer action center resolves to the button hit target: "
-                                + composerGeometry + "; action=" + action,
-                        action.getBoolean("hitTarget"));
-            }
-            if (requireAllEnabled) {
-                assertTrue("the staged draft makes every composer action tappable: " + composerGeometry + "; action=" + action,
-                        !action.getBoolean("disabled") && action.getBoolean("hitTarget"));
-            }
-        }
-        assertTrue("at least the composer dictation action stays enabled and tappable", enabledTargets > 0);
-        assertTrue("geometry was captured with the Android IME open", geometry.getJSONObject("androidIme").getBoolean("visible"));
-        if (requireCatalogOpen) {
-            assertTrue("the keyboard-up composer action proof keeps the fast-key catalog open",
-                    !"closed".equals(geometry.getString("fastKeysPage")));
-        }
-    }
-
-    private void assertCompactStatusComposerLayout(String action, JSONObject geometry) throws Exception {
-        JSONObject panel = geometry.getJSONObject("composerPanel");
-        JSONObject draft = geometry.getJSONObject("composerDraft");
-        JSONObject row = geometry.getJSONObject("composerActionRow");
-        JSONArray actions = geometry.getJSONArray("composerActions");
-        JSONObject viewport = geometry.getJSONObject("visualViewport");
-        double imeEdgeCssY = geometry.optDouble("imeEdgeCssY",
-                viewport.getDouble("height") + viewport.optDouble("offsetTop", 0));
-        String composerGeometry = "panel=" + panel + "; draft=" + draft + "; actionRow=" + row
-                + "; actionTargets=" + actions + "; visualViewport=" + viewport
-                + "; imeEdgeCssY=" + imeEdgeCssY + "; nativeIme=" + geometry.optJSONObject("androidIme");
-        assertTrue(action + " must keep its status row visible above the key controls",
-                geometry.getBoolean("inlineDictationStatusVisible"));
-        assertTrue(action + " must show its 80px composer panel: " + composerGeometry,
-                Math.abs(panel.getDouble("height") - 80) <= 0.5);
-        assertTrue(action + " must keep a usable 25px single-line prompt editor: " + composerGeometry,
-                Math.abs(draft.getDouble("height") - 25) <= 0.5);
-        assertTrue(action + " must retain its full 48px action row: " + composerGeometry,
-                Math.abs(row.getDouble("height") - 48) <= 0.5);
-        assertTrue(action + " editor and actions must remain fully inside the composer without overlap: " + composerGeometry,
-                draft.getDouble("top") >= panel.getDouble("top") - 0.5
-                        && row.getDouble("top") - draft.getDouble("bottom") >= 2
-                        && row.getDouble("bottom") <= panel.getDouble("bottom") + 0.5);
-        assertTrue(action + " composer and action row must clear the measured IME edge: " + composerGeometry,
-                panel.getDouble("bottom") <= imeEdgeCssY + 0.5
-                        && row.getDouble("bottom") <= imeEdgeCssY - 4);
-        for (int index = 0; index < actions.length(); index += 1) {
-            JSONObject target = actions.getJSONObject(index);
-            assertTrue(action + " " + target.optString("action")
-                            + " hit target must clear the measured IME edge by at least 4px: " + composerGeometry,
-                    target.getDouble("bottom") <= imeEdgeCssY - 4);
-        }
-        assertComposerActionsReachable(geometry, false, false);
-        JSONObject sheet = geometry.optJSONObject("catalogSheet");
-        if (sheet != null) {
-            assertTrue(action + " catalog must finish before the composer begins: sheet=" + sheet + "; panel=" + panel,
-                    sheet.getDouble("bottom") <= panel.getDouble("top") + 0.5);
-            assertTrue(action + " catalog must not overlap the composer",
-                    !geometry.getBoolean("catalogSheetIntersectsComposer"));
-        }
+        double imeEdge = geometry.optDouble("imeEdgeCssY", viewport.getDouble("height") + viewport.optDouble("offsetTop", 0));
+        assertTrue("compact catalog and persistent toolbar must clear the measured IME edge: " + geometry,
+                dock.getDouble("bottom") <= imeEdge + 0.5);
     }
 
     private void assertCatalogPageActionReachable(JSONObject geometry) throws Exception {
@@ -1733,6 +1794,76 @@ public final class JsFastKeysDockerJourneyTest {
                 baselineResizeAcks, afterGeometry.getInt("resizeAcks"));
         assertEquals(action + " must finish with native PTY resize idle; after=" + afterGeometry,
                 0, afterGeometry.getInt("resizePending"));
+    }
+
+    private void assertBackgroundResumeGeometryAcknowledged(JSONObject geometry, int resizeAcksBeforeResume)
+            throws Exception {
+        JSONObject grid = runtimeGrid(geometry);
+        assertTrue("app resume after dismissing the IME must describe the keyboard-hidden layout", !geometry.getBoolean("keyboardVisible"));
+        assertTrue("the native IME must be hidden at the resumed geometry checkpoint", !geometry.getJSONObject("androidIme").getBoolean("visible"));
+        assertEquals("resumed PTY geometry must finish all native resize requests", 0, geometry.getInt("resizePending"));
+        assertEquals("resumed PTY geometry must not hide a resize failure", 0, geometry.getInt("resizeFailures"));
+        assertTrue("the resized host PTY must acknowledge a fresh post-resume size; geometry=" + geometry,
+                geometry.getInt("resizeAcks") > resizeAcksBeforeResume);
+        assertEquals("visible resize status must report the accepted local grid; geometry=" + geometry,
+                grid.getInt("cols") + " × " + grid.getInt("rows") + " accepted by SSH", geometry.getString("resizeStatus"));
+
+        JSONArray fitEvents = geometry.getJSONArray("resizeFitEvents");
+        JSONArray ackEvents = geometry.getJSONArray("resizeAckEvents");
+        JSONObject resumeFit = null;
+        JSONObject resumeAck = null;
+        for (int index = 0; index < fitEvents.length(); index++) {
+            JSONObject event = fitEvents.getJSONObject(index);
+            // Activity resume may first fit an intermediate size and then let
+            // ResizeObserver publish the final restored terminal dimensions.
+            // Match the actual final-grid request and its ACK, regardless of
+            // which valid fit trigger produced it.
+            if (event.optInt("cols", -1) == grid.getInt("cols")
+                    && event.optInt("rows", -1) == grid.getInt("rows")
+                    && !event.optString("reason").isEmpty()
+                    && event.optInt("requestId", -1) > 0) resumeFit = event;
+        }
+        assertNotNull("resume must record a final-grid xterm fit request; geometry=" + geometry, resumeFit);
+        for (int index = 0; index < ackEvents.length(); index++) {
+            JSONObject event = ackEvents.getJSONObject(index);
+            if (event.optInt("requestId", -1) == resumeFit.optInt("requestId", -2)) resumeAck = event;
+        }
+        assertNotNull("resume fit must have a matching native resize ACK; geometry=" + geometry, resumeAck);
+        assertEquals("resume resize ACK must accept the fitted columns", grid.getInt("cols"), resumeAck.getInt("cols"));
+        assertEquals("resume resize ACK must accept the fitted rows", grid.getInt("rows"), resumeAck.getInt("rows"));
+        assertEquals("resume resize ACK must be accepted", "accepted", resumeAck.getString("result"));
+        assertEquals("resume resize ACK must belong to the live PTY attachment", geometry.getInt("sshAttachEpoch"), resumeAck.getInt("attachEpoch"));
+        assertTrue("resume resize ACK must follow its local fit", resumeAck.getDouble("atMs") >= resumeFit.getDouble("atMs"));
+    }
+
+    private void assertGridHasAcceptedResizeAck(JSONObject geometry, String action) throws Exception {
+        JSONObject grid = runtimeGrid(geometry);
+        assertEquals(action + " must finish without pending resize work", 0, geometry.getInt("resizePending"));
+        assertEquals(action + " must not hide a resize failure", 0, geometry.getInt("resizeFailures"));
+        assertEquals(action + " must report the accepted local xterm grid",
+                grid.getInt("cols") + " × " + grid.getInt("rows") + " accepted by SSH", geometry.getString("resizeStatus"));
+        JSONArray fitEvents = geometry.getJSONArray("resizeFitEvents");
+        JSONArray ackEvents = geometry.getJSONArray("resizeAckEvents");
+        JSONObject matchedFit = null;
+        JSONObject matchedAck = null;
+        for (int index = 0; index < fitEvents.length(); index++) {
+            JSONObject event = fitEvents.getJSONObject(index);
+            if (event.optInt("cols", -1) == grid.getInt("cols")
+                    && event.optInt("rows", -1) == grid.getInt("rows")
+                    && event.optInt("requestId", -1) > 0) matchedFit = event;
+        }
+        assertNotNull(action + " must record an xterm fit request", matchedFit);
+        for (int index = 0; index < ackEvents.length(); index++) {
+            JSONObject event = ackEvents.getJSONObject(index);
+            if (event.optInt("requestId", -1) == matchedFit.optInt("requestId", -2)) matchedAck = event;
+        }
+        assertNotNull(action + " fit must have a matching resize acknowledgement", matchedAck);
+        assertEquals(action + " ACK must accept the fitted columns", grid.getInt("cols"), matchedAck.getInt("cols"));
+        assertEquals(action + " ACK must accept the fitted rows", grid.getInt("rows"), matchedAck.getInt("rows"));
+        assertEquals(action + " ACK must be accepted", "accepted", matchedAck.getString("result"));
+        assertEquals(action + " ACK must belong to the live PTY attachment",
+                geometry.getInt("sshAttachEpoch"), matchedAck.getInt("attachEpoch"));
+        assertTrue(action + " ACK must follow its local fit", matchedAck.getDouble("atMs") >= matchedFit.getDouble("atMs"));
     }
 
     private void assertAtLeastFiveRows(String action, JSONObject geometry) throws Exception {

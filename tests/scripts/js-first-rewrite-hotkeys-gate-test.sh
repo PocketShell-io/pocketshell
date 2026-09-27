@@ -80,7 +80,9 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("fractional measured viewport caps round down under the 144px maximum", "Math.min(terminalViewportDockPreferredCapPx, Math.floor(height))"),
         ("narrow toolbar scroll reachability is checked", "narrowToolbarReachability"),
         ("Android dock heights reserve the status, key, and catalog rows", "INLINE_DICTATION_STATUS_ROW_HEIGHT_PX"),
-        ("catalog scroller stays within the 144px sheet", "catalogScrollerInsideSheet"),
+        ("catalog scroller stays within the 96px in-flow rail", "catalogScrollerInsideSheet"),
+        ("main and Ctrl rails record their terminal-region semantics", "catalogSheetRole"),
+        ("prompt composer entry has same-run measured reachability", "promptComposerLauncher"),
         ("dock stays within its clipping terminal panel", "insideTerminalPanel"),
         ("terminal slot stays within its clipping panel", "terminalSlotInsideTerminalPanel"),
         ("live keyboard row must not overflow", "live-width persistent row is clipped"),
@@ -91,7 +93,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("dictation transcribing screenshot is uploaded", "fastkeys-dictation-transcribing-ime-open.png"),
         ("dictation stopped screenshot is uploaded", "fastkeys-dictation-stopped-ime-open.png"),
         ("dictation error screenshot is uploaded", "fastkeys-dictation-error-ime-open.png"),
-        ("composer actions screenshot is uploaded", "fastkeys-main-composer-actions-ime-open.png"),
+        ("prompt composer Dictate action is measured", "Start prompt dictation"),
         ("dictation reattach screenshot is uploaded", "fastkeys-dictation-reattached-ime-open.png"),
         ("closed fast-key row screenshot is uploaded", "fastkeys-row-closed-ime-open.png"),
         ("catalog sheet front and tail screenshots are hashed for review", "fastkeys-sheet-ctrl-tail-ime-open.png"),
@@ -136,18 +138,10 @@ require_contract(workflow, lanes, runner, extractor)
 styles = app_path.parent.joinpath("styles.css").read_text()
 if "live keyboard row must contain all persistent controls without clipping or scrolling" not in journey:
     raise AssertionError("Android journey must reject live-width fast-key row clipping")
-if ("row.getDouble(\"top\") - draft.getDouble(\"bottom\") >= 2" not in journey
-        or "row.get(\"top\", 0) - draft.get(\"bottom\", 10**9) < 2" not in extractor
-        or ".app-shell[data-keyboard-visible=\"true\"][data-inline-dictation-status=\"true\"] .live-workspace .composer-actions {\n    margin-top: -2px;" not in styles):
-    raise AssertionError("status-visible composer must lift its 48px actions while keeping a 2px editor gap")
 if ("TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01" not in journey
         or "TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01" not in extractor
         or "terminal viewport overlap greater than 0.01px CSS rejected" not in extractor):
     raise AssertionError("Fast Keys geometry must document the 0.01px viewport rounding epsilon and reject larger overlaps")
-if ("target.getDouble(\"bottom\") <= imeEdgeCssY - 4" not in journey
-        or "require_ime_clearance_for_targets" not in extractor
-        or "status Send target without 4px IME clearance rejected" not in extractor):
-    raise AssertionError("every status composer action target must keep at least 4px of IME clearance")
 if ("Math.min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP," not in journey
         or "private JSONObject assertAcceptedKeyboardUpViewport" not in journey
         or "38, grid.getInt(\"cols\")" not in journey
@@ -170,22 +164,18 @@ if "gap: 0;" not in styles or "margin-top: 0;" not in styles:
     raise AssertionError("keyboard-up catalog must return reclaimed gap and remove dock overflow margin")
 if "the persistent mic must remain fully inside the key row" not in journey:
     raise AssertionError("Android journey must measure the mic inside the persistent row")
-if ("assertCompactStatusComposerLayout(\"listening status\", listening)" not in journey
-        or "assertCompactStatusComposerLayout(\"Ctrl catalog while dictation is listening\", ctrlListening)" not in journey
-        or "composerDraft:composerDraftRect" not in journey
-        or "imeEdgeCssY:" not in journey or "actionTargets=" not in journey):
-    raise AssertionError("Android journey must measure the compact 25px editor and composer actions with status open and closed")
-if ("height: 80px;" not in styles or "height: 25px;" not in styles
-        or "padding: 2px 8px;" not in styles or "font: 14px/20px var(--font-mono);" not in styles):
-    raise AssertionError("status-visible composer must reclaim its 16px row with an 80px panel and 25px editor")
-if "validate_compact_status_composer" not in extractor or "less than a 25px editor rejected" not in extractor:
-    raise AssertionError("artifact self-tests must enforce the compact status composer geometry")
+if ("journey.put(\"promptComposerEntry\", promptComposerEntry);" not in journey
+        or '"dialog".equals(promptComposerEntry.optString("role"))' not in journey
+        or '"Start prompt dictation".equals(promptComposerEntry.optString("micLabel"))' not in journey
+        or "promptComposerLauncher" not in journey):
+    raise AssertionError("Fast Keys journey must keep a measured entry into the first-class prompt dictation composer")
+if ("prompt composer entry without its modal dictation target rejected" not in extractor
+        or "Start prompt dictation" not in extractor):
+    raise AssertionError("artifact self-tests must enforce a reachable prompt dictation mode in the composer")
 if "dictation status shrinking the pre-dock viewport cap rejected" not in extractor:
     raise AssertionError("artifact self-tests must reject the former 16px viewport shrink")
 if "keeps active dictation status above the persistent controls on both catalog pages" not in unit_test_manifest:
     raise AssertionError("full JS unit gate manifest must include the active status row component test")
-if '"IME-up Ctrl catalog while inline dictation is listening"' not in extractor:
-    raise AssertionError("artifact gate must enforce the four-pixel composer clearance for Ctrl catalog dictation")
 if '.mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-dock {\n  border-top: 1px solid var(--border-soft);' not in mobile_hotkeys:
     raise AssertionError("Android inline dictation must use its one-pixel hairline as the dock boundary")
 if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
@@ -199,11 +189,17 @@ if ("More terminal keys" not in mobile_hotkeys
         or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
     raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment with accessible names")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 193px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog without visible dictation status must match the 193px Kotlin-aligned dock budget")
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog without visible dictation status must match the compact 145px dock budget")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 209px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog with visible dictation status must match the 209px Kotlin-aligned dock budget")
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog with visible dictation status must match the compact 161px dock budget")
+if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys
+        or "overflow-x: auto;" not in mobile_hotkeys or "overflow-y: hidden;" not in mobile_hotkeys
+        or "touch-action: pan-x;" not in mobile_hotkeys):
+    raise AssertionError("Fast Keys catalog must stay a compact horizontal single-row rail")
+if ('role="region"' not in mobile_hotkeys or 'role="dialog"' in mobile_hotkeys):
+    raise AssertionError("Fast Keys catalog must remain in the terminal hierarchy rather than float as a dialog")
 if "translateY(0.95px)" in mobile_hotkeys:
     raise AssertionError("Android inline dictation must not translate 48dp controls out of the clipped toolbar row")
 if "scrollbar-width: none;" not in mobile_hotkeys or ".mobile-hotkeys__bar::-webkit-scrollbar { display: none; }" not in mobile_hotkeys:
@@ -252,6 +248,12 @@ if "expected_first='1b5b411b5b421b091b5b5a110303030404040d'" not in runner \
     raise AssertionError("dedicated runner lost its independent first-session or reattached PTY byte oracle")
 if "hotkeys-host-oracle.txt" not in runner or 'tee "$evidence_dir/hotkeys-gradle.log"' not in runner:
     raise AssertionError("dedicated runner must preserve host byte and Gradle evidence")
+if '(set +m; stty raw -echo;' not in journey:
+    raise AssertionError("byte receiver must suppress background sampler job notices that evict the visible marker")
+if 'includes(" + JSONObject.quote(resumedDone) + ")' not in journey:
+    raise AssertionError("reattached fast-key journey must retain its visible resumed DONE marker assertion")
+if 'appLastContainsDone:app.includes(done)' not in journey or 'terminalLastContainsDone:term.includes(done)' not in journey:
+    raise AssertionError("failed marker diagnostics must distinguish app delivery from xterm write parsing")
 for focus_contract in (
     "reattachEarlyPromptTapWhileHeld",
     "reattachEarlyPromptTapAfterAttach",
@@ -357,9 +359,10 @@ if "dictationModeSelector" in extractor or "dictationModeOptions" in extractor:
     raise AssertionError("Fast Keys artifact validation must not retain the removed JS-only selector contract")
 if "narrowToolbarReachability" not in journey or "scrollWidth" not in journey:
     raise AssertionError("Fast Keys acceptance omits measured narrow-width horizontal reachability")
-for catalog_contract in ("catalogHeaderControlsDoNotOverlap", "catalogTitle", "scrollHeight", "mobile-hotkeys__ctrl-grid"):
+for catalog_contract in ("catalogHeaderControlsDoNotOverlap", "catalogTitle", "catalogSheetRole",
+                         "promptComposerLauncher", "clientHeight", "scrollHeight"):
     if catalog_contract not in journey or catalog_contract not in extractor:
-        raise AssertionError(f"Fast Keys acceptance omits visible title/header fit or vertical Ctrl reachability: {catalog_contract}")
+        raise AssertionError(f"Fast Keys acceptance omits measured single-row rail or composer-entry geometry: {catalog_contract}")
 for dictation_contract in (
     "inlineDictationMicInsideBar",
     "inlineDictationMicCount",

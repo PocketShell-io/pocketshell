@@ -73,6 +73,7 @@ EOF
 
 "$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py" --self-test
 "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" --self-test
+python3 "$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
@@ -93,6 +94,7 @@ copy_key_hash="$(sha256sum "$ssh_key_copy" | awk '{print $1}')"
 printf 'Fixture SSH key copy verified: %s\n' "$copy_key_hash"
 ssh_opts=(-i "$ssh_key_copy" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+ssh_remote() { ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"; }
 ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 \
   'command -v a >/dev/null && command -v aplexer >/dev/null && command -v pocketshell >/dev/null' \
   || fail "agents lane $PORT does not authenticate with the committed test key or lacks the aplexer tools"
@@ -171,7 +173,7 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I > "$asset_logcat" 2>&1 &
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I PS2884DictationFailure:I > "$asset_logcat" 2>&1 &
 asset_logcat_pid=$!
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live fast-key artifact logcat collector'
@@ -190,12 +192,23 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
 else
   test_exit_code=$?
   stop_asset_logcat
+  failure_raw="/tmp/$SESSION_BASE-keys-dictation.raw"
+  failure_geometry="${failure_raw}.geometry"
+  failure_oracle="$evidence_dir/hotkeys-host-failure-diagnostics.txt"
+  {
+    printf 'run_id=%s\nsession_prefix=%s\n' "$ARTIFACT_RUN_ID" "$SESSION_BASE"
+    ssh_remote "if [ -f '$failure_raw' ]; then printf 'raw_bytes='; wc -c < '$failure_raw'; printf 'raw_sha256='; sha256sum '$failure_raw'; printf 'raw_hex='; od -An -tx1 '$failure_raw' | tr -d '[:space:]'; printf '\\n'; else printf 'raw_file_missing=%s\\n' '$failure_raw'; fi" \
+      || printf 'raw_host_query_failed=1\n'
+    ssh_remote "if [ -f '$failure_geometry' ]; then printf 'geometry_samples='; wc -l < '$failure_geometry'; printf 'geometry_sha256='; sha256sum '$failure_geometry'; printf 'geometry_size_counts=\\n'; sort '$failure_geometry' | uniq -c; else printf 'geometry_file_missing=%s\\n' '$failure_geometry'; fi" \
+      || printf 'geometry_host_query_failed=1\n'
+  } > "$failure_oracle" 2>&1
+  printf 'Preserved failure-mode host receiver diagnostics: %s\n' "$failure_oracle"
   mkdir -p "$RESULTS_DIR"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 5000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
   "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
-    --output-dir "$evidence_dir" || true
+    --output-dir "$evidence_dir" --preserve-on-failure || true
   exit "$test_exit_code"
 fi
 
@@ -205,7 +218,6 @@ stop_asset_logcat
 "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir"
 
-ssh_remote() { ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"; }
 first_raw="$SESSION_BASE-keys-bytes.raw"
 resumed_raw="$SESSION_BASE-keys-resumed-bytes.raw"
 dictation_raw="$SESSION_BASE-keys-dictation.raw"
@@ -222,6 +234,7 @@ dictation = journey.get("dictation")
 if not isinstance(dictation, dict):
     raise SystemExit("FAIL: integrated dictation evidence is missing")
 raw_file = dictation.get("rawFile")
+geometry_oracle_file = dictation.get("geometryOracleFile")
 expected_hex = dictation.get("expectedHostHex")
 expected_count = dictation.get("expectedByteCount")
 if not isinstance(raw_file, str) or not re.fullmatch(r"/tmp/[A-Za-z0-9._-]+-keys-dictation\.raw", raw_file):
@@ -230,11 +243,14 @@ if not isinstance(expected_hex, str) or not re.fullmatch(r"(?:[0-9a-f]{2})+", ex
     raise SystemExit("FAIL: dictation expected host bytes are unsafe or malformed")
 if isinstance(expected_count, bool) or not isinstance(expected_count, int) or expected_count != len(expected_hex) // 2:
     raise SystemExit("FAIL: dictation byte count does not match the journey manifest")
-print(f"{raw_file}\t{expected_hex}\t{expected_count}")
+if geometry_oracle_file != f"{raw_file}.geometry":
+    raise SystemExit("FAIL: dictation PTY geometry oracle path does not match its raw byte receiver")
+print(f"{raw_file}\t{expected_hex}\t{expected_count}\t{geometry_oracle_file}")
 PY
 )" || fail 'could not read the integrated dictation host byte oracle'
-IFS=$'\t' read -r dictation_raw_path expected_dictation_hex expected_dictation_count <<< "$dictation_oracle"
+IFS=$'\t' read -r dictation_raw_path expected_dictation_hex expected_dictation_count dictation_geometry_path <<< "$dictation_oracle"
 [[ "$dictation_raw_path" == "/tmp/$dictation_raw" ]] || fail "unexpected dictation raw file: ${dictation_raw_path:-<empty>}"
+[[ "$dictation_geometry_path" == "/tmp/$dictation_raw.geometry" ]] || fail "unexpected dictation geometry path: ${dictation_geometry_path:-<empty>}"
 expected_first='1b5b411b5b421b091b5b5a110303030404040d'
 expected_resumed='1b5b41'
 [[ "$first_hex" == "$expected_first" ]] \
@@ -251,6 +267,12 @@ dictation_count="$(ssh_remote "wc -c < /tmp/$dictation_raw | tr -d '[:space:]'")
   || fail "remote raw byte file lengths mismatch: first=${first_count:-?} resumed=${resumed_count:-?}"
 [[ "$dictation_count" == "$expected_dictation_count" ]] \
   || fail "dictation raw byte file length mismatch: expected=$expected_dictation_count got=${dictation_count:-?}"
+dictation_geometry_samples="$evidence_dir/dictation-pty-geometry-samples.txt"
+ssh_remote "test -s '$dictation_geometry_path' && cat -- '$dictation_geometry_path'" > "$dictation_geometry_samples" \
+  || fail 'independent remote PTY geometry sample file is missing or unreadable'
+python3 "$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py" \
+  --journey "$evidence_dir/fastkeys-journey.json" --samples "$dictation_geometry_samples" \
+  | tee "$evidence_dir/hotkeys-pty-geometry-oracle.txt"
 {
   printf 'PASS: first live session exact PTY bytes (%s bytes): %s\n' "$first_count" "$first_hex"
   printf 'PASS: reattached live session exact PTY bytes (%s bytes): %s\n' "$resumed_count" "$resumed_hex"
