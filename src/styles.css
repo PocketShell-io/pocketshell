@@ -653,9 +653,6 @@ button { color: inherit; }
     padding-top: 0;
     padding-bottom: 1px;
   }
-  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace .panel-heading--terminal {
-    display: none;
-  }
   .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
     gap: 0;
     padding-bottom: 4px;
@@ -696,7 +693,7 @@ button { color: inherit; }
     padding-block: 1px;
   }
   .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal {
-    min-height: 18px;
+    min-height: 24px;
   }
   .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal h2 {
     font-size: 12px;

@@ -16,8 +16,9 @@ export function resolveAndroidBackDestination(
   canNavigateBack: boolean,
   homeSurface: HomeSurface,
   hasConnection: boolean,
+  hasRouteOverlay = false,
 ): AndroidBackDestination {
-  if (canNavigateBack) return 'navigation';
+  if (canNavigateBack || hasRouteOverlay) return 'navigation';
   if (hasConnection && homeSurface !== 'connection') return 'workspace';
   return 'minimize';
 }

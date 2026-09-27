@@ -83,16 +83,43 @@ const mountedPromptComposer = {
     const phase = internalInstance?.setupState?.dictationPhase as string | undefined;
     const activeDictation = internalInstance?.setupState?.activeDictation as object | null | undefined;
     const stopDictation = internalInstance?.setupState?.stopDictation as ((operation: object) => Promise<void>) | undefined;
+    const cancelDictation = internalInstance?.setupState?.cancelDictation as ((operation: object) => void) | undefined;
+    const deliver = internalInstance?.setupState?.deliver as ((intent: 'insert' | 'submit') => Promise<void>) | undefined;
+    const canDeliver = internalInstance?.setupState?.canDeliver as boolean | undefined;
     return h('section', [
       h('button', {
         'data-testid': 'composer-dictate',
         onClick: toggleDictation,
       }),
       h('p', { 'data-testid': 'composer-dictation-state' }, phase ?? ''),
-      ...(phase === 'recording' ? [h('button', {
-        'data-testid': 'composer-recording-stop',
-        onClick: () => activeDictation && stopDictation?.(activeDictation),
-      })] : []),
+      ...(phase === 'starting' || phase === 'recording' || phase === 'transcribing' ? [h('div', {
+        'data-testid': 'composer-recording-actions',
+      }, [
+        h('button', {
+          'data-testid': 'composer-recording-cancel',
+          'aria-label': 'Cancel dictation and restore the original draft',
+          onClick: () => activeDictation && cancelDictation?.(activeDictation),
+        }, 'Cancel'),
+        ...(phase === 'recording' ? [
+          h('button', {
+            'data-testid': 'composer-insert',
+            disabled: !canDeliver,
+            onClick: () => deliver?.('insert'),
+          }, 'Insert'),
+        ] : []),
+        ...(phase === 'recording' || phase === 'transcribing' ? [
+          h('button', {
+            'data-testid': 'composer-dictation-send',
+            disabled: !canDeliver,
+            onClick: () => deliver?.('submit'),
+          }, 'Send'),
+        ] : []),
+        ...(phase === 'recording' ? [h('button', {
+          'data-testid': 'composer-recording-stop',
+          'aria-label': 'Stop dictation and keep the recognized text in the editable draft',
+          onClick: () => activeDictation && stopDictation?.(activeDictation),
+        }, 'Stop')] : []),
+      ])] : []),
       h('p', { 'data-testid': 'composer-recording-preview' }, livePreview ?? ''),
     ]);
   },
@@ -116,6 +143,70 @@ describe('composer dictation cancellation', () => {
   afterEach(() => {
     vi.clearAllMocks();
     mocks.appStateListener = undefined;
+  });
+
+  it('labels the recording restore action Cancel and restores the original draft', async () => {
+    mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
+      mocks.appStateListener = listener;
+      return { remove: vi.fn(async () => {}) };
+    });
+
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const stop = vi.fn(async () => {});
+    const nativeCancel = vi.fn(async () => {});
+    mocks.cancelDictation.mockImplementation(nativeCancel);
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dictation-cancel-label-1');
+      dictationEvent?.({ requestId: 'dictation-cancel-label-1', type: 'started' });
+      return { requestId: 'dictation-cancel-label-1', stop, cancel: vi.fn(async () => {}) };
+    });
+
+    const targetKey = 'host/cancel-label-session';
+    const writePty = vi.fn(async () => ({ ok: true }));
+    const pinia = createPinia();
+    const root = node('root');
+    const app = renderer.createApp(mountedPromptComposer, {
+      targetKey,
+      targetLabel: 'session',
+      transportState: 'connected',
+      writePty,
+    });
+    app.use(pinia);
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft(targetKey, 'original typed draft');
+    const dictate = findByTestId(root, 'composer-dictate');
+    await (dictate?.props.onClick as () => Promise<void>)();
+    dictationEvent?.({ requestId: 'dictation-cancel-label-1', type: 'partial', text: 'visible partial' });
+    await flushPromises();
+
+    const cancel = findByTestId(root, 'composer-recording-cancel');
+    expect(cancel?.text).toBe('Cancel');
+    expect(cancel?.props['aria-label']).toBe('Cancel dictation and restore the original draft');
+    expect(drafts.draftFor(targetKey)).toBe('original typed draft visible partial');
+    expect(writePty).not.toHaveBeenCalled();
+
+    (cancel?.props.onClick as () => void)();
+    await flushPromises();
+    expect(findByTestId(root, 'composer-dictation-state')?.text).toBe('idle');
+    expect(drafts.draftFor(targetKey)).toBe('original typed draft');
+    expect(findByTestId(root, 'composer-recording-preview')?.text).toBe('');
+    expect(mocks.cancelDictation).toHaveBeenCalledWith('dictation-cancel-label-1');
+    expect(stop).not.toHaveBeenCalled();
+    expect(writePty).not.toHaveBeenCalled();
+
+    dictationEvent?.({ requestId: 'dictation-cancel-label-1', type: 'partial', text: 'late text' });
+    await flushPromises();
+    expect(drafts.draftFor(targetKey)).toBe('original typed draft');
+    app.unmount();
   });
 
   it('cancels a pending start on background, restores the base draft, and rejects late partials', async () => {
@@ -304,6 +395,108 @@ describe('composer dictation cancellation', () => {
     expect(drafts.draftFor('host/pause-session')).toBe('keep typed recognized phrase');
     expect(writePty).not.toHaveBeenCalled();
 
+    app.unmount();
+  });
+
+  it.each([
+    { phase: 'recording', intent: 'insert' },
+    { phase: 'recording', intent: 'submit' },
+    { phase: 'transcribing', intent: 'submit' },
+  ] as const)('stops $phase capture before the explicit $intent delivery and freezes the visible transcript', async ({ phase, intent }) => {
+    mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
+      mocks.appStateListener = listener;
+      return { remove: vi.fn(async () => {}) };
+    });
+
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const writes: Array<{ bytes: Uint8Array; operationId: string; writeIndex: number }> = [];
+    const writePty = vi.fn(async (bytes: Uint8Array, context: { operationId: string; writeIndex: number }) => {
+      writes.push({ bytes, operationId: context.operationId, writeIndex: context.writeIndex });
+      return { ok: true };
+    });
+    const stop = vi.fn(async () => {});
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dictation-delivery-1');
+      dictationEvent?.({ requestId: 'dictation-delivery-1', type: 'started' });
+      return { requestId: 'dictation-delivery-1', stop, cancel: vi.fn(async () => {}) };
+    });
+
+    const targetKey = 'host/' + phase + '-' + intent;
+    const pinia = createPinia();
+    const root = node('root');
+    const app = renderer.createApp(mountedPromptComposer, {
+      targetKey,
+      targetLabel: 'session',
+      transportState: 'connected',
+      writePty,
+    });
+    app.use(pinia);
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft(targetKey, 'typed prefix');
+
+    const dictate = findByTestId(root, 'composer-dictate');
+    const start = dictate?.props.onClick;
+    expect(start).toBeTypeOf('function');
+    await (start as () => Promise<void>)();
+    dictationEvent?.({ requestId: 'dictation-delivery-1', type: 'partial', text: 'visible transcript' });
+    await flushPromises();
+    expect(drafts.draftFor(targetKey)).toBe('typed prefix visible transcript');
+    expect(writePty).not.toHaveBeenCalled();
+    const actions = findByTestId(root, 'composer-recording-actions');
+    expect(actions?.children.map((child) => child.props['data-testid'])).toEqual([
+      'composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop',
+    ]);
+    expect(findByTestId(root, 'composer-recording-cancel')?.text).toBe('Cancel');
+    expect(findByTestId(root, 'composer-recording-cancel')?.props['aria-label'])
+      .toBe('Cancel dictation and restore the original draft');
+
+    if (phase === 'transcribing') {
+      const stopButton = findByTestId(root, 'composer-recording-stop');
+      expect(stopButton).toBeDefined();
+      await (stopButton?.props.onClick as () => Promise<void>)();
+      expect(findByTestId(root, 'composer-dictation-state')?.text).toBe('transcribing');
+      expect(findByTestId(root, 'composer-recording-actions')?.children.map((child) => child.props['data-testid'])).toEqual([
+        'composer-recording-cancel', 'composer-dictation-send',
+      ]);
+      expect(findByTestId(root, 'composer-recording-cancel')?.text).toBe('Cancel');
+      expect(findByTestId(root, 'composer-recording-cancel')?.props['aria-label'])
+        .toBe('Cancel dictation and restore the original draft');
+      expect(findByTestId(root, 'composer-insert')).toBeUndefined();
+      expect(writePty).not.toHaveBeenCalled();
+    }
+
+    const action = findByTestId(root, intent === 'insert' ? 'composer-insert' : 'composer-dictation-send');
+    expect(action).toBeDefined();
+    expect(action?.props.disabled).toBe(false);
+    const pending = (action?.props.onClick as () => Promise<void>)();
+    await flushPromises();
+    expect(findByTestId(root, 'composer-dictation-state')?.text).toBe('transcribing');
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(writePty).not.toHaveBeenCalled();
+
+    dictationEvent?.({ requestId: 'dictation-delivery-1', type: 'result', text: 'late final transcript' });
+    await flushPromises();
+    expect(drafts.draftFor(targetKey)).toBe('typed prefix visible transcript');
+    expect(writePty).not.toHaveBeenCalled();
+    dictationEvent?.({ requestId: 'dictation-delivery-1', type: 'stopped' });
+    await pending;
+
+    expect(writePty).toHaveBeenCalled();
+    expect(new Set(writes.map((write) => write.operationId)).size).toBe(1);
+    expect(writes.map((write) => write.writeIndex)).toEqual(writes.map((_write, index) => index + 1));
+    const delivered = writes.map(({ bytes }) => new TextDecoder().decode(bytes)).join('');
+    expect(delivered).toContain('typed prefix visible transcript');
+    expect(delivered).not.toContain('late final transcript');
+    expect(delivered.endsWith(String.fromCharCode(13))).toBe(intent === 'submit');
+    expect(drafts.draftFor(targetKey)).toBe('');
     app.unmount();
   });
 });

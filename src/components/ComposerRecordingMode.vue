@@ -3,11 +3,15 @@ defineProps<{
   state: 'starting' | 'recording' | 'transcribing';
   elapsedLabel: string;
   livePreview: string;
+  canDeliver: boolean;
+  sending: boolean;
 }>();
 
 const emit = defineEmits<{
   cancel: [];
   stop: [];
+  insert: [];
+  send: [];
 }>();
 </script>
 
@@ -32,19 +36,32 @@ const emit = defineEmits<{
       <span class="recording-mode__spinner" aria-hidden="true"></span>
       <span>Preparing your draft</span>
     </div>
-    <p v-if="state === 'recording'" id="composer-recording-preview" class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
+    <p v-if="state === 'recording' || state === 'transcribing'" id="composer-recording-preview"
+      class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
       {{ livePreview || 'Speak to build your draft.' }}
     </p>
 
-    <div class="recording-mode__actions">
+    <div class="recording-mode__actions" data-testid="composer-recording-actions">
       <button class="recording-mode__button recording-mode__button--cancel" type="button"
-        data-testid="composer-recording-cancel" @click="emit('cancel')">
-        Cancel &amp; discard
+        data-testid="composer-recording-cancel"
+        aria-label="Cancel dictation and restore the original draft"
+        :disabled="sending" @click="emit('cancel')">
+        Cancel
       </button>
-      <button v-if="state === 'recording'" class="recording-mode__button recording-mode__button--stop" type="button"
-        data-testid="composer-recording-stop" aria-label="Stop dictation and keep the text in the editable draft"
-        @click="emit('stop')">
-        Stop &amp; keep text
+      <button v-if="state === 'recording'" class="recording-mode__button recording-mode__button--insert" type="button"
+        data-testid="composer-insert" :disabled="!canDeliver || sending" @click="emit('insert')">
+        Insert
+      </button>
+      <button v-if="state === 'recording' || state === 'transcribing'"
+        class="recording-mode__button recording-mode__button--send" type="button"
+        data-testid="composer-dictation-send" :disabled="!canDeliver || sending" @click="emit('send')">
+        {{ sending ? 'Sending…' : 'Send' }}
+      </button>
+      <button v-if="state === 'recording'" class="recording-mode__button recording-mode__button--stop"
+        type="button" data-testid="composer-recording-stop"
+        aria-label="Stop dictation and keep the recognized text in the editable draft"
+        :disabled="sending" @click="emit('stop')">
+        Stop
       </button>
     </div>
   </section>
@@ -72,13 +89,12 @@ const emit = defineEmits<{
 }
 
 .recording-mode__header strong { min-width: 0; font-weight: 600; }
+.recording-mode__header time { margin-left: auto; }
 .recording-mode__header time {
-  margin-left: auto;
   color: var(--accent);
   font: 600 var(--fs-300)/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-
 .recording-mode__indicator {
   width: 9px;
   height: 9px;
@@ -148,7 +164,7 @@ const emit = defineEmits<{
   overflow-wrap: anywhere;
 }
 
-.recording-mode__actions { display: flex; gap: 8px; }
+.recording-mode__actions { display: flex; gap: 6px; }
 .recording-mode__button {
   min-width: 0;
   min-height: 48px;
@@ -164,11 +180,16 @@ const emit = defineEmits<{
 .recording-mode__button--cancel { color: var(--fg-secondary); }
 .recording-mode__button--stop {
   border-color: var(--accent);
+  color: var(--accent);
+}
+.recording-mode__button--send {
+  border-color: var(--accent);
   background: var(--accent);
   color: var(--bg);
 }
+.recording-mode__button:disabled { opacity: var(--disabled-opacity); }
 .recording-mode__button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.recording-mode__button:active { filter: brightness(1.12); }
+.recording-mode__button:active:not(:disabled) { filter: brightness(1.12); }
 
 @keyframes recording-wave {
   from { transform: scaleY(0.35); }

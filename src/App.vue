@@ -34,6 +34,7 @@ import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { ConnectionController } from './session/connectionController';
+import { createAppLifecycleHandler } from './session/appLifecycle';
 import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
@@ -126,6 +127,7 @@ const terminalFontFamily = computed(() => fontCssVariables({
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
+const mobilePromptComposerOpen = ref(false);
 const promptComposerHasFocus = ref(false);
 const mobileHotkeysHasFocus = ref(false);
 const terminalViewportHasFocus = ref(false);
@@ -233,7 +235,7 @@ const mobileHotkeysDockHeight = computed(() => {
   const dictationStatusRowHeight = Capacitor.getPlatform() === 'android' && inlineDictationStatusVisible.value
     ? inlineDictationStatusRowHeightPx
     : 0;
-  const catalogHeight = mobileHotkeysPaletteOpen.value ? 144 : 0;
+  const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;
   const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
   return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
 });
@@ -278,6 +280,7 @@ const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
 ) ?? null);
 
 function navigateHomeSurface(action: HomeSurfaceAction) {
+  mobilePromptComposerOpen.value = false;
   if (action !== 'session-attached' && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
@@ -489,6 +492,21 @@ watch(() => navigation.route, (route) => {
   if (route === 'usage') void refreshUsage();
   if (route === 'ports') void refreshPorts();
 });
+
+function openPromptComposer() {
+  mobileHotkeys.value?.closePalette();
+  mobilePromptComposerOpen.value = true;
+}
+
+function setMobilePromptComposerOpen(open: boolean) {
+  mobilePromptComposerOpen.value = open;
+  if (!open) {
+    void nextTick(() => {
+      document.querySelector<HTMLButtonElement>('[data-testid="prompt-composer-launcher"]')
+        ?.focus({ preventScroll: true });
+    });
+  }
+}
 
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
@@ -1076,6 +1094,14 @@ onMounted(() => {
     void loadImportedLegacyHosts();
   });
   if (Capacitor.isNativePlatform()) {
+    const handleAppState = createAppLifecycleHandler({
+      getController: () => controller,
+      getBackgroundGraceMs: () => appSettings.backgroundGraceMs,
+      onError: (error) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+      },
+    });
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
       const activeElement = document.activeElement;
@@ -1090,12 +1116,24 @@ onMounted(() => {
         (activeElement as HTMLElement).blur();
         return;
       }
+      if (mobilePromptComposerOpen.value) {
+        setMobilePromptComposerOpen(false);
+        return;
+      }
       if (mobileHotkeysPaletteOpen.value) {
         mobileHotkeys.value?.closePalette();
         return;
       }
-      switch (resolveAndroidBackDestination(navigation.canGoBack, homeSurface.value, !!connectionSnapshot.value)) {
-        case 'navigation': navigation.back(); break;
+      switch (resolveAndroidBackDestination(
+        navigation.canGoBack,
+        homeSurface.value,
+        !!connectionSnapshot.value,
+        navigation.route !== 'home',
+      )) {
+        case 'navigation':
+          if (navigation.canGoBack) navigation.back();
+          else navigation.home();
+          break;
         case 'workspace': navigateHomeSurface('back'); break;
         case 'minimize':
           void CapacitorApp.minimizeApp().catch((error: unknown) => {
@@ -1111,17 +1149,7 @@ onMounted(() => {
     });
     void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       diagnostics.record(isActive ? 'app-foregrounded' : 'app-backgrounded', 'lifecycle', 'OK');
-      const active = controller;
-      if (!active) return;
-      const phase = active.getSnapshot().phase;
-      if (isActive && phase === 'background') void active.returnToForeground().catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
-      else if (!isActive && phase === 'live') void active.enterBackground(appSettings.backgroundGraceMs).catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
+      handleAppState(isActive);
     }).then((listener) => {
       removeAppState = () => listener.remove();
     }).catch((error: unknown) => {
@@ -1155,6 +1183,9 @@ watchEffect(() => {
   root.style.setProperty('--terminal-min-grid-height', `${Math.ceil(appSettings.terminalFontSize * 7.6 + 22)}px`);
 });
 
+watch(() => navigation.route, (route) => {
+  if (route !== 'home') mobilePromptComposerOpen.value = false;
+});
 
 onBeforeUnmount(() => {
   removeKeyboardViewportListeners?.();
@@ -1174,6 +1205,7 @@ onBeforeUnmount(() => {
     :data-native-platform="Capacitor.getPlatform()"
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
+    :data-prompt-composer-open="mobilePromptComposerOpen"
     :data-terminal-viewport-focused="terminalViewportHasFocus"
     :data-fast-keys-ctrl="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'ctrl'"
     :data-fast-keys-main="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'main'"
@@ -1201,6 +1233,7 @@ onBeforeUnmount(() => {
     @pointerdown.capture="recordAttachComposerPointer"
     :data-migration-status="installedDataMigrationState.status"
   >
+    <div id="prompt-composer-portal" aria-live="off"></div>
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
       <template v-if="navigation.route === 'home' && connectionSnapshot">
         <div class="session-context" aria-live="polite">
@@ -1524,12 +1557,14 @@ onBeforeUnmount(() => {
             :enabled="mobileHotkeysEnabled"
             :keyboard-visible="keyboardVisible"
             :dictation-available="Capacitor.getPlatform() === 'android'"
+            :prompt-composer-available="Capacitor.getPlatform() === 'android'"
             :dictation-state="inlineDictationState"
             :dictation-target-key="inlineDictationTargetKey"
             @send="sendMobileHotkey"
             @palette-change="mobileHotkeysPaletteOpen = $event"
             @page-change="mobileHotkeysPage = $event"
             @keep-keyboard-open="keepMobileHotkeysImeOpen"
+            @open-composer="openPromptComposer"
           >
             <template #persistent-accessory>
               <TerminalDictationBar
@@ -1549,9 +1584,11 @@ onBeforeUnmount(() => {
         <PromptComposer
           v-if="connectionSnapshot?.selectedSession"
           :target-key="composerTargetKey"
-          :target-label="connectionSnapshot.selectedSession.name"
           :transport-state="composerTransportState"
           :write-pty="writeComposerPty"
+          :mobile-sheet="Capacitor.getPlatform() === 'android'"
+          :open="mobilePromptComposerOpen"
+          @open-change="setMobilePromptComposerOpen"
         />
       </section>
     </main>

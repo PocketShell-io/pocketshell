@@ -126,7 +126,8 @@
         "keeps host setup and session selection reachable from the live terminal",
         "backs from the terminal to sessions, then to connection details",
         "returns to connection setup when disconnected",
-        "closes nested routes before stepping back through a connected workspace"
+        "closes nested routes before stepping back through a connected workspace",
+        "closes a route overlay without stepping away from the current connected surface"
       ]
     },
     "tests/unit/inlineDictation.test.ts": {
@@ -163,6 +164,7 @@
         "keeps the controls inert off-live and resumes only after an explicit live state",
         "emits core catalog bytes and keeps the palette open until toggled or closed",
         "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
+        "offers the Android Compose launcher as an accessible entry to prompt dictation",
         "keeps active dictation status above the persistent controls on both catalog pages",
         "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
         "closes and cancels a pending hold on live-session loss, then starts on the main page again",
@@ -236,12 +238,22 @@
         "still gives the terminal focus when no composer has claimed it"
       ]
     },
+    "tests/unit/terminalDictationBarUnmount.test.ts": {
+      "suite": "terminal dictation bar lifecycle",
+      "tests": [
+        "cancels on unmount, clears parent state, and ignores late transcript events"
+      ]
+    },
     "tests/unit/composerDictationCancellation.test.ts": {
       "suite": "composer dictation cancellation",
       "tests": [
+        "labels the recording restore action Cancel and restores the original draft",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",
-        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop"
+        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",
+        "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
+        "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
+        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
       ]
     }
   }

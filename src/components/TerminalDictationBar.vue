@@ -19,12 +19,13 @@ const emit = defineEmits<{
   stateChange: [state: InlineDictationState];
 }>();
 
-const state = ref<InlineDictationState>({
+const initialState: InlineDictationState = {
   phase: 'idle',
   preview: '',
   message: 'Tap the microphone to dictate at the terminal cursor.',
   tone: 'quiet',
-});
+};
+const state = ref<InlineDictationState>({ ...initialState });
 const controller = createInlineDictationController({
   startDictation: (onEvent, settings) => platformInput.startDictation(onEvent, settings),
   insertText: (targetKey, text) => props.insertText(targetKey, text),
@@ -60,8 +61,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   void appStateListener?.remove();
-  stopWatching();
+  // Cancellation clears buffered finals and rejects late native events. Start
+  // it before detaching the controller listener, then reset App's external
+  // state explicitly because the sheet containing this control is going away.
   void controller.cancel();
+  emit('stateChange', { ...initialState });
+  stopWatching();
 });
 
 function toggleDictation() {

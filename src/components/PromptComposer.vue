@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
-import { ComposerControls } from '@pocketshell/ui';
+import { AppIcon, ComposerControls } from '@pocketshell/ui';
 import type { ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
 import { platformInput, type DictationEvent, type DictationSession } from '../session/platformInput';
@@ -10,12 +10,18 @@ import { useAppSettings, VOICE_LANGUAGE_AUTO } from '../stores/appSettings';
 import { useComposerDrafts } from '../stores/composerDrafts';
 import ComposerRecordingMode from './ComposerRecordingMode.vue';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   targetKey: string;
-  targetLabel: string;
   transportState: 'connected' | 'lost' | 'closed';
   writePty: PtyWriteEffect;
-}>();
+  /** Android opens the shared composer in a modal sheet from the terminal dock. */
+  mobileSheet?: boolean;
+  open?: boolean;
+}>(), {
+  mobileSheet: false,
+  open: false,
+});
+const emit = defineEmits<{ openChange: [open: boolean] }>();
 
 type DictationPhase = 'idle' | 'starting' | 'recording' | 'transcribing' | 'review';
 
@@ -24,9 +30,12 @@ interface ActiveDictation {
   baseDraft: string;
   requestId: string | null;
   session: DictationSession | null;
+  finished: Promise<'stopped' | 'cancelled'>;
+  resolveFinished: (result: 'stopped' | 'cancelled') => void;
   cancelled: boolean;
   sawStarted: boolean;
   stopRequested: boolean;
+  deliveryChosen: boolean;
   completedTranscript: string;
   partialTranscript: string;
 }
@@ -42,6 +51,7 @@ const dictationPhase = ref<DictationPhase>('idle');
 const elapsedMs = ref(0);
 const activeDictation = shallowRef<ActiveDictation | null>(null);
 const draftInput = ref<HTMLTextAreaElement | null>(null);
+const sheetCloseButton = ref<HTMLButtonElement | null>(null);
 let recordingStartedAt = 0;
 let recordingTimer: ReturnType<typeof setInterval> | null = null;
 let appStateListener: PluginListenerHandle | null = null;
@@ -72,7 +82,7 @@ const elapsedLabel = computed(() => {
 const canDeliver = computed(() => props.targetKey.length > 0
   && props.transportState === 'connected'
   && draft.value.length > 0
-  && (dictationPhase.value === 'idle' || dictationPhase.value === 'review')
+  && dictationPhase.value !== 'starting'
   && sendingIntent.value === null);
 
 watch(() => props.transportState, (state) => delivery.value.setTransportState(state), { immediate: true });
@@ -96,7 +106,19 @@ watch(() => props.targetKey, () => {
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+  if (props.mobileSheet) emit('openChange', false);
 }, { flush: 'sync' });
+
+watch(() => props.open, (open, previousOpen) => {
+  if (!props.mobileSheet) return;
+  if (open) {
+    void nextTick(() => sheetCloseButton.value?.focus({ preventScroll: true }));
+  } else if (previousOpen) {
+    const operation = activeDictation.value;
+    if (operation) cancelDictation(operation, false);
+    draftInput.value?.blur();
+  }
+});
 
 onBeforeUnmount(() => {
   composerUnmounting = true;
@@ -138,6 +160,7 @@ function blockDraftEditsDuringDictation(event: Event) {
 }
 
 function preserveDraftFocus(event: PointerEvent) {
+  if (props.mobileSheet) return;
   const target = event.target;
   if (target instanceof Element && target.closest('button') && document.activeElement === draftInput.value) {
     // Android hides the IME when a tapped control takes focus. Keep the draft
@@ -203,9 +226,11 @@ function handleDictationEvent(operation: ActiveDictation, event: DictationEvent)
       stopRecordingTimer();
     }
   } else if (event.type === 'partial') {
+    if (operation.deliveryChosen) return;
     operation.partialTranscript = event.text ?? '';
     renderDictationDraft(operation);
   } else if (event.type === 'result') {
+    if (operation.deliveryChosen) return;
     operation.completedTranscript = appendTranscript(operation.completedTranscript, event.text ?? operation.partialTranscript);
     operation.partialTranscript = '';
     renderDictationDraft(operation);
@@ -213,14 +238,15 @@ function handleDictationEvent(operation: ActiveDictation, event: DictationEvent)
     statusTone.value = 'error';
     statusText.value = `Dictation stopped: ${event.code ?? 'speech recognition failed'}. Review the draft before sending.`;
   } else if (event.type === 'stopped') {
-    renderDictationDraft(operation);
+    if (!operation.deliveryChosen) renderDictationDraft(operation);
     stopRecordingTimer();
     dictationPreview.value = '';
     activeDictation.value = null;
     dictationPhase.value = 'review';
-    if (statusTone.value !== 'error') {
+    operation.resolveFinished('stopped');
+    if (!operation.deliveryChosen && statusTone.value !== 'error') {
       statusTone.value = 'quiet';
-      statusText.value = 'Review and edit this draft, then tap Send or Insert when ready.';
+      statusText.value = 'Dictation ready for review.';
     }
   }
 }
@@ -232,14 +258,21 @@ async function toggleDictation() {
   }
   if (dictationPhase.value === 'starting' || !props.targetKey) return;
 
+  let resolveFinished!: (result: 'stopped' | 'cancelled') => void;
+  const finished = new Promise<'stopped' | 'cancelled'>((resolve) => {
+    resolveFinished = resolve;
+  });
   const operation: ActiveDictation = {
     targetKey: props.targetKey,
     baseDraft: drafts.draftFor(props.targetKey),
     requestId: null,
     session: null,
+    finished,
+    resolveFinished,
     cancelled: false,
     sawStarted: false,
     stopRequested: false,
+    deliveryChosen: false,
     completedTranscript: '',
     partialTranscript: '',
   };
@@ -248,7 +281,7 @@ async function toggleDictation() {
   dictationPhase.value = 'starting';
   elapsedMs.value = 0;
   statusTone.value = 'quiet';
-  statusText.value = 'Nothing is sent until you review and tap Send.';
+  statusText.value = 'Your draft stays in the composer until you tap Insert or Send.';
   discardArmed.value = false;
 
   try {
@@ -282,25 +315,31 @@ async function toggleDictation() {
   }
 }
 
-async function stopDictation(operation: ActiveDictation) {
-  if (operation.cancelled || activeDictation.value !== operation || !operation.session) return;
+async function stopDictation(operation: ActiveDictation, updateStatus = true): Promise<boolean> {
+  if (operation.cancelled || activeDictation.value !== operation || !operation.session) return false;
+  if (operation.stopRequested) return true;
   operation.stopRequested = true;
   dictationPhase.value = 'transcribing';
   stopRecordingTimer();
-  statusTone.value = 'quiet';
-  statusText.value = 'Your text is being prepared for review. It will not be sent automatically.';
+  if (updateStatus) {
+    statusTone.value = 'quiet';
+    statusText.value = 'Your text is being prepared for review. It will not be sent automatically.';
+  }
   try {
     await operation.session.stop();
+    return true;
   } catch (error) {
-    if (operation.cancelled || activeDictation.value !== operation) return;
+    if (operation.cancelled || activeDictation.value !== operation) return false;
     statusTone.value = 'error';
     statusText.value = `Dictation could not stop: ${errorMessage(error)}. Cancel to restore the original draft.`;
+    return false;
   }
 }
 
 function cancelDictation(operation: ActiveDictation, showStatus = true) {
   if (operation.cancelled) return;
   operation.cancelled = true;
+  operation.resolveFinished('cancelled');
   if (activeDictation.value === operation) {
     activeDictation.value = null;
     dictationPhase.value = 'idle';
@@ -341,10 +380,34 @@ async function deliver(intent: ComposerDeliveryIntent) {
   const payload = drafts.draftFor(targetKey);
   if (!targetKey || payload.length === 0 || !canDeliver.value) return;
   const activeDelivery = delivery.value;
+  const operation = activeDictation.value;
+  if (operation && !operation.session) return;
   sendingIntent.value = intent;
   acknowledgedWrites.value = 0;
   statusTone.value = 'quiet';
-  statusText.value = intent === 'insert' ? 'Inserting into the terminal…' : 'Sending to the terminal…';
+  statusText.value = operation
+    ? 'Stopping dictation before ' + (intent === 'insert' ? 'Insert' : 'Send') + '.'
+    : intent === 'insert' ? 'Inserting into the terminal…' : 'Sending to the terminal…';
+  if (operation) {
+    operation.deliveryChosen = true;
+    stopRecordingTimer();
+    dictationPhase.value = 'transcribing';
+    const stopAccepted = await stopDictation(operation, false);
+    if (!stopAccepted) {
+      operation.deliveryChosen = false;
+      if (sendingIntent.value === intent) sendingIntent.value = null;
+      return;
+    }
+    if (operation.cancelled || delivery.value !== activeDelivery || props.targetKey !== targetKey) {
+      if (sendingIntent.value === intent) sendingIntent.value = null;
+      return;
+    }
+    const finishResult = await operation.finished;
+    if (finishResult !== 'stopped' || delivery.value !== activeDelivery || props.targetKey !== targetKey) {
+      if (sendingIntent.value === intent) sendingIntent.value = null;
+      return;
+    }
+  }
   const result = await activeDelivery.deliver({
     operationId: nextOperationId(),
     payload,
@@ -373,87 +436,216 @@ function discardDraft() {
   statusTone.value = 'quiet';
   statusText.value = 'Draft cleared.';
 }
+
+function requestClose() {
+  if (!props.mobileSheet || !props.open || sendingIntent.value !== null) return;
+  const operation = activeDictation.value;
+  if (operation) cancelDictation(operation);
+  draftInput.value?.blur();
+  emit('openChange', false);
+}
+
+function startPromptDictation() {
+  // Start native recognition directly from the microphone tap, then dismiss
+  // Android's IME so the recording state and its Stop/Cancel actions have room.
+  void toggleDictation();
+  if (props.mobileSheet) draftInput.value?.blur();
+}
 </script>
 
 <template>
-  <section class="composer-panel" aria-labelledby="composer-title" data-testid="prompt-composer"
-    :data-target-key="targetKey" :data-transport-state="transportState"
-    :data-acknowledged-writes="acknowledgedWrites" :data-dictation-state="dictationPhase">
-    <div class="composer-heading">
-      <div>
-        <p class="eyebrow">PROMPT</p>
-        <h3 id="composer-title">Compose for {{ targetLabel }}</h3>
+  <Teleport to="#prompt-composer-portal" :disabled="!mobileSheet">
+    <div v-if="mobileSheet && open" class="composer-sheet-scrim" data-testid="prompt-composer-scrim"
+      @click.self="requestClose" />
+    <section v-if="!mobileSheet || open" class="composer-panel"
+      :class="{ 'composer-panel--sheet': mobileSheet, 'composer-panel--dictating': dictationBusy }"
+      aria-labelledby="composer-title" data-testid="prompt-composer"
+      :role="mobileSheet ? 'dialog' : undefined" :aria-modal="mobileSheet ? 'true' : undefined"
+      :data-target-key="targetKey" :data-transport-state="transportState"
+      :data-acknowledged-writes="acknowledgedWrites" :data-dictation-state="dictationPhase">
+      <div v-if="mobileSheet" class="composer-sheet-handle" aria-hidden="true"><span /></div>
+      <div class="composer-heading">
+        <div class="composer-heading__copy">
+          <h3 id="composer-title">Prompt Composer</h3>
+        </div>
+        <span class="state-tag" :class="transportState === 'connected' ? 'state-tag--success' : 'state-tag--muted'">
+          {{ transportState === 'connected' ? 'READY' : transportState === 'lost' ? 'RECONNECTING' : 'NO PTY' }}
+        </span>
+        <button v-if="mobileSheet && !dictationBusy" ref="sheetCloseButton" class="composer-sheet-close" type="button"
+          data-testid="composer-close" aria-label="Close prompt composer" @click="requestClose">
+          <AppIcon name="close" aria-hidden="true" />
+        </button>
       </div>
-      <span class="state-tag" :class="transportState === 'connected' ? 'state-tag--success' : 'state-tag--muted'">
-        {{ transportState === 'connected' ? 'READY' : transportState === 'lost' ? 'RECONNECTING' : 'NO PTY' }}
-      </span>
-    </div>
 
-    <label class="sr-only" for="prompt-draft">Prompt draft</label>
-    <textarea
-      id="prompt-draft"
-      class="composer-draft"
-      :class="{ 'composer-draft--dictation-anchor': dictationBusy }"
-      data-testid="prompt-draft"
-      :aria-label="dictationBusy ? 'Dictation draft, read only while dictating' : 'Prompt draft'"
-      :aria-describedby="dictationBusy ? (dictationPhase === 'recording' ? 'composer-recording-preview composer-status' : 'composer-status') : undefined"
-      ref="draftInput"
-      :value="draft"
-      :disabled="targetKey.length === 0 || sendingIntent !== null"
-      :aria-readonly="dictationBusy ? 'true' : 'false'"
-      :placeholder="targetKey ? 'Write a prompt for this session…' : 'Attach a session to start a draft.'"
-      spellcheck="false"
-      autocapitalize="sentences"
-      enterkeyhint="enter"
-      @beforeinput="blockDraftEditsDuringDictation"
-      @input="setDraft"
-    />
-
-    <ComposerRecordingMode
-      v-if="dictationPhase === 'starting' || dictationPhase === 'recording' || dictationPhase === 'transcribing'"
-      :state="dictationPhase"
-      :elapsed-label="elapsedLabel"
-      :live-preview="dictationPreview"
-      @pointerdown.capture="preserveDraftFocus"
-      @cancel="activeDictation && cancelDictation(activeDictation)"
-      @stop="activeDictation && stopDictation(activeDictation)"
-    />
-    <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review">
-      Review and edit your dictated text. Nothing is sent until you tap Send or Insert.
-    </p>
-
-    <p id="composer-status" class="composer-status" role="status" aria-live="polite" data-testid="composer-status"
-      :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
-      {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
-    </p>
-
-    <div class="composer-actions" data-testid="composer-actions" @pointerdown.capture="preserveDraftFocus">
-      <template v-if="dictationPhase === 'idle' || dictationPhase === 'review'">
-        <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="draft.length === 0 || sendingIntent !== null"
-          @click="discardDraft">{{ discardArmed ? 'Discard?' : 'Discard' }}</button>
-        <span class="composer-action-spacer"></span>
-        <button class="composer-insert" type="button" data-testid="composer-dictate"
-          :disabled="sendingIntent !== null || !targetKey"
-          :aria-pressed="dictationPhase === 'review'"
-          @click="toggleDictation">Dictate</button>
-        <button class="composer-insert" type="button" data-testid="composer-insert" :disabled="!canDeliver"
-          @click="deliver('insert')">Insert</button>
-        <ComposerControls
-          class="composer-shared-controls"
-          :uploading-count="0"
-          :can-send="canDeliver"
-          :send-in-flight="sendingIntent === 'submit'"
-          :draft-length="0"
-          :attachment-count="0"
-          :discard-armed="false"
-          @send="deliver('submit')"
+      <div class="composer-draft-row" :class="{ 'composer-draft-row--dictating': dictationBusy }">
+        <label class="sr-only" for="prompt-draft">Prompt draft</label>
+        <textarea
+          id="prompt-draft"
+          class="composer-draft"
+          :class="{ 'composer-draft--dictation-anchor': dictationBusy }"
+          data-testid="prompt-draft"
+          :aria-label="dictationBusy ? 'Dictation draft, read only while dictating' : 'Prompt draft'"
+          :aria-describedby="dictationBusy ? (dictationPhase === 'recording' ? 'composer-recording-preview composer-status' : 'composer-status') : undefined"
+          ref="draftInput"
+          :value="draft"
+          :disabled="targetKey.length === 0 || sendingIntent !== null"
+          :aria-readonly="dictationBusy ? 'true' : 'false'"
+          :placeholder="targetKey ? 'Write a prompt for this session…' : 'Attach a session to start a draft.'"
+          spellcheck="false"
+          autocapitalize="sentences"
+          enterkeyhint="enter"
+          @beforeinput="blockDraftEditsDuringDictation"
+          @input="setDraft"
         />
-      </template>
-    </div>
-  </section>
+        <button v-if="mobileSheet && (dictationPhase === 'idle' || dictationPhase === 'review')"
+          class="composer-dictate composer-dictate--sheet" type="button" data-testid="composer-dictate"
+          :disabled="sendingIntent !== null || !targetKey" :aria-pressed="dictationPhase === 'review'"
+          aria-label="Start prompt dictation" @click="startPromptDictation">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
+          </svg>
+          <span>Dictate</span>
+        </button>
+      </div>
+
+      <ComposerRecordingMode
+        v-if="dictationPhase === 'starting' || dictationPhase === 'recording' || dictationPhase === 'transcribing'"
+        :state="dictationPhase"
+        :elapsed-label="elapsedLabel"
+        :live-preview="dictationPreview"
+        :can-deliver="canDeliver"
+        :sending="sendingIntent !== null"
+        @pointerdown.capture="preserveDraftFocus"
+        @cancel="activeDictation && cancelDictation(activeDictation)"
+        @stop="activeDictation && stopDictation(activeDictation)"
+        @insert="deliver('insert')"
+        @send="deliver('submit')"
+      />
+      <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review">
+        Review and edit your dictated text. Your draft stays in the composer until you tap Insert or Send.
+      </p>
+
+      <p id="composer-status" class="composer-status" role="status" aria-live="polite" data-testid="composer-status"
+        :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
+        {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
+      </p>
+
+      <div class="composer-actions" data-testid="composer-actions" @pointerdown.capture="preserveDraftFocus">
+        <template v-if="dictationPhase === 'idle' || dictationPhase === 'review'">
+          <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="draft.length === 0 || sendingIntent !== null"
+            @click="discardDraft">{{ discardArmed ? 'Discard?' : 'Discard' }}</button>
+          <span class="composer-action-spacer"></span>
+          <button v-if="!mobileSheet" class="composer-insert" type="button" data-testid="composer-dictate"
+            :disabled="sendingIntent !== null || !targetKey" :aria-pressed="dictationPhase === 'review'"
+            @click="startPromptDictation">Dictate</button>
+          <button class="composer-insert" type="button" data-testid="composer-insert" :disabled="!canDeliver"
+            @click="deliver('insert')">Insert</button>
+          <ComposerControls
+            class="composer-shared-controls"
+            :uploading-count="0"
+            :can-send="canDeliver"
+            :send-in-flight="sendingIntent === 'submit'"
+            :draft-length="0"
+            :attachment-count="0"
+            :discard-armed="false"
+            @send="deliver('submit')"
+          />
+        </template>
+      </div>
+    </section>
+  </Teleport>
 </template>
 
 <style scoped>
+.composer-sheet-scrim {
+  position: fixed;
+  z-index: 90;
+  inset: 0;
+  background: rgb(7 9 13 / 0.62);
+  backdrop-filter: blur(2px);
+}
+
+.composer-panel--sheet {
+  position: fixed;
+  z-index: 91;
+  inset-inline: 0;
+  bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  display: grid;
+  width: min(100%, 640px);
+  max-width: 640px;
+  max-height: min(86dvh, calc(100dvh - 12px));
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin-inline: auto;
+  border: 1px solid var(--border-strong);
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  background: var(--surface);
+  padding: 8px 16px calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+  box-shadow: 0 -10px 36px rgb(0 0 0 / 0.3);
+}
+
+.composer-sheet-handle { display: flex; height: 12px; align-items: flex-start; justify-content: center; }
+.composer-sheet-handle span { width: 36px; height: 4px; border-radius: 999px; background: var(--border-strong); }
+.composer-panel--sheet .composer-heading { min-height: 48px; gap: 8px; }
+.composer-panel--sheet .composer-heading__copy { min-width: 0; flex: 1 1 auto; }
+.composer-panel--sheet .composer-heading h3 { overflow: hidden; font-size: var(--fs-300); text-overflow: ellipsis; white-space: nowrap; }
+.composer-panel--sheet .composer-sheet-close {
+  display: inline-flex;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fg-secondary);
+}
+.composer-panel--sheet .composer-sheet-close svg { width: 18px; height: 18px; }
+.composer-panel--sheet .composer-draft-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px;
+  align-items: stretch;
+  gap: 10px;
+}
+.composer-panel--sheet .composer-draft {
+  min-height: 90px;
+  max-height: min(28dvh, 220px);
+  resize: vertical;
+}
+.composer-draft-row--dictating { display: block; height: 1px; overflow: visible; }
+.composer-dictate--sheet {
+  display: grid;
+  min-width: 72px;
+  min-height: 72px;
+  align-content: center;
+  justify-items: center;
+  gap: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--fg);
+  font-size: var(--fs-100);
+  font-weight: 600;
+}
+.composer-dictate--sheet:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.composer-dictate--sheet:disabled { opacity: var(--disabled-opacity); }
+.composer-panel--sheet .composer-status { min-height: 16px; }
+.composer-panel--sheet .composer-actions { min-height: 48px; gap: 6px; }
+.composer-panel--sheet .composer-discard,
+.composer-panel--sheet .composer-insert,
+.composer-panel--sheet .composer-shared-controls .send { min-height: 48px; }
+.composer-panel--sheet .composer-action-spacer { flex: 1 1 4px; }
+.composer-panel--sheet :is(button, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .composer-review {
   margin: 0;
   color: var(--fg-secondary);

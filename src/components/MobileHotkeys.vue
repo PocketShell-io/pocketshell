@@ -27,6 +27,8 @@ const props = withDefaults(defineProps<{
   keyboardVisible?: boolean;
   /** Android owns the inline terminal dictation affordance and status chip. */
   dictationAvailable?: boolean;
+  /** Adds the Kotlin-style Compose entry point for the shared prompt composer. */
+  promptComposerAvailable?: boolean;
   dictationState?: InlineDictationState;
   dictationTargetKey?: string;
   /** Override only for deterministic tests; production uses Android's 500 ms long-press feel. */
@@ -34,6 +36,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   keyboardVisible: false,
   dictationAvailable: false,
+  promptComposerAvailable: false,
   dictationState: () => ({
     phase: 'idle' as const,
     preview: '',
@@ -53,6 +56,8 @@ const emit = defineEmits<{
   pageChange: [page: MobileHotkeysPage];
   /** Re-focuses the prompt after a physical hotkey tap so Android keeps the IME open. */
   keepKeyboardOpen: [];
+  /** Opens the shared prompt composer, including its prompt-dictation mode. */
+  openComposer: [];
 }>();
 
 const slots = useSlots();
@@ -67,6 +72,7 @@ const mainKeys = HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.
   ...key,
   section: section.title,
 })));
+const ctrlKeys = HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row);
 const hasPersistentStatus = computed(() => Boolean(slots['persistent-status']));
 const hasPersistentControls = computed(() => Boolean(slots['persistent-controls']));
 const hasPersistentAccessory = computed(() => Boolean(slots['persistent-accessory']));
@@ -206,6 +212,19 @@ defineExpose({
       </div>
 
       <div class="mobile-hotkeys__bar" role="toolbar" aria-label="Persistent terminal keys">
+        <button
+          v-if="promptComposerAvailable"
+          class="mobile-hotkeys__key mobile-hotkeys__composer-launcher"
+          type="button"
+          data-testid="prompt-composer-launcher"
+          aria-label="Open prompt composer"
+          title="Compose a prompt"
+          :disabled="!enabled"
+          @click="emit('openComposer')"
+        >
+          <AppIcon name="edit-2" aria-hidden="true" />
+        </button>
+
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
           <template v-for="key in SESSION_BAR_NAV_KEYS" :key="key.id">
           <button
@@ -258,8 +277,7 @@ defineExpose({
         v-if="paletteOpen"
         class="mobile-hotkeys__sheet"
         data-testid="mobile-hotkeys-sheet"
-        role="dialog"
-        aria-modal="false"
+        role="region"
         :aria-labelledby="page === 'ctrl' ? 'mobile-hotkeys-ctrl-title' : 'mobile-hotkeys-main-title'"
       >
         <header class="mobile-hotkeys__sheet-header">
@@ -330,26 +348,18 @@ defineExpose({
           role="group"
           aria-label="QWERTY Ctrl keys"
         >
-          <div
-            v-for="(row, rowIndex) in HOTKEY_CTRL_PAGE_ROWS"
-            :key="rowIndex"
-            class="mobile-hotkeys__ctrl-row"
-            role="group"
-            :aria-label="`Ctrl key row ${rowIndex + 1}`"
+          <button
+            v-for="key in ctrlKeys"
+            :key="key.id"
+            class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
+            type="button"
+            :data-key-id="key.id"
+            :aria-label="accessibleKeyName(key)"
+            :disabled="!enabled"
+            @click="sendKey(key.id)"
           >
-            <button
-              v-for="key in row"
-              :key="key.id"
-              class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
-              type="button"
-              :data-key-id="key.id"
-              :aria-label="accessibleKeyName(key)"
-              :disabled="!enabled"
-              @click="sendKey(key.id)"
-            >
-              <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
-            </button>
-          </div>
+            <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+          </button>
         </div>
       </section>
     </div>
@@ -367,16 +377,16 @@ defineExpose({
   color: var(--fg);
 }
 .mobile-hotkeys--main-open,
-.mobile-hotkeys--ctrl-open { height: 192px; }
+.mobile-hotkeys--ctrl-open { height: 144px; }
 .mobile-hotkeys--dictation-status-open { height: 80px; }
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 192px; }
+.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 176px; }
 .mobile-hotkeys--dictation-available { height: 49px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 65px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 193px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 209px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -445,11 +455,11 @@ defineExpose({
   overscroll-behavior-x: contain;
   scrollbar-width: none;
   touch-action: pan-x;
-  padding-inline: 8px;
+  padding-inline: 4px;
   background: transparent;
 }
 .mobile-hotkeys__bar::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-2); }
+.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
@@ -483,6 +493,8 @@ defineExpose({
 }
 .mobile-hotkeys__key--navigation { font: 600 18px/1 var(--font-ui); }
 .mobile-hotkeys__key--enter { font: 600 var(--fs-200)/1 var(--font-ui); }
+.mobile-hotkeys__composer-launcher { color: var(--accent); }
+.mobile-hotkeys__composer-launcher :deep(svg) { width: 18px; height: 18px; }
 .mobile-hotkeys__launcher {
   margin-left: var(--sp-2);
   border-color: transparent;
@@ -493,7 +505,7 @@ defineExpose({
 .mobile-hotkeys__launcher :deep(svg),
 .mobile-hotkeys__page-action :deep(svg) { width: 18px; height: 18px; }
 
-.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: var(--sp-1); margin-left: 2px; }
+.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; margin-left: 0; }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-controls,
@@ -511,11 +523,13 @@ defineExpose({
 }
 
 .mobile-hotkeys__sheet {
+  display: flex;
   width: 100%;
   min-width: 0;
-  height: 144px;
-  min-height: 144px;
-  flex: 0 0 144px;
+  height: 96px;
+  min-height: 96px;
+  flex: 0 0 96px;
+  flex-direction: column;
   overflow: hidden;
   box-shadow: inset 0 1px 0 var(--border-soft);
   background: var(--surface);
@@ -539,25 +553,26 @@ defineExpose({
 }
 .mobile-hotkeys__sheet-title { overflow: hidden; color: var(--fg); font-size: var(--fs-200); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__catalog-scroll {
-  display: grid;
+  display: flex;
   width: 100%;
-  height: 96px;
+  height: 48px;
+  min-height: 48px;
+  flex: 0 0 48px;
   min-width: 0;
-  align-content: start;
+  align-items: center;
   gap: 4px;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding: 0 var(--sp-1);
-  touch-action: pan-y;
-  overscroll-behavior-y: contain;
+  touch-action: pan-x;
+  overscroll-behavior-x: contain;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
 .mobile-hotkeys__catalog-scroll::-webkit-scrollbar { display: none; }
 .mobile-hotkeys__page-action { font: 500 var(--fs-100)/1 var(--font-mono); }
-.mobile-hotkeys__main-keys { grid-template-columns: repeat(5, 48px); grid-auto-rows: 48px; justify-content: center; gap: 0 4px; }
-.mobile-hotkeys__ctrl-grid { display: flex; height: 96px; min-height: 96px; flex: 0 0 96px; flex-direction: column; gap: 4px; }
-.mobile-hotkeys__ctrl-row { display: grid; min-height: 48px; flex: 0 0 48px; grid-template-columns: repeat(auto-fit, 48px); justify-content: center; gap: 4px; }
+.mobile-hotkeys__main-keys,
+.mobile-hotkeys__ctrl-grid { justify-content: flex-start; }
 .mobile-hotkeys__key--catalog { flex-direction: column; gap: 1px; padding: 2px; font: 500 12px/1.1 var(--font-mono); }
 .mobile-hotkeys__keycap {
   display: inline-block;

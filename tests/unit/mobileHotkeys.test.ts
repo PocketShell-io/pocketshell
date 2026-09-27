@@ -81,7 +81,8 @@ describe('mobile fast-key behavior', () => {
 
       const sheet = findByTestId(mounted.root, 'mobile-hotkeys-sheet');
       if (!sheet) throw new Error('The on-demand key catalog sheet did not mount');
-      expect(sheet.props).toMatchObject({ role: 'dialog', 'aria-modal': 'false' });
+      expect(sheet.props).toMatchObject({ role: 'region' });
+      expect(sheet.props['aria-modal']).toBeUndefined();
       expect(sheet.props['aria-labelledby']).toBe('mobile-hotkeys-main-title');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Terminal keys');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.props.class).toBe('mobile-hotkeys__sheet-title');
@@ -106,6 +107,11 @@ describe('mobile fast-key behavior', () => {
 
       const ctrlPage = findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page');
       if (!ctrlPage) throw new Error('The Ctrl key page did not mount');
+      expect(ctrlPage.props).toMatchObject({
+        role: 'group',
+        'aria-label': 'QWERTY Ctrl keys',
+      });
+      expect(ctrlPage.props.class).toContain('mobile-hotkeys__ctrl-grid');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')?.props['aria-labelledby'])
         .toBe('mobile-hotkeys-ctrl-title');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Ctrl keys');
@@ -113,9 +119,21 @@ describe('mobile fast-key behavior', () => {
       const ctrlIds = findAll(ctrlPage, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string')
         .map((node) => node.props['data-key-id']);
       expect(ctrlIds).toEqual(HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row.map((key) => key.id)));
-      expect(findAll(ctrlPage, (node) => node.props.role === 'group' && typeof node.props['aria-label'] === 'string')
-        .map((row) => row.props['aria-label']))
-        .toEqual(HOTKEY_CTRL_PAGE_ROWS.map((_, index) => `Ctrl key row ${index + 1}`));
+      expect(ctrlIds).toHaveLength(HOTKEY_CTRL_PAGE_ROWS.reduce((count, row) => count + row.length, 0));
+    } finally {
+      mounted.app.unmount();
+    }
+  });
+
+  it('offers the Android Compose launcher as an accessible entry to prompt dictation', () => {
+    const mounted = mountMobileHotkeys(false, false, false, true);
+    try {
+      const launcher = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
+      expect(launcher.props['aria-label']).toBe('Open prompt composer');
+      expect(launcher.props.title).toBe('Compose a prompt');
+      click(launcher);
+      expect(mounted.composerOpenRequests()).toBe(1);
+      expect(mounted.sent).toEqual([]);
     } finally {
       mounted.app.unmount();
     }
@@ -377,17 +395,24 @@ const renderer = createRenderer<TestNode, TestElement>({
   },
 });
 
-function mountMobileHotkeys(withPersistentSlots = false, dictationAvailable = false, activeDictationStatus = false) {
+function mountMobileHotkeys(
+  withPersistentSlots = false,
+  dictationAvailable = false,
+  activeDictationStatus = false,
+  promptComposerAvailable = false,
+) {
   const root: TestElement = {
     tag: 'root', props: {}, children: [], parent: null, text: '', setPointerCapture: () => {},
   };
   const enabled = ref(true);
   const sent: Array<{ bytes: Uint8Array; key: string }> = [];
   const paletteChanges: boolean[] = [];
+  let composerOpenRequests = 0;
   const Host = defineComponent({
     setup: () => () => h(MobileHotkeys, {
       enabled: enabled.value,
       dictationAvailable,
+      promptComposerAvailable,
       dictationState: activeDictationStatus ? {
         phase: 'listening',
         preview: 'git status',
@@ -397,6 +422,7 @@ function mountMobileHotkeys(withPersistentSlots = false, dictationAvailable = fa
       holdThresholdMs: 500,
       onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
       onPaletteChange: (open: boolean) => paletteChanges.push(open),
+      onOpenComposer: () => { composerOpenRequests += 1; },
     }, withPersistentSlots ? {
       'persistent-status': () => h('span', { 'data-testid': 'status-slot-fixture' }, 'One line of status'),
       'persistent-controls': () => h('button', { 'data-testid': 'control-slot-fixture', 'aria-label': 'Future control' }, '●'),
@@ -404,7 +430,8 @@ function mountMobileHotkeys(withPersistentSlots = false, dictationAvailable = fa
   });
   const app = renderer.createApp(Host) as App;
   app.mount(root as unknown as Element);
-  return { root, app, sent, paletteChanges, setEnabled: (value: boolean) => { enabled.value = value; } };
+  return { root, app, sent, paletteChanges, composerOpenRequests: () => composerOpenRequests,
+    setEnabled: (value: boolean) => { enabled.value = value; } };
 }
 
 function findAll(root: TestElement, predicate: (node: TestElement) => boolean): TestElement[] {
