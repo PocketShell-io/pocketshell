@@ -72,7 +72,7 @@ const mainKeys = HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.
   ...key,
   section: section.title,
 })));
-const ctrlKeys = HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row);
+const ctrlRows = HOTKEY_CTRL_PAGE_ROWS;
 const hasPersistentStatus = computed(() => Boolean(slots['persistent-status']));
 const hasPersistentControls = computed(() => Boolean(slots['persistent-controls']));
 const hasPersistentAccessory = computed(() => Boolean(slots['persistent-accessory']));
@@ -223,6 +223,7 @@ defineExpose({
           @click="emit('openComposer')"
         >
           <AppIcon name="edit-2" aria-hidden="true" />
+          <span class="mobile-hotkeys__composer-label" data-testid="mobile-hotkeys-launcher-label">Prompt</span>
         </button>
 
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
@@ -269,6 +270,7 @@ defineExpose({
           </div>
           <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
             <slot name="persistent-accessory" />
+            <span v-if="dictationAvailable" class="mobile-hotkeys__dictation-label" data-testid="inline-dictation-destination" aria-hidden="true">Terminal</span>
           </div>
         </div>
       </div>
@@ -297,7 +299,7 @@ defineExpose({
             :disabled="!enabled"
             @click="showCtrlPage"
           >
-            Ctrl+…
+            Ctrl letters
           </button>
           <button
             v-else
@@ -348,18 +350,20 @@ defineExpose({
           role="group"
           aria-label="QWERTY Ctrl keys"
         >
-          <button
-            v-for="key in ctrlKeys"
-            :key="key.id"
-            class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
-            type="button"
-            :data-key-id="key.id"
-            :aria-label="accessibleKeyName(key)"
-            :disabled="!enabled"
-            @click="sendKey(key.id)"
-          >
-            <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
-          </button>
+          <div v-for="(row, rowIndex) in ctrlRows" :key="rowIndex" class="mobile-hotkeys__ctrl-row" role="presentation">
+            <button
+              v-for="key in row"
+              :key="key.id"
+              class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
+              type="button"
+              :data-key-id="key.id"
+              :aria-label="accessibleKeyName(key)"
+              :disabled="!enabled"
+              @click="sendKey(key.id)"
+            >
+              <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+            </button>
+          </div>
         </div>
       </section>
     </div>
@@ -377,16 +381,16 @@ defineExpose({
   color: var(--fg);
 }
 .mobile-hotkeys--main-open,
-.mobile-hotkeys--ctrl-open { height: 144px; }
+.mobile-hotkeys--ctrl-open { height: 192px; }
 .mobile-hotkeys--dictation-status-open { height: 80px; }
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 176px; }
+.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 224px; }
 .mobile-hotkeys--dictation-available { height: 49px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 65px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 193px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 209px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -405,7 +409,7 @@ defineExpose({
 .mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-status-row {
   height: 16px;
   flex: 0 0 16px;
-  padding: 0 4px;
+  padding: 0 2px;
 }
 .mobile-hotkeys__dictation-status {
   overflow: hidden;
@@ -459,7 +463,7 @@ defineExpose({
   background: transparent;
 }
 .mobile-hotkeys__bar::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; }
+.mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
@@ -491,12 +495,30 @@ defineExpose({
   border-color: var(--accent);
   color: var(--accent);
 }
-.mobile-hotkeys__key--navigation { font: 600 18px/1 var(--font-ui); }
+.mobile-hotkeys__key--navigation { border-color: transparent; background: transparent; font: 600 18px/1 var(--font-ui); }
 .mobile-hotkeys__key--enter { font: 600 var(--fs-200)/1 var(--font-ui); }
-.mobile-hotkeys__composer-launcher { color: var(--accent); }
-.mobile-hotkeys__composer-launcher :deep(svg) { width: 18px; height: 18px; }
+.mobile-hotkeys__composer-launcher {
+  width: 60px;
+  min-width: 60px;
+  flex: 0 0 60px;
+  flex-direction: column;
+  gap: 1px;
+  border-color: var(--accent);
+  background: var(--accent);
+  padding: 0 2px;
+  color: var(--bg);
+  font-size: var(--fs-100);
+  font-weight: 600;
+}
+.mobile-hotkeys__composer-launcher:hover:not(:disabled),
+.mobile-hotkeys__composer-launcher:active:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+}
+.mobile-hotkeys__composer-label { white-space: nowrap; }
 .mobile-hotkeys__launcher {
-  margin-left: var(--sp-2);
+  margin-left: 4px;
   border-color: transparent;
   background: transparent;
   color: var(--fg-secondary);
@@ -504,12 +526,41 @@ defineExpose({
 .mobile-hotkeys__launcher[aria-expanded="true"] { background: var(--state-selected); color: var(--accent); }
 .mobile-hotkeys__launcher :deep(svg),
 .mobile-hotkeys__page-action :deep(svg) { width: 18px; height: 18px; }
+.mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 14px; height: 14px; }
 
-.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; margin-left: 0; }
+.mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; margin-left: var(--sp-1); }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-controls,
-.mobile-hotkeys__persistent-accessory { display: flex; min-width: 48px; flex: 0 0 auto; align-items: center; justify-content: flex-end; }
+.mobile-hotkeys__persistent-accessory {
+  position: relative;
+  display: flex;
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+}
+.mobile-hotkeys__dictation-label {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  color: var(--fg-secondary);
+  font-size: var(--fs-100);
+  font-weight: 500;
+  line-height: var(--lh-100);
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) { align-items: flex-start; padding-top: 5px; }
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button svg) {
+  width: 18px;
+  height: 18px;
+}
 .mobile-hotkeys__persistent-controls :deep(button),
 .mobile-hotkeys__persistent-accessory :deep(button) {
   width: 48px;
@@ -526,9 +577,9 @@ defineExpose({
   display: flex;
   width: 100%;
   min-width: 0;
-  height: 96px;
-  min-height: 96px;
-  flex: 0 0 96px;
+  height: 144px;
+  min-height: 144px;
+  flex: 0 0 144px;
   flex-direction: column;
   overflow: hidden;
   box-shadow: inset 0 1px 0 var(--border-soft);
@@ -555,24 +606,40 @@ defineExpose({
 .mobile-hotkeys__catalog-scroll {
   display: flex;
   width: 100%;
-  height: 48px;
-  min-height: 48px;
-  flex: 0 0 48px;
+  height: 96px;
+  min-height: 96px;
+  flex: 0 0 96px;
   min-width: 0;
-  align-items: center;
-  gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 0 var(--sp-1);
-  touch-action: pan-x;
-  overscroll-behavior-x: contain;
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
 .mobile-hotkeys__catalog-scroll::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__page-action { font: 500 var(--fs-100)/1 var(--font-mono); }
-.mobile-hotkeys__main-keys,
+.mobile-hotkeys__page-action {
+  width: auto;
+  min-width: 48px;
+  flex: 0 0 auto;
+  padding-inline: var(--sp-2);
+  color: var(--accent);
+  font: 600 var(--fs-100)/1 var(--font-mono);
+  white-space: nowrap;
+}
+.mobile-hotkeys__main-keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+  grid-auto-rows: 48px;
+  align-content: start;
+  column-gap: 4px;
+}
 .mobile-hotkeys__ctrl-grid { justify-content: flex-start; }
+.mobile-hotkeys__ctrl-row { display: flex; height: 48px; min-height: 48px; flex: 0 0 48px; align-items: center; justify-content: center; gap: 4px; }
 .mobile-hotkeys__key--catalog { flex-direction: column; gap: 1px; padding: 2px; font: 500 12px/1.1 var(--font-mono); }
 .mobile-hotkeys__keycap {
   display: inline-block;

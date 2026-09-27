@@ -208,7 +208,7 @@ else
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
   "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
-    --output-dir "$evidence_dir" --preserve-on-failure || true
+    --output-dir "$evidence_dir" --preserve-test-failure || true
   exit "$test_exit_code"
 fi
 

@@ -165,6 +165,7 @@
         "emits core catalog bytes and keeps the palette open until toggled or closed",
         "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
         "offers the Android Compose launcher as an accessible entry to prompt dictation",
+        "labels terminal dictation separately from the prompt composer entry",
         "keeps active dictation status above the persistent controls on both catalog pages",
         "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
         "closes and cancels a pending hold on live-session loss, then starts on the main page again",

@@ -163,6 +163,9 @@ button { color: inherit; }
   gap: 8px;
   overflow: hidden;
   padding: 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--term-bg);
 }
 .live-workspace .terminal-slot {
   display: flex;
@@ -171,6 +174,7 @@ button { color: inherit; }
   flex: 1 1 auto;
   flex-direction: column;
   overflow: hidden;
+  background: var(--term-bg);
 }
 .live-workspace .terminal-slot--hotkeys {
   min-height: calc(var(--terminal-min-grid-height, 110px) + var(--terminal-hotkeys-dock-height, 48px));
@@ -182,6 +186,23 @@ button { color: inherit; }
   min-height: var(--terminal-min-grid-height, 110px);
   max-height: none;
   flex: 1 1 auto;
+}
+.live-workspace .terminal-slot--preserve-grid > .terminal-viewport {
+  height: var(--terminal-viewport-dock-cap);
+  min-height: var(--terminal-viewport-dock-cap);
+  max-height: var(--terminal-viewport-dock-cap);
+  flex: 0 0 var(--terminal-viewport-dock-cap);
+  padding: 4px;
+  /* Keep the capped host as a clip boundary, not a scroll container. On
+     Android WebView, focusing xterm's IME textarea can otherwise scroll this
+     host and push the rendered terminal above its visible 144px viewport. */
+  overflow: clip;
+}
+.live-workspace .terminal-slot--preserve-grid > .terminal-viewport > .xterm {
+  height: calc(var(--terminal-viewport-dock-cap) - 5px);
+}
+.live-workspace .terminal-slot--preserve-grid {
+  justify-content: space-between;
 }
 .live-workspace .panel-footnote { flex: 0 0 auto; margin: 0; }
 .live-workspace > .composer-panel { min-width: 0; flex: 0 0 auto; margin: 0; }
@@ -243,7 +264,7 @@ button { color: inherit; }
 .workspace-placeholder__icon svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
 .panel-heading--terminal { align-items: center; }
-.terminal-viewport { width: 100%; height: clamp(220px, 36vh, 360px); min-height: 200px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--r-md); background: var(--term-bg); padding: 8px; }
+.terminal-viewport { width: 100%; height: clamp(220px, 36vh, 360px); min-height: 200px; overflow: hidden; border: 1px solid transparent; border-radius: 0; background: var(--term-bg); padding: 8px; }
 .terminal-viewport .xterm { height: 100%; }
 .terminal-viewport .xterm-viewport { overflow-y: auto !important; }
 .panel-footnote { margin: 9px 0 0; color: var(--fg-muted); font-size: var(--fs-100); line-height: 1.45; }
@@ -732,9 +753,14 @@ button { color: inherit; }
     max-height: var(--terminal-viewport-dock-cap);
     flex: 0 0 var(--terminal-viewport-dock-cap);
   }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .terminal-viewport > .xterm {
+    height: calc(var(--terminal-viewport-dock-cap) - 5px);
+  }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid {
     /* Keep a one-pixel trailing containment slot after the dock. */
     min-height: calc(var(--terminal-viewport-dock-cap) + var(--terminal-hotkeys-dock-height) + 1px);
+    justify-content: space-between;
+    background: var(--term-bg);
   }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .mobile-hotkeys {
     margin-top: 0;

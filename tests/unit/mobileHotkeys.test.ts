@@ -131,9 +131,26 @@ describe('mobile fast-key behavior', () => {
       const launcher = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
       expect(launcher.props['aria-label']).toBe('Open prompt composer');
       expect(launcher.props.title).toBe('Compose a prompt');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')?.text).toBe('Prompt');
       click(launcher);
       expect(mounted.composerOpenRequests()).toBe(1);
       expect(mounted.sent).toEqual([]);
+    } finally {
+      mounted.app.unmount();
+    }
+  });
+
+  it('labels terminal dictation separately from the prompt composer entry', () => {
+    const mounted = mountMobileHotkeys(false, true, false, true);
+    try {
+      const prompt = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
+      const terminalMic = findButton(mounted.root, { 'data-testid': 'inline-dictation-toggle' });
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')?.text).toBe('Prompt');
+      expect(terminalMic.props['aria-label']).toBe('Dictate to terminal');
+      expect(findByTestId(mounted.root, 'inline-dictation-destination')?.text).toBe('Terminal');
+      expect(prompt.props['aria-label']).not.toBe(terminalMic.props['aria-label']);
+      expect(findAll(mounted.root, (node) => node.tag === 'button' && node.props['data-testid'] === 'inline-dictation-toggle'))
+        .toHaveLength(1);
     } finally {
       mounted.app.unmount();
     }
@@ -409,24 +426,35 @@ function mountMobileHotkeys(
   const paletteChanges: boolean[] = [];
   let composerOpenRequests = 0;
   const Host = defineComponent({
-    setup: () => () => h(MobileHotkeys, {
-      enabled: enabled.value,
-      dictationAvailable,
-      promptComposerAvailable,
-      dictationState: activeDictationStatus ? {
-        phase: 'listening',
-        preview: 'git status',
-        message: '',
-        tone: 'quiet',
-      } : undefined,
-      holdThresholdMs: 500,
-      onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
-      onPaletteChange: (open: boolean) => paletteChanges.push(open),
-      onOpenComposer: () => { composerOpenRequests += 1; },
-    }, withPersistentSlots ? {
-      'persistent-status': () => h('span', { 'data-testid': 'status-slot-fixture' }, 'One line of status'),
-      'persistent-controls': () => h('button', { 'data-testid': 'control-slot-fixture', 'aria-label': 'Future control' }, '●'),
-    } : {}),
+    setup: () => {
+      const slots = {
+        ...(withPersistentSlots ? {
+          'persistent-status': () => h('span', { 'data-testid': 'status-slot-fixture' }, 'One line of status'),
+          'persistent-controls': () => h('button', { 'data-testid': 'control-slot-fixture', 'aria-label': 'Future control' }, '●'),
+        } : {}),
+        ...(dictationAvailable ? {
+          'persistent-accessory': () => h('button', {
+            'data-testid': 'inline-dictation-toggle',
+            'aria-label': 'Dictate to terminal',
+          }, '◉'),
+        } : {}),
+      };
+      return () => h(MobileHotkeys, {
+        enabled: enabled.value,
+        dictationAvailable,
+        promptComposerAvailable,
+        dictationState: activeDictationStatus ? {
+          phase: 'listening',
+          preview: 'git status',
+          message: '',
+          tone: 'quiet',
+        } : undefined,
+        holdThresholdMs: 500,
+        onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
+        onPaletteChange: (open: boolean) => paletteChanges.push(open),
+        onOpenComposer: () => { composerOpenRequests += 1; },
+      }, slots);
+    },
   });
   const app = renderer.createApp(Host) as App;
   app.mount(root as unknown as Element);

@@ -132,7 +132,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("Compose must open a modal with a reachable prompt dictation action: " + promptComposerEntry,
                 "dialog".equals(promptComposerEntry.optString("role"))
                         && "true".equals(promptComposerEntry.optString("modal"))
-                        && "Start prompt dictation".equals(promptComposerEntry.optString("micLabel"))
+                        && "Dictate prompt".equals(promptComposerEntry.optString("micLabel"))
                         && promptComposerEntry.optBoolean("micVisible")
                         && promptComposerEntry.optDouble("micWidth") >= 47.9
                         && promptComposerEntry.optDouble("micHeight") >= 47.9);
@@ -154,14 +154,17 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
         JSONObject keyboardGeometry = captureGeometry("keyboard-up-compact-row");
+        assertTrue("keyboard-up screenshot must include visible Android IME", isImeVisible());
+        // Save the real packaged frame before the xterm/host containment gate.
+        // If the CSS surface is genuinely displaced, the same-run PNGs let us
+        // distinguish that from a stale DOM rectangle measurement.
+        captureScreenshot("fastkeys-ime-open.png");
+        captureScreenshot("fastkeys-row-closed-ime-open.png");
+        captureTerminalViewportScreenshot("fastkeys-row-closed-ime-open-viewport.png", keyboardGeometry);
         acceptedKeyboardGrid = assertAcceptedKeyboardUpViewport("initial API 35 keyboard-up baseline", keyboardGeometry);
         assertHotkeyBarReachable(keyboardGeometry);
         assertDictationMicReachable(keyboardGeometry);
         journey.put("narrowToolbarReachability", verifyNarrowToolbarReachability());
-        assertTrue("keyboard-up screenshot must include visible Android IME", isImeVisible());
-        captureScreenshot("fastkeys-ime-open.png");
-        captureScreenshot("fastkeys-row-closed-ime-open.png");
-        captureTerminalViewportScreenshot("fastkeys-row-closed-ime-open-viewport.png", keyboardGeometry);
 
         tapDomCenter("[data-key-id='arrow-up']");
         awaitHotkeyWrites(1);
@@ -260,7 +263,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("closing the fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
         assertEquals("closed Android navigation lane reserves its key row and containment pixel", 49,
                 (int) closedTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
-        assertEquals("open main catalog adds its compact two-row rail below the persistent key row", 145,
+        assertEquals("open main catalog adds two balanced key rows below the persistent key row", 193,
                 (int) mainTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
         assertHotkeyBarReachable(closedTrayGeometry);
 
@@ -523,8 +526,8 @@ public final class JsFastKeysDockerJourneyTest {
         assertDictationMicReachable(readyGeometry);
         assertUnchangedTerminalGrid("preparing the host-side dictation receiver", stableGrid, runtimeGrid(readyGeometry));
         assertEquals("host-side receiver setup must settle back to the initial terminal viewport height",
-                idle.getJSONObject("terminalViewport").getDouble("height"),
-                readyGeometry.getJSONObject("terminalViewport").getDouble("height"), 0.5);
+                idle.getJSONObject("terminalGridViewport").getDouble("height"),
+                readyGeometry.getJSONObject("terminalGridViewport").getDouble("height"), 0.5);
         stableResizeAcks = readyGeometry.getInt("resizeAcks");
         int writesBeforeListening = terminalInputAcknowledgements();
         String targetBefore = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
@@ -544,7 +547,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertHotkeyBarReachable(listening);
         assertEquals("dictation previews must stay local to the dock", writesBeforeListening, terminalInputAcknowledgements());
         assertDictationStableStage("showing a dictation partial", idle, listening, stableGrid, stableResizeAcks);
-        assertEquals("listening mic stays icon-only with a Stop accessible action", "",
+        assertEquals("listening mic retains its visible terminal destination caption", "Terminal",
                 listening.getJSONObject("inlineDictationMic").getString("visibleLabel"));
         awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
@@ -882,8 +885,14 @@ public final class JsFastKeysDockerJourneyTest {
         String expectedMicState = "listening".equals(phase) ? "listening"
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
-        assertEquals("persistent dictation mic stays icon-only, without crowding the toolbar: " + geometry,
-                "", mic.getString("visibleLabel"));
+        assertEquals("persistent dictation mic names its terminal destination without sharing composer dictation: " + geometry,
+                "Terminal", mic.getString("visibleLabel"));
+        JSONObject destination = geometry.getJSONObject("terminalDictationDestination");
+        assertEquals("inline dictation destination stays visibly distinct from the Prompt launcher: " + geometry,
+                "Terminal", destination.getString("text"));
+        assertTrue("terminal dictation destination remains fully visible inside the keybar: " + geometry,
+                destination.getBoolean("insideKeybar") && destination.getBoolean("insideViewport")
+                        && destination.getBoolean("fits"));
         assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
                 expectedAccessibleLabel, mic.getString("label"));
         assertEquals("only the listening mic is exposed as pressed: " + geometry,
@@ -1265,7 +1274,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const r=target.getBoundingClientRect(),c=container.getBoundingClientRect(),v=window.visualViewport;"
                 + "const style=getComputedStyle(container),buttonRects=Array.from(container.querySelectorAll('button[data-key-id]')).map(n=>{const b=n.getBoundingClientRect();"
                 + "return {keyId:n.dataset.keyId,top:b.top,bottom:b.bottom,width:b.width,height:b.height};});"
-                + "const horizontal=true,y=c.top+c.height/2;"
+                + "const horizontal=style.overflowX==='auto'||style.overflowX==='scroll',y=c.top+c.height/2;"
                 + "const verticalAnchor=(()=>{for(let x=c.left+24;x<c.right-16;x+=4){const hit=document.elementFromPoint(x,y);"
                 + "const insideScroller=!!hit&&(hit===container||container.contains(hit));"
                 + "if(insideScroller&&!hit.closest('button'))return {x,y,insideScroller,clearOfButtons:true};}"
@@ -1323,13 +1332,42 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const shell=document.querySelector('.app-shell');const slot=document.querySelector('[data-testid=terminal-slot]');"
                 + "const tray=document.querySelector('[data-testid=mobile-hotkeys]');const trayRect=rect('[data-testid=mobile-hotkeys]');"
                 + "const slotRect=rect('[data-testid=terminal-slot]');const terminalRect=rect('.terminal-viewport');"
+                + "const terminalGridRect=rect('.terminal-viewport');const terminalXtermSurface=rect('.terminal-viewport > .xterm');"
+                + "const describeTerminalNode=node=>{if(!node)return null;const r=node.getBoundingClientRect(),s=getComputedStyle(node),op=node.offsetParent;"
+                + "const opRect=op?.getBoundingClientRect();return {tag:node.tagName.toLowerCase(),className:String(node.className||''),"
+                + "rect:{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height},position:s.position,"
+                + "top:s.top,bottom:s.bottom,left:s.left,right:s.right,transform:s.transform,translate:s.translate,"
+                + "marginTop:s.marginTop,marginBottom:s.marginBottom,display:s.display,overflow:s.overflow,height:s.height,"
+                + "offsetTop:node.offsetTop,offsetLeft:node.offsetLeft,scrollTop:node.scrollTop,scrollLeft:node.scrollLeft,"
+                + "scrollHeight:node.scrollHeight,clientHeight:node.clientHeight,"
+                + "offsetParent:op?{tag:op.tagName.toLowerCase(),className:String(op.className||''),top:opRect?.top??null,bottom:opRect?.bottom??null}:null};};"
+                + "const terminalXtermNode=document.querySelector('.terminal-viewport > .xterm');"
+                + "const terminalXtermMetrics=describeTerminalNode(terminalXtermNode);const terminalXtermAncestors=[];"
+                + "for(let node=terminalXtermNode;node&&node instanceof HTMLElement&&terminalXtermAncestors.length<5;node=node.parentElement){"
+                + "terminalXtermAncestors.push(describeTerminalNode(node));if(node.matches('.terminal-viewport'))break;}"
+                + "const terminalXtermChildSurfaces=terminalXtermNode?['.xterm-viewport','.xterm-screen','.xterm-screen canvas'].map(selector=>"
+                + "describeTerminalNode(terminalXtermNode.querySelector(selector))):[];"
                 + "const runtimeGeometry=window.__ps2875TerminalRuntimeGeometry??null;"
-                + "const visibleTerminalRows=runtimeGeometry&&terminalRect&&runtimeGeometry.cellHeight>0?Math.floor((terminalRect.height-8)/runtimeGeometry.cellHeight):0;"
+                + "const visibleTerminalRows=runtimeGeometry&&terminalXtermSurface&&runtimeGeometry.cellHeight>0?Math.floor((terminalXtermSurface.height-8)/runtimeGeometry.cellHeight):0;"
                 + "const catalogSheetNode=document.querySelector('[data-testid=mobile-hotkeys-sheet]');"
                 + "const catalogSheetRole=catalogSheetNode?.getAttribute('role')??'';"
                 + "const catalogSheet=rect('[data-testid=mobile-hotkeys-sheet]');"
                 + "const promptComposerLauncherNode=document.querySelector('[data-testid=prompt-composer-launcher]');"
-                + "const promptComposerLauncher=promptComposerLauncherNode?target(promptComposerLauncherNode):null;"
+                + "const promptComposerIconNode=promptComposerLauncherNode?.querySelector('svg');"
+                + "const promptComposerLabelNode=promptComposerLauncherNode?.querySelector('[data-testid=mobile-hotkeys-launcher-label]');"
+                + "const measuredBounds=node=>{if(!node)return null;const r=node.getBoundingClientRect();"
+                + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
+                + "const promptComposerBounds=measuredBounds(promptComposerLauncherNode);"
+                + "const promptComposerIconBounds=measuredBounds(promptComposerIconNode);"
+                + "const promptComposerLabelBounds=measuredBounds(promptComposerLabelNode);"
+                + "const insideBounds=(outer,inner)=>!!outer&&!!inner&&inner.left>=outer.left-0.5&&inner.right<=outer.right+0.5"
+                + "&&inner.top>=outer.top-0.5&&inner.bottom<=outer.bottom+0.5;"
+                + "const promptComposerLauncher=promptComposerLauncherNode?{...target(promptComposerLauncherNode),"
+                + "iconBounds:promptComposerIconBounds,labelBounds:promptComposerLabelBounds,"
+                + "iconComputedWidth:promptComposerIconNode?getComputedStyle(promptComposerIconNode).width:'',"
+                + "iconComputedHeight:promptComposerIconNode?getComputedStyle(promptComposerIconNode).height:'',"
+                + "visibleLabel:promptComposerLabelNode?.textContent.trim()??'',"
+                + "contentsInside:insideBounds(promptComposerBounds,promptComposerIconBounds)&&insideBounds(promptComposerBounds,promptComposerLabelBounds)}:null;"
                 + "const pageActionNode=document.querySelector('[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page]');"
                 + "const pageAction=pageActionNode?target(pageActionNode):null;"
                 + "const catalogTitleNode=tray?.querySelector('[data-testid=mobile-hotkeys-sheet-title]');"
@@ -1350,7 +1388,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const catalogScrollMetrics=catalogScroller?{clientWidth:catalogScroller.clientWidth,scrollWidth:catalogScroller.scrollWidth,scrollLeft:catalogScroller.scrollLeft,"
                 + "clientHeight:catalogScroller.clientHeight,scrollHeight:catalogScroller.scrollHeight,scrollTop:catalogScroller.scrollTop,"
                 + "rowGap:catalogScrollStyle?.rowGap??'',columnGap:catalogScrollStyle?.columnGap??'',gridAutoRows:catalogScrollStyle?.gridAutoRows??'',buttonRects:catalogButtonRects,"
-                + "axis:'horizontal'}:null;"
+                + "axis:catalogScrollStyle?.overflowY==='auto'?'vertical':'horizontal'}:null;"
                 + "const overlaps=(a,b)=>!!a&&!!b&&a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;"
                 + "const sheetInside=pageActionNode&&catalogSheet?(()=>{const a=pageActionNode.getBoundingClientRect();return a.left>=catalogSheet.left-0.5&&a.right<=catalogSheet.right+0.5&&a.top>=catalogSheet.top-0.5&&a.bottom<=catalogSheet.bottom+0.5;})():false;"
                 + "const composerRect=rect('.composer-panel');"
@@ -1368,7 +1406,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationBarNode=document.querySelector('[data-testid=inline-dictation-bar]');"
                 + "const inlineDictationMicNode=document.querySelector('[data-testid=inline-dictation-toggle]');"
                 + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),visibleLabel:"
-                + "''}:null;"
+                + "inlineDictationMicNode.parentElement?.querySelector('[data-testid=inline-dictation-destination]')?.textContent.trim()??''}:null;"
                 + "const enterDivider=rect('[data-testid=mobile-hotkeys-enter-divider]');"
                 + "const inlineDictationStatusRow=rect('[data-testid=inline-dictation-status-row]');"
                 + "const dictationSheetHeader=rect('.mobile-hotkeys__sheet-header');"
@@ -1376,6 +1414,16 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const keybarNode=document.querySelector('.mobile-hotkeys__bar');"
                 + "const keybarClientRect=keybarNode?(()=>{const r=keybarNode.getBoundingClientRect(),left=r.left+keybarNode.clientLeft,top=r.top+keybarNode.clientTop;"
                 + "return {left,top,right:left+keybarNode.clientWidth,bottom:top+keybarNode.clientHeight,width:keybarNode.clientWidth,height:keybarNode.clientHeight};})():null;"
+                + "const inlineDictationDestinationNode=document.querySelector('[data-testid=inline-dictation-destination]');"
+                + "const inlineDictationDestinationBounds=inlineDictationDestinationNode?.getBoundingClientRect();"
+                + "const terminalDictationDestination=inlineDictationDestinationNode&&inlineDictationDestinationBounds&&keybarClientRect?{"
+                + "text:inlineDictationDestinationNode.textContent.trim(),top:inlineDictationDestinationBounds.top,bottom:inlineDictationDestinationBounds.bottom,"
+                + "left:inlineDictationDestinationBounds.left,right:inlineDictationDestinationBounds.right,width:inlineDictationDestinationBounds.width,height:inlineDictationDestinationBounds.height,"
+                + "fits:inlineDictationDestinationNode.scrollWidth<=inlineDictationDestinationNode.clientWidth+1,"
+                + "insideKeybar:inlineDictationDestinationBounds.left>=keybarClientRect.left-0.5&&inlineDictationDestinationBounds.right<=keybarClientRect.right+0.5"
+                + "&&inlineDictationDestinationBounds.top>=keybarClientRect.top-0.5&&inlineDictationDestinationBounds.bottom<=keybarClientRect.bottom+0.5,"
+                + "insideViewport:inlineDictationDestinationBounds.left>=0&&inlineDictationDestinationBounds.right<=innerWidth+0.5"
+                + "&&inlineDictationDestinationBounds.top>=0&&inlineDictationDestinationBounds.bottom<=(window.visualViewport?.height??innerHeight)+0.5}:null;"
                 + "const persistentRowMetrics=keybarNode?{clientWidth:keybarNode.clientWidth,scrollWidth:keybarNode.scrollWidth,scrollLeft:keybarNode.scrollLeft,"
                 + "scrollable:keybarNode.scrollWidth>keybarNode.clientWidth+1}:null;"
                 + "const inlineDictationStatusNode=document.querySelector('[data-testid=inline-dictation-status]');"
@@ -1405,7 +1453,12 @@ public final class JsFastKeysDockerJourneyTest {
                 + "fastKeysPage:tray?.dataset.palettePage||'closed',"
                 + "href:location.href,route:shell?.dataset.route||'',sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
                 + "sshAttachEpoch:Number(shell?.dataset.sshAttachEpoch??-1),"
-                + "terminalPanel:terminalPanelRect,terminalSlot:terminalSlotRect,terminalSlotInsideTerminalPanel,terminalViewport:rect('.terminal-viewport'),"
+                + "terminalPanel:terminalPanelRect,terminalSlot:terminalSlotRect,terminalSlotInsideTerminalPanel,terminalViewport:terminalRect,terminalGridViewport:terminalGridRect,terminalXtermSurface,"
+                + "terminalXtermMetrics,terminalXtermAncestors,terminalXtermChildSurfaces,"
+                + "terminalCanvas:slotRect,terminalCanvasEndsAtDock:!!slotRect&&!!trayRect&&Math.abs(slotRect.bottom-trayRect.bottom)<=1,"
+                + "terminalCanvasStyle:(()=>{const canvas=document.querySelector('.terminal-slot'),panel=document.querySelector('.terminal-panel');"
+                + "if(!canvas||!panel)return null;const cs=getComputedStyle(canvas),ps=getComputedStyle(panel);return {borderRadius:cs.borderRadius,borderWidth:cs.borderWidth,"
+                + "backgroundColor:cs.backgroundColor,panelBackgroundColor:ps.backgroundColor};})(),"
                 + "catalogScrollerInsideSheet,catalogScrollerBounds:catalogScrollerRect?{top:catalogScrollerRect.top,bottom:catalogScrollerRect.bottom,"
                 + "left:catalogScrollerRect.left,right:catalogScrollerRect.right,width:catalogScrollerRect.width,height:catalogScrollerRect.height}:null,"
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
@@ -1422,7 +1475,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "catalogScroller?.matches('.mobile-hotkeys__main-keys')?'.mobile-hotkeys__main-keys':null,catalogScrollMetrics,"
                 + "mainCatalog:rect('.mobile-hotkeys__main-keys'),ctrlCatalog:rect('.mobile-hotkeys__ctrl-grid'),"
                 + "composerPanel:composerRect,composerDraft:composerDraftRect,composerActionRow,composerActions,"
-                + "inlineDictationBar,keybarRect,keybarClientRect,"
+                + "inlineDictationBar,keybarRect,keybarClientRect,terminalDictationDestination,"
                 + "inlineDictationStatusRow,inlineDictationStatusVisible:!!inlineDictationStatusNode,"
                 + "dictationSheetHeader,inlineDictationStatusInsideSheetHeader:inlineDictationStatusRow&&dictationSheetHeader?inlineDictationStatusRow.top>=dictationSheetHeader.top-0.5"
                 + "&&inlineDictationStatusRow.left>=dictationSheetHeader.left-0.5&&inlineDictationStatusRow.bottom<=dictationSheetHeader.bottom+0.5"
@@ -1549,6 +1602,22 @@ public final class JsFastKeysDockerJourneyTest {
                         && composeLauncher.getBoolean("insideViewport") && composeLauncher.getBoolean("hitTarget")
                         && !composeLauncher.getBoolean("disabled")
                         && "Open prompt composer".equals(composeLauncher.getString("label")));
+        JSONObject promptIconBounds = composeLauncher.optJSONObject("iconBounds");
+        JSONObject promptLabelBounds = composeLauncher.optJSONObject("labelBounds");
+        assertNotNull("Prompt icon must expose its computed SVG bounds", promptIconBounds);
+        assertNotNull("Prompt label must expose its visible text bounds", promptLabelBounds);
+        assertTrue("Prompt icon and full label must stay inside the 60dp launcher: " + composeLauncher,
+                "Prompt".equals(composeLauncher.getString("visibleLabel"))
+                        && "14px".equals(composeLauncher.getString("iconComputedWidth"))
+                        && "14px".equals(composeLauncher.getString("iconComputedHeight"))
+                        && promptIconBounds.getDouble("width") <= 14.5
+                        && promptIconBounds.getDouble("height") <= 14.5
+                        && promptIconBounds.getDouble("left") >= composeLauncher.getDouble("left") + 2.5
+                        && promptIconBounds.getDouble("right") <= composeLauncher.getDouble("right") - 2.5
+                        && promptLabelBounds.getDouble("width") <= composeLauncher.getDouble("width") - 5.5
+                        && promptLabelBounds.getDouble("left") >= composeLauncher.getDouble("left") + 2.5
+                        && promptLabelBounds.getDouble("right") <= composeLauncher.getDouble("right") - 2.5
+                        && composeLauncher.getBoolean("contentsInside"));
         int expectedTargetCount = 4;
         assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
@@ -1602,16 +1671,27 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
                 + "const visibleHeight=Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top));"
                 + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);return {label:node.getAttribute('aria-label')||node.textContent.trim(),"
-                + "left:r.left,right:r.right,width:r.width,height:r.height,insideToolbar:r.left>=b.left-0.5&&r.right<=b.right+0.5,"
+                + "left:r.left,right:r.right,width:r.width,height:r.height,insideToolbar:r.left>=clip.left-0.5&&r.right<=clip.right+0.5,"
                 + "visibleWidth,visibleHeight,hitTarget:!!hit&&(hit===node||node.contains(hit)),"
                 + "disabled:!!node.disabled};});"
+                + "const destination=tray.querySelector('[data-testid=inline-dictation-destination]');"
+                + "let terminalDestination=null,finalMic=null;if(destination){destination.scrollIntoView({block:'nearest',inline:'nearest'});"
+                + "const r=destination.getBoundingClientRect(),b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
+                + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
+                + "terminalDestination={text:destination.textContent.trim(),left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height,"
+                + "insideToolbar:r.left>=clip.left-0.5&&r.right<=clip.right+0.5&&r.top>=clip.top-0.5&&r.bottom<=clip.bottom+0.5};"
+                + "const mic=bar.querySelector('[data-testid=inline-dictation-toggle]'),m=mic?.getBoundingClientRect();if(m){const hit=document.elementFromPoint(m.left+m.width/2,m.top+m.height/2);"
+                + "finalMic={left:m.left,right:m.right,top:m.top,bottom:m.bottom,width:m.width,height:m.height,"
+                + "insideToolbar:m.left>=clip.left-0.5&&m.right<=clip.right+0.5&&m.top>=clip.top-0.5&&m.bottom<=clip.bottom+0.5,"
+                + "hitTarget:!!hit&&(hit===mic||mic.contains(hit))};}}"
                 + "const maxScrollLeft=bar.scrollWidth-bar.clientWidth;"
                 + "if(savedStyle===null)tray.removeAttribute('style');else tray.setAttribute('style',savedStyle);bar.scrollLeft=savedScrollLeft;"
-                + "return JSON.stringify({clientWidth,clientHeight:bar.clientHeight,scrollWidth,maxScrollLeft,scrollable:scrollWidth>clientWidth+1,targets});"
+                + "return JSON.stringify({clientWidth,clientHeight:bar.clientHeight,scrollWidth,maxScrollLeft,scrollable:scrollWidth>clientWidth+1,targets,terminalDestination,finalMic});"
                 + "})()"));
         assertTrue("narrow-width probe must find the persistent toolbar: " + result, !result.optBoolean("missing"));
-        assertTrue("a 330px toolbar must keep every persistent key inline without overflow: " + result,
-                !result.getBoolean("scrollable") && result.getDouble("scrollWidth") <= result.getDouble("clientWidth") + 1);
+        assertEquals("narrow toolbar overflow state must match its measured scroll range: " + result,
+                result.getDouble("scrollWidth") > result.getDouble("clientWidth") + 1,
+                result.getBoolean("scrollable"));
         JSONArray targets = result.getJSONArray("targets");
         assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
         assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer"));
@@ -1623,6 +1703,15 @@ public final class JsFastKeysDockerJourneyTest {
                             && target.getBoolean("hitTarget") && target.getBoolean("insideToolbar")
                             && !target.getBoolean("disabled"));
         }
+        JSONObject terminalDestination = result.getJSONObject("terminalDestination");
+        assertEquals("narrow-width inline caption visibly names its terminal destination", "Terminal",
+                terminalDestination.getString("text"));
+        assertTrue("narrow-width terminal destination label remains fully readable after scrolling: " + result,
+                terminalDestination.getDouble("width") > 0 && terminalDestination.getBoolean("insideToolbar"));
+        JSONObject finalMic = result.getJSONObject("finalMic");
+        assertTrue("narrow-width terminal dictation remains a fully visible 48dp hit target: " + result,
+                finalMic.getDouble("width") >= 47.9 && finalMic.getDouble("height") >= 47.9
+                        && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget"));
         int writesAfter = hotkeyWrites().length();
         assertEquals("testing the narrow toolbar must not write bytes to the PTY", writesBefore, writesAfter);
         result.put("ptyWritesBefore", writesBefore);
@@ -1638,11 +1727,11 @@ public final class JsFastKeysDockerJourneyTest {
                 && geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
         JSONObject sheet = geometry.optJSONObject("catalogSheet");
         assertNotNull("the key catalog must render as a compact terminal rail", sheet);
-        assertEquals("the in-flow catalog must fit one 48dp title row and one 48dp key rail: " + geometry,
-                96, sheet.getDouble("height"), 0.5);
+        assertEquals("the in-flow catalog must fit one title row and two 48dp key rows: " + geometry,
+                144, sheet.getDouble("height"), 0.5);
         JSONObject dock = geometry.getJSONObject("mobileHotkeys");
         assertEquals("the open terminal dock reserves the key row, optional status, and bounded catalog: " + geometry,
-                geometry.getBoolean("inlineDictationStatusVisible") ? 161 : 145,
+                geometry.getBoolean("inlineDictationStatusVisible") ? 209 : 193,
                 dock.getDouble("height"), 0.5);
         JSONObject terminalPanel = geometry.getJSONObject("terminalPanel");
         JSONObject terminalSlot = geometry.getJSONObject("terminalSlot");
@@ -1655,6 +1744,12 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("the catalog rail must not overlap xterm or composer: " + geometry,
                 geometry.getBoolean("catalogSheetBelowTerminalViewport")
                         && !geometry.getBoolean("catalogSheetIntersectsComposer"));
+        assertTrue("the full terminal surface must end flush at the dock: " + geometry,
+                geometry.getBoolean("terminalCanvasEndsAtDock"));
+        JSONObject canvasStyle = geometry.getJSONObject("terminalCanvasStyle");
+        assertEquals("terminal surface and panel must share one background", canvasStyle.getString("panelBackgroundColor"),
+                canvasStyle.getString("backgroundColor"));
+        assertEquals("terminal surface must not add nested rounded chrome", "0px", canvasStyle.getString("borderRadius"));
         JSONObject terminalHeading = geometry.getJSONObject("layout").getJSONObject(".panel-heading--terminal");
         assertTrue("the terminal title stays in the hierarchy while fast keys are open",
                 !"none".equals(terminalHeading.getString("display")) && terminalHeading.getDouble("height") >= 24);
@@ -1671,20 +1766,32 @@ public final class JsFastKeysDockerJourneyTest {
                 geometry.getBoolean("catalogHeaderControlsDoNotOverlap"));
         JSONObject scroll = geometry.getJSONObject("catalogScrollMetrics");
         JSONObject scroller = geometry.getJSONObject("catalogScrollerBounds");
-        assertTrue("catalog scroller must remain fully inside the 96dp rail after border sizing: " + geometry,
+        assertTrue("catalog scroller must remain fully inside the 144dp rail after border sizing: " + geometry,
                 geometry.getBoolean("catalogScrollerInsideSheet")
                         && scroller.getDouble("top") >= sheet.getDouble("top") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("bottom") <= sheet.getDouble("bottom") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("left") >= sheet.getDouble("left") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("right") <= sheet.getDouble("right") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
-                        && Math.abs(scroller.getDouble("height") - 48) <= 1);
-        assertEquals("both key pages must use the same horizontal rail", "horizontal", scroll.getString("axis"));
-        assertEquals("the " + page + " catalog keeps one visible 48dp row: " + geometry,
-                48, scroll.getDouble("clientHeight"), 1.0);
-        assertTrue("the " + page + " catalog must scroll horizontally to keep its 48dp targets reachable: " + geometry,
-                scroll.getDouble("scrollWidth") > scroll.getDouble("clientWidth") + 1);
-        assertTrue("the " + page + " catalog must not grow into a second row: " + geometry,
-                scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
+                        && Math.abs(scroller.getDouble("height") - 96) <= 1);
+        assertEquals("both key pages use vertical catalog flow", "vertical", scroll.getString("axis"));
+        assertEquals("the " + page + " catalog shows two complete 48dp rows: " + geometry,
+                96, scroll.getDouble("clientHeight"), 1.0);
+        assertTrue("catalog keys must fit the available width without sideways clipping: " + geometry,
+                scroll.getDouble("scrollWidth") <= scroll.getDouble("clientWidth") + 1);
+        if ("main".equals(page)) {
+            assertTrue("main catalog shows both rows without scrolling: " + geometry,
+                    scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
+            JSONArray buttonRects = scroll.getJSONArray("buttonRects");
+            List<Double> rows = new ArrayList<>();
+            for (int index = 0; index < buttonRects.length(); index += 1) {
+                double rowTop = buttonRects.getJSONObject(index).getDouble("top");
+                if (!rows.contains(rowTop)) rows.add(rowTop);
+            }
+            assertEquals("all ten common keys occupy two visible rows", 2, rows.size());
+        } else {
+            assertTrue("Ctrl page keeps extra letter rows in its vertical scroller: " + geometry,
+                    scroll.getDouble("scrollHeight") > scroll.getDouble("clientHeight") + 1);
+        }
         assertTrue("the terminal heading and at least five terminal rows remain visible: " + geometry,
                 !"none".equals(terminalHeading.getString("display")) && terminalHeading.getDouble("height") >= 24
                         && terminalHeading.getDouble("bottom") <= geometry.getJSONObject("terminalViewport").getDouble("top") + 0.5
@@ -1723,10 +1830,20 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject trayBounds = tray.getJSONObject("bounds");
         JSONObject terminalViewport = geometry.getJSONObject("terminalViewport");
         double trayViewportGap = trayBounds.getDouble("top") - terminalViewport.getDouble("bottom");
-        assertTrue("fast-key lane must be below the xterm viewport within the documented 0.01px CSS rounding epsilon: "
+        JSONObject terminalCanvas = geometry.getJSONObject("terminalCanvas");
+        assertTrue("fast-key lane must be below the capped xterm viewport inside the flat terminal canvas: "
                         + geometry,
                 tray.getBoolean("belowTerminalViewport")
                         && trayViewportGap >= -TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX);
+        assertTrue("full terminal canvas must include the capped grid, expected empty output area, and input rail: " + geometry,
+                terminalCanvas.getDouble("top") <= terminalViewport.getDouble("top") + 0.5
+                        && terminalCanvas.getDouble("bottom") >= trayBounds.getDouble("bottom") - 1
+                        && terminalCanvas.getDouble("height") >= terminalViewport.getDouble("height") + trayBounds.getDouble("height"));
+        JSONObject gridViewport = geometry.getJSONObject("terminalGridViewport");
+        assertTrue("capped xterm grid must sit within the full terminal canvas: " + geometry,
+                gridViewport.getDouble("top") >= terminalViewport.getDouble("top") - 0.5
+                        && gridViewport.getDouble("bottom") <= terminalViewport.getDouble("bottom") + 0.5
+                        && gridViewport.getDouble("bottom") <= terminalCanvas.getDouble("bottom") + 0.5);
         assertTrue("fast-key controls must not intersect terminal text: " + geometry, !tray.getBoolean("intersectsTerminalViewport"));
         assertTrue("fast-key lane must not overlap the composer panel: " + geometry, !tray.getBoolean("intersectsComposerPanel"));
         if (!geometry.isNull("inlineDictationBar")) {
@@ -1746,8 +1863,9 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void assertTerminalViewportCap(String action, JSONObject baselineGeometry, JSONObject afterGeometry)
             throws Exception {
-        JSONObject baselineViewport = baselineGeometry.getJSONObject("terminalViewport");
+        JSONObject baselineViewport = baselineGeometry.getJSONObject("terminalGridViewport");
         JSONObject afterViewport = afterGeometry.getJSONObject("terminalViewport");
+        JSONObject afterGridViewport = afterGeometry.getJSONObject("terminalGridViewport");
         int cap = Math.min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP,
                 (int) Math.floor(baselineViewport.getDouble("height")));
         assertEquals(action + " must retain the accepted capped keyboard-up viewport; before=" + baselineGeometry
@@ -1756,7 +1874,13 @@ public final class JsFastKeysDockerJourneyTest {
                 afterGeometry.getInt("terminalViewportDockCapPx"));
         assertEquals(action + " must keep the xterm viewport at that height; before=" + baselineGeometry
                         + "; after=" + afterGeometry,
-                cap, afterViewport.getDouble("height"), 0.5);
+                cap, afterGridViewport.getDouble("height"), 0.5);
+        JSONObject canvas = afterGeometry.getJSONObject("terminalCanvas");
+        JSONObject dock = afterGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds");
+        assertTrue(action + " must let the terminal canvas continue to the dock; after=" + afterGeometry,
+                afterViewport.getDouble("height") >= afterGridViewport.getDouble("height") - 0.5
+                        && canvas.getDouble("height") >= afterViewport.getDouble("height") + dock.getDouble("height")
+                        && afterGeometry.getBoolean("terminalCanvasEndsAtDock"));
         double dockHeight = afterGeometry.getDouble("terminalHotkeysDockHeightPx");
         double renderedDockHeight = afterGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height");
         assertEquals(action + " dock height state must match the rendered dock; after=" + afterGeometry,
@@ -1766,7 +1890,7 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private JSONObject assertAcceptedKeyboardUpViewport(String action, JSONObject geometry) throws Exception {
-        JSONObject viewport = geometry.getJSONObject("terminalViewport");
+        JSONObject viewport = geometry.getJSONObject("terminalGridViewport");
         int expectedCap = Math.min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP,
                 (int) Math.floor(viewport.getDouble("height")));
         assertEquals(action + " must apply the min(144px, measured viewport) cap; geometry=" + geometry,
@@ -1869,8 +1993,17 @@ public final class JsFastKeysDockerJourneyTest {
     private void assertAtLeastFiveRows(String action, JSONObject geometry) throws Exception {
         int rows = runtimeGrid(geometry).getInt("rows");
         int visibleRows = geometry.getInt("visibleTerminalRows");
+        JSONObject host = geometry.getJSONObject("terminalViewport");
+        JSONObject surface = geometry.getJSONObject("terminalXtermSurface");
+        JSONArray xtermAncestors = geometry.getJSONArray("terminalXtermAncestors");
+        JSONObject terminalHostMetrics = xtermAncestors.getJSONObject(1);
         assertTrue(action + " must keep at least five physical terminal rows visible; geometry=" + geometry, visibleRows >= 5);
         assertTrue(action + " must retain a PTY grid with at least five rows; geometry=" + geometry, rows >= 5);
+        assertEquals(action + " must not let IME focus scroll the capped terminal host; geometry=" + geometry,
+                0, terminalHostMetrics.getDouble("scrollTop"), 0.5);
+        assertTrue(action + " xterm surface must stay within its capped host: " + geometry,
+                surface.getDouble("top") >= host.getDouble("top") - 0.5
+                        && surface.getDouble("bottom") <= host.getDouble("bottom") + 0.5);
     }
 
     private void awaitRenderedFrame() throws Exception {
