@@ -318,15 +318,17 @@ describe('composer dictation cancellation', () => {
     expect(mic?.props).toMatchObject({
       class: 'composer-dictate composer-dictate--mic',
       'aria-label': 'Dictate prompt',
+      title: 'Dictate a prompt',
       disabled: false,
     });
+    expect(textContent(mic!)).toBe('Dictate');
     expect(findByTestId(portal, 'composer-insert')?.parent).toBe(actions);
     expect(send).toBeDefined();
     expect(isDescendantOf(send!, actions!)).toBe(true);
     expect(findAll(actions!, (candidate) => candidate.type === 'button'
       && (typeof candidate.props['data-testid'] === 'string' || candidate.props.title === 'Send (Enter)'))
       .map((candidate) => candidate.props['data-testid'] ?? candidate.props.title))
-      .toEqual(['composer-discard', 'composer-insert', 'Send (Enter)', 'composer-dictate']);
+      .toEqual(['composer-insert', 'Send (Enter)', 'composer-dictate']);
 
     app.unmount();
     composerTeleportTarget = null;
@@ -335,12 +337,14 @@ describe('composer dictation cancellation', () => {
   it('pins the production composer mic and shared dictation action styles to the Kotlin hierarchy', () => {
     const composerStyles = styleSource(promptComposerSource, 'PromptComposer');
     const mic = cssRule(composerStyles, '.composer-dictate--mic');
-    expect(mic).toContain('width: 48px');
+    expect(mic).toContain('min-width: 48px');
     expect(mic).toContain('height: 48px');
-    expect(mic).toContain('flex: 0 0 48px');
+    expect(mic).toContain('flex: 0 0 auto');
     expect(mic).toContain('border: 1px solid var(--border-strong)');
-    expect(mic).toContain('border-radius: 50%');
+    expect(mic).toContain('border-radius: 24px');
     expect(mic).toContain('background: var(--surface-2)');
+    expect(mic).toContain('font: var(--fw-semibold) var(--fs-200)/1 var(--font-ui)');
+    expect(promptComposerSource).toContain('<span>Dictate</span>');
 
     const send = cssRule(composerStyles, '.composer-recording-action--send');
     expect(send).toContain('border-color: var(--accent-dim)');
@@ -358,6 +362,7 @@ describe('composer dictation cancellation', () => {
     const recordingStyles = styleSource(composerRecordingModeSource, 'ComposerRecordingMode');
     expect(cssRule(recordingStyles, '.recording-mode__live-row')).toContain('display: flex');
     expect(cssRule(recordingStyles, '.recording-mode__waveform')).toContain('flex: 1 1 auto');
+    expect(composerRecordingModeSource).toContain('class="recording-mode__phase">Listening</span>');
     expect(composerRecordingModeSource).toContain('v-for="bar in 30"');
     expect(composerRecordingModeSource).not.toContain('data-testid="composer-recording-actions"');
   });
@@ -513,6 +518,7 @@ describe('composer dictation cancellation', () => {
     expect(onClick).toBeTypeOf('function');
     await (onClick as () => Promise<void>)();
     expect(composerState(root)).toBe('recording');
+    expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation');
 
     dictationEvent?.({ requestId: 'dictation-pause-1', type: 'partial', text: 'recognized phrase' });
     await flushPromises();
@@ -540,7 +546,9 @@ describe('composer dictation cancellation', () => {
     dictationEvent?.({ requestId: 'dictation-pause-1', type: 'stopped' });
     await flushPromises();
     expect(composerState(root)).toBe('review');
+    expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation');
     expect(drafts.draftFor('host/pause-session')).toBe('keep typed recognized phrase');
+    expect(findByTestId(root, 'prompt-draft')?.props['aria-readonly']).toBe('false');
     expect(writePty).not.toHaveBeenCalled();
 
     app.unmount();
@@ -596,6 +604,7 @@ describe('composer dictation cancellation', () => {
     await flushPromises();
     expect(drafts.draftFor(targetKey)).toBe('typed prefix visible transcript');
     expect(writePty).not.toHaveBeenCalled();
+    expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation');
     const actions = findByTestId(root, 'composer-recording-actions');
     expect(findAll(actions!, (child) => child.type === 'button')
       .map((child) => child.props['data-testid']))

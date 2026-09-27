@@ -89,6 +89,7 @@ EOF
 
 "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --self-test
 "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --self-test
+"$ROOT_DIR/scripts/check-js-composer-host-oracle.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
@@ -156,6 +157,9 @@ if [[ -n "$COMPOSER_FOCUS_MAX_ATTEMPTS" ]]; then
 fi
 asset_logcat="$evidence_dir/composer-assets-live-logcat.txt"
 asset_logcat_pid=""
+host_oracle_pid=""
+host_oracle_port=""
+host_oracle_port_file="$evidence_dir/composer-host-byte-oracle.port"
 prepare_asset_logcat_path() {
   mkdir -p "$(dirname -- "$1")"
   : > "$1" || fail "cannot create live artifact logcat output: $1"
@@ -168,10 +172,22 @@ stop_asset_logcat() {
     asset_logcat_pid=""
   fi
 }
+stop_host_oracle() {
+  if [[ -n "$host_oracle_pid" ]]; then
+    kill "$host_oracle_pid" 2>/dev/null || true
+    wait "$host_oracle_pid" 2>/dev/null || true
+    host_oracle_pid=""
+  fi
+  if [[ -n "$host_oracle_port" ]]; then
+    "$ADB" -s "$ANDROID_SERIAL" reverse --remove "tcp:$host_oracle_port" >/dev/null 2>&1 || true
+    host_oracle_port=""
+  fi
+}
 finish_composer_run() {
   local exit_status=$?
   set +e
   stop_asset_logcat
+  stop_host_oracle
   if [[ -d "$RESULTS_DIR" ]]; then
     shopt -s nullglob
     local report
@@ -195,6 +211,25 @@ finish_composer_run() {
 }
 trap finish_composer_run EXIT
 
+python3 "$ROOT_DIR/scripts/composer-host-byte-oracle.py" \
+  --listen 127.0.0.1 --port 0 --port-file "$host_oracle_port_file" \
+  --ssh-key "$ssh_key_copy" --ssh-port "$PORT" --run-id "$ARTIFACT_RUN_ID" \
+  --session "$SESSION_BASE-bytes" --evidence-dir "$evidence_dir" \
+  > "$evidence_dir/composer-host-byte-oracle-server.log" 2>&1 &
+host_oracle_pid=$!
+for attempt in $(seq 1 50); do
+  if [[ -s "$host_oracle_port_file" ]]; then
+    IFS= read -r host_oracle_port < "$host_oracle_port_file"
+    break
+  fi
+  kill -0 "$host_oracle_pid" 2>/dev/null || fail 'Docker host-byte oracle server exited before opening its local socket'
+  sleep 0.1
+done
+[[ "$host_oracle_port" =~ ^[0-9]+$ ]] && (( host_oracle_port > 0 && host_oracle_port <= 65535 )) \
+  || fail 'Docker host-byte oracle server did not publish a usable port'
+"$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$host_oracle_port" "tcp:$host_oracle_port"
+printf 'host_oracle_port=%s\n' "$host_oracle_port" >> "$evidence_dir/composer-run-metadata.txt"
+
 # Capture only the run-scoped artifact channel while the test emits it. A
 # post-hoc tail of the shared emulator buffer can silently lose a burst of PNG
 # chunks before extraction gets a chance to detect the gap.
@@ -217,6 +252,7 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$SESSION_BASE" \
+    "-Pandroid.testInstrumentationRunnerArguments.hostOraclePort=$host_oracle_port" \
     "-Pandroid.testInstrumentationRunnerArguments.artifactRunId=$ARTIFACT_RUN_ID" \
     "${focus_test_args[@]}" \
     --stacktrace --console=plain 2>&1 | tee "$evidence_dir/composer-gradle.log"; then
@@ -243,6 +279,8 @@ stop_asset_logcat
   --expected-terminal-marker "PS2857_SENT_$SESSION_BASE" \
   --expected-dictation-marker "PS2857_DICTATION_EDITED_$SESSION_BASE"
 exec > >(tee -a "$evidence_dir/composer-host-oracle.txt") 2>&1
+"$ROOT_DIR/scripts/check-js-composer-host-oracle.py" \
+  --evidence-dir "$evidence_dir" --run-id "$ARTIFACT_RUN_ID" --session "$SESSION_BASE-bytes"
 inline_preview="$evidence_dir/inline-dictation-preview.png"
 [[ -s "$inline_preview" ]] || fail 'same-run inline dictation screenshot is missing or empty'
 file "$inline_preview"

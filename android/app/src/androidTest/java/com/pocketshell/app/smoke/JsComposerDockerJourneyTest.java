@@ -33,10 +33,15 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.File;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
@@ -61,6 +66,7 @@ public final class JsComposerDockerJourneyTest {
     private String bytesSession;
     private String uncertainSession;
     private String artifactRunId;
+    private int hostOraclePort;
     private boolean forceFirstPostAttachTapMiss;
     private int composerFocusMaxAttempts = 2;
     private final JSONArray focusTapAttempts = new JSONArray();
@@ -123,6 +129,14 @@ public final class JsComposerDockerJourneyTest {
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
+        String hostOraclePortValue = arguments.getString("hostOraclePort");
+        assertNotNull("pass the local Docker host-byte oracle port", hostOraclePortValue);
+        try {
+            hostOraclePort = Integer.parseInt(hostOraclePortValue);
+        } catch (NumberFormatException error) {
+            throw new AssertionError("host-byte oracle port must be an integer", error);
+        }
+        assertTrue("host-byte oracle port must be valid", hostOraclePort >= 1 && hostOraclePort <= 65_535);
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         checkpoint("build-ready");
@@ -1002,6 +1016,10 @@ public final class JsComposerDockerJourneyTest {
         evalString("window.__ps2857DictationTestMode = true; 'debug dictation test mode enabled'");
         String original = "keep this typed draft " + nameBase;
         checkpoint("dictation-open-sheet");
+        capturePromptComposerRoute(runId);
+        tapDomCenter("[data-testid=prompt-composer-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
         setComposerDraft(original);
         assertGenericComposerTitleAndSessionChrome(runId);
         checkpoint("dictation-title-verified");
@@ -1044,7 +1062,7 @@ public final class JsComposerDockerJourneyTest {
                 + "return draft?.classList.contains('composer-draft--dictation-anchor')===true"
                 + " && style?.display!=='none' && style?.visibility!=='hidden' && style?.opacity==='0'"
                 + " && draft?.getAttribute('aria-hidden')!=='true' && draft?.getAttribute('aria-readonly')==='true'"
-                + " && draft?.getAttribute('aria-label')==='Dictation draft, read only while dictating'"
+                + " && draft?.getAttribute('aria-label')==='Prompt dictation draft, read only during capture'"
                 + " && draft?.getBoundingClientRect().width<=1 && draft?.getBoundingClientRect().height<=1"
                 + " && mode?.getClientRects().length>0 && preview?.textContent.includes('discard this dictated phrase')"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')"
@@ -1134,6 +1152,7 @@ public final class JsComposerDockerJourneyTest {
         assertEquals("recording-time Insert must not write while its visible transcript is updated", insertWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
         checkpoint("dictation-insert-before-tap");
+        captureHostBeforeExplicitAction("recording-insert", insertCommand);
         tapDomCenter("[data-testid=composer-insert]");
         checkpoint("dictation-insert-tap-returned");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
@@ -1176,6 +1195,7 @@ public final class JsComposerDockerJourneyTest {
                 transcribingSendWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
         checkpoint("dictation-transcribing-send-before-tap");
+        captureHostBeforeExplicitAction("transcribing-send", transcribingSendCommand);
         tapDomCenter("[data-testid=composer-dictation-send]");
         checkpoint("dictation-transcribing-send-tap-returned");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
@@ -1250,6 +1270,8 @@ public final class JsComposerDockerJourneyTest {
         recordComposerModeState(runId, "review", dictationCommand);
         assertEquals("Stop must keep recognized text in the editable review draft", dictationCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        checkpoint("dictation-stop-review-before-action");
+        captureHostBeforeExplicitAction("stop-review", dictationCommand);
 
         String editedMarker = "PS2857_DICTATION_EDITED_" + nameBase;
         String editedCommand = "printf '%s' '" + editedMarker + "' > /tmp/" + bytesSession + "-dictation.marker";
@@ -1352,6 +1374,57 @@ public final class JsComposerDockerJourneyTest {
         }
     }
 
+    private void capturePromptComposerRoute(String runId) throws Exception {
+        awaitImeVisible(false);
+        awaitWebViewVisualState();
+        String report = evalString("(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const label=document.querySelector('[data-testid=mobile-hotkeys-launcher-label]');"
+                + "const inlineMic=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const visible=node=>!!node&&node.getClientRects().length>0"
+                + "&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';"
+                + "return JSON.stringify({route:shell?.dataset.route??'',homeSurface:shell?.dataset.homeSurface??'',"
+                + "sshPhase:shell?.dataset.sshPhase??'',keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "viewport:{width:window.visualViewport?.width??window.innerWidth,height:window.visualViewport?.height??window.innerHeight},"
+                + "composerPresent:!!composer,launcherVisible:visible(launcher),launcherEnabled:!!launcher&&!launcher.disabled,"
+                + "promptLabel:label?.textContent.trim()??'',inlineMicVisible:visible(inlineMic),"
+                + "inlineMicEnabled:!!inlineMic&&!inlineMic.disabled,inlineMicLabel:inlineMic?.getAttribute('aria-label')??'',"
+                + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
+                + "promptBounds:(()=>{if(!launcher)return null;const r=launcher.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};})(),"
+                + "inlineMicBounds:(()=>{if(!inlineMic)return null;const r=inlineMic.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};})()});})() ");
+        JSONObject state = new JSONObject(report).put("runId", runId)
+                .put("expectedPromptLabel", "Prompt")
+                .put("expectedInlineMicLabel", "Dictate to terminal")
+                .put("expectedSession", bytesSession);
+        emitArtifact(runId, "composer-route.json", state.toString().getBytes(StandardCharsets.UTF_8));
+        emitCurrentScreen(runId, "composer-route.png");
+        assertTrue("idle terminal must expose Prompt separately from inline terminal dictation: " + state,
+                "home".equals(state.getString("route")) && "live".equals(state.getString("homeSurface"))
+                        && "live".equals(state.getString("sshPhase")) && !state.getBoolean("keyboardVisible")
+                        && !state.getBoolean("composerPresent") && state.getBoolean("launcherVisible")
+                        && state.getBoolean("launcherEnabled") && "Prompt".equals(state.getString("promptLabel"))
+                        && state.getBoolean("inlineMicVisible") && state.getBoolean("inlineMicEnabled")
+                        && "Dictate to terminal".equals(state.getString("inlineMicLabel"))
+                        && state.getString("terminalHeading").contains(bytesSession)
+                        && state.getJSONObject("promptBounds").getDouble("width") >= 48.0
+                        && state.getJSONObject("promptBounds").getDouble("height") >= 48.0
+                        && state.getJSONObject("inlineMicBounds").getDouble("width") >= 48.0
+                        && state.getJSONObject("inlineMicBounds").getDouble("height") >= 48.0
+                        && state.getJSONObject("promptBounds").getDouble("top") >= 0.0
+                        && state.getJSONObject("promptBounds").getDouble("bottom")
+                                <= state.getJSONObject("viewport").getDouble("height")
+                        && state.getJSONObject("promptBounds").getDouble("left") >= 0.0
+                        && state.getJSONObject("promptBounds").getDouble("right")
+                                <= state.getJSONObject("viewport").getDouble("width")
+                        && state.getJSONObject("inlineMicBounds").getDouble("top") >= 0.0
+                        && state.getJSONObject("inlineMicBounds").getDouble("bottom")
+                                <= state.getJSONObject("viewport").getDouble("height")
+                        && state.getJSONObject("inlineMicBounds").getDouble("left") >= 0.0
+                        && state.getJSONObject("inlineMicBounds").getDouble("right")
+                                <= state.getJSONObject("viewport").getDouble("width"));
+    }
+
     private void assertGenericComposerTitleAndSessionChrome(String runId) throws Exception {
         String visibleIdleSheet = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const scrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
@@ -1395,6 +1468,7 @@ public final class JsComposerDockerJourneyTest {
         titleState.put("runId", runId);
         titleState.put("expectedComposerHeading", "Prompt Composer");
         titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt");
+        titleState.put("expectedDictatePromptVisibleLabel", "Dictate");
         titleState.put("expectedSessionChrome", bytesSession);
         emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-title.png");
@@ -1403,12 +1477,12 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("buttons").getBoolean("dictate")
                         && titleState.getJSONObject("buttons").getBoolean("insert")
                         && titleState.getJSONObject("buttons").getBoolean("send")
-                        && titleState.getString("dictatePromptText").isEmpty()
+                        && "Dictate".equals(titleState.getString("dictatePromptText"))
                         && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
                         && titleState.getBoolean("dictatePromptVisible")
                         && titleState.getBoolean("dictatePromptEnabled")
-                        && Math.abs(titleState.getJSONObject("dictatePromptBounds").getDouble("width") - 48.0) < 0.5
-                        && Math.abs(titleState.getJSONObject("dictatePromptBounds").getDouble("height") - 48.0) < 0.5
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("width") >= 70.0
+                        && titleState.getJSONObject("dictatePromptBounds").getDouble("height") >= 48.0
                         && titleState.getDouble("screenScrollTop") == 0
                         && titleState.getDouble("documentScrollTop") == 0);
         assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
@@ -1448,6 +1522,47 @@ public final class JsComposerDockerJourneyTest {
         journeyCheckpoint = name;
         journeyCheckpointAtMs = SystemClock.elapsedRealtime();
         Log.i("PS2857Checkpoint", "runId=" + artifactRunId + " checkpoint=" + name);
+    }
+
+    private JSONObject captureHostBeforeExplicitAction(String stage, String forbiddenMarker) throws Exception {
+        JSONObject request = new JSONObject()
+                .put("runId", artifactRunId)
+                .put("stage", stage)
+                .put("session", bytesSession)
+                .put("forbiddenMarker", forbiddenMarker);
+        String responseLine;
+        try (Socket socket = new Socket("127.0.0.1", hostOraclePort)) {
+            socket.setSoTimeout(15_000);
+            try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+                    socket.getOutputStream(), StandardCharsets.UTF_8));
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(
+                         socket.getInputStream(), StandardCharsets.UTF_8))) {
+                writer.write(request.toString());
+                writer.write('\n');
+                writer.flush();
+                responseLine = reader.readLine();
+            }
+        }
+        assertNotNull("Docker host-byte oracle did not return a snapshot for " + stage, responseLine);
+        JSONObject report = new JSONObject(responseLine);
+        assertEquals("host-byte oracle response belongs to this run", artifactRunId, report.getString("runId"));
+        assertEquals("host-byte oracle response belongs to the requested checkpoint", stage, report.getString("stage"));
+        assertEquals("host-byte oracle reads the Docker host's PTY capture", "docker-host-a-capture",
+                report.getString("source"));
+        assertEquals("host-byte oracle checks the expected transcript bytes", forbiddenMarker,
+                report.getString("forbiddenMarker"));
+        byte[] hostBytes = Base64.getDecoder().decode(report.getString("hostBytesBase64"));
+        assertEquals("host-byte snapshot length matches the independent capture", hostBytes.length,
+                report.getInt("hostBytesLength"));
+        assertEquals("host-byte snapshot hash matches the independent capture",
+                hex(MessageDigest.getInstance("SHA-256").digest(hostBytes)), report.getString("hostBytesSha256"));
+        assertTrue("dictated text must not reach the Docker PTY before explicit Insert or Send: " + report,
+                report.getBoolean("noPtyWriteBeforeExplicitAction")
+                        && !report.getBoolean("ptyWriteObserved")
+                        && !new String(hostBytes, StandardCharsets.UTF_8).contains(forbiddenMarker));
+        Log.i("PS2857HostOracle", "PRE_ACTION_BYTES|" + stage + "|length=" + hostBytes.length
+                + "|sha256=" + report.getString("hostBytesSha256") + "|markerAbsent=true");
+        return report;
     }
 
     private void recordComposerModeState(String runId, String state, String expectedDraft) throws Exception {
@@ -1565,6 +1680,10 @@ public final class JsComposerDockerJourneyTest {
                 : state.startsWith("recording") ? "recording"
                         : state.startsWith("transcribing") ? "transcribing" : state;
         assertEquals("composer phase must match the " + state + " screenshot", expectedPhase, measured.getString("dictationState"));
+        String expectedHeading = state.startsWith("recording") || state.startsWith("transcribing")
+                ? "Prompt dictation" : state.equals("review") ? "Review dictation" : "Prompt Composer";
+        assertEquals("composer heading must identify the active prompt dictation phase", expectedHeading,
+                measured.getString("composerHeading"));
         assertTrue("state screenshot must retain the expected draft text", measured.getBoolean("expectedDraftMatches"));
         assertTrue("dictation mode must be presented in the modal composer sheet", measured.getBoolean("composerModal"));
         assertTrue("dictation controls must dismiss the IME and keep the sheet unobstructed",
@@ -1574,7 +1693,8 @@ public final class JsComposerDockerJourneyTest {
                 dictationBusy ? "focus-anchor" : "editor", measured.getString("draftPresentation"));
         assertTrue("the focused dictation draft anchor must stay in the accessibility tree",
                 !measured.getBoolean("draftAriaHidden")
-                        && (!dictationBusy || measured.getString("draftAriaLabel").contains("read only while dictating")));
+                        && (!dictationBusy || measured.getString("draftAriaLabel").equals(
+                                "Prompt dictation draft, read only during capture")));
         if (dictationBusy) {
             assertTrue("busy dictation must show its recording/transcribing surface while hiding the editor visually",
                     measured.getBoolean("recordingModeVisible")

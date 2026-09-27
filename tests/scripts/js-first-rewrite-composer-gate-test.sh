@@ -6,16 +6,26 @@ WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-composer-artifacts.py"
 JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsComposerDockerJourneyTest.java"
+PROMPT_COMPOSER="$ROOT_DIR/src/components/PromptComposer.vue"
+RECORDING_MODE="$ROOT_DIR/src/components/ComposerRecordingMode.vue"
+DICTATION_UNIT_TEST="$ROOT_DIR/tests/unit/composerDictationCancellation.test.ts"
+HOST_ORACLE="$ROOT_DIR/scripts/composer-host-byte-oracle.py"
+HOST_ORACLE_CHECKER="$ROOT_DIR/scripts/check-js-composer-host-oracle.py"
 TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
-[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -f "$JOURNEY" && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -f "$JOURNEY" \
+  && -f "$PROMPT_COMPOSER" && -f "$RECORDING_MODE" && -f "$DICTATION_UNIT_TEST" \
+  && -x "$HOST_ORACLE" && -x "$HOST_ORACLE_CHECKER" \
+  && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
   printf 'FAIL: rewrite composer gate inputs are missing\n' >&2
   exit 1
 }
 
 bash -n "$RUNNER"
-python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" "$JOURNEY" <<'PY'
+python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" \
+  "$JOURNEY" "$PROMPT_COMPOSER" "$RECORDING_MODE" "$DICTATION_UNIT_TEST" \
+  "$HOST_ORACLE" "$HOST_ORACLE_CHECKER" <<'PY'
 import ast
 import os
 import re
@@ -24,13 +34,19 @@ import sys
 import tempfile
 from pathlib import Path
 
-workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path = map(Path, sys.argv[1:])
+workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path, \
+    prompt_composer_path, recording_mode_path, dictation_unit_test_path, host_oracle_path, host_oracle_checker_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
 journey = journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 extractor = extractor_path.read_text()
+prompt_composer = prompt_composer_path.read_text()
+recording_mode = recording_mode_path.read_text()
+dictation_unit_test = dictation_unit_test_path.read_text()
+host_oracle = host_oracle_path.read_text()
+host_oracle_checker = host_oracle_checker_path.read_text()
 ast.parse(extractor, filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
 subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
@@ -40,26 +56,34 @@ if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
 
 def require_dictate_prompt_journey(source: str) -> None:
     required = (
+        'capturePromptComposerRoute(runId);',
+        'emitCurrentScreen(runId, "composer-route.png")',
+        'emitArtifact(runId, "composer-route.json"',
+        'const inlineMic=document.querySelector(\'[data-testid=inline-dictation-toggle]\')',
+        '"Dictate to terminal".equals(state.getString("inlineMicLabel"))',
         'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt")',
-        'titleState.getString("dictatePromptText").isEmpty()',
+        'titleState.put("expectedDictatePromptVisibleLabel", "Dictate")',
+        '"Dictate".equals(titleState.getString("dictatePromptText"))',
         'titleState.getString("dictatePromptAccessibleName")',
         'titleState.getBoolean("dictatePromptVisible")',
         'titleState.getBoolean("dictatePromptEnabled")',
-        'getDouble("width") - 48.0',
-        'getDouble("height") - 48.0',
+        'getDouble("width") >= 70.0',
+        'getDouble("height") >= 48.0',
         'emitCurrentScreen(runId, "composer-title.png")',
         'emitArtifact(runId, "composer-title.json"',
     )
     for needle in required:
         if needle not in source:
-            raise AssertionError(f"composer journey is missing the icon-only 48dp Dictate prompt contract: {needle}")
+            raise AssertionError(f"composer journey is missing the separate Prompt and inline dictation route contract: {needle}")
     start = source.index("private void exerciseComposerDictationMode")
     end = source.index("private void awaitComposerReadyToSend", start)
     dictation_method = source[start:end]
+    route_capture = dictation_method.index("capturePromptComposerRoute(runId);")
+    prompt_entry_tap = dictation_method.index('tapDomCenter("[data-testid=prompt-composer-launcher]")')
     title_assertion = dictation_method.index("assertGenericComposerTitleAndSessionChrome(runId);")
     action_tap = dictation_method.index('tapDomCenter("[data-testid=composer-dictate]")')
-    if title_assertion >= action_tap:
-        raise AssertionError("composer journey must verify the Dictate prompt mic before tapping it")
+    if not route_capture < prompt_entry_tap < title_assertion < action_tap:
+        raise AssertionError("journey must capture the idle terminal route, open Prompt, verify its Dictate action, then enter dictation")
 
 
 require_dictate_prompt_journey(journey)
@@ -102,6 +126,8 @@ require_icon_only_stop_contract(journey, extractor)
 def require_kotlin_dictation_contract(source: str, extractor_source: str) -> None:
     journey_evidence = (
         "actions?.getAttribute('role')==='group'",
+        '"Prompt dictation"',
+        '"Review dictation"',
         "cancel?.textContent.trim()==='Discard'",
         "cancel?.getAttribute('aria-label')==='Discard recording without transcribing'",
         '"timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"',
@@ -119,6 +145,8 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
 
     extractor_evidence = (
         'mode_geometry.get("cancelText") != "Discard"',
+        'mode_geometry.get("composerHeading") != expected_heading',
+        'route_state.get("inlineMicLabel") != "Dictate to terminal"',
         'mode_geometry.get("cancelText") != "Cancel"',
         'mode_geometry.get("timerBesideWaveform") is not True',
         '_timer_sits_beside_waveform(mode_geometry.get("timer"), mode_geometry.get("waveform"))',
@@ -138,6 +166,88 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
 
 
 require_kotlin_dictation_contract(journey, extractor)
+
+
+def require_obvious_prompt_dictation_mode() -> None:
+    composer_evidence = (
+        "const composerTitle = computed(() => dictationPhase.value === 'review'",
+        "'Review dictation'",
+        "'Prompt dictation'",
+        "<h3 id=\"composer-title\">{{ composerTitle }}</h3>",
+        'title="Dictate a prompt" aria-label="Dictate prompt"',
+        "<span>Dictate</span>",
+        "composer-recording-preview composer-status",
+        "Prompt dictation draft, read only during capture",
+    )
+    for needle in composer_evidence:
+        if needle not in prompt_composer:
+            raise AssertionError(f"mobile prompt composer does not expose its distinct dictation mode: {needle}")
+    for needle in ('class="recording-mode__phase">Listening</span>', "Transcribing prompt…"):
+        if needle not in recording_mode:
+            raise AssertionError(f"prompt dictation feedback is not phase-specific: {needle}")
+    unit_evidence = (
+        "places the mobile Dictate prompt microphone in the composer action row",
+        "expect(textContent(mic!)).toBe('Dictate')",
+        "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation')",
+        "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation')",
+        "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop'])",
+        "expect(writePty).not.toHaveBeenCalled();",
+    )
+    for needle in unit_evidence:
+        if needle not in dictation_unit_test:
+            raise AssertionError(f"dictation UX regression test is missing its failing assertion: {needle}")
+    # The extractor self-test below feeds small and clipped route controls into
+    # the same artifact validator used by the packaged screenshot journey.
+    if '"idle terminal {label} is clipped or below the 48dp touch target"' not in extractor:
+        raise AssertionError("route screenshot validation does not protect the separate Prompt and inline mic touch targets")
+    subprocess.run([sys.executable, str(host_oracle_checker_path), "--self-test"], check=True)
+
+
+require_obvious_prompt_dictation_mode()
+
+
+def require_pre_action_host_byte_oracle() -> None:
+    for stage, action in (
+        ("recording-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
+        ("transcribing-send", 'tapDomCenter("[data-testid=composer-dictation-send]")'),
+    ):
+        before = journey.index(f'captureHostBeforeExplicitAction("{stage}",')
+        after = journey.index(action, before)
+        if before >= after:
+            raise AssertionError(f"host byte snapshot for {stage} must precede the explicit action")
+    review_snapshot = journey.index('captureHostBeforeExplicitAction("stop-review",')
+    review_action = journey.index('tapDomCenter(".composer-shared-controls .send")', review_snapshot)
+    if review_snapshot >= review_action:
+        raise AssertionError("Stop must leave an editable draft and no PTY write before a later explicit Send")
+    for needle in (
+        "a capture --workspace /home/testuser --tag",
+        '"source": "docker-host-a-capture"',
+        '"noPtyWriteBeforeExplicitAction": result.returncode == 0 and not marker_present',
+    ):
+        if needle not in host_oracle:
+            raise AssertionError(f"host oracle is missing independent pre-action PTY evidence: {needle}")
+    if '"recording-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
+        raise AssertionError("host-byte checker does not require every pre-action stage")
+    for needle in (
+        '"ptyWriteObserved") is not False',
+        '"noPtyWriteBeforeExplicitAction") is not True',
+        "marker.encode(\"utf-8\") in capture",
+        "composer-host-oracle-pre-{stage}.json",
+    ):
+        if needle not in host_oracle_checker:
+            raise AssertionError(f"host-byte evidence checker is missing a fail-closed condition: {needle}")
+    runner_evidence = (
+        '"$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$host_oracle_port" "tcp:$host_oracle_port"',
+        '"-Pandroid.testInstrumentationRunnerArguments.hostOraclePort=$host_oracle_port"',
+        '"$ROOT_DIR/scripts/check-js-composer-host-oracle.py"',
+        '--evidence-dir "$evidence_dir" --run-id "$ARTIFACT_RUN_ID" --session "$SESSION_BASE-bytes"',
+    )
+    for needle in runner_evidence:
+        if needle not in runner:
+            raise AssertionError(f"packaged composer runner does not wire host-byte verification: {needle}")
+
+
+require_pre_action_host_byte_oracle()
 
 
 def require_contract(source: str, packaged_script: str) -> None:

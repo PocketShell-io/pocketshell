@@ -41,6 +41,8 @@ REQUIRED_NAMES = {
     "composer-transcribing-send-geometry.json",
     "composer-back-workspace-restored.png",
     "composer-back-workspace-restored.json",
+    "composer-route.png",
+    "composer-route.json",
     "composer-title.png",
     "composer-title.json",
     "composer-launcher-before-reopen.png",
@@ -62,6 +64,7 @@ OPTIONAL_NAMES = {
     "composer-focus-failure.json",
     "composer-focus-failure-logcat.txt",
     "composer-back-workspace-failure.png",
+    "composer-route.png",
     "composer-back-workspace-failure.json",
 }
 EXPECTED_NAMES = REQUIRED_NAMES | OPTIONAL_NAMES
@@ -308,6 +311,54 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
     if validate_layout:
+        try:
+            route_state = json.loads(decoded["composer-route.json"])
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ExtractionFailure(f"composer route JSON is invalid: {error}") from error
+        if (not isinstance(route_state, dict) or route_state.get("runId") != run_id
+                or route_state.get("route") != "home" or route_state.get("homeSurface") != "live"
+                or route_state.get("sshPhase") != "live" or route_state.get("keyboardVisible") is not False
+                or route_state.get("composerPresent") is not False
+                or route_state.get("launcherVisible") is not True or route_state.get("launcherEnabled") is not True
+                or route_state.get("promptLabel") != "Prompt" or route_state.get("expectedPromptLabel") != "Prompt"
+                or route_state.get("inlineMicVisible") is not True or route_state.get("inlineMicEnabled") is not True
+                or route_state.get("inlineMicLabel") != "Dictate to terminal"
+                or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"):
+            raise ExtractionFailure("idle terminal evidence does not distinguish Prompt access from inline terminal dictation")
+        route_session = route_state.get("expectedSession")
+        route_heading = route_state.get("terminalHeading")
+        if (not isinstance(route_session, str) or not route_session or not isinstance(route_heading, str)
+                or route_session not in route_heading):
+            raise ExtractionFailure("idle terminal route evidence does not identify the attached session")
+        route_viewport = route_state.get("viewport")
+        if not isinstance(route_viewport, dict):
+            raise ExtractionFailure("idle terminal route evidence is missing its visible viewport")
+        try:
+            route_viewport_width = float(route_viewport["width"])
+            route_viewport_height = float(route_viewport["height"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("idle terminal route evidence has invalid viewport bounds") from error
+        if (not all(math.isfinite(value) for value in (route_viewport_width, route_viewport_height))
+                or route_viewport_width <= 0 or route_viewport_height <= 0):
+            raise ExtractionFailure("idle terminal route evidence has invalid viewport bounds")
+        for label in ("promptBounds", "inlineMicBounds"):
+            bounds = route_state.get(label)
+            if not isinstance(bounds, dict):
+                raise ExtractionFailure(f"idle terminal route evidence is missing {label}")
+            try:
+                top, bottom = float(bounds["top"]), float(bounds["bottom"])
+                left, right = float(bounds["left"]), float(bounds["right"])
+                width, height = float(bounds["width"]), float(bounds["height"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"idle terminal route evidence has invalid {label}") from error
+            if (not all(math.isfinite(value) for value in (top, bottom, left, right, width, height))
+                    or width <= 0 or height <= 0 or abs((right - left) - width) >= 0.5
+                    or abs((bottom - top) - height) >= 0.5):
+                raise ExtractionFailure(f"idle terminal route evidence has invalid bounds for {label}")
+            if (width < 48.0 or height < 48.0 or top < -0.5 or left < -0.5
+                    or bottom > route_viewport_height + 0.5 or right > route_viewport_width + 0.5):
+                raise ExtractionFailure(f"idle terminal {label} is clipped or below the 48dp touch target")
+
         title_bytes = decoded.get("composer-title.json")
         if title_bytes is None or "composer-title.png" not in decoded:
             raise ExtractionFailure("same-run composer title screenshot and report are required")
@@ -325,7 +376,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("composerHeading") != "Prompt Composer"
                 or title_state.get("expectedComposerHeading") != "Prompt Composer"
                 or title_state.get("sheetFullyVisible") is not True
-                or title_state.get("dictatePromptText") != ""
+                or title_state.get("dictatePromptText") != "Dictate"
+                or title_state.get("expectedDictatePromptVisibleLabel") != "Dictate"
                 or title_state.get("expectedDictatePromptAccessibleName") != "Dictate prompt"
                 or title_state.get("dictatePromptAccessibleName") != "Dictate prompt"
                 or title_state.get("dictatePromptVisible") is not True
@@ -357,12 +409,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             viewport_height = float(viewport["height"])
         except (KeyError, TypeError, ValueError) as error:
             raise ExtractionFailure("composer title report has invalid Dictate prompt bounds") from error
-        if (abs(dictate_width - 48.0) >= 0.5 or abs(dictate_height - 48.0) >= 0.5
+        if (dictate_width < 70.0 or dictate_height < 48.0
                 or abs((dictate_right - dictate_left) - dictate_width) >= 0.5
                 or abs((dictate_bottom - dictate_top) - dictate_height) >= 0.5
                 or dictate_top < max(0.0, panel_top) or dictate_bottom > min(viewport_height, panel_bottom) + 0.5
                 or dictate_left < max(0.0, panel_left) or dictate_right > min(viewport_width, panel_right) + 0.5):
-            raise ExtractionFailure("Dictate prompt mic is clipped or does not have 48dp bounds")
+            raise ExtractionFailure("Dictate prompt action is clipped or below the 48dp touch target")
         terminal_heading = title_state.get("terminalHeading")
         expected_session = title_state.get("expectedSessionChrome")
         if (not isinstance(terminal_heading, str) or not isinstance(expected_session, str)
@@ -657,6 +709,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure(f"{geometry_name} does not identify the {state} composer state")
             if state.startswith("recording") and "Your draft stays in the composer until you tap Insert or Send" not in str(mode_geometry.get("statusText", "")):
                 raise ExtractionFailure(f"{state} screenshot has misleading dictation delivery instructions")
+            expected_heading = ("Prompt dictation" if state.startswith(("recording", "transcribing"))
+                                else "Review dictation" if state == "review" else "Prompt Composer")
+            if mode_geometry.get("composerHeading") != expected_heading:
+                raise ExtractionFailure(f"{state} screenshot does not identify the active prompt dictation mode")
             if state == "review" and "Transcript ready" not in str(mode_geometry.get("reviewText", "")):
                 raise ExtractionFailure("review screenshot does not identify the transcript as ready for editing")
             if state in ("recording-insert", "transcribing-send"):
@@ -697,7 +753,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure(f"{state} screenshot does not show the expected editor presentation")
             if expected_locked:
                 if (mode_geometry.get("draftOpacity") != "0" or mode_geometry.get("draftAriaHidden") is True
-                        or "read only while dictating" not in str(mode_geometry.get("draftAriaLabel", ""))
+                        or mode_geometry.get("draftAriaLabel") != "Prompt dictation draft, read only during capture"
                         or mode_geometry.get("draftEditingLocked") is not True
                         or "composer-status" not in str(mode_geometry.get("draftDescribedBy", ""))
                         or mode_geometry.get("recordingModeVisible") is not True
@@ -934,13 +990,14 @@ def self_test() -> None:
         "sheetFullyVisible": True,
         "composerHeading": "Prompt Composer",
         "expectedComposerHeading": "Prompt Composer",
-        "dictatePromptText": "",
+        "dictatePromptText": "Dictate",
+        "expectedDictatePromptVisibleLabel": "Dictate",
         "expectedDictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptVisible": True,
         "dictatePromptEnabled": True,
-        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 348.0, "right": 396.0,
-                                 "width": 48.0, "height": 48.0},
+        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 300.0, "right": 396.0,
+                                 "width": 96.0, "height": 48.0},
         "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
         "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
         "viewport": {"width": 412.0, "height": 915.0},
@@ -950,6 +1007,38 @@ def self_test() -> None:
         "terminalHeading": f"{run_id}-bytes",
         "expectedSessionChrome": f"{run_id}-bytes",
     }).encode()
+    route_state = json.dumps({
+        "runId": run_id,
+        "route": "home",
+        "homeSurface": "live",
+        "sshPhase": "live",
+        "keyboardVisible": False,
+        "viewport": {"width": 412.0, "height": 915.0},
+        "composerPresent": False,
+        "launcherVisible": True,
+        "launcherEnabled": True,
+        "promptLabel": "Prompt",
+        "expectedPromptLabel": "Prompt",
+        "inlineMicVisible": True,
+        "inlineMicEnabled": True,
+        "inlineMicLabel": "Dictate to terminal",
+        "expectedInlineMicLabel": "Dictate to terminal",
+        "terminalHeading": f"{run_id}-bytes",
+        "expectedSession": f"{run_id}-bytes",
+        "promptBounds": {"top": 700.0, "bottom": 748.0, "left": 280.0, "right": 360.0,
+                         "width": 80.0, "height": 48.0},
+        "inlineMicBounds": {"top": 700.0, "bottom": 748.0, "left": 360.0, "right": 408.0,
+                            "width": 48.0, "height": 48.0},
+    }).encode()
+    confused_route_state_value = json.loads(route_state)
+    confused_route_state_value["inlineMicLabel"] = "Dictate prompt"
+    confused_route_state = json.dumps(confused_route_state_value).encode()
+    small_route_prompt_value = json.loads(route_state)
+    small_route_prompt_value["promptBounds"]["width"] = 47.0
+    small_route_prompt = json.dumps(small_route_prompt_value).encode()
+    clipped_route_mic_value = json.loads(route_state)
+    clipped_route_mic_value["inlineMicBounds"]["right"] = 420.0
+    clipped_route_mic = json.dumps(clipped_route_mic_value).encode()
     launcher_before = json.dumps({
         "runId": run_id,
         "native": {"windowHasFocus": True, "webViewHasFocus": True, "imeVisible": False,
@@ -1042,6 +1131,7 @@ def self_test() -> None:
         payload = {
             "runId": run_id,
             "state": state,
+            "composerHeading": "Prompt dictation" if anchored else "Review dictation" if state == "review" else "Prompt Composer",
             "dictationState": "recording" if recording else "transcribing" if transcribing
             else "review" if state == "review" else "idle",
             "androidImeVisible": False,
@@ -1061,7 +1151,7 @@ def self_test() -> None:
             "draftPresentation": "focus-anchor" if anchored else "editor",
             "draftOpacity": "0" if anchored else "1",
             "draftAriaHidden": False,
-            "draftAriaLabel": "Dictation draft, read only while dictating" if anchored else "Prompt draft",
+            "draftAriaLabel": "Prompt dictation draft, read only during capture" if anchored else "Prompt draft",
             "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if transcribing else "",
             "recordingModeVisible": anchored,
             "recordingModeLabel": "Prompt dictation recording" if recording else "Transcribing prompt" if transcribing else "",
@@ -1319,6 +1409,7 @@ def self_test() -> None:
 
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
                    dictation_send_bytes: bytes = dictation_send,
+                   route_state_bytes: bytes = route_state,
                    focus_trace_bytes: bytes = focus_trace,
                    title_state_bytes: bytes = title_state,
                    launcher_before_bytes: bytes = launcher_before,
@@ -1333,6 +1424,8 @@ def self_test() -> None:
                    review_geometry_bytes: bytes | None = None,
                    inline_preview_bytes: bytes = png) -> list[str]:
         source = [
+            ("composer-route.png", png),
+            ("composer-route.json", route_state_bytes),
             ("composer-title.png", png),
             ("composer-title.json", title_state_bytes),
             ("composer-launcher-before-reopen.png", png),
@@ -1401,6 +1494,11 @@ def self_test() -> None:
     for label, altered in (
         ("missing artifact", lines[:-1]),
         ("missing focus trace", [line for line in lines if "composer-focus-trace.json" not in line]),
+        ("missing idle-terminal route evidence", [line for line in lines if "composer-route.json" not in line]),
+        ("route confuses prompt dictation with terminal dictation",
+         make_lines(route_state_bytes=confused_route_state)),
+        ("idle Prompt entry is below the 48dp touch target", make_lines(route_state_bytes=small_route_prompt)),
+        ("idle inline terminal mic is clipped", make_lines(route_state_bytes=clipped_route_mic)),
         ("forced first miss closes Composer and removes its retry target",
          make_lines(focus_trace_bytes=broken_forced_focus_trace)),
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
@@ -1459,7 +1557,7 @@ def self_test() -> None:
         ("post-stop review is no longer editable",
          make_lines(review_geometry_bytes=uneditable_review_geometry)),
         ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
-        ("composer mic shows visible label text",
+        ("composer mic omits the visible Dictate label",
          make_lines(title_state_bytes=ambiguous_dictate_text)),
         ("composer dictation entry has an ambiguous accessible name",
          make_lines(title_state_bytes=ambiguous_dictate_accessibility)),

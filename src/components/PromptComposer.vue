@@ -73,6 +73,9 @@ const dictationPreview = ref('');
 const dictationBusy = computed(() => dictationPhase.value === 'starting'
   || dictationPhase.value === 'recording'
   || dictationPhase.value === 'transcribing');
+const composerTitle = computed(() => dictationPhase.value === 'review'
+  ? 'Review dictation'
+  : dictationBusy.value ? 'Prompt dictation' : 'Prompt Composer');
 const elapsedLabel = computed(() => {
   const totalSeconds = Math.floor(elapsedMs.value / 1_000);
   const minutes = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
@@ -466,7 +469,7 @@ function startPromptDictation() {
       <div v-if="mobileSheet" class="composer-sheet-handle" aria-hidden="true"><span /></div>
       <div class="composer-heading">
         <div class="composer-heading__copy">
-          <h3 id="composer-title">Prompt Composer</h3>
+          <h3 id="composer-title">{{ composerTitle }}</h3>
         </div>
         <span class="state-tag" :class="transportState === 'connected' ? 'state-tag--success' : 'state-tag--muted'">
           {{ transportState === 'connected' ? 'READY' : transportState === 'lost' ? 'RECONNECTING' : 'NO PTY' }}
@@ -484,8 +487,8 @@ function startPromptDictation() {
           class="composer-draft"
           :class="{ 'composer-draft--dictation-anchor': dictationBusy }"
           data-testid="prompt-draft"
-          :aria-label="dictationBusy ? 'Dictation draft, read only while dictating' : 'Prompt draft'"
-          :aria-describedby="dictationBusy ? (dictationPhase === 'recording' ? 'composer-recording-preview composer-status' : 'composer-status') : undefined"
+          :aria-label="dictationBusy ? 'Prompt dictation draft, read only during capture' : 'Prompt draft'"
+          :aria-describedby="dictationBusy ? (dictationPhase === 'starting' ? 'composer-status' : 'composer-recording-preview composer-status') : undefined"
           ref="draftInput"
           :value="draft"
           :disabled="targetKey.length === 0 || sendingIntent !== null"
@@ -506,7 +509,7 @@ function startPromptDictation() {
         :live-preview="dictationPreview"
       />
       <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review">
-        Transcript ready. Edit the draft before choosing Insert or Send.
+        Transcript ready. Edit it, then choose Insert or Send.
       </p>
 
       <p id="composer-status" class="composer-status" :class="{ 'composer-status--dictation': dictationBusy }"
@@ -518,9 +521,9 @@ function startPromptDictation() {
       <div class="composer-actions" :class="{ 'composer-actions--dictation': dictationBusy }"
         data-testid="composer-actions" @pointerdown.capture="preserveDraftFocus">
         <template v-if="dictationPhase === 'idle' || dictationPhase === 'review'">
-          <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="draft.length === 0 || sendingIntent !== null"
+          <button v-if="draft.length > 0" class="composer-discard" type="button" data-testid="composer-discard" :disabled="sendingIntent !== null"
             @click="discardDraft">{{ discardArmed ? 'Discard?' : 'Discard' }}</button>
-          <span class="composer-action-spacer"></span>
+          <span v-if="draft.length === 0" class="composer-action-spacer"></span>
           <button v-if="!mobileSheet" class="composer-insert" type="button" data-testid="composer-dictate"
             :disabled="sendingIntent !== null || !targetKey" :aria-pressed="dictationPhase === 'review'"
             @click="startPromptDictation">Dictate</button>
@@ -538,12 +541,13 @@ function startPromptDictation() {
           />
           <button v-if="mobileSheet" class="composer-dictate composer-dictate--mic" type="button"
             data-testid="composer-dictate" :disabled="sendingIntent !== null || !targetKey"
-            :aria-pressed="dictationPhase === 'review'" aria-label="Dictate prompt" @click="startPromptDictation">
+            title="Dictate a prompt" aria-label="Dictate prompt" @click="startPromptDictation">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"
               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="9" y="2" width="6" height="12" rx="3" />
               <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8" />
             </svg>
+            <span>Dictate</span>
           </button>
         </template>
 
@@ -648,16 +652,18 @@ function startPromptDictation() {
 .composer-draft-row--dictating { display: block; height: 1px; overflow: visible; }
 .composer-dictate--mic {
   display: inline-flex;
-  width: 48px;
+  min-width: 48px;
   height: 48px;
-  flex: 0 0 48px;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
+  gap: var(--sp-2);
   border: 1px solid var(--border-strong);
-  border-radius: 50%;
+  border-radius: 24px;
   background: var(--surface-2);
   color: var(--fg);
-  padding: 0;
+  padding: 0 var(--sp-3);
+  font: var(--fw-semibold) var(--fs-200)/1 var(--font-ui);
 }
 .composer-dictate--mic:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--accent); }
 .composer-dictate--mic:disabled { opacity: var(--disabled-opacity); }

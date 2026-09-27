@@ -10,6 +10,7 @@ defineProps<{
   <section class="recording-mode" role="group" data-testid="composer-recording-mode" :data-recording-state="state"
     :aria-label="state === 'recording' ? 'Prompt dictation recording' : state === 'transcribing' ? 'Transcribing prompt' : 'Starting prompt dictation'">
     <div v-if="state === 'recording'" class="recording-mode__live-row">
+      <span class="recording-mode__phase">Listening</span>
       <time data-testid="composer-recording-timer" aria-label="Recording elapsed time">
         {{ elapsedLabel }}
       </time>
@@ -21,7 +22,7 @@ defineProps<{
 
     <div v-else class="recording-mode__progress" role="status" aria-live="polite">
       <span class="recording-mode__spinner" aria-hidden="true"></span>
-      <span>{{ state === 'starting' ? 'Requesting microphone access…' : 'Transcribing…' }}</span>
+      <span>{{ state === 'starting' ? 'Requesting microphone access…' : 'Transcribing prompt…' }}</span>
     </div>
     <p v-if="state === 'recording' || state === 'transcribing'" id="composer-recording-preview"
       class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
@@ -54,6 +55,13 @@ defineProps<{
   color: var(--accent);
   font: 600 var(--fs-300)/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
+}
+
+.recording-mode__phase {
+  flex: 0 0 auto;
+  color: var(--fg);
+  font-size: var(--fs-200);
+  font-weight: var(--fw-semibold);
 }
 
 .recording-mode__waveform {
