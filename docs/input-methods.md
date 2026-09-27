@@ -112,19 +112,25 @@ Composer remains the preferred surface for prose and longer agent prompts.
 ## Terminal hotkeys panel
 
 The terminal controls use a normal-flow dock below xterm. Its persistent row
-keeps Up, Down, Enter, More keys, and the Android inline dictation mic
-available. The icon-only More keys button opens a compact `Terminal keys`
-sheet; it stays open after a key tap and never covers terminal output or the
-composer. The dictation mic stays beside More keys; while listening, one
-status line above the row carries the partial preview, and tapping the mic
-again stops recognition. Only its validated final text is inserted once at
-the active terminal cursor. With the IME open,
-the dock reserves its measured height while xterm keeps the same PTY grid and
-at least five terminal rows remain visible. The Main catalog fits ten common
-keys in two rows; the Ctrl catalog scrolls vertically through its QWERTY rows.
+keeps Up, Down, Enter, a Prompt entry, More keys, and the separate Android
+inline dictation mic available. Prompt opens the shared composer, where its
+own Dictate action records a prompt. The inline mic is visibly labeled
+`Terminal`; it records text for one insertion at the active terminal cursor.
+Neither speech action changes the other's destination. While inline
+dictation is active, one status line above the row carries its partial
+preview, and tapping the inline mic again stops recognition. Only validated
+final text is inserted once. With the IME open, the dock reserves its measured
+height while xterm keeps the same PTY grid and at least five terminal rows
+remain visible.
+
+More keys opens a flat, compact catalog in normal terminal flow. Its 48dp
+header keeps Main and Ctrl navigation visible. Main presents all ten common
+keys in one horizontally scrollable 48dp row; Ctrl scrolls vertically
+through its QWERTY rows in the same 48dp viewport. Both pages remain reachable
+while the Android IME is open and leave terminal output visually primary.
 Key actions map through `@pocketshell/core` and write to the active PTY.
-Long-pressing `^C` / `^D` sends the doubled interrupt/EOF sequence. Every key
-and the dictation mic has a 48dp target.
+Long-pressing `^C` / `^D` sends the doubled interrupt/EOF sequence. Every key,
+page tab, and dictation mic has a 48dp target.
 
 Main page (`HOTKEY_PALETTE_MAIN_SECTIONS`) — ↑ / ↓ / Enter stay in the
 persistent row so they remain one tap away:
@@ -136,8 +142,8 @@ CTRL             ^B  ^C  ^D  ^Q  ^X
                  [Ctrl+…]
 ```
 
-`Ctrl+…` opens the separate Ctrl page. Its 48dp targets preserve keyboard
-muscle memory in five-column QWERTY rows:
+The `Ctrl` tab opens the separate Ctrl page. Its 48dp targets preserve
+keyboard muscle memory in five-column QWERTY rows:
 
 ```
 Q W E R T
@@ -150,8 +156,8 @@ N M \
 
 Each tap immediately sends that key's control byte and leaves the page open,
 so sequences such as `^B ^B` need no re-entry. `^Q` is XON (`0x11`) and `^\`
-is SIGQUIT (`0x1c`). The sheet header's back control returns to common keys;
-the More keys button closes it. Reopening starts on the Main page. There is no
+is SIGQUIT (`0x1c`). The `Main` tab returns to common keys; the More keys
+button closes the catalog. Reopening starts on the Main page. There is no
 hidden sticky-modifier state, and literal letters belong to the system IME.
 
 The Kotlin `TerminalHotkeysPaletteOverlay` and `HotkeyCatalog.kt` describe the

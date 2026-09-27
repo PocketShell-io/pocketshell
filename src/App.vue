@@ -235,7 +235,7 @@ const mobileHotkeysDockHeight = computed(() => {
   const dictationStatusRowHeight = Capacitor.getPlatform() === 'android' && inlineDictationStatusVisible.value
     ? inlineDictationStatusRowHeightPx
     : 0;
-  const catalogHeight = mobileHotkeysPaletteOpen.value ? 144 : 0;
+  const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;
   const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
   return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
 });

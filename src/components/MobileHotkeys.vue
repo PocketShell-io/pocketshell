@@ -72,7 +72,7 @@ const mainKeys = HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.
   ...key,
   section: section.title,
 })));
-const MAIN_CATALOG_KEYS_PER_ROW = 5;
+const MAIN_CATALOG_KEYS_PER_ROW = mainKeys.length;
 const mainKeyRows = Array.from(
   { length: Math.ceil(mainKeys.length / MAIN_CATALOG_KEYS_PER_ROW) },
   (_, rowIndex) => mainKeys.slice(
@@ -288,38 +288,32 @@ defineExpose({
         class="mobile-hotkeys__sheet"
         data-testid="mobile-hotkeys-sheet"
         role="region"
-        :aria-labelledby="page === 'ctrl' ? 'mobile-hotkeys-ctrl-title' : 'mobile-hotkeys-main-title'"
+        :aria-label="page === 'ctrl' ? 'Ctrl key catalog' : 'Main key catalog'"
       >
         <header class="mobile-hotkeys__sheet-header">
-          <div class="mobile-hotkeys__sheet-heading">
-            <span
-              :id="page === 'ctrl' ? 'mobile-hotkeys-ctrl-title' : 'mobile-hotkeys-main-title'"
-              class="mobile-hotkeys__sheet-title"
-              data-testid="mobile-hotkeys-sheet-title"
-            >{{ page === 'ctrl' ? 'Ctrl keys' : 'Terminal keys' }}</span>
+          <span class="mobile-hotkeys__sheet-title" data-testid="mobile-hotkeys-sheet-title" aria-hidden="true">Keys</span>
+          <div class="mobile-hotkeys__page-tabs" role="group" aria-label="Key catalog page">
+            <button
+              class="mobile-hotkeys__page-tab"
+              :class="{ 'mobile-hotkeys__page-tab--selected': page === 'main' }"
+              type="button"
+              data-testid="mobile-hotkeys-back-main-page"
+              aria-label="Select Main keys"
+              :aria-pressed="page === 'main'"
+              :disabled="!enabled"
+              @click="showMainPage"
+            >Main</button>
+            <button
+              class="mobile-hotkeys__page-tab"
+              :class="{ 'mobile-hotkeys__page-tab--selected': page === 'ctrl' }"
+              type="button"
+              data-testid="mobile-hotkeys-open-ctrl-page"
+              aria-label="Select Ctrl keys"
+              :aria-pressed="page === 'ctrl'"
+              :disabled="!enabled"
+              @click="showCtrlPage"
+            >Ctrl</button>
           </div>
-          <button
-            v-if="page === 'main'"
-            class="mobile-hotkeys__page-action"
-            type="button"
-            data-testid="mobile-hotkeys-open-ctrl-page"
-            aria-label="Open Ctrl plus letter keys"
-            :disabled="!enabled"
-            @click="showCtrlPage"
-          >
-            Ctrl+…
-          </button>
-          <button
-            v-else
-            class="mobile-hotkeys__page-action"
-            type="button"
-            data-testid="mobile-hotkeys-back-main-page"
-            aria-label="Back to terminal hotkeys"
-            :disabled="!enabled"
-            @click="showMainPage"
-          >
-            <AppIcon name="arrow-left" aria-hidden="true" />
-          </button>
         </header>
         <div
           v-if="page === 'main'"
@@ -396,16 +390,16 @@ defineExpose({
   color: var(--fg);
 }
 .mobile-hotkeys--main-open,
-.mobile-hotkeys--ctrl-open { height: 192px; }
+.mobile-hotkeys--ctrl-open { height: 144px; }
 .mobile-hotkeys--dictation-status-open { height: 80px; }
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 224px; }
+.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 176px; }
 .mobile-hotkeys--dictation-available { height: 49px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 65px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 193px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 209px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -482,7 +476,7 @@ defineExpose({
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
 .mobile-hotkeys__launcher,
-.mobile-hotkeys__page-action {
+.mobile-hotkeys__page-tab {
   display: inline-flex;
   width: 48px;
   min-width: 48px;
@@ -500,13 +494,13 @@ defineExpose({
 }
 .mobile-hotkeys__key:hover:not(:disabled),
 .mobile-hotkeys__launcher:hover:not(:disabled),
-.mobile-hotkeys__page-action:hover:not(:disabled) {
+.mobile-hotkeys__page-tab:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--state-hover);
 }
 .mobile-hotkeys__key:active:not(:disabled),
 .mobile-hotkeys__launcher[aria-expanded="true"],
-.mobile-hotkeys__page-action:active:not(:disabled) {
+.mobile-hotkeys__page-tab:active:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -542,8 +536,7 @@ defineExpose({
   color: var(--fg-secondary);
 }
 .mobile-hotkeys__launcher[aria-expanded="true"] { background: var(--state-selected); color: var(--accent); }
-.mobile-hotkeys__launcher :deep(svg),
-.mobile-hotkeys__page-action :deep(svg) { width: 18px; height: 18px; }
+.mobile-hotkeys__launcher :deep(svg) { width: 18px; height: 18px; }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 14px; height: 14px; }
 
 .mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; margin-left: var(--sp-1); }
@@ -595,15 +588,14 @@ defineExpose({
   display: flex;
   width: 100%;
   min-width: 0;
-  height: 144px;
-  min-height: 144px;
-  flex: 0 0 144px;
+  height: 96px;
+  min-height: 96px;
+  flex: 0 0 96px;
   flex-direction: column;
   overflow: hidden;
-  border-radius: var(--r-lg);
-  box-shadow: inset 0 1px 0 var(--border-soft), inset 1px 0 0 var(--border-soft),
-    inset -1px 0 0 var(--border-soft), inset 0 -1px 0 var(--border-soft);
-  background: var(--surface);
+  border-radius: 0;
+  box-shadow: inset 0 1px 0 var(--border-soft);
+  background: transparent;
 }
 .mobile-hotkeys__sheet-header {
   display: flex;
@@ -612,67 +604,118 @@ defineExpose({
   min-height: 48px;
   flex: 0 0 48px;
   align-items: center;
-  gap: var(--sp-1);
-  border-bottom: 1px solid var(--border-soft);
+  gap: var(--sp-2);
   padding: 0 var(--sp-1);
 }
-.mobile-hotkeys__sheet-heading {
+.mobile-hotkeys__sheet-title {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
   align-items: center;
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--fs-100);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
-.mobile-hotkeys__sheet-title { overflow: hidden; color: var(--fg); font-size: var(--fs-200); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-hotkeys__page-tabs { display: flex; height: 48px; flex: 0 0 auto; align-items: stretch; gap: var(--sp-1); }
+.mobile-hotkeys__page-tab {
+  position: relative;
+  width: 56px;
+  min-width: 48px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg-secondary);
+  font: 500 var(--fs-300)/1 var(--font-ui);
+}
+.mobile-hotkeys__page-tab--selected { color: var(--accent); }
+.mobile-hotkeys__page-tab--selected::after {
+  position: absolute;
+  right: var(--sp-2);
+  bottom: 4px;
+  left: var(--sp-2);
+  height: 2px;
+  border-radius: var(--r-sm);
+  background: var(--accent);
+  content: '';
+}
+.mobile-hotkeys__page-tab:hover:not(:disabled) { background: var(--state-hover); }
 .mobile-hotkeys__catalog-scroll {
   display: flex;
   width: 100%;
-  height: 96px;
-  min-height: 96px;
-  flex: 0 0 96px;
+  height: 48px;
+  min-height: 48px;
+  flex: 0 0 48px;
   min-width: 0;
   flex-direction: column;
   align-items: stretch;
   gap: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 var(--sp-1);
+  padding: 0 var(--sp-2);
   touch-action: pan-y;
+  scroll-snap-type: y mandatory;
   overscroll-behavior-y: contain;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
 .mobile-hotkeys__catalog-scroll::-webkit-scrollbar { display: none; }
-.mobile-hotkeys__page-action {
-  width: auto;
-  min-width: 48px;
-  flex: 0 0 auto;
-  padding-inline: var(--sp-2);
-  color: var(--accent);
-  font: 600 var(--fs-100)/1 var(--font-mono);
-  white-space: nowrap;
-}
 .mobile-hotkeys__main-keys {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
   gap: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  padding-inline: 0;
+  padding-right: 0.33px;
+  scroll-padding-inline: 0;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
 }
 .mobile-hotkeys__main-row {
-  display: grid;
-  width: 100%;
-  min-width: 0;
+  display: flex;
+  width: max-content;
+  min-width: max-content;
   height: 48px;
   min-height: 48px;
   flex: 0 0 48px;
-  grid-template-columns: repeat(5, minmax(48px, 1fr));
   align-items: center;
-  column-gap: 4px;
-  justify-items: center;
+  gap: var(--sp-2);
 }
 .mobile-hotkeys__ctrl-grid { justify-content: flex-start; }
-.mobile-hotkeys__ctrl-row { display: flex; height: 48px; min-height: 48px; flex: 0 0 48px; align-items: center; justify-content: center; gap: 4px; }
-.mobile-hotkeys__key--catalog { flex-direction: column; gap: 1px; padding: 2px; font: 500 12px/1.1 var(--font-mono); }
+.mobile-hotkeys__ctrl-row { display: flex; height: 48px; min-height: 48px; flex: 0 0 48px; align-items: center; justify-content: flex-start; gap: var(--sp-2); scroll-snap-align: start; scroll-snap-stop: always; }
+.mobile-hotkeys__key--catalog {
+  flex-direction: column;
+  gap: 1px;
+  border-color: var(--border-soft);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-secondary);
+  padding: 2px;
+  font: 500 var(--fs-300)/1.1 var(--font-mono);
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+.mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child {
+  scroll-snap-align: end;
+}
+.mobile-hotkeys__key--catalog:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  background: var(--state-hover);
+  color: var(--fg);
+}
+.mobile-hotkeys__key--catalog:active:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .mobile-hotkeys__keycap {
   display: inline-block;
   min-width: 1.6em;
-  color: var(--fg);
+  color: inherit;
   text-align: center;
   font-family: var(--font-mono);
   line-height: 1.35;

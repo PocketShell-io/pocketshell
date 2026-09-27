@@ -85,7 +85,7 @@ TIMING_FIELDS = (
 
 MOBILE_HOTKEYS_BASE_HEIGHT_PX = 49
 INLINE_DICTATION_STATUS_ROW_HEIGHT_PX = 16
-CATALOG_SHEET_HEIGHT_PX = 144
+CATALOG_SHEET_HEIGHT_PX = 96
 ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX = 144
 API35_ACCEPTED_TERMINAL_GRID = (38, 6)
 # WebView can round shared rectangle edges apart by a tiny fraction; larger overlaps remain failures.
@@ -168,7 +168,7 @@ def validate_docked_dictation_geometry(
                 or scroller.get("left", -1) < sheet.get("left", 0) - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                 or scroller.get("right", 10**9) > sheet.get("right", 0) + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                 or abs(scroller.get("height", 0) - (sheet.get("height", 0) - 48)) > 1):
-            raise ExtractionFailure(f"{label} visible catalog scroller is clipped by the 144px rail")
+            raise ExtractionFailure(f"{label} visible catalog scroller is clipped by the 96px rail")
     tray_bounds = dock.get("bounds") if isinstance(dock, dict) else None
     terminal_panel = item.get("terminalPanel")
     if (not isinstance(tray_bounds, dict) or not isinstance(terminal_panel, dict)
@@ -1021,6 +1021,49 @@ def validate_journey(journey: object) -> None:
                     or key["height"] < 47.9):
                 key_id = key.get("keyId") if isinstance(key, dict) else "unknown"
                 raise ExtractionFailure(f"{label} catalog key {key_id} lacks a visible 48dp target measurement")
+            expected_axis = "horizontal" if label == "main" else "vertical"
+            expected_snap = "x mandatory" if label == "main" else "y mandatory"
+            if key.get("axis") != expected_axis or expected_snap not in key.get("snapType", ""):
+                key_id = key.get("keyId", "unknown")
+                raise ExtractionFailure(f"{label} catalog key {key_id} was not reached in its snapped scroll direction")
+            if label == "main":
+                endpoint = key.get("endpointBounds")
+                endpoint_content = key.get("endpointContentBounds")
+                endpoint_intersects = key.get("endpointIntersectsContent")
+                if (not isinstance(endpoint, dict) or not isinstance(endpoint_content, dict)
+                        or not isinstance(endpoint_intersects, bool)):
+                    raise ExtractionFailure("Main catalog is missing endpoint measurements for each snapped target")
+                left, right = endpoint.get("left"), endpoint.get("right")
+                top, bottom = endpoint.get("top"), endpoint.get("bottom")
+                content_left, content_right = endpoint_content.get("left"), endpoint_content.get("right")
+                content_top, content_bottom = endpoint_content.get("top"), endpoint_content.get("bottom")
+                geometry_values = (left, right, top, bottom, content_left, content_right, content_top, content_bottom)
+                if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in geometry_values):
+                    raise ExtractionFailure("Main catalog endpoint evidence is missing target or rail bounds")
+                intersects = (right > content_left and left < content_right
+                              and bottom > content_top and top < content_bottom)
+                contained = (left >= content_left and right <= content_right
+                             and top >= content_top and bottom <= content_bottom)
+                if intersects != endpoint_intersects:
+                    raise ExtractionFailure("Main catalog endpoint intersection flag does not match measured bounds")
+                if intersects and (not contained or key.get("endpointInsideContent") is not True
+                                   or key.get("endpointInsideViewport") is not True):
+                    key_id = key.get("keyId", "unknown")
+                    raise ExtractionFailure(f"Main endpoint key {key_id} is partially clipped at the rail boundary")
+                scroll_left = key.get("scrollLeft")
+                endpoint_scroll_left = key.get("endpointScrollLeft")
+                if (isinstance(scroll_left, bool) or not isinstance(scroll_left, (int, float))
+                        or isinstance(endpoint_scroll_left, bool) or not isinstance(endpoint_scroll_left, (int, float))
+                        or abs(scroll_left - round(scroll_left / 56) * 56) > 0.75
+                        or abs(endpoint_scroll_left - round(endpoint_scroll_left / 56) * 56) > 0.75):
+                    key_id = key.get("keyId", "unknown")
+                    raise ExtractionFailure(f"Main catalog key {key_id} stops between 56dp slot boundaries")
+            else:
+                scroll_top = key.get("scrollTop")
+                if (isinstance(scroll_top, bool) or not isinstance(scroll_top, (int, float))
+                        or abs(scroll_top - round(scroll_top / 48) * 48) > 0.75):
+                    key_id = key.get("keyId", "unknown")
+                    raise ExtractionFailure(f"Ctrl catalog key {key_id} was reached between 48dp row boundaries")
 
     before = by_name["before-fast-keys"]
     opened = by_name["fast-keys-main-open-ime-up"]
@@ -1071,7 +1114,7 @@ def validate_journey(journey: object) -> None:
     if (abs(main_bounds.get("height", 0) - (MOBILE_HOTKEYS_BASE_HEIGHT_PX + CATALOG_SHEET_HEIGHT_PX)) > 0.5
             or abs(closed_bounds.get("height", 0) - MOBILE_HOTKEYS_BASE_HEIGHT_PX) > 0.5
             or abs(ctrl_bounds.get("height", 0) - (MOBILE_HOTKEYS_BASE_HEIGHT_PX + CATALOG_SHEET_HEIGHT_PX)) > 0.5):
-        raise ExtractionFailure("fast-key tray did not reserve the persistent 48px row and balanced 144px catalog")
+        raise ExtractionFailure("fast-key tray did not reserve the persistent 48px row and compact 96px catalog")
     for label, item in (("main", opened), ("Ctrl", ctrl)):
         sheet = item.get("catalogSheet")
         page_action = item.get("catalogPageAction")
@@ -1095,23 +1138,52 @@ def validate_journey(journey: object) -> None:
                 or page_action.get("width", 0) < 47.9
                 or page_action.get("height", 0) < 47.9):
             raise ExtractionFailure(f"{label} catalog page action is not a visible 48dp sheet target")
-        expected_title = "Terminal keys" if label == "main" else "Ctrl keys"
+        expected_page_action = "Select Ctrl keys" if label == "main" else "Select Main keys"
+        if page_action.get("label") != expected_page_action:
+            raise ExtractionFailure(f"{label} catalog page action does not lead to the other visible page")
+        tabs = item.get("catalogTabs")
+        expected_selected = {"Select Main keys": label == "main", "Select Ctrl keys": label == "Ctrl"}
+        if (not isinstance(tabs, list) or len(tabs) != 2
+                or {tab.get("label"): tab.get("selected") for tab in tabs if isinstance(tab, dict)} != expected_selected
+                or any(not isinstance(tab, dict) or tab.get("insideCatalogSheet") is not True
+                       or tab.get("insideViewport") is not True or tab.get("hitTarget") is not True
+                       or tab.get("width", 0) < 47.9 or tab.get("height", 0) < 47.9 for tab in tabs)):
+            raise ExtractionFailure(f"{label} catalog does not expose both reachable 48px Main/Ctrl tabs")
+        expected_title = "Keys"
         title = item.get("catalogTitle")
         if (not isinstance(title, dict) or title.get("text") != expected_title or title.get("fits") is not True
                 or item.get("catalogHeaderControlsDoNotOverlap") is not True):
-            raise ExtractionFailure(f"{label} catalog title, optional dictation line, and page action do not fit the header")
+            raise ExtractionFailure(f"{label} catalog caption and Main/Ctrl navigation do not fit the header")
+        surface = item.get("catalogSurfaceStyle")
+        if (not isinstance(surface, dict) or surface.get("backgroundColor") != "rgba(0, 0, 0, 0)"
+                or surface.get("borderRadius") != "0px"
+                or any(surface.get(edge) != "0px" for edge in
+                       ("borderRightWidth", "borderBottomWidth", "borderLeftWidth"))):
+            raise ExtractionFailure(f"{label} catalog still uses the rounded, filled card surface")
+        key_style = item.get("catalogKeyStyle")
+        scaled_font_size = math.nan
+        if isinstance(key_style, dict) and isinstance(key_style.get("fontSize"), str):
+            try:
+                scaled_font_size = float(key_style["fontSize"].removesuffix("px"))
+            except ValueError:
+                pass
+        if (not isinstance(key_style, dict) or key_style.get("backgroundColor") != "rgba(0, 0, 0, 0)"
+                or key_style.get("fontToken") != "13px" or not 13 <= scaled_font_size <= 17):
+            raise ExtractionFailure(f"{label} key slots do not use the quiet, compact dense treatment")
         expected_scroller = ".mobile-hotkeys__main-keys" if label == "main" else ".mobile-hotkeys__ctrl-grid"
         if item.get("catalogScrollerSelector") != expected_scroller:
             raise ExtractionFailure(f"{label} catalog evidence does not measure {expected_scroller}")
         if (not isinstance(scroll, dict)
-                or scroll.get("axis") != "vertical"
-                or scroll.get("scrollWidth", 0) > scroll.get("clientWidth", 0) + 1
-                or abs(scroll.get("clientHeight", 0) - 96) > 1):
-            raise ExtractionFailure(f"{label} catalog does not show two vertical 48px key rows without horizontal clipping")
+                or abs(scroll.get("clientHeight", 0) - 48) > 1):
+            raise ExtractionFailure(f"{label} catalog does not reserve exactly one visible 48px key row")
+        expected_snap = "x mandatory" if label == "main" else "y mandatory"
+        if (not isinstance(scroll, dict) or expected_snap not in scroll.get("scrollSnapType", "")):
+            raise ExtractionFailure(f"{label} catalog does not report mandatory snapping along its swipe axis")
         if label == "main":
             button_rects = scroll.get("buttonRects")
-            if not isinstance(button_rects, list) or len(button_rects) != len(EXPECTED_MAIN_KEY_IDS):
-                raise ExtractionFailure("main common-key catalog does not fit all ten keys in two visible rows")
+            if (scroll.get("axis") != "horizontal" or scroll.get("scrollWidth", 0) <= scroll.get("clientWidth", 0) + 1
+                    or not isinstance(button_rects, list) or len(button_rects) != len(EXPECTED_MAIN_KEY_IDS)):
+                raise ExtractionFailure("Main keys must fit one horizontally scrollable row of ten 48px targets")
             row_counts: dict[int, int] = {}
             for rect in button_rects:
                 top = rect.get("top") if isinstance(rect, dict) else None
@@ -1119,12 +1191,19 @@ def validate_journey(journey: object) -> None:
                     raise ExtractionFailure("main common-key catalog is missing measured key row positions")
                 row = round(top)
                 row_counts[row] = row_counts.get(row, 0) + 1
-            if sorted(row_counts.values()) != [5, 5]:
-                raise ExtractionFailure("main common-key catalog must have exactly five keys in each of two rows")
+            if sorted(row_counts.values()) != [10]:
+                raise ExtractionFailure("main common-key catalog must keep all ten targets in one row")
+            key_layout = item.get("mainKeyLayout")
+            if (not isinstance(key_layout, dict) or key_layout.get("rowCount") != 1
+                    or key_layout.get("columnGap") != "8px"
+                    or not 500 < key_layout.get("maxRowWidth", 0) <= 600):
+                raise ExtractionFailure("Main keys must use one compactly spaced horizontal touch row")
             if scroll.get("scrollHeight", 0) > scroll.get("clientHeight", 0) + 1:
-                raise ExtractionFailure("main common-key catalog does not fit both balanced rows without scrolling")
-        elif scroll.get("scrollHeight", 0) <= scroll.get("clientHeight", 0) + 1:
-            raise ExtractionFailure("Ctrl letters do not use the expected vertical catalog scroll")
+                raise ExtractionFailure("Main keys must not add a second vertical catalog row")
+        elif (scroll.get("axis") != "vertical"
+              or scroll.get("scrollWidth", 0) > scroll.get("clientWidth", 0) + 1
+              or scroll.get("scrollHeight", 0) <= scroll.get("clientHeight", 0) + 1):
+            raise ExtractionFailure("Ctrl letters must remain in a vertically scrollable QWERTY catalog")
     before_grid = before.get("runtimeGeometry")
     if not isinstance(before_grid, dict):
         raise ExtractionFailure("fast-key open comparison lacks the initial xterm dimensions")
@@ -1275,6 +1354,8 @@ def self_test() -> int:
          with_unbalanced_main_catalog_rows(sample_journey(), 4), False),
         ("main catalog with an extra vertical row rejected",
          with_second_catalog_row(sample_journey()), False),
+        ("rejected 144px filled two-row catalog hierarchy fails the visual contract",
+         with_rejected_catalog_hierarchy(sample_journey()), False),
         ("catalog page without the prompt composer launcher rejected",
          with_missing_prompt_composer_launcher(sample_journey()), False),
         ("oversized Prompt control rejected",
@@ -1362,6 +1443,10 @@ def self_test() -> int:
          with_dictation_error_write(sample_journey()), False),
         ("incomplete main catalog reachability rejected",
          with_missing_main_key(sample_journey()), False),
+        ("Main endpoint clamp clipping Tab at x=6.38 rejected",
+         with_main_endpoint_tab_clipped(sample_journey()), False),
+        ("Ctrl catalog reachability between 48dp row boundaries rejected",
+         with_partial_ctrl_row_offset(sample_journey()), False),
         ("undersized Ctrl catalog target rejected",
          with_undersized_ctrl_key(sample_journey()), False),
         ("resized PTY on fast-key open rejected",
@@ -1527,6 +1612,11 @@ def sample_journey() -> dict[str, object]:
         "catalogSheetBelowTerminalViewport": False,
         "catalogSheetIntersectsComposer": False,
         "catalogPageAction": None,
+        "catalogTabs": None,
+        "catalogTabList": None,
+        "catalogSurfaceStyle": None,
+        "catalogKeyStyle": None,
+        "mainKeyLayout": None,
         "catalogScrollMetrics": None,
         "catalogScrollerBounds": None,
         "catalogScrollerInsideSheet": False,
@@ -1601,24 +1691,43 @@ def sample_journey() -> dict[str, object]:
         "keyboardComposerMode": True,
         "fastKeysPage": "main",
         "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
-        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
-        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
+        "mobileHotkeys": {"top": 250, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 145},
+        "catalogSheet": {"top": 299, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 96},
         "catalogSheetRole": "region",
         "catalogSheetModal": None,
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
-        "catalogPageAction": {"label": "Open Ctrl plus letter keys", "width": 48, "height": 48,
+        "catalogPageAction": {"label": "Select Ctrl keys", "width": 56, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogTitle": {"text": "Terminal keys", "fits": True, "width": 80, "height": 18},
-        "catalogHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogTabs": [
+            {"label": "Select Main keys", "selected": True, "width": 56, "height": 48,
+             "insideViewport": True, "insideCatalogSheet": True, "hitTarget": True},
+            {"label": "Select Ctrl keys", "selected": False, "width": 56, "height": 48,
+             "insideViewport": True, "insideCatalogSheet": True, "hitTarget": True},
+        ],
+        "catalogTabList": {"top": 299, "bottom": 347, "left": 300, "right": 420, "width": 120, "height": 48},
+        "catalogSurfaceStyle": {"backgroundColor": "rgba(0, 0, 0, 0)", "borderRadius": "0px",
+            "borderTopWidth": "0px", "borderRightWidth": "0px", "borderBottomWidth": "0px", "borderLeftWidth": "0px",
+            "boxShadow": "rgb(33, 38, 45) 0px 1px 0px 0px inset"},
+        "catalogKeyStyle": {"backgroundColor": "rgba(0, 0, 0, 0)", "borderRadius": "6px",
+            "borderColor": "rgb(33, 38, 45)", "fontSize": "15px", "fontToken": "13px", "fontFamily": "monospace"},
+        "mainKeyLayout": {"rowCount": 1, "columnGap": "8px", "maxRowWidth": 552},
+        "catalogTitle": {"text": "Keys", "fits": True, "width": 24, "height": 16},
+        "catalogHeader": {"top": 299, "bottom": 347, "left": 0, "right": 400, "width": 400, "height": 48},
         "catalogHeaderControlsDoNotOverlap": True,
         "catalogScrollerSelector": ".mobile-hotkeys__main-keys",
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
-            "clientHeight": 96, "scrollHeight": 96, "scrollTop": 0, "axis": "vertical"},
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 192}},
+        "catalogScrollMetrics": {"clientWidth": 392, "scrollWidth": 568, "scrollLeft": 0,
+            "clientHeight": 48, "scrollHeight": 48, "scrollTop": 0, "axis": "horizontal",
+            "scrollSnapType": "x mandatory",
+            "buttonRects": [{"keyId": key_id, "left": 12 + index * 56, "right": 60 + index * 56,
+                "top": 347, "bottom": 395, "width": 48, "height": 48}
+                for index, key_id in enumerate(EXPECTED_MAIN_KEY_IDS)]},
+        "catalogScrollerBounds": {"top": 347, "bottom": 395, "left": 4, "right": 396, "width": 392, "height": 48},
+        "catalogScrollerInsideSheet": True,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 145}},
         "terminalViewportDockCapPx": 144,
-        "terminalHotkeysDockHeightPx": 192,
-        "inlineDictationBar": {**base["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
+        "terminalHotkeysDockHeightPx": 145,
+        "inlineDictationBar": {**base["inlineDictationBar"], "top": 250, "bottom": 395, "height": 145},
         "inlineDictationMic": {**base["inlineDictationMic"], "left": 235, "right": 283},
         "navigationTargets": [
             *base["navigationTargets"][:3],
@@ -1637,24 +1746,43 @@ def sample_journey() -> dict[str, object]:
         **base,
         "fastKeysPage": "ctrl",
         "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
-        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
-        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
+        "mobileHotkeys": {"top": 250, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 145},
+        "catalogSheet": {"top": 299, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 96},
         "catalogSheetRole": "region",
         "catalogSheetModal": None,
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
-        "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
+        "catalogPageAction": {"label": "Select Main keys", "width": 56, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogTitle": {"text": "Ctrl keys", "fits": True, "width": 60, "height": 18},
-        "catalogHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
+        "catalogTabs": [
+            {"label": "Select Main keys", "selected": False, "width": 56, "height": 48,
+             "insideViewport": True, "insideCatalogSheet": True, "hitTarget": True},
+            {"label": "Select Ctrl keys", "selected": True, "width": 56, "height": 48,
+             "insideViewport": True, "insideCatalogSheet": True, "hitTarget": True},
+        ],
+        "catalogTabList": {"top": 299, "bottom": 347, "left": 300, "right": 420, "width": 120, "height": 48},
+        "catalogSurfaceStyle": {"backgroundColor": "rgba(0, 0, 0, 0)", "borderRadius": "0px",
+            "borderTopWidth": "0px", "borderRightWidth": "0px", "borderBottomWidth": "0px", "borderLeftWidth": "0px",
+            "boxShadow": "rgb(33, 38, 45) 0px 1px 0px 0px inset"},
+        "catalogKeyStyle": {"backgroundColor": "rgba(0, 0, 0, 0)", "borderRadius": "6px",
+            "borderColor": "rgb(33, 38, 45)", "fontSize": "15px", "fontToken": "13px", "fontFamily": "monospace"},
+        "mainKeyLayout": {"rowCount": 0, "columnGap": "", "maxRowWidth": 0},
+        "catalogTitle": {"text": "Keys", "fits": True, "width": 24, "height": 16},
+        "catalogHeader": {"top": 299, "bottom": 347, "left": 0, "right": 400, "width": 400, "height": 48},
         "catalogHeaderControlsDoNotOverlap": True,
         "catalogScrollerSelector": ".mobile-hotkeys__ctrl-grid",
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
-            "clientHeight": 96, "scrollHeight": 288, "scrollTop": 0, "axis": "vertical"},
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 192}},
+        "catalogScrollMetrics": {"clientWidth": 392, "scrollWidth": 392, "scrollLeft": 0,
+            "clientHeight": 48, "scrollHeight": 288, "scrollTop": 0, "axis": "vertical",
+            "scrollSnapType": "y mandatory",
+            "buttonRects": [{"keyId": key_id, "left": 12 + (index % 5) * 56, "right": 60 + (index % 5) * 56,
+                "top": 347 + (index // 5) * 48, "bottom": 395 + (index // 5) * 48, "width": 48, "height": 48}
+                for index, key_id in enumerate(EXPECTED_CTRL_KEY_IDS)]},
+        "catalogScrollerBounds": {"top": 347, "bottom": 395, "left": 4, "right": 396, "width": 392, "height": 48},
+        "catalogScrollerInsideSheet": True,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 145}},
         "terminalViewportDockCapPx": 144,
-        "terminalHotkeysDockHeightPx": 192,
-        "inlineDictationBar": {**base["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
+        "terminalHotkeysDockHeightPx": 145,
+        "inlineDictationBar": {**base["inlineDictationBar"], "top": 250, "bottom": 395, "height": 145},
         "inlineDictationMic": {**base["inlineDictationMic"], "left": 235, "right": 283},
         "navigationTargets": [
             *base["navigationTargets"][:3],
@@ -1922,12 +2050,25 @@ def sample_journey() -> dict[str, object]:
         "allHotkeyWrites": expected_first_writes() + [{"key": "arrow-up", "bytes": [0x1B, 0x5B, 0x41]}],
         "catalogReachability": {
             "mainKeys": [
-                {"keyId": key_id, "width": 48, "height": 48, "insideContent": True, "insideViewport": True}
-                for key_id in EXPECTED_MAIN_KEY_IDS
+                {"keyId": key_id, "width": 48, "height": 48, "insideContent": True, "insideViewport": True,
+                 "axis": "horizontal", "snapType": "x mandatory", "scrollLeft": 0, "scrollTop": 0,
+                 "endpointBounds": {
+                     "left": 14 + index * 56 - 168, "right": 62 + index * 56 - 168,
+                     "top": 347, "bottom": 395, "width": 48, "height": 48,
+                 },
+                 "endpointContentBounds": {"left": 14, "right": 398, "top": 347, "bottom": 395,
+                     "width": 384, "height": 48},
+                 "endpointIntersectsContent": 14 + index * 56 - 168 < 398 and 62 + index * 56 - 168 > 14,
+                 "endpointInsideContent": 14 + index * 56 - 168 >= 14 and 62 + index * 56 - 168 <= 398,
+                 "endpointInsideViewport": 14 + index * 56 - 168 >= 0 and 62 + index * 56 - 168 <= 400,
+                 "endpointScrollLeft": 168}
+                for index, key_id in enumerate(EXPECTED_MAIN_KEY_IDS)
             ],
             "ctrlKeys": [
-                {"keyId": key_id, "width": 48, "height": 48, "insideContent": True, "insideViewport": True}
-                for key_id in EXPECTED_CTRL_KEY_IDS
+                {"keyId": key_id, "width": 48, "height": 48, "insideContent": True, "insideViewport": True,
+                 "axis": "vertical", "snapType": "y mandatory", "scrollLeft": 0,
+                 "scrollTop": (index // 5) * 48}
+                for index, key_id in enumerate(EXPECTED_CTRL_KEY_IDS)
             ],
         },
         "reattachEarlyPromptTapWhileHeld": {
@@ -2108,26 +2249,19 @@ def with_android_dock_containment(journey: dict[str, object]) -> dict[str, objec
                 "top": sheet_top, "bottom": sheet_top + 48,
                 "left": left, "right": right, "width": width, "height": 48,
             }
+            measured_scroller = item.get("catalogScrollerBounds")
+            scroller_left = measured_scroller.get("left", left) if isinstance(measured_scroller, dict) else left
+            scroller_right = measured_scroller.get("right", right) if isinstance(measured_scroller, dict) else right
+            scroller_width = measured_scroller.get("width", scroller_right - scroller_left) if isinstance(measured_scroller, dict) else width
             item["catalogScrollerBounds"] = {
                 "top": sheet_top + 48, "bottom": bottom,
-                "left": left, "right": right, "width": width, "height": bottom - sheet_top - 48,
+                "left": scroller_left, "right": scroller_right, "width": scroller_width,
+                "height": bottom - sheet_top - 48,
             }
             item["catalogScrollerInsideSheet"] = True
-            item["catalogScrollMetrics"]["clientWidth"] = width
-            item["catalogScrollMetrics"]["scrollWidth"] = width
-            item["catalogScrollMetrics"]["clientHeight"] = 96
-            item["catalogScrollMetrics"]["scrollHeight"] = 96 if page == "main" else 288
-            item["catalogScrollMetrics"]["axis"] = "vertical"
-            key_ids = EXPECTED_MAIN_KEY_IDS if page == "main" else EXPECTED_CTRL_KEY_IDS
-            if page == "main":
-                item["catalogScrollMetrics"]["buttonRects"] = [
-                    {"keyId": key_id, "left": left + 16.8 + (index % 5) * 77.6,
-                     "right": left + 64.8 + (index % 5) * 77.6,
-                     "top": sheet_top + 48 + (index // 5) * 48,
-                     "bottom": sheet_top + 96 + (index // 5) * 48,
-                     "width": 48, "height": 48}
-                    for index, key_id in enumerate(key_ids)
-                ]
+            scroll = item.get("catalogScrollMetrics")
+            if not isinstance(scroll, dict):
+                raise ExtractionFailure(f"{page} key catalog lacks measured scroll geometry")
         if status_visible:
             item["inlineDictationStatusRow"] = {
                 "top": status_top, "bottom": status_top + INLINE_DICTATION_STATUS_ROW_HEIGHT_PX,
@@ -2189,8 +2323,6 @@ def with_android_dock_containment(journey: dict[str, object]) -> dict[str, objec
         }
         item["inlineDictationMicInsideBar"] = True
         item["inlineDictationMicInsideKeybar"] = True
-        if isinstance(item.get("catalogHeader"), dict):
-            item["catalogHeaderControlsDoNotOverlap"] = True
         visual_viewport = item.get("visualViewport")
         if isinstance(visual_viewport, dict):
             item["imeEdgeCssY"] = visual_viewport.get("offsetTop", 0) + visual_viewport.get("height", 0)
@@ -2427,6 +2559,68 @@ def with_second_catalog_row(journey: dict[str, object]) -> dict[str, object]:
     return copied
 
 
+def with_partial_ctrl_row_offset(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    copied["catalogReachability"]["ctrlKeys"][5]["scrollTop"] = 56
+    return copied
+
+
+def with_main_endpoint_tab_clipped(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    tab = copied["catalogReachability"]["mainKeys"][3]
+    tab["endpointBounds"]["left"] = 6.38
+    tab["endpointBounds"]["right"] = 54.38
+    tab["endpointIntersectsContent"] = True
+    tab["endpointInsideContent"] = False
+    tab["endpointScrollLeft"] = 183.619
+    return copied
+
+
+def with_rejected_catalog_hierarchy(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item.get("fastKeysPage") not in {"main", "ctrl"}:
+            continue
+        old_sheet = item["catalogSheet"]
+        old_sheet["height"] = 144
+        old_sheet["bottom"] = old_sheet["top"] + 144
+        old_dock_height = MOBILE_HOTKEYS_BASE_HEIGHT_PX + 144 + (
+            INLINE_DICTATION_STATUS_ROW_HEIGHT_PX if item.get("inlineDictationStatusVisible") is True else 0
+        )
+        dock = item["mobileHotkeys"]
+        dock["height"] = old_dock_height
+        dock["bottom"] = dock["top"] + old_dock_height
+        item["terminalHotkeysDockHeightPx"] = old_dock_height
+        tray = item.get("fastKeysTray")
+        if isinstance(tray, dict) and isinstance(tray.get("bounds"), dict):
+            tray["bounds"]["height"] = old_dock_height
+            tray["bounds"]["bottom"] = tray["bounds"]["top"] + old_dock_height
+        scroller = item["catalogScrollerBounds"]
+        scroller["height"] = 96
+        scroller["bottom"] = scroller["top"] + 96
+        scroll = item["catalogScrollMetrics"]
+        scroll["clientHeight"] = 96
+        scroll["scrollHeight"] = 96
+        scroll["axis"] = "vertical"
+        item["catalogSurfaceStyle"] = {
+            "backgroundColor": "rgb(22, 27, 34)", "borderRadius": "10px",
+            "borderTopWidth": "0px", "borderRightWidth": "0px", "borderBottomWidth": "0px",
+            "borderLeftWidth": "0px", "boxShadow": "rgb(33, 38, 45) 0px 1px 0px 0px inset",
+        }
+        item["catalogKeyStyle"] = {
+            "backgroundColor": "rgb(28, 33, 41)", "borderRadius": "6px", "fontSize": "18px",
+        }
+        if item.get("fastKeysPage") == "main":
+            button_rects = scroll["buttonRects"]
+            first_top = button_rects[0]["top"]
+            for index, rect in enumerate(button_rects):
+                rect["top"] = first_top + (48 if index >= 5 else 0)
+                rect["bottom"] = rect["top"] + 48
+            scroll["scrollWidth"] = scroll["clientWidth"]
+            item["mainKeyLayout"] = {"rowCount": 2, "columnGap": "4px", "maxRowWidth": 352}
+    return copied
+
+
 def with_missing_prompt_composer_launcher(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
@@ -2601,26 +2795,26 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
     copied["geometryTrace"].append({
         **ctrl,
         "stage": "dictation-listening-ctrl-open-ime-open",
-        "mobileHotkeys": {"top": 203, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 192},
-        "catalogSheet": {"top": 251, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 144},
+        "mobileHotkeys": {"top": 234, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 161},
+        "catalogSheet": {"top": 299, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 96},
         "catalogSheetModal": "false",
         "catalogSheetBelowTerminalViewport": True,
         "catalogSheetIntersectsComposer": False,
-        "catalogPageAction": {"label": "Back to terminal hotkeys", "width": 48, "height": 48,
+        "catalogPageAction": {"label": "Select Main keys", "width": 56, "height": 48,
             "insideViewport": True, "insideCatalogSheet": True},
-        "catalogScrollMetrics": {"clientWidth": 400, "scrollWidth": 400, "scrollLeft": 0,
-            "clientHeight": 96, "scrollHeight": 312, "scrollTop": 0, "axis": "vertical"},
+        "catalogScrollMetrics": {"clientWidth": 384, "scrollWidth": 384, "scrollLeft": 0,
+            "clientHeight": 48, "scrollHeight": 312, "scrollTop": 0, "axis": "vertical"},
         "terminalViewportDockCapPx": 144,
-        "terminalHotkeysDockHeightPx": 192,
-        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 192}},
+        "terminalHotkeysDockHeightPx": 161,
+        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 161}},
         "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
-        "inlineDictationBar": {**ctrl["inlineDictationBar"], "top": 203, "bottom": 395, "height": 192},
-        "dictationSheetHeader": {"top": 251, "bottom": 299, "left": 0, "right": 400, "width": 400, "height": 48},
+        "inlineDictationBar": {**ctrl["inlineDictationBar"], "top": 234, "bottom": 395, "height": 161},
+        "dictationSheetHeader": {"top": 299, "bottom": 347, "left": 0, "right": 400, "width": 400, "height": 48},
         "inlineDictationPhase": "listening",
         "inlineDictationTone": "quiet",
         "inlineDictationStatusText": "Listening · echo test",
         "inlineDictationPreview": "echo test",
-        "inlineDictationStatusRow": {"top": 262, "bottom": 288, "left": 89, "right": 336, "width": 247, "height": 26},
+        "inlineDictationStatusRow": {"top": 234, "bottom": 250, "left": 89, "right": 336, "width": 247, "height": 16},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
@@ -2628,7 +2822,7 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
         "inlineDictationStatusInsideSheetHeader": True,
         "inlineDictationMic": {
             **ctrl["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
-            "top": 203, "bottom": 251, "left": 235, "right": 283,
+            "top": 250, "bottom": 298, "left": 235, "right": 283,
         },
     })
     return copied

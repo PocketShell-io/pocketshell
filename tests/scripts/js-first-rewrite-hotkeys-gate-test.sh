@@ -209,25 +209,49 @@ if ("More terminal keys" not in mobile_hotkeys
         or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
     raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment with accessible names")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 193px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog without visible dictation status must reserve its 193px two-row dock")
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog without visible dictation status must reserve its 145px compact dock")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 209px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog with visible dictation status must reserve its 209px two-row dock")
-if ("height: 144px;" not in mobile_hotkeys or "height: 96px;" not in mobile_hotkeys
-        or "overflow-x: hidden;" not in mobile_hotkeys or "overflow-y: auto;" not in mobile_hotkeys
-        or "touch-action: pan-y;" not in mobile_hotkeys
-        or "grid-template-columns: repeat(5, minmax(48px, 1fr));" not in mobile_hotkeys
-        or "mobile-hotkeys__main-row" not in mobile_hotkeys):
-    raise AssertionError("Fast Keys main catalog must have explicit five-key rows while Ctrl rows scroll vertically")
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog with visible dictation status must reserve its 161px compact dock")
+if "const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;" not in app:
+    raise AssertionError("terminal viewport reservation must track the rendered 96px catalog height")
+if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys
+        or "overflow-x: auto;" not in mobile_hotkeys or "overflow-y: hidden;" not in mobile_hotkeys
+        or "touch-action: pan-x;" not in mobile_hotkeys
+        or "width: max-content;" not in mobile_hotkeys or "gap: var(--sp-2);" not in mobile_hotkeys
+        or "overflow-y: auto;" not in mobile_hotkeys or "touch-action: pan-y;" not in mobile_hotkeys):
+    raise AssertionError("Fast Keys must use a 96px catalog with one horizontal Main row and a vertical Ctrl scroller")
+if ("scroll-snap-type: y mandatory;" not in mobile_hotkeys
+        or "scroll-snap-type: x mandatory;" not in mobile_hotkeys
+        or "padding-inline: 0;" not in mobile_hotkeys
+        or "padding-right: 0.33px;" not in mobile_hotkeys
+        or "scroll-padding-inline: 0;" not in mobile_hotkeys
+        or "scroll-snap-align: start; scroll-snap-stop: always;" not in mobile_hotkeys
+        or ".mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child" not in mobile_hotkeys
+        or "scroll-snap-align: end;" not in mobile_hotkeys
+        or 'startY = towardEnd ? container.getDouble("bottom") - 2' not in journey
+        or "Math.rint(scrollTop / 48.0)" not in journey
+        or "assertMainCatalogEndpointReachability" not in journey
+        or "endpointIntersectsContent" not in journey
+        or "const insideContent=r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom;" not in journey
+        or "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)};});" not in journey
+        or "Main rail end clamp must stay on the 56dp key-slot boundary" not in journey
+        or "scrollSnapType" not in extractor
+        or "Ctrl catalog reachability between 48dp row boundaries rejected" not in extractor
+        or "Main endpoint clamp clipping Tab at x=6.38 rejected" not in extractor):
+    raise AssertionError("Fast Keys physical swipes must snap to rows and preserve fully visible 48dp targets")
 if ("mainRows.map((row) => findAll(row" not in unit_test
-        or ".toEqual([5, 5])" not in unit_test
-        or "assertMainCatalogRowsBalanced(scroll, geometry);" not in journey
-        or "List.of(5, 5)" not in journey
-        or "sorted(row_counts.values()) != [5, 5]" not in extractor
-        or "main catalog with an uneven 7+3 row split rejected" not in extractor
-        or "main catalog with an uneven 6+4 row split rejected" not in extractor):
-    raise AssertionError("Fast Keys unit, packaged journey, and extractor must reject uneven common-key rows")
+        or ".toEqual([10])" not in unit_test
+        or "assertMainCatalogSingleRow(scroll, geometry);" not in journey
+        or "List.of(10)" not in journey
+        or "sorted(row_counts.values()) != [10]" not in extractor
+        or "rejected 144px filled two-row catalog hierarchy fails the visual contract" not in extractor):
+    raise AssertionError("Fast Keys unit, packaged journey, and extractor must enforce the compact single-row Main layout")
+if ("catalogTabs" not in journey or "assertCatalogTabsReachable" not in journey
+        or "catalogSurfaceStyle" not in journey or "mainKeyLayout" not in journey
+        or "fontToken" not in journey or "fontToken" not in extractor):
+    raise AssertionError("packaged Fast Keys evidence must measure catalog navigation, flat styling, Main row, and UI-kit type token")
 if ('role="region"' not in mobile_hotkeys or 'role="dialog"' in mobile_hotkeys):
     raise AssertionError("Fast Keys catalog must remain in the terminal hierarchy rather than float as a dialog")
 if "translateY(0.95px)" in mobile_hotkeys:

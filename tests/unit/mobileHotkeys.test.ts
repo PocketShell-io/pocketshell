@@ -83,15 +83,22 @@ describe('mobile fast-key behavior', () => {
       if (!sheet) throw new Error('The on-demand key catalog sheet did not mount');
       expect(sheet.props).toMatchObject({ role: 'region' });
       expect(sheet.props['aria-modal']).toBeUndefined();
-      expect(sheet.props['aria-labelledby']).toBe('mobile-hotkeys-main-title');
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Terminal keys');
+      expect(sheet.props['aria-label']).toBe('Main key catalog');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Keys');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.props.class).toBe('mobile-hotkeys__sheet-title');
       expect(findAll(mounted.root, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string'))
         .toHaveLength(3 + HOTKEY_PALETTE_MAIN_SECTIONS.reduce((count, section) => count + section.keys.length, 0));
 
       const mainPage = findByTestId(mounted.root, 'mobile-hotkeys-main-page');
       if (!mainPage) throw new Error('The fast keys main page did not mount');
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-open-ctrl-page')?.text.trim()).toBe('Ctrl+…');
+      const mainTab = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-back-main-page' });
+      const ctrlTab = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' });
+      expect(mainTab.text.trim()).toBe('Main');
+      expect(mainTab.props['aria-pressed']).toBe(true);
+      expect(mainTab.props['aria-label']).toBe('Select Main keys');
+      expect(ctrlTab.text.trim()).toBe('Ctrl');
+      expect(ctrlTab.props['aria-pressed']).toBe(false);
+      expect(ctrlTab.props['aria-label']).toBe('Select Ctrl keys');
       expect(mainPage.props).toMatchObject({
         role: 'group',
         'aria-label': 'Common terminal keys',
@@ -103,11 +110,11 @@ describe('mobile fast-key behavior', () => {
       expect(mainKeys.map((key) => key.props['data-key-section']))
         .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map(() => section.title)));
       const mainRows = findAll(mainPage, (node) => node.props.class === 'mobile-hotkeys__main-row');
-      expect(mainRows).toHaveLength(2);
+      expect(mainRows).toHaveLength(1);
       expect(mainRows.map((row) => findAll(row, (node) => node.tag === 'button'
-        && typeof node.props['data-key-id'] === 'string').length)).toEqual([5, 5]);
+        && typeof node.props['data-key-id'] === 'string').length)).toEqual([10]);
 
-      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
+      click(ctrlTab);
       await nextTick();
 
       const ctrlPage = findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page');
@@ -117,14 +124,22 @@ describe('mobile fast-key behavior', () => {
         'aria-label': 'QWERTY Ctrl keys',
       });
       expect(ctrlPage.props.class).toContain('mobile-hotkeys__ctrl-grid');
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')?.props['aria-labelledby'])
-        .toBe('mobile-hotkeys-ctrl-title');
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Ctrl keys');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet')?.props['aria-label'])
+        .toBe('Ctrl key catalog');
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.text).toBe('Keys');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-sheet-title')?.props.class).toBe('mobile-hotkeys__sheet-title');
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-back-main-page' }).props['aria-pressed']).toBe(false);
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }).props['aria-pressed']).toBe(true);
       const ctrlIds = findAll(ctrlPage, (node) => node.tag === 'button' && typeof node.props['data-key-id'] === 'string')
         .map((node) => node.props['data-key-id']);
       expect(ctrlIds).toEqual(HOTKEY_CTRL_PAGE_ROWS.flatMap((row) => row.map((key) => key.id)));
       expect(ctrlIds).toHaveLength(HOTKEY_CTRL_PAGE_ROWS.reduce((count, row) => count + row.length, 0));
+
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-back-main-page' }));
+      await nextTick();
+      expect(findByTestId(mounted.root, 'mobile-hotkeys-main-page')).toBeDefined();
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-back-main-page' }).props['aria-pressed']).toBe(true);
+      expect(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }).props['aria-pressed']).toBe(false);
     } finally {
       mounted.app.unmount();
     }
@@ -295,7 +310,7 @@ describe('mobile fast-key behavior', () => {
       await nextTick();
       expect(findByTestId(mounted.root, 'mobile-hotkeys-ctrl-page')).toBeDefined();
       click(findButton(mounted.root, { 'data-key-id': 'ctrl-q' }));
-      click(findButton(mounted.root, { 'aria-label': 'Back to terminal hotkeys' }));
+      click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-back-main-page' }));
       await nextTick();
       expect(findByTestId(mounted.root, 'mobile-hotkeys-main-page')).toBeDefined();
       click(findButton(mounted.root, { 'aria-label': 'Close terminal keys' }));

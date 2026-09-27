@@ -246,7 +246,7 @@ public final class JsFastKeysDockerJourneyTest {
         captureScreenshot("fastkeys-sheet-ctrl-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-sheet-ctrl-ime-open-viewport.png", ctrlStartGeometry);
         sendPaletteKey("ctrl-q");
-        tapDomCenter("[aria-label='Back to terminal hotkeys']");
+        tapDomCenter("[data-testid=mobile-hotkeys-back-main-page]");
         awaitJsTrue("!!document.querySelector('[data-testid=mobile-hotkeys-main-page]')");
         sendControl("ctrl-c", false);
         sendControl("ctrl-c", true);
@@ -263,7 +263,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("closing the fast-key tray must not resize the SSH PTY", resizeAcksBeforePalette, terminalResizeAcks());
         assertEquals("closed Android navigation lane reserves its key row and containment pixel", 49,
                 (int) closedTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
-        assertEquals("open main catalog adds two balanced key rows below the persistent key row", 193,
+        assertEquals("open main catalog adds a compact rail below the persistent key row", 145,
                 (int) mainTrayGeometry.getJSONObject("fastKeysTray").getJSONObject("bounds").getDouble("height"));
         assertHotkeyBarReachable(closedTrayGeometry);
 
@@ -1121,8 +1121,10 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject target = evalJson("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "const content=node?.closest('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');if(!node||!content)return JSON.stringify({missing:true});"
                 + "const r=node.getBoundingClientRect(),c=content.getBoundingClientRect(),v=window.visualViewport;"
+                + "const style=getComputedStyle(content),axis=style.overflowX==='auto'||style.overflowX==='scroll'?'horizontal':'vertical';"
                 + "const bounds=b=>({left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height});"
                 + "return JSON.stringify({missing:false,width:r.width,height:r.height,targetBounds:bounds(r),contentBounds:bounds(c),"
+                + "axis,snapType:style.scrollSnapType,scrollLeft:content.scrollLeft,scrollTop:content.scrollTop,"
                 + "insideContent:r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5,"
                 + "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)});})()");
         target.put("keyId", keyId);
@@ -1135,6 +1137,15 @@ public final class JsFastKeysDockerJourneyTest {
                 target.getBoolean("insideContent"));
         assertTrue("catalog action must remain inside the visible Android viewport: " + target,
                 target.getBoolean("insideViewport"));
+        boolean horizontal = "horizontal".equals(target.getString("axis"));
+        assertTrue("catalog swipe viewport must snap rows to keep 48dp keys aligned: " + target,
+                target.getString("snapType").contains(horizontal ? "x mandatory" : "y mandatory"));
+        if (!horizontal) {
+            double scrollTop = target.getDouble("scrollTop");
+            double snappedScrollTop = Math.rint(scrollTop / 48.0) * 48.0;
+            assertTrue("physical Ctrl swipes must settle on a complete 48dp row: " + target,
+                    Math.abs(scrollTop - snappedScrollTop) <= 0.75);
+        }
         return target;
     }
 
@@ -1176,9 +1187,53 @@ public final class JsFastKeysDockerJourneyTest {
             swipeFastKeyIntoView(selector);
             reachable.put(assertCatalogActionReachable(selector, keyId));
         }
+        if (".mobile-hotkeys__main-keys".equals(containerSelector)) {
+            assertMainCatalogEndpointReachability(containerSelector, keyIds, reachable);
+        }
         assertEquals("physical catalog reachability swipes must not activate keys or write to the PTY",
                 writesBeforeReachabilitySwipes, hotkeyWrites().length());
         return reachable;
+    }
+
+    private void assertMainCatalogEndpointReachability(
+            String selector, JSONArray keyIds, JSONArray reachable) throws Exception {
+        JSONObject endpoint = evalJson("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if(!node)return JSON.stringify({missing:true});"
+                + "const c=node.getBoundingClientRect(),v=window.visualViewport;"
+                + "const bounds=r=>({left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height});"
+                + "const keys=Array.from(node.querySelectorAll('button[data-key-id]')).map(key=>{const r=key.getBoundingClientRect();"
+                + "const intersectsContent=r.right>c.left&&r.left<c.right&&r.bottom>c.top&&r.top<c.bottom;"
+                + "const insideContent=r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom;"
+                + "return {keyId:key.dataset.keyId,bounds:bounds(r),intersectsContent,insideContent,width:r.width,height:r.height,"
+                + "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)};});"
+                + "return JSON.stringify({missing:false,scrollLeft:node.scrollLeft,contentBounds:bounds(c),keys});})()");
+        assertTrue("the Main rail endpoint must be measurable after physical swipes: " + endpoint,
+                !endpoint.optBoolean("missing", true));
+        assertEquals("the Main rail endpoint must measure every catalog key", keyIds.length(),
+                endpoint.getJSONArray("keys").length());
+        double scrollLeft = endpoint.getDouble("scrollLeft");
+        double snappedScrollLeft = Math.rint(scrollLeft / 56.0) * 56.0;
+        assertTrue("Main rail end clamp must stay on the 56dp key-slot boundary: " + endpoint,
+                Math.abs(scrollLeft - snappedScrollLeft) <= 0.75);
+        JSONObject contentBounds = endpoint.getJSONObject("contentBounds");
+        JSONArray endpointKeys = endpoint.getJSONArray("keys");
+        for (int index = 0; index < endpointKeys.length(); index += 1) {
+            JSONObject key = endpointKeys.getJSONObject(index);
+            String keyId = key.getString("keyId");
+            assertEquals("Main endpoint keys must keep their shared-core order", keyIds.getString(index), keyId);
+            assertTrue("every Main endpoint target that intersects the rail must remain a full 48dp target: "
+                            + keyId + "; " + endpoint,
+                    !key.getBoolean("intersectsContent") || (key.getBoolean("insideContent")
+                            && key.getDouble("width") >= 47.9 && key.getDouble("height") >= 47.9
+                            && key.getBoolean("insideViewport")));
+            reachable.getJSONObject(index)
+                    .put("endpointBounds", key.getJSONObject("bounds"))
+                    .put("endpointContentBounds", contentBounds)
+                    .put("endpointIntersectsContent", key.getBoolean("intersectsContent"))
+                    .put("endpointInsideContent", key.getBoolean("insideContent"))
+                    .put("endpointInsideViewport", key.getBoolean("insideViewport"))
+                    .put("endpointScrollLeft", scrollLeft);
+        }
     }
 
     private void scrollCatalogToStart(String selector) throws Exception {
@@ -1186,8 +1241,10 @@ public final class JsFastKeysDockerJourneyTest {
                 + "if(!node)throw new Error('missing catalog scroller '+" + JSONObject.quote(selector) + ");"
                 + "node.scrollTop=0;node.scrollLeft=0;return String(node.scrollTop);})()");
         awaitRenderedFrame();
-        awaitJsTrue("document.querySelector(" + JSONObject.quote(selector) + ")?.scrollTop === 0"
-                + " && document.querySelector(" + JSONObject.quote(selector) + ")?.scrollLeft === 0");
+        awaitJsTrue("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "const first=node?.querySelector('button[data-key-id]'),c=node?.getBoundingClientRect(),r=first?.getBoundingClientRect();"
+                + "return !!node&&!!c&&!!r&&node.scrollTop<=0.5&&node.scrollLeft<=8.5"
+                + "&&r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5;})()");
     }
 
     private void swipeFastKeyIntoView(String selector) throws Exception {
@@ -1231,6 +1288,7 @@ public final class JsFastKeysDockerJourneyTest {
             if (horizontal) {
                 endX += towardEnd ? -distance : distance;
             } else {
+                startY = towardEnd ? container.getDouble("bottom") - 2 : container.getDouble("top") + 2;
                 endY = towardEnd ? container.getDouble("top") + 2 : container.getDouble("bottom") - 2;
             }
             assertTrue("injected swipe must stay within the catalog viewport: " + geometry,
@@ -1275,9 +1333,9 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const style=getComputedStyle(container),buttonRects=Array.from(container.querySelectorAll('button[data-key-id]')).map(n=>{const b=n.getBoundingClientRect();"
                 + "return {keyId:n.dataset.keyId,top:b.top,bottom:b.bottom,width:b.width,height:b.height};});"
                 + "const horizontal=style.overflowX==='auto'||style.overflowX==='scroll',y=c.top+c.height/2;"
-                + "const verticalAnchor=(()=>{for(let x=c.left+24;x<c.right-16;x+=4){const hit=document.elementFromPoint(x,y);"
-                + "const insideScroller=!!hit&&(hit===container||container.contains(hit));"
-                + "if(insideScroller&&!hit.closest('button'))return {x,y,insideScroller,clearOfButtons:true};}"
+                + "const verticalAnchor=(()=>{for(let x=c.left+24;x<c.right-16;x+=4){const hits=[c.top+2,y,c.bottom-2].map(py=>document.elementFromPoint(x,py));"
+                + "const insideScroller=hits.every(hit=>!!hit&&(hit===container||container.contains(hit)));"
+                + "if(insideScroller&&hits.every(hit=>!hit.closest('button')))return {x,y,insideScroller,clearOfButtons:true};}"
                 + "return {x:null,y:null,insideScroller:false,clearOfButtons:false};})();"
                 + "const freeX=fromRight=>{const step=fromRight?-1:1,start=fromRight?c.right-1:c.left+1;"
                 + "for(let x=start;fromRight?x>c.left+1:x<c.right-1;x+=step){if(!document.elementFromPoint(x,y)?.closest('button'))return {x,y};}return null;};"
@@ -1352,6 +1410,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const catalogSheetNode=document.querySelector('[data-testid=mobile-hotkeys-sheet]');"
                 + "const catalogSheetRole=catalogSheetNode?.getAttribute('role')??'';"
                 + "const catalogSheet=rect('[data-testid=mobile-hotkeys-sheet]');"
+                + "const catalogSurfaceStyle=catalogSheetNode?(()=>{const s=getComputedStyle(catalogSheetNode);return {backgroundColor:s.backgroundColor,borderRadius:s.borderRadius,"
+                + "borderTopWidth:s.borderTopWidth,borderRightWidth:s.borderRightWidth,borderBottomWidth:s.borderBottomWidth,borderLeftWidth:s.borderLeftWidth,boxShadow:s.boxShadow};})():null;"
                 + "const promptComposerLauncherNode=document.querySelector('[data-testid=prompt-composer-launcher]');"
                 + "const promptComposerIconNode=promptComposerLauncherNode?.querySelector('svg');"
                 + "const promptComposerLabelNode=promptComposerLauncherNode?.querySelector('[data-testid=mobile-hotkeys-launcher-label]');"
@@ -1368,8 +1428,13 @@ public final class JsFastKeysDockerJourneyTest {
                 + "iconComputedHeight:promptComposerIconNode?getComputedStyle(promptComposerIconNode).height:'',"
                 + "visibleLabel:promptComposerLabelNode?.textContent.trim()??'',"
                 + "contentsInside:insideBounds(promptComposerBounds,promptComposerIconBounds)&&insideBounds(promptComposerBounds,promptComposerLabelBounds)}:null;"
-                + "const pageActionNode=document.querySelector('[data-testid=mobile-hotkeys-open-ctrl-page],[data-testid=mobile-hotkeys-back-main-page]');"
+                + "const pageActionNode=tray?.querySelector(tray.dataset.palettePage==='ctrl'?'[data-testid=mobile-hotkeys-back-main-page]':'[data-testid=mobile-hotkeys-open-ctrl-page]');"
                 + "const pageAction=pageActionNode?target(pageActionNode):null;"
+                + "const catalogTabsNode=tray?.querySelector('.mobile-hotkeys__page-tabs');"
+                + "const catalogTabsBounds=catalogTabsNode?.getBoundingClientRect();"
+                + "const catalogTabs=Array.from(catalogTabsNode?.querySelectorAll('button')??[]).map(node=>{const t=target(node),r=node.getBoundingClientRect();"
+                + "return {...t,selected:node.getAttribute('aria-pressed')==='true',insideCatalogSheet:!!catalogSheet&&r.left>=catalogSheet.left-0.5&&r.right<=catalogSheet.right+0.5"
+                + "&&r.top>=catalogSheet.top-0.5&&r.bottom<=catalogSheet.bottom+0.5};});"
                 + "const catalogTitleNode=tray?.querySelector('[data-testid=mobile-hotkeys-sheet-title]');"
                 + "const catalogTitleBounds=catalogTitleNode?.getBoundingClientRect();"
                 + "const catalogTitle=catalogTitleNode&&catalogTitleBounds?{text:catalogTitleNode.textContent.trim(),top:catalogTitleBounds.top,bottom:catalogTitleBounds.bottom,"
@@ -1377,6 +1442,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "fits:catalogTitleNode.scrollWidth<=catalogTitleNode.clientWidth+1}:null;"
                 + "const catalogScroller=tray?.querySelector('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');"
                 + "const catalogScrollStyle=catalogScroller?getComputedStyle(catalogScroller):null;"
+                + "const catalogKeyNode=catalogScroller?.querySelector('button[data-key-id]');"
+                + "const catalogKeyStyle=catalogKeyNode?(()=>{const s=getComputedStyle(catalogKeyNode);return {backgroundColor:s.backgroundColor,borderRadius:s.borderRadius,borderColor:s.borderColor,fontSize:s.fontSize,fontToken:getComputedStyle(document.documentElement).getPropertyValue('--fs-300').trim(),fontFamily:s.fontFamily};})():null;"
                 + "const catalogScrollerRect=catalogScroller?.getBoundingClientRect();"
                 + "const catalogScrollerInsideSheet=!!catalogScrollerRect&&!!catalogSheet"
                 + "&&catalogScrollerRect.top>=catalogSheet.top-" + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
@@ -1388,7 +1455,15 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const catalogScrollMetrics=catalogScroller?{clientWidth:catalogScroller.clientWidth,scrollWidth:catalogScroller.scrollWidth,scrollLeft:catalogScroller.scrollLeft,"
                 + "clientHeight:catalogScroller.clientHeight,scrollHeight:catalogScroller.scrollHeight,scrollTop:catalogScroller.scrollTop,"
                 + "rowGap:catalogScrollStyle?.rowGap??'',columnGap:catalogScrollStyle?.columnGap??'',gridAutoRows:catalogScrollStyle?.gridAutoRows??'',buttonRects:catalogButtonRects,"
+                + "scrollSnapType:catalogScrollStyle?.scrollSnapType??'',"
                 + "axis:catalogScrollStyle?.overflowY==='auto'?'vertical':'horizontal'}:null;"
+                + "const mainCatalogNode=tray?.querySelector('.mobile-hotkeys__main-keys');"
+                + "const mainRowNodes=Array.from(mainCatalogNode?.querySelectorAll('.mobile-hotkeys__main-row')??[]);"
+                + "const mainKeyRects=Array.from(mainCatalogNode?.querySelectorAll('button[data-key-id]')??[]).map(node=>node.getBoundingClientRect());"
+                + "const mainRowWidths=mainRowNodes.map(row=>{const top=row.getBoundingClientRect().top,keys=mainKeyRects.filter(r=>Math.abs(r.top-top)<1);"
+                + "return keys.length?Math.max(...keys.map(r=>r.right))-Math.min(...keys.map(r=>r.left)):0;});"
+                + "const mainKeyLayout={rowCount:mainRowNodes.length,columnGap:mainRowNodes[0]?getComputedStyle(mainRowNodes[0]).columnGap:'',"
+                + "maxRowWidth:mainRowWidths.length?Math.max(...mainRowWidths):0};"
                 + "const overlaps=(a,b)=>!!a&&!!b&&a.left<b.right&&a.right>b.left&&a.top<b.bottom&&a.bottom>b.top;"
                 + "const sheetInside=pageActionNode&&catalogSheet?(()=>{const a=pageActionNode.getBoundingClientRect();return a.left>=catalogSheet.left-0.5&&a.right<=catalogSheet.right+0.5&&a.top>=catalogSheet.top-0.5&&a.bottom<=catalogSheet.bottom+0.5;})():false;"
                 + "const composerRect=rect('.composer-panel');"
@@ -1464,12 +1539,13 @@ public final class JsFastKeysDockerJourneyTest {
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
                 + "mobileHotkeys:trayRect,navigationTargets:keys,promptComposerLauncher,enterDivider,persistentRowMetrics,hotkeyControls,"
-                + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,"
+                + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,catalogSurfaceStyle,"
                 + "visibleTerminalRows,runtimeGeometry,"
                 + "catalogSheetBelowTerminalViewport:!!catalogSheet&&!!terminalRect&&catalogSheet.top>=terminalRect.bottom,"
                 + "catalogSheetIntersectsComposer:overlaps(catalogSheet,composerRect),catalogPageAction:pageAction?{...pageAction,insideCatalogSheet:!!sheetInside}:null,"
+                + "catalogTabs,catalogTabList:rect('.mobile-hotkeys__page-tabs'),catalogKeyStyle,mainKeyLayout,"
                 + "catalogTitle,catalogHeader:rect('.mobile-hotkeys__sheet-header'),"
-                + "catalogHeaderControlsDoNotOverlap:!!catalogTitleBounds&&!!pageActionNode&&(()=>{const a=pageActionNode.getBoundingClientRect();"
+                + "catalogHeaderControlsDoNotOverlap:!!catalogTitleBounds&&!!catalogTabsBounds&&(()=>{const a=catalogTabsBounds;"
                 + "return !overlaps(catalogTitleBounds,a);})(),"
                 + "catalogScrollerSelector:catalogScroller?.matches('.mobile-hotkeys__ctrl-grid')?'.mobile-hotkeys__ctrl-grid':"
                 + "catalogScroller?.matches('.mobile-hotkeys__main-keys')?'.mobile-hotkeys__main-keys':null,catalogScrollMetrics,"
@@ -1728,11 +1804,11 @@ public final class JsFastKeysDockerJourneyTest {
                 && geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
         JSONObject sheet = geometry.optJSONObject("catalogSheet");
         assertNotNull("the key catalog must render as a compact terminal rail", sheet);
-        assertEquals("the in-flow catalog must fit one title row and two 48dp key rows: " + geometry,
-                144, sheet.getDouble("height"), 0.5);
+        assertEquals("the compact in-flow catalog must fit one 48dp tab row and one 48dp key row: " + geometry,
+                96, sheet.getDouble("height"), 0.5);
         JSONObject dock = geometry.getJSONObject("mobileHotkeys");
         assertEquals("the open terminal dock reserves the key row, optional status, and bounded catalog: " + geometry,
-                geometry.getBoolean("inlineDictationStatusVisible") ? 209 : 193,
+                geometry.getBoolean("inlineDictationStatusVisible") ? 161 : 145,
                 dock.getDouble("height"), 0.5);
         JSONObject terminalPanel = geometry.getJSONObject("terminalPanel");
         JSONObject terminalSlot = geometry.getJSONObject("terminalSlot");
@@ -1758,32 +1834,53 @@ public final class JsFastKeysDockerJourneyTest {
                 geometry.getString("catalogSheetRole"));
         assertTrue("in-flow catalog must not claim modal semantics", geometry.isNull("catalogSheetModal"));
         JSONObject title = geometry.getJSONObject("catalogTitle");
-        assertEquals("catalog title must match the selected key page", "main".equals(page) ? "Terminal keys" : "Ctrl keys",
-                title.getString("text"));
+        assertEquals("the muted catalog caption must stay short", "Keys", title.getString("text"));
         assertEquals("catalog page title and controls use one 48dp header", 48,
                 geometry.getJSONObject("catalogHeader").getDouble("height"), 0.5);
         assertTrue("catalog title must remain fully visible at the device width: " + geometry, title.getBoolean("fits"));
-        assertTrue("catalog title, optional one-line dictation status, and 48dp page action must not overlap: " + geometry,
+        assertTrue("catalog caption and Main/Ctrl tabs must not overlap: " + geometry,
                 geometry.getBoolean("catalogHeaderControlsDoNotOverlap"));
+        assertCatalogTabsReachable(geometry, page);
+        JSONObject catalogSurfaceStyle = geometry.getJSONObject("catalogSurfaceStyle");
+        assertEquals("the expanded key catalog must remain visually flat on the terminal surface",
+                "rgba(0, 0, 0, 0)", catalogSurfaceStyle.getString("backgroundColor"));
+        assertEquals("the key catalog must not read as a rounded card", "0px", catalogSurfaceStyle.getString("borderRadius"));
+        assertEquals("the key catalog must not add card side borders", "0px", catalogSurfaceStyle.getString("borderLeftWidth"));
+        assertEquals("the key catalog must not add card side borders", "0px", catalogSurfaceStyle.getString("borderRightWidth"));
+        assertEquals("the key catalog must not add a card bottom border", "0px", catalogSurfaceStyle.getString("borderBottomWidth"));
+        JSONObject catalogKeyStyle = geometry.getJSONObject("catalogKeyStyle");
+        assertEquals("key targets retain transparent, secondary key-slot styling", "rgba(0, 0, 0, 0)",
+                catalogKeyStyle.getString("backgroundColor"));
+        assertEquals("key labels use the shared UI-kit dense type token", "13px", catalogKeyStyle.getString("fontToken"));
+        double scaledKeyFontSize = Double.parseDouble(catalogKeyStyle.getString("fontSize").replace("px", ""));
+        assertTrue("key labels remain compact with Android text scaling: " + catalogKeyStyle,
+                scaledKeyFontSize >= 13 && scaledKeyFontSize <= 17);
         JSONObject scroll = geometry.getJSONObject("catalogScrollMetrics");
         JSONObject scroller = geometry.getJSONObject("catalogScrollerBounds");
-        assertTrue("catalog scroller must remain fully inside the 144dp rail after border sizing: " + geometry,
+        assertTrue("catalog scroller must remain fully inside the 96dp rail after border sizing: " + geometry,
                 geometry.getBoolean("catalogScrollerInsideSheet")
                         && scroller.getDouble("top") >= sheet.getDouble("top") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("bottom") <= sheet.getDouble("bottom") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("left") >= sheet.getDouble("left") - TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
                         && scroller.getDouble("right") <= sheet.getDouble("right") + TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX
-                        && Math.abs(scroller.getDouble("height") - 96) <= 1);
-        assertEquals("both key pages use vertical catalog flow", "vertical", scroll.getString("axis"));
-        assertEquals("the " + page + " catalog shows two complete 48dp rows: " + geometry,
-                96, scroll.getDouble("clientHeight"), 1.0);
-        assertTrue("catalog keys must fit the available width without sideways clipping: " + geometry,
-                scroll.getDouble("scrollWidth") <= scroll.getDouble("clientWidth") + 1);
+                        && Math.abs(scroller.getDouble("height") - 48) <= 1);
+        assertEquals("the compact catalog shows one complete 48dp key row: " + geometry,
+                48, scroll.getDouble("clientHeight"), 1.0);
         if ("main".equals(page)) {
-            assertTrue("main catalog shows both rows without scrolling: " + geometry,
-                    scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
-            assertMainCatalogRowsBalanced(scroll, geometry);
+            assertEquals("the Main keys use a horizontal swipe rail", "horizontal", scroll.getString("axis"));
+            assertTrue("Main exposes every key through horizontal swiping: " + geometry,
+                    scroll.getDouble("scrollWidth") > scroll.getDouble("clientWidth") + 1
+                            && scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
+            assertMainCatalogSingleRow(scroll, geometry);
+            JSONObject mainKeyLayout = geometry.getJSONObject("mainKeyLayout");
+            assertEquals("Main uses one compact horizontal row", 1, mainKeyLayout.getInt("rowCount"));
+            assertEquals("Main keys keep a compact 8dp slot gap", "8px", mainKeyLayout.getString("columnGap"));
+            assertTrue("all Main keys stay in one scrollable touch row: " + mainKeyLayout,
+                    mainKeyLayout.getDouble("maxRowWidth") > 500 && mainKeyLayout.getDouble("maxRowWidth") <= 600);
         } else {
+            assertEquals("the Ctrl key rows keep vertical QWERTY scrolling", "vertical", scroll.getString("axis"));
+            assertTrue("Ctrl keys do not scroll sideways: " + geometry,
+                    scroll.getDouble("scrollWidth") <= scroll.getDouble("clientWidth") + 1);
             assertTrue("Ctrl page keeps extra letter rows in its vertical scroller: " + geometry,
                     scroll.getDouble("scrollHeight") > scroll.getDouble("clientHeight") + 1);
         }
@@ -1797,7 +1894,7 @@ public final class JsFastKeysDockerJourneyTest {
                 dock.getDouble("bottom") <= imeEdge + 0.5);
     }
 
-    private void assertMainCatalogRowsBalanced(JSONObject scroll, JSONObject geometry) throws Exception {
+    private void assertMainCatalogSingleRow(JSONObject scroll, JSONObject geometry) throws Exception {
         JSONArray buttonRects = scroll.getJSONArray("buttonRects");
         assertEquals("the packaged main catalog measures all ten common keys", 10, buttonRects.length());
         List<Double> rowTops = new ArrayList<>();
@@ -1812,9 +1909,9 @@ public final class JsFastKeysDockerJourneyTest {
             }
             rowCounts.set(row, rowCounts.get(row) + 1);
         }
-        assertEquals("common keys must use exactly two grid rows: " + geometry, 2, rowCounts.size());
-        assertEquals("each common-key row must contain five 48dp targets: " + geometry,
-                List.of(5, 5), rowCounts);
+        assertEquals("common keys must use one horizontally scrollable row: " + geometry, 1, rowCounts.size());
+        assertEquals("the common-key row must contain all ten 48dp targets: " + geometry,
+                List.of(10), rowCounts);
     }
 
     private void assertCatalogPageActionReachable(JSONObject geometry) throws Exception {
@@ -1824,6 +1921,24 @@ public final class JsFastKeysDockerJourneyTest {
                 action.getDouble("width") >= 47.9 && action.getDouble("height") >= 47.9);
         assertTrue("catalog page action must remain visible above the IME: " + action,
                 action.getBoolean("insideViewport") && action.getBoolean("insideCatalogSheet"));
+    }
+
+    private void assertCatalogTabsReachable(JSONObject geometry, String page) throws Exception {
+        JSONArray tabs = geometry.getJSONArray("catalogTabs");
+        assertEquals("the in-flow catalog exposes explicit Main and Ctrl navigation", 2, tabs.length());
+        boolean mainSelected = false;
+        boolean ctrlSelected = false;
+        for (int index = 0; index < tabs.length(); index += 1) {
+            JSONObject tab = tabs.getJSONObject(index);
+            assertTrue("Main/Ctrl page controls meet the 48dp touch target and clear the IME: " + tab,
+                    tab.getDouble("width") >= 47.9 && tab.getDouble("height") >= 47.9
+                            && tab.getBoolean("insideViewport") && tab.getBoolean("insideCatalogSheet")
+                            && tab.getBoolean("hitTarget"));
+            if ("Select Main keys".equals(tab.getString("label"))) mainSelected = tab.getBoolean("selected");
+            if ("Select Ctrl keys".equals(tab.getString("label"))) ctrlSelected = tab.getBoolean("selected");
+        }
+        assertTrue("the selected Main/Ctrl tab must match the visible catalog page", mainSelected == "main".equals(page)
+                && ctrlSelected == "ctrl".equals(page));
     }
 
     private void assertHotkeyBarWithinTerminalPanel(JSONObject geometry) throws Exception {
