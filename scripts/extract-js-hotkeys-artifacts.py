@@ -1108,10 +1108,19 @@ def validate_journey(journey: object) -> None:
             raise ExtractionFailure(f"{label} catalog does not show two vertical 48px key rows without horizontal clipping")
         if label == "main":
             button_rects = scroll.get("buttonRects")
-            if (not isinstance(button_rects, list) or len(button_rects) != len(EXPECTED_MAIN_KEY_IDS)
-                    or len({round(rect.get("top", -999)) for rect in button_rects if isinstance(rect, dict)}) != 2
-                    or scroll.get("scrollHeight", 0) > scroll.get("clientHeight", 0) + 1):
+            if not isinstance(button_rects, list) or len(button_rects) != len(EXPECTED_MAIN_KEY_IDS):
                 raise ExtractionFailure("main common-key catalog does not fit all ten keys in two visible rows")
+            row_counts: dict[int, int] = {}
+            for rect in button_rects:
+                top = rect.get("top") if isinstance(rect, dict) else None
+                if isinstance(top, bool) or not isinstance(top, (int, float)):
+                    raise ExtractionFailure("main common-key catalog is missing measured key row positions")
+                row = round(top)
+                row_counts[row] = row_counts.get(row, 0) + 1
+            if sorted(row_counts.values()) != [5, 5]:
+                raise ExtractionFailure("main common-key catalog must have exactly five keys in each of two rows")
+            if scroll.get("scrollHeight", 0) > scroll.get("clientHeight", 0) + 1:
+                raise ExtractionFailure("main common-key catalog does not fit both balanced rows without scrolling")
         elif scroll.get("scrollHeight", 0) <= scroll.get("clientHeight", 0) + 1:
             raise ExtractionFailure("Ctrl letters do not use the expected vertical catalog scroll")
     before_grid = before.get("runtimeGeometry")
@@ -1256,6 +1265,12 @@ def self_test() -> int:
          with_intersecting_catalog_sheet(sample_journey()), False),
         ("Ctrl catalog horizontal overflow rejected",
          with_horizontal_catalog_overflow(sample_journey()), False),
+        ("main catalog with an uneven 7+3 row split rejected",
+         with_unbalanced_main_catalog_rows(sample_journey(), 7), False),
+        ("main catalog with an uneven 6+4 row split rejected",
+         with_unbalanced_main_catalog_rows(sample_journey(), 6), False),
+        ("main catalog with an uneven 4+6 row split rejected",
+         with_unbalanced_main_catalog_rows(sample_journey(), 4), False),
         ("main catalog with an extra vertical row rejected",
          with_second_catalog_row(sample_journey()), False),
         ("catalog page without the prompt composer launcher rejected",
@@ -2101,10 +2116,10 @@ def with_android_dock_containment(journey: dict[str, object]) -> dict[str, objec
             key_ids = EXPECTED_MAIN_KEY_IDS if page == "main" else EXPECTED_CTRL_KEY_IDS
             if page == "main":
                 item["catalogScrollMetrics"]["buttonRects"] = [
-                    {"keyId": key_id, "left": left + 8 + (index % 6) * 52,
-                     "right": left + 56 + (index % 6) * 52,
-                     "top": sheet_top + 48 + (index // 6) * 48,
-                     "bottom": sheet_top + 96 + (index // 6) * 48,
+                    {"keyId": key_id, "left": left + 16.8 + (index % 5) * 77.6,
+                     "right": left + 64.8 + (index % 5) * 77.6,
+                     "top": sheet_top + 48 + (index // 5) * 48,
+                     "bottom": sheet_top + 96 + (index // 5) * 48,
                      "width": 48, "height": 48}
                     for index, key_id in enumerate(key_ids)
                 ]
@@ -2386,6 +2401,17 @@ def with_horizontal_catalog_overflow(journey: dict[str, object]) -> dict[str, ob
     for item in copied["geometryTrace"]:
         if item["stage"] == "fast-keys-ctrl-open-ime-up":
             item["catalogScrollMetrics"]["scrollWidth"] = item["catalogScrollMetrics"]["clientWidth"] + 48
+    return copied
+
+
+def with_unbalanced_main_catalog_rows(journey: dict[str, object], first_row_count: int) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
+    button_rects = item["catalogScrollMetrics"]["buttonRects"]
+    first_row_top = button_rects[0]["top"]
+    for index, rect in enumerate(button_rects):
+        rect["top"] = first_row_top + (0 if index < first_row_count else 48)
+        rect["bottom"] = rect["top"] + 48
     return copied
 
 

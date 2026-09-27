@@ -34,6 +34,7 @@ journey = journey_path.read_text()
 mobile_hotkeys = mobile_hotkeys_path.read_text()
 app = app_path.read_text()
 unit_test_manifest = (app_path.parent.parent / "scripts/js-unit-test-manifest.json").read_text()
+unit_test = (app_path.parent.parent / "tests/unit/mobileHotkeys.test.ts").read_text()
 extractor_module = ast.parse(extractor, filename=str(extractor_path))
 ast.parse(checker, filename=str(checker_path))
 asset_sets = {}
@@ -193,6 +194,8 @@ if "dictation status shrinking the pre-dock viewport cap rejected" not in extrac
     raise AssertionError("artifact self-tests must reject the former 16px viewport shrink")
 if "keeps active dictation status above the persistent controls on both catalog pages" not in unit_test_manifest:
     raise AssertionError("full JS unit gate manifest must include the active status row component test")
+if "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page" not in unit_test_manifest:
+    raise AssertionError("full JS unit gate manifest must include the common-key row layout component test")
 if '.mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-dock {\n  border-top: 1px solid var(--border-soft);' not in mobile_hotkeys:
     raise AssertionError("Android inline dictation must use its one-pixel hairline as the dock boundary")
 if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
@@ -214,8 +217,17 @@ if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.
 if ("height: 144px;" not in mobile_hotkeys or "height: 96px;" not in mobile_hotkeys
         or "overflow-x: hidden;" not in mobile_hotkeys or "overflow-y: auto;" not in mobile_hotkeys
         or "touch-action: pan-y;" not in mobile_hotkeys
-        or "grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));" not in mobile_hotkeys):
-    raise AssertionError("Fast Keys catalog must show two balanced rows and scroll its Ctrl rows vertically")
+        or "grid-template-columns: repeat(5, minmax(48px, 1fr));" not in mobile_hotkeys
+        or "mobile-hotkeys__main-row" not in mobile_hotkeys):
+    raise AssertionError("Fast Keys main catalog must have explicit five-key rows while Ctrl rows scroll vertically")
+if ("mainRows.map((row) => findAll(row" not in unit_test
+        or ".toEqual([5, 5])" not in unit_test
+        or "assertMainCatalogRowsBalanced(scroll, geometry);" not in journey
+        or "List.of(5, 5)" not in journey
+        or "sorted(row_counts.values()) != [5, 5]" not in extractor
+        or "main catalog with an uneven 7+3 row split rejected" not in extractor
+        or "main catalog with an uneven 6+4 row split rejected" not in extractor):
+    raise AssertionError("Fast Keys unit, packaged journey, and extractor must reject uneven common-key rows")
 if ('role="region"' not in mobile_hotkeys or 'role="dialog"' in mobile_hotkeys):
     raise AssertionError("Fast Keys catalog must remain in the terminal hierarchy rather than float as a dialog")
 if "translateY(0.95px)" in mobile_hotkeys:

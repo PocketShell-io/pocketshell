@@ -72,6 +72,14 @@ const mainKeys = HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.
   ...key,
   section: section.title,
 })));
+const MAIN_CATALOG_KEYS_PER_ROW = 5;
+const mainKeyRows = Array.from(
+  { length: Math.ceil(mainKeys.length / MAIN_CATALOG_KEYS_PER_ROW) },
+  (_, rowIndex) => mainKeys.slice(
+    rowIndex * MAIN_CATALOG_KEYS_PER_ROW,
+    (rowIndex + 1) * MAIN_CATALOG_KEYS_PER_ROW,
+  ),
+);
 const ctrlRows = HOTKEY_CTRL_PAGE_ROWS;
 const hasPersistentStatus = computed(() => Boolean(slots['persistent-status']));
 const hasPersistentControls = computed(() => Boolean(slots['persistent-controls']));
@@ -321,25 +329,32 @@ defineExpose({
           role="group"
           aria-label="Common terminal keys"
         >
-          <button
-            v-for="key in mainKeys"
-            :key="key.id"
-            class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
-            :class="{ 'mobile-hotkeys__key--holdable': key.id === 'ctrl-c' || key.id === 'ctrl-d' }"
-            type="button"
-            :data-key-section="key.section"
-            :data-key-id="key.id"
-            :aria-label="accessibleKeyName(key)"
-            :disabled="!enabled"
-            @pointerdown="beginControlPointer($event, key.id)"
-            @pointerup="finishControlPointer"
-            @pointercancel="cancelControlPointer"
-            @lostpointercapture="cancelControlPointer"
-            @click="onPaletteKeyClick($event, key.id)"
+          <div
+            v-for="(row, rowIndex) in mainKeyRows"
+            :key="rowIndex"
+            class="mobile-hotkeys__main-row"
+            role="presentation"
           >
-            <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
-            <small v-if="key.id === 'ctrl-c' || key.id === 'ctrl-d'">hold ×2</small>
-          </button>
+            <button
+              v-for="key in row"
+              :key="key.id"
+              class="mobile-hotkeys__key mobile-hotkeys__key--catalog"
+              :class="{ 'mobile-hotkeys__key--holdable': key.id === 'ctrl-c' || key.id === 'ctrl-d' }"
+              type="button"
+              :data-key-section="key.section"
+              :data-key-id="key.id"
+              :aria-label="accessibleKeyName(key)"
+              :disabled="!enabled"
+              @pointerdown="beginControlPointer($event, key.id)"
+              @pointerup="finishControlPointer"
+              @pointercancel="cancelControlPointer"
+              @lostpointercapture="cancelControlPointer"
+              @click="onPaletteKeyClick($event, key.id)"
+            >
+              <span class="mobile-hotkeys__keycap">{{ key.label }}</span>
+              <small v-if="key.id === 'ctrl-c' || key.id === 'ctrl-d'">hold ×2</small>
+            </button>
+          </div>
         </div>
 
         <div
@@ -632,11 +647,19 @@ defineExpose({
   white-space: nowrap;
 }
 .mobile-hotkeys__main-keys {
+  gap: 0;
+}
+.mobile-hotkeys__main-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
-  grid-auto-rows: 48px;
-  align-content: start;
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  min-height: 48px;
+  flex: 0 0 48px;
+  grid-template-columns: repeat(5, minmax(48px, 1fr));
+  align-items: center;
   column-gap: 4px;
+  justify-items: center;
 }
 .mobile-hotkeys__ctrl-grid { justify-content: flex-start; }
 .mobile-hotkeys__ctrl-row { display: flex; height: 48px; min-height: 48px; flex: 0 0 48px; align-items: center; justify-content: center; gap: 4px; }

@@ -101,6 +101,10 @@ describe('mobile fast-key behavior', () => {
         .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map((key) => key.id)));
       expect(mainKeys.map((key) => key.props['data-key-section']))
         .toEqual(HOTKEY_PALETTE_MAIN_SECTIONS.flatMap((section) => section.keys.map(() => section.title)));
+      const mainRows = findAll(mainPage, (node) => node.props.class === 'mobile-hotkeys__main-row');
+      expect(mainRows).toHaveLength(2);
+      expect(mainRows.map((row) => findAll(row, (node) => node.tag === 'button'
+        && typeof node.props['data-key-id'] === 'string').length)).toEqual([5, 5]);
 
       click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-open-ctrl-page' }));
       await nextTick();

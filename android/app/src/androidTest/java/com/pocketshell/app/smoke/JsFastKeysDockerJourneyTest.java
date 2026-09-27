@@ -1781,13 +1781,7 @@ public final class JsFastKeysDockerJourneyTest {
         if ("main".equals(page)) {
             assertTrue("main catalog shows both rows without scrolling: " + geometry,
                     scroll.getDouble("scrollHeight") <= scroll.getDouble("clientHeight") + 1);
-            JSONArray buttonRects = scroll.getJSONArray("buttonRects");
-            List<Double> rows = new ArrayList<>();
-            for (int index = 0; index < buttonRects.length(); index += 1) {
-                double rowTop = buttonRects.getJSONObject(index).getDouble("top");
-                if (!rows.contains(rowTop)) rows.add(rowTop);
-            }
-            assertEquals("all ten common keys occupy two visible rows", 2, rows.size());
+            assertMainCatalogRowsBalanced(scroll, geometry);
         } else {
             assertTrue("Ctrl page keeps extra letter rows in its vertical scroller: " + geometry,
                     scroll.getDouble("scrollHeight") > scroll.getDouble("clientHeight") + 1);
@@ -1800,6 +1794,26 @@ public final class JsFastKeysDockerJourneyTest {
         double imeEdge = geometry.optDouble("imeEdgeCssY", viewport.getDouble("height") + viewport.optDouble("offsetTop", 0));
         assertTrue("compact catalog and persistent toolbar must clear the measured IME edge: " + geometry,
                 dock.getDouble("bottom") <= imeEdge + 0.5);
+    }
+
+    private void assertMainCatalogRowsBalanced(JSONObject scroll, JSONObject geometry) throws Exception {
+        JSONArray buttonRects = scroll.getJSONArray("buttonRects");
+        assertEquals("the packaged main catalog measures all ten common keys", 10, buttonRects.length());
+        List<Double> rowTops = new ArrayList<>();
+        List<Integer> rowCounts = new ArrayList<>();
+        for (int index = 0; index < buttonRects.length(); index += 1) {
+            double rowTop = buttonRects.getJSONObject(index).getDouble("top");
+            int row = 0;
+            while (row < rowTops.size() && Math.abs(rowTops.get(row) - rowTop) >= 1) row += 1;
+            if (row == rowTops.size()) {
+                rowTops.add(rowTop);
+                rowCounts.add(0);
+            }
+            rowCounts.set(row, rowCounts.get(row) + 1);
+        }
+        assertEquals("common keys must use exactly two grid rows: " + geometry, 2, rowCounts.size());
+        assertEquals("each common-key row must contain five 48dp targets: " + geometry,
+                List.of(5, 5), rowCounts);
     }
 
     private void assertCatalogPageActionReachable(JSONObject geometry) throws Exception {
