@@ -210,11 +210,17 @@ defineExpose({
       <div v-if="dictationStatusVisible" class="mobile-hotkeys__dictation-status-row" data-testid="inline-dictation-status-row">
         <p class="mobile-hotkeys__dictation-status" :data-dictation-tone="dictationState.tone"
           :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
-          <span v-if="dictationState.phase === 'listening'" class="mobile-hotkeys__dictation-phase">Listening · </span>
-          <span v-else-if="['stopping', 'inserting'].includes(dictationState.phase)" class="mobile-hotkeys__dictation-phase">Transcribing · </span>
+          <span v-if="dictationState.tone === 'error'" class="mobile-hotkeys__dictation-phase">Error · </span>
+          <span v-else-if="dictationState.tone === 'warning'" class="mobile-hotkeys__dictation-phase">Warning · </span>
+          <span v-else-if="dictationState.phase === 'starting'" class="mobile-hotkeys__dictation-phase">Starting · </span>
+          <span v-else-if="dictationState.phase === 'listening'" class="mobile-hotkeys__dictation-phase">Listening · </span>
+          <span v-else-if="dictationState.phase === 'stopping'" class="mobile-hotkeys__dictation-phase">Transcribing · </span>
+          <span v-else-if="dictationState.phase === 'cancelling'" class="mobile-hotkeys__dictation-phase">Cancelling · </span>
+          <span v-else-if="dictationState.phase === 'inserting'" class="mobile-hotkeys__dictation-phase">Inserting · </span>
           <span v-if="dictationState.preview" class="terminal-dictation-preview" data-testid="inline-dictation-preview" aria-live="off">
             {{ dictationState.preview }}
           </span>
+          <span v-else-if="dictationState.phase === 'listening'" data-testid="inline-dictation-message">Speak now. Stop to insert.</span>
           <span v-else data-testid="inline-dictation-message">{{ dictationState.message }}</span>
         </p>
       </div>
@@ -395,11 +401,11 @@ defineExpose({
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 176px; }
 .mobile-hotkeys--dictation-available { height: 49px; }
-.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 65px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 81px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
-.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 177px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -416,18 +422,18 @@ defineExpose({
 }
 .mobile-hotkeys__dictation-status-row { display: flex; min-width: 0; height: 32px; flex: 0 0 32px; align-items: center; padding: 2px 4px; }
 .mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-status-row {
-  height: 16px;
-  flex: 0 0 16px;
-  padding: 0 2px;
+  height: 32px;
+  flex: 0 0 32px;
+  padding: 0 4px;
 }
 .mobile-hotkeys__dictation-status {
   overflow: hidden;
   width: 100%;
   min-width: 0;
-  height: 26px;
+  height: 30px;
   margin: 0;
-  border: 0;
-  border-radius: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--r-sm);
   background: var(--surface-2);
   padding: 0 8px;
   color: var(--fg-secondary);
@@ -440,16 +446,19 @@ defineExpose({
 .mobile-hotkeys__dictation-status[data-dictation-tone="warning"] { color: var(--warning); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="error"] { color: var(--error); }
 .mobile-hotkeys__dictation-status[data-dictation-phase="listening"] .mobile-hotkeys__dictation-phase { color: var(--accent); }
+.mobile-hotkeys__dictation-status[data-dictation-tone="success"] .mobile-hotkeys__dictation-phase { color: var(--success); }
+.mobile-hotkeys__dictation-status[data-dictation-tone="warning"] .mobile-hotkeys__dictation-phase { color: var(--warning); }
+.mobile-hotkeys__dictation-status[data-dictation-tone="error"] .mobile-hotkeys__dictation-phase { color: var(--error); }
 .mobile-hotkeys__dictation-phase { color: var(--fg-secondary); font-weight: 600; }
 .mobile-hotkeys__dictation-status .terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="success"] .terminal-dictation-preview { color: var(--success); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="error"] .terminal-dictation-preview { color: var(--error); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="warning"] .terminal-dictation-preview { color: var(--warning); }
 .mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-status {
-  height: 16px;
-  padding: 0 6px;
+  height: 30px;
+  padding: 6px 8px;
   font-size: 11px;
-  line-height: 12px;
+  line-height: 16px;
 }
 
 .mobile-hotkeys button { color: inherit; font: inherit; }
@@ -560,17 +569,56 @@ defineExpose({
   bottom: 0;
   left: 0;
   color: var(--fg-secondary);
-  font-size: var(--fs-100);
+  font-size: 10px;
   font-weight: 500;
-  line-height: var(--lh-100);
+  line-height: 11px;
   pointer-events: none;
   text-align: center;
   white-space: nowrap;
 }
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) { align-items: flex-start; padding-top: 5px; }
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) {
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 3px 2px 12px;
+  flex-direction: column;
+}
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button svg) {
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-action) {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--fg);
+  font: 600 11px/12px var(--font-ui);
+  text-align: center;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]),
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {
+  border-color: var(--accent);
+  background: var(--state-selected);
+  color: var(--accent);
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="transcribing"]) {
+  border-color: var(--warning);
+  background: var(--state-selected);
+  color: var(--warning);
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="error"]) {
+  border-color: var(--error);
+  background: var(--surface-2);
+  color: var(--error);
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button:disabled[data-mic-state="transcribing"]) {
+  background: var(--state-selected);
+  color: var(--warning);
 }
 .mobile-hotkeys__persistent-controls :deep(button),
 .mobile-hotkeys__persistent-accessory :deep(button) {

@@ -144,6 +144,7 @@ describe('terminal dictation bar lifecycle', () => {
     const toggle = findByTestId(root, 'inline-dictation-toggle');
     expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
     expect(toggle?.props['data-mic-state']).toBe('idle');
+    expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Dictate');
     expect(toggle?.children[0]?.type).toBe('svg');
     expect(toggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
       .toEqual([
@@ -159,6 +160,7 @@ describe('terminal dictation bar lifecycle', () => {
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
     expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
+    expect(findByTestId(root, 'inline-dictation-action-label')?.text).toBe('Stop');
     expect(listeningToggle?.children[0]?.children.filter((child) => child.type === 'path').map((path) => path.props.d))
       .toEqual(['M7 7h10v10H7z']);
     expect(listeningToggle?.children[0]?.children.find((child) => child.type === 'path')?.props.style)

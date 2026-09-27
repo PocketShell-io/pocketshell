@@ -191,6 +191,7 @@ describe('mobile fast-key behavior', () => {
       expect(findByTestId(mounted.root, 'inline-dictation-status')?.props).toMatchObject({
         role: 'status', 'aria-live': 'polite',
       });
+      expect(findByTestId(mounted.root, 'inline-dictation-preview')?.props['aria-live']).toBe('off');
       expect(findByTestId(mounted.root, 'inline-dictation-mode-selector')).toBeUndefined();
 
       click(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }));

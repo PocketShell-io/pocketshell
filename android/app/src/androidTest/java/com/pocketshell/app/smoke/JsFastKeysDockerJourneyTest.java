@@ -879,14 +879,19 @@ public final class JsFastKeysDockerJourneyTest {
         boolean transcribing = List.of("stopping", "cancelling", "inserting").contains(phase);
         String expectedAccessibleLabel = "listening".equals(phase) ? "Stop terminal dictation"
                 : "starting".equals(phase) ? "Cancel terminal dictation request"
-                : List.of("stopping", "cancelling").contains(phase) ? "Transcribing terminal speech"
+                : "cancelling".equals(phase) ? "Cancelling terminal dictation"
+                : "stopping".equals(phase) ? "Transcribing terminal speech"
                 : "inserting".equals(phase) ? "Inserting terminal speech"
                 : mic.getBoolean("disabled") ? "Terminal dictation unavailable" : "Dictate to terminal";
         String expectedMicState = "listening".equals(phase) ? "listening"
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
+        String expectedVisibleAction = "listening".equals(phase) ? "Stop"
+                : "starting".equals(phase) ? "Cancel" : transcribing ? "Wait" : "Dictate";
         assertEquals("persistent dictation mic names its terminal destination without sharing composer dictation: " + geometry,
                 "Terminal", mic.getString("visibleLabel"));
+        assertEquals("the inline terminal control shows its current action as text: " + geometry,
+                expectedVisibleAction, mic.getString("actionText"));
         JSONObject destination = geometry.getJSONObject("terminalDictationDestination");
         assertEquals("inline dictation destination stays visibly distinct from the Prompt launcher: " + geometry,
                 "Terminal", destination.getString("text"));
@@ -917,8 +922,21 @@ public final class JsFastKeysDockerJourneyTest {
                     geometry.getBoolean("inlineDictationStatusAboveKeybar")
                             && !geometry.getBoolean("inlineDictationStatusInsideSheetHeader")
                             && statusRow.getDouble("bottom") <= keybar.getDouble("top") + 0.5);
-            assertEquals("the Android dictation status is one readable 16dp line", 16,
-                    statusRow.getDouble("height"), 0.5);
+            assertTrue("the status line keeps its readable 32dp chip row", statusRow.getDouble("height") >= 31.5);
+            JSONObject statusMetrics = geometry.getJSONObject("inlineDictationStatusMetrics");
+            assertTrue("dictation status uses readable 11px text and a 16px line", statusMetrics.getDouble("fontSize") >= 11
+                    && statusMetrics.getDouble("lineHeight") >= 16);
+            assertTrue("dictation status keeps 6px vertical chip padding", statusMetrics.getDouble("paddingTop") >= 6
+                    && statusMetrics.getDouble("paddingBottom") >= 6);
+            assertTrue("dictation status chip fits the padded line", statusMetrics.getDouble("height") >= 29.5);
+            if ("listening".equals(phase)) {
+                assertTrue("Listening status names the phase and exposes a one-line partial preview: " + geometry,
+                        geometry.getString("inlineDictationStatusText").startsWith("Listening ·")
+                                && !geometry.getString("inlineDictationPreview").isEmpty());
+            } else if ("error".equals(tone)) {
+                assertTrue("terminal dictation errors are named in the status chip: " + geometry,
+                        geometry.getString("inlineDictationStatusText").startsWith("Error ·"));
+            }
         } else {
             assertEquals("idle default hint must not consume a status row", "idle", geometry.getString("inlineDictationPhase"));
         }
@@ -1481,7 +1499,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationBarNode=document.querySelector('[data-testid=inline-dictation-bar]');"
                 + "const inlineDictationMicNode=document.querySelector('[data-testid=inline-dictation-toggle]');"
                 + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),visibleLabel:"
-                + "inlineDictationMicNode.parentElement?.querySelector('[data-testid=inline-dictation-destination]')?.textContent.trim()??''}:null;"
+                + "inlineDictationMicNode.parentElement?.querySelector('[data-testid=inline-dictation-destination]')?.textContent.trim()??'',"
+                + "actionText:inlineDictationMicNode.querySelector('[data-testid=inline-dictation-action-label]')?.textContent.trim()??''}:null;"
                 + "const enterDivider=rect('[data-testid=mobile-hotkeys-enter-divider]');"
                 + "const inlineDictationStatusRow=rect('[data-testid=inline-dictation-status-row]');"
                 + "const dictationSheetHeader=rect('.mobile-hotkeys__sheet-header');"
@@ -1503,6 +1522,9 @@ public final class JsFastKeysDockerJourneyTest {
                 + "scrollable:keybarNode.scrollWidth>keybarNode.clientWidth+1}:null;"
                 + "const inlineDictationStatusNode=document.querySelector('[data-testid=inline-dictation-status]');"
                 + "const inlineDictationStatusStyle=inlineDictationStatusNode?getComputedStyle(inlineDictationStatusNode):null;"
+                + "const inlineDictationStatusMetrics=inlineDictationStatusNode&&inlineDictationStatusStyle?{height:inlineDictationStatusNode.getBoundingClientRect().height,"
+                + "fontSize:parseFloat(inlineDictationStatusStyle.fontSize),lineHeight:parseFloat(inlineDictationStatusStyle.lineHeight),"
+                + "paddingTop:parseFloat(inlineDictationStatusStyle.paddingTop),paddingBottom:parseFloat(inlineDictationStatusStyle.paddingBottom)}:null;"
                 + "const fitEvents=window.__ps2884ResizeFitEvents??[],ackEvents=window.__ps2884ResizeAckEvents??[];"
                 + "const fitCursor=window.__ps2884ResizeFitTraceCursor??0,ackCursor=window.__ps2884ResizeAckTraceCursor??0;"
                 + "const fitEventsSince=fitEvents.slice(fitCursor),ackEventsSince=ackEvents.slice(ackCursor);"
@@ -1564,6 +1586,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "inlineDictationTone:inlineDictationBarNode?.dataset.dictationTone??'',"
                 + "inlineDictationStatusText:inlineDictationStatusNode?.textContent.trim()??'',"
                 + "inlineDictationPreview:inlineDictationStatusNode?.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim()??'',"
+                + "inlineDictationStatusMetrics,"
                 + "inlineDictationStatusOneLine,"
                 + "inlineDictationStatusInsideBar:inlineDictationStatusRow&&inlineDictationBar?inlineDictationStatusRow.top>=inlineDictationBar.top-0.5"
                 + "&&inlineDictationStatusRow.left>=inlineDictationBar.left-0.5&&inlineDictationStatusRow.bottom<=inlineDictationBar.bottom+0.5"
@@ -1808,7 +1831,7 @@ public final class JsFastKeysDockerJourneyTest {
                 96, sheet.getDouble("height"), 0.5);
         JSONObject dock = geometry.getJSONObject("mobileHotkeys");
         assertEquals("the open terminal dock reserves the key row, optional status, and bounded catalog: " + geometry,
-                geometry.getBoolean("inlineDictationStatusVisible") ? 161 : 145,
+                geometry.getBoolean("inlineDictationStatusVisible") ? 177 : 145,
                 dock.getDouble("height"), 0.5);
         JSONObject terminalPanel = geometry.getJSONObject("terminalPanel");
         JSONObject terminalSlot = geometry.getJSONObject("terminalSlot");

@@ -32,6 +32,7 @@ extractor = extractor_path.read_text()
 checker = checker_path.read_text()
 journey = journey_path.read_text()
 mobile_hotkeys = mobile_hotkeys_path.read_text()
+terminal_dictation = mobile_hotkeys_path.with_name("TerminalDictationBar.vue").read_text()
 app = app_path.read_text()
 unit_test_manifest = (app_path.parent.parent / "scripts/js-unit-test-manifest.json").read_text()
 unit_test = (app_path.parent.parent / "tests/unit/mobileHotkeys.test.ts").read_text()
@@ -178,7 +179,7 @@ if ("min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(idle_viewport_hei
         or "API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid" not in extractor
         or "with_api35_expanded_keyboard_viewport(sample_journey()), False" not in extractor):
     raise AssertionError("artifact gate must reject a 172px viewport and enforce the accepted API35 144px/38x6 grid")
-if "the Android dictation status is one readable 16dp line" not in journey:
+if "the status line keeps its readable 32dp chip row" not in journey:
     raise AssertionError("Android journey must keep the status above persistent keys at the Kotlin-aligned height")
 if "gap: 0;" not in styles or "margin-top: 0;" not in styles:
     raise AssertionError("keyboard-up catalog must return reclaimed gap and remove dock overflow margin")
@@ -193,7 +194,7 @@ if ("prompt composer entry without its modal dictation target rejected" not in e
         or "Dictate prompt" not in extractor):
     raise AssertionError("artifact self-tests must enforce a reachable prompt dictation mode in the composer")
 if "dictation status shrinking the pre-dock viewport cap rejected" not in extractor:
-    raise AssertionError("artifact self-tests must reject the former 16px viewport shrink")
+    raise AssertionError("artifact self-tests must reject a dictation status that shrinks the accepted viewport cap")
 if "keeps active dictation status above the persistent controls on both catalog pages" not in unit_test_manifest:
     raise AssertionError("full JS unit gate manifest must include the active status row component test")
 if "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page" not in unit_test_manifest:
@@ -205,8 +206,9 @@ if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
     raise AssertionError("persistent arrows and Enter must keep the Kotlin divider without consuming a hit target")
 if ("mobile-hotkeys-launcher-label" not in mobile_hotkeys
         or "inline-dictation-destination" not in mobile_hotkeys
+        or "inline-dictation-action-label" not in terminal_dictation
         or ".terminal-dictation-button__label" in styles):
-    raise AssertionError("Prompt and terminal dictation destinations must be visible beside their distinct controls")
+    raise AssertionError("Prompt and terminal dictation actions and destinations must be visible and distinct")
 if ("More terminal keys" not in mobile_hotkeys
         or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
     raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment with accessible names")
@@ -214,8 +216,8 @@ if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
         ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
     raise AssertionError("Android catalog without visible dictation status must reserve its 145px compact dock")
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 161px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog with visible dictation status must reserve its 161px compact dock")
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 177px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog with visible dictation status must reserve its 177px compact dock")
 if "const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;" not in app:
     raise AssertionError("terminal viewport reservation must track the rendered 96px catalog height")
 if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys

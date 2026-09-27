@@ -91,10 +91,18 @@ const buttonDisabled = () => !props.enabled
 const buttonLabel = () => {
   if (state.value.phase === 'listening') return 'Stop terminal dictation';
   if (state.value.phase === 'starting') return 'Cancel terminal dictation request';
-  if (state.value.phase === 'stopping' || state.value.phase === 'cancelling') return 'Transcribing terminal speech';
+  if (state.value.phase === 'cancelling') return 'Cancelling terminal dictation';
+  if (state.value.phase === 'stopping') return 'Transcribing terminal speech';
   if (state.value.phase === 'inserting') return 'Inserting terminal speech';
   if (buttonDisabled()) return 'Terminal dictation unavailable';
   return 'Dictate to terminal';
+};
+
+const buttonAction = () => {
+  if (state.value.phase === 'starting') return 'Cancel';
+  if (state.value.phase === 'listening') return 'Stop';
+  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
+  return 'Dictate';
 };
 
 const buttonState = () => {
@@ -131,5 +139,8 @@ const buttonState = () => {
         <path d="M12 19v3M8 22h8" />
       </template>
     </svg>
+    <span class="terminal-dictation-action" data-testid="inline-dictation-action-label" aria-hidden="true">
+      {{ buttonAction() }}
+    </span>
   </button>
 </template>

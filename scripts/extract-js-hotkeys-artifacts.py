@@ -84,7 +84,7 @@ TIMING_FIELDS = (
 )
 
 MOBILE_HOTKEYS_BASE_HEIGHT_PX = 49
-INLINE_DICTATION_STATUS_ROW_HEIGHT_PX = 16
+INLINE_DICTATION_STATUS_ROW_HEIGHT_PX = 32
 CATALOG_SHEET_HEIGHT_PX = 96
 ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX = 144
 API35_ACCEPTED_TERMINAL_GRID = (38, 6)
@@ -221,6 +221,11 @@ def validate_docked_dictation_geometry(
         raise ExtractionFailure(f"{label} mic target is smaller than 48dp")
     if mic.get("visibleLabel", "") != "Terminal":
         raise ExtractionFailure(f"{label} microphone lacks the visible terminal dictation destination")
+    phase = item.get("inlineDictationPhase")
+    expected_action = ("Stop" if phase == "listening" else "Cancel" if phase == "starting"
+                       else "Wait" if phase in {"stopping", "cancelling", "inserting"} else "Dictate")
+    if mic.get("actionText") != expected_action:
+        raise ExtractionFailure(f"{label} inline terminal dictation action is not visibly named")
     destination = item.get("terminalDictationDestination")
     if (not isinstance(destination, dict) or destination.get("text") != "Terminal"
             or destination.get("fits") is not True
@@ -263,9 +268,23 @@ def validate_docked_dictation_geometry(
                 or item.get("inlineDictationStatusInsideSheetHeader") is not False
                 or not expected_placement
                 or not isinstance(status_row, dict)
-                or abs(status_row.get("height", 0) - INLINE_DICTATION_STATUS_ROW_HEIGHT_PX) > 0.5
+                or status_row.get("height", 0) < INLINE_DICTATION_STATUS_ROW_HEIGHT_PX - 0.5
                 or status_row.get("bottom", 10**9) > keybar.get("top", 0) + 0.5):
-            raise ExtractionFailure(f"{label} status is not a 16px one-line row above the persistent keys")
+            raise ExtractionFailure(f"{label} status is not a readable one-line row above the persistent keys")
+        status_metrics = item.get("inlineDictationStatusMetrics")
+        if (not isinstance(status_metrics, dict)
+                or status_metrics.get("fontSize", 0) < 11
+                or status_metrics.get("lineHeight", 0) < 16
+                or status_metrics.get("paddingTop", 0) < 6
+                or status_metrics.get("paddingBottom", 0) < 6
+                or status_metrics.get("height", 0) < 29.5):
+            raise ExtractionFailure(f"{label} status chip lacks readable text and vertical padding")
+        status_text = item.get("inlineDictationStatusText", "")
+        if item.get("inlineDictationTone") == "error" and not status_text.startswith("Error ·"):
+            raise ExtractionFailure(f"{label} terminal dictation error is not named in the status chip")
+        if phase == "listening" and (not status_text.startswith("Listening ·")
+                                      or not item.get("inlineDictationPreview")):
+            raise ExtractionFailure(f"{label} listening state lacks a visible partial preview")
     elif (item.get("inlineDictationPhase") != "idle" or item.get("inlineDictationTone") != "quiet"
           or item.get("inlineDictationStatusText") != ""):
         raise ExtractionFailure(f"{label} hides a meaningful dictation status")
@@ -1384,6 +1403,10 @@ def self_test() -> int:
          with_missing_dictation_mic(sample_journey()), False),
         ("misleading inline mic destination caption rejected",
          with_wrong_dictation_destination_caption(sample_journey()), False),
+        ("terminal mic without visible Dictate/Stop action rejected",
+         with_missing_dictation_action_text(sample_journey()), False),
+        ("compressed listening chip without Kotlin-sized type and padding rejected",
+         with_compressed_dictation_status_chip(sample_journey()), False),
         ("mic separated from the persistent control cluster rejected",
          with_far_right_dictation_mic(sample_journey()), False),
         ("missing Kotlin Enter divider rejected",
@@ -1650,7 +1673,7 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationMic": {
             "label": "Dictate to terminal", "top": 208, "bottom": 256, "left": 235, "right": 283,
             "width": 48, "height": 48, "insideViewport": True, "disabled": False, "micState": "idle",
-            "visibleLabel": "Terminal",
+            "visibleLabel": "Terminal", "actionText": "Dictate",
         },
         "terminalDictationDestination": {
             "text": "Terminal", "top": 224, "bottom": 240, "left": 287, "right": 327,
@@ -1816,12 +1839,12 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusAboveKeybar": True,
         "inlineDictationStatusInsideSheetHeader": False,
         "dictationSheetHeader": None,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
-        "terminalHotkeysDockHeightPx": 80,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
+        "terminalHotkeysDockHeightPx": 81,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
         "inlineDictationMic": {**base["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
-            "top": 235, "bottom": 283},
+            "actionText": "Stop", "top": 235, "bottom": 283},
     }
     final_pending = {
         **dictation_idle,
@@ -1833,11 +1856,11 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
-        "terminalHotkeysDockHeightPx": 80,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
+        "terminalHotkeysDockHeightPx": 81,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
-        "inlineDictationMic": {**base["inlineDictationMic"], "disabled": True, "micState": "transcribing",
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
+        "inlineDictationMic": {**base["inlineDictationMic"], "disabled": True, "micState": "transcribing", "actionText": "Wait",
             "top": 235, "bottom": 283},
     }
     final_inserted = {
@@ -1849,10 +1872,10 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
-        "terminalHotkeysDockHeightPx": 80,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
+        "terminalHotkeysDockHeightPx": 81,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
         "inlineDictationMic": {**base["inlineDictationMic"], "top": 235, "bottom": 283},
         "terminalViewportFocused": True,
         "activeElementInsideTerminal": True,
@@ -1876,24 +1899,28 @@ def sample_journey() -> dict[str, object]:
         "resizeAcks": 6,
         "resizeStatus": "38 × 6 accepted by SSH",
         "inlineDictationTone": "error",
-        "inlineDictationStatusText": "Dictation failed: network",
+        "inlineDictationStatusText": "Error · Dictation failed: network",
         "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 80}},
-        "terminalHotkeysDockHeightPx": 80,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
+        "terminalHotkeysDockHeightPx": 81,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 80},
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
         "inlineDictationMic": {**base["inlineDictationMic"], "top": 235, "bottom": 283},
     }
     for status_stage in (listening, final_pending, final_inserted, post_stop, error):
+        status_stage["inlineDictationStatusMetrics"] = {
+            "height": 30, "fontSize": 11, "lineHeight": 16,
+            "paddingTop": 6, "paddingBottom": 6,
+        }
         status_stage["terminalSlot"] = {
             "top": 64, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 219,
         }
         status_stage["mobileHotkeys"] = {
-            "top": 203, "bottom": 283, "left": 0, "right": 400, "width": 400, "height": 80,
+            "top": 203, "bottom": 284, "left": 0, "right": 400, "width": 400, "height": 81,
         }
         status_stage["navigationTargets"] = [
             {**target, "top": 235, "bottom": 283}
@@ -2733,6 +2760,26 @@ def with_wrong_dictation_destination_caption(journey: dict[str, object]) -> dict
     return copied
 
 
+def with_missing_dictation_action_text(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if isinstance(item.get("inlineDictationMic"), dict):
+            item["inlineDictationMic"]["actionText"] = ""
+    return copied
+
+
+def with_compressed_dictation_status_chip(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item.get("stage") == "dictation-listening-ime-open":
+            item["inlineDictationStatusRow"]["height"] = 16
+            item["inlineDictationStatusMetrics"] = {
+                "height": 16, "fontSize": 11, "lineHeight": 12,
+                "paddingTop": 0, "paddingBottom": 0,
+            }
+    return copied
+
+
 def with_far_right_dictation_mic(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
@@ -2823,7 +2870,7 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
     copied["geometryTrace"].append({
         **ctrl,
         "stage": "dictation-listening-ctrl-open-ime-open",
-        "mobileHotkeys": {"top": 234, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 161},
+        "mobileHotkeys": {"top": 234, "bottom": 411, "left": 0, "right": 400, "width": 400, "height": 177},
         "catalogSheet": {"top": 299, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 96},
         "catalogSheetModal": "false",
         "catalogSheetBelowTerminalViewport": True,
@@ -2833,23 +2880,25 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
         "catalogScrollMetrics": {"clientWidth": 384, "scrollWidth": 384, "scrollLeft": 0,
             "clientHeight": 48, "scrollHeight": 312, "scrollTop": 0, "axis": "vertical"},
         "terminalViewportDockCapPx": 144,
-        "terminalHotkeysDockHeightPx": 161,
-        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 161}},
-        "terminalSlot": {"top": 64, "bottom": 395, "left": 0, "right": 400, "width": 400, "height": 331},
-        "inlineDictationBar": {**ctrl["inlineDictationBar"], "top": 234, "bottom": 395, "height": 161},
+        "terminalHotkeysDockHeightPx": 177,
+        "fastKeysTray": {**ctrl["fastKeysTray"], "bounds": {"height": 177}},
+        "terminalSlot": {"top": 64, "bottom": 411, "left": 0, "right": 400, "width": 400, "height": 347},
+        "inlineDictationBar": {**ctrl["inlineDictationBar"], "top": 234, "bottom": 411, "height": 177},
         "dictationSheetHeader": {"top": 299, "bottom": 347, "left": 0, "right": 400, "width": 400, "height": 48},
         "inlineDictationPhase": "listening",
         "inlineDictationTone": "quiet",
         "inlineDictationStatusText": "Listening · echo test",
         "inlineDictationPreview": "echo test",
-        "inlineDictationStatusRow": {"top": 234, "bottom": 250, "left": 89, "right": 336, "width": 247, "height": 16},
+        "inlineDictationStatusRow": {"top": 234, "bottom": 266, "left": 89, "right": 336, "width": 247, "height": 32},
+        "inlineDictationStatusMetrics": {"height": 30, "fontSize": 11, "lineHeight": 16,
+            "paddingTop": 6, "paddingBottom": 6},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": False,
         "inlineDictationStatusInsideSheetHeader": True,
         "inlineDictationMic": {
-            **ctrl["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening",
+            **ctrl["inlineDictationMic"], "label": "Stop terminal dictation", "micState": "listening", "actionText": "Stop",
             "top": 250, "bottom": 298, "left": 235, "right": 283,
         },
     })
