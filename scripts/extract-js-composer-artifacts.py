@@ -115,6 +115,24 @@ def _has_48dp_square_bounds(bounds: object) -> bool:
             and abs((bottom - top) - height) < 0.5)
 
 
+def _timer_sits_beside_waveform(timer: object, waveform: object) -> bool:
+    if not isinstance(timer, dict) or not isinstance(waveform, dict):
+        return False
+    try:
+        timer_top = float(timer["top"])
+        timer_bottom = float(timer["bottom"])
+        timer_right = float(timer["right"])
+        waveform_top = float(waveform["top"])
+        waveform_bottom = float(waveform["bottom"])
+        waveform_left = float(waveform["left"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    values = (timer_top, timer_bottom, timer_right, waveform_top, waveform_bottom, waveform_left)
+    return (all(math.isfinite(value) for value in values)
+            and timer_top < waveform_bottom and timer_bottom > waveform_top
+            and timer_right < waveform_left)
+
+
 def _validate_launcher_tap_evidence(launcher_before: object, launcher_after: object,
                                    run_id: str, suffix: str) -> None:
     before_dom = launcher_before.get("dom") if isinstance(launcher_before, dict) else None
@@ -639,8 +657,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure(f"{geometry_name} does not identify the {state} composer state")
             if state.startswith("recording") and "Your draft stays in the composer until you tap Insert or Send" not in str(mode_geometry.get("statusText", "")):
                 raise ExtractionFailure(f"{state} screenshot has misleading dictation delivery instructions")
-            if state == "review" and "Your draft stays in the composer until you tap Insert or Send" not in str(mode_geometry.get("reviewText", "")):
-                raise ExtractionFailure("review screenshot has misleading dictation delivery instructions")
+            if state == "review" and "Transcript ready" not in str(mode_geometry.get("reviewText", "")):
+                raise ExtractionFailure("review screenshot does not identify the transcript as ready for editing")
             if state in ("recording-insert", "transcribing-send"):
                 acknowledged_writes = mode_geometry.get("acknowledgedWrites")
                 writes_before_action = mode_geometry.get("acknowledgedWritesBeforeAction")
@@ -686,12 +704,18 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         or not str(mode_geometry.get("recordingModeLabel", "")).strip()
                         or mode_geometry.get("composerStatusAccessible") is not True
                         or mode_geometry.get("cancelAccessible") is not True
-                        or mode_geometry.get("cancelText") != "Cancel"
-                        or mode_geometry.get("cancelAriaLabel") != "Cancel dictation and restore the original draft"):
+                        or mode_geometry.get("recordingControlsAccessible") is not True
+                        or mode_geometry.get("recordingControlsSeparate") is not True):
                     raise ExtractionFailure(f"{state} screenshot does not retain an accessible draft anchor beside the visible recording surface")
                 if state.startswith("recording"):
-                    if (mode_geometry.get("previewVisible") is not True
+                    if (mode_geometry.get("cancelText") != "Discard"
+                            or mode_geometry.get("cancelAriaLabel") != "Discard recording without transcribing"
+                            or mode_geometry.get("previewVisible") is not True
                             or mode_geometry.get("previewLive") is not True
+                            or mode_geometry.get("previewAccessible") is not True
+                            or mode_geometry.get("timerAccessible") is not True
+                            or mode_geometry.get("timerBesideWaveform") is not True
+                            or not _timer_sits_beside_waveform(mode_geometry.get("timer"), mode_geometry.get("waveform"))
                             or mode_geometry.get("stopText") != ""
                             or mode_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
                             or mode_geometry.get("stopVisible") is not True
@@ -701,10 +725,18 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                             or not str(mode_geometry.get("previewText", "")).strip()
                             or "composer-recording-preview" not in str(mode_geometry.get("draftDescribedBy", ""))):
                         raise ExtractionFailure("recording screenshot does not prove the icon-only, enabled 48dp Stop control and live preview")
-                elif mode_geometry.get("transcribingStatusAccessible") is not True:
-                    raise ExtractionFailure("transcribing screenshot does not expose its accessible live status")
-            elif state == "review" and mode_geometry.get("reviewVisible") is not True:
-                raise ExtractionFailure("review screenshot does not show the editable review surface")
+                elif (mode_geometry.get("cancelText") != "Cancel"
+                        or mode_geometry.get("cancelAriaLabel") != "Cancel dictation and restore the original draft"
+                        or mode_geometry.get("transcribingStatusAccessible") is not True):
+                    raise ExtractionFailure("transcribing screenshot does not expose Cancel and its accessible live status")
+            elif state == "review" and (
+                    mode_geometry.get("reviewVisible") is not True
+                    or mode_geometry.get("reviewEditable") is not True
+                    or mode_geometry.get("draftReadOnly") is not False
+                    or mode_geometry.get("draftEditingLocked") is not False
+                    or mode_geometry.get("draftPresentation") != "editor"
+                    or mode_geometry.get("expectedDraftMatches") is not True):
+                raise ExtractionFailure("review screenshot does not show the retained transcript in an editable draft")
             elif state in ("cancel", "background") and mode_geometry.get("recordingModeVisible") is not False:
                 raise ExtractionFailure(f"{state} screenshot still shows a recording surface")
             viewport = mode_geometry.get("visualViewport")
@@ -729,10 +761,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 required_rects.append("recordingMode")
             if expected_locked:
                 if mode_geometry.get("cancelAccessible") is not True:
-                    raise ExtractionFailure(f"{state} screenshot does not prove the accessible Cancel action")
+                    raise ExtractionFailure(f"{state} screenshot does not prove the accessible discard/cancel action")
                 if mode_geometry.get("dictationSendAccessible") is not True or mode_geometry.get("dictationSendEnabled") is not True:
                     raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Send during dictation")
-                required_rects.extend(("cancel", "dictationSend"))
+                required_rects.extend(("cancel", "dictationSend", "recordingActions"))
                 if state.startswith("recording"):
                     if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
                         raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Insert during recording")
@@ -745,7 +777,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 if mode_geometry.get("actionOrder") != expected_actions:
                     raise ExtractionFailure(f"{state} screenshot action order does not match the Kotlin composer")
             if state.startswith("recording"):
-                required_rects.extend(("timer", "preview", "stop"))
+                required_rects.extend(("timer", "waveform", "preview", "recordingActions", "stop"))
             elif state.startswith("transcribing"):
                 required_rects.append("recordingMode")
             for rect_name in required_rects:
@@ -786,6 +818,15 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     or restart_geometry.get("expectedDraftMatches") is not True
                     or restart_geometry.get("recordingModeVisible") is not True
                     or restart_geometry.get("previewVisible") is not True
+                    or restart_geometry.get("previewAccessible") is not True
+                    or restart_geometry.get("timerAccessible") is not True
+                    or restart_geometry.get("timerBesideWaveform") is not True
+                    or not _timer_sits_beside_waveform(restart_geometry.get("timer"), restart_geometry.get("waveform"))
+                    or restart_geometry.get("recordingControlsAccessible") is not True
+                    or restart_geometry.get("recordingControlsSeparate") is not True
+                    or restart_geometry.get("cancelText") != "Discard"
+                    or restart_geometry.get("cancelAriaLabel") != "Discard recording without transcribing"
+                    or restart_geometry.get("actionOrder") != "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
                     or restart_geometry.get("stopText") != ""
                     or restart_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
                     or restart_geometry.get("stopVisible") is not True
@@ -992,6 +1033,8 @@ def self_test() -> None:
     one_write_dictation_send = json.dumps(one_write_dictation_send_value).encode()
     def mode_geometry_payload(state: str) -> bytes:
         rect = {"top": 10.0, "bottom": 60.0, "left": 5.0, "right": 395.0}
+        timer_rect = {"top": 28.0, "bottom": 41.0, "left": 10.0, "right": 48.0}
+        waveform_rect = {"top": 18.0, "bottom": 50.0, "left": 60.0, "right": 380.0}
         recording = state.startswith("recording")
         transcribing = state.startswith("transcribing")
         anchored = recording or transcribing
@@ -1011,7 +1054,8 @@ def self_test() -> None:
             "expectedDraftMatches": True,
             "statusText": "Dictation cancelled. Your original draft was restored." if state == "cancel"
             else "Your draft stays in the composer until you tap Insert or Send." if recording else "",
-            "reviewText": "Review and edit your dictated text. Your draft stays in the composer until you tap Insert or Send." if state == "review" else "",
+            "reviewText": "Transcript ready. Edit the draft before choosing Insert or Send." if state == "review" else "",
+            "reviewEditable": state == "review",
             "acknowledgedWrites": 1 if state == "transcribing-send" else 0,
             "acknowledgedWritesBeforeAction": 1 if state == "transcribing-send" else 0,
             "draftPresentation": "focus-anchor" if anchored else "editor",
@@ -1020,13 +1064,19 @@ def self_test() -> None:
             "draftAriaLabel": "Dictation draft, read only while dictating" if anchored else "Prompt draft",
             "draftDescribedBy": "composer-recording-preview composer-status" if recording else "composer-status" if transcribing else "",
             "recordingModeVisible": anchored,
-            "recordingModeLabel": "Recording prompt" if anchored else "",
+            "recordingModeLabel": "Prompt dictation recording" if recording else "Transcribing prompt" if transcribing else "",
             "previewVisible": recording,
             "previewLive": recording,
+            "previewAccessible": recording,
             "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert" else "discard this dictated phrase" if recording else "",
+            "timerAccessible": recording,
+            "timerBesideWaveform": recording,
+            "recordingControlsAccessible": anchored,
+            "recordingControlsSeparate": anchored,
             "cancelAccessible": anchored,
-            "cancelText": "Cancel" if anchored else "",
-            "cancelAriaLabel": "Cancel dictation and restore the original draft" if anchored else "",
+            "cancelText": "Discard" if recording else "Cancel" if transcribing else "",
+            "cancelAriaLabel": "Discard recording without transcribing" if recording
+            else "Cancel dictation and restore the original draft" if transcribing else "",
             "stopText": "",
             "stopAccessibleName": STOP_ACCESSIBLE_NAME if recording else "",
             "stopVisible": recording,
@@ -1060,6 +1110,7 @@ def self_test() -> None:
             payload["recordingMode"] = rect
             payload["cancel"] = rect
             payload["dictationSend"] = rect
+            payload["recordingActions"] = rect
             payload["actionOrder"] = (
                 "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
                 if recording else "composer-recording-cancel,composer-dictation-send"
@@ -1069,7 +1120,7 @@ def self_test() -> None:
         if state in ("cancel", "background"):
             payload["send"] = rect
         if recording:
-            payload.update({"timer": rect, "preview": rect,
+            payload.update({"timer": timer_rect, "waveform": waveform_rect, "preview": rect,
                             "stop": {"top": 10.0, "bottom": 58.0, "left": 347.0, "right": 395.0,
                                      "width": 48.0, "height": 48.0}})
         if state == "review":
@@ -1164,10 +1215,28 @@ def self_test() -> None:
     wrong_stop_size_value = json.loads(mode_geometry_payload("recording"))
     wrong_stop_size_value["stop"]["width"] = 47.0
     wrong_stop_size_geometry = json.dumps(wrong_stop_size_value).encode()
-    discard_labeled_recording_action = json.loads(mode_geometry_payload("recording-insert"))
-    discard_labeled_recording_action["cancelText"] = "Discard"
-    discard_labeled_recording_action["cancelAriaLabel"] = "Discard dictation and restore the original draft"
-    discard_labeled_recording_action_geometry = json.dumps(discard_labeled_recording_action).encode()
+    cancel_labeled_recording_discard = json.loads(mode_geometry_payload("recording"))
+    cancel_labeled_recording_discard["cancelText"] = "Cancel"
+    cancel_labeled_recording_discard["cancelAriaLabel"] = "Cancel dictation and restore the original draft"
+    cancel_labeled_recording_discard_geometry = json.dumps(cancel_labeled_recording_discard).encode()
+    discard_labeled_transcribing_cancel = json.loads(mode_geometry_payload("transcribing"))
+    discard_labeled_transcribing_cancel["cancelText"] = "Discard"
+    discard_labeled_transcribing_cancel["cancelAriaLabel"] = "Discard recording without transcribing"
+    discard_labeled_transcribing_cancel_geometry = json.dumps(discard_labeled_transcribing_cancel).encode()
+    timer_below_waveform = json.loads(mode_geometry_payload("recording"))
+    timer_below_waveform["timerBesideWaveform"] = True
+    timer_below_waveform["timer"]["left"] = 80.0
+    timer_below_waveform["timer"]["right"] = 120.0
+    timer_below_waveform_geometry = json.dumps(timer_below_waveform).encode()
+    inaccessible_transcript = json.loads(mode_geometry_payload("recording"))
+    inaccessible_transcript["previewAccessible"] = False
+    inaccessible_transcript_geometry = json.dumps(inaccessible_transcript).encode()
+    nested_recording_actions = json.loads(mode_geometry_payload("recording"))
+    nested_recording_actions["recordingControlsSeparate"] = False
+    nested_recording_actions_geometry = json.dumps(nested_recording_actions).encode()
+    uneditable_review = json.loads(mode_geometry_payload("review"))
+    uneditable_review["reviewEditable"] = False
+    uneditable_review_geometry = json.dumps(uneditable_review).encode()
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
@@ -1261,6 +1330,7 @@ def self_test() -> None:
                    recording_geometry_bytes: bytes | None = None,
                    recording_insert_geometry_bytes: bytes | None = None,
                    transcribing_send_geometry_bytes: bytes | None = None,
+                   review_geometry_bytes: bytes | None = None,
                    inline_preview_bytes: bytes = png) -> list[str]:
         source = [
             ("composer-title.png", png),
@@ -1294,7 +1364,7 @@ def self_test() -> None:
             ("composer-transcribing-send.png", png),
             ("composer-transcribing-send-geometry.json", transcribing_send_geometry_bytes or mode_geometry_payload("transcribing-send")),
             ("composer-review.png", png),
-            ("composer-review-geometry.json", mode_geometry_payload("review")),
+            ("composer-review-geometry.json", review_geometry_bytes or mode_geometry_payload("review")),
             ("composer-recording-after-restart.png", png),
             ("composer-recording-after-restart-geometry.json", mode_geometry_payload("recording-after-restart")),
             ("composer-dictation-send.json", dictation_send_bytes),
@@ -1376,7 +1446,18 @@ def self_test() -> None:
          make_lines(recording_geometry_bytes=missing_stop_glyph_geometry)),
         ("recording Stop bounds are not 48dp square",
          make_lines(recording_geometry_bytes=wrong_stop_size_geometry)),
-        ("recording restore action is labeled Discard", make_lines(recording_insert_geometry_bytes=discard_labeled_recording_action_geometry)),
+        ("recording action is labeled Cancel instead of Discard",
+         make_lines(recording_geometry_bytes=cancel_labeled_recording_discard_geometry)),
+        ("transcribing Cancel is labeled Discard",
+         make_lines(transcribing_send_geometry_bytes=discard_labeled_transcribing_cancel_geometry)),
+        ("recording timer is stacked below its waveform",
+         make_lines(recording_geometry_bytes=timer_below_waveform_geometry)),
+        ("recording transcript lacks live accessible text",
+         make_lines(recording_geometry_bytes=inaccessible_transcript_geometry)),
+        ("recording controls are nested inside the status card",
+         make_lines(recording_geometry_bytes=nested_recording_actions_geometry)),
+        ("post-stop review is no longer editable",
+         make_lines(review_geometry_bytes=uneditable_review_geometry)),
         ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
         ("composer mic shows visible label text",
          make_lines(title_state_bytes=ambiguous_dictate_text)),

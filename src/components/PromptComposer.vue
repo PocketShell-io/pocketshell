@@ -504,24 +504,19 @@ function startPromptDictation() {
         :state="dictationPhase"
         :elapsed-label="elapsedLabel"
         :live-preview="dictationPreview"
-        :can-deliver="canDeliver"
-        :sending="sendingIntent !== null"
-        @pointerdown.capture="preserveDraftFocus"
-        @cancel="activeDictation && cancelDictation(activeDictation)"
-        @stop="activeDictation && stopDictation(activeDictation)"
-        @insert="deliver('insert')"
-        @send="deliver('submit')"
       />
       <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review">
-        Review and edit your dictated text. Your draft stays in the composer until you tap Insert or Send.
+        Transcript ready. Edit the draft before choosing Insert or Send.
       </p>
 
-      <p id="composer-status" class="composer-status" role="status" aria-live="polite" data-testid="composer-status"
+      <p id="composer-status" class="composer-status" :class="{ 'composer-status--dictation': dictationBusy }"
+        role="status" aria-live="polite" data-testid="composer-status"
         :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
         {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
       </p>
 
-      <div class="composer-actions" data-testid="composer-actions" @pointerdown.capture="preserveDraftFocus">
+      <div class="composer-actions" :class="{ 'composer-actions--dictation': dictationBusy }"
+        data-testid="composer-actions" @pointerdown.capture="preserveDraftFocus">
         <template v-if="dictationPhase === 'idle' || dictationPhase === 'review'">
           <button class="composer-discard" type="button" data-testid="composer-discard" :disabled="draft.length === 0 || sendingIntent !== null"
             @click="discardDraft">{{ discardArmed ? 'Discard?' : 'Discard' }}</button>
@@ -551,6 +546,37 @@ function startPromptDictation() {
             </svg>
           </button>
         </template>
+
+        <div v-else class="composer-recording-actions" data-testid="composer-recording-actions"
+          role="group" aria-label="Dictation controls">
+          <button class="composer-recording-action composer-recording-action--discard" type="button"
+            data-testid="composer-recording-cancel"
+            :aria-label="dictationPhase === 'recording' ? 'Discard recording without transcribing' : 'Cancel dictation and restore the original draft'"
+            :disabled="sendingIntent !== null"
+            @click="activeDictation && cancelDictation(activeDictation)">
+            {{ dictationPhase === 'recording' ? 'Discard' : 'Cancel' }}
+          </button>
+          <button v-if="dictationPhase === 'recording'" class="composer-recording-action composer-recording-action--insert"
+            type="button" data-testid="composer-insert" :disabled="!canDeliver || sendingIntent !== null"
+            @click="deliver('insert')">
+            Insert
+          </button>
+          <button v-if="dictationPhase === 'recording' || dictationPhase === 'transcribing'"
+            class="composer-recording-action composer-recording-action--send" type="button"
+            data-testid="composer-dictation-send" :disabled="!canDeliver || sendingIntent !== null"
+            @click="deliver('submit')">
+            {{ sendingIntent === 'submit' ? 'Sending…' : 'Send' }}
+          </button>
+          <button v-if="dictationPhase === 'recording'" class="composer-recording-action composer-recording-action--stop"
+            type="button" data-testid="composer-recording-stop"
+            aria-label="Stop dictation and keep the recognized text in the editable draft"
+            :disabled="sendingIntent !== null"
+            @click="activeDictation && stopDictation(activeDictation)">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
       </div>
     </section>
   </Teleport>
@@ -637,17 +663,68 @@ function startPromptDictation() {
 .composer-dictate--mic:disabled { opacity: var(--disabled-opacity); }
 .composer-panel--sheet .composer-status { min-height: 16px; }
 .composer-panel--sheet .composer-actions { min-height: 48px; gap: 6px; }
+.composer-panel--sheet .composer-actions--dictation { min-height: 48px; }
 .composer-panel--sheet .composer-discard,
 .composer-panel--sheet .composer-insert,
 .composer-panel--sheet .composer-shared-controls .send { min-height: 48px; }
+.composer-panel--sheet .composer-recording-action { min-height: 48px; }
 .composer-panel--sheet .composer-action-spacer { flex: 1 1 4px; }
 .composer-panel--sheet :is(button, textarea):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.composer-actions--dictation { gap: 6px; }
+.composer-recording-actions { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 6px; }
+.composer-recording-action {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 48px;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  padding: 0 var(--sp-3);
+  color: var(--fg);
+  font-family: var(--font-ui);
+  font-size: var(--fs-200);
+  font-weight: var(--fw-semibold);
+  cursor: pointer;
+}
+.composer-recording-action--discard { color: var(--fg-secondary); }
+.composer-recording-action--send {
+  border-color: var(--accent-dim);
+  background: var(--surface-2);
+  color: var(--accent);
+}
+.composer-recording-action--stop {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border-color: var(--accent);
+  border-radius: 50%;
+  background: var(--accent);
+  padding: 0;
+  color: var(--on-accent);
+}
+.composer-recording-action:disabled { opacity: var(--disabled-opacity); cursor: default; }
+.composer-recording-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.composer-recording-action:active:not(:disabled) { filter: brightness(1.12); }
 
 .composer-review {
   margin: 0;
   color: var(--fg-secondary);
   font-size: var(--fs-100);
   line-height: 1.4;
+}
+
+.composer-status--dictation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
 }
 
 .composer-draft--dictation-anchor {

@@ -248,9 +248,11 @@
     "tests/unit/composerDictationCancellation.test.ts": {
       "suite": "composer dictation cancellation",
       "tests": [
-        "labels the recording restore action Cancel and restores the original draft",
+        "labels the recording Discard action and restores the original draft",
+        "keeps Cancel distinct from Discard while transcription is finishing",
+        "keeps recording and transcribing preview regions present before speech arrives",
         "places the mobile Dictate prompt microphone in the composer action row",
-        "pins the production composer mic and recording action styles to the Kotlin hierarchy",
+        "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",
         "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",

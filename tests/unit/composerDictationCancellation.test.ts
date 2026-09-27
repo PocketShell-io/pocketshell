@@ -128,7 +128,7 @@ describe('composer dictation cancellation', () => {
     composerTeleportTarget = null;
   });
 
-  it('labels the recording restore action Cancel and restores the original draft', async () => {
+  it('labels the recording Discard action and restores the original draft', async () => {
     mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
       mocks.appStateListener = listener;
       return { remove: vi.fn(async () => {}) };
@@ -170,8 +170,8 @@ describe('composer dictation cancellation', () => {
     await flushPromises();
 
     const cancel = findByTestId(root, 'composer-recording-cancel');
-    expect(textContent(cancel!)).toBe('Cancel');
-    expect(cancel?.props['aria-label']).toBe('Cancel dictation and restore the original draft');
+    expect(textContent(cancel!)).toBe('Discard');
+    expect(cancel?.props['aria-label']).toBe('Discard recording without transcribing');
     expect(drafts.draftFor(targetKey)).toBe('original typed draft visible partial');
     expect(writePty).not.toHaveBeenCalled();
 
@@ -187,6 +187,102 @@ describe('composer dictation cancellation', () => {
     dictationEvent?.({ requestId: 'dictation-cancel-label-1', type: 'partial', text: 'late text' });
     await flushPromises();
     expect(drafts.draftFor(targetKey)).toBe('original typed draft');
+    app.unmount();
+  });
+
+  it('keeps Cancel distinct from Discard while transcription is finishing', async () => {
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const stop = vi.fn(async () => {});
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dictation-transcribing-cancel-1');
+      dictationEvent?.({ requestId: 'dictation-transcribing-cancel-1', type: 'started' });
+      return { requestId: 'dictation-transcribing-cancel-1', stop, cancel: vi.fn(async () => {}) };
+    });
+
+    const targetKey = 'host/transcribing-cancel-session';
+    const writePty = vi.fn(async () => ({ ok: true }));
+    const pinia = createPinia();
+    const root = node('root');
+    const app = renderer.createApp(PromptComposer, {
+      targetKey,
+      transportState: 'connected',
+      writePty,
+    });
+    app.use(pinia);
+    app.mount(root);
+    await flushPromises();
+
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft(targetKey, 'original draft');
+    await (findByTestId(root, 'composer-dictate')?.props.onClick as () => Promise<void>)();
+    dictationEvent?.({ requestId: 'dictation-transcribing-cancel-1', type: 'partial', text: 'partial words' });
+    await flushPromises();
+    await (findByTestId(root, 'composer-recording-stop')?.props.onClick as () => Promise<void>)();
+
+    const cancel = findByTestId(root, 'composer-recording-cancel');
+    expect(composerState(root)).toBe('transcribing');
+    expect(textContent(cancel!)).toBe('Cancel');
+    expect(cancel?.props['aria-label']).toBe('Cancel dictation and restore the original draft');
+    (cancel?.props.onClick as () => void)();
+    await flushPromises();
+
+    expect(composerState(root)).toBe('idle');
+    expect(drafts.draftFor(targetKey)).toBe('original draft');
+    expect(writePty).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('keeps recording and transcribing preview regions present before speech arrives', async () => {
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dictation-empty-preview-1');
+      dictationEvent?.({ requestId: 'dictation-empty-preview-1', type: 'started' });
+      return {
+        requestId: 'dictation-empty-preview-1',
+        stop: vi.fn(async () => {}),
+        cancel: vi.fn(async () => {}),
+      };
+    });
+
+    const root = node('root');
+    const app = renderer.createApp(PromptComposer, {
+      targetKey: 'host/empty-preview-session',
+      transportState: 'connected',
+      writePty: vi.fn(async () => ({ ok: true })),
+    });
+    app.use(createPinia());
+    app.mount(root);
+    await flushPromises();
+
+    await (findByTestId(root, 'composer-dictate')?.props.onClick as () => Promise<void>)();
+
+    const draft = findByTestId(root, 'prompt-draft');
+    const describedBy = String(draft?.props['aria-describedby'] ?? '').split(/\s+/);
+    const preview = findAll(root, (candidate) => candidate.props.id === 'composer-recording-preview')[0];
+    expect(composerState(root)).toBe('recording');
+    expect(describedBy).toContain('composer-recording-preview');
+    expect(preview).toBeDefined();
+    expect(preview?.props['aria-live']).toBe('polite');
+    expect(textContent(preview!)).toBe('Listening for speech…');
+
+    await (findByTestId(root, 'composer-recording-stop')?.props.onClick as () => Promise<void>)();
+    await flushPromises();
+    const transcribingPreview = findByTestId(root, 'composer-recording-preview');
+    expect(composerState(root)).toBe('transcribing');
+    expect(transcribingPreview?.props.id).toBe('composer-recording-preview');
+    expect(transcribingPreview?.props['aria-live']).toBe('polite');
+    expect(textContent(transcribingPreview!)).toBe('Waiting for transcript…');
+
     app.unmount();
   });
 
@@ -236,7 +332,7 @@ describe('composer dictation cancellation', () => {
     composerTeleportTarget = null;
   });
 
-  it('pins the production composer mic and recording action styles to the Kotlin hierarchy', () => {
+  it('pins the production composer mic and shared dictation action styles to the Kotlin hierarchy', () => {
     const composerStyles = styleSource(promptComposerSource, 'PromptComposer');
     const mic = cssRule(composerStyles, '.composer-dictate--mic');
     expect(mic).toContain('width: 48px');
@@ -246,19 +342,24 @@ describe('composer dictation cancellation', () => {
     expect(mic).toContain('border-radius: 50%');
     expect(mic).toContain('background: var(--surface-2)');
 
-    const recordingStyles = styleSource(composerRecordingModeSource, 'ComposerRecordingMode');
-    const send = cssRule(recordingStyles, '.recording-mode__button--send');
+    const send = cssRule(composerStyles, '.composer-recording-action--send');
     expect(send).toContain('border-color: var(--accent-dim)');
     expect(send).toContain('background: var(--surface-2)');
     expect(send).toContain('color: var(--accent)');
 
-    const stop = cssRule(recordingStyles, '.recording-mode__button--stop');
+    const stop = cssRule(composerStyles, '.composer-recording-action--stop');
     expect(stop).toContain('width: 48px');
     expect(stop).toContain('height: 48px');
     expect(stop).toContain('flex: 0 0 48px');
     expect(stop).toContain('border-radius: 50%');
     expect(stop).toContain('background: var(--accent)');
     expect(stop).toContain('color: var(--on-accent)');
+
+    const recordingStyles = styleSource(composerRecordingModeSource, 'ComposerRecordingMode');
+    expect(cssRule(recordingStyles, '.recording-mode__live-row')).toContain('display: flex');
+    expect(cssRule(recordingStyles, '.recording-mode__waveform')).toContain('flex: 1 1 auto');
+    expect(composerRecordingModeSource).toContain('v-for="bar in 30"');
+    expect(composerRecordingModeSource).not.toContain('data-testid="composer-recording-actions"');
   });
 
   it('cancels a pending start on background, restores the base draft, and rejects late partials', async () => {
@@ -499,18 +600,20 @@ describe('composer dictation cancellation', () => {
     expect(findAll(actions!, (child) => child.type === 'button')
       .map((child) => child.props['data-testid']))
       .toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop']);
+    expect(isDescendantOf(actions!, findByTestId(root, 'composer-actions')!)).toBe(true);
+    expect(isDescendantOf(actions!, findByTestId(root, 'composer-recording-mode')!)).toBe(false);
     const recordingSend = findByTestId(root, 'composer-dictation-send');
     const stopButton = findByTestId(root, 'composer-recording-stop');
     expect(recordingSend?.props.class)
-      .toBe('recording-mode__button recording-mode__button--send');
+      .toBe('composer-recording-action composer-recording-action--send');
     expect(stopButton?.props.class)
-      .toBe('recording-mode__button recording-mode__button--stop');
+      .toBe('composer-recording-action composer-recording-action--stop');
     expect(stopButton?.props['aria-label'])
       .toBe('Stop dictation and keep the recognized text in the editable draft');
     expect(stopButton?.children[0]?.type).toBe('svg');
-    expect(textContent(findByTestId(root, 'composer-recording-cancel')!)).toBe('Cancel');
+    expect(textContent(findByTestId(root, 'composer-recording-cancel')!)).toBe('Discard');
     expect(findByTestId(root, 'composer-recording-cancel')?.props['aria-label'])
-      .toBe('Cancel dictation and restore the original draft');
+      .toBe('Discard recording without transcribing');
 
     if (phase === 'transcribing') {
       const stopButton = findByTestId(root, 'composer-recording-stop');

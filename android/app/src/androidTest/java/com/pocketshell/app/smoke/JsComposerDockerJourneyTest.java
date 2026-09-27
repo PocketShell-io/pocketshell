@@ -1035,8 +1035,10 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('discard this dictated phrase')");
         String recordingPredicate = "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const style=draft&&getComputedStyle(draft);const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                + "const actions=document.querySelector('[data-testid=composer-recording-actions]');"
+                + "const cancel=actions?.querySelector('[data-testid=composer-recording-cancel]');"
                 + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
-                + "const stop=mode?.querySelector('[data-testid=composer-recording-stop]');"
+                + "const stop=actions?.querySelector('[data-testid=composer-recording-stop]');"
                 + "const stopStyle=stop&&getComputedStyle(stop);const stopRect=stop?.getBoundingClientRect();"
                 + "const stopGlyph=stop?.querySelector(\"svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']\");"
                 + "return draft?.classList.contains('composer-draft--dictation-anchor')===true"
@@ -1046,8 +1048,9 @@ public final class JsComposerDockerJourneyTest {
                 + " && draft?.getBoundingClientRect().width<=1 && draft?.getBoundingClientRect().height<=1"
                 + " && mode?.getClientRects().length>0 && preview?.textContent.includes('discard this dictated phrase')"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')"
-                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.textContent.trim()==='Cancel'"
-                + " && mode.querySelector('[data-testid=composer-recording-cancel]')?.getAttribute('aria-label')==='Cancel dictation and restore the original draft'"
+                + " && actions?.getAttribute('role')==='group'"
+                + " && cancel?.textContent.trim()==='Discard'"
+                + " && cancel?.getAttribute('aria-label')==='Discard recording without transcribing'"
                 + " && stop?.innerText.trim()===''"
                 + " && stop?.getAttribute('aria-label')==='Stop dictation and keep the recognized text in the editable draft'"
                 + " && !!stop&&stop.getClientRects().length>0&&stopStyle?.display!=='none'"
@@ -1065,9 +1068,17 @@ public final class JsComposerDockerJourneyTest {
             throw predicateFailure;
         }
         recordComposerModeState(runId, "recording", original + " discard this dictated phrase");
-        assertTrue("recording surface must identify its animation as capture state rather than microphone volume",
-                "true".equals(evalRaw("document.querySelector('[data-testid=composer-recording-mode]')?.textContent.includes('Recording prompt')"
-                        + " && document.querySelector('.recording-mode__waveform')?.getAttribute('aria-label').includes('not volume')")));
+        assertTrue("recording surface must pair the elapsed timer and capture-state waveform like the Kotlin composer",
+                "true".equals(evalRaw("(() => {const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                        + "const row=mode?.querySelector('.recording-mode__live-row');"
+                        + "const timer=row?.querySelector('[data-testid=composer-recording-timer]');"
+                        + "const waveform=row?.querySelector('.recording-mode__waveform');"
+                        + "const preview=mode?.querySelector('[data-testid=composer-recording-preview]');"
+                        + "const tr=(node)=>node?.getBoundingClientRect();const timeRect=tr(timer);const waveRect=tr(waveform);"
+                        + "return !!row&&!!timeRect&&!!waveRect&&!!preview&&timeRect.top<waveRect.bottom"
+                        + " && timeRect.bottom>waveRect.top&&waveRect.width>0"
+                        + " && waveform.getAttribute('aria-label').includes('not volume')"
+                        + " && !mode.querySelector('[data-testid=composer-recording-actions]');})()")));
         String timer = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
         assertTrue("recording mode must show a formatted elapsed timer", timer.matches("\\d{2}:\\d{2}"));
 
@@ -1235,7 +1246,7 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=composer-dictation-review]')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.readOnly === false"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.getAttribute('aria-readonly') === 'false'"
-                + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')", 10_000);
+                + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('Transcript ready')", 10_000);
         recordComposerModeState(runId, "review", dictationCommand);
         assertEquals("Stop must keep recognized text in the editable review draft", dictationCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
@@ -1453,11 +1464,14 @@ public final class JsComposerDockerJourneyTest {
                 + "const mode=document.querySelector('[data-testid=composer-recording-mode]');"
                 + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
                 + "const composerStatus=document.querySelector('[data-testid=composer-status]');"
+                + "const actionRow=composer?.querySelector('[data-testid=composer-recording-actions]');"
+                + "const timer=document.querySelector('[data-testid=composer-recording-timer]');"
+                + "const waveform=mode?.querySelector('.recording-mode__waveform');"
+                + "const timerRect=timer?.getBoundingClientRect();const waveformRect=waveform?.getBoundingClientRect();"
                 + "const cancelButton=document.querySelector('[data-testid=composer-recording-cancel]');"
                 + "const stopButton=document.querySelector('[data-testid=composer-recording-stop]');"
                 + "const insertButton=document.querySelector('[data-testid=composer-insert]');"
                 + "const dictationSendButton=document.querySelector('[data-testid=composer-dictation-send]');"
-                + "const actionRow=mode?.querySelector('[data-testid=composer-recording-actions]');"
                 + "const transcribingStatus=mode?.querySelector('[role=status][aria-live=polite]');"
                 + "const cancelText=(cancelButton?.textContent??'').trim();"
                 + "const cancelAriaLabel=cancelButton?.getAttribute('aria-label')??'';"
@@ -1485,9 +1499,14 @@ public final class JsComposerDockerJourneyTest {
                 + "recordingModeLabel:mode?.getAttribute('aria-label')??'',"
                 + "previewVisible:!!preview&&preview.getClientRects().length>0&&getComputedStyle(preview).display!=='none',"
                 + "previewLive:preview?.getAttribute('aria-live')==='polite',"
+                + "previewAccessible:!!preview&&preview.getAttribute('id')==='composer-recording-preview'"
+                + "&&preview.getAttribute('aria-live')==='polite'&&preview.getClientRects().length>0"
+                + "&&draft?.getAttribute('aria-describedby')?.includes('composer-recording-preview')===true,"
                 + "previewText:preview?.textContent.trim()??'',"
-                + "cancelText,cancelAriaLabel,cancelAccessible:!!cancelButton&&cancelText==='Cancel'"
-                + "&&cancelAriaLabel==='Cancel dictation and restore the original draft'&&cancelButton.getClientRects().length>0,"
+                + "cancelText,cancelAriaLabel,cancelAccessible:!!cancelButton"
+                + "&&(composer?.dataset.dictationState==='recording' ? cancelText==='Discard'"
+                + "&&cancelAriaLabel==='Discard recording without transcribing' : cancelText==='Cancel'"
+                + "&&cancelAriaLabel==='Cancel dictation and restore the original draft')&&cancelButton.getClientRects().length>0,"
                 + "stopText,stopAccessibleName,"
                 + "stopVisible:!!stopButton&&stopButton.getClientRects().length>0&&stopStyle?.display!=='none'"
                 + "&&stopStyle?.visibility!=='hidden'&&Number(stopStyle?.opacity??0)>0.95,"
@@ -1497,6 +1516,13 @@ public final class JsComposerDockerJourneyTest {
                 + "insertEnabled:!!insertButton&&!insertButton.disabled,"
                 + "dictationSendAccessible:!!dictationSendButton&&(dictationSendButton.textContent??'').includes('Send')"
                 + "&&dictationSendButton.getClientRects().length>0,dictationSendEnabled:!!dictationSendButton&&!dictationSendButton.disabled,"
+                + "timerAccessible:timer?.getAttribute('aria-label')==='Recording elapsed time',"
+                + "timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"
+                + "&&timerRect.top<waveformRect.bottom&&timerRect.right<waveformRect.left,"
+                + "recordingControlsAccessible:actionRow?.getAttribute('role')==='group'"
+                + "&&actionRow?.getAttribute('aria-label')==='Dictation controls',"
+                + "recordingControlsSeparate:!!actionRow&&!!mode&&!mode.contains(actionRow),"
+                + "reviewEditable:!!draft&&!draft.readOnly&&draft.getAttribute('aria-readonly')==='false',"
                 + "transcribingStatusAccessible:!!transcribingStatus&&transcribingStatus.getClientRects().length>0,"
                 + "actionOrder:actionRow?Array.from(actionRow.children).map(node=>node.getAttribute('data-testid')).join(','):'',"
                 + "composerStatusAccessible:composerStatus?.getAttribute('role')==='status'&&composerStatus?.getAttribute('aria-live')==='polite',"
@@ -1504,6 +1530,7 @@ public final class JsComposerDockerJourneyTest {
                 + "reviewVisible:!!document.querySelector('[data-testid=composer-dictation-review]')"
                 + "&&getComputedStyle(document.querySelector('[data-testid=composer-dictation-review]')).display!=='none',"
                 + "recordingMode:rect('[data-testid=composer-recording-mode]'),timer:rect('[data-testid=composer-recording-timer]'),"
+                + "waveform:rect('.recording-mode__waveform'),recordingActions:rect('[data-testid=composer-recording-actions]'),"
                 + "preview:rect('[data-testid=composer-recording-preview]'),review:rect('[data-testid=composer-dictation-review]'),"
                 + "status:rect('[data-testid=composer-status]'),actions:rect('[data-testid=composer-actions]'),"
                 + "cancel:rect('[data-testid=composer-recording-cancel]'),stop:rect('[data-testid=composer-recording-stop]'),"
@@ -1558,13 +1585,13 @@ public final class JsComposerDockerJourneyTest {
                             && measured.getBoolean("composerStatusAccessible")
                             && measured.getString("draftDescribedBy").contains("composer-status")
                             && measured.getBoolean("cancelAccessible"));
-            assertEquals("dictation restore control must be labeled Cancel visually", "Cancel", measured.getString("cancelText"));
-            assertEquals("dictation restore control must expose its Cancel restoration action",
-                    "Cancel dictation and restore the original draft", measured.getString("cancelAriaLabel"));
             if (state.startsWith("recording")) {
-                assertEquals("recording actions must follow the Kotlin composer row: Cancel, Insert, Send, Stop",
+                assertEquals("recording actions must follow the Kotlin composer row: Discard, Insert, Send, Stop",
                         "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop",
                         measured.getString("actionOrder"));
+                assertEquals("recording must use the Kotlin discard label", "Discard", measured.getString("cancelText"));
+                assertEquals("discard must explain that this throws away the recording",
+                        "Discard recording without transcribing", measured.getString("cancelAriaLabel"));
                 assertTrue("recording must keep explicit Insert and Send visible, enabled, and at least 48dp tall",
                         measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
                                 && measured.getJSONObject("insert").getDouble("height") >= 47.9
@@ -1584,6 +1611,10 @@ public final class JsComposerDockerJourneyTest {
                 assertEquals("transcribing actions must match Kotlin: Cancel and explicit Send",
                         "composer-recording-cancel,composer-dictation-send",
                         measured.getString("actionOrder"));
+                assertEquals("transcribing Cancel must be distinct from recording Discard", "Cancel",
+                        measured.getString("cancelText"));
+                assertEquals("transcribing Cancel must explain that it restores the original draft",
+                        "Cancel dictation and restore the original draft", measured.getString("cancelAriaLabel"));
                 assertTrue("transcribing state must expose accessible status and Send while hiding Insert",
                         measured.getBoolean("transcribingStatusAccessible")
                                 && !measured.getBoolean("insertAccessible")

@@ -3,213 +3,132 @@ defineProps<{
   state: 'starting' | 'recording' | 'transcribing';
   elapsedLabel: string;
   livePreview: string;
-  canDeliver: boolean;
-  sending: boolean;
-}>();
-
-const emit = defineEmits<{
-  cancel: [];
-  stop: [];
-  insert: [];
-  send: [];
 }>();
 </script>
 
 <template>
-  <section class="recording-mode" data-testid="composer-recording-mode" :data-recording-state="state"
+  <section class="recording-mode" role="group" data-testid="composer-recording-mode" :data-recording-state="state"
     :aria-label="state === 'recording' ? 'Prompt dictation recording' : state === 'transcribing' ? 'Transcribing prompt' : 'Starting prompt dictation'">
-    <div class="recording-mode__header">
-      <span class="recording-mode__indicator" :class="`recording-mode__indicator--${state}`" aria-hidden="true"></span>
-      <strong v-if="state === 'starting'">Requesting microphone access…</strong>
-      <strong v-else-if="state === 'recording'">Recording prompt</strong>
-      <strong v-else>Transcribing…</strong>
-      <time v-if="state === 'recording'" data-testid="composer-recording-timer" aria-label="Recording elapsed time">
+    <div v-if="state === 'recording'" class="recording-mode__live-row">
+      <time data-testid="composer-recording-timer" aria-label="Recording elapsed time">
         {{ elapsedLabel }}
       </time>
+      <div class="recording-mode__waveform" role="img"
+        aria-label="Speech capture is active. The animated bars show recording state, not volume.">
+        <span v-for="bar in 30" :key="bar" :style="{ '--bar': bar - 1 }"></span>
+      </div>
     </div>
 
-    <div v-if="state === 'recording'" class="recording-mode__waveform" role="img"
-      aria-label="Speech capture is active. The animated bars show recording state, not volume.">
-      <span v-for="bar in 25" :key="bar" :style="{ '--bar': bar - 1 }"></span>
-    </div>
-    <div v-else-if="state === 'transcribing'" class="recording-mode__progress" role="status" aria-live="polite">
+    <div v-else class="recording-mode__progress" role="status" aria-live="polite">
       <span class="recording-mode__spinner" aria-hidden="true"></span>
-      <span>Preparing your draft</span>
+      <span>{{ state === 'starting' ? 'Requesting microphone access…' : 'Transcribing…' }}</span>
     </div>
     <p v-if="state === 'recording' || state === 'transcribing'" id="composer-recording-preview"
       class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
-      {{ livePreview || 'Speak to build your draft.' }}
+      {{ livePreview.trim() ? livePreview : state === 'recording' ? 'Listening for speech…' : 'Waiting for transcript…' }}
     </p>
-
-    <div class="recording-mode__actions" data-testid="composer-recording-actions">
-      <button class="recording-mode__button recording-mode__button--cancel" type="button"
-        data-testid="composer-recording-cancel"
-        aria-label="Cancel dictation and restore the original draft"
-        :disabled="sending" @click="emit('cancel')">
-        Cancel
-      </button>
-      <button v-if="state === 'recording'" class="recording-mode__button recording-mode__button--insert" type="button"
-        data-testid="composer-insert" :disabled="!canDeliver || sending" @click="emit('insert')">
-        Insert
-      </button>
-      <button v-if="state === 'recording' || state === 'transcribing'"
-        class="recording-mode__button recording-mode__button--send" type="button"
-        data-testid="composer-dictation-send" :disabled="!canDeliver || sending" @click="emit('send')">
-        {{ sending ? 'Sending…' : 'Send' }}
-      </button>
-      <button v-if="state === 'recording'" class="recording-mode__button recording-mode__button--stop"
-        type="button" data-testid="composer-recording-stop"
-        aria-label="Stop dictation and keep the recognized text in the editable draft"
-        :disabled="sending" @click="emit('stop')">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-          <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
-        </svg>
-      </button>
-    </div>
   </section>
 </template>
 
 <style scoped>
 .recording-mode {
   display: grid;
-  gap: 8px;
+  gap: var(--sp-2);
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface-2);
-  padding: 10px;
+  padding: var(--sp-3);
 }
 
-.recording-mode__header {
+.recording-mode__live-row {
   display: flex;
   min-width: 0;
-  min-height: 22px;
+  min-height: 32px;
   align-items: center;
-  gap: 8px;
-  color: var(--fg);
-  font-size: var(--fs-200);
+  gap: var(--sp-3);
 }
 
-.recording-mode__header strong { min-width: 0; font-weight: 600; }
-.recording-mode__header time { margin-left: auto; }
-.recording-mode__header time {
+.recording-mode__live-row time {
+  flex: 0 0 auto;
   color: var(--accent);
   font: 600 var(--fs-300)/1 var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
-.recording-mode__indicator {
-  width: 9px;
-  height: 9px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--fg-muted);
-}
-.recording-mode__indicator--recording {
-  background: var(--error);
-  box-shadow: 0 0 0 0 color-mix(in srgb, var(--error) 45%, transparent);
-  animation: recording-pulse 1.5s ease-out infinite;
-}
-.recording-mode__indicator--transcribing { background: var(--accent); }
 
 .recording-mode__waveform {
   display: flex;
-  height: 27px;
+  min-width: 0;
+  height: 32px;
+  flex: 1 1 auto;
   align-items: center;
   justify-content: space-between;
   overflow: hidden;
-  border-radius: var(--r-sm);
-  background: var(--bg);
-  padding: 0 8px;
+  padding-inline: var(--sp-1);
 }
 .recording-mode__waveform span {
   width: 3px;
-  height: 22%;
+  height: 4px;
   flex: 0 0 auto;
   border-radius: 2px;
   background: var(--accent);
-  opacity: 0.72;
   transform-origin: center;
-  animation: recording-wave 900ms ease-in-out infinite alternate;
-  animation-delay: calc(var(--bar) * -53ms);
+  animation: recording-wave 1.4s linear infinite;
+  animation-delay: calc(var(--bar) * -47ms);
 }
-.recording-mode__waveform span:nth-child(4n + 1) { --peak: 1.4; }
-.recording-mode__waveform span:nth-child(4n + 2) { --peak: 2.4; }
-.recording-mode__waveform span:nth-child(4n + 3) { --peak: 3.4; }
-.recording-mode__waveform span:nth-child(4n) { --peak: 1.9; }
+.recording-mode__waveform span:nth-child(15n + 1) { --peak: 6; }
+.recording-mode__waveform span:nth-child(15n + 2) { --peak: 8; }
+.recording-mode__waveform span:nth-child(15n + 3) { --peak: 11; }
+.recording-mode__waveform span:nth-child(15n + 4) { --peak: 14; }
+.recording-mode__waveform span:nth-child(15n + 5) { --peak: 18; }
+.recording-mode__waveform span:nth-child(15n + 6) { --peak: 21; }
+.recording-mode__waveform span:nth-child(15n + 7) { --peak: 24; }
+.recording-mode__waveform span:nth-child(15n + 8) { --peak: 22; }
+.recording-mode__waveform span:nth-child(15n + 9) { --peak: 18; }
+.recording-mode__waveform span:nth-child(15n + 10) { --peak: 14; }
+.recording-mode__waveform span:nth-child(15n + 11) { --peak: 10; }
+.recording-mode__waveform span:nth-child(15n + 12) { --peak: 7; }
+.recording-mode__waveform span:nth-child(15n + 13) { --peak: 5; }
+.recording-mode__waveform span:nth-child(15n + 14) { --peak: 4; }
+.recording-mode__waveform span:nth-child(15n) { --peak: 3; }
 
 .recording-mode__progress {
   display: flex;
-  min-height: 27px;
+  min-height: 32px;
   align-items: center;
-  gap: 9px;
+  gap: var(--sp-2);
   color: var(--fg-secondary);
-  font-size: var(--fs-100);
+  font-size: var(--fs-200);
 }
 .recording-mode__spinner {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
   border: 2px solid var(--border-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: recording-spin 850ms linear infinite;
+  animation: recording-spin 900ms linear infinite;
 }
 
 .recording-mode__preview {
   display: -webkit-box;
-  min-height: 18px;
   overflow: hidden;
   margin: 0;
-  color: var(--fg-secondary);
-  font: 12px/1.45 var(--font-mono);
+  color: var(--fg);
+  font: var(--fs-200)/1.45 var(--font-ui);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   overflow-wrap: anywhere;
 }
 
-.recording-mode__actions { display: flex; gap: 6px; }
-.recording-mode__button {
-  min-width: 0;
-  min-height: 48px;
-  flex: 1 1 0;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--bg);
-  padding: 0 8px;
-  color: var(--fg);
-  font-size: var(--fs-100);
-  font-weight: 600;
-}
-.recording-mode__button--cancel { color: var(--fg-secondary); }
-.recording-mode__button--stop {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  border-color: var(--accent);
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--on-accent);
-}
-.recording-mode__button--send {
-  border-color: var(--accent-dim);
-  background: var(--surface-2);
-  color: var(--accent);
-}
-.recording-mode__button:disabled { opacity: var(--disabled-opacity); }
-.recording-mode__button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.recording-mode__button:active:not(:disabled) { filter: brightness(1.12); }
-
 @keyframes recording-wave {
-  from { transform: scaleY(0.35); }
-  to { transform: scaleY(var(--peak, 2)); }
-}
-@keyframes recording-pulse {
-  70% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--error) 0%, transparent); }
-  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--error) 0%, transparent); }
+  0%, 100% { height: 4px; }
+  50% { height: calc(var(--peak, 8) * 1px); }
 }
 @keyframes recording-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
-  .recording-mode__indicator--recording, .recording-mode__waveform span, .recording-mode__spinner { animation: none; }
-  .recording-mode__waveform span { height: 45%; }
+  .recording-mode__waveform span, .recording-mode__spinner { animation: none; }
+  .recording-mode__waveform span { height: 8px; }
 }
 </style>

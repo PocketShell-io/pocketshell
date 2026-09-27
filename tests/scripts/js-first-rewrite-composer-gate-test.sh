@@ -99,6 +99,47 @@ def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
 require_icon_only_stop_contract(journey, extractor)
 
 
+def require_kotlin_dictation_contract(source: str, extractor_source: str) -> None:
+    journey_evidence = (
+        "actions?.getAttribute('role')==='group'",
+        "cancel?.textContent.trim()==='Discard'",
+        "cancel?.getAttribute('aria-label')==='Discard recording without transcribing'",
+        '"timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"',
+        '"recordingControlsAccessible:actionRow?.getAttribute(\'role\')===\'group\'"',
+        '"recordingControlsSeparate:!!actionRow&&!!mode&&!mode.contains(actionRow),',
+        '"previewAccessible:!!preview&&preview.getAttribute(\'id\')===\'composer-recording-preview\'"',
+        '"reviewEditable:!!draft&&!draft.readOnly&&draft.getAttribute(\'aria-readonly\')===\'false\',',
+        "textContent.includes('Transcript ready')",
+        '"recording actions must follow the Kotlin composer row: Discard, Insert, Send, Stop"',
+        '"transcribing Cancel must be distinct from recording Discard"',
+    )
+    for needle in journey_evidence:
+        if needle not in source:
+            raise AssertionError(f"composer journey is missing a Kotlin dictation contract assertion: {needle}")
+
+    extractor_evidence = (
+        'mode_geometry.get("cancelText") != "Discard"',
+        'mode_geometry.get("cancelText") != "Cancel"',
+        'mode_geometry.get("timerBesideWaveform") is not True',
+        '_timer_sits_beside_waveform(mode_geometry.get("timer"), mode_geometry.get("waveform"))',
+        'mode_geometry.get("previewAccessible") is not True',
+        'mode_geometry.get("recordingControlsSeparate") is not True',
+        'mode_geometry.get("reviewEditable") is not True',
+        '"recording timer is stacked below its waveform"',
+        '"recording transcript lacks live accessible text"',
+        '"recording controls are nested inside the status card"',
+        '"post-stop review is no longer editable"',
+    )
+    for needle in extractor_evidence:
+        if needle not in extractor_source:
+            raise AssertionError(f"composer artifact extractor is missing a Kotlin dictation criterion: {needle}")
+
+    subprocess.run([sys.executable, str(extractor_path), "--self-test"], check=True)
+
+
+require_kotlin_dictation_contract(journey, extractor)
+
+
 def require_contract(source: str, packaged_script: str) -> None:
     required = (
         ("isolated fixture", "scripts/agents-pool.sh up 2245"),
