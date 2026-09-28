@@ -138,7 +138,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("Compose must open a modal with a reachable prompt dictation action: " + promptComposerEntry,
                 "dialog".equals(promptComposerEntry.optString("role"))
                         && "true".equals(promptComposerEntry.optString("modal"))
-                        && "Dictate prompt".equals(promptComposerEntry.optString("micLabel"))
+                        && "Dictate prompt draft".equals(promptComposerEntry.optString("micLabel"))
                         && promptComposerEntry.optBoolean("micVisible")
                         && promptComposerEntry.optDouble("micWidth") >= 47.9
                         && promptComposerEntry.optDouble("micHeight") >= 47.9
@@ -171,7 +171,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertUnchangedTerminalGrid("composer-to-keys handoff with IME open", composerKeyboardGrid,
                 runtimeGrid(composerKeys));
         assertHotkeyBarReachable(composerKeys);
-        assertDockIconOnlyPresentation(composerKeys);
+        assertDockDestinationLabels(composerKeys);
         captureScreenshot("fastkeys-composer-keys-ime-open.png");
         tapDomCenter("[data-testid=prompt-composer-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
@@ -621,9 +621,9 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("dictation previews must stay local to the dock", writesBeforeListening, terminalInputAcknowledgements());
         assertDictationStableStage("showing a dictation partial", idle, listening, stableGrid, stableResizeAcks);
         JSONObject listeningMic = listening.getJSONObject("inlineDictationMic");
-        assertEquals("listening exposes an accessible Stop action", "Stop terminal dictation",
+        assertEquals("listening exposes an accessible Stop action", "Stop dictating at terminal cursor",
                 listeningMic.getString("label"));
-        assertEquals("listening mic title matches its accessible action", "Stop terminal dictation",
+        assertEquals("listening mic title matches its accessible action", "Stop dictating at terminal cursor",
                 listeningMic.getString("title"));
         assertTrue("listening keeps a visible mic/Stop icon in its reachable target", listeningMic.getBoolean("iconVisible"));
         awaitRenderedFrame();
@@ -977,12 +977,12 @@ public final class JsFastKeysDockerJourneyTest {
         String phase = geometry.getString("inlineDictationPhase");
         String tone = geometry.getString("inlineDictationTone");
         boolean transcribing = List.of("stopping", "cancelling", "inserting").contains(phase);
-        String expectedAccessibleLabel = "listening".equals(phase) ? "Stop terminal dictation"
-                : "starting".equals(phase) ? "Cancel terminal dictation request"
+        String expectedAccessibleLabel = "listening".equals(phase) ? "Stop dictating at terminal cursor"
+                : "starting".equals(phase) ? "Cancel terminal cursor dictation request"
                 : "cancelling".equals(phase) ? "Cancelling terminal dictation"
-                : "stopping".equals(phase) ? "Transcribing terminal speech"
-                : "inserting".equals(phase) ? "Inserting terminal speech"
-                : mic.getBoolean("disabled") ? "Terminal dictation unavailable" : "Dictate to terminal";
+                : "stopping".equals(phase) ? "Transcribing speech for terminal cursor"
+                : "inserting".equals(phase) ? "Inserting speech at terminal cursor"
+                : mic.getBoolean("disabled") ? "Terminal cursor dictation unavailable" : "Dictate at terminal cursor";
         String expectedMicState = "listening".equals(phase) ? "listening"
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
@@ -1854,13 +1854,15 @@ public final class JsFastKeysDockerJourneyTest {
                         && composeLauncher.getDouble("visibleHeightInKeybar") >= 47.9
                         && composeLauncher.getBoolean("insideViewport") && composeLauncher.getBoolean("hitTarget")
                         && !composeLauncher.getBoolean("disabled")
-                        && "Open prompt composer".equals(composeLauncher.getString("label")));
+                        && "Open prompt composer to type or dictate a prompt".equals(composeLauncher.getString("label")));
         JSONObject promptIconBounds = composeLauncher.optJSONObject("iconBounds");
         assertNotNull("Prompt icon must expose its computed SVG bounds", promptIconBounds);
-        assertEquals("Compose launcher exposes a clear accessible name", "Open prompt composer",
+        assertEquals("Compose launcher exposes a clear accessible name", "Open prompt composer to type or dictate a prompt",
                 composeLauncher.getString("label"));
-        assertEquals("Compose launcher title matches its accessible name", "Open prompt composer",
+        assertEquals("Compose launcher title matches its accessible name", "Open prompt composer to type or dictate a prompt",
                 composeLauncher.getString("title"));
+        assertEquals("Compose launcher visibly identifies its destination", "Prompt",
+                composeLauncher.getString("visibleText"));
         assertTrue("Compose icon must be visible, 20px, and inside its 48dp launcher: " + composeLauncher,
                 composeLauncher.getBoolean("iconVisible")
                         && "20px".equals(composeLauncher.getString("iconComputedWidth"))
@@ -1911,11 +1913,11 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
     }
 
-    private void assertDockIconOnlyPresentation(JSONObject geometry) throws Exception {
+    private void assertDockDestinationLabels(JSONObject geometry) throws Exception {
         JSONArray controls = geometry.getJSONArray("stableDockControls");
         assertEquals("the mobile dock keeps Compose, arrows, Enter, More keys, and Mic in Kotlin order", 6, controls.length());
-        List<String> expected = List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
-                "Close terminal keys", "Dictate to terminal");
+        List<String> expected = List.of("Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter",
+                "Close terminal keys", "Dictate at terminal cursor");
         for (int index = 0; index < controls.length(); index += 1) {
             JSONObject control = controls.getJSONObject(index);
             assertEquals("dock control accessibility name follows its slot", expected.get(index), control.getString("label"));
@@ -1924,19 +1926,22 @@ public final class JsFastKeysDockerJourneyTest {
                             && Math.abs(control.getDouble("height") - 48.0) < 0.5
                             && control.getBoolean("insideViewport") && control.getBoolean("hitTarget"));
         }
+        assertEquals("Prompt launcher keeps a short visible destination label", "Prompt",
+                controls.getJSONObject(0).getString("visibleText"));
+        assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(4).getString("visibleText"));
+        assertEquals("terminal dictation destination stays visible", "Dictate",
+                controls.getJSONObject(5).getString("visibleText"));
         for (int index : List.of(0, 4, 5)) {
-            JSONObject iconControl = controls.getJSONObject(index);
-            assertEquals("dictation destinations use icon-only toolbar targets", "",
-                    iconControl.getString("visibleText"));
-            assertEquals("Compose, keys, and mic retain one visual icon", 1, iconControl.getInt("iconCount"));
+            assertEquals("Compose, keys, and mic retain one visual icon", 1,
+                    controls.getJSONObject(index).getInt("iconCount"));
         }
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
-        assertEquals("Mic accessible action remains stable in the idle phase", "Dictate to terminal", mic.getString("label"));
-        assertEquals("terminal mic keeps its accessible title", "Dictate to terminal", mic.getString("title"));
-        assertEquals("terminal mic has no visible text inside its 48dp target", "", mic.getString("visibleText"));
+        assertEquals("Mic accessible action names its destination", "Dictate at terminal cursor", mic.getString("label"));
+        assertEquals("terminal mic keeps its accessible title", "Dictate at terminal cursor", mic.getString("title"));
+        assertEquals("terminal mic visibly names its destination", "Dictate", mic.getString("visibleText"));
         assertEquals("terminal mic does not add a visible caption beside its icon", new JSONArray(),
                 mic.getJSONArray("destinationLabels"));
-        assertTrue("terminal mic has no caption node or bounds", mic.isNull("destinationLabelBounds"));
+        assertTrue("terminal mic does not add a duplicate caption beside its icon", mic.isNull("destinationLabelBounds"));
         assertEquals("the idle mic remains the microphone icon", "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
                 mic.getJSONArray("iconPaths").toString());
     }
@@ -1982,9 +1987,9 @@ public final class JsFastKeysDockerJourneyTest {
                 !result.getBoolean("scrollable") && result.getDouble("maxScrollLeft") <= 1);
         JSONArray targets = result.getJSONArray("targets");
         assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
-        assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer"));
+        assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer to type or dictate a prompt"));
         assertEquals("narrow dock exposes the Kotlin-parity accessible control order",
-                List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate to terminal"),
+                List.of("Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor"),
                 narrowToolbarLabels(targets));
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
@@ -2002,7 +2007,7 @@ public final class JsFastKeysDockerJourneyTest {
                 finalMic.getDouble("width") >= 47.9 && finalMic.getDouble("height") >= 47.9
                         && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget")
                         && finalMic.getBoolean("iconVisible")
-                        && "Dictate to terminal".equals(finalMic.getString("label"))
+                        && "Dictate at terminal cursor".equals(finalMic.getString("label"))
                         && finalMic.getString("label").equals(finalMic.getString("title")));
         int writesAfter = hotkeyWrites().length();
         assertEquals("testing the narrow toolbar must not write bytes to the PTY", writesBefore, writesAfter);

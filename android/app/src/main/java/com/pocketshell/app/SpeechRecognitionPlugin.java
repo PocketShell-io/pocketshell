@@ -143,6 +143,8 @@ public final class SpeechRecognitionPlugin extends Plugin {
                     emit("result", eventRequestId, text, null);
                     emit("stopped", eventRequestId, null, null);
                 }
+            } else if ("error".equals(type)) {
+                emit("error", eventRequestId, null, text == null ? "TEST_RECOGNITION_ERROR" : text);
             } else if ("partial".equals(type) || "processing".equals(type) || "result".equals(type)
                     || "ready".equals(type) || "listening".equals(type)) {
                 emit(type, eventRequestId, text, null);

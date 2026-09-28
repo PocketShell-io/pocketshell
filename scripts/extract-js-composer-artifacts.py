@@ -58,6 +58,10 @@ REQUIRED_NAMES = {
 }
 OPTIONAL_NAMES = {
     "composer-recording-before-fix.png",
+    "composer-review-error.png",
+    "composer-review-error-geometry.json",
+    "composer-review-empty.png",
+    "composer-review-empty-geometry.json",
     "composer-mode-ime-failure.png",
     "composer-mode-ime-failure.json",
     "composer-focus-failure.png",
@@ -77,6 +81,8 @@ FAILURE_SCREENSHOTS = {
     "composer-background.png",
     "composer-transcribing.png",
     "composer-review.png",
+    "composer-review-error.png",
+    "composer-review-empty.png",
     "composer-recording-before-fix.png",
     "composer-focus-failure.png",
     "composer-mode-ime-failure.png",
@@ -320,25 +326,25 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or route_state.get("sshPhase") != "live" or route_state.get("keyboardVisible") is not False
                 or route_state.get("composerPresent") is not False
                 or route_state.get("launcherVisible") is not True or route_state.get("launcherEnabled") is not True
-                or route_state.get("promptAccessibleName") != "Open prompt composer"
-                or route_state.get("expectedPromptAccessibleName") != "Open prompt composer"
-                or route_state.get("promptTitle") != "Open prompt composer"
-                or route_state.get("promptVisibleText") != ""
-                or route_state.get("expectedPromptVisibleText") != ""
+                or route_state.get("promptAccessibleName") != "Open prompt composer to type or dictate a prompt"
+                or route_state.get("expectedPromptAccessibleName") != "Open prompt composer to type or dictate a prompt"
+                or route_state.get("promptTitle") != "Open prompt composer to type or dictate a prompt"
+                or route_state.get("promptVisibleText") != "Prompt"
+                or route_state.get("expectedPromptVisibleText") != "Prompt"
                 or route_state.get("promptIconVisible") is not True
                 or route_state.get("promptCenterHit") is not True
                 or route_state.get("inlineMicVisible") is not True or route_state.get("inlineMicEnabled") is not True
-                or route_state.get("inlineMicLabel") != "Dictate to terminal"
-                or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"
-                or route_state.get("inlineMicTitle") != "Dictate to terminal"
-                or route_state.get("inlineMicVisibleText") != ""
+                or route_state.get("inlineMicLabel") != "Dictate at terminal cursor"
+                or route_state.get("expectedInlineMicLabel") != "Dictate at terminal cursor"
+                or route_state.get("inlineMicTitle") != "Dictate at terminal cursor"
+                or route_state.get("inlineMicVisibleText") != "Dictate"
                 or route_state.get("terminalDestinationLabels") != []
                 or route_state.get("expectedTerminalDestinationLabels") != []
                 or route_state.get("terminalDestinationVisible") is not False
                 or route_state.get("inlineMicIconVisible") is not True
                 or route_state.get("inlineMicCenterHit") is not True
                 or route_state.get("targetsSeparated") is not True):
-            raise ExtractionFailure("idle terminal evidence does not prove icon-only, accessible, separate Prompt and terminal dictation controls")
+            raise ExtractionFailure("idle terminal evidence does not prove visibly distinct, accessible Prompt and terminal dictation controls")
         route_session = route_state.get("expectedSession")
         route_heading = route_state.get("terminalHeading")
         if (not isinstance(route_session, str) or not route_session or not isinstance(route_heading, str)
@@ -399,8 +405,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("sheetFullyVisible") is not True
                 or title_state.get("dictatePromptText") != ""
                 or title_state.get("expectedDictatePromptVisibleLabel") != ""
-                or title_state.get("expectedDictatePromptAccessibleName") != "Dictate prompt"
-                or title_state.get("dictatePromptAccessibleName") != "Dictate prompt"
+                or title_state.get("expectedDictatePromptAccessibleName") != "Dictate prompt draft"
+                or title_state.get("dictatePromptAccessibleName") != "Dictate prompt draft"
                 or title_state.get("dictatePromptGlyphPresent") is not True
                 or title_state.get("dictatePromptVisible") is not True
                 or title_state.get("dictatePromptEnabled") is not True
@@ -1077,8 +1083,8 @@ def self_test() -> None:
         "dictatePromptText": "",
         "expectedDictatePromptVisibleLabel": "",
         "dictatePromptGlyphPresent": True,
-        "expectedDictatePromptAccessibleName": "Dictate prompt",
-        "dictatePromptAccessibleName": "Dictate prompt",
+        "expectedDictatePromptAccessibleName": "Dictate prompt draft",
+        "dictatePromptAccessibleName": "Dictate prompt draft",
         "dictatePromptVisible": True,
         "dictatePromptEnabled": True,
         "dictatePromptBounds": {"top": 516.0, "bottom": 564.0, "left": 348.0, "right": 396.0,
@@ -1106,19 +1112,19 @@ def self_test() -> None:
         "composerPresent": False,
         "launcherVisible": True,
         "launcherEnabled": True,
-        "promptAccessibleName": "Open prompt composer",
-        "expectedPromptAccessibleName": "Open prompt composer",
-        "promptTitle": "Open prompt composer",
-        "promptVisibleText": "",
-        "expectedPromptVisibleText": "",
+        "promptAccessibleName": "Open prompt composer to type or dictate a prompt",
+        "expectedPromptAccessibleName": "Open prompt composer to type or dictate a prompt",
+        "promptTitle": "Open prompt composer to type or dictate a prompt",
+        "promptVisibleText": "Prompt",
+        "expectedPromptVisibleText": "Prompt",
         "promptIconVisible": True,
         "promptCenterHit": True,
         "inlineMicVisible": True,
         "inlineMicEnabled": True,
-        "inlineMicLabel": "Dictate to terminal",
-        "expectedInlineMicLabel": "Dictate to terminal",
-        "inlineMicTitle": "Dictate to terminal",
-        "inlineMicVisibleText": "",
+        "inlineMicLabel": "Dictate at terminal cursor",
+        "expectedInlineMicLabel": "Dictate at terminal cursor",
+        "inlineMicTitle": "Dictate at terminal cursor",
+        "inlineMicVisibleText": "Dictate",
         "terminalDestinationLabels": [],
         "expectedTerminalDestinationLabels": [],
         "terminalDestinationVisible": False,
@@ -1147,9 +1153,15 @@ def self_test() -> None:
     visible_prompt_caption_value = json.loads(route_state)
     visible_prompt_caption_value["promptVisibleText"] = "Prompt"
     visible_prompt_caption = json.dumps(visible_prompt_caption_value).encode()
+    missing_prompt_caption_value = json.loads(route_state)
+    missing_prompt_caption_value["promptVisibleText"] = ""
+    missing_prompt_caption = json.dumps(missing_prompt_caption_value).encode()
     visible_terminal_mic_caption_value = json.loads(route_state)
     visible_terminal_mic_caption_value["inlineMicVisibleText"] = "Dictate"
     visible_terminal_mic_caption = json.dumps(visible_terminal_mic_caption_value).encode()
+    missing_terminal_mic_caption_value = json.loads(route_state)
+    missing_terminal_mic_caption_value["inlineMicVisibleText"] = ""
+    missing_terminal_mic_caption = json.dumps(missing_terminal_mic_caption_value).encode()
     visible_terminal_destination_value = json.loads(route_state)
     visible_terminal_destination_value["terminalDestinationLabels"] = ["Dictate"]
     visible_terminal_destination_value["expectedTerminalDestinationLabels"] = ["Dictate"]
@@ -1675,6 +1687,18 @@ def self_test() -> None:
     assert json.loads(forced_focus_assets["composer-focus-trace.json"])["forcedFirstPostAttachMiss"] is True
     print("PASS: forced Composer miss stays inside the modal and retains a mounted draft for the physical retry")
 
+    for label, accepted_route_state in (
+        ("visible Prompt caption", visible_prompt_caption),
+        ("visible Dictate destination label", visible_terminal_mic_caption),
+    ):
+        accepted_assets = parse_assets(
+            "\n".join(make_lines(route_state_bytes=accepted_route_state)), run_id,
+            expected_terminal_marker=marker, expected_dictation_marker=dictation_marker)
+        accepted_state = json.loads(accepted_assets["composer-route.json"])
+        assert accepted_state["promptVisibleText"] == "Prompt"
+        assert accepted_state["inlineMicVisibleText"] == "Dictate"
+        print(f"PASS: {label} is present in accepted dock evidence")
+
     for label, altered in (
         ("missing artifact", lines[:-1]),
         ("missing focus trace", [line for line in lines if "composer-focus-trace.json" not in line]),
@@ -1684,8 +1708,8 @@ def self_test() -> None:
         ("Prompt composer has no accessible name", make_lines(route_state_bytes=unnamed_prompt_route)),
         ("Prompt composer has the wrong title", make_lines(route_state_bytes=mismatched_prompt_title)),
         ("Prompt composer icon is hidden", make_lines(route_state_bytes=hidden_prompt_icon)),
-        ("visible Prompt caption is rejected", make_lines(route_state_bytes=visible_prompt_caption)),
-        ("visible terminal mic caption is rejected", make_lines(route_state_bytes=visible_terminal_mic_caption)),
+        ("missing Prompt caption is rejected", make_lines(route_state_bytes=missing_prompt_caption)),
+        ("missing terminal Dictate caption is rejected", make_lines(route_state_bytes=missing_terminal_mic_caption)),
         ("visible terminal destination caption is rejected", make_lines(route_state_bytes=visible_terminal_destination)),
         ("Prompt composer center misses its target", make_lines(route_state_bytes=missed_prompt_center)),
         ("terminal dictation mic has the wrong title",

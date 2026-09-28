@@ -174,7 +174,7 @@ const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 const inlineDictationState = ref<InlineDictationState>({
   phase: 'idle',
   preview: '',
-  message: 'Tap the microphone to dictate at the terminal cursor.',
+  message: 'Tap Dictate to speak at the terminal cursor.',
   tone: 'quiet',
 });
 // Resize callbacks can finish after the user has selected a different PTY.
@@ -232,9 +232,7 @@ const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 
   || inlineDictationState.value.tone === 'warning'
 ));
 const mobileHotkeysDockHeight = computed(() => {
-  const dictationStatusRowHeight = Capacitor.getPlatform() === 'android' && inlineDictationStatusVisible.value
-    ? inlineDictationStatusRowHeightPx
-    : 0;
+  const dictationStatusRowHeight = inlineDictationStatusVisible.value ? inlineDictationStatusRowHeightPx : 0;
   const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;
   const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
   return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
@@ -1569,6 +1567,7 @@ onBeforeUnmount(() => {
             :enabled="mobileHotkeysEnabled"
             :keyboard-visible="keyboardVisible"
             :dictation-available="Capacitor.getPlatform() === 'android'"
+            :show-inline-dictation-status="inlineDictationStatusVisible"
             :prompt-composer-available="Capacitor.getPlatform() === 'android'"
             :dictation-state="inlineDictationState"
             :dictation-target-key="inlineDictationTargetKey"

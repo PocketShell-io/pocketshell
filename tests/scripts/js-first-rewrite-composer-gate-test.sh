@@ -67,8 +67,8 @@ def require_dictate_prompt_journey(source: str) -> None:
         'emitCurrentScreen(runId, "composer-route.png")',
         'emitArtifact(runId, "composer-route.json"',
         'const inlineMic=document.querySelector(\'[data-testid=inline-dictation-toggle]\')',
-        '"Dictate to terminal".equals(state.getString("inlineMicLabel"))',
-        'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt")',
+        '"Dictate at terminal cursor".equals(state.getString("inlineMicLabel"))',
+        'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt draft")',
         'titleState.put("expectedDictatePromptVisibleLabel", "")',
         'titleState.getString("dictatePromptText").isEmpty()',
         'titleState.getBoolean("dictatePromptGlyphPresent")',
@@ -97,7 +97,7 @@ def require_dictate_prompt_journey(source: str) -> None:
 require_dictate_prompt_journey(journey)
 
 
-def require_icon_only_terminal_route_contract(source: str, extractor_source: str) -> None:
+def require_labeled_terminal_route_contract(source: str, extractor_source: str) -> None:
     start = source.index("private void capturePromptComposerRoute(")
     end = source.index("private void ", start + len("private void "))
     route_capture = source[start:end]
@@ -113,16 +113,17 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
         "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)",
         "inlineMicCenterHit:hitCenter(inlineMic)",
         "targetsSeparated:!!promptBounds&&!!inlineMicBounds&&promptBounds.right<=inlineMicBounds.left",
-        '"Open prompt composer".equals(state.getString("promptAccessibleName"))',
-        '"Open prompt composer".equals(state.getString("promptTitle"))',
-        '.put("expectedPromptAccessibleName", "Open prompt composer")',
-        '.put("expectedPromptVisibleText", "")',
-        'state.getString("promptVisibleText").isEmpty()',
-        'state.getString("inlineMicVisibleText").isEmpty()',
+        '"Open prompt composer to type or dictate a prompt".equals(state.getString("promptAccessibleName"))',
+        '"Open prompt composer to type or dictate a prompt".equals(state.getString("promptTitle"))',
+        '.put("expectedPromptAccessibleName", "Open prompt composer to type or dictate a prompt")',
+        '.put("expectedPromptVisibleText", "Prompt")',
+        '"Prompt".equals(state.getString("promptVisibleText"))',
+        '"Dictate".equals(state.getString("inlineMicVisibleText"))',
         '.put("expectedTerminalDestinationLabels", new JSONArray())',
         '"[]".equals(state.getJSONArray("terminalDestinationLabels").toString())',
         '!state.getBoolean("terminalDestinationVisible")',
-        '"Dictate to terminal".equals(state.getString("inlineMicTitle"))',
+        '"Dictate at terminal cursor".equals(state.getString("inlineMicLabel"))',
+        '"Dictate at terminal cursor".equals(state.getString("inlineMicTitle"))',
         'state.getBoolean("promptIconVisible")',
         'state.getBoolean("promptCenterHit")',
         'state.getBoolean("inlineMicIconVisible")',
@@ -134,17 +135,18 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
             raise AssertionError(f"labeled terminal route journey is missing {needle}")
     if ('promptLabel=launcher?.querySelector' in route_capture
             or 'const terminalDestinationLabels=terminalDestination?Array.from(terminalDestination.children).map(node=>node.textContent.trim()):[];' not in route_capture):
-        raise AssertionError("terminal route evidence must capture icon-only controls and reject visible captions")
+        raise AssertionError("terminal route evidence must capture visible Prompt and Dictate labels and reject duplicate destination captions")
 
     extractor_evidence = (
-        'route_state.get("promptAccessibleName") != "Open prompt composer"',
-        'route_state.get("promptTitle") != "Open prompt composer"',
-        'route_state.get("promptVisibleText") != ""',
-        'route_state.get("expectedPromptVisibleText") != ""',
-        'route_state.get("inlineMicVisibleText") != ""',
+        'route_state.get("promptAccessibleName") != "Open prompt composer to type or dictate a prompt"',
+        'route_state.get("promptTitle") != "Open prompt composer to type or dictate a prompt"',
+        'route_state.get("promptVisibleText") != "Prompt"',
+        'route_state.get("expectedPromptVisibleText") != "Prompt"',
+        'route_state.get("inlineMicVisibleText") != "Dictate"',
         'route_state.get("promptIconVisible") is not True',
         'route_state.get("promptCenterHit") is not True',
-        'route_state.get("inlineMicTitle") != "Dictate to terminal"',
+        'route_state.get("inlineMicLabel") != "Dictate at terminal cursor"',
+        'route_state.get("inlineMicTitle") != "Dictate at terminal cursor"',
         'route_state.get("terminalDestinationLabels") != []',
         'route_state.get("expectedTerminalDestinationLabels") != []',
         'route_state.get("terminalDestinationVisible") is not False',
@@ -155,8 +157,8 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
         '"Prompt composer has no accessible name"',
         '"Prompt composer has the wrong title"',
         '"Prompt composer icon is hidden"',
-        '"visible Prompt caption is rejected"',
-        '"visible terminal mic caption is rejected"',
+        '"missing Prompt caption is rejected"',
+        '"missing terminal Dictate caption is rejected"',
         '"visible terminal destination caption is rejected"',
         '"Prompt composer center misses its target"',
         '"terminal dictation mic has the wrong title"',
@@ -170,7 +172,7 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
             raise AssertionError(f"composer artifact extractor is missing a visible route-label regression check: {needle}")
 
 
-require_icon_only_terminal_route_contract(journey, extractor)
+require_labeled_terminal_route_contract(journey, extractor)
 
 
 def require_open_composer_physical_target_settles(source: str) -> None:
@@ -317,7 +319,7 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
     extractor_evidence = (
         'mode_geometry.get("cancelText") != "Discard"',
         'mode_geometry.get("composerHeading") != expected_heading',
-        'route_state.get("inlineMicLabel") != "Dictate to terminal"',
+        'route_state.get("inlineMicLabel") != "Dictate at terminal cursor"',
         'mode_geometry.get("cancelText") != "Cancel"',
         'mode_geometry.get("insertAccessible") is not False',
         'mode_geometry.get("insert") is not None',
@@ -352,7 +354,7 @@ def require_obvious_prompt_dictation_mode() -> None:
         "'Review dictation'",
         "'Prompt dictation'",
         "<h3 id=\"composer-title\">{{ composerTitle }}</h3>",
-        'title="Dictate a prompt" aria-label="Dictate prompt"',
+        'title="Dictate into prompt draft" aria-label="Dictate prompt draft"',
         '<DictationMicIcon :size="20" />',
         "composer-recording-preview composer-status",
         "Prompt dictation draft, read only during capture",

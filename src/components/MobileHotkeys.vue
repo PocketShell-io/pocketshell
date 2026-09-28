@@ -21,6 +21,8 @@ const props = withDefaults(defineProps<{
   keyboardVisible?: boolean;
   /** Android owns the inline terminal dictation affordance and status chip. */
   dictationAvailable?: boolean;
+  /** The app shares this value with PTY dock sizing so the status row cannot drift. */
+  showInlineDictationStatus?: boolean;
   /** Adds the Kotlin-style Compose entry point for the shared prompt composer. */
   promptComposerAvailable?: boolean;
   dictationState?: InlineDictationState;
@@ -30,11 +32,12 @@ const props = withDefaults(defineProps<{
 }>(), {
   keyboardVisible: false,
   dictationAvailable: false,
+  showInlineDictationStatus: undefined,
   promptComposerAvailable: false,
   dictationState: () => ({
     phase: 'idle' as const,
     preview: '',
-    message: 'Tap the microphone to dictate at the terminal cursor.',
+    message: 'Tap Dictate to speak at the terminal cursor.',
     tone: 'quiet' as const,
   }),
   dictationTargetKey: '',
@@ -78,10 +81,12 @@ const ctrlRows = HOTKEY_CTRL_PAGE_ROWS;
 const hasPersistentStatus = computed(() => Boolean(slots['persistent-status']));
 const hasPersistentControls = computed(() => Boolean(slots['persistent-controls']));
 const hasPersistentAccessory = computed(() => Boolean(slots['persistent-accessory']));
-const dictationStatusVisible = computed(() => props.dictationAvailable && (
-  props.dictationState.phase !== 'idle'
-  || props.dictationState.tone === 'error'
-  || props.dictationState.tone === 'warning'
+const dictationStatusVisible = computed(() => props.showInlineDictationStatus ?? (
+  props.dictationAvailable && (
+    props.dictationState.phase !== 'idle'
+    || props.dictationState.tone === 'error'
+    || props.dictationState.tone === 'warning'
+  )
 ));
 const sendKey = actions.sendKey;
 let keyboardPointer: { id: number; button: Element } | null = null;
@@ -190,6 +195,7 @@ defineExpose({
     :data-keyboard-visible="keyboardVisible"
     :data-palette-open="paletteOpen"
     :data-palette-page="paletteOpen ? page : 'closed'"
+    :data-dictation-status-visible="dictationStatusVisible"
     @pointerdown="preserveKeyboardFocus"
     @pointercancel="cancelKeyboardPointer"
     @click="restoreKeyboardAfterPointerClick"
@@ -225,12 +231,13 @@ defineExpose({
           class="mobile-hotkeys__key mobile-hotkeys__composer-launcher"
           type="button"
           data-testid="prompt-composer-launcher"
-          aria-label="Open prompt composer"
-          title="Open prompt composer"
+          aria-label="Open prompt composer to type or dictate a prompt"
+          title="Open prompt composer to type or dictate a prompt"
           :disabled="!enabled"
           @click="emit('openComposer')"
         >
           <AppIcon name="edit-2" aria-hidden="true" />
+          <span class="mobile-hotkeys__dock-label" data-testid="prompt-composer-launcher-label" aria-hidden="true">Prompt</span>
         </button>
 
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
@@ -521,6 +528,8 @@ defineExpose({
 .mobile-hotkeys__key--navigation { border-color: var(--border-soft); background: var(--surface-2); font: 600 18px/1 var(--font-ui); }
 .mobile-hotkeys__key--enter { font: 600 var(--fs-200)/1 var(--font-ui); }
 .mobile-hotkeys__composer-launcher {
+  flex-direction: column;
+  gap: 1px;
   width: 48px;
   min-width: 48px;
   flex: 0 0 48px;
@@ -548,6 +557,7 @@ defineExpose({
 .mobile-hotkeys__launcher :deep(svg),
 .mobile-hotkeys__keys-icon { width: 20px; height: 20px; }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 20px; height: 20px; }
+.mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui); white-space: nowrap; }
 
 .mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
@@ -569,6 +579,8 @@ defineExpose({
   color: var(--accent);
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) {
+  flex-direction: column;
+  gap: 1px;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border-soft);
@@ -576,6 +588,11 @@ defineExpose({
   background: var(--surface-2);
   padding: 0;
   color: var(--fg-secondary);
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label) {
+  color: var(--fg-muted);
+  font: 600 var(--fs-100)/1 var(--font-ui);
+  white-space: nowrap;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]),
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {

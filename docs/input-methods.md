@@ -114,9 +114,9 @@ Composer remains the preferred surface for prose and longer agent prompts.
 The terminal controls use a normal-flow dock below xterm. Its persistent row
 keeps Up, Down, Enter, a Prompt entry, More keys, and the separate Android
 inline dictation mic available. Prompt opens the shared composer, where its
-own Dictate action records a prompt. The inline mic is icon-only in the row;
-its accessible name and title identify the terminal destination. It records
-text for one insertion at the active terminal cursor.
+own Dictate action records a prompt. The dock labels the destinations Prompt
+and Dictate; the inline mic's accessible name and title identify the terminal
+destination. It records text for one insertion at the active terminal cursor.
 Neither speech action changes the other's destination. While inline
 dictation is active, one status line above the row carries its partial
 preview, and tapping the inline mic again stops recognition. Only validated

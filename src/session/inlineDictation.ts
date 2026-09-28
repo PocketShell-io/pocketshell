@@ -40,7 +40,7 @@ const DEFAULT_STOP_TIMEOUT_MS = 15_000;
 const INITIAL_STATE: InlineDictationState = {
   phase: 'idle',
   preview: '',
-  message: 'Tap the microphone to dictate at the terminal cursor.',
+  message: 'Tap Dictate to speak at the terminal cursor.',
   tone: 'quiet',
 };
 
@@ -159,7 +159,7 @@ export function createInlineDictationController(
       case 'ready':
       case 'listening':
         if (state.phase === 'starting') {
-          publish({ phase: 'listening', preview: '', message: 'Listening. Tap Stop to insert the recognized text.', tone: 'quiet' });
+          publish({ phase: 'listening', preview: '', message: 'Listening. Tap Stop to insert at the terminal cursor.', tone: 'quiet' });
         }
         break;
       case 'processing':
@@ -242,7 +242,7 @@ export function createInlineDictationController(
         return;
       }
       if (isStillStarting()) {
-        publish({ phase: 'listening', preview: '', message: 'Listening. Tap Stop to insert the recognized text.', tone: 'quiet' });
+        publish({ phase: 'listening', preview: '', message: 'Listening. Tap Stop to insert at the terminal cursor.', tone: 'quiet' });
       }
     } catch (error) {
       if (!current(gen)) return;

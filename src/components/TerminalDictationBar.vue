@@ -23,7 +23,7 @@ const emit = defineEmits<{
 const initialState: InlineDictationState = {
   phase: 'idle',
   preview: '',
-  message: 'Tap the microphone to dictate at the terminal cursor.',
+  message: 'Tap Dictate to speak at the terminal cursor.',
   tone: 'quiet',
 };
 const state = ref<InlineDictationState>({ ...initialState });
@@ -90,13 +90,13 @@ const buttonDisabled = () => !props.enabled
   || ['stopping', 'cancelling', 'inserting'].includes(state.value.phase);
 
 const buttonLabel = () => {
-  if (state.value.phase === 'listening') return 'Stop terminal dictation';
-  if (state.value.phase === 'starting') return 'Cancel terminal dictation request';
+  if (state.value.phase === 'listening') return 'Stop dictating at terminal cursor';
+  if (state.value.phase === 'starting') return 'Cancel terminal cursor dictation request';
   if (state.value.phase === 'cancelling') return 'Cancelling terminal dictation';
-  if (state.value.phase === 'stopping') return 'Transcribing terminal speech';
-  if (state.value.phase === 'inserting') return 'Inserting terminal speech';
-  if (buttonDisabled()) return 'Terminal dictation unavailable';
-  return 'Dictate to terminal';
+  if (state.value.phase === 'stopping') return 'Transcribing speech for terminal cursor';
+  if (state.value.phase === 'inserting') return 'Inserting speech at terminal cursor';
+  if (buttonDisabled()) return 'Terminal cursor dictation unavailable';
+  return 'Dictate at terminal cursor';
 };
 
 const buttonState = () => {
@@ -122,5 +122,6 @@ const buttonState = () => {
     @click="toggleDictation"
   >
     <DictationMicIcon :size="20" />
+    <span class="terminal-dictation-label" data-testid="inline-dictation-dock-label" aria-hidden="true">Dictate</span>
   </button>
 </template>

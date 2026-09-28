@@ -172,7 +172,8 @@ describe('terminal dictation bar lifecycle', () => {
     await flushPromises();
 
     const toggle = findByTestId(root, 'inline-dictation-toggle');
-    expect(toggle?.props['aria-label']).toBe('Dictate to terminal');
+    expect(toggle?.props['aria-label']).toBe('Dictate at terminal cursor');
+    expect(findByTestId(root, 'inline-dictation-dock-label')?.text).toBe('Dictate');
     expect(toggle?.props['data-mic-state']).toBe('idle');
     const idleMicSvg = findAllByType(toggle!, 'svg')[0];
     expect(idleMicSvg?.props['aria-hidden']).toBe('true');
@@ -188,7 +189,7 @@ describe('terminal dictation bar lifecycle', () => {
 
     const listeningToggle = findByTestId(root, 'inline-dictation-toggle');
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
-    expect(listeningToggle?.props['aria-label']).toBe('Stop terminal dictation');
+    expect(listeningToggle?.props['aria-label']).toBe('Stop dictating at terminal cursor');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
     const listeningMicSvg = findAllByType(listeningToggle!, 'svg')[0];
@@ -254,7 +255,7 @@ describe('terminal dictation bar lifecycle', () => {
     expect(states.at(-1)).toEqual({
       phase: 'idle',
       preview: '',
-      message: 'Tap the microphone to dictate at the terminal cursor.',
+      message: 'Tap Dictate to speak at the terminal cursor.',
       tone: 'quiet',
     });
     expect(insertText).not.toHaveBeenCalled();

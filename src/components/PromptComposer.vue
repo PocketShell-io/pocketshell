@@ -42,6 +42,7 @@ interface ActiveDictation {
   deliveryChosen: boolean;
   completedTranscript: string;
   partialTranscript: string;
+  failureCode: string | null;
 }
 
 const drafts = useComposerDrafts();
@@ -74,12 +75,45 @@ function createObservedDelivery() {
 const delivery = shallowRef(createObservedDelivery());
 const draft = computed(() => drafts.draftFor(props.targetKey));
 const dictationPreview = ref('');
+const dictationReviewResult = ref<'ready' | 'empty' | 'error'>('ready');
+const failureReviewEdited = ref(false);
 const dictationBusy = computed(() => dictationPhase.value === 'starting'
   || dictationPhase.value === 'recording'
   || dictationPhase.value === 'transcribing');
 const composerTitle = computed(() => dictationPhase.value === 'review'
   ? 'Review dictation'
   : dictationBusy.value ? 'Prompt dictation' : 'Prompt Composer');
+const composerModeStatus = computed(() => {
+  if (transportStateIsOffline()) return props.transportState === 'lost' ? 'RECONNECTING' : 'NO PTY';
+  switch (dictationPhase.value) {
+    case 'starting': return 'STARTING';
+    case 'recording': return 'LISTENING';
+    case 'transcribing': return 'TRANSCRIBING';
+    case 'review': return 'REVIEW';
+    case 'idle': return 'READY';
+  }
+});
+const composerModeStatusClass = computed(() => {
+  if (props.transportState !== 'connected') return props.transportState === 'lost' ? 'state-tag--warning' : 'state-tag--muted';
+  return dictationPhase.value === 'idle' ? 'state-tag--success' : 'state-tag--dictation';
+});
+const composerModeStatusLabel = computed(() => {
+  if (props.transportState !== 'connected') {
+    return props.transportState === 'lost' ? 'Terminal reconnecting' : 'No live terminal session';
+  }
+  if (dictationPhase.value === 'starting') return 'Prompt dictation is starting';
+  if (dictationPhase.value === 'recording') return 'Prompt dictation is listening';
+  if (dictationPhase.value === 'transcribing') return 'Prompt dictation is transcribing';
+  if (dictationPhase.value === 'review' && dictationReviewResult.value === 'empty') return 'No speech was recognized';
+  if (dictationPhase.value === 'review' && dictationReviewResult.value === 'error') return 'Dictation ended with a recognition error';
+  if (dictationPhase.value === 'review') return 'Dictation transcript is ready to review';
+  return 'Terminal ready';
+});
+const composerReviewText = computed(() => {
+  if (dictationReviewResult.value === 'empty') return 'No speech recognized. Your original draft is unchanged. Edit it to continue.';
+  if (dictationReviewResult.value === 'error') return 'Recognition stopped. Edit the draft before inserting or sending.';
+  return 'Transcript ready. Edit it, then choose Insert or Send.';
+});
 const composerReviewStatusEmpty = computed(() => dictationPhase.value === 'review'
   && statusTone.value === 'quiet'
   && statusText.value.length === 0);
@@ -99,7 +133,13 @@ const canDeliver = computed(() => props.targetKey.length > 0
   && props.transportState === 'connected'
   && draft.value.length > 0
   && dictationPhase.value !== 'starting'
+  && activeDictation.value?.failureCode == null
+  && !(dictationPhase.value === 'review' && dictationReviewResult.value !== 'ready' && !failureReviewEdited.value)
   && sendingIntent.value === null);
+
+function transportStateIsOffline(): boolean {
+  return props.transportState !== 'connected';
+}
 
 watch(() => props.transportState, (state) => delivery.value.setTransportState(state), { immediate: true });
 watch(() => props.writePty, () => {
@@ -122,6 +162,10 @@ watch(() => props.targetKey, () => {
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+  dictationPreview.value = '';
+  dictationReviewResult.value = 'ready';
+  failureReviewEdited.value = false;
+  dictationPhase.value = 'idle';
   if (props.mobileSheet) emit('openChange', false);
 }, { flush: 'sync' });
 
@@ -164,14 +208,20 @@ onMounted(() => {
 });
 
 function setDraft(event: Event) {
-  const target = event.target;
-  if (!(target instanceof HTMLTextAreaElement)) return;
+  const target = event.target as HTMLTextAreaElement | null;
+  if (!target || typeof target.value !== 'string') return;
   if (dictationBusy.value) {
     // Some Android IMEs still deliver an input after beforeinput was canceled.
     // Keep the browser field synchronized with the JS transcript without
     // letting manual key events replace the active recognition result.
     target.value = drafts.draftFor(props.targetKey);
     return;
+  }
+  const previousDraft = drafts.draftFor(props.targetKey);
+  if (dictationPhase.value === 'review'
+    && dictationReviewResult.value !== 'ready'
+    && target.value !== previousDraft) {
+    failureReviewEdited.value = true;
   }
   drafts.setDraft(props.targetKey, target.value);
   statusText.value = '';
@@ -229,6 +279,7 @@ function stopRecordingTimer() {
 
 function handleDictationEvent(operation: ActiveDictation, event: DictationEvent) {
   if (operation.cancelled || activeDictation.value !== operation || event.requestId !== operation.requestId) return;
+  if (operation.failureCode && event.type !== 'stopped') return;
   if (event.type === 'started' || event.type === 'listening' || event.type === 'ready') {
     if (!operation.sawStarted) {
       operation.sawStarted = true;
@@ -250,19 +301,25 @@ function handleDictationEvent(operation: ActiveDictation, event: DictationEvent)
       stopRecordingTimer();
     }
   } else if (event.type === 'partial') {
-    if (operation.deliveryChosen) return;
+    if (operation.deliveryChosen || operation.failureCode) return;
     operation.partialTranscript = event.text ?? '';
     renderDictationDraft(operation);
   } else if (event.type === 'result') {
-    if (operation.deliveryChosen) return;
+    if (operation.deliveryChosen || operation.failureCode) return;
     operation.completedTranscript = appendTranscript(operation.completedTranscript, event.text ?? operation.partialTranscript);
     operation.partialTranscript = '';
     renderDictationDraft(operation);
   } else if (event.type === 'error') {
+    operation.failureCode = event.code ?? 'speech recognition failed';
     statusTone.value = 'error';
     statusText.value = `Dictation stopped: ${event.code ?? 'speech recognition failed'}. Review the draft before sending.`;
+    dictationPhase.value = 'transcribing';
+    stopRecordingTimer();
   } else if (event.type === 'stopped') {
     if (!operation.deliveryChosen) renderDictationDraft(operation);
+    const transcript = appendTranscript(operation.completedTranscript, operation.partialTranscript);
+    dictationReviewResult.value = operation.failureCode ? 'error' : transcript.trim() ? 'ready' : 'empty';
+    failureReviewEdited.value = false;
     stopRecordingTimer();
     dictationPreview.value = '';
     activeDictation.value = null;
@@ -299,8 +356,11 @@ async function toggleDictation() {
     deliveryChosen: false,
     completedTranscript: '',
     partialTranscript: '',
+    failureCode: null,
   };
   dictationPreview.value = '';
+  dictationReviewResult.value = 'ready';
+  failureReviewEdited.value = false;
   activeDictation.value = operation;
   dictationPhase.value = 'starting';
   elapsedMs.value = 0;
@@ -354,6 +414,7 @@ async function stopDictation(operation: ActiveDictation, updateStatus = true): P
     return true;
   } catch (error) {
     if (operation.cancelled || activeDictation.value !== operation) return false;
+    operation.failureCode = errorMessage(error);
     statusTone.value = 'error';
     statusText.value = `Dictation could not stop: ${errorMessage(error)}. Cancel to restore the original draft.`;
     return false;
@@ -372,6 +433,8 @@ function cancelDictation(operation: ActiveDictation, showStatus = true) {
     drafts.setDraft(operation.targetKey, operation.baseDraft);
     statusTone.value = showStatus ? 'quiet' : statusTone.value;
     if (showStatus) statusText.value = 'Dictation cancelled. Your original draft was restored.';
+    dictationReviewResult.value = 'ready';
+    failureReviewEdited.value = false;
   }
   if (operation.requestId) {
     void platformInput.cancelDictation(operation.requestId).catch((error: unknown) => {
@@ -427,7 +490,7 @@ async function deliver(intent: ComposerDeliveryIntent) {
       return;
     }
     const finishResult = await operation.finished;
-    if (finishResult !== 'stopped' || delivery.value !== activeDelivery || props.targetKey !== targetKey) {
+    if (finishResult !== 'stopped' || operation.failureCode || delivery.value !== activeDelivery || props.targetKey !== targetKey) {
       if (sendingIntent.value === intent) sendingIntent.value = null;
       return;
     }
@@ -440,6 +503,8 @@ async function deliver(intent: ComposerDeliveryIntent) {
   if (result.draftEffect === 'clear') {
     drafts.clearDraft(targetKey);
     dictationPhase.value = 'idle';
+    dictationReviewResult.value = 'ready';
+    failureReviewEdited.value = false;
   }
   if (delivery.value !== activeDelivery) return;
   showResult(result, intent);
@@ -456,6 +521,8 @@ function discardDraft() {
   }
   drafts.clearDraft(props.targetKey);
   dictationPhase.value = 'idle';
+  dictationReviewResult.value = 'ready';
+  failureReviewEdited.value = false;
   discardArmed.value = false;
   statusTone.value = 'quiet';
   statusText.value = 'Draft cleared.';
@@ -497,8 +564,9 @@ function startPromptDictation() {
         <div class="composer-heading__copy">
           <h3 id="composer-title">{{ composerTitle }}</h3>
         </div>
-        <span class="state-tag" :class="transportState === 'connected' ? 'state-tag--success' : 'state-tag--muted'">
-          {{ transportState === 'connected' ? 'READY' : transportState === 'lost' ? 'RECONNECTING' : 'NO PTY' }}
+        <span class="state-tag" :class="composerModeStatusClass" data-testid="composer-mode-status"
+          :data-dictation-phase="dictationPhase" :aria-label="composerModeStatusLabel">
+          {{ composerModeStatus }}
         </span>
         <button v-if="mobileSheet && !dictationBusy" class="composer-open-keys" type="button"
           data-testid="composer-open-keys" aria-label="More terminal keys" title="More terminal keys"
@@ -522,7 +590,7 @@ function startPromptDictation() {
           class="composer-draft"
           :class="{ 'composer-draft--dictation-anchor': dictationBusy }"
           data-testid="prompt-draft"
-          :aria-label="dictationBusy ? 'Prompt dictation draft, read only during capture' : 'Prompt draft'"
+          :aria-label="dictationPhase === 'review' ? 'Dictation transcript, editable before inserting or sending' : dictationBusy ? 'Prompt dictation draft, read only during capture' : 'Prompt draft'"
           :aria-describedby="dictationBusy ? (dictationPhase === 'starting' ? 'composer-status' : 'composer-recording-preview composer-status') : undefined"
           ref="draftInput"
           :value="draft"
@@ -545,11 +613,11 @@ function startPromptDictation() {
       />
       <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review"
         role="status" aria-live="polite">
-        Transcript ready. Edit it, then choose Insert or Send.
+        {{ composerReviewText }}
       </p>
 
       <p id="composer-status" class="composer-status" :class="{
-          'composer-status--dictation': dictationBusy,
+          'composer-status--dictation': dictationBusy && statusTone !== 'error',
           'composer-status--review-empty': composerReviewStatusEmpty,
         }"
         role="status" aria-live="polite" data-testid="composer-status"
@@ -580,7 +648,7 @@ function startPromptDictation() {
           />
           <button v-if="mobileSheet" class="composer-dictate composer-dictate--mic" type="button"
             data-testid="composer-dictate" :disabled="sendingIntent !== null || !targetKey"
-            title="Dictate a prompt" aria-label="Dictate prompt" @click="startPromptDictation">
+            title="Dictate into prompt draft" aria-label="Dictate prompt draft" @click="startPromptDictation">
             <DictationMicIcon :size="20" />
           </button>
         </template>
@@ -761,6 +829,8 @@ function startPromptDictation() {
   font-size: var(--fs-100);
   line-height: 1.4;
 }
+
+.state-tag--dictation { border-color: var(--accent-dim); background: var(--state-selected); color: var(--accent); }
 
 .composer-status--review-empty { display: none; }
 

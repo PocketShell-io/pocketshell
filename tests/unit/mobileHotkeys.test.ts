@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { HOTKEY_CTRL_PAGE_ROWS, HOTKEY_PALETTE_MAIN_SECTIONS } from '@pocketshell/core';
 import MobileHotkeys from '../../src/components/MobileHotkeys.vue';
 import mobileHotkeysSource from '../../src/components/MobileHotkeys.vue?raw';
+import appSource from '../../src/App.vue?raw';
 import { createMobileHotkeysActions, createMobileHotkeysState } from '../../src/components/mobileHotkeysModel';
 import type { InlineDictationState } from '../../src/session/inlineDictation';
 
@@ -25,6 +26,15 @@ describe('mobile fast-key behavior', () => {
     expect(mobileHotkeysSource).toContain('.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {\n  border-color: var(--accent-dim);\n  background: var(--state-selected);\n  color: var(--accent);\n}');
     expect(mobileHotkeysSource).toContain('.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="transcribing"]) {\n  border-color: var(--warning);\n  background: var(--state-selected);\n  color: var(--warning);\n}');
     expect(mobileHotkeysSource).toContain('.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="error"]) {\n  border-color: var(--error);\n  background: var(--surface-2);\n  color: var(--error);\n}');
+    expect(mobileHotkeysSource).toContain('.mobile-hotkeys__sheet {\n  display: flex;\n  width: 100%;\n  min-width: 0;\n  height: 96px;\n  min-height: 96px;\n  flex: 0 0 96px;');
+    expect(mobileHotkeysSource).toContain('.mobile-hotkeys__catalog-scroll {\n  display: flex;\n  width: 100%;\n  height: 48px;\n  min-height: 48px;\n  flex: 0 0 48px;');
+    expect(mobileHotkeysSource).toContain('.mobile-hotkeys__page-tabs { display: flex; height: 48px; flex: 0 0 auto;');
+    expect(mobileHotkeysSource).toContain('.mobile-hotkeys__key--catalog {\n  flex-direction: column;');
+  });
+
+  it('uses one App-owned dictation status value for dock sizing and status-row visibility', () => {
+    expect(appSource).toContain('const dictationStatusRowHeight = inlineDictationStatusVisible.value ? inlineDictationStatusRowHeightPx : 0;');
+    expect(appSource).toContain(':show-inline-dictation-status="inlineDictationStatusVisible"');
   });
 
   it('keeps the controls inert off-live and resumes only after an explicit live state', () => {
@@ -158,16 +168,17 @@ describe('mobile fast-key behavior', () => {
     }
   });
 
-  it('offers an icon-only Android Compose launcher with an accessible route to the prompt draft', () => {
+  it('offers a labeled 48px Prompt launcher with an accessible route to the prompt draft', () => {
     const mounted = mountMobileHotkeys(false, false, false, true);
     try {
       const launcher = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
-      expect(launcher.props['aria-label']).toBe('Open prompt composer');
-      expect(launcher.props.title).toBe('Open prompt composer');
+      expect(launcher.props['aria-label']).toBe('Open prompt composer to type or dictate a prompt');
+      expect(launcher.props.title).toBe('Open prompt composer to type or dictate a prompt');
       expect(launcher.props.class).toContain('mobile-hotkeys__composer-launcher');
+      expect(findByTestId(mounted.root, 'prompt-composer-launcher-label')?.text).toBe('Prompt');
       expect(findAll(launcher, (node) => node.tag === 'svg')).toHaveLength(1);
-      expect(findAll(launcher, (node) => node.tag === 'span' || node.tag === '#text')).toHaveLength(0);
-      expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
+      expect(findAll(launcher, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Prompt']);
+      expect(mobileHotkeysSource).toContain('.mobile-hotkeys__composer-launcher {\n  flex-direction: column;\n  gap: 1px;\n  width: 48px;');
       click(launcher);
       expect(mounted.composerOpenRequests()).toBe(1);
       expect(mounted.sent).toEqual([]);
@@ -176,7 +187,7 @@ describe('mobile fast-key behavior', () => {
     }
   });
 
-  it('keeps both dictation routes distinct while rendering icon-only 48dp toolbar controls', async () => {
+  it('labels both dictation routes distinctly while keeping 48dp dock controls', async () => {
     const mounted = mountMobileHotkeys(false, true, false, true);
     try {
       const prompt = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
@@ -193,14 +204,14 @@ describe('mobile fast-key behavior', () => {
           'mobile-hotkeys-launcher',
           'inline-dictation-toggle',
       ]);
-      expect(prompt.props.title).toBe('Open prompt composer');
-      expect(terminalMic.props['aria-label']).toBe('Dictate to terminal');
+      expect(prompt.props.title).toBe('Open prompt composer to type or dictate a prompt');
+      expect(terminalMic.props['aria-label']).toBe('Dictate at terminal cursor');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
-      expect(findByTestId(mounted.root, 'inline-dictation-destination')).toBeUndefined();
+      expect(findByTestId(mounted.root, 'prompt-composer-launcher-label')?.text).toBe('Prompt');
+      expect(findByTestId(mounted.root, 'inline-dictation-dock-label')?.text).toBe('Dictate');
       expect(findAll(prompt, (node) => node.tag === 'svg')).toHaveLength(1);
-      expect(findAll(prompt, (node) => node.tag === 'span' || node.tag === '#text')).toHaveLength(0);
-      expect(findAll(terminalMic, (node) => node.tag === 'span' || node.tag === '#text')).toHaveLength(0);
-      expect(findByTestId(mounted.root, 'inline-dictation-action-label')).toBeUndefined();
+      expect(findAll(prompt, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Prompt']);
+      expect(findAll(terminalMic, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Dictate']);
       const keysButton = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' });
       expect(keysButton.props.title).toBe('More terminal keys');
       const keysGlyph = findAll(keysButton, (node) => node.tag === 'svg')[0];
@@ -212,6 +223,8 @@ describe('mobile fast-key behavior', () => {
       expect(findAll(findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' }), (node) => node.tag === 'svg')[0])
         .toBe(keysGlyph);
       expect(prompt.props['aria-label']).not.toBe(terminalMic.props['aria-label']);
+      expect(prompt.props['aria-label']).toContain('prompt');
+      expect(terminalMic.props['aria-label']).toContain('terminal cursor');
       expect(findAll(mounted.root, (node) => node.tag === 'button' && node.props['data-testid'] === 'inline-dictation-toggle'))
         .toHaveLength(1);
     } finally {
@@ -230,10 +243,36 @@ describe('mobile fast-key behavior', () => {
       try {
         expect(Boolean(findByTestId(mounted.root, 'inline-dictation-status-row'))).toBe(tone !== 'success');
         expect(findButton(mounted.root, { 'data-testid': 'inline-dictation-toggle' }).props['aria-label'])
-          .toBe('Dictate to terminal');
+          .toBe('Dictate at terminal cursor');
       } finally {
         mounted.app.unmount();
       }
+    }
+  });
+
+  it('lets App force the same status-row visibility that it uses for terminal dock sizing', () => {
+    const visible = mountMobileHotkeys(false, true, {
+      phase: 'idle', preview: '', message: 'Inserted at the cursor.', tone: 'success',
+    }, false, true);
+    try {
+      expect(findByTestId(visible.root, 'mobile-hotkeys')?.props['data-dictation-status-visible']).toBe(true);
+      expect(findByTestId(visible.root, 'inline-dictation-status-row')).toBeDefined();
+      expect(String(findByTestId(visible.root, 'mobile-hotkeys')?.props.class).split(' '))
+        .toContain('mobile-hotkeys--dictation-status-open');
+    } finally {
+      visible.app.unmount();
+    }
+
+    const hidden = mountMobileHotkeys(false, true, {
+      phase: 'listening', preview: 'words', message: '', tone: 'quiet',
+    }, false, false);
+    try {
+      expect(findByTestId(hidden.root, 'mobile-hotkeys')?.props['data-dictation-status-visible']).toBe(false);
+      expect(findByTestId(hidden.root, 'inline-dictation-status-row')).toBeUndefined();
+      expect(String(findByTestId(hidden.root, 'mobile-hotkeys')?.props.class).split(' '))
+        .not.toContain('mobile-hotkeys--dictation-status-open');
+    } finally {
+      hidden.app.unmount();
     }
   });
 
@@ -528,6 +567,7 @@ function mountMobileHotkeys(
   dictationAvailable = false,
   activeDictationStatus: boolean | InlineDictationState = false,
   promptComposerAvailable = false,
+  showInlineDictationStatus?: boolean,
 ) {
   const root: TestElement = {
     tag: 'root', props: {}, children: [], parent: null, text: '', setPointerCapture: () => {},
@@ -553,16 +593,17 @@ function mountMobileHotkeys(
         } : {}),
         ...(dictationAvailable ? {
           'persistent-accessory': () => h('button', {
-          'data-testid': 'inline-dictation-toggle',
-          class: 'terminal-dictation-button',
-          'aria-label': 'Dictate to terminal',
-        }, '◉'),
+            'data-testid': 'inline-dictation-toggle',
+            class: 'terminal-dictation-button',
+            'aria-label': 'Dictate at terminal cursor',
+          }, [h('span', { 'data-testid': 'inline-dictation-dock-label' }, 'Dictate')]),
         } : {}),
       };
       return () => h(MobileHotkeys, {
         enabled: enabled.value,
         dictationAvailable,
         promptComposerAvailable,
+        ...(showInlineDictationStatus === undefined ? {} : { showInlineDictationStatus }),
         dictationState,
         holdThresholdMs: 500,
         onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),

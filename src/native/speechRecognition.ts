@@ -41,7 +41,7 @@ export type SpeechRecognitionPlugin = Plugin & {
   cancelDictation(options: { requestId: string }): Promise<{ requestId: string; cancelled: boolean }>;
   injectTestDictationEvent(options: {
     requestId?: string;
-    type: 'partial' | 'processing' | 'result' | 'ready' | 'listening' | 'finish';
+    type: 'partial' | 'processing' | 'result' | 'ready' | 'listening' | 'error' | 'finish';
     text?: string;
   }): Promise<{
     requestId: string;

@@ -808,7 +808,7 @@ public final class JsComposerDockerJourneyTest {
         checkpoint("inline-dictation-start-tap-returned");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.dataset.micState === 'listening'"
-                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.getAttribute('aria-label')?.includes('Stop terminal dictation')");
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.getAttribute('aria-label')?.includes('Stop dictating at terminal cursor')");
         JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
         assertEquals("inline dictation must use the saved Voice language", "de", start.getString("languageTag"));
         assertEquals("inline dictation must use the saved Voice silence window", 9_000,
@@ -992,9 +992,12 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("Android HOME key up must reach the system", upInjected);
 
         JSONObject background = awaitNativeWindowFocus(false);
+        // HOME must background the actual activity before appStateChange
+        // cancellation. Keep the IME snapshot as diagnostic evidence, but do
+        // not gate on it: once the activity is stopped, its decor can report
+        // cached root-window insets from the last focused frame.
         assertTrue("HOME must background the actual MainActivity before appStateChange cancellation: " + background,
-                !background.getBoolean("windowFocus") && "CREATED".equals(background.getString("lifecycleState"))
-                        && !background.getBoolean("imeVisible"));
+                !background.getBoolean("windowFocus") && "CREATED".equals(background.getString("lifecycleState")));
         checkpoint("background-observed-" + scenarioName);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 15_000);
         checkpoint("app-background-transition-observed-" + scenarioName);
@@ -1041,8 +1044,7 @@ public final class JsComposerDockerJourneyTest {
             boolean matchingLifecycle = last != null && (expectedFocus
                     ? "RESUMED".equals(last.optString("lifecycleState"))
                     : "CREATED".equals(last.optString("lifecycleState")));
-            boolean matchingIme = expectedFocus || (last != null && !last.optBoolean("imeVisible"));
-            if (matchingFocus && matchingLifecycle && matchingIme) return last;
+            if (matchingFocus && matchingLifecycle) return last;
             Thread.sleep(50);
         }
         throw new AssertionError("PocketShell window/lifecycle did not reach focus=" + expectedFocus
@@ -1339,8 +1341,60 @@ public final class JsComposerDockerJourneyTest {
                 sent.getInt("acknowledgedWrites") == 2 && sent.getString("draft").isEmpty()
                         && sent.getString("dictationState").equals("idle")
                         && sent.getString("deliveryStatus").contains("Sent to the terminal"));
+        exerciseComposerDictationFailureModes(runId);
         assertTrue("debug event injection must be reset after the packaged composer journey",
                 "true".equals(evalRaw("(window.__ps2857DictationTestMode = false) === false")));
+    }
+
+    private void exerciseComposerDictationFailureModes(String runId) throws Exception {
+        String errorBase = "keep typed text after recognition error";
+        String errorPartial = "partial speech before the error";
+        String errorDraft = errorBase + " " + errorPartial;
+        setComposerDraft(errorBase);
+        String errorWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
+        injectDictationTestEvent("partial", errorPartial);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(errorDraft));
+        injectDictationTestEvent("error", "recognizer-no-match");
+        injectDictationTestEvent("finish", null);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
+                + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('Recognition stopped.')"
+                + " && document.querySelector('[data-testid=composer-mode-status]')?.getAttribute('aria-label')"
+                + " === 'Dictation ended with a recognition error'", 10_000);
+        recordComposerModeState(runId, "review-error", errorDraft);
+        assertDictationReviewCannotWrite(errorWriteBaseline, "recognition error");
+
+        String emptyBase = "keep typed text after empty recognition";
+        setComposerDraft(emptyBase);
+        String emptyWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        tapDomCenter("[data-testid=composer-dictate]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
+        awaitImeVisible(false);
+        tapDomCenter("[data-testid=composer-recording-stop]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
+        awaitImeVisible(false);
+        injectDictationTestEvent("finish", null);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
+                + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('No speech recognized.')"
+                + " && document.querySelector('[data-testid=composer-mode-status]')?.getAttribute('aria-label')"
+                + " === 'No speech was recognized'", 10_000);
+        recordComposerModeState(runId, "review-empty", emptyBase);
+        assertDictationReviewCannotWrite(emptyWriteBaseline, "empty transcript");
+    }
+
+    private void assertDictationReviewCannotWrite(String writeBaseline, String description) throws Exception {
+        String guarded = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const insert=document.querySelector('[data-testid=composer-insert]');"
+                + "const send=document.querySelector('.composer-shared-controls .send');"
+                + "return composer?.dataset.dictationState==='review' && !!insert&&insert.disabled"
+                + " && !!send&&send.disabled && composer.dataset.acknowledgedWrites==="
+                + JSONObject.quote(writeBaseline) + ";})()";
+        assertTrue(description + " review must keep Insert and Send disabled without a deliberate text edit",
+                "true".equals(evalRaw(guarded)));
+        assertEquals(description + " must not write any transcript bytes to the PTY", writeBaseline,
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
     }
 
     private void awaitComposerReadyToSend(String runId, String expectedDraft) throws Exception {
@@ -1451,9 +1505,9 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
                 + "promptBounds,inlineMicBounds});})() ");
         JSONObject state = new JSONObject(report).put("runId", runId)
-                .put("expectedPromptAccessibleName", "Open prompt composer")
-                .put("expectedPromptVisibleText", "")
-                .put("expectedInlineMicLabel", "Dictate to terminal")
+                .put("expectedPromptAccessibleName", "Open prompt composer to type or dictate a prompt")
+                .put("expectedPromptVisibleText", "Prompt")
+                .put("expectedInlineMicLabel", "Dictate at terminal cursor")
                 .put("expectedTerminalDestinationLabels", new JSONArray())
                 .put("expectedSession", bytesSession);
         emitArtifact(runId, "composer-route.json", state.toString().getBytes(StandardCharsets.UTF_8));
@@ -1463,14 +1517,14 @@ public final class JsComposerDockerJourneyTest {
                         && "live".equals(state.getString("sshPhase")) && !state.getBoolean("keyboardVisible")
                         && !state.getBoolean("composerPresent") && state.getBoolean("launcherVisible")
                         && state.getBoolean("launcherEnabled")
-                        && "Open prompt composer".equals(state.getString("promptAccessibleName"))
-                        && "Open prompt composer".equals(state.getString("promptTitle"))
-                        && state.getString("promptVisibleText").isEmpty()
+                        && "Open prompt composer to type or dictate a prompt".equals(state.getString("promptAccessibleName"))
+                        && "Open prompt composer to type or dictate a prompt".equals(state.getString("promptTitle"))
+                        && "Prompt".equals(state.getString("promptVisibleText"))
                         && state.getBoolean("promptIconVisible") && state.getBoolean("promptCenterHit")
                         && state.getBoolean("inlineMicVisible") && state.getBoolean("inlineMicEnabled")
-                        && "Dictate to terminal".equals(state.getString("inlineMicLabel"))
-                        && "Dictate to terminal".equals(state.getString("inlineMicTitle"))
-                        && state.getString("inlineMicVisibleText").isEmpty()
+                        && "Dictate at terminal cursor".equals(state.getString("inlineMicLabel"))
+                        && "Dictate at terminal cursor".equals(state.getString("inlineMicTitle"))
+                        && "Dictate".equals(state.getString("inlineMicVisibleText"))
                         && "[]".equals(state.getJSONArray("terminalDestinationLabels").toString())
                         && "[]".equals(state.getJSONArray("expectedTerminalDestinationLabels").toString())
                         && !state.getBoolean("terminalDestinationVisible")
@@ -1547,7 +1601,7 @@ public final class JsComposerDockerJourneyTest {
                 + "documentScrollTop:document.documentElement.scrollTop??0});})()"));
         titleState.put("runId", runId);
         titleState.put("expectedComposerHeading", "Prompt Composer");
-        titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt");
+        titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt draft");
         titleState.put("expectedDictatePromptVisibleLabel", "");
         titleState.put("expectedSessionChrome", bytesSession);
         emitArtifact(runId, "composer-title.json", titleState.toString().getBytes(StandardCharsets.UTF_8));
@@ -1561,7 +1615,7 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("buttons").getBoolean("send")
                         && titleState.getJSONObject("buttons").getBoolean("keys")
                         && titleState.getString("dictatePromptText").isEmpty()
-                        && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
+                        && "Dictate prompt draft".equals(titleState.getString("dictatePromptAccessibleName"))
                         && titleState.getBoolean("dictatePromptGlyphPresent")
                         && titleState.getBoolean("dictatePromptVisible")
                         && titleState.getBoolean("dictatePromptEnabled")
@@ -1684,6 +1738,8 @@ public final class JsComposerDockerJourneyTest {
                 + "const stopButton=document.querySelector('[data-testid=composer-recording-stop]');"
                 + "const insertButton=document.querySelector('[data-testid=composer-insert]');"
                 + "const dictationSendButton=document.querySelector('[data-testid=composer-dictation-send]');"
+                + "const sendButton=document.querySelector('.composer-shared-controls .send');"
+                + "const modeStatus=document.querySelector('[data-testid=composer-mode-status]');"
                 + "const transcribingStatus=mode?.querySelector('[role=status][aria-live=polite]');"
                 + "const cancelText=(cancelButton?.textContent??'').trim();"
                 + "const cancelAriaLabel=cancelButton?.getAttribute('aria-label')??'';"
@@ -1731,7 +1787,7 @@ public final class JsComposerDockerJourneyTest {
                 + "insertEnabled:!!insertButton&&!insertButton.disabled,"
                 + "dictationSendAccessible:!!dictationSendButton&&(dictationSendButton.textContent??'').includes('Send')"
                 + "&&dictationSendButton.getClientRects().length>0,dictationSendEnabled:!!dictationSendButton&&!dictationSendButton.disabled,"
-                + "timerAccessible:timer?.getAttribute('aria-label')==='Recording elapsed time',"
+                + "timerAccessible:timer?.getAttribute('aria-label')==='Dictation duration',"
                 + "timerVisible:!!timer&&timer.getClientRects().length>0&&getComputedStyle(timer).display!=='none',"
                 + "timerText:timer?.textContent.trim()??'',"
                 + "timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"
@@ -1753,6 +1809,8 @@ public final class JsComposerDockerJourneyTest {
                 + "cancel:rect('[data-testid=composer-recording-cancel]'),stop:rect('[data-testid=composer-recording-stop]'),"
                 + "insert:rect('[data-testid=composer-insert]'),dictationSend:rect('[data-testid=composer-dictation-send]'),"
                 + "send:rect('.composer-shared-controls .send'),visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth},"
+                + "insertEnabled:!!insertButton&&!insertButton.disabled,sendEnabled:!!sendButton&&!sendButton.disabled,"
+                + "modeStatusText:modeStatus?.textContent.trim()??'',modeStatusLabel:modeStatus?.getAttribute('aria-label')??'',"
                 + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??null,documentScrollTop:document.scrollingElement?.scrollTop??null,"
                 + "statusText:document.querySelector('[data-testid=composer-status]')?.textContent.trim()??'',"
                 + "waveformLabel:mode?.querySelector('.recording-mode__waveform')?.getAttribute('aria-label')??null});})() ");
@@ -1778,12 +1836,13 @@ public final class JsComposerDockerJourneyTest {
             throw new AssertionError("the Android keyboard must be dismissed during the " + state + " modal dictation state; state="
                     + measured);
         }
+        boolean reviewState = state.startsWith("review");
         String expectedPhase = state.equals("cancel") || state.equals("background") ? "idle"
                 : state.startsWith("recording") ? "recording"
-                        : state.startsWith("transcribing") ? "transcribing" : state;
+                        : state.startsWith("transcribing") ? "transcribing" : reviewState ? "review" : state;
         assertEquals("composer phase must match the " + state + " screenshot", expectedPhase, measured.getString("dictationState"));
         String expectedHeading = state.startsWith("recording") || state.startsWith("transcribing")
-                ? "Prompt dictation" : state.equals("review") ? "Review dictation" : "Prompt Composer";
+                ? "Prompt dictation" : reviewState ? "Review dictation" : "Prompt Composer";
         assertEquals("composer heading must identify the active prompt dictation phase", expectedHeading,
                 measured.getString("composerHeading"));
         assertTrue("keyboard-down composer must retain its phase heading",
@@ -1854,11 +1913,20 @@ public final class JsComposerDockerJourneyTest {
             }
         } else {
             assertTrue("idle and review must retain the ordinary composer textarea",
-                    state.equals("review") ? measured.getBoolean("reviewVisible") : !measured.getBoolean("recordingModeVisible"));
-            if (state.equals("review")) {
+                    reviewState ? measured.getBoolean("reviewVisible") : !measured.getBoolean("recordingModeVisible"));
+            if (reviewState) {
                 assertTrue("editable review must restore its explicit, enabled Insert action",
-                        measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
-                                && measured.getJSONObject("insert").getDouble("height") >= 47.9);
+                        measured.getBoolean("insertAccessible") && measured.getJSONObject("insert").getDouble("height") >= 47.9);
+                if (state.equals("review-error") || state.equals("review-empty")) {
+                    assertTrue("error and empty review states must keep delivery disabled until a deliberate edit",
+                            !measured.getBoolean("insertEnabled") && !measured.getBoolean("sendEnabled")
+                                    && measured.getJSONObject("send").getDouble("height") >= 47.9);
+                    assertEquals("error and empty review states must show the Review status", "REVIEW",
+                            measured.getString("modeStatusText"));
+                } else {
+                    assertTrue("successful review must restore enabled Insert",
+                            measured.getBoolean("insertEnabled"));
+                }
             }
         }
     }

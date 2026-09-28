@@ -11,7 +11,7 @@ defineProps<{
     :aria-label="state === 'recording' ? 'Prompt dictation recording' : state === 'transcribing' ? 'Transcribing prompt' : 'Starting prompt dictation'">
     <div v-if="state === 'recording'" class="recording-mode__live-row">
       <span class="recording-mode__phase">Listening</span>
-      <time data-testid="composer-recording-timer" aria-label="Recording elapsed time">
+      <time data-testid="composer-recording-timer" aria-label="Dictation duration">
         {{ elapsedLabel }}
       </time>
       <div class="recording-mode__waveform" role="img"
@@ -23,7 +23,7 @@ defineProps<{
     <div v-else-if="state === 'transcribing'" class="recording-mode__transcribing-row" role="status" aria-live="polite">
       <span class="recording-mode__spinner" aria-hidden="true"></span>
       <span>Transcribing prompt…</span>
-      <time data-testid="composer-recording-timer" aria-label="Recording elapsed time">
+      <time data-testid="composer-recording-timer" aria-label="Dictation duration">
         {{ elapsedLabel }}
       </time>
     </div>
