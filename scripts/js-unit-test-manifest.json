@@ -120,6 +120,7 @@
         "keeps nested settings and support routes reachable through Back",
         "retains a selected report ID and resets the stack when returning home",
         "clears the selected event when opening the whole-log export preview",
+        "opens the SSH file workspace as a back-navigable full-screen destination",
         "does not push the current destination a second time",
         "keeps usage and port tools as Settings child routes without changing the live home destination"
       ]
@@ -161,6 +162,16 @@
       "suite": "TerminalViewport resize failure across a route remount",
       "tests": [
         "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
+      ]
+    },
+    "tests/unit/documentTransfers.test.ts": {
+      "suite": "bounded Android document transfers",
+      "tests": [
+        "reads selected content URIs in ordered byte chunks and releases the URI",
+        "treats picker and Save As cancellation as no-ops",
+        "rejects a mismatched source chunk and still releases its document ID",
+        "writes exact binary bytes to the selected document and completes the byte count",
+        "aborts a partial save when the document provider rejects a chunk"
       ]
     }
   }
