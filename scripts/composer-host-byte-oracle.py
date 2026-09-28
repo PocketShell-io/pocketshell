@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 
-SAFE_STAGE = re.compile(r"^(recording-insert|transcribing-insert|transcribing-send|stop-review)$")
+SAFE_STAGE = re.compile(r"^(recording-insert|transcribing-send|stop-review)$")
 SAFE_SESSION = re.compile(r"^[A-Za-z0-9-]{8,32}-bytes$")
 
 

@@ -12,6 +12,7 @@ RECORDING_MODE="$ROOT_DIR/src/components/ComposerRecordingMode.vue"
 DICTATION_UNIT_TEST="$ROOT_DIR/tests/unit/composerDictationCancellation.test.ts"
 HOST_ORACLE="$ROOT_DIR/scripts/composer-host-byte-oracle.py"
 HOST_ORACLE_CHECKER="$ROOT_DIR/scripts/check-js-composer-host-oracle.py"
+APP_STYLES="$ROOT_DIR/src/styles.css"
 TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
@@ -19,6 +20,7 @@ PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
   && -f "$USAGE_PORTS_JOURNEY" \
   && -f "$PROMPT_COMPOSER" && -f "$RECORDING_MODE" && -f "$DICTATION_UNIT_TEST" \
   && -x "$HOST_ORACLE" && -x "$HOST_ORACLE_CHECKER" \
+  && -f "$APP_STYLES" \
   && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
   printf 'FAIL: rewrite composer gate inputs are missing\n' >&2
   exit 1
@@ -27,7 +29,7 @@ PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" \
   "$JOURNEY" "$USAGE_PORTS_JOURNEY" "$PROMPT_COMPOSER" "$RECORDING_MODE" "$DICTATION_UNIT_TEST" \
-  "$HOST_ORACLE" "$HOST_ORACLE_CHECKER" <<'PY'
+  "$HOST_ORACLE" "$HOST_ORACLE_CHECKER" "$APP_STYLES" <<'PY'
 import ast
 import os
 import re
@@ -38,7 +40,7 @@ from pathlib import Path
 
 workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path, \
     usage_ports_journey_path, prompt_composer_path, recording_mode_path, dictation_unit_test_path, \
-    host_oracle_path, host_oracle_checker_path = map(Path, sys.argv[1:])
+    host_oracle_path, host_oracle_checker_path, app_styles_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
@@ -51,6 +53,7 @@ recording_mode = recording_mode_path.read_text()
 dictation_unit_test = dictation_unit_test_path.read_text()
 host_oracle = host_oracle_path.read_text()
 host_oracle_checker = host_oracle_checker_path.read_text()
+app_styles = app_styles_path.read_text()
 ast.parse(extractor, filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
 subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
@@ -94,22 +97,28 @@ def require_dictate_prompt_journey(source: str) -> None:
 require_dictate_prompt_journey(journey)
 
 
-def require_icon_only_terminal_route_contract(source: str, extractor_source: str) -> None:
+def require_labeled_terminal_route_contract(source: str, extractor_source: str) -> None:
     start = source.index("private void capturePromptComposerRoute(")
     end = source.index("private void ", start + len("private void "))
     route_capture = source[start:end]
     journey_evidence = (
         "promptAccessibleName:launcher?.getAttribute('aria-label')??''",
         "promptTitle:launcher?.getAttribute('title')??''",
+        "promptLabel:promptLabel?.textContent.trim()??''",
+        "promptLabelVisible:visible(promptLabel)",
         "promptIconVisible:!!promptIcon&&visible(promptIcon)",
         "promptCenterHit:hitCenter(launcher)",
         "inlineMicTitle:inlineMic?.getAttribute('title')??''",
+        "terminalDestinationLabels,terminalDestinationVisible:visible(terminalDestination)",
         "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)",
         "inlineMicCenterHit:hitCenter(inlineMic)",
         "targetsSeparated:!!promptBounds&&!!inlineMicBounds&&promptBounds.right<=inlineMicBounds.left",
         '"Open prompt composer".equals(state.getString("promptAccessibleName"))',
         '"Open prompt composer".equals(state.getString("promptTitle"))',
         '.put("expectedPromptAccessibleName", "Open prompt composer")',
+        '.put("expectedPromptLabel", "Prompt")',
+        '.put("expectedTerminalDestinationLabels", new JSONArray(List.of("Dictate")))',
+        '"[\\"Dictate\\"]".equals(state.getJSONArray("terminalDestinationLabels").toString())',
         '"Dictate to terminal".equals(state.getString("inlineMicTitle"))',
         'state.getBoolean("promptIconVisible")',
         'state.getBoolean("promptCenterHit")',
@@ -119,16 +128,23 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
     )
     for needle in journey_evidence:
         if needle not in route_capture:
-            raise AssertionError(f"icon-only terminal route journey is missing {needle}")
-    if "promptLabel" in route_capture or "expectedPromptLabel" in route_capture:
-        raise AssertionError("terminal Prompt access must use its accessible name and title, without a visible caption")
+            raise AssertionError(f"labeled terminal route journey is missing {needle}")
+    if ('const promptLabel=launcher?.querySelector(\'.mobile-hotkeys__destination-label\')' not in route_capture
+            or 'const terminalDestinationLabels=terminalDestination?Array.from(terminalDestination.children).map(node=>node.textContent.trim()):[];' not in route_capture):
+        raise AssertionError("terminal route evidence must capture visible Prompt and Dictate captions")
 
     extractor_evidence = (
         'route_state.get("promptAccessibleName") != "Open prompt composer"',
         'route_state.get("promptTitle") != "Open prompt composer"',
+        'route_state.get("promptLabel") != "Prompt"',
+        'route_state.get("expectedPromptLabel") != "Prompt"',
+        'route_state.get("promptLabelVisible") is not True',
         'route_state.get("promptIconVisible") is not True',
         'route_state.get("promptCenterHit") is not True',
         'route_state.get("inlineMicTitle") != "Dictate to terminal"',
+        'route_state.get("terminalDestinationLabels") != ["Dictate"]',
+        'route_state.get("expectedTerminalDestinationLabels") != ["Dictate"]',
+        'route_state.get("terminalDestinationVisible") is not True',
         'route_state.get("inlineMicIconVisible") is not True',
         'route_state.get("inlineMicCenterHit") is not True',
         'route_state.get("targetsSeparated") is not True',
@@ -136,6 +152,10 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
         '"Prompt composer has no accessible name"',
         '"Prompt composer has the wrong title"',
         '"Prompt composer icon is hidden"',
+        '"idle Prompt caption is missing"',
+        '"idle Prompt caption is hidden"',
+        '"terminal dictation action/destination caption is incomplete"',
+        '"terminal dictation action/destination caption is hidden"',
         '"Prompt composer center misses its target"',
         '"terminal dictation mic has the wrong title"',
         '"terminal dictation mic icon is hidden"',
@@ -145,10 +165,10 @@ def require_icon_only_terminal_route_contract(source: str, extractor_source: str
     )
     for needle in extractor_evidence:
         if needle not in extractor_source:
-            raise AssertionError(f"composer artifact extractor is missing an icon-only route regression check: {needle}")
+            raise AssertionError(f"composer artifact extractor is missing a visible route-label regression check: {needle}")
 
 
-require_icon_only_terminal_route_contract(journey, extractor)
+require_labeled_terminal_route_contract(journey, extractor)
 
 
 def require_open_composer_physical_target_settles(source: str) -> None:
@@ -285,6 +305,8 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
         "textContent.includes('Transcript ready')",
         '"recording actions must follow the Kotlin composer row: Discard, Insert, Send, Stop"',
         '"transcribing Cancel must be distinct from recording Discard"',
+        '"transcribing state must expose Cancel, timer, live preview, and Send without Insert"',
+        '"editable review must restore its explicit, enabled Insert action"',
     )
     for needle in journey_evidence:
         if needle not in source:
@@ -295,6 +317,10 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
         'mode_geometry.get("composerHeading") != expected_heading',
         'route_state.get("inlineMicLabel") != "Dictate to terminal"',
         'mode_geometry.get("cancelText") != "Cancel"',
+        'mode_geometry.get("insertAccessible") is not False',
+        'mode_geometry.get("insert") is not None',
+        'mode_geometry.get("insertEnabled") is not True',
+        'required_rects.append("insert")',
         'mode_geometry.get("timerBesideWaveform") is not True',
         'mode_geometry.get("timerVisible") is not True',
         'mode_geometry.get("insertAccessible") is not True',
@@ -328,6 +354,7 @@ def require_obvious_prompt_dictation_mode() -> None:
         '<DictationMicIcon :size="20" />',
         "composer-recording-preview composer-status",
         "Prompt dictation draft, read only during capture",
+        'v-if="dictationPhase === \'recording\'"',
     )
     for needle in composer_evidence:
         if needle not in prompt_composer:
@@ -340,7 +367,11 @@ def require_obvious_prompt_dictation_mode() -> None:
         "expect(textContent(mic!)).toBe('')",
         "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation')",
         "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation')",
+        "const reviewInsert = findByTestId(root, 'composer-insert');",
+        "expect(reviewInsert?.props.disabled).toBe(false);",
         "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop'])",
+        "toEqual(['composer-recording-cancel', 'composer-dictation-send'])",
+        "expect(findByTestId(root, 'composer-insert')).toBeUndefined();",
         "expect(writePty).not.toHaveBeenCalled();",
     )
     for needle in unit_evidence:
@@ -356,10 +387,56 @@ def require_obvious_prompt_dictation_mode() -> None:
 require_obvious_prompt_dictation_mode()
 
 
+def require_keyboard_up_composer_layout() -> None:
+    base_sheet_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel {')
+    sheet_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet {')
+    title_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading__copy,')
+    route_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading > .state-tag { display: none; }')
+    route_group_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading { justify-content: flex-end; }')
+    if not base_sheet_rule < sheet_rule < title_rule:
+        raise AssertionError("keyboard-up sheet padding and hidden title copy rules must follow the generic composer rule")
+    if route_rule <= title_rule:
+        raise AssertionError("keyboard-up composer must hide header status text while retaining the key route controls")
+    if route_group_rule <= sheet_rule or "display: none;" not in app_styles[route_rule:route_rule + 120]:
+        raise AssertionError("keyboard-up composer must hide title copy while preserving a visible key-control row")
+    for needle in ("padding-inline: 16px;",):
+        if needle not in app_styles[sheet_rule:title_rule]:
+            raise AssertionError("keyboard-up Prompt Composer does not retain the shared horizontal inset")
+    journey_evidence = (
+        'composerIsSheet:composer?.classList.contains(\'composer-panel--sheet\')===true',
+        'composerHeadingVisible:!!heading&&heading.getClientRects().length>0&&headingStyle?.display!==\'none\'',
+        'keyboard-up Prompt Composer must hide its title copy while keeping the key route visible',
+        "keys:composer?.querySelector('[data-testid=composer-open-keys]')",
+        'composerOpenKeysBounds:rect(buttons.keys)',
+        'keyboard-up composer " + name + " must keep a 16dp horizontal gutter',
+        'keyboard-down composer must retain its phase heading',
+        'draftBounds:rect(draftNode),actionsBounds:rect(actionsNode)',
+    )
+    for needle in journey_evidence:
+        if needle not in journey:
+            raise AssertionError(f"composer journey is missing the keyboard-up/down layout assertion: {needle}")
+    extractor_evidence = (
+        'geometry.get("composerIsSheet") is not True',
+        'geometry.get("composerHeadingVisible") is not False',
+        'any(buttons.get(name) is not True for name in ("dictate", "insert", "send", "keys"))',
+        'composerOpenKeysBounds',
+        'keyboard-up composer {name} must keep a 16dp horizontal gutter',
+        'title_state.get("composerHeadingVisible") is not False',
+        'mode_geometry.get("composerHeadingVisible") is not True',
+        'keyboard-up composer title copy is visible',
+        'keyboard-up composer draft loses its horizontal gutter',
+    )
+    for needle in extractor_evidence:
+        if needle not in extractor:
+            raise AssertionError(f"composer artifact extractor is missing the keyboard-up/down layout guard: {needle}")
+
+
+require_keyboard_up_composer_layout()
+
+
 def require_pre_action_host_byte_oracle() -> None:
     for stage, action in (
         ("recording-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
-        ("transcribing-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
         ("transcribing-send", 'tapDomCenter("[data-testid=composer-dictation-send]")'),
     ):
         before = journey.index(f'captureHostBeforeExplicitAction("{stage}",')
@@ -377,7 +454,7 @@ def require_pre_action_host_byte_oracle() -> None:
     ):
         if needle not in host_oracle:
             raise AssertionError(f"host oracle is missing independent pre-action PTY evidence: {needle}")
-    if '"recording-insert", "transcribing-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
+    if '"recording-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
         raise AssertionError("host-byte checker does not require every pre-action stage")
     for needle in (
         '"ptyWriteObserved") is not False',
@@ -399,6 +476,53 @@ def require_pre_action_host_byte_oracle() -> None:
 
 
 require_pre_action_host_byte_oracle()
+
+
+def require_wrapped_terminal_marker_oracle(source: str) -> None:
+    matcher_start = source.index("private static String wrappedXtermMarkerSpanJs(")
+    wait_start = source.index("private long waitForTerminalMarkerOrCaptureWindow(", matcher_start)
+    artifact_start = source.index("private void savePostSendArtifacts(", wait_start)
+    assertion_start = source.index("assertTrue(\"post-send byte and marker output rows", artifact_start)
+    matcher = source[matcher_start:wait_start]
+    wait = source[wait_start:artifact_start]
+    artifact = source[artifact_start:assertion_start]
+    assertions = source[assertion_start:source.index("private void ", assertion_start)]
+    for needle in (
+        "joined=(rows[start].textContent||'')+joined",
+        "rows:rows.slice(start,end+1)",
+    ):
+        if needle not in matcher:
+            raise AssertionError(f"Composer marker matcher does not join consecutive xterm rows: {needle}")
+    for needle in (
+        "wrappedXtermMarkerSpanJs(quotedMarker)",
+        "markerRowRects.every(bounds=>visible(bounds,view,screenBounds))",
+        "composerBounds=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect()",
+        "bounds.bottom<=composerBounds.top",
+        "byteRowIndex<markerSpan.start",
+        "markerFragments:markerRowNodes.map",
+    ):
+        if needle not in wait:
+            raise AssertionError(f"Composer marker wait/failure diagnostics lack wrapped-row coverage: {needle}")
+    for needle in (
+        "wrappedXtermMarkerSpanJs(JSONObject.quote(expectedMarker))",
+        "markerRowSpan:{startRowIndex:markerSpan?.start??null",
+        "markerRowsVisible&&byteOutputVisible&&byteOutputRowIndex>=0",
+        "bounds.bottom<=composerRect.top",
+        "byteOutputRowIndex<markerSpan.start",
+        "terminalDomText,terminalDomRows",
+    ):
+        if needle not in artifact:
+            raise AssertionError(f"Composer post-send artifact does not report a wrapped marker span: {needle}")
+    for needle in (
+        "markerRow.getDouble(\"top\") >= viewport.getDouble(\"top\")",
+        "markerRow.getDouble(\"bottom\") <= composerTop",
+        "measured.getBoolean(\"terminalOutputRowVisible\")",
+    ):
+        if needle not in assertions:
+            raise AssertionError(f"Composer post-send assertion lost marker visibility/order checks: {needle}")
+
+
+require_wrapped_terminal_marker_oracle(journey)
 
 
 def require_contract(source: str, packaged_script: str) -> None:

@@ -557,6 +557,12 @@ button { color: inherit; }
     gap: 6px;
     padding: 0;
   }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet {
+    padding-inline: 16px;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading { justify-content: flex-end; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading__copy,
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading > .state-tag { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading .eyebrow { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading h3 {

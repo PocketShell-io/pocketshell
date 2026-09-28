@@ -594,7 +594,7 @@ function startPromptDictation() {
             @click="activeDictation && cancelDictation(activeDictation)">
             {{ dictationPhase === 'recording' ? 'Discard' : 'Cancel' }}
           </button>
-          <button v-if="dictationPhase === 'recording' || dictationPhase === 'transcribing'"
+          <button v-if="dictationPhase === 'recording'"
             class="composer-recording-action composer-recording-action--insert"
             type="button" data-testid="composer-insert" :disabled="!canDeliver || sendingIntent !== null"
             @click="deliver('insert')">

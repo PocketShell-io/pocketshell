@@ -39,8 +39,6 @@ REQUIRED_NAMES = {
     "composer-recording-insert-geometry.json",
     "composer-transcribing-send.png",
     "composer-transcribing-send-geometry.json",
-    "composer-transcribing-insert.png",
-    "composer-transcribing-insert-geometry.json",
     "composer-back-workspace-restored.png",
     "composer-back-workspace-restored.json",
     "composer-route.png",
@@ -84,7 +82,6 @@ FAILURE_SCREENSHOTS = {
     "composer-mode-ime-failure.png",
     "composer-recording-insert.png",
     "composer-transcribing-send.png",
-    "composer-transcribing-insert.png",
     "composer-back-workspace-failure.png",
     "composer-title.png",
     "composer-launcher-before-reopen.png",
@@ -326,16 +323,22 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or route_state.get("promptAccessibleName") != "Open prompt composer"
                 or route_state.get("expectedPromptAccessibleName") != "Open prompt composer"
                 or route_state.get("promptTitle") != "Open prompt composer"
+                or route_state.get("promptLabel") != "Prompt"
+                or route_state.get("expectedPromptLabel") != "Prompt"
+                or route_state.get("promptLabelVisible") is not True
                 or route_state.get("promptIconVisible") is not True
                 or route_state.get("promptCenterHit") is not True
                 or route_state.get("inlineMicVisible") is not True or route_state.get("inlineMicEnabled") is not True
                 or route_state.get("inlineMicLabel") != "Dictate to terminal"
                 or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"
                 or route_state.get("inlineMicTitle") != "Dictate to terminal"
+                or route_state.get("terminalDestinationLabels") != ["Dictate"]
+                or route_state.get("expectedTerminalDestinationLabels") != ["Dictate"]
+                or route_state.get("terminalDestinationVisible") is not True
                 or route_state.get("inlineMicIconVisible") is not True
                 or route_state.get("inlineMicCenterHit") is not True
                 or route_state.get("targetsSeparated") is not True):
-            raise ExtractionFailure("idle terminal evidence does not prove accessible, separate Prompt and terminal dictation controls")
+            raise ExtractionFailure("idle terminal evidence does not prove visibly labeled, separate Prompt and terminal dictation controls")
         route_session = route_state.get("expectedSession")
         route_heading = route_state.get("terminalHeading")
         if (not isinstance(route_session, str) or not route_session or not isinstance(route_heading, str)
@@ -390,6 +393,9 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
         if (title_state.get("state") != "idle" or title_state.get("composerVisible") is not True
                 or title_state.get("composerHeading") != "Prompt Composer"
                 or title_state.get("expectedComposerHeading") != "Prompt Composer"
+                or title_state.get("keyboardVisible") is not True
+                or title_state.get("composerHeadingVisible") is not False
+                or title_state.get("composerHeadingDisplay") != "none"
                 or title_state.get("sheetFullyVisible") is not True
                 or title_state.get("dictatePromptText") != ""
                 or title_state.get("expectedDictatePromptVisibleLabel") != ""
@@ -399,6 +405,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or title_state.get("dictatePromptVisible") is not True
                 or title_state.get("dictatePromptEnabled") is not True
                 or not isinstance(panel, dict) or not isinstance(scrim, dict) or not isinstance(viewport, dict)
+                or not isinstance(title_state.get("draftBounds"), dict)
+                or not isinstance(title_state.get("actionsBounds"), dict)
                 or not isinstance(viewport.get("width"), (int, float))
                 or not isinstance(viewport.get("height"), (int, float))
                 or panel.get("top", -1) < 0 or panel.get("bottom", float("inf")) > viewport.get("height", 0) + 0.5
@@ -406,10 +414,21 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or scrim.get("bottom", 0) < viewport.get("height", 0) - 0.5
                 or scrim.get("right", 0) < viewport.get("width", 0) - 0.5
                 or not isinstance(buttons, dict)
-                or any(buttons.get(name) is not True for name in ("dictate", "insert", "send"))
+                or any(buttons.get(name) is not True for name in ("dictate", "insert", "send", "keys"))
                 or title_state.get("screenScrollTop") != 0 or title_state.get("documentScrollTop") != 0):
             raise ExtractionFailure("composer title report does not prove a fully visible idle sheet and generic heading")
+        for name in ("draftBounds", "actionsBounds"):
+            bounds = title_state[name]
+            try:
+                left = float(bounds["left"])
+                right = float(bounds["right"])
+                title_width = float(viewport["width"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"composer title report has invalid {name} horizontal bounds") from error
+            if left < 16.0 or title_width - right < 16.0:
+                raise ExtractionFailure(f"keyboard-up composer {name} must keep a 16dp horizontal gutter")
         dictate_bounds = title_state.get("dictatePromptBounds")
+        open_keys_bounds = title_state.get("composerOpenKeysBounds")
         try:
             dictate_top = float(dictate_bounds["top"])
             dictate_bottom = float(dictate_bounds["bottom"])
@@ -431,6 +450,19 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or dictate_top < max(0.0, panel_top) or dictate_bottom > min(viewport_height, panel_bottom) + 0.5
                 or dictate_left < max(0.0, panel_left) or dictate_right > min(viewport_width, panel_right) + 0.5):
             raise ExtractionFailure("Dictate prompt action is clipped or below the 48dp touch target")
+        try:
+            keys_top = float(open_keys_bounds["top"])
+            keys_bottom = float(open_keys_bounds["bottom"])
+            keys_left = float(open_keys_bounds["left"])
+            keys_right = float(open_keys_bounds["right"])
+            keys_width = float(open_keys_bounds["width"])
+            keys_height = float(open_keys_bounds["height"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExtractionFailure("composer title report has invalid More terminal keys bounds") from error
+        if (keys_width < 48.0 or keys_width >= 49.0 or keys_height < 48.0 or keys_height >= 49.0
+                or keys_top < max(0.0, panel_top) or keys_bottom > min(viewport_height, panel_bottom) + 0.5
+                or keys_left < max(0.0, panel_left) or keys_right > min(viewport_width, panel_right) + 0.5):
+            raise ExtractionFailure("More terminal keys is hidden, clipped, or below the 48dp touch target")
         terminal_heading = title_state.get("terminalHeading")
         expected_session = title_state.get("expectedSessionChrome")
         if (not isinstance(terminal_heading, str) or not isinstance(expected_session, str)
@@ -497,6 +529,10 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("keyboard geometry has invalid safe-area or viewport bounds") from error
         if ime_inset <= 0 or safe_area.get("keyboardVisible") is not True:
             raise ExtractionFailure("native IME inset or WebView keyboard layout state is missing")
+        if (geometry.get("composerIsSheet") is not True
+                or geometry.get("composerHeadingVisible") is not False
+                or geometry.get("composerHeadingDisplay") != "none"):
+            raise ExtractionFailure("keyboard-up Prompt Composer must hide its title copy")
         if abs(safe_bottom) > 0.5 or abs(shell_bottom) > 0.5:
             raise ExtractionFailure(f"keyboard layout retained bottom safe-area padding: CSS={safe_bottom}, shell={shell_bottom}")
         if status_inset <= 0 or safe_top < status_inset - 1 or shell_top < status_inset - 1 or app_bar_top < status_inset - 1:
@@ -505,7 +541,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 f"shell padding={shell_top}, app bar top={app_bar_top}"
             )
         visible_rects = {"draft": draft, "status": status, "actions": actions, "terminal context": terminal}
-        for name in ("discard", "insert", "send"):
+        for name in ("discard", "insert", "send", "keys"):
             button = controls.get(name)
             if not isinstance(button, dict):
                 raise ExtractionFailure(f"keyboard geometry is missing the {name} button bounds")
@@ -528,6 +564,15 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     f"{name} is clipped by keyboard viewport: {left}..{right} x {top}..{bottom}, "
                     f"viewport={width}x{height}"
                 )
+        for name in ("draft", "actions"):
+            rect = visible_rects[name]
+            try:
+                left = float(rect["left"])
+                right = float(rect["right"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ExtractionFailure(f"keyboard-up composer {name} has invalid horizontal bounds") from error
+            if left < 16.0 or width - right < 16.0:
+                raise ExtractionFailure(f"keyboard-up composer {name} must keep a 16dp horizontal gutter")
         if float(terminal["height"]) < 48:
             raise ExtractionFailure("keyboard layout hides the terminal context instead of preserving a useful viewport")
         if float(actions["top"]) < float(draft["bottom"]):
@@ -713,7 +758,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("accepted composer run contains the pre-fix recording screenshot")
         if "composer-mode-ime-failure.png" in decoded or "composer-mode-ime-failure.json" in decoded:
             raise ExtractionFailure("accepted composer run contains an IME-hidden state failure capture")
-        for state in ("recording", "recording-insert", "cancel", "background", "transcribing", "transcribing-insert", "transcribing-send", "review"):
+        for state in ("recording", "recording-insert", "cancel", "background", "transcribing", "transcribing-send", "review"):
             geometry_name = f"composer-{state}-geometry.json"
             try:
                 mode_geometry = json.loads(decoded[geometry_name])
@@ -729,9 +774,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                                 else "Review dictation" if state == "review" else "Prompt Composer")
             if mode_geometry.get("composerHeading") != expected_heading:
                 raise ExtractionFailure(f"{state} screenshot does not identify the active prompt dictation mode")
+            if (mode_geometry.get("composerHeadingVisible") is not True
+                    or mode_geometry.get("composerHeadingDisplay") == "none"):
+                raise ExtractionFailure(f"keyboard-down {state} screenshot must retain the composer heading")
             if state == "review" and "Transcript ready" not in str(mode_geometry.get("reviewText", "")):
                 raise ExtractionFailure("review screenshot does not identify the transcript as ready for editing")
-            if state in ("recording-insert", "transcribing-insert", "transcribing-send"):
+            if state in ("recording-insert", "transcribing-send"):
                 acknowledged_writes = mode_geometry.get("acknowledgedWrites")
                 writes_before_action = mode_geometry.get("acknowledgedWritesBeforeAction")
                 if (type(acknowledged_writes) is not int or type(writes_before_action) is not int
@@ -800,8 +848,9 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 elif (mode_geometry.get("cancelText") != "Cancel"
                         or mode_geometry.get("cancelAriaLabel") != "Cancel dictation and restore the original draft"
                         or mode_geometry.get("transcribingStatusAccessible") is not True
-                        or mode_geometry.get("insertAccessible") is not True
-                        or mode_geometry.get("insertEnabled") is not True
+                        or mode_geometry.get("insertAccessible") is not False
+                        or mode_geometry.get("insertEnabled") is not False
+                        or mode_geometry.get("insert") is not None
                         or mode_geometry.get("dictationSendAccessible") is not True
                         or mode_geometry.get("dictationSendEnabled") is not True
                         or mode_geometry.get("timerAccessible") is not True
@@ -811,15 +860,17 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         or mode_geometry.get("previewLive") is not True
                         or mode_geometry.get("previewAccessible") is not True
                         or not str(mode_geometry.get("previewText", "")).strip()):
-                    raise ExtractionFailure("transcribing screenshot does not expose Cancel, timer, live preview, Insert, and Send")
+                    raise ExtractionFailure("transcribing screenshot must show Cancel, timer, live preview, and Send while hiding Insert")
             elif state == "review" and (
                     mode_geometry.get("reviewVisible") is not True
                     or mode_geometry.get("reviewEditable") is not True
                     or mode_geometry.get("draftReadOnly") is not False
                     or mode_geometry.get("draftEditingLocked") is not False
                     or mode_geometry.get("draftPresentation") != "editor"
-                    or mode_geometry.get("expectedDraftMatches") is not True):
-                raise ExtractionFailure("review screenshot does not show the retained transcript in an editable draft")
+                    or mode_geometry.get("expectedDraftMatches") is not True
+                    or mode_geometry.get("insertAccessible") is not True
+                    or mode_geometry.get("insertEnabled") is not True):
+                raise ExtractionFailure("review screenshot does not show the retained transcript in an editable draft with Insert")
             elif state in ("cancel", "background") and mode_geometry.get("recordingModeVisible") is not False:
                 raise ExtractionFailure(f"{state} screenshot still shows a recording surface")
             viewport = mode_geometry.get("visualViewport")
@@ -833,6 +884,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             required_rects = ["draft", "status", "actions"]
             if state == "review":
                 required_rects.append("review")
+                required_rects.append("insert")
                 required_rects.append("send")
             elif state in ("cancel", "background"):
                 required_rects.append("send")
@@ -854,10 +906,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     required_rects.append("insert")
                     expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
                 else:
-                    if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
-                        raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Insert during transcribing")
-                    required_rects.append("insert")
-                    expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send"
+                    if (mode_geometry.get("insertAccessible") is not False
+                            or mode_geometry.get("insertEnabled") is not False
+                            or mode_geometry.get("insert") is not None):
+                        raise ExtractionFailure(f"{state} screenshot exposes Insert before editable review")
+                    expected_actions = "composer-recording-cancel,composer-dictation-send"
                 if mode_geometry.get("actionOrder") != expected_actions:
                     raise ExtractionFailure(f"{state} screenshot action order does not match the Kotlin composer")
             if state.startswith("recording"):
@@ -1016,8 +1069,11 @@ def self_test() -> None:
         "state": "idle",
         "composerVisible": True,
         "sheetFullyVisible": True,
+        "keyboardVisible": True,
         "composerHeading": "Prompt Composer",
         "expectedComposerHeading": "Prompt Composer",
+        "composerHeadingVisible": False,
+        "composerHeadingDisplay": "none",
         "dictatePromptText": "",
         "expectedDictatePromptVisibleLabel": "",
         "dictatePromptGlyphPresent": True,
@@ -1025,12 +1081,16 @@ def self_test() -> None:
         "dictatePromptAccessibleName": "Dictate prompt",
         "dictatePromptVisible": True,
         "dictatePromptEnabled": True,
-        "dictatePromptBounds": {"top": 684.0, "bottom": 732.0, "left": 348.0, "right": 396.0,
+        "dictatePromptBounds": {"top": 516.0, "bottom": 564.0, "left": 348.0, "right": 396.0,
                                  "width": 48.0, "height": 48.0},
-        "panelBounds": {"top": 500.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 415.0},
-        "scrimBounds": {"top": 0.0, "bottom": 915.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 915.0},
-        "viewport": {"width": 412.0, "height": 915.0},
-        "buttons": {"dictate": True, "insert": True, "send": True},
+        "panelBounds": {"top": 336.0, "bottom": 572.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 236.0},
+        "scrimBounds": {"top": 0.0, "bottom": 572.0, "left": 0.0, "right": 412.0, "width": 412.0, "height": 572.0},
+        "viewport": {"width": 412.0, "height": 572.0},
+        "draftBounds": {"top": 410.0, "bottom": 482.0, "left": 16.0, "right": 396.0, "width": 380.0, "height": 72.0},
+        "actionsBounds": {"top": 507.0, "bottom": 572.0, "left": 16.0, "right": 396.0, "width": 380.0, "height": 65.0},
+        "buttons": {"dictate": True, "insert": True, "send": True, "keys": True},
+        "composerOpenKeysBounds": {"top": 344.0, "bottom": 392.0, "left": 340.0, "right": 388.0,
+                                    "width": 48.0, "height": 48.0},
         "screenScrollTop": 0,
         "documentScrollTop": 0,
         "terminalHeading": f"{run_id}-bytes",
@@ -1049,6 +1109,9 @@ def self_test() -> None:
         "promptAccessibleName": "Open prompt composer",
         "expectedPromptAccessibleName": "Open prompt composer",
         "promptTitle": "Open prompt composer",
+        "promptLabel": "Prompt",
+        "expectedPromptLabel": "Prompt",
+        "promptLabelVisible": True,
         "promptIconVisible": True,
         "promptCenterHit": True,
         "inlineMicVisible": True,
@@ -1056,6 +1119,9 @@ def self_test() -> None:
         "inlineMicLabel": "Dictate to terminal",
         "expectedInlineMicLabel": "Dictate to terminal",
         "inlineMicTitle": "Dictate to terminal",
+        "terminalDestinationLabels": ["Dictate"],
+        "expectedTerminalDestinationLabels": ["Dictate"],
+        "terminalDestinationVisible": True,
         "inlineMicIconVisible": True,
         "inlineMicCenterHit": True,
         "targetsSeparated": True,
@@ -1078,6 +1144,18 @@ def self_test() -> None:
     hidden_prompt_icon_value = json.loads(route_state)
     hidden_prompt_icon_value["promptIconVisible"] = False
     hidden_prompt_icon = json.dumps(hidden_prompt_icon_value).encode()
+    missing_prompt_label_value = json.loads(route_state)
+    missing_prompt_label_value["promptLabel"] = ""
+    missing_prompt_label = json.dumps(missing_prompt_label_value).encode()
+    hidden_prompt_label_value = json.loads(route_state)
+    hidden_prompt_label_value["promptLabelVisible"] = False
+    hidden_prompt_label = json.dumps(hidden_prompt_label_value).encode()
+    missing_terminal_destination_value = json.loads(route_state)
+    missing_terminal_destination_value["terminalDestinationLabels"] = []
+    missing_terminal_destination = json.dumps(missing_terminal_destination_value).encode()
+    hidden_terminal_destination_value = json.loads(route_state)
+    hidden_terminal_destination_value["terminalDestinationVisible"] = False
+    hidden_terminal_destination = json.dumps(hidden_terminal_destination_value).encode()
     missed_prompt_center_value = json.loads(route_state)
     missed_prompt_center_value["promptCenterHit"] = False
     missed_prompt_center = json.dumps(missed_prompt_center_value).encode()
@@ -1196,6 +1274,8 @@ def self_test() -> None:
             "runId": run_id,
             "state": state,
             "composerHeading": "Prompt dictation" if anchored else "Review dictation" if state == "review" else "Prompt Composer",
+            "composerHeadingVisible": True,
+            "composerHeadingDisplay": "flex",
             "dictationState": "recording" if recording else "transcribing" if transcribing
             else "review" if state == "review" else "idle",
             "androidImeVisible": False,
@@ -1210,8 +1290,8 @@ def self_test() -> None:
             else "Your draft stays in the composer until you tap Insert or Send." if recording else "",
             "reviewText": "Transcript ready. Edit the draft before choosing Insert or Send." if state == "review" else "",
             "reviewEditable": state == "review",
-            "acknowledgedWrites": 1 if state in ("transcribing-send", "transcribing-insert") else 0,
-            "acknowledgedWritesBeforeAction": 1 if state in ("transcribing-send", "transcribing-insert") else 0,
+            "acknowledgedWrites": 1 if state == "transcribing-send" else 0,
+            "acknowledgedWritesBeforeAction": 1 if state == "transcribing-send" else 0,
             "draftPresentation": "focus-anchor" if anchored else "editor",
             "draftOpacity": "0" if anchored else "1",
             "draftAriaHidden": False,
@@ -1238,8 +1318,8 @@ def self_test() -> None:
             "stopVisible": recording,
             "stopEnabled": recording,
             "stopGlyphPresent": recording,
-            "insertAccessible": anchored,
-            "insertEnabled": anchored,
+            "insertAccessible": recording or state == "review",
+            "insertEnabled": recording or state == "review",
             "dictationSendAccessible": anchored,
             "dictationSendEnabled": anchored,
             "transcribingStatusAccessible": transcribing,
@@ -1269,9 +1349,10 @@ def self_test() -> None:
             payload["recordingActions"] = rect
             payload["actionOrder"] = (
                 "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
-                if recording else "composer-recording-cancel,composer-insert,composer-dictation-send"
+                if recording else "composer-recording-cancel,composer-dictation-send"
             )
-            payload["insert"] = rect
+            if recording:
+                payload["insert"] = rect
         if state in ("cancel", "background"):
             payload["send"] = rect
         if recording:
@@ -1282,6 +1363,7 @@ def self_test() -> None:
             payload.update({"timer": timer_rect, "preview": rect})
         if state == "review":
             payload["review"] = rect
+            payload["insert"] = rect
             payload["send"] = rect
         return json.dumps(payload).encode()
     focus_trace = json.dumps({
@@ -1380,6 +1462,12 @@ def self_test() -> None:
     discard_labeled_transcribing_cancel["cancelText"] = "Discard"
     discard_labeled_transcribing_cancel["cancelAriaLabel"] = "Discard recording without transcribing"
     discard_labeled_transcribing_cancel_geometry = json.dumps(discard_labeled_transcribing_cancel).encode()
+    premature_transcribing_insert = json.loads(mode_geometry_payload("transcribing"))
+    premature_transcribing_insert["insertAccessible"] = True
+    premature_transcribing_insert["insertEnabled"] = True
+    premature_transcribing_insert["insert"] = {"top": 10.0, "bottom": 58.0, "left": 347.0, "right": 395.0}
+    premature_transcribing_insert["actionOrder"] = "composer-recording-cancel,composer-insert,composer-dictation-send"
+    premature_transcribing_insert_geometry = json.dumps(premature_transcribing_insert).encode()
     timer_below_waveform = json.loads(mode_geometry_payload("recording"))
     timer_below_waveform["timerBesideWaveform"] = True
     timer_below_waveform["timer"]["left"] = 80.0
@@ -1394,6 +1482,10 @@ def self_test() -> None:
     uneditable_review = json.loads(mode_geometry_payload("review"))
     uneditable_review["reviewEditable"] = False
     uneditable_review_geometry = json.dumps(uneditable_review).encode()
+    hidden_keyboard_down_heading = json.loads(mode_geometry_payload("review"))
+    hidden_keyboard_down_heading["composerHeadingVisible"] = False
+    hidden_keyboard_down_heading["composerHeadingDisplay"] = "none"
+    hidden_keyboard_down_heading_geometry = json.dumps(hidden_keyboard_down_heading).encode()
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
     keyboard_up_post_send = json.dumps(keyboard_up_post_send_value).encode()
@@ -1433,11 +1525,29 @@ def self_test() -> None:
     disabled_dictate_value = json.loads(title_state)
     disabled_dictate_value["dictatePromptEnabled"] = False
     disabled_dictate = json.dumps(disabled_dictate_value).encode()
+    hidden_open_keys_value = json.loads(title_state)
+    hidden_open_keys_value["buttons"]["keys"] = False
+    hidden_open_keys = json.dumps(hidden_open_keys_value).encode()
+    clipped_open_keys_value = json.loads(title_state)
+    clipped_open_keys_value["composerOpenKeysBounds"].update({"left": 376.0, "right": 424.0})
+    clipped_open_keys = json.dumps(clipped_open_keys_value).encode()
     offscreen_title_value = json.loads(title_state)
     offscreen_title_value["sheetFullyVisible"] = False
     offscreen_title_value["panelBounds"]["top"] = 914.0
     offscreen_title_value["panelBounds"]["bottom"] = 1329.0
     offscreen_title_state = json.dumps(offscreen_title_value).encode()
+    visible_keyboard_title_value = json.loads(title_state)
+    visible_keyboard_title_value["composerHeadingVisible"] = True
+    visible_keyboard_title_value["composerHeadingDisplay"] = "flex"
+    visible_keyboard_title_state = json.dumps(visible_keyboard_title_value).encode()
+    unpadded_title_draft_value = json.loads(title_state)
+    unpadded_title_draft_value["draftBounds"]["left"] = 1.0
+    unpadded_title_draft_value["draftBounds"]["right"] = 411.0
+    unpadded_title_draft = json.dumps(unpadded_title_draft_value).encode()
+    unpadded_title_actions_value = json.loads(title_state)
+    unpadded_title_actions_value["actionsBounds"]["left"] = 1.0
+    unpadded_title_actions_value["actionsBounds"]["right"] = 411.0
+    unpadded_title_actions = json.dumps(unpadded_title_actions_value).encode()
     untrusted_launcher_after_value = json.loads(launcher_after)
     untrusted_launcher_after_value["dom"]["pointerEvents"] = []
     untrusted_launcher_after = json.dumps(untrusted_launcher_after_value).encode()
@@ -1459,20 +1569,27 @@ def self_test() -> None:
             "androidImeVisible": ime_visible,
             "visualViewport": {"height": 240.0, "width": 400.0},
             "terminalViewport": {"top": 30.0, "bottom": 30.0 + terminal_height, "left": 1.0, "right": 399.0, "height": terminal_height},
+            "composerIsSheet": True,
+            "composerHeadingVisible": False,
+            "composerHeadingDisplay": "none",
             "appBar": {"top": app_bar_top},
-            "draft": {"top": 100.0, "bottom": 150.0, "left": 1.0, "right": 399.0},
-            "status": {"top": 152.0, "bottom": 166.0, "left": 1.0, "right": 399.0},
-            "actions": {"top": 168.0, "bottom": 219.0, "left": 1.0, "right": 399.0},
+            "draft": {"top": 100.0, "bottom": 150.0, "left": 16.0, "right": 384.0},
+            "status": {"top": 152.0, "bottom": 166.0, "left": 16.0, "right": 384.0},
+            "actions": {"top": 168.0, "bottom": 219.0, "left": 16.0, "right": 384.0},
             "buttons": {
-                "discard": {"top": 170.0, "bottom": 218.0, "left": 1.0, "right": 70.0},
+                "discard": {"top": 170.0, "bottom": 218.0, "left": 16.0, "right": 70.0},
                 "insert": {"top": 170.0, "bottom": 218.0, "left": 250.0, "right": 310.0},
-                "send": {"top": 170.0, "bottom": send_bottom, "left": 320.0, "right": 398.0},
+                "send": {"top": 170.0, "bottom": send_bottom, "left": 320.0, "right": 384.0},
+                "keys": {"top": 20.0, "bottom": 68.0, "left": 320.0, "right": 368.0},
             },
             "safeArea": {"topCss": 24.0, "bottomCss": 0.0, "shellTopPadding": 24.0, "shellBottomPadding": 0.0, "keyboardVisible": True},
             "nativeInsets": {"statusBarTopDp": 24.0, "imeBottomDp": 300.0},
         }).encode()
 
     geometry = geometry_payload()
+    undersized_open_keys_value = json.loads(geometry)
+    undersized_open_keys_value["buttons"]["keys"]["bottom"] = 67.0
+    undersized_open_keys_geometry = json.dumps(undersized_open_keys_value).encode()
 
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
                    dictation_send_bytes: bytes = dictation_send,
@@ -1487,6 +1604,7 @@ def self_test() -> None:
                    background_geometry_bytes: bytes | None = None,
                    recording_geometry_bytes: bytes | None = None,
                    recording_insert_geometry_bytes: bytes | None = None,
+                   transcribing_geometry_bytes: bytes | None = None,
                    transcribing_send_geometry_bytes: bytes | None = None,
                    review_geometry_bytes: bytes | None = None,
                    inline_preview_bytes: bytes = png) -> list[str]:
@@ -1520,11 +1638,9 @@ def self_test() -> None:
             ("composer-background.png", png),
             ("composer-background-geometry.json", background_geometry_bytes or mode_geometry_payload("background")),
             ("composer-transcribing.png", png),
-            ("composer-transcribing-geometry.json", mode_geometry_payload("transcribing")),
+            ("composer-transcribing-geometry.json", transcribing_geometry_bytes or mode_geometry_payload("transcribing")),
             ("composer-transcribing-send.png", png),
             ("composer-transcribing-send-geometry.json", transcribing_send_geometry_bytes or mode_geometry_payload("transcribing-send")),
-            ("composer-transcribing-insert.png", png),
-            ("composer-transcribing-insert-geometry.json", mode_geometry_payload("transcribing-insert")),
             ("composer-review.png", png),
             ("composer-review-geometry.json", review_geometry_bytes or mode_geometry_payload("review")),
             ("composer-recording-after-restart.png", png),
@@ -1569,6 +1685,10 @@ def self_test() -> None:
         ("Prompt composer has no accessible name", make_lines(route_state_bytes=unnamed_prompt_route)),
         ("Prompt composer has the wrong title", make_lines(route_state_bytes=mismatched_prompt_title)),
         ("Prompt composer icon is hidden", make_lines(route_state_bytes=hidden_prompt_icon)),
+        ("idle Prompt caption is missing", make_lines(route_state_bytes=missing_prompt_label)),
+        ("idle Prompt caption is hidden", make_lines(route_state_bytes=hidden_prompt_label)),
+        ("terminal dictation action/destination caption is incomplete", make_lines(route_state_bytes=missing_terminal_destination)),
+        ("terminal dictation action/destination caption is hidden", make_lines(route_state_bytes=hidden_terminal_destination)),
         ("Prompt composer center misses its target", make_lines(route_state_bytes=missed_prompt_center)),
         ("terminal dictation mic has the wrong title",
          make_lines(route_state_bytes=mismatched_inline_mic_title)),
@@ -1587,8 +1707,18 @@ def self_test() -> None:
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
         ("bad digest", [line.replace(hashlib.sha256(png).hexdigest(), "0" * 64) for line in lines]),
         ("IME hidden", make_lines(geometry_payload(ime_visible=False))),
+        ("keyboard-up Prompt Composer title remains visible",
+         make_lines(geometry_bytes=json.dumps({**json.loads(geometry), "composerHeadingVisible": True,
+                                               "composerHeadingDisplay": "flex"}).encode())),
+        ("keyboard-up composer draft loses its horizontal gutter",
+         make_lines(geometry_bytes=json.dumps({**json.loads(geometry),
+                                               "draft": {**json.loads(geometry)["draft"], "left": 1.0, "right": 399.0}}).encode())),
+        ("keyboard-up composer actions lose their horizontal gutter",
+         make_lines(geometry_bytes=json.dumps({**json.loads(geometry),
+                                               "actions": {**json.loads(geometry)["actions"], "left": 1.0, "right": 399.0}}).encode())),
         ("send button clipped by viewport", make_lines(geometry_payload(send_bottom=241))),
         ("send touch target below 48dp", make_lines(geometry_payload(send_bottom=214))),
+        ("More terminal keys touch target below 48dp", make_lines(geometry_bytes=undersized_open_keys_geometry)),
         ("status bar overlap", make_lines(geometry_payload(app_bar_top=0))),
         ("terminal context hidden", make_lines(geometry_payload(terminal_height=30))),
         ("post-send marker missing from rendered terminal", make_lines(post_send_bytes=post_send.replace(marker.encode(), b"wrong-marker"))),
@@ -1631,6 +1761,8 @@ def self_test() -> None:
          make_lines(recording_geometry_bytes=cancel_labeled_recording_discard_geometry)),
         ("transcribing Cancel is labeled Discard",
          make_lines(transcribing_send_geometry_bytes=discard_labeled_transcribing_cancel_geometry)),
+        ("transcribing offers Insert before editable review",
+         make_lines(transcribing_geometry_bytes=premature_transcribing_insert_geometry)),
         ("recording timer is stacked below its waveform",
          make_lines(recording_geometry_bytes=timer_below_waveform_geometry)),
         ("recording transcript lacks live accessible text",
@@ -1639,6 +1771,8 @@ def self_test() -> None:
          make_lines(recording_geometry_bytes=nested_recording_actions_geometry)),
         ("post-stop review is no longer editable",
          make_lines(review_geometry_bytes=uneditable_review_geometry)),
+        ("keyboard-down Composer title row is hidden",
+         make_lines(review_geometry_bytes=hidden_keyboard_down_heading_geometry)),
         ("session identity leaked into composer title", make_lines(title_state_bytes=session_leaked_title_state)),
         ("composer mic omits the visible Dictate label",
          make_lines(title_state_bytes=ambiguous_dictate_text)),
@@ -1648,8 +1782,16 @@ def self_test() -> None:
         ("composer mic does not have 48dp bounds", make_lines(title_state_bytes=wrong_size_dictate)),
         ("composer mic is hidden", make_lines(title_state_bytes=hidden_dictate)),
         ("composer mic is disabled", make_lines(title_state_bytes=disabled_dictate)),
+        ("composer More terminal keys route is hidden", make_lines(title_state_bytes=hidden_open_keys)),
+        ("composer More terminal keys route is clipped", make_lines(title_state_bytes=clipped_open_keys)),
         ("idle composer title screenshot captured before the sheet was painted",
          make_lines(title_state_bytes=offscreen_title_state)),
+        ("keyboard-up composer title copy is visible",
+         make_lines(title_state_bytes=visible_keyboard_title_state)),
+        ("keyboard-up composer draft has no horizontal inset",
+         make_lines(title_state_bytes=unpadded_title_draft)),
+        ("keyboard-up composer actions have no horizontal inset",
+         make_lines(title_state_bytes=unpadded_title_actions)),
         ("inline dictation screenshot is ASCII run-as error text",
          make_lines(inline_preview_bytes=b"run-as: unknown package: com.pocketshell.app.i2857inline\n")),
     ):

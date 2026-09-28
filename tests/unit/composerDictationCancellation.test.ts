@@ -310,11 +310,18 @@ describe('composer dictation cancellation', () => {
     const draftRow = findByTestId(portal, 'prompt-draft')?.parent;
     const actions = findByTestId(portal, 'composer-actions');
     const mic = findByTestId(portal, 'composer-dictate');
+    const openKeys = findByTestId(portal, 'composer-open-keys');
     const send = findAll(portal, (candidate) => candidate.type === 'button'
       && candidate.props.title === 'Send (Enter)')[0];
 
     expect(composer?.props).toMatchObject({ role: 'dialog', 'aria-modal': 'true' });
     expect(draftRow).toBeDefined();
+    expect(openKeys?.parent?.props.class).toBe('composer-heading');
+    expect(openKeys?.props).toMatchObject({
+      'aria-label': 'More terminal keys',
+      title: 'More terminal keys',
+      disabled: false,
+    });
     expect(findByTestId(draftRow!, 'composer-dictate')).toBeUndefined();
     expect(mic?.parent).toBe(actions);
     expect(mic?.props).toMatchObject({
@@ -555,6 +562,9 @@ describe('composer dictation cancellation', () => {
     expect(findByTestId(root, 'prompt-draft')?.props['aria-readonly']).toBe('false');
     const review = findByTestId(root, 'composer-dictation-review');
     expect(textContent(review!)).toBe('Transcript ready. Edit it, then choose Insert or Send.');
+    const reviewInsert = findByTestId(root, 'composer-insert');
+    expect(reviewInsert).toBeDefined();
+    expect(reviewInsert?.props.disabled).toBe(false);
     expect(review?.props.role).toBe('status');
     expect(review?.props['aria-live']).toBe('polite');
     const reviewStatus = findByTestId(root, 'composer-status');
@@ -570,7 +580,6 @@ describe('composer dictation cancellation', () => {
   it.each([
     { phase: 'recording', intent: 'insert' },
     { phase: 'recording', intent: 'submit' },
-    { phase: 'transcribing', intent: 'insert' },
     { phase: 'transcribing', intent: 'submit' },
   ] as const)('stops $phase capture before the explicit $intent delivery and freezes the visible transcript', async ({ phase, intent }) => {
     mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
@@ -645,11 +654,11 @@ describe('composer dictation cancellation', () => {
       expect(composerState(root)).toBe('transcribing');
       expect(findAll(findByTestId(root, 'composer-recording-actions')!, (child) => child.type === 'button')
         .map((child) => child.props['data-testid']))
-        .toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send']);
+        .toEqual(['composer-recording-cancel', 'composer-dictation-send']);
       expect(textContent(findByTestId(root, 'composer-recording-cancel')!)).toBe('Cancel');
       expect(findByTestId(root, 'composer-recording-cancel')?.props['aria-label'])
         .toBe('Cancel dictation and restore the original draft');
-      expect(findByTestId(root, 'composer-insert')).toBeDefined();
+      expect(findByTestId(root, 'composer-insert')).toBeUndefined();
       expect(writePty).not.toHaveBeenCalled();
     }
 

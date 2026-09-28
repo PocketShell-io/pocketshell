@@ -45,6 +45,7 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -168,7 +169,7 @@ public final class JsComposerDockerJourneyTest {
         String sentMarkerPrefix = "PS2857_SENT_";
         String unicodeCommand = "printf '%s' 'café 🧪' | od -An -tx1 | tr -d '[:space:]' | tee /tmp/"
                 + nameBase + "-u; printf '\\n%s%s\\n' '" + sentMarkerPrefix + "' '" + nameBase
-                + "' | tee /tmp/" + nameBase + "-s";
+                + "' | tee /tmp/" + nameBase + "-s; printf '\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n'";
         assertTrue("the sent-output marker must not be present verbatim in the command echo", !unicodeCommand.contains(sentMarker));
         openComposerAfterInlineWithEvidence(artifactRunId);
         setComposerDraft(unicodeCommand);
@@ -829,7 +830,7 @@ public final class JsComposerDockerJourneyTest {
                 terminalInputAcknowledgements());
         evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (acknowledgementsBefore + 1), 15_000);
         awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
@@ -943,7 +944,7 @@ public final class JsComposerDockerJourneyTest {
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(command) + "); 'final emitted'");
         evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-status]')?.textContent.includes('Inserted at the cursor')"
+                + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (acknowledgementsBefore + 1), 15_000);
     }
@@ -1207,48 +1208,6 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
                 + ".map(row => row.textContent || '').join('').includes(" + JSONObject.quote(insertMarker) + ")", 10_000);
 
-        awaitConnectedLivePromptTarget("before-transcribing-insert-case");
-        String transcribingInsertMarker = "PS2857_DICTATION_TRANSCRIBING_INSERT_" + nameBase;
-        String transcribingInsertCommand = "printf '%s' '" + transcribingInsertMarker + "' > /tmp/" + bytesSession
-                + "-dictation-transcribing-insert.marker";
-        String transcribingInsertPreview = "Extract the key details from these logs.";
-        setComposerDraft("");
-        String transcribingInsertWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
-        tapDomCenter("[data-testid=composer-dictate]");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
-        awaitImeVisible(false);
-        injectDictationTestEvent("partial", transcribingInsertPreview);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
-                + JSONObject.quote(transcribingInsertPreview));
-        tapDomCenter("[data-testid=composer-recording-stop]");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
-        String frozenInsertTimer = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
-        assertTrue("transcribing must keep the stopped recording timer visible", frozenInsertTimer.matches("\\d{2}:\\d{2}"));
-        SystemClock.sleep(750);
-        assertEquals("Stop must freeze the elapsed prompt dictation timer after its physical tap completes", frozenInsertTimer,
-                evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''"));
-        injectDictationTestEvent("partial", transcribingInsertCommand);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
-                + JSONObject.quote(transcribingInsertCommand));
-        assertEquals("transcribing-time Insert must not write while its visible transcript updates",
-                transcribingInsertWriteBaseline,
-                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
-        recordComposerModeState(runId, "transcribing-insert", transcribingInsertCommand,
-                Integer.parseInt(transcribingInsertWriteBaseline));
-        captureHostBeforeExplicitAction("transcribing-insert", transcribingInsertCommand);
-        tapDomCenter("[data-testid=composer-insert]");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'"
-                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
-                + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Insert')");
-        injectDictationTestEvent("finish", null);
-        awaitInsertedAndCleared();
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '1'");
-        tapDomCenter("[data-testid=composer-close]");
-        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
-        tapDomCenter("[data-key-id=enter]");
-        awaitJsTrue("Array.from(document.querySelectorAll('.terminal-viewport .xterm-rows > div'))"
-                + ".map(row => row.textContent || '').join('').includes(" + JSONObject.quote(transcribingInsertMarker) + ")", 10_000);
-
         awaitConnectedLivePromptTarget("before-transcribing-send-case");
         String transcribingSendMarker = "PS2857_DICTATION_TRANSCRIBING_SEND_" + nameBase;
         String transcribingSendCommand = "printf '%s' '" + transcribingSendMarker + "' > /tmp/" + bytesSession
@@ -1462,8 +1421,11 @@ public final class JsComposerDockerJourneyTest {
         String report = evalString("(() => {const shell=document.querySelector('.app-shell');"
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const promptLabel=launcher?.querySelector('.mobile-hotkeys__destination-label');"
                 + "const promptIcon=launcher?.querySelector('svg');const promptIconStyle=promptIcon?getComputedStyle(promptIcon):null;"
                 + "const inlineMic=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const terminalDestination=inlineMic?.parentElement?.querySelector('[data-testid=inline-dictation-destination]');"
+                + "const terminalDestinationLabels=terminalDestination?Array.from(terminalDestination.children).map(node=>node.textContent.trim()):[];"
                 + "const inlineMicIcon=inlineMic?.querySelector('svg');const inlineMicIconStyle=inlineMicIcon?getComputedStyle(inlineMicIcon):null;"
                 + "const visible=node=>!!node&&node.getClientRects().length>0"
                 + "&&getComputedStyle(node).display!=='none'&&getComputedStyle(node).visibility!=='hidden';"
@@ -1475,11 +1437,13 @@ public final class JsComposerDockerJourneyTest {
                 + "viewport:{width:window.visualViewport?.width??window.innerWidth,height:window.visualViewport?.height??window.innerHeight},"
                 + "composerPresent:!!composer,launcherVisible:visible(launcher),launcherEnabled:!!launcher&&!launcher.disabled,"
                 + "promptAccessibleName:launcher?.getAttribute('aria-label')??'',promptTitle:launcher?.getAttribute('title')??'',"
+                + "promptLabel:promptLabel?.textContent.trim()??'',promptLabelVisible:visible(promptLabel),"
                 + "promptIconVisible:!!promptIcon&&visible(promptIcon)&&Number.parseFloat(promptIconStyle?.opacity??'1')>0"
                 + "&&promptIcon.getBoundingClientRect().width>0&&promptIcon.getBoundingClientRect().height>0,"
                 + "promptCenterHit:hitCenter(launcher),inlineMicVisible:visible(inlineMic),"
                 + "inlineMicEnabled:!!inlineMic&&!inlineMic.disabled,inlineMicLabel:inlineMic?.getAttribute('aria-label')??'',"
                 + "inlineMicTitle:inlineMic?.getAttribute('title')??'',"
+                + "terminalDestinationLabels,terminalDestinationVisible:visible(terminalDestination),"
                 + "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)&&Number.parseFloat(inlineMicIconStyle?.opacity??'1')>0"
                 + "&&inlineMicIcon.getBoundingClientRect().width>0&&inlineMicIcon.getBoundingClientRect().height>0,"
                 + "inlineMicCenterHit:hitCenter(inlineMic),"
@@ -1488,7 +1452,9 @@ public final class JsComposerDockerJourneyTest {
                 + "promptBounds,inlineMicBounds});})() ");
         JSONObject state = new JSONObject(report).put("runId", runId)
                 .put("expectedPromptAccessibleName", "Open prompt composer")
+                .put("expectedPromptLabel", "Prompt")
                 .put("expectedInlineMicLabel", "Dictate to terminal")
+                .put("expectedTerminalDestinationLabels", new JSONArray(List.of("Dictate")))
                 .put("expectedSession", bytesSession);
         emitArtifact(runId, "composer-route.json", state.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-route.png");
@@ -1499,10 +1465,13 @@ public final class JsComposerDockerJourneyTest {
                         && state.getBoolean("launcherEnabled")
                         && "Open prompt composer".equals(state.getString("promptAccessibleName"))
                         && "Open prompt composer".equals(state.getString("promptTitle"))
+                        && "Prompt".equals(state.getString("promptLabel")) && state.getBoolean("promptLabelVisible")
                         && state.getBoolean("promptIconVisible") && state.getBoolean("promptCenterHit")
                         && state.getBoolean("inlineMicVisible") && state.getBoolean("inlineMicEnabled")
                         && "Dictate to terminal".equals(state.getString("inlineMicLabel"))
                         && "Dictate to terminal".equals(state.getString("inlineMicTitle"))
+                        && "[\"Dictate\"]".equals(state.getJSONArray("terminalDestinationLabels").toString())
+                        && state.getBoolean("terminalDestinationVisible")
                         && state.getBoolean("inlineMicIconVisible") && state.getBoolean("inlineMicCenterHit")
                         && state.getBoolean("targetsSeparated")
                         && state.getString("terminalHeading").contains(bytesSession)
@@ -1531,7 +1500,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const style=composer?getComputedStyle(composer):null;"
                 + "return composer?.dataset.dictationState==='idle' && composer.getAttribute('role')==='dialog'"
                 + " && composer.getAttribute('aria-modal')==='true' && !!scrim && scrim.getClientRects().length>0"
-                + " && !!panel && panel.height>=200 && panel.top>=0 && panel.bottom<=viewportHeight+0.5"
+                + " && !!panel && panel.height>=160 && panel.top>=0 && panel.bottom<=viewportHeight+0.5"
                 + " && style?.display!=='none' && style?.visibility!=='hidden' && Number(style?.opacity??0)>0.95;})()";
         awaitJsTrue(visibleIdleSheet, 15_000);
         awaitWebViewVisualState();
@@ -1541,8 +1510,12 @@ public final class JsComposerDockerJourneyTest {
                 + "const rect=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
                 + "const viewport={width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight};"
                 + "const panelBounds=rect(composer);const scrimBounds=rect(scrim);"
+                + "const heading=composer?.querySelector('.composer-heading__copy');const headingStyle=heading?getComputedStyle(heading):null;"
+                + "const draftNode=composer?.querySelector('[data-testid=prompt-draft]');"
+                + "const actionsNode=composer?.querySelector('[data-testid=composer-actions]');"
                 + "const buttons={dictate:document.querySelector('[data-testid=composer-dictate]'),"
-                + "insert:document.querySelector('[data-testid=composer-insert]'),send:document.querySelector('.composer-shared-controls .send')};"
+                + "insert:document.querySelector('[data-testid=composer-insert]'),send:document.querySelector('.composer-shared-controls .send'),"
+                + "keys:composer?.querySelector('[data-testid=composer-open-keys]')};"
                 + "const dictateLabel=buttons.dictate?(buttons.dictate.innerText||'').replace(/\\s+/g,' ').trim():'';"
                 + "const dictateRect=buttons.dictate?.getBoundingClientRect();"
                 + "const dictateStyle=buttons.dictate?getComputedStyle(buttons.dictate):null;"
@@ -1550,10 +1523,14 @@ public final class JsComposerDockerJourneyTest {
                 + "&&dictateStyle?.display!=='none'&&dictateStyle?.visibility!=='hidden'&&Number(dictateStyle?.opacity??0)>0.95;"
                 + "return JSON.stringify({state:composer?.dataset.dictationState??'',"
                 + "composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "composerHeadingDisplay:headingStyle?.display??'',"
+                + "composerHeadingVisible:!!heading&&heading.getClientRects().length>0&&headingStyle?.display!=='none'"
+                + "&&headingStyle?.visibility!=='hidden'&&Number(headingStyle?.opacity??0)>0.95,"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
                 + "composerVisible:!!composer&&composer.getClientRects().length>0,"
                 + "composerRole:composer?.getAttribute('role')??'',composerAriaModal:composer?.getAttribute('aria-modal')??'',"
                 + "panelBounds,scrimBounds,viewport,keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "draftBounds:rect(draftNode),actionsBounds:rect(actionsNode),"
                 + "sheetFullyVisible:!!panelBounds&&panelBounds.top>=0&&panelBounds.bottom<=viewport.height+0.5,"
                 + "draftText:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
                 + "dictatePromptText:dictateLabel,"
@@ -1562,6 +1539,7 @@ public final class JsComposerDockerJourneyTest {
                 + "dictatePromptVisible:dictateVisible,"
                 + "dictatePromptBounds:dictateRect?{top:dictateRect.top,bottom:dictateRect.bottom,left:dictateRect.left,right:dictateRect.right,width:dictateRect.width,height:dictateRect.height}:null,"
                 + "dictatePromptEnabled:!!buttons.dictate&&!buttons.dictate.disabled,"
+                + "composerOpenKeysBounds:rect(buttons.keys),"
                 + "buttons:Object.fromEntries(Object.entries(buttons).map(([name,node])=>[name,!!node&&node.getClientRects().length>0&&!node.disabled])),"
                 + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??0,"
                 + "documentScrollTop:document.documentElement.scrollTop??0});})()"));
@@ -1574,9 +1552,12 @@ public final class JsComposerDockerJourneyTest {
         emitCurrentScreen(runId, "composer-title.png");
         assertTrue("idle prompt composer sheet must be fully onscreen when title is captured: " + titleState,
                 titleState.getBoolean("composerVisible") && titleState.getBoolean("sheetFullyVisible")
+                        && titleState.getBoolean("keyboardVisible") && !titleState.getBoolean("composerHeadingVisible")
+                        && "none".equals(titleState.getString("composerHeadingDisplay"))
                         && titleState.getJSONObject("buttons").getBoolean("dictate")
                         && titleState.getJSONObject("buttons").getBoolean("insert")
                         && titleState.getJSONObject("buttons").getBoolean("send")
+                        && titleState.getJSONObject("buttons").getBoolean("keys")
                         && titleState.getString("dictatePromptText").isEmpty()
                         && "Dictate prompt".equals(titleState.getString("dictatePromptAccessibleName"))
                         && titleState.getBoolean("dictatePromptGlyphPresent")
@@ -1586,6 +1567,16 @@ public final class JsComposerDockerJourneyTest {
                         && titleState.getJSONObject("dictatePromptBounds").getDouble("width") < 49.0
                         && titleState.getJSONObject("dictatePromptBounds").getDouble("height") >= 48.0
                         && titleState.getJSONObject("dictatePromptBounds").getDouble("height") < 49.0
+                        && titleState.getJSONObject("composerOpenKeysBounds").getDouble("width") >= 48.0
+                        && titleState.getJSONObject("composerOpenKeysBounds").getDouble("width") < 49.0
+                        && titleState.getJSONObject("composerOpenKeysBounds").getDouble("height") >= 48.0
+                        && titleState.getJSONObject("composerOpenKeysBounds").getDouble("height") < 49.0
+                        && titleState.getJSONObject("draftBounds").getDouble("left") >= 16.0
+                        && titleState.getJSONObject("viewport").getDouble("width")
+                                - titleState.getJSONObject("draftBounds").getDouble("right") >= 16.0
+                        && titleState.getJSONObject("actionsBounds").getDouble("left") >= 16.0
+                        && titleState.getJSONObject("viewport").getDouble("width")
+                                - titleState.getJSONObject("actionsBounds").getDouble("right") >= 16.0
                         && titleState.getDouble("screenScrollTop") == 0
                         && titleState.getDouble("documentScrollTop") == 0);
         assertEquals("the composer title capture must show the idle composer", "idle", titleState.getString("state"));
@@ -1686,6 +1677,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const timer=document.querySelector('[data-testid=composer-recording-timer]');"
                 + "const waveform=mode?.querySelector('.recording-mode__waveform');"
                 + "const timerRect=timer?.getBoundingClientRect();const waveformRect=waveform?.getBoundingClientRect();"
+                + "const heading=composer?.querySelector('.composer-heading__copy');const headingStyle=heading?getComputedStyle(heading):null;"
                 + "const cancelButton=document.querySelector('[data-testid=composer-recording-cancel]');"
                 + "const stopButton=document.querySelector('[data-testid=composer-recording-stop]');"
                 + "const insertButton=document.querySelector('[data-testid=composer-insert]');"
@@ -1698,6 +1690,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const stopStyle=stopButton?getComputedStyle(stopButton):null;"
                 + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",state:" + JSONObject.quote(state)
                 + ",composerHeading:composer?.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "composerHeadingDisplay:headingStyle?.display??'',"
+                + "composerHeadingVisible:!!heading&&heading.getClientRects().length>0&&headingStyle?.display!=='none'"
+                + "&&headingStyle?.visibility!=='hidden'&&Number(headingStyle?.opacity??0)>0.95,"
                 + "terminalHeading:document.querySelector('#terminal-title')?.textContent.trim()??'',"
                 + "dictationState:composer?.dataset.dictationState??'',"
                 + "acknowledgedWrites:Number(composer?.dataset.acknowledgedWrites??0),"
@@ -1789,6 +1784,9 @@ public final class JsComposerDockerJourneyTest {
                 ? "Prompt dictation" : state.equals("review") ? "Review dictation" : "Prompt Composer";
         assertEquals("composer heading must identify the active prompt dictation phase", expectedHeading,
                 measured.getString("composerHeading"));
+        assertTrue("keyboard-down composer must retain its phase heading",
+                measured.getBoolean("composerHeadingVisible")
+                        && !"none".equals(measured.getString("composerHeadingDisplay")));
         assertTrue("state screenshot must retain the expected draft text", measured.getBoolean("expectedDraftMatches"));
         assertTrue("dictation mode must be presented in the modal composer sheet", measured.getBoolean("composerModal"));
         assertTrue("dictation controls must dismiss the IME and keep the sheet unobstructed",
@@ -1833,21 +1831,21 @@ public final class JsComposerDockerJourneyTest {
                                 && Math.abs(measured.getJSONObject("stop").getDouble("height") - 48.0) < 0.5
                                 && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
             } else {
-                assertEquals("transcribing actions must match Kotlin: Cancel, Insert, and Send",
-                        "composer-recording-cancel,composer-insert,composer-dictation-send",
+                assertEquals("transcribing actions must match Kotlin: Cancel and Send",
+                        "composer-recording-cancel,composer-dictation-send",
                         measured.getString("actionOrder"));
                 assertEquals("transcribing Cancel must be distinct from recording Discard", "Cancel",
                         measured.getString("cancelText"));
                 assertEquals("transcribing Cancel must explain that it restores the original draft",
                         "Cancel dictation and restore the original draft", measured.getString("cancelAriaLabel"));
-                assertTrue("transcribing state must expose its timer, live preview, Insert, and Send",
+                assertTrue("transcribing state must expose Cancel, timer, live preview, and Send without Insert",
                         measured.getBoolean("transcribingStatusAccessible")
                                 && measured.getBoolean("timerAccessible") && measured.getBoolean("timerVisible")
                                 && measured.getString("timerText").matches("\\d{2}:\\d{2}")
                                 && measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
                                 && measured.getBoolean("previewAccessible")
-                                && measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
-                                && measured.getJSONObject("insert").getDouble("height") >= 47.9
+                                && !measured.getBoolean("insertAccessible") && !measured.getBoolean("insertEnabled")
+                                && measured.isNull("insert")
                                 && measured.getBoolean("dictationSendAccessible")
                                 && measured.getBoolean("dictationSendEnabled")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
@@ -1855,6 +1853,11 @@ public final class JsComposerDockerJourneyTest {
         } else {
             assertTrue("idle and review must retain the ordinary composer textarea",
                     state.equals("review") ? measured.getBoolean("reviewVisible") : !measured.getBoolean("recordingModeVisible"));
+            if (state.equals("review")) {
+                assertTrue("editable review must restore its explicit, enabled Insert action",
+                        measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
+                                && measured.getJSONObject("insert").getDouble("height") >= 47.9);
+            }
         }
     }
 
@@ -1965,11 +1968,15 @@ public final class JsComposerDockerJourneyTest {
         String geometry = saveKeyboardGeometry(runId);
         try {
             awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
+                    + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                    + "const heading=composer?.querySelector('.composer-heading__copy');"
+                    + "const headingStyle=heading?getComputedStyle(heading):null;"
+                    + "const gutter=node=>{if(!node)return false;const r=node.getBoundingClientRect();return r.left>=16&&innerWidth-r.right>=16;};"
                     + "const appBar=document.querySelector('.app-bar')?.getBoundingClientRect();"
                     + "const terminal=document.querySelector('.terminal-viewport')?.getBoundingClientRect();"
                     + "const height=window.visualViewport?.height ?? innerHeight;"
                     + "const safeTop=parseFloat(getComputedStyle(shell).paddingTop)||0;"
-                    + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
+                    + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]','[data-testid=composer-open-keys]',"
                     + "'[data-testid=composer-discard]','[data-testid=composer-insert]','.composer-shared-controls .send'];"
                     + "const visible=selectors.every(selector=>{const node=document.querySelector(selector);"
                     + "if(!node)return false;const rect=node.getBoundingClientRect();return rect.top >= 0 && rect.bottom <= height + 0.5"
@@ -1979,6 +1986,9 @@ public final class JsComposerDockerJourneyTest {
                     + "return rect.top >= 0 && rect.bottom <= height + 0.5 && rect.left >= 0 && rect.right <= innerWidth + 0.5;});"
                     + "const screen=document.querySelector('.screen-content');"
                     + "return shell?.dataset.keyboardVisible === 'true' && !!appBar && !!terminal && terminal.height >= 48"
+                    + " && composer?.classList.contains('composer-panel--sheet')===true && headingStyle?.display==='none'"
+                    + " && gutter(document.querySelector('[data-testid=prompt-draft]'))"
+                    + " && gutter(document.querySelector('[data-testid=composer-actions]'))"
                     + " && appBar.top >= safeTop - 0.5 && appBar.bottom <= height + 0.5"
                     + " && terminal.top >= appBar.bottom && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
                     + " && navVisible && visible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
@@ -1991,8 +2001,18 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("workspace chrome must begin below the Android status bar",
                 keyboardGeometry.getJSONObject("appBar").getDouble("top")
                         >= nativeInsets.getDouble("statusBarTopDp") - 1.0);
+        assertTrue("keyboard-up Prompt Composer must hide its title copy while keeping the key route visible",
+                keyboardGeometry.getBoolean("composerIsSheet")
+                        && !keyboardGeometry.getBoolean("composerHeadingVisible")
+                        && "none".equals(keyboardGeometry.getString("composerHeadingDisplay")));
+        double viewportWidth = keyboardGeometry.getJSONObject("visualViewport").getDouble("width");
+        for (String name : new String[]{"draft", "actions"}) {
+            JSONObject bounds = keyboardGeometry.getJSONObject(name);
+            assertTrue("keyboard-up composer " + name + " must keep a 16dp horizontal gutter",
+                    bounds.getDouble("left") >= 16.0 && viewportWidth - bounds.getDouble("right") >= 16.0);
+        }
         JSONObject buttons = keyboardGeometry.getJSONObject("buttons");
-        for (String name : new String[]{"discard", "insert", "send"}) {
+        for (String name : new String[]{"discard", "insert", "send", "keys"}) {
             JSONObject bounds = buttons.getJSONObject(name);
             assertTrue(name + " must keep a 48dp touch target with the IME open",
                     bounds.getDouble("bottom") - bounds.getDouble("top") >= 47.9);
@@ -2321,6 +2341,17 @@ public final class JsComposerDockerJourneyTest {
         return tapDomCenter(selector);
     }
 
+    private static String wrappedXtermMarkerSpanJs(String quotedMarker) {
+        return "const findWrappedMarkerSpan=needle=>{for(let end=0;end<rows.length;end++){let joined='';"
+                + "for(let start=end;start>=0;start--){joined=(rows[start].textContent||'')+joined;"
+                + "const offset=joined.indexOf(needle);if(offset>=0)return {start,end,offset,joined,rows:rows.slice(start,end+1)};"
+                + "}}return null;};const markerSpan=findWrappedMarkerSpan(" + quotedMarker + ");"
+                + "const markerRowNodes=markerSpan?.rows??[];"
+                + "const markerRowRects=markerRowNodes.map(node=>node.getBoundingClientRect());"
+                + "const markerRect=markerRowRects.length?{top:markerRowRects[0].top,bottom:markerRowRects[markerRowRects.length-1].bottom,"
+                + "left:Math.min(...markerRowRects.map(bounds=>bounds.left)),right:Math.max(...markerRowRects.map(bounds=>bounds.right))}:null;";
+    }
+
     private long waitForTerminalMarkerOrCaptureWindow(String marker, long sendTouchUpUptimeMs) throws Exception {
         String quotedMarker = JSONObject.quote(marker);
         String expectedBytes = JSONObject.quote("636166c3a920f09fa7aa");
@@ -2328,30 +2359,37 @@ public final class JsComposerDockerJourneyTest {
             awaitJsTrue("(() => {const status=document.querySelector('[data-testid=composer-status]');"
                 + "const viewport=document.querySelector('.terminal-viewport');"
                 + "const screen=viewport?.querySelector('.xterm-screen');"
+                + "const composerBounds=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
                 + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
                 + "const byteRow=rows.find(node=>(node.textContent||'').includes(" + expectedBytes + "));"
-                + "const markerRow=rows.find(node=>(node.textContent||'').includes(" + quotedMarker + "));"
-                + "const byteBounds=byteRow?.getBoundingClientRect(),markerBounds=markerRow?.getBoundingClientRect();"
+                + wrappedXtermMarkerSpanJs(quotedMarker)
+                + "const byteBounds=byteRow?.getBoundingClientRect(),markerBounds=markerRect;"
+                + "const byteRowIndex=rows.indexOf(byteRow);"
                 + "const view=viewport?.getBoundingClientRect(),screenBounds=screen?.getBoundingClientRect();"
-                + "const visible=(bounds,outer,inner)=>!!bounds&&!!outer&&!!inner&&bounds.top>=outer.top&&bounds.bottom<=outer.bottom"
+                + "const visible=(bounds,outer,inner)=>!!bounds&&!!outer&&!!inner&&!!composerBounds&&bounds.top>=outer.top&&bounds.bottom<=outer.bottom"
                 + "&&bounds.left>=outer.left&&bounds.right<=outer.right&&bounds.top>=inner.top&&bounds.bottom<=inner.bottom"
-                + "&&bounds.left>=inner.left&&bounds.right<=inner.right;"
+                + "&&bounds.left>=inner.left&&bounds.right<=inner.right&&bounds.bottom<=composerBounds.top;"
+                + "const markerRowsVisible=!!markerSpan&&markerRowRects.length>0&&markerRowRects.every(bounds=>visible(bounds,view,screenBounds));"
                 + "return status?.dataset.deliveryState==='success'&&status.textContent.includes('Sent to the terminal')"
                 + "&&document.querySelector('[data-testid=prompt-draft]')?.value===''"
-                + "&&visible(byteBounds,view,screenBounds)&&visible(markerBounds,view,screenBounds)"
-                + "&&byteRow!==markerRow&&byteBounds.bottom<=markerBounds.top+0.5"
+                + "&&visible(byteBounds,view,screenBounds)&&markerRowsVisible"
+                + "&&byteRowIndex>=0&&byteRowIndex<markerSpan.start&&byteBounds.bottom<=markerBounds.top+0.5"
                 + "&&document.querySelector('.screen-content')?.scrollTop===0&&document.scrollingElement?.scrollTop===0;})()",
                 5_000);
         } catch (AssertionError failure) {
             String bounds = evalString("(() => {const v=document.querySelector('.terminal-viewport');"
                 + "const screen=v?.querySelector('.xterm-screen');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const rows=Array.from(v?.querySelectorAll('.xterm-rows > div') ?? []);"
-                + "const pick=text=>rows.find(node=>(node.textContent||'').includes(text));"
+                + "const byteRow=rows.find(node=>(node.textContent||'').includes('636166c3a920f09fa7aa'));"
+                + wrappedXtermMarkerSpanJs(quotedMarker)
                 + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right}:null};"
                 + "return JSON.stringify({status:document.querySelector('[data-testid=composer-status]')?.dataset.deliveryState,"
                 + "draft:document.querySelector('[data-testid=prompt-draft]')?.value,"
-                + "bytes:rect(pick('636166c3a920f09fa7aa')),marker:rect(pick(" + quotedMarker + ")),"
-                + "viewport:rect(v),screen:rect(screen),screenScroll:document.querySelector('.screen-content')?.scrollTop,"
+                + "byteRowIndex:rows.indexOf(byteRow),markerSpanStart:markerSpan?.start??null,markerSpanEnd:markerSpan?.end??null,"
+                + "bytes:rect(byteRow),marker:markerRect,markerFragments:markerRowNodes.map((node,index)=>"
+                + "({rowIndex:markerSpan.start+index,text:node.textContent||'',bounds:rect(node)})),"
+                + "viewport:rect(v),screen:rect(screen),composer:rect(composer),screenScroll:document.querySelector('.screen-content')?.scrollTop,"
                 + "documentScroll:document.scrollingElement?.scrollTop});})()");
             throw new AssertionError("Post-send rendered-row bounds: " + bounds, failure);
         }
@@ -2368,24 +2406,26 @@ public final class JsComposerDockerJourneyTest {
                 + "const composerRect=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
                 + "const terminalScreenRect=viewport?.querySelector('.xterm-screen')?.getBoundingClientRect();"
                 + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
-                + "const markerRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
-                + ".find(row=>(row.textContent||'').includes(" + JSONObject.quote(expectedMarker) + "));"
-                + "const byteOutputRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
-                + ".find(row=>(row.textContent||'').includes('636166c3a920f09fa7aa'));"
-                + "const markerRect=markerRow?.getBoundingClientRect();"
+                + "const rows=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? []);"
+                + "const byteOutputRow=rows.find(row=>(row.textContent||'').includes('636166c3a920f09fa7aa'));"
+                + wrappedXtermMarkerSpanJs(JSONObject.quote(expectedMarker))
                 + "const byteOutputRect=byteOutputRow?.getBoundingClientRect();"
+                + "const byteOutputRowIndex=rows.indexOf(byteOutputRow);"
                 + "const visibleText=window.__ps2857TerminalVisibleText || '';"
-                + "const terminalDomText=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
-                + ".map(row=>row.textContent || '').join('\\n').slice(-4000);"
+                + "const terminalDomRows=rows.map(row=>row.textContent||'').join('\\n').slice(-4000);"
+                + "const terminalDomText=rows.map(row=>row.textContent||'').join('').slice(-4000);"
                 + "const height=window.visualViewport?.height ?? innerHeight;"
-                + "const markerVisible=!!rect&&!!terminalScreenRect&&!!markerRect"
-                + "&&markerRect.top>=rect.top&&markerRect.bottom<=rect.bottom&&markerRect.left>=rect.left&&markerRect.right<=rect.right"
-                + "&&markerRect.top>=terminalScreenRect.top&&markerRect.bottom<=terminalScreenRect.bottom"
-                + "&&markerRect.left>=terminalScreenRect.left&&markerRect.right<=terminalScreenRect.right;"
+                + "const markerRowsVisible=!!rect&&!!terminalScreenRect&&!!markerSpan&&markerRowRects.length>0"
+                + "&&markerRowRects.every(bounds=>bounds.top>=rect.top&&bounds.bottom<=rect.bottom"
+                + "&&bounds.left>=rect.left&&bounds.right<=rect.right"
+                + "&&bounds.top>=terminalScreenRect.top&&bounds.bottom<=terminalScreenRect.bottom"
+                + "&&bounds.left>=terminalScreenRect.left&&bounds.right<=terminalScreenRect.right"
+                + "&&!!composerRect&&bounds.bottom<=composerRect.top);"
                 + "const byteOutputVisible=!!rect&&!!terminalScreenRect&&!!byteOutputRect"
                 + "&&byteOutputRect.top>=rect.top&&byteOutputRect.bottom<=rect.bottom&&byteOutputRect.left>=rect.left&&byteOutputRect.right<=rect.right"
                 + "&&byteOutputRect.top>=terminalScreenRect.top&&byteOutputRect.bottom<=terminalScreenRect.bottom"
-                + "&&byteOutputRect.left>=terminalScreenRect.left&&byteOutputRect.right<=terminalScreenRect.right;"
+                + "&&byteOutputRect.left>=terminalScreenRect.left&&byteOutputRect.right<=terminalScreenRect.right"
+                + "&&!!composerRect&&byteOutputRect.bottom<=composerRect.top;"
                 + "const screenScrollTop=document.querySelector('.screen-content')?.scrollTop??null;"
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
@@ -2405,13 +2445,19 @@ public final class JsComposerDockerJourneyTest {
                 + "appBar:appBarRect?{top:appBarRect.top,bottom:appBarRect.bottom,left:appBarRect.left,right:appBarRect.right}:null,"
                 + "composer:composerRect?{top:composerRect.top,bottom:composerRect.bottom,left:composerRect.left,right:composerRect.right}:null,"
                 + "markerRow:markerRect?{top:markerRect.top,bottom:markerRect.bottom,left:markerRect.left,right:markerRect.right}:null,"
+                + "markerRowSpan:{startRowIndex:markerSpan?.start??null,endRowIndex:markerSpan?.end??null,"
+                + "matchedText:markerSpan?.joined??'',fragments:markerRowNodes.map((node,index)=>{const bounds=markerRowRects[index];"
+                + "return {rowIndex:markerSpan.start+index,text:node.textContent||'',top:bounds.top,bottom:bounds.bottom,"
+                + "left:bounds.left,right:bounds.right};})},"
                 + "byteOutputRow:byteOutputRect?{top:byteOutputRect.top,bottom:byteOutputRect.bottom,left:byteOutputRect.left,right:byteOutputRect.right}:null,"
+                + "byteOutputRowIndex:byteOutputRowIndex,"
                 + "terminalScroller:{scrollTop:terminalScroller?.scrollTop??null,scrollHeight:terminalScroller?.scrollHeight??null,clientHeight:terminalScroller?.clientHeight??null},"
-                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top+0.5,"
-                + "byteOutputVisible,visualViewport:{height,width:window.visualViewport?.width ?? innerWidth},"
+                + "terminalOutputRowVisible:markerRowsVisible&&byteOutputVisible&&byteOutputRowIndex>=0"
+                + "&&byteOutputRowIndex<markerSpan.start&&byteOutputRect.bottom<=markerRect.top+0.5,"
+                + "markerRowsVisible,byteOutputVisible,visualViewport:{height,width:window.visualViewport?.width ?? innerWidth},"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
                 + "screenScrollTop,documentScrollTop,"
-                + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
+                + "terminalDomText,terminalDomRows,deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
         JSONObject measured = new JSONObject(report);
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
         awaitWebViewVisualState();
@@ -2512,6 +2558,8 @@ public final class JsComposerDockerJourneyTest {
         String geometry = evalString("(() => {const rect=(selector) => {const node=document.querySelector(selector);"
                 + "if(!node)return null;const r=node.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
                 + "const style=(selector) => {const node=document.querySelector(selector);if(!node)return null;const s=getComputedStyle(node);return {display:s.display,position:s.position,visibility:s.visibility,overflow:s.overflow,overflowY:s.overflowY,zIndex:s.zIndex};};"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const heading=composer?.querySelector('.composer-heading__copy');const headingStyle=heading?getComputedStyle(heading):null;"
                 + "return JSON.stringify({innerHeight,innerWidth,outerHeight,outerWidth,scrollY,clientHeight:document.documentElement.clientHeight,"
                 + "visualViewport:window.visualViewport?{height:visualViewport.height,width:visualViewport.width,offsetTop:visualViewport.offsetTop}:null,"
                 + "screen:{height:screen.height,width:screen.width},activeElement:document.activeElement?.outerHTML?.slice(0,300)??null,"
@@ -2519,7 +2567,13 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalViewport:rect('.terminal-viewport'),"
                 + "appBar:rect('.app-bar'),draft:rect('[data-testid=prompt-draft]'),"
                 + "status:rect('[data-testid=composer-status]'),actions:rect('[data-testid=composer-actions]'),"
-                + "buttons:{discard:rect('[data-testid=composer-discard]'),insert:rect('[data-testid=composer-insert]'),send:rect('.composer-shared-controls .send')},"
+                + "composerIsSheet:composer?.classList.contains('composer-panel--sheet')===true,"
+                + "composerHeading:rect('.composer-panel--sheet .composer-heading'),"
+                + "composerHeadingVisible:!!heading&&heading.getClientRects().length>0&&headingStyle?.display!=='none'"
+                + "&&headingStyle?.visibility!=='hidden'&&Number(headingStyle?.opacity??0)>0.95,"
+                + "composerHeadingDisplay:headingStyle?.display??'',"
+                + "buttons:{discard:rect('[data-testid=composer-discard]'),insert:rect('[data-testid=composer-insert]'),send:rect('.composer-shared-controls .send'),"
+                + "keys:rect('[data-testid=composer-open-keys]')},"
                 + "safeArea:{topCss:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingTop)||0,"
                 + "bottomCss:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingBottom)||0,"
                 + "shellTopPadding:parseFloat(getComputedStyle(document.querySelector('.app-shell')).paddingTop)||0,"
