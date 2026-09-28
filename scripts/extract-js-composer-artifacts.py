@@ -722,9 +722,47 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("forced post-attach focus trace is missing its first transient miss")
             for miss in forced_misses:
                 after = miss.get("after")
-                if (miss.get("requestedSelector") != "[data-testid=prompt-composer] #composer-title"
+                tap = miss.get("tap")
+                center_hit = tap.get("centerHit") if isinstance(tap, dict) else None
+                physical_pointer = miss.get("physicalPointerDown")
+                physical_target = physical_pointer.get("target") if isinstance(physical_pointer, dict) else None
+                physical_center_hit = (
+                    miss.get("physicalCenterHit") is True
+                    and isinstance(tap, dict)
+                    and isinstance(physical_pointer, dict)
+                    and physical_pointer.get("type") == "pointerdown"
+                    and physical_pointer.get("isTrusted") is True
+                    and physical_pointer.get("targetMatchesRequested") is True
+                    and isinstance(physical_target, dict)
+                    and physical_target.get("testid") == "composer-status"
+                    and all(isinstance(value, (int, float)) and math.isfinite(value)
+                            for value in (tap.get("x"), tap.get("y"),
+                                          physical_pointer.get("clientX"), physical_pointer.get("clientY")))
+                    and abs(physical_pointer["clientX"] - tap["x"]) <= 1.0
+                    and abs(physical_pointer["clientY"] - tap["y"]) <= 1.0
+                )
+                visible_inert_status_hit = (
+                    miss.get("requestedSelector") == "[data-testid=prompt-composer] [data-testid=composer-status]"
+                    and isinstance(tap, dict)
+                    and tap.get("centerHitMatchesTarget") is True
+                    and tap.get("targetVisible") is True
+                    and tap.get("targetTestId") == "composer-status"
+                    and isinstance(center_hit, dict)
+                    and center_hit.get("testid") == "composer-status"
+                    and all(isinstance(tap.get(key), (int, float)) and math.isfinite(tap[key])
+                            for key in ("top", "bottom", "left", "right", "width", "height",
+                                        "targetWidth", "targetHeight"))
+                    and tap["targetWidth"] > 0 and tap["targetHeight"] > 0
+                    and tap["top"] >= 0 and tap["bottom"] > tap["top"]
+                    and tap["bottom"] <= tap["height"] + 0.5
+                    and tap["left"] >= 0 and tap["right"] > tap["left"]
+                    and tap["right"] <= tap["width"] + 0.5
+                    and physical_center_hit
+                )
+                if (not visible_inert_status_hit
                         or miss.get("trustedPointerDownOnRequestedTarget") is not True
                         or miss.get("draftFocusedAfter") is not False
+                        or miss.get("visibleInertStatusHit") is not True
                         or miss.get("inertMissInsideComposer") is not True
                         or miss.get("dialogStayedOpenAfterMiss") is not True
                         or miss.get("draftStayedMountedAfterMiss") is not True
@@ -1404,13 +1442,22 @@ def self_test() -> None:
     forced_focus_value["attempts"] = [{
         "stage": "uncertain-session-after-attach",
         "attempt": 1,
-        "requestedSelector": "[data-testid=prompt-composer] #composer-title",
+        "requestedSelector": "[data-testid=prompt-composer] [data-testid=composer-status]",
         "before": {"activeElement": {"id": "composer-close"}},
         "nativeImeVisibleBefore": False,
-        "tap": {"top": 100, "bottom": 150, "screenX": 200, "screenY": 400},
+        "tap": {"top": 100, "bottom": 118, "left": 50, "right": 300, "width": 412, "height": 600,
+                "targetTestId": "composer-status", "targetWidth": 250, "targetHeight": 18,
+                "targetVisible": True, "x": 175, "y": 109, "screenX": 200, "screenY": 400,
+                "centerHitMatchesTarget": True,
+                "centerHit": {"tag": "P", "testid": "composer-status", "className": "composer-status"}},
+        "physicalPointerDown": {"type": "pointerdown", "isTrusted": True, "targetMatchesRequested": True,
+                                 "clientX": 175, "clientY": 109,
+                                 "target": {"tag": "P", "testid": "composer-status", "className": "composer-status"}},
+        "physicalCenterHit": True,
         "trustedPointerDownOnRequestedTarget": True,
         "draftFocusedAfter": False,
         "nativeImeVisibleAfter": False,
+        "visibleInertStatusHit": True,
         "inertMissInsideComposer": True,
         "dialogStayedOpenAfterMiss": True,
         "draftStayedMountedAfterMiss": True,
@@ -1433,6 +1480,8 @@ def self_test() -> None:
     forced_focus_trace = json.dumps(forced_focus_value).encode()
     broken_forced_focus_value = json.loads(forced_focus_trace)
     broken_forced_focus_value["attempts"][0]["requestedSelector"] = ".terminal-viewport"
+    broken_forced_focus_value["attempts"][0]["physicalCenterHit"] = False
+    broken_forced_focus_value["attempts"][0]["visibleInertStatusHit"] = False
     broken_forced_focus_value["attempts"][0]["inertMissInsideComposer"] = False
     broken_forced_focus_value["attempts"][0]["dialogStayedOpenAfterMiss"] = False
     broken_forced_focus_value["attempts"][0]["draftStayedMountedAfterMiss"] = False
@@ -1440,6 +1489,12 @@ def self_test() -> None:
                                                                "composerTitlePresent": False, "draftPresent": False,
                                                                "draftConnected": False})
     broken_forced_focus_trace = json.dumps(broken_forced_focus_value).encode()
+    hidden_forced_focus_value = json.loads(forced_focus_trace)
+    hidden_forced_focus_value["attempts"][0]["tap"]["targetVisible"] = False
+    hidden_forced_focus_trace = json.dumps(hidden_forced_focus_value).encode()
+    off_center_forced_focus_value = json.loads(forced_focus_trace)
+    off_center_forced_focus_value["attempts"][0]["physicalPointerDown"]["clientX"] += 8
+    off_center_forced_focus_trace = json.dumps(off_center_forced_focus_value).encode()
     clipped_post_send_value = json.loads(post_send)
     clipped_post_send_value["terminalViewport"]["top"] = 220.0
     clipped_post_send_value["terminalViewport"]["bottom"] = 300.0
@@ -1732,6 +1787,10 @@ def self_test() -> None:
         ("idle inline terminal mic is clipped", make_lines(route_state_bytes=clipped_route_mic)),
         ("forced first miss closes Composer and removes its retry target",
          make_lines(focus_trace_bytes=broken_forced_focus_trace)),
+        ("forced first miss does not hit visibly rendered inert status copy",
+         make_lines(focus_trace_bytes=hidden_forced_focus_trace)),
+        ("forced first miss physical pointerdown is not at the target center",
+         make_lines(focus_trace_bytes=off_center_forced_focus_trace)),
         ("missing chunk", [line for line in lines if "DATA|" not in line or "|0|" not in line]),
         ("bad digest", [line.replace(hashlib.sha256(png).hexdigest(), "0" * 64) for line in lines]),
         ("IME hidden", make_lines(geometry_payload(ime_visible=False))),

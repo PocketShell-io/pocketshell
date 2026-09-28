@@ -2133,10 +2133,9 @@ public final class JsComposerDockerJourneyTest {
             for (int attemptIndex = 0; attemptIndex < composerFocusMaxAttempts; attemptIndex += 1) {
                 awaitWebViewVisualState();
                 boolean injectMiss = forceFirstPostAttachTapMiss && requirePhysicalTap && attemptIndex == 0;
-                // Keep the deliberate missed tap inside the modal. A tap through
-                // its scrim closes Composer and makes the next retry target stale.
+                // Keep the deliberate missed tap inside visible, inert modal copy.
                 String targetSelector = injectMiss
-                        ? "[data-testid=prompt-composer] #composer-title"
+                        ? "[data-testid=prompt-composer] [data-testid=composer-status]"
                         : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
@@ -2168,10 +2167,38 @@ public final class JsComposerDockerJourneyTest {
                             && after.optBoolean("composerTitlePresent");
                     boolean draftStayedMounted = after.optBoolean("draftPresent")
                             && after.optBoolean("draftConnected");
-                    record.put("inertMissInsideComposer", targetSelector.equals("[data-testid=prompt-composer] #composer-title"))
+                    JSONObject centerHit = tap.optJSONObject("centerHit");
+                    JSONObject physicalPointerDown = trustedPointerDownEvidence(after);
+                    boolean physicalCenterHit = physicalPointerDown.optBoolean("isTrusted")
+                            && physicalPointerDown.optBoolean("targetMatchesRequested")
+                            && "composer-status".equals(physicalPointerDown.optJSONObject("target") == null
+                                    ? "" : physicalPointerDown.optJSONObject("target").optString("testid"))
+                            && Math.abs(physicalPointerDown.optDouble("clientX", Double.NaN)
+                                    - tap.optDouble("x", Double.MAX_VALUE)) <= 1.0
+                            && Math.abs(physicalPointerDown.optDouble("clientY", Double.NaN)
+                                    - tap.optDouble("y", Double.MAX_VALUE)) <= 1.0;
+                    boolean visibleInertStatusHit = "[data-testid=prompt-composer] [data-testid=composer-status]".equals(targetSelector)
+                            && tap.optBoolean("centerHitMatchesTarget")
+                            && tap.optBoolean("targetVisible")
+                            && "composer-status".equals(tap.optString("targetTestId"))
+                            && centerHit != null
+                            && "composer-status".equals(centerHit.optString("testid"))
+                            && tap.optDouble("targetWidth", 0) > 0
+                            && tap.optDouble("targetHeight", 0) > 0
+                            && tap.optDouble("top", -1) >= 0
+                            && tap.optDouble("bottom", -1) > tap.optDouble("top", -1)
+                            && tap.optDouble("bottom", Double.MAX_VALUE) <= tap.optDouble("height", 0) + 0.5
+                            && tap.optDouble("left", -1) >= 0
+                            && tap.optDouble("right", Double.MAX_VALUE) <= tap.optDouble("width", 0) + 0.5
+                            && physicalCenterHit;
+                    record.put("physicalPointerDown", physicalPointerDown)
+                            .put("physicalCenterHit", physicalCenterHit)
+                            .put("visibleInertStatusHit", visibleInertStatusHit)
+                            .put("inertMissInsideComposer", visibleInertStatusHit)
                             .put("dialogStayedOpenAfterMiss", modalStayedOpen)
                             .put("draftStayedMountedAfterMiss", draftStayedMounted);
-                    injectedMissPreservedRetryTarget = physicalTargetObserved && modalStayedOpen && draftStayedMounted;
+                    injectedMissPreservedRetryTarget = physicalTargetObserved && visibleInertStatusHit
+                            && modalStayedOpen && draftStayedMounted;
                 }
                 focusTapAttempts.put(record);
                 Log.i("PS2891Focus", "ATTEMPT|" + artifactRunId + "|" + record);
@@ -2268,6 +2295,17 @@ public final class JsComposerDockerJourneyTest {
             Thread.sleep(30);
         }
         return "true".equals(evalRaw(expression));
+    }
+
+    private JSONObject trustedPointerDownEvidence(JSONObject dom) throws JSONException {
+        JSONArray events = dom.optJSONArray("pointerEvents");
+        if (events == null) return new JSONObject();
+        for (int index = 0; index < events.length(); index += 1) {
+            JSONObject event = events.optJSONObject(index);
+            if (event != null && "pointerdown".equals(event.optString("type"))
+                    && event.optBoolean("isTrusted") && event.optBoolean("targetMatchesRequested")) return event;
+        }
+        return new JSONObject();
     }
 
     private boolean awaitPromptDraftFocus(long timeoutMillis) throws Exception {
@@ -2793,12 +2831,17 @@ public final class JsComposerDockerJourneyTest {
     private long tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
+                + "const hasVisibleBox=element.getClientRects().length>0&&rect.width>0&&rect.height>0;"
+                + "let ancestorsVisible=true;for(let node=element;node&&node.nodeType===1;node=node.parentElement){const s=getComputedStyle(node);"
+                + "if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)<=0){ancestorsVisible=false;break;}}"
                 + "const height=window.visualViewport?.height ?? innerHeight;const x=rect.left+rect.width/2,y=rect.top+rect.height/2;"
                 + "const hit=document.elementFromPoint(x,y);const label=node=>node?{tag:node.tagName||'',id:node.id||'',"
                 + "testid:node.getAttribute?.('data-testid')||'',className:typeof node.className==='string'?node.className:''}:null;"
                 + "const targetHit=selector=>selector==='[data-testid=prompt-draft]'?hit===element:!!hit?.closest?.(selector);"
                 + "return JSON.stringify({selector:" + JSONObject.quote(selector)
                 + ",x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,"
+                + "targetTestId:element.getAttribute('data-testid')||'',targetWidth:rect.width,targetHeight:rect.height,"
+                + "targetVisible:hasVisibleBox&&ancestorsVisible,"
                 + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
                 + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
                 + "centerHit:label(hit),centerHitMatchesTarget:targetHit(" + JSONObject.quote(selector) + "),"

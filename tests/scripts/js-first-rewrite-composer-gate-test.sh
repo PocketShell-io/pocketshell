@@ -533,6 +533,60 @@ def require_wrapped_terminal_marker_oracle(source: str) -> None:
 require_wrapped_terminal_marker_oracle(journey)
 
 
+def require_visible_inert_forced_focus_miss(source: str, extractor_source: str, composer_source: str) -> None:
+    focus_start = source.index("private void ensureImeVisible(String stage)")
+    focus_end = source.index("private boolean isPromptDraftFocused()", focus_start)
+    focus = source[focus_start:focus_end]
+    required_focus = (
+        '"[data-testid=prompt-composer] [data-testid=composer-status]"',
+        'attemptIndex < composerFocusMaxAttempts',
+        'forceFirstPostAttachTapMiss && requirePhysicalTap && attemptIndex == 0',
+        'tap.optBoolean("targetVisible")',
+        '"composer-status".equals(centerHit.optString("testid"))',
+        'JSONObject physicalPointerDown = trustedPointerDownEvidence(after)',
+        '.put("physicalCenterHit", physicalCenterHit)',
+        '.put("visibleInertStatusHit", visibleInertStatusHit)',
+        '.put("dialogStayedOpenAfterMiss", modalStayedOpen)',
+        '.put("draftStayedMountedAfterMiss", draftStayedMounted)',
+    )
+    for needle in required_focus:
+        if needle not in focus:
+            raise AssertionError(f"forced focus miss does not prove a visible inert status tap and bounded retry: {needle}")
+    if 'composerFocusMaxAttempts >= 1 && composerFocusMaxAttempts <= 2' not in source:
+        raise AssertionError("composer focus retry bound must remain between one and two physical taps")
+    tap_start = source.index("private long tapDomCenter(")
+    tap_end = source.index("private void ", tap_start + len("private void "))
+    tap_method = source[tap_start:tap_end]
+    for needle in ('x=rect.left+rect.width/2,y=rect.top+rect.height/2',
+                   'targetVisible:hasVisibleBox&&ancestorsVisible',
+                   'targetTestId:element.getAttribute(\'data-testid\')||\'\''):
+        if needle not in tap_method:
+            raise AssertionError(f"physical tap evidence omits rendered target visibility: {needle}")
+    status_start = composer_source.index('<p id="composer-status"')
+    status_end = composer_source.index("</p>", status_start)
+    if "@click" in composer_source[status_start:status_end]:
+        raise AssertionError("composer status copy must remain inert so the injected physical miss cannot take an action")
+    required_extractor = (
+        'miss.get("requestedSelector") == "[data-testid=prompt-composer] [data-testid=composer-status]"',
+        'tap.get("targetVisible") is True',
+        'tap.get("targetTestId") == "composer-status"',
+        'center_hit.get("testid") == "composer-status"',
+        'miss.get("physicalCenterHit") is True',
+        'physical_pointer.get("targetMatchesRequested") is True',
+        'abs(physical_pointer["clientX"] - tap["x"]) <= 1.0',
+        'tap["targetWidth"] > 0 and tap["targetHeight"] > 0',
+        'miss.get("visibleInertStatusHit") is not True',
+        'attempt.get("attempt") == 2',
+        'attempt.get("requestedSelector") == "[data-testid=prompt-draft]"',
+    )
+    for needle in required_extractor:
+        if needle not in extractor_source:
+            raise AssertionError(f"composer artifact gate does not enforce visible miss proof and physical retry: {needle}")
+
+
+require_visible_inert_forced_focus_miss(journey, extractor, prompt_composer)
+
+
 def require_contract(source: str, packaged_script: str) -> None:
     required = (
         ("isolated fixture", "scripts/agents-pool.sh up 2245"),
