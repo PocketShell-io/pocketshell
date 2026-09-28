@@ -14,7 +14,7 @@ import {
   type SshConnectionRef,
   type SshHostTarget,
   type SshResourceSnapshot,
-  type UsageProviderRecord,
+  type UsageRow,
 } from '@pocketshell/core';
 import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
@@ -106,7 +106,7 @@ const connectionMessage = ref('');
 const settingsReloading = ref(false);
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
-const usageRecords = ref<UsageProviderRecord[]>([]);
+const usageRecords = ref<UsageRow[]>([]);
 const usageLoading = ref(false);
 const usageError = ref('');
 const usageLastReadAt = ref<number | null>(null);

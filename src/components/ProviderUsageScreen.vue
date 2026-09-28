@@ -4,13 +4,14 @@ import {
   usageThresholdState,
   usageWindowPercent,
   usageWindowDisplayLabel,
-  type UsageProviderRecord,
+  type UsageRow,
+  type UsageWindow,
 } from '@pocketshell/core';
 import { AppIcon } from '@pocketshell/ui';
 
 const props = defineProps<{
   connected: boolean;
-  records: UsageProviderRecord[];
+  records: UsageRow[];
   loading: boolean;
   error: string;
   lastReadAt: number | null;
@@ -18,26 +19,36 @@ const props = defineProps<{
 
 const emit = defineEmits<{ refresh: [] }>();
 
-function stateFor(record: UsageProviderRecord): string {
+function stateFor(record: UsageRow): string {
   const threshold = usageThresholdState(record);
-  return record.status === 'ok' ? threshold : record.status;
+  const status = record.status.toLowerCase();
+  return status === 'ok' ? threshold : status;
 }
 
-function stateLabel(record: UsageProviderRecord): string | null {
+function stateLabel(record: UsageRow): string | null {
   const state = stateFor(record);
   return state === 'ok' ? null : state;
 }
 
-function remainingPercent(record: UsageProviderRecord, index: number): number {
-  const window = record.windows[index];
-  return window ? Math.max(0, Math.min(100, 100 - usageWindowPercent(window))) : 0;
+function remainingPercent(window: UsageWindow): number | null {
+  const used = usageWindowPercent(window);
+  return used === null ? null : Math.max(0, Math.min(100, 100 - used));
 }
 
-function meterTone(record: UsageProviderRecord): string {
+function meterTone(record: UsageRow): string {
   const threshold = usageThresholdState(record);
-  if (threshold === 'exceeded' || threshold === 'critical' || record.status === 'blocked') return 'error';
-  if (threshold === 'approaching' || record.status === 'warn') return 'warning';
+  const status = record.status.toLowerCase();
+  if (threshold === 'exceeded' || threshold === 'critical' || status === 'blocked' || status === 'error') return 'error';
+  if (threshold === 'approaching' || status === 'warn' || status === 'limited') return 'warning';
   return 'success';
+}
+
+function hasResetCreditSummary(record: UsageRow): boolean {
+  if (record.resets_available !== null || record.resets_expire_at !== null) return true;
+  return [
+    'reset_credits_available', 'reset_credits', 'reset_credits_error',
+    'resets_available', 'resets', 'resets_error',
+  ].some((key) => Object.hasOwn(record.details, key));
 }
 
 function formattedReset(value: string | null): string {
@@ -99,35 +110,37 @@ function capturedLabel(): string {
           </div>
 
           <div v-if="record.windows.length" class="usage-window-list">
-            <div v-for="(window, index) in record.windows" :key="window.name" class="usage-window">
-              <span class="usage-window__label">{{ usageWindowDisplayLabel(window.name) }}</span>
-              <span
-                class="usage-meter"
-                role="meter"
-                :aria-label="`${usageWindowDisplayLabel(window.name)} quota remaining`"
-                :aria-valuemin="0"
-                :aria-valuemax="100"
-                :aria-valuenow="Math.round(remainingPercent(record, index))"
-              >
-                <span class="usage-meter__fill" :class="`usage-meter__fill--${meterTone(record)}`" :style="{ width: `${remainingPercent(record, index)}%` }" />
-              </span>
-              <span class="usage-window__remaining">{{ Math.round(remainingPercent(record, index)) }}% left</span>
-              <time v-if="window.resetAt" class="usage-window__reset" :datetime="window.resetAt" :title="formattedReset(window.resetAt)">
-                {{ formattedReset(window.resetAt) }}
+            <div v-for="window in record.windows" :key="window.window" class="usage-window">
+              <span class="usage-window__label">{{ usageWindowDisplayLabel(window.window) }}</span>
+              <template v-if="remainingPercent(window) !== null">
+                <span
+                  class="usage-meter"
+                  role="meter"
+                  :aria-label="`${usageWindowDisplayLabel(window.window)} quota remaining`"
+                  :aria-valuemin="0"
+                  :aria-valuemax="100"
+                  :aria-valuenow="Math.round(remainingPercent(window) ?? 0)"
+                >
+                  <span class="usage-meter__fill" :class="`usage-meter__fill--${meterTone(record)}`" :style="{ width: `${remainingPercent(window) ?? 0}%` }" />
+                </span>
+                <span class="usage-window__remaining">{{ Math.round(remainingPercent(window) ?? 0) }}% left</span>
+              </template>
+              <span v-else class="usage-window__remaining">Quota not reported</span>
+              <time v-if="window.reset_at" class="usage-window__reset" :datetime="window.reset_at" :title="formattedReset(window.reset_at)">
+                {{ formattedReset(window.reset_at) }}
               </time>
             </div>
           </div>
-          <p v-else class="usage-note">{{ record.lastError || 'No quota windows reported.' }}</p>
+          <p v-else class="usage-note">{{ record.error || 'No quota windows reported.' }}</p>
 
-          <p v-if="record.blockReason" class="usage-note">{{ record.blockReason }}</p>
-          <p v-if="record.lastError && record.windows.length" class="usage-note usage-note--error">{{ record.lastError }}</p>
-          <div v-if="record.resetCredits" class="usage-credits" data-testid="usage-reset-credits">
-            <strong v-if="record.resetCredits.availableCount !== null">
-              {{ record.resetCredits.availableCount }} reset{{ record.resetCredits.availableCount === 1 ? '' : 's' }} available
+          <p v-if="record.error && record.windows.length" class="usage-note usage-note--error">{{ record.error }}</p>
+          <div v-if="hasResetCreditSummary(record)" class="usage-credits" data-testid="usage-reset-credits">
+            <strong v-if="record.resets_available !== null">
+              {{ record.resets_available }} reset{{ record.resets_available === 1 ? '' : 's' }} available
             </strong>
             <strong v-else>Reset credits unavailable</strong>
-            <span v-for="(credit, index) in record.resetCredits.credits" :key="`${credit.title}-${index}`" class="usage-credits__item">
-              {{ credit.title }}<template v-if="credit.expiresAt"> · expires {{ formattedReset(credit.expiresAt) }}</template>
+            <span v-if="record.resets_expire_at" class="usage-credits__item">
+              Credits expire {{ formattedReset(record.resets_expire_at) }}
             </span>
           </div>
         </article>

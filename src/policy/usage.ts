@@ -1,6 +1,6 @@
 import {
   parseUsageNdjson,
-  type UsageProviderRecord,
+  type UsageRow,
 } from '@pocketshell/core';
 import type { SshCapability, SshConnectionRef, SshExecResult } from '@pocketshell/core';
 
@@ -30,7 +30,7 @@ export async function readHostUsage(
   capability: SshCapability,
   connection: SshConnectionRef,
   options: UsageSourceOptions = {},
-): Promise<UsageProviderRecord[]> {
+): Promise<UsageRow[]> {
   const requestId = (options.createRequestId ?? defaultRequestId)();
   let result: SshExecResult;
   try {

@@ -45,9 +45,9 @@
     "tests/unit/usagePolicyAdapter.test.ts": {
       "suite": "host usage adapter",
       "tests": [
-        "runs the canonical host command on the active generation and parses provider quota states",
+        "runs the canonical host command on the active generation and parses canonical UsageRows",
         "reports command, timeout, and cross-generation failures rather than returning empty usage",
-        "keeps provider schema failures distinct from an unavailable command",
+        "keeps host-reported provider errors and named custom windows in canonical rows",
         "parses the packaged Docker fixture states that the Usage screen displays"
       ]
     },
@@ -56,7 +56,8 @@
       "tests": [
         "runs the listener and cwd probes through the current SSH generation",
         "uses JS desired-port policy and native socket effects, then restores manual intent after reconnect",
-        "closes auto tunnels only after bounded successful misses and closes all owned handles"
+        "closes auto tunnels only after bounded successful misses and closes all owned handles",
+        "automatically forwards 9638 while retaining discovered rows 22 and 33307"
       ]
     },
     "tests/unit/composerDelivery.test.ts": {
