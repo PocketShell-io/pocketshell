@@ -737,6 +737,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (writesBeforeListening + 1), 15_000);
         int writesAfterStopped = terminalInputAcknowledgements();
+        awaitDockGeometrySettled("inserting final dictation text");
         JSONObject finalInsertedGeometry = captureGeometry("dictation-final-inserted");
         assertTerminalViewportCap("inserting final dictation text", idle, finalInsertedGeometry);
         assertTrayBelowTerminalViewport(finalInsertedGeometry);
@@ -2010,6 +2011,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "left:catalogScrollerRect.left,right:catalogScrollerRect.right,width:catalogScrollerRect.width,height:catalogScrollerRect.height}:null,"
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
+                + "mobileHotkeysClassName:tray?String(tray.className):'',"
                 + "mobileHotkeys:trayRect,navigationTargets:keys,stableDockControls,promptComposerLauncher,promptDictationLauncher,promptInputGroup,terminalControlsGroup,enterDivider,persistentRowMetrics,hotkeyControls,"
                 + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,catalogSurfaceStyle,"
                 + "visibleTerminalRows,runtimeGeometry,"
@@ -2545,6 +2547,47 @@ public final class JsFastKeysDockerJourneyTest {
                 before.getInt("cols"), after.getInt("cols"));
         assertEquals(action + " must keep xterm rows; before=" + before + "; after=" + after,
                 before.getInt("rows"), after.getInt("rows"));
+    }
+
+    private void awaitDockGeometrySettled(String action) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject previous = null;
+        JSONObject last = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = readDockSizingState();
+            double reserved = last.getDouble("reservedHeightPx");
+            double rendered = last.getDouble("renderedHeightPx");
+            boolean matches = Math.abs(reserved - rendered) <= 0.5;
+            boolean stable = previous != null
+                    && Math.abs(previous.getDouble("reservedHeightPx") - reserved) <= 0.1
+                    && Math.abs(previous.getDouble("renderedHeightPx") - rendered) <= 0.1
+                    && previous.getString("className").equals(last.getString("className"))
+                    && previous.getBoolean("statusVisible") == last.getBoolean("statusVisible");
+            if (matches && stable) {
+                awaitRenderedFrame();
+                JSONObject afterFrame = readDockSizingState();
+                if (Math.abs(afterFrame.getDouble("reservedHeightPx") - afterFrame.getDouble("renderedHeightPx")) <= 0.5
+                        && Math.abs(afterFrame.getDouble("reservedHeightPx") - reserved) <= 0.1
+                        && Math.abs(afterFrame.getDouble("renderedHeightPx") - rendered) <= 0.1
+                        && afterFrame.getString("className").equals(last.getString("className"))
+                        && afterFrame.getBoolean("statusVisible") == last.getBoolean("statusVisible")) {
+                    return;
+                }
+                previous = afterFrame;
+            } else {
+                previous = last;
+            }
+            Thread.sleep(60);
+        }
+        throw new AssertionError(action + " did not settle to the reserved terminal dock height; last=" + last);
+    }
+
+    private JSONObject readDockSizingState() throws Exception {
+        return evalJson("(() => {const slot=document.querySelector('[data-testid=terminal-slot]');"
+                + "const dock=document.querySelector('[data-testid=mobile-hotkeys]');"
+                + "return JSON.stringify({reservedHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
+                + "renderedHeightPx:dock?.getBoundingClientRect().height??0,className:dock?String(dock.className):'',"
+                + "statusVisible:!!document.querySelector('[data-testid=inline-dictation-status-row]')});})()");
     }
 
     private void assertTerminalViewportCap(String action, JSONObject baselineGeometry, JSONObject afterGeometry)
