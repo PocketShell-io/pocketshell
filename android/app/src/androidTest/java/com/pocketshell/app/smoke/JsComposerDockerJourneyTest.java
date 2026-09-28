@@ -1393,6 +1393,9 @@ public final class JsComposerDockerJourneyTest {
         String emptyBase = "keep typed text after empty recognition";
         setComposerDraft(emptyBase);
         String emptyWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        checkpoint("dictation-empty-waiting-for-prompt-target");
+        awaitPromptDictateTargetSettled();
+        checkpoint("dictation-empty-prompt-target-settled");
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
