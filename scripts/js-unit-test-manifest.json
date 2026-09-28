@@ -167,7 +167,8 @@
         "emits core catalog bytes and keeps the palette open until toggled or closed",
         "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
         "offers a labeled 48px Prompt launcher with an accessible route to the prompt draft",
-        "matches the Kotlin input row with one terminal dictation mic and a separate Prompt entry",
+        "matches the mobile input row with a visible Dictate action and a separate Prompt entry",
+        "closes an open catalog when recording starts and shows a live elapsed clock",
         "shows an idle status strip for errors and warnings, not successful insertion feedback",
         "lets App force the same status-row visibility that it uses for terminal dock sizing",
         "keeps active dictation status above the persistent controls on both catalog pages",
@@ -246,7 +247,7 @@
     "tests/unit/terminalDictationBarUnmount.test.ts": {
       "suite": "terminal dictation bar lifecycle",
       "tests": [
-        "shows a distinct Stop glyph while listening, with an accessible action and state tint",
+        "keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint",
         "cancels on unmount, clears parent state, and ignores late transcript events"
       ]
     },

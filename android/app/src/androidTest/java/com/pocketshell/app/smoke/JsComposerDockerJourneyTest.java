@@ -808,7 +808,7 @@ public final class JsComposerDockerJourneyTest {
         checkpoint("inline-dictation-start-tap-returned");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
                 + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.dataset.micState === 'listening'"
-                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.getAttribute('aria-label')?.includes('Stop dictating at terminal cursor')");
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.getAttribute('aria-label')?.includes('Stop dictation and insert at terminal cursor')");
         JSONObject start = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)");
         assertEquals("inline dictation must use the saved Voice language", "de", start.getString("languageTag"));
         assertEquals("inline dictation must use the saved Voice silence window", 9_000,

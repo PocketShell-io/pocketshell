@@ -171,6 +171,14 @@ finish_hotkeys_run() {
     local report
     for report in "$RESULTS_DIR"/TEST-*.xml; do cp -- "$report" "$evidence_dir/"; done
     shopt -u nullglob
+    shopt -s nullglob
+    local test_artifact
+    for test_artifact in "$RESULTS_DIR"/*/logcat-*.txt "$RESULTS_DIR"/*/test-result.textproto; do
+      if [[ -f "$test_artifact" ]]; then
+        cp -- "$test_artifact" "$evidence_dir/wrapper-$(basename -- "$test_artifact")"
+      fi
+    done
+    shopt -u nullglob
     for diagnostic in diagnostics-logcat.txt diagnostics-input-method.txt diagnostics-screen.png; do
       if [[ -f "$RESULTS_DIR/$diagnostic" ]]; then cp -- "$RESULTS_DIR/$diagnostic" "$evidence_dir/wrapper-$diagnostic"; fi
     done

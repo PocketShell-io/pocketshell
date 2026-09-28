@@ -188,8 +188,11 @@ if ("min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(idle_viewport_hei
         or "API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid" not in extractor
         or "with_api35_expanded_keyboard_viewport(sample_journey()), False" not in extractor):
     raise AssertionError("artifact gate must reject a 172px viewport and enforce the accepted API35 144px/38x6 grid")
-if "the status line keeps its readable 32dp chip row" not in journey:
-    raise AssertionError("Android journey must keep the status above persistent keys at the Kotlin-aligned height")
+if ("the status row keeps its phase-specific height above the 48dp key row" not in journey
+        or 'geometry.getInt("inlineDictationWaveformBars")' not in journey
+        or 'geometry.getString("inlineDictationElapsed").matches' not in journey
+        or 'recording action is visibly captioned Stop' not in journey):
+    raise AssertionError("Android journey must verify the distinct 40dp recording band, timer, waveform, and explicit Stop action")
 if "gap: 0;" not in styles or "margin-top: 0;" not in styles:
     raise AssertionError("keyboard-up catalog must return reclaimed gap and remove dock overflow margin")
 if "the persistent mic must remain fully inside the key row" not in journey:
@@ -228,33 +231,39 @@ if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobil
         or ':title="buttonLabel()"' not in terminal_dictation
         or '<DictationMicIcon :size="20" :stopped="state.phase === \'listening\'" />' not in terminal_dictation
         or 'data-testid="inline-dictation-dock-label"' not in terminal_dictation
-        or '{{ buttonDockLabel() }}</span>' not in terminal_dictation
-        or "return 'Dictate';" not in terminal_dictation
+        or 'buttonCaption' not in terminal_dictation
+        or 'data-testid="inline-dictation-stop-hint"' in mobile_hotkeys
+        or 'Stop to insert · ' in mobile_hotkeys
+        or 'data-testid="inline-dictation-elapsed"' not in mobile_hotkeys
+        or 'data-testid="inline-dictation-waveform"' not in mobile_hotkeys
+        or 'data-testid="inline-dictation-preview"' not in mobile_hotkeys
+        or "actions.closePalette();" not in mobile_hotkeys
         or any(label not in terminal_dictation for label in (
-            "Dictate at terminal cursor", "Stop dictating at terminal cursor", "Cancel terminal cursor dictation request",
+            "Dictate at terminal cursor", "Stop dictation and insert at terminal cursor", "Cancel terminal cursor dictation request",
             "Cancelling terminal dictation", "Transcribing speech for terminal cursor", "Inserting speech at terminal cursor",
             "Terminal cursor dictation unavailable",
         ))
         or '.mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui);' not in mobile_hotkeys
-        or '.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label)' not in mobile_hotkeys
-        or 'font: 600 var(--fs-100)/1 var(--font-ui);' not in mobile_hotkeys):
-    raise AssertionError("Prompt must open the composer while terminal dictation shows its Dictate/Stop state in a compact, accessible 48dp control")
+        or '.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label)' in mobile_hotkeys):
+    raise AssertionError("Prompt must open the shared composer while terminal dictation has a labeled idle target and a distinct active recording mode")
 if ("offers a labeled 48px Prompt launcher with an accessible route to the prompt draft" not in unit_test
-        or "matches the Kotlin input row with one terminal dictation mic and a separate Prompt entry" not in unit_test
+        or "matches the mobile input row with a visible Dictate action and a separate Prompt entry" not in unit_test
         or "prompt-dictation-launcher')).toBeUndefined()" not in unit_test
         or 'geometry.isNull("promptDictationLauncher")' not in journey
         or 'there is no standalone Prompt Dictate action in the dock' not in journey
         or 'visibleText") != "Prompt"' not in extractor
-        or 'visibleText") != "Dictate"' not in extractor
+        or 'mic.get("visibleText") != "Dictate"' not in extractor
         or "visible Prompt caption inside the dock launcher accepted" not in extractor
         or "missing Prompt button caption rejected" not in extractor
         or "duplicate Stop destination label on the terminal mic rejected" not in extractor
         or "old Cursor caption on idle terminal dictation target rejected" not in extractor
         or '"visibleText": "Prompt"' not in extractor
-        or '"visibleText": "Dictate"' not in extractor
+        or '"visibleText": "Stop"' not in extractor
+        or '"inlineDictationElapsed": "00:01"' not in extractor
+        or '"inlineDictationWaveformBars": 12' not in extractor
         or 'visibleText:promptComposerLauncherNode.innerText.trim()' not in journey
         or 'visibleText:inlineDictationMicNode.innerText.trim()' not in journey):
-    raise AssertionError("component and packaged gates must verify Prompt-to-composer routing, a single terminal Dictate/Stop target, and accessible labels")
+    raise AssertionError("component and packaged gates must verify Prompt-to-composer routing, a Kotlin-sized terminal mic with explicit Stop status, and accessible labels")
 if ("More terminal keys" not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
@@ -282,6 +291,10 @@ if ("composerKeysTransition" not in journey
         or '"keyboardVisibleAfterReturn"' not in journey
         or "fastkeys-composer-keys-ime-open.png" not in journey
         or "fastkeys-composer-returned.png" not in journey
+        or "expandedInputSurfaceCount" not in journey
+        or "catalog is the only expanded surface before starting dictation" not in journey
+        or "!document.querySelector('[data-testid=mobile-hotkeys-sheet]')" not in journey
+        or "!!document.querySelector('[data-testid=mobile-hotkeys-sheet]')" not in journey
         or "terminalNativeDictation" not in journey
         or "installNativeSpeechBridgeObserver()" not in journey
         or "finalAndStoppedInjectedThroughNativePlugin" not in journey):
@@ -296,9 +309,11 @@ if ("validate_composer_alternate_surface(" not in extractor
 if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
         ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
     raise AssertionError("Android catalog without visible dictation status must reserve its 145px compact dock")
-if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,\n"
-        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 177px; }") not in mobile_hotkeys:
-    raise AssertionError("Android catalog with visible dictation status must reserve its 177px compact dock")
+if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--main-open,\n"
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--ctrl-open { height: 185px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog during listening must reserve its 185px status band and compact key catalog")
+if "const inlineDictationListeningStatusRowHeightPx = 40;" not in app:
+    raise AssertionError("App dock sizing must reserve the matching 40px terminal listening band")
 if "const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;" not in app:
     raise AssertionError("terminal viewport reservation must track the rendered 96px catalog height")
 if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys
@@ -551,7 +566,7 @@ if ("prompt_icon_matches_computed_size" not in extractor
         or "clipped final Dictate target at 330px rejected" not in extractor
         or "separate prompt-dictation dock shortcut rejected" not in extractor):
     raise AssertionError("artifact validator must require six fully visible 48dp controls at 330px without overflow or clipping")
-if ("Listening ·" not in extractor
+if ('"Listening" not in status_text' not in extractor
         or 'listening.get("inlineDictationPreview") != dictation.get("partialText")' not in extractor
         or 'listening.get("inlineDictationStatusVisible") is not True' not in extractor):
     raise AssertionError("artifact validator must require the active visible status and matching partial preview")

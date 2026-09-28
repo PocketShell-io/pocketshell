@@ -7,7 +7,7 @@ The full alternative-to-typing strategy. PocketShell reduces keyboard reliance t
 | Surface | Purpose | Trigger |
 |---|---|---|
 | Prompt Composer | Voice/text composing for agent prompts | Tap **Prompt** in the persistent dock; use the composer's mic to dictate a prompt |
-| Inline dictation | Voice straight into the terminal | Tap **Dictate** in the persistent dock |
+| Inline dictation | Voice straight into the terminal | Tap the terminal mic in the persistent dock |
 | Terminal hotkeys panel | Special keys, control combos, the `Ctrl+…` page's a–z letters, arrows | Tap More keys on `SessionTerminalBar`, or the hotkeys entry in the composer sheet |
 | Command chips / snippets | Whole commands or prompt templates | Always-visible chip row when keyboard is down |
 
@@ -66,18 +66,22 @@ Behaviours:
 
 ### Inline dictation (escape hatch)
 
-For short shell commands when the prompt composer is overkill. Tap **Dictate** in the terminal controls to start; partials appear only in the status preview and never reach the PTY. Tap **Stop** to finish. Only a validated final transcript is inserted once into the active terminal at its current insertion point. Enter remains a separate action, and no final transcript means no insertion. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
+For short shell commands when the prompt composer is overkill. The persistent 48dp terminal control is labeled **Dictate** at rest, so its purpose is visible before recording. Starting dictation closes an open key catalog and enters a separate recording presentation above the unchanged key row: **Terminal · Listening**, elapsed time, waveform, and a preview of partial text, with a filled **Stop** control. Partials stay in the preview and never reach the PTY. Stop finishes recognition; only a validated final transcript is inserted once into the active terminal at its current insertion point. Enter remains a separate action, and no final transcript means no insertion. Starting, transcribing, errors, and unavailable states have distinct status/action labels. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
 
 Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s under Settings → Advanced). A pause can end an Android recognition segment; PocketShell keeps dictation open until you tap Stop.
 
 The Android dock order is **Prompt**, ↑, ↓, **Enter**, the keyboard icon
-(accessible name **More terminal keys**), then **Dictate**.
-Prompt opens the composer; its in-composer mic starts prompt dictation. The
-separate **Dictate** action starts terminal inline dictation and changes to
-**Stop** while listening. Its one-line status and partial preview appear above
-the row; partials stay out of the PTY, and Stop inserts validated final text
-once into the active terminal. The full key catalog remains in normal terminal
-flow below the controls while the IME stays open.
+(accessible name **More terminal keys**), then the labeled **Dictate** control.
+Prompt opens the shared composer; its in-composer mic starts prompt dictation
+and returns editable text for review. The separate terminal control starts
+inline dictation and becomes a filled, labeled **Stop** action while listening.
+Its 40dp recording band sits directly above the 48dp key row and shows the
+Terminal destination, Listening state, elapsed time, waveform, and preview.
+The active key catalog closes when recording starts, avoiding a competing
+surface; it can be reopened afterward if needed. Partials stay out of the PTY,
+and Stop inserts validated final text once into the active terminal. The full
+key catalog remains in normal terminal flow below the controls while the IME
+stays open.
 
 Used for: `git status`, file names mid-command, dictating an `ssh` target.
 
@@ -113,13 +117,13 @@ Composer remains the preferred surface for prose and longer agent prompts.
 
 The terminal controls use a normal-flow dock below xterm. On Android, its
 persistent row is ordered **Prompt**, ↑, ↓, **Enter**, the keyboard icon
-(accessible name **More terminal keys**), then **Dictate**.
+(accessible name **More terminal keys**), then the labeled **Dictate** control.
 Prompt opens the shared composer for typing; its in-composer mic starts prompt
-dictation, then shows an editable transcript for review. **Dictate** is the
-separate terminal speech action; its accessible name and title identify the
-terminal destination, and Stop inserts validated final text once into the active
-terminal. While terminal dictation is active, one status line above the row
-carries its partial preview and the action reads **Stop**. With the IME open,
+dictation, then shows an editable transcript for review. The separate terminal
+control starts inline speech and changes to a visibly labeled **Stop** action
+while listening. Its 40dp status band above the row identifies the terminal,
+shows Listening, elapsed time, a waveform, and the partial preview. Stop inserts
+validated final text once into the active terminal. With the IME open,
 the dock reserves its measured height while xterm keeps the same PTY grid and at
 least five terminal rows remain visible.
 
@@ -130,9 +134,9 @@ through its QWERTY rows in the same 48dp viewport. Both pages remain reachable
 while the Android IME is open and leave terminal output visually primary.
 Key actions map through `@pocketshell/core` and write to the active PTY.
 Long-pressing `^C` / `^D` sends the doubled interrupt/EOF sequence. Prompt,
-navigation keys, More keys, Dictate, and page tabs have 48dp targets. Dictate
-stacks its icon above its visible label. Prompt has its own labeled input group;
-navigation keys, More keys, and Dictate share the terminal-controls group.
+navigation keys, More keys, the terminal mic, and page tabs have 48dp targets.
+Prompt has its own labeled input group; navigation keys, More keys, and the
+terminal mic share the terminal-controls group.
 
 Main page (`HOTKEY_PALETTE_MAIN_SECTIONS`) — ↑ / ↓ / Enter stay in the
 persistent row so they remain one tap away:
@@ -208,7 +212,7 @@ Keyboard up:
 ┌────────────────────────────┐
 │   terminal output          │
 ├────────────────────────────┤
-│ Prompt ↑ ↓ Enter [⌨] Dictate │  persistent dock
+│ Prompt ↑ ↓ Enter [⌨] [Mic]   │  persistent dock, Dictate labeled at rest
 ├────────────────────────────┤
 │  q w e r t y u i o p       │
 │   a s d f g h j k l        │  system keyboard
@@ -217,8 +221,9 @@ Keyboard up:
 ```
 
 (The More keys icon opens the catalog below the persistent dock. While terminal
-dictation is active, its status and partial preview appear above the dock; the
-Dictate action reads Stop while listening.)
+dictation is active, its Listening state, elapsed time, waveform, and partial
+preview appear in the status band above the dock; the terminal action reads
+Stop.)
 
 Keyboard down:
 
@@ -228,7 +233,7 @@ Keyboard down:
 ├────────────────────────────┤
 │ git status   build   logs  │  command chips
 ├────────────────────────────┤
-│ Prompt ↑ ↓ Enter [⌨] Dictate │  persistent dock
+│ Prompt ↑ ↓ Enter [⌨] [Mic]   │  persistent dock, Dictate labeled at rest
 └────────────────────────────┘
 ```
 

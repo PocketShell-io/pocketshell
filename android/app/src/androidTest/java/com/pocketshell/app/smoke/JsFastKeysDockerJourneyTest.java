@@ -173,11 +173,14 @@ public final class JsFastKeysDockerJourneyTest {
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
         tapDomCenter("[data-testid=composer-open-keys]");
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         awaitImeVisible(true);
         awaitTerminalResizeIdle();
         JSONObject composerKeys = captureGeometry("composer-to-keys-ime-open");
+        assertEquals("opening More keys from the composer leaves only the catalog expanded", 1,
+                composerKeys.getInt("expandedInputSurfaceCount"));
         assertTrue("More keys from Compose must hand off to the one terminal palette surface with the IME open: " + composerKeys,
                 composerKeys.isNull("composerPanel")
                         && "main".equals(composerKeys.getString("fastKeysPage"))
@@ -192,6 +195,7 @@ public final class JsFastKeysDockerJourneyTest {
         captureScreenshot("fastkeys-composer-keys-ime-open.png");
         tapDomCenter("[data-testid=prompt-composer-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                + " && !document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
                 + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
         String restoredDraft = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
         assertEquals("Compose must reopen with the draft that was present before opening terminal keys",
@@ -202,6 +206,8 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
         JSONObject composerReturn = captureGeometry("keys-to-composer-return");
+        assertEquals("opening Prompt from the catalog leaves only the composer expanded", 1,
+                composerReturn.getInt("expandedInputSurfaceCount"));
         assertTrue("the return action must restore the modal composer, draft focus, and Android IME, then close the palette: " + composerReturn,
                 !composerReturn.isNull("composerPanel")
                         && "closed".equals(composerReturn.getString("fastKeysPage"))
@@ -591,6 +597,16 @@ public final class JsFastKeysDockerJourneyTest {
         int stableResizeAcks;
         assertAtLeastFiveRows("initial inline dictation state", idle);
         captureScreenshot("fastkeys-dictation-idle-ime-open.png");
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        JSONObject idleCatalog = captureGeometry("dictation-idle-catalog-ime-open");
+        assertEquals("the idle expanded surface is the key catalog alone", 1, idleCatalog.getInt("expandedInputSurfaceCount"));
+        assertCatalogSheetGeometry(idleCatalog, "main");
+        assertDockDestinationLabels(idleCatalog);
+        assertDictationMicReachable(idleCatalog);
+        captureScreenshot("fastkeys-dictation-idle-catalog-ime-open.png");
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
 
         String rawFile = "/tmp/" + firstSession + "-dictation.raw";
         String readyMarker = "PS2884_DICTATION_READY_" + nameBase;
@@ -620,8 +636,18 @@ public final class JsFastKeysDockerJourneyTest {
         stableResizeAcks = readyGeometry.getInt("resizeAcks");
         int writesBeforeListening = terminalInputAcknowledgements();
         String targetBefore = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
+        tapDomCenter("[data-testid=mobile-hotkeys-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        JSONObject catalogBeforeListening = captureGeometry("dictation-catalog-before-listening-ime-open");
+        assertEquals("the key catalog is the only expanded surface before starting dictation", 1,
+                catalogBeforeListening.getInt("expandedInputSurfaceCount"));
+        assertCatalogSheetGeometry(catalogBeforeListening, "main");
+        assertAtLeastFiveRows("Main catalog before inline dictation", catalogBeforeListening);
         tapDomCenter("[data-testid=inline-dictation-toggle]");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
+                + " && !document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
+                + " && !document.querySelector('[data-testid=prompt-composer]')"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'false'");
         assertEquals("one dock tap must start only one Android speech plugin session", 1, nativeSpeechCallCount("startCount"));
         JSONObject start = evalJson("JSON.stringify(window.__ps2857NativeSpeechEvidence?.startOptions ?? null)");
         String requestId = start.getString("requestId");
@@ -632,6 +658,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + JSONObject.quote(dictatedText));
         int writesAfterPartial = terminalInputAcknowledgements();
         JSONObject listening = captureGeometry("dictation-listening-ime-open");
+        assertEquals("recording starts after the catalog closes and does not open the prompt composer", 0,
+                listening.getInt("expandedInputSurfaceCount"));
         assertTerminalViewportCap("showing a dictation partial", idle, listening);
         assertTrayBelowTerminalViewport(listening);
         assertDictationMicReachable(listening);
@@ -639,10 +667,16 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("dictation previews must stay local to the dock", writesBeforeListening, terminalInputAcknowledgements());
         assertDictationStableStage("showing a dictation partial", idle, listening, stableGrid, stableResizeAcks);
         JSONObject listeningMic = listening.getJSONObject("inlineDictationMic");
-        assertEquals("listening exposes an accessible Stop action", "Stop dictating at terminal cursor",
+        assertEquals("listening exposes an accessible Stop and insert action", "Stop dictation and insert at terminal cursor",
                 listeningMic.getString("label"));
-        assertEquals("listening mic title matches its accessible action", "Stop dictating at terminal cursor",
+        assertEquals("listening mic title matches its accessible action", "Stop dictation and insert at terminal cursor",
                 listeningMic.getString("title"));
+        assertEquals("listening exposes the visible Stop action in the dock", "Stop", listeningMic.getString("visibleText"));
+        assertEquals("listening exposes its distinct active button state", "listening", listeningMic.getString("micState"));
+        assertTrue("Stop caption remains readable against its button surface: " + listeningMic,
+                listeningMic.getDouble("captionContrastRatio") >= 4.5);
+        assertTrue("Stop glyph remains distinguishable against its button surface: " + listeningMic,
+                listeningMic.getDouble("iconContrastRatio") >= 3.0);
         assertTrue("listening keeps a visible mic/Stop icon in its reachable target", listeningMic.getBoolean("iconVisible"));
         awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
@@ -1198,7 +1232,7 @@ public final class JsFastKeysDockerJourneyTest {
         String phase = geometry.getString("inlineDictationPhase");
         String tone = geometry.getString("inlineDictationTone");
         boolean transcribing = List.of("stopping", "cancelling", "inserting").contains(phase);
-        String expectedAccessibleLabel = "listening".equals(phase) ? "Stop dictating at terminal cursor"
+        String expectedAccessibleLabel = "listening".equals(phase) ? "Stop dictation and insert at terminal cursor"
                 : "starting".equals(phase) ? "Cancel terminal cursor dictation request"
                 : "cancelling".equals(phase) ? "Cancelling terminal dictation"
                 : "stopping".equals(phase) ? "Transcribing speech for terminal cursor"
@@ -1209,8 +1243,10 @@ public final class JsFastKeysDockerJourneyTest {
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
         String expectedDockLabel = "listening".equals(phase) ? "Stop"
-                : "starting".equals(phase) ? "Cancel" : transcribing ? "Wait"
-                : "error".equals(tone) ? "Retry" : "Dictate";
+                : "starting".equals(phase) ? "Cancel"
+                : transcribing ? "Wait"
+                : "error".equals(tone) ? "Retry"
+                : mic.getBoolean("disabled") ? "Unavailable" : "Dictate";
         assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
                 expectedAccessibleLabel, mic.getString("label"));
         assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
@@ -1248,17 +1284,29 @@ public final class JsFastKeysDockerJourneyTest {
                     geometry.getBoolean("inlineDictationStatusAboveKeybar")
                             && !geometry.getBoolean("inlineDictationStatusInsideSheetHeader")
                             && statusRow.getDouble("bottom") <= keybar.getDouble("top") + 0.5);
-            assertTrue("the status line keeps its readable 32dp chip row", statusRow.getDouble("height") >= 31.5);
+            double expectedStatusRowHeight = "listening".equals(phase) ? 39.5 : 31.5;
+            assertTrue("the status row keeps its phase-specific height above the 48dp key row", statusRow.getDouble("height") >= expectedStatusRowHeight);
             JSONObject statusMetrics = geometry.getJSONObject("inlineDictationStatusMetrics");
             assertTrue("dictation status uses readable 11px text and a 16px line", statusMetrics.getDouble("fontSize") >= 11
                     && statusMetrics.getDouble("lineHeight") >= 16);
-            assertTrue("dictation status keeps 6px vertical chip padding", statusMetrics.getDouble("paddingTop") >= 6
-                    && statusMetrics.getDouble("paddingBottom") >= 6);
-            assertTrue("dictation status chip fits the padded line", statusMetrics.getDouble("height") >= 29.5);
             if ("listening".equals(phase)) {
-                assertTrue("Listening status names its terminal destination and exposes a one-line partial preview: " + geometry,
-                        geometry.getString("inlineDictationStatusText").contains("Terminal · Listening ·")
-                                && !geometry.getString("inlineDictationPreview").isEmpty());
+                assertTrue("recording band fills its 40dp row with a distinct Listening treatment",
+                        statusMetrics.getDouble("height") >= 37.5);
+            } else {
+                assertTrue("dictation status keeps 6px vertical chip padding", statusMetrics.getDouble("paddingTop") >= 6
+                        && statusMetrics.getDouble("paddingBottom") >= 6);
+                assertTrue("dictation status chip fits the padded line", statusMetrics.getDouble("height") >= 29.5);
+            }
+            if ("listening".equals(phase)) {
+                assertTrue("Listening status names the terminal destination and shows its separate elapsed timer: " + geometry,
+                        geometry.getString("inlineDictationStatusText").contains("Terminal")
+                                && geometry.getString("inlineDictationStatusText").contains("Listening")
+                                && geometry.getString("inlineDictationElapsed").matches("\\d{2,}:\\d{2}"));
+                assertEquals("recording mode shows the complete waveform vocabulary", 12,
+                        geometry.getInt("inlineDictationWaveformBars"));
+                assertEquals("recording action is visibly captioned Stop", "Stop", mic.getString("visibleText"));
+                assertTrue("partial transcript remains a preview inside the recording band",
+                        !geometry.getString("inlineDictationPreview").isEmpty());
             } else if ("error".equals(tone)) {
                 assertTrue("terminal cursor destination and error are named in the status chip: " + geometry,
                         geometry.getString("inlineDictationStatusText").contains("Terminal · Error ·"));
@@ -1874,6 +1922,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const composerDraftRect=rect('[data-testid=prompt-draft]');"
                 + "const composerActionRow=rect('[data-testid=composer-actions]');"
                 + "const composerPanelNode=document.querySelector('.composer-panel');const composerPanelBounds=composerPanelNode?.getBoundingClientRect();"
+                + "const expandedInputSurfaceCount=[document.querySelector('[data-testid=prompt-composer]'),document.querySelector('[data-testid=mobile-hotkeys-sheet]')].filter(Boolean).length;"
                 + "const composerActionSelectors=[['discard','[data-testid=composer-discard]'],['dictate','[data-testid=composer-dictate]'],"
                 + "['insert','[data-testid=composer-insert]'],['send','.composer-shared-controls .send']];"
                 + "const composerActions=composerActionSelectors.map(([action,selector])=>{const n=document.querySelector(selector);if(!n)return {action,missing:true};"
@@ -1886,12 +1935,20 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationMicNode=document.querySelector('[data-testid=inline-dictation-toggle]');"
                 + "const inlineDictationMicIcon=inlineDictationMicNode?.querySelector('svg');"
                 + "const inlineDictationMicIconStyle=inlineDictationMicIcon?getComputedStyle(inlineDictationMicIcon):null;"
+                + "const inlineDictationMicStyle=inlineDictationMicNode?getComputedStyle(inlineDictationMicNode):null;"
+                + "const inlineDictationMicCaption=inlineDictationMicNode?.querySelector('[data-testid=inline-dictation-dock-label]');"
+                + "const inlineDictationMicCaptionStyle=inlineDictationMicCaption?getComputedStyle(inlineDictationMicCaption):null;"
+                + "const contrastRatio=(foreground,background)=>{const luminance=color=>{const rgb=color.match(/[\\d.]+/g)?.slice(0,3).map(Number);"
+                + "if(!rgb||rgb.length<3)return 0;const linear=rgb.map(value=>{const channel=value/255;return channel<=.04045?channel/12.92:Math.pow((channel+.055)/1.055,2.4);});"
+                + "return .2126*linear[0]+.7152*linear[1]+.0722*linear[2];};const [a,b]=[luminance(foreground),luminance(background)].sort((x,y)=>y-x);return (a+.05)/(b+.05);};"
                 + "const inlineDictationMicIconRect=inlineDictationMicIcon?.getBoundingClientRect();"
                 + "const inlineDictationDestination=inlineDictationMicNode?.parentElement?.querySelector('[data-testid=inline-dictation-destination]');"
                 + "const inlineDictationDestinationLabels=inlineDictationDestination?Array.from(inlineDictationDestination.children).map(node=>node.textContent.trim()):[];"
                 + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),"
                 + "title:inlineDictationMicNode.getAttribute('title')??'',"
                 + "visibleText:inlineDictationMicNode.innerText.trim(),"
+                + "captionContrastRatio:inlineDictationMicCaptionStyle&&inlineDictationMicStyle?contrastRatio(inlineDictationMicCaptionStyle.color,inlineDictationMicStyle.backgroundColor):0,"
+                + "iconContrastRatio:inlineDictationMicIconStyle&&inlineDictationMicStyle?contrastRatio(inlineDictationMicIconStyle.color,inlineDictationMicStyle.backgroundColor):0,"
                 + "destinationLabels:inlineDictationDestinationLabels,destinationLabelBounds:rect('[data-testid=inline-dictation-destination]'),"
                 + "iconBounds:inlineDictationMicIconRect?{top:inlineDictationMicIconRect.top,bottom:inlineDictationMicIconRect.bottom,left:inlineDictationMicIconRect.left,right:inlineDictationMicIconRect.right,width:inlineDictationMicIconRect.width,height:inlineDictationMicIconRect.height}:null,"
                 + "iconVisible:!!inlineDictationMicIcon&&inlineDictationMicIconStyle?.display!=='none'"
@@ -1912,6 +1969,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationStatusMetrics=inlineDictationStatusNode&&inlineDictationStatusStyle?{height:inlineDictationStatusNode.getBoundingClientRect().height,"
                 + "fontSize:parseFloat(inlineDictationStatusStyle.fontSize),lineHeight:parseFloat(inlineDictationStatusStyle.lineHeight),"
                 + "paddingTop:parseFloat(inlineDictationStatusStyle.paddingTop),paddingBottom:parseFloat(inlineDictationStatusStyle.paddingBottom)}:null;"
+                + "const inlineDictationElapsedNode=document.querySelector('[data-testid=inline-dictation-elapsed]');"
+                + "const inlineDictationWaveformNode=document.querySelector('[data-testid=inline-dictation-waveform]');"
                 + "const fitEvents=window.__ps2884ResizeFitEvents??[],ackEvents=window.__ps2884ResizeAckEvents??[];"
                 + "const fitCursor=window.__ps2884ResizeFitTraceCursor??0,ackCursor=window.__ps2884ResizeAckTraceCursor??0;"
                 + "const fitEventsSince=fitEvents.slice(fitCursor),ackEventsSince=ackEvents.slice(ackCursor);"
@@ -1964,6 +2023,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "catalogScroller?.matches('.mobile-hotkeys__main-keys')?'.mobile-hotkeys__main-keys':null,catalogScrollMetrics,"
                 + "mainCatalog:rect('.mobile-hotkeys__main-keys'),ctrlCatalog:rect('.mobile-hotkeys__ctrl-grid'),"
                 + "composerPanel:composerRect,composerDraft:composerDraftRect,composerActionRow,composerActions,"
+                + "expandedInputSurfaceCount,"
                 + "inlineDictationBar,keybarRect,keybarClientRect,"
                 + "inlineDictationStatusRow,inlineDictationStatusVisible:!!inlineDictationStatusNode,"
                 + "dictationSheetHeader,inlineDictationStatusInsideSheetHeader:inlineDictationStatusRow&&dictationSheetHeader?inlineDictationStatusRow.top>=dictationSheetHeader.top-0.5"
@@ -1976,6 +2036,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "inlineDictationPhase:inlineDictationBarNode?.dataset.phase??'',"
                 + "inlineDictationTone:inlineDictationBarNode?.dataset.dictationTone??'',"
                 + "inlineDictationStatusText:inlineDictationStatusNode?.textContent.trim()??'',"
+                + "inlineDictationElapsed:inlineDictationElapsedNode?.textContent.trim()??'',"
+                + "inlineDictationWaveformBars:inlineDictationWaveformNode?.querySelectorAll('i').length??0,"
                 + "inlineDictationPreview:inlineDictationStatusNode?.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim()??'',"
                 + "inlineDictationStatusMetrics,"
                 + "inlineDictationStatusOneLine,"
@@ -2187,7 +2249,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("Prompt launcher keeps a short visible destination label", "Prompt",
                 controls.getJSONObject(0).getString("visibleText"));
         assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(4).getString("visibleText"));
-        assertEquals("terminal dictation is visible inline in the persistent row", "Dictate",
+        assertEquals("terminal dictation remains visibly labeled in the persistent row", "Dictate",
                 controls.getJSONObject(5).getString("visibleText"));
         assertTrue("there is no standalone Prompt Dictate action in the dock", geometry.isNull("promptDictationLauncher"));
         for (int index : List.of(0, 4, 5)) {
@@ -2197,7 +2259,7 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
         assertEquals("Mic accessible action names its destination", "Dictate at terminal cursor", mic.getString("label"));
         assertEquals("terminal mic keeps its accessible title", "Dictate at terminal cursor", mic.getString("title"));
-        assertEquals("idle terminal mic visibly names its Dictate action", "Dictate", mic.getString("visibleText"));
+        assertEquals("idle terminal mic exposes Dictate inside its 48dp target", "Dictate", mic.getString("visibleText"));
         assertEquals("terminal mic does not add a visible caption beside its icon", new JSONArray(),
                 mic.getJSONArray("destinationLabels"));
         assertTrue("terminal mic does not add a duplicate caption beside its icon", mic.isNull("destinationLabelBounds"));
@@ -2299,8 +2361,10 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("the compact in-flow catalog must fit one 48dp tab row and one 48dp key row: " + geometry,
                 96, sheet.getDouble("height"), 0.5);
         JSONObject dock = geometry.getJSONObject("mobileHotkeys");
-        assertEquals("the open terminal dock reserves the key row, optional status, and bounded catalog: " + geometry,
-                geometry.getBoolean("inlineDictationStatusVisible") ? 177 : 145,
+        int expectedCatalogDockHeight = "listening".equals(geometry.getString("inlineDictationPhase")) ? 185
+                : geometry.getBoolean("inlineDictationStatusVisible") ? 177 : 145;
+        assertEquals("the open terminal dock reserves the key row, phase-sized status, and bounded catalog: " + geometry,
+                expectedCatalogDockHeight,
                 dock.getDouble("height"), 0.5);
         JSONObject terminalPanel = geometry.getJSONObject("terminalPanel");
         JSONObject terminalSlot = geometry.getJSONObject("terminalSlot");
