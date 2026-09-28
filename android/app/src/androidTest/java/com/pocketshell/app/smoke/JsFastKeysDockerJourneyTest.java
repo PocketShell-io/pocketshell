@@ -140,6 +140,8 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer-launcher]')"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        assertEquals("the dock must have one Prompt entry; prompt dictation starts inside the composer", "false",
+                evalRaw("!!document.querySelector('[data-testid=prompt-dictation-launcher]')"));
         openPromptComposerSheet();
         String preservedDraft = "keep this draft across keys " + nameBase;
         setValue("[data-testid=prompt-draft]", preservedDraft);
@@ -162,16 +164,6 @@ public final class JsFastKeysDockerJourneyTest {
                         && promptComposerEntry.optDouble("keysWidth") >= 47.9
                         && promptComposerEntry.optDouble("keysHeight") >= 47.9);
         journey.put("promptComposerEntry", promptComposerEntry);
-        JSONObject promptDictationLauncher = evalJson("(() => {const node=document.querySelector('[data-testid=prompt-dictation-launcher]');"
-                + "const r=node?.getBoundingClientRect();return JSON.stringify({label:node?.getAttribute('aria-label')??'',"
-                + "title:node?.getAttribute('title')??'',visibleText:node?.innerText?.trim()??'',width:r?.width??0,height:r?.height??0});})()");
-        assertTrue("the dock must expose a visibly distinct one-tap prompt dictation entry: " + promptDictationLauncher,
-                "Dictate a prompt and review it before Insert or Send".equals(promptDictationLauncher.optString("label"))
-                        && promptDictationLauncher.optString("label").equals(promptDictationLauncher.optString("title"))
-                        && "Dictate".equals(promptDictationLauncher.optString("visibleText"))
-                        && Math.abs(promptDictationLauncher.optDouble("width") - 48.0) < 0.5
-                        && Math.abs(promptDictationLauncher.optDouble("height") - 48.0) < 0.5);
-        journey.put("promptDictationLauncher", promptDictationLauncher);
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
@@ -383,7 +375,7 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("firstSessionGeometryOracleFile", firstRaw + ".geometry");
 
         exerciseDockedDictation(nameBase, dictationTargetSession);
-        exercisePromptDictationFromDock();
+        exercisePromptDictationFromComposer();
 
         // The dictation journey switches sessions and backgrounds/resumes the
         // app. Re-establish the exact precondition for the layered Back check
@@ -974,30 +966,32 @@ public final class JsFastKeysDockerJourneyTest {
         attachSession(firstSession);
     }
 
-    private void exercisePromptDictationFromDock() throws Exception {
-        Log.i("PS2897Prompt", "checkpoint prompt flow waiting for live terminal");
+    private void exercisePromptDictationFromComposer() throws Exception {
+        Log.i("PS2897Prompt", "checkpoint Prompt composer dictation waiting for live terminal");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && document.querySelector('[data-testid=prompt-dictation-launcher]')?.disabled === false");
-        JSONObject dockReady = awaitPromptDictationDockReady();
-        journey.put("promptDictationDockReady", dockReady);
-        Log.i("PS2897Prompt", "checkpoint Prompt Dictate dock ready after IME/resize/frame settle " + dockReady);
+                + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === false"
+                + " && !document.querySelector('[data-testid=prompt-dictation-launcher]')");
+        openPromptComposerSheet();
+        JSONObject composerReady = awaitPromptDictationComposerReady();
+        journey.put("promptDictationComposerReady", composerReady);
+        Log.i("PS2897Prompt", "checkpoint composer Dictate ready after IME/resize/frame settle " + composerReady);
         int writesBefore = terminalInputAcknowledgements();
         int startsBefore = controlledSpeechCallCount("startCount");
         int stopsBefore = controlledSpeechCallCount("stopCount");
         int pointerEventsBefore = pointerEventCount();
-        tapDomCenter("[data-testid=prompt-dictation-launcher]");
-        JSONObject dictateTapState = capturePromptDictationDockTapState(pointerEventsBefore);
-        journey.put("promptDictationDockTap", dictateTapState);
-        Log.i("PS2897Prompt", "checkpoint prompt Dictate tap returned " + dictateTapState);
+        tapDomCenter("[data-testid=composer-dictate]");
+        JSONObject dictateTapState = capturePromptDictationComposerTapState(pointerEventsBefore);
+        journey.put("promptComposerDictateTap", dictateTapState);
+        Log.i("PS2897Prompt", "checkpoint composer Dictate tap returned " + dictateTapState);
         try {
             awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
                     + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'");
         } catch (AssertionError error) {
-            JSONObject failedState = capturePromptDictationDockTapState(pointerEventsBefore);
-            Log.e("PS2897Prompt", "prompt Dictate failed to reach recording " + failedState, error);
-            throw new AssertionError("Prompt Dictate did not open in recording state; tap diagnostics=" + failedState, error);
+            JSONObject failedState = capturePromptDictationComposerTapState(pointerEventsBefore);
+            Log.e("PS2897Prompt", "composer Dictate failed to reach recording " + failedState, error);
+            throw new AssertionError("composer Dictate did not reach recording state; tap diagnostics=" + failedState, error);
         }
-        Log.i("PS2897Prompt", "checkpoint dock Dictate reached recording");
+        Log.i("PS2897Prompt", "checkpoint composer Dictate reached recording");
         assertEquals("one Dictate tap starts exactly one prompt recognizer", startsBefore + 1,
                 controlledSpeechCallCount("startCount"));
         assertEquals("prompt dictation stays separate from terminal-cursor dictation", "idle",
@@ -1025,14 +1019,14 @@ public final class JsFastKeysDockerJourneyTest {
                 + "stopLabel:stop?.getAttribute('aria-label')??'',draft:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true'});})()");
         recording.put("nativeIme", keyboardHidden.getJSONObject("nativeIme"));
-        assertEquals("one-tap Prompt Dictate must open the explicit Kotlin-style recording state", "recording",
+        assertEquals("the composer microphone opens the explicit recording state", "recording",
                 recording.getString("state"));
         assertEquals("recording names its prompt destination", "Prompt dictation", recording.getString("title"));
         assertEquals("recording provides a visible accessible Stop action",
                 "Stop dictation and keep the recognized text in the editable draft", recording.getString("stopLabel"));
         assertEquals("the recording sheet hides the Android keyboard", false,
                 recording.getBoolean("keyboardVisible"));
-        assertEquals("native WindowInsets confirms Prompt Dictate dismissed Android's IME", false,
+        assertEquals("native WindowInsets confirms composer dictation dismissed Android's IME", false,
                 recording.getJSONObject("nativeIme").getBoolean("visible"));
         captureScreenshot("fastkeys-prompt-dictation-recording.png");
 
@@ -1098,16 +1092,15 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'");
         assertEquals("Discard clears the reviewed prompt without touching the terminal", writesBefore,
                 terminalInputAcknowledgements());
-        JSONObject evidence = new JSONObject().put("entry", "mobile-dock Dictate")
+        JSONObject evidence = new JSONObject().put("entry", "Prompt composer microphone")
                 .put("nativeStartCalls", controlledSpeechCallCount("startCount") - startsBefore)
                 .put("nativeStopCalls", controlledSpeechCallCount("stopCount") - stopsBefore)
                 .put("recording", recording).put("transcribing", transcribing).put("review", review).put("transcript", transcript)
                 .put("editedTranscript", editedTranscript).put("editable", true)
                 .put("actions", new JSONArray().put("Discard").put("Insert").put("Send"))
                 .put("discardCleared", true).put("terminalWrites", terminalInputAcknowledgements() - writesBefore);
-        journey.put("promptDictationFromDock", evidence);
-        tapDomCenter("[data-testid=composer-close]");
-        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+        journey.put("promptDictationFromComposer", evidence);
+        closePromptComposerSheet();
     }
 
     private JSONObject awaitPromptDictationKeyboardHidden() throws Exception {
@@ -1147,8 +1140,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + appKeyboardVisible + ", state=" + failedState);
     }
 
-    private JSONObject awaitPromptDictationDockReady() throws Exception {
-        Log.i("PS2897Prompt", "waiting for native IME visible before Prompt Dictate tap");
+    private JSONObject awaitPromptDictationComposerReady() throws Exception {
+        Log.i("PS2897Prompt", "waiting for native IME visible before composer Dictate tap");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
@@ -1156,22 +1149,22 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
 
-        JSONObject state = capturePromptDictationDockTapState(pointerEventCount());
+        JSONObject state = capturePromptDictationComposerTapState(pointerEventCount());
         JSONObject button = state.getJSONObject("button");
         JSONObject bounds = button.getJSONObject("bounds");
         JSONObject hit = button.getJSONObject("centerTarget");
         JSONObject nativeIme = state.getJSONObject("nativeIme");
-        assertTrue("Prompt Dictate must be enabled, at least 48dp, and fully visible after IME resize settles: " + state,
+        assertTrue("composer Dictate must be enabled, at least 48dp, and fully visible after IME resize settles: " + state,
                 !button.getBoolean("disabled") && button.getBoolean("visible")
                         && bounds.getDouble("width") >= 47.9 && bounds.getDouble("height") >= 47.9);
-        assertEquals("the center of the dock Dictate target must hit that same button before touch injection: " + state,
-                "prompt-dictation-launcher", hit.optString("buttonTestId"));
-        assertTrue("Prompt Dictate tap requires the native and WebView keyboard state to agree: " + state,
+        assertEquals("the center of the composer Dictate target must hit that same button before touch injection: " + state,
+                "composer-dictate", hit.optString("buttonTestId"));
+        assertTrue("composer Dictate tap requires the native and WebView keyboard state to agree: " + state,
                 nativeIme.getBoolean("visible") && "true".equals(state.optString("keyboardVisible"))
                         && state.getBoolean("keyboardComposerMode"));
-        assertEquals("Prompt Dictate tap requires an idle PTY resize pipeline: " + state, 0,
+        assertEquals("composer Dictate tap requires an idle PTY resize pipeline: " + state, 0,
                 state.getInt("resizePending"));
-        assertTrue("Prompt Dictate tap requires an acknowledged, failure-free PTY resize: " + state,
+        assertTrue("composer Dictate tap requires an acknowledged, failure-free PTY resize: " + state,
                 state.getInt("resizeAcks") > 0 && state.getInt("resizeFailures") == 0);
         return state;
     }
@@ -1217,7 +1210,7 @@ public final class JsFastKeysDockerJourneyTest {
                 : "error".equals(tone) ? "error" : "idle";
         String expectedDockLabel = "listening".equals(phase) ? "Stop"
                 : "starting".equals(phase) ? "Cancel" : transcribing ? "Wait"
-                : "error".equals(tone) ? "Retry" : "Cursor";
+                : "error".equals(tone) ? "Retry" : "Dictate";
         assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
                 expectedAccessibleLabel, mic.getString("label"));
         assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
@@ -1927,7 +1920,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "&&inlineDictationStatusNode.clientHeight>0&&inlineDictationStatusNode.scrollHeight<=inlineDictationStatusNode.clientHeight+1;"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
                 + "[data-testid=mobile-hotkeys-launcher]')).map(target);"
-                + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-testid=prompt-dictation-launcher]','[data-key-id=arrow-up]',"
+                + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-key-id=arrow-up]',"
                 + "'[data-key-id=arrow-down]','[data-key-id=enter]','[data-testid=mobile-hotkeys-launcher]',"
                 + "'[data-testid=inline-dictation-toggle]'].map(selector=>document.querySelector(selector)).filter(Boolean).map(node=>({"
                 + "...target(node),visibleText:node.innerText.trim(),iconCount:node.querySelectorAll('svg').length}));"
@@ -2085,7 +2078,7 @@ public final class JsFastKeysDockerJourneyTest {
                     rowMetrics.getDouble("scrollWidth") <= rowMetrics.getDouble("clientWidth") + 1);
         }
         JSONObject composeLauncher = geometry.optJSONObject("promptComposerLauncher");
-        assertNotNull("the Android toolbar must keep first-class prompt dictation one tap away", composeLauncher);
+        assertNotNull("the Android toolbar must keep the Prompt composer one tap away", composeLauncher);
         assertTrue("prompt composer launcher must remain a measured 48dp hit target above the IME: " + composeLauncher,
                 composeLauncher.getDouble("width") >= 47.9 && composeLauncher.getDouble("height") >= 47.9
                         && composeLauncher.getDouble("visibleWidthInKeybar") >= 47.9
@@ -2112,18 +2105,8 @@ public final class JsFastKeysDockerJourneyTest {
                         && promptIconBounds.getDouble("top") >= composeLauncher.getDouble("top")
                         && promptIconBounds.getDouble("bottom") <= composeLauncher.getDouble("bottom")
                         && composeLauncher.getBoolean("iconInside"));
-        JSONObject promptVoice = geometry.optJSONObject("promptDictationLauncher");
-        assertNotNull("the dock must expose a separate one-tap prompt-voice action", promptVoice);
-        assertTrue("Dictate must remain fully visible above the keyboard with a clear prompt-review label: " + promptVoice,
-                "Dictate a prompt and review it before Insert or Send".equals(promptVoice.getString("label"))
-                        && promptVoice.getString("label").equals(promptVoice.getString("title"))
-                        && "Dictate".equals(promptVoice.getString("visibleText"))
-                        && Math.abs(promptVoice.getDouble("width") - 48.0) < 0.5
-                        && Math.abs(promptVoice.getDouble("height") - 48.0) < 0.5
-                        && promptVoice.getDouble("visibleWidthInKeybar") >= 47.9
-                        && promptVoice.getDouble("visibleHeightInKeybar") >= 47.9
-                        && promptVoice.getBoolean("insideViewport") && promptVoice.getBoolean("hitTarget")
-                        && !promptVoice.getBoolean("disabled"));
+        assertTrue("prompt dictation is available from inside the composer, not as a dock shortcut",
+                geometry.isNull("promptDictationLauncher"));
         int expectedTargetCount = 4;
         assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
@@ -2157,7 +2140,7 @@ public final class JsFastKeysDockerJourneyTest {
         String page = geometry.getString("fastKeysPage");
         List<String> expected = new ArrayList<>(List.of("Send Up arrow", "Send Down arrow", "Send Enter"));
         expected.add("closed".equals(page) ? "More terminal keys" : "Close terminal keys");
-        assertEquals("persistent row keeps navigation, Fast Keys page, launcher, and trailing mic reachable",
+        assertEquals("persistent row keeps navigation, More keys, and the inline terminal mic reachable",
                 expected, labels);
         assertTrue("keyboard geometry must confirm native IME visibility", geometry.getJSONObject("androidIme").getBoolean("visible"));
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
@@ -2165,20 +2148,20 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void assertDockDestinationLabels(JSONObject geometry) throws Exception {
         JSONArray controls = geometry.getJSONArray("stableDockControls");
-        assertEquals("the mobile dock keeps prompt actions, terminal keys, and Cursor in grouped order", 7, controls.length());
+        assertEquals("the mobile dock keeps one Prompt action, terminal keys, and Dictate in grouped order", 6, controls.length());
         JSONObject promptGroup = geometry.optJSONObject("promptInputGroup");
         JSONObject terminalGroup = geometry.optJSONObject("terminalControlsGroup");
-        assertNotNull("Prompt and Dictate share a measured group", promptGroup);
-        assertNotNull("navigation keys, More, and Cursor share a measured terminal group", terminalGroup);
+        assertNotNull("Prompt has a measured input group", promptGroup);
+        assertNotNull("navigation keys, More, and Dictate share a measured terminal group", terminalGroup);
         assertEquals("prompt group has a distinct accessible name", "Prompt input", promptGroup.getString("label"));
         assertEquals("prompt controls use group semantics", "group", promptGroup.getString("role"));
         assertEquals("terminal group has a distinct accessible name", "Terminal controls", terminalGroup.getString("label"));
         assertEquals("terminal actions use group semantics", "group", terminalGroup.getString("role"));
         assertTrue("prompt group preserves a 48dp row height", Math.abs(promptGroup.getDouble("height") - 48.0) < 0.5);
         assertTrue("terminal group preserves a 48dp row height", Math.abs(terminalGroup.getDouble("height") - 48.0) < 0.5);
+        String moreLabel = "closed".equals(geometry.getString("fastKeysPage")) ? "More terminal keys" : "Close terminal keys";
         List<String> expected = List.of("Open prompt composer to type or dictate a prompt",
-                "Dictate a prompt and review it before Insert or Send", "Send Up arrow", "Send Down arrow", "Send Enter",
-                "Close terminal keys", "Dictate at terminal cursor");
+                "Send Up arrow", "Send Down arrow", "Send Enter", moreLabel, "Dictate at terminal cursor");
         for (int index = 0; index < controls.length(); index += 1) {
             JSONObject control = controls.getJSONObject(index);
             assertEquals("dock control accessibility name follows its slot", expected.get(index), control.getString("label"));
@@ -2189,34 +2172,32 @@ public final class JsFastKeysDockerJourneyTest {
                             && control.getBoolean("insideViewport") && control.getBoolean("hitTarget"));
         }
         JSONObject promptButton = controls.getJSONObject(0);
-        JSONObject dictateButton = controls.getJSONObject(1);
-        assertTrue("Prompt and Dictate targets remain inside their shared group",
+        assertTrue("the single Prompt target remains inside its input group",
                 promptGroup.getDouble("left") <= promptButton.getDouble("left") + 0.5
-                        && promptGroup.getDouble("right") >= dictateButton.getDouble("right") - 0.5
+                        && promptGroup.getDouble("right") >= promptButton.getDouble("right") - 0.5
                         && promptGroup.getDouble("top") <= promptButton.getDouble("top") + 0.5
-                        && promptGroup.getDouble("bottom") >= dictateButton.getDouble("bottom") - 0.5);
-        JSONObject upButton = controls.getJSONObject(2);
-        JSONObject cursorButton = controls.getJSONObject(6);
-        assertTrue("navigation and Cursor targets remain inside their shared terminal group",
+                        && promptGroup.getDouble("bottom") >= promptButton.getDouble("bottom") - 0.5);
+        JSONObject upButton = controls.getJSONObject(1);
+        JSONObject cursorButton = controls.getJSONObject(5);
+        assertTrue("navigation and Dictate targets remain inside their shared terminal group",
                 terminalGroup.getDouble("left") <= upButton.getDouble("left") + 0.5
                         && terminalGroup.getDouble("right") >= cursorButton.getDouble("right") - 0.5
                         && terminalGroup.getDouble("top") <= upButton.getDouble("top") + 0.5
                         && terminalGroup.getDouble("bottom") >= cursorButton.getDouble("bottom") - 0.5);
         assertEquals("Prompt launcher keeps a short visible destination label", "Prompt",
                 controls.getJSONObject(0).getString("visibleText"));
-        assertEquals("the prompt voice action is a visible Dictate control", "Dictate",
-                controls.getJSONObject(1).getString("visibleText"));
-        assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(5).getString("visibleText"));
-        assertEquals("terminal cursor dictation remains a distinct destination", "Cursor",
-                controls.getJSONObject(6).getString("visibleText"));
-        for (int index : List.of(0, 1, 5, 6)) {
-            assertEquals("Prompt, Dictate, keys, and Cursor retain one visual icon", 1,
+        assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(4).getString("visibleText"));
+        assertEquals("terminal dictation is visible inline in the persistent row", "Dictate",
+                controls.getJSONObject(5).getString("visibleText"));
+        assertTrue("there is no standalone Prompt Dictate action in the dock", geometry.isNull("promptDictationLauncher"));
+        for (int index : List.of(0, 4, 5)) {
+            assertEquals("Prompt, keys, and Dictate retain one visual icon", 1,
                     controls.getJSONObject(index).getInt("iconCount"));
         }
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
         assertEquals("Mic accessible action names its destination", "Dictate at terminal cursor", mic.getString("label"));
         assertEquals("terminal mic keeps its accessible title", "Dictate at terminal cursor", mic.getString("title"));
-        assertEquals("terminal mic visibly names its destination", "Cursor", mic.getString("visibleText"));
+        assertEquals("idle terminal mic visibly names its Dictate action", "Dictate", mic.getString("visibleText"));
         assertEquals("terminal mic does not add a visible caption beside its icon", new JSONArray(),
                 mic.getJSONArray("destinationLabels"));
         assertTrue("terminal mic does not add a duplicate caption beside its icon", mic.isNull("destinationLabelBounds"));
@@ -2235,10 +2216,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
                 + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
                 + "const buttons=Array.from(bar.querySelectorAll('button'));"
-                + "const targets=buttons.map(node=>{let r=node.getBoundingClientRect();"
-                + "if(r.left<clip.left)bar.scrollLeft=Math.max(0,bar.scrollLeft-(clip.left-r.left)-1);"
-                + "else if(r.right>clip.right)bar.scrollLeft=Math.min(bar.scrollWidth-bar.clientWidth,bar.scrollLeft+(r.right-clip.right)+1);"
-                + "r=node.getBoundingClientRect();"
+                + "const targets=buttons.map(node=>{const r=node.getBoundingClientRect();"
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
                 + "const visibleHeight=Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top));"
                 + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2),icon=node.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
@@ -2264,13 +2242,15 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("narrow toolbar overflow state must match its measured scroll range: " + result,
                 result.getDouble("scrollWidth") > result.getDouble("clientWidth") + 1,
                 result.getBoolean("scrollable"));
-        assertTrue("at 330px the persistent dock must scroll horizontally to keep all actions reachable: " + result,
-                result.getBoolean("scrollable") && result.getDouble("maxScrollLeft") > 1);
+        assertTrue("at 330px all persistent dock controls must fit without horizontal overflow: " + result,
+                !result.getBoolean("scrollable")
+                        && result.getDouble("scrollWidth") <= result.getDouble("clientWidth") + 1
+                        && result.getDouble("maxScrollLeft") <= 1);
         JSONArray targets = result.getJSONArray("targets");
-        assertEquals("narrow-width toolbar keeps Prompt, Dictate, navigation, Fast Keys, and Cursor reachable", 7, targets.length());
-        assertEquals("narrow dock exposes both distinct dictation destinations in the accessible control order",
-                List.of("Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
-                        "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor"),
+        assertEquals("narrow-width toolbar keeps Prompt, navigation, More keys, and terminal Dictate reachable", 6, targets.length());
+        assertEquals("narrow dock exposes one Prompt entry and the terminal dictation control in accessible order",
+                List.of("Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow",
+                        "Send Enter", "More terminal keys", "Dictate at terminal cursor"),
                 narrowToolbarLabels(targets));
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
@@ -2284,16 +2264,13 @@ public final class JsFastKeysDockerJourneyTest {
             assertTrue("narrow dock control title, when present, matches its accessible name: " + target,
                     target.getString("title").isEmpty() || target.getString("label").equals(target.getString("title")));
         }
-        assertTrue("narrow dock keeps the Compose icon visible", targets.getJSONObject(0).getBoolean("iconVisible"));
-        assertEquals("Dictate stays a visible, labeled one-tap prompt capture action", "Dictate",
-                targets.getJSONObject(1).getString("visibleText"));
-        assertTrue("Dictate icon remains visible after bringing it into the 330px viewport", targets.getJSONObject(1).getBoolean("iconVisible"));
+        assertTrue("the Prompt icon remains visible at the 330px viewport", targets.getJSONObject(0).getBoolean("iconVisible"));
         JSONObject finalMic = result.getJSONObject("finalMic");
-        assertTrue("narrow-width Cursor remains a fully visible 48dp hit target after scrolling: " + result,
+        assertTrue("narrow-width Dictate remains a fully visible 48dp hit target without scrolling: " + result,
                 finalMic.getDouble("width") >= 47.9 && finalMic.getDouble("height") >= 47.9
                         && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget")
                         && finalMic.getBoolean("iconVisible")
-                        && "Cursor".equals(finalMic.getString("visibleText"))
+                        && "Dictate".equals(finalMic.getString("visibleText"))
                         && "Dictate at terminal cursor".equals(finalMic.getString("label"))
                         && finalMic.getString("label").equals(finalMic.getString("title")));
         int writesAfter = hotkeyWrites().length();
@@ -2733,9 +2710,9 @@ public final class JsFastKeysDockerJourneyTest {
         return Integer.parseInt(evalString("String((window.__ps2884PointerEvents ?? []).length)"));
     }
 
-    private JSONObject capturePromptDictationDockTapState(int pointerEventOffset) throws Exception {
+    private JSONObject capturePromptDictationComposerTapState(int pointerEventOffset) throws Exception {
         JSONObject state = evalJson("(() => {const shell=document.querySelector('.app-shell');"
-                + "const button=document.querySelector('[data-testid=prompt-dictation-launcher]');"
+                + "const button=document.querySelector('[data-testid=composer-dictate]');"
                 + "const rect=button?.getBoundingClientRect();const viewport=window.visualViewport;"
                 + "const center=rect?document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2):null;"
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"

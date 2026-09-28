@@ -129,6 +129,10 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("dictation listening has same-run terminal viewport evidence", "fastkeys-dictation-listening-ime-open-viewport.png"),
         ("dictation stopped has same-run terminal viewport evidence", "fastkeys-dictation-stopped-ime-open-viewport.png"),
         ("dictation error has same-run terminal viewport evidence", "fastkeys-dictation-error-ime-open-viewport.png"),
+        ("composer recording screenshot is retained", "fastkeys-prompt-dictation-recording.png"),
+        ("composer transcribing screenshot is retained", "fastkeys-prompt-dictation-transcribing.png"),
+        ("composer review screenshot is retained", "fastkeys-prompt-dictation-review.png"),
+        ("composer recording artifact self-test remains active", "complete prompt dictation recording/transcribing/review artifacts are accepted"),
     )
     for label, needle in required:
         combined = source + packaged_lanes + packaged_runner + artifact_extractor + app
@@ -194,7 +198,7 @@ if ("journey.put(\"promptComposerEntry\", promptComposerEntry);" not in journey
         or '"dialog".equals(promptComposerEntry.optString("role"))' not in journey
         or '"Dictate prompt draft".equals(promptComposerEntry.optString("micLabel"))' not in journey
         or "promptComposerLauncher" not in journey):
-    raise AssertionError("Fast Keys journey must keep a measured entry into the first-class prompt dictation composer")
+    raise AssertionError("Fast Keys journey must keep a measured Prompt entry and Dictate action inside PromptComposer")
 if ("prompt composer entry without its modal dictation target rejected" not in extractor
         or 'composer_entry.get("micLabel") != "Dictate prompt draft"' not in extractor):
     raise AssertionError("artifact self-tests must enforce a reachable prompt dictation mode in the composer")
@@ -216,6 +220,7 @@ if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobil
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
         or 'mobile-hotkeys__destination-label' in mobile_hotkeys
         or 'data-testid="inline-dictation-destination"' in mobile_hotkeys
+        or 'data-testid="prompt-dictation-launcher"' in mobile_hotkeys
         or 'data-testid="mobile-hotkeys-main-scroll-hint"' not in mobile_hotkeys
         or 'Swipe →' not in mobile_hotkeys
         or 'class="terminal-dictation-action sr-only"' in terminal_dictation
@@ -224,7 +229,7 @@ if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobil
         or '<DictationMicIcon :size="20" :stopped="state.phase === \'listening\'" />' not in terminal_dictation
         or 'data-testid="inline-dictation-dock-label"' not in terminal_dictation
         or '{{ buttonDockLabel() }}</span>' not in terminal_dictation
-        or "return 'Cursor';" not in terminal_dictation
+        or "return 'Dictate';" not in terminal_dictation
         or any(label not in terminal_dictation for label in (
             "Dictate at terminal cursor", "Stop dictating at terminal cursor", "Cancel terminal cursor dictation request",
             "Cancelling terminal dictation", "Transcribing speech for terminal cursor", "Inserting speech at terminal cursor",
@@ -233,20 +238,23 @@ if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobil
         or '.mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui);' not in mobile_hotkeys
         or '.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label)' not in mobile_hotkeys
         or 'font: 600 var(--fs-100)/1 var(--font-ui);' not in mobile_hotkeys):
-    raise AssertionError("Prompt and terminal dictation must show their distinct destinations in compact, accessible 48dp controls")
+    raise AssertionError("Prompt must open the composer while terminal dictation shows its Dictate/Stop state in a compact, accessible 48dp control")
 if ("offers a labeled 48px Prompt launcher with an accessible route to the prompt draft" not in unit_test
-        or "labels both dictation routes distinctly while keeping 48dp dock controls" not in unit_test
-        or "inline-dictation-destination')).toBeUndefined()" not in unit_test
+        or "matches the Kotlin input row with one terminal dictation mic and a separate Prompt entry" not in unit_test
+        or "prompt-dictation-launcher')).toBeUndefined()" not in unit_test
+        or 'geometry.isNull("promptDictationLauncher")' not in journey
+        or 'there is no standalone Prompt Dictate action in the dock' not in journey
         or 'visibleText") != "Prompt"' not in extractor
-        or 'visibleText") != "Cursor"' not in extractor
+        or 'visibleText") != "Dictate"' not in extractor
         or "visible Prompt caption inside the dock launcher accepted" not in extractor
-        or "missing Prompt destination caption rejected" not in extractor
-        or "dynamic Stop caption on the terminal mic rejected" not in extractor
+        or "missing Prompt button caption rejected" not in extractor
+        or "duplicate Stop destination label on the terminal mic rejected" not in extractor
+        or "old Cursor caption on idle terminal dictation target rejected" not in extractor
         or '"visibleText": "Prompt"' not in extractor
-        or '"visibleText": "Cursor"' not in extractor
+        or '"visibleText": "Dictate"' not in extractor
         or 'visibleText:promptComposerLauncherNode.innerText.trim()' not in journey
         or 'visibleText:inlineDictationMicNode.innerText.trim()' not in journey):
-    raise AssertionError("component and packaged gates must verify visible Prompt and Dictate destinations, accessible names, and route separation")
+    raise AssertionError("component and packaged gates must verify Prompt-to-composer routing, a single terminal Dictate/Stop target, and accessible labels")
 if ("More terminal keys" not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
@@ -334,7 +342,7 @@ if ('role="region"' not in mobile_hotkeys or 'role="dialog"' in mobile_hotkeys):
 if "translateY(0.95px)" in mobile_hotkeys:
     raise AssertionError("Android inline dictation must not translate 48dp controls out of the clipped toolbar row")
 if "scrollbar-width: none;" not in mobile_hotkeys or ".mobile-hotkeys__bar::-webkit-scrollbar { display: none; }" not in mobile_hotkeys:
-    raise AssertionError("Android narrow-width toolbar must preserve full target height while retaining swipe scrolling")
+    raise AssertionError("Android narrow-width toolbar must keep full-height touch targets with scrolling available only for real overflow")
 if "dictationModeSelector" in journey or "dictationModeOptions" in journey or "inlineDictationMode" in app:
     raise AssertionError("the Kotlin-aligned inline mic/status dock must not retain the JS-only Prompt/Command mode state")
 if "terminalSlotInsideTerminalPanel" not in journey or "terminalSlotInsideTerminalPanel" not in extractor:
@@ -489,7 +497,7 @@ if "mobile-hotkeys__mode-selector" in mobile_hotkeys or "InlineDictationMode" in
 if "dictationModeSelector" in extractor or "dictationModeOptions" in extractor:
     raise AssertionError("Fast Keys artifact validation must not retain the removed JS-only selector contract")
 if "narrowToolbarReachability" not in journey or "scrollWidth" not in journey or "insideToolbar:r.left>=clip.left" not in journey:
-    raise AssertionError("Fast Keys acceptance omits measured narrow-width horizontal reachability")
+    raise AssertionError("Fast Keys acceptance omits measured narrow-width visibility and overflow evidence")
 for catalog_contract in ("catalogHeaderControlsDoNotOverlap", "catalogTitle", "catalogSheetRole",
                          "promptComposerLauncher", "clientHeight", "scrollHeight",
                          "terminalGridViewport", "terminalCanvasEndsAtDock"):
@@ -532,9 +540,17 @@ if ("prompt_icon_matches_computed_size" not in extractor
         or "iconComputedWidth" not in extractor
         or "iconComputedHeight" not in extractor
         or "expected_narrow_labels" not in extractor
-        or "Dictate a prompt and review it before Insert or Send" not in extractor
-        or "len(narrow_targets) != 7" not in extractor):
-    raise AssertionError("artifact validator must enforce both Dictate destinations and seven-control narrow-toolbar order")
+        or "len(controls) != 6" not in extractor
+        or "len(narrow_targets) != 6" not in extractor
+        or "narrow_scroll_width > narrow_client_width + 0.5" not in extractor
+        or 'narrow_row.get("scrollable") is not False' not in extractor
+        or "abs(narrow_max_scroll_left) > 0.5" not in extractor
+        or "narrow_mic_right > narrow_client_width + 0.5" not in extractor
+        or "six narrow dock controls fit 330px without horizontal scrolling" not in extractor
+        or "unnecessary horizontal scroll at 330px rejected" not in extractor
+        or "clipped final Dictate target at 330px rejected" not in extractor
+        or "separate prompt-dictation dock shortcut rejected" not in extractor):
+    raise AssertionError("artifact validator must require six fully visible 48dp controls at 330px without overflow or clipping")
 if ("Listening ·" not in extractor
         or 'listening.get("inlineDictationPreview") != dictation.get("partialText")' not in extractor
         or 'listening.get("inlineDictationStatusVisible") is not True' not in extractor):

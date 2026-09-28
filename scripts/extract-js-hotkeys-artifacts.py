@@ -141,7 +141,7 @@ def expected_terminal_dictation_caption(phase: object, tone: object) -> str:
         return "Wait"
     if tone == "error":
         return "Retry"
-    return "Cursor"
+    return "Dictate"
 
 
 def expected_terminal_dictation_mic_state(phase: object, tone: object, disabled: object) -> str:
@@ -337,7 +337,7 @@ def validate_docked_dictation_geometry(
     expected_caption = expected_terminal_dictation_caption(phase, item.get("inlineDictationTone"))
     if (mic.get("visibleText") != expected_caption or mic.get("destinationLabels") != []
             or mic.get("destinationLabelBounds") is not None):
-        raise ExtractionFailure(f"{label} terminal mic caption must match its active phase and keep the Cursor destination inside its target")
+        raise ExtractionFailure(f"{label} terminal mic caption must match its active phase and remain inside its target")
     if mic.get("iconVisible") is not True or not icon_is_inside_button(mic, mic.get("iconBounds")):
         raise ExtractionFailure(f"{label} dictation icon is missing or outside its 48dp button")
     expected_mic_state = expected_terminal_dictation_mic_state(
@@ -688,6 +688,16 @@ def validate_journey(journey: object) -> None:
         raise ExtractionFailure("journey evidence must be a JSON object")
     if not isinstance(journey.get("androidApi"), int) or journey["androidApi"] < 35:
         raise ExtractionFailure("journey evidence does not prove API 35+")
+    geometry_trace = journey.get("geometryTrace")
+    has_prompt_dictation_dock_control = (
+        journey.get("promptDictationLauncher") is not None
+        or journey.get("promptDictationFromDock") is not None
+        or (isinstance(geometry_trace, list)
+            and any(isinstance(item, dict) and item.get("promptDictationLauncher") is not None
+                    for item in geometry_trace))
+    )
+    if has_prompt_dictation_dock_control:
+        raise ExtractionFailure("prompt dictation must start inside PromptComposer, not from a separate dock shortcut")
     composer_entry = journey.get("promptComposerEntry")
     if (not isinstance(composer_entry, dict)
             or composer_entry.get("role") != "dialog"
@@ -697,20 +707,6 @@ def validate_journey(journey: object) -> None:
             or composer_entry.get("micWidth", 0) < 47.9
             or composer_entry.get("micHeight", 0) < 47.9):
         raise ExtractionFailure("prompt composer entry does not prove a reachable dictation action in the modal composer")
-    prompt_dictation = journey.get("promptDictationFromDock")
-    recording = prompt_dictation.get("recording") if isinstance(prompt_dictation, dict) else None
-    transcribing = prompt_dictation.get("transcribing") if isinstance(prompt_dictation, dict) else None
-    review = prompt_dictation.get("review") if isinstance(prompt_dictation, dict) else None
-    if (not isinstance(prompt_dictation, dict)
-            or prompt_dictation.get("entry") != "mobile-dock Dictate"
-            or not isinstance(recording, dict) or recording.get("state") != "recording"
-            or not isinstance(transcribing, dict) or transcribing.get("state") != "transcribing"
-            or not isinstance(review, dict) or review.get("state") != "review"
-            or "editable" not in str(review.get("draftLabel", "")).lower()
-            or review.get("draftReadOnly") != "false"
-            or prompt_dictation.get("editable") is not True
-            or prompt_dictation.get("actions") != ["Discard", "Insert", "Send"]):
-        raise ExtractionFailure("mobile-dock Dictate must prove recording, transcribing, editable review, and Discard/Insert/Send")
     if (composer_entry.get("keysLabel") != "More terminal keys"
             or composer_entry.get("keysVisible") is not True
             or composer_entry.get("keysWidth", 0) < 47.9
@@ -719,8 +715,8 @@ def validate_journey(journey: object) -> None:
     transition = journey.get("composerKeysTransition")
     controls = transition.get("stableDockControls") if isinstance(transition, dict) else None
     expected_dock_labels = (
-        "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
-        "Send Up arrow", "Send Down arrow", "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
+        "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow",
+        "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
     )
     before_grid = transition.get("terminalGridBefore") if isinstance(transition, dict) else None
     keys_grid = transition.get("terminalGridDuringKeys") if isinstance(transition, dict) else None
@@ -735,7 +731,7 @@ def validate_journey(journey: object) -> None:
             or transition.get("imeVisibleAfterReturn") is not True
             or transition.get("keyboardVisibleAfterReturn") is not True
             or not isinstance(before_grid, dict) or before_grid != keys_grid
-            or not isinstance(controls, list) or len(controls) != 7
+            or not isinstance(controls, list) or len(controls) != 6
             or tuple(control.get("label") for control in controls if isinstance(control, dict)) != expected_dock_labels
             or any(not isinstance(control, dict)
                    or abs(control.get("width", 0) - 48) >= 0.5
@@ -744,15 +740,15 @@ def validate_journey(journey: object) -> None:
                    or control.get("hitTarget") is not True
                    for control in controls)
             or any(controls[index].get("visibleText") != expected_text
-                   for index, expected_text in ((0, "Prompt"), (1, "Dictate"), (2, "↑"), (3, "↓"),
-                                                (4, "Enter"), (5, ""), (6, "Cursor")))
-            or any(controls[index].get("iconCount") != 1 for index in (0, 1, 5, 6))):
+                   for index, expected_text in ((0, "Prompt"), (1, "↑"), (2, "↓"),
+                                                (3, "Enter"), (4, ""), (5, "Dictate")))
+            or any(controls[index].get("iconCount") != 1 for index in (0, 4, 5))):
         raise ExtractionFailure("composer-to-keys journey does not prove a draft-preserving exclusive 48dp dock handoff with stable PTY grid")
     mic = transition.get("inlineDictationMic")
     label_bounds = mic.get("destinationLabelBounds") if isinstance(mic, dict) else None
-    if (not isinstance(mic, dict) or mic.get("visibleText") != "Cursor"
+    if (not isinstance(mic, dict) or mic.get("visibleText") != "Dictate"
             or mic.get("destinationLabels") != [] or label_bounds is not None):
-        raise ExtractionFailure("terminal mic must visibly identify its terminal dictation destination")
+        raise ExtractionFailure("terminal mic must show one Dictate caption without a duplicate destination label")
     native_dictation = journey.get("terminalNativeDictation")
     if not isinstance(native_dictation, dict):
         raise ExtractionFailure("journey is missing the terminal bar's actual Android speech bridge proof")
@@ -784,28 +780,43 @@ def validate_journey(journey: object) -> None:
     narrow_targets = narrow_row.get("targets") if isinstance(narrow_row, dict) else None
     narrow_mic = narrow_row.get("finalMic") if isinstance(narrow_row, dict) else None
     expected_narrow_labels = (
-        "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
-        "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor",
+        "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow",
+        "Send Enter", "More terminal keys", "Dictate at terminal cursor",
     )
+    narrow_client_width = narrow_row.get("clientWidth") if isinstance(narrow_row, dict) else None
+    narrow_scroll_width = narrow_row.get("scrollWidth") if isinstance(narrow_row, dict) else None
+    narrow_max_scroll_left = narrow_row.get("maxScrollLeft") if isinstance(narrow_row, dict) else None
+    narrow_mic_left = narrow_mic.get("left") if isinstance(narrow_mic, dict) else None
+    narrow_mic_right = narrow_mic.get("right") if isinstance(narrow_mic, dict) else None
+    narrow_mic_width = narrow_mic.get("width") if isinstance(narrow_mic, dict) else None
     if (not isinstance(narrow_row, dict)
-            or abs(narrow_row.get("clientWidth", 0) - 330) > 1
-            or narrow_row.get("scrollable") is not (narrow_row.get("scrollWidth", 0) > narrow_row.get("clientWidth", 0) + 1)
-            or narrow_row.get("maxScrollLeft", -1) < 0
+            or isinstance(narrow_client_width, bool) or not isinstance(narrow_client_width, (int, float))
+            or isinstance(narrow_scroll_width, bool) or not isinstance(narrow_scroll_width, (int, float))
+            or isinstance(narrow_max_scroll_left, bool) or not isinstance(narrow_max_scroll_left, (int, float))
+            or abs(narrow_client_width - 330) > 1
+            or narrow_scroll_width > narrow_client_width + 0.5
+            or narrow_row.get("scrollable") is not False
+            or abs(narrow_max_scroll_left) > 0.5
             or narrow_row.get("ptyWritesBefore") != narrow_row.get("ptyWritesAfter")
             or not isinstance(narrow_targets, list)
-            or len(narrow_targets) != 7
+            or len(narrow_targets) != 6
             or not isinstance(narrow_mic, dict)
+            or isinstance(narrow_mic_left, bool) or not isinstance(narrow_mic_left, (int, float))
+            or isinstance(narrow_mic_right, bool) or not isinstance(narrow_mic_right, (int, float))
+            or isinstance(narrow_mic_width, bool) or not isinstance(narrow_mic_width, (int, float))
+            or narrow_mic_left < 0 or narrow_mic_right > narrow_client_width + 0.5
+            or abs((narrow_mic_right - narrow_mic_left) - narrow_mic_width) > 0.5
             or narrow_mic.get("label") != "Dictate at terminal cursor"
             or narrow_mic.get("title") != "Dictate at terminal cursor"
-            or narrow_mic.get("visibleText") != "Cursor"
+            or narrow_mic.get("visibleText") != "Dictate"
             or narrow_mic.get("iconVisible") is not True
             or narrow_mic.get("width", 0) < 47.9 or narrow_mic.get("height", 0) < 47.9
             or narrow_mic.get("insideToolbar") is not True or narrow_mic.get("hitTarget") is not True
             or tuple(target.get("label") for target in narrow_targets if isinstance(target, dict)) != expected_narrow_labels
             or any(not isinstance(narrow_targets[index], dict)
                    or narrow_targets[index].get("visibleText") != expected_text
-                   for index, expected_text in ((0, "Prompt"), (1, "Dictate"), (2, "↑"), (3, "↓"),
-                                                (4, "Enter"), (5, ""), (6, "Cursor")))
+                   for index, expected_text in ((0, "Prompt"), (1, "↑"), (2, "↓"),
+                                                (3, "Enter"), (4, ""), (5, "Dictate")))
             or any(not isinstance(target, dict)
                    or target.get("width", 0) < 47.9 or target.get("height", 0) < 47.9
                    or target.get("visibleWidth", 0) < 47.9 or target.get("visibleHeight", 0) < 47.9
@@ -815,7 +826,7 @@ def validate_journey(journey: object) -> None:
             or {target.get("label") for target in narrow_targets if isinstance(target, dict)}
                < {"Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor"}
            ):
-        raise ExtractionFailure("330px dock does not prove reachable 48dp navigation, launcher, and dictation controls")
+        raise ExtractionFailure("330px dock does not prove reachable 48dp Prompt, navigation, More keys, and dictation controls")
     validate_dictation_behavior(journey)
     if journey.get("firstHotkeyWrites") != expected_first_writes():
         raise ExtractionFailure("mounted app write trace does not match the expected first-session key payloads")
@@ -1581,6 +1592,7 @@ def self_test() -> int:
     samples = [
         ("complete key action stream accepted", {**sample_journey(), "androidApi": 35}, True),
         ("API 35 keyboard-up baseline locks 144px and the 38x6 PTY grid", sample_journey(), True),
+        ("six narrow dock controls fit 330px without horizontal scrolling", sample_journey(), True),
         ("API 35 144px viewport with a 38x7 PTY grid rejected",
          with_api35_extra_keyboard_row(sample_journey()), False),
         ("API 35 172px keyboard-up viewport cap rejected",
@@ -1621,14 +1633,18 @@ def self_test() -> int:
          with_rejected_catalog_hierarchy(sample_journey()), False),
         ("catalog page without the prompt composer launcher rejected",
          with_missing_prompt_composer_launcher(sample_journey()), False),
+        ("separate prompt-dictation dock shortcut rejected",
+         with_separate_prompt_dictation_shortcut(sample_journey()), False),
         ("Prompt launcher lacks its accessible title rejected",
          with_wrong_prompt_composer_launcher_title(sample_journey()), False),
         ("visible Prompt caption inside the dock launcher accepted",
          with_visible_prompt_composer_caption(sample_journey()), True),
-        ("missing Prompt destination caption rejected",
+        ("missing Prompt button caption rejected",
          with_missing_prompt_composer_caption(sample_journey()), False),
-        ("dynamic Stop caption on the terminal mic rejected",
+        ("duplicate Stop destination label on the terminal mic rejected",
          with_visible_terminal_mic_caption(sample_journey()), False),
+        ("old Cursor caption on idle terminal dictation target rejected",
+         with_old_terminal_idle_mic_caption(sample_journey()), False),
         ("Prompt launcher icon is hidden rejected",
          with_hidden_prompt_composer_icon(sample_journey()), False),
         ("Prompt launcher icon size is inconsistent with its bounds rejected",
@@ -1679,6 +1695,10 @@ def self_test() -> int:
          with_live_row_overflow(sample_journey()), False),
         ("narrow toolbar controls are out of their required order rejected",
          with_reordered_narrow_toolbar_targets(sample_journey()), False),
+        ("unnecessary horizontal scroll at 330px rejected",
+         with_unnecessary_narrow_toolbar_scroll(sample_journey()), False),
+        ("clipped final Dictate target at 330px rejected",
+         with_clipped_narrow_toolbar_dictation_target(sample_journey()), False),
         ("Back layering without the native IME rejected",
          with_invalid_back_layer_precondition(sample_journey(), keyboard_visible=False), False),
         ("Back layering with the dock closed rejected",
@@ -1971,7 +1991,7 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationMic": {
             "label": "Dictate at terminal cursor", "top": 208, "bottom": 256, "left": 235, "right": 283,
             "width": 48, "height": 48, "insideViewport": True, "disabled": False, "micState": "idle",
-            "title": "Dictate at terminal cursor", "visibleText": "Cursor", "destinationLabels": [],
+            "title": "Dictate at terminal cursor", "visibleText": "Dictate", "destinationLabels": [],
             "destinationLabelBounds": None, "iconVisible": True,
             "iconBounds": {"left": 249, "top": 222, "right": 269, "bottom": 242, "width": 20, "height": 20},
             "pressed": False, "hitTarget": True,
@@ -2373,14 +2393,6 @@ def sample_journey() -> dict[str, object]:
             "micVisible": True, "micWidth": 48, "micHeight": 48,
             "keysLabel": "More terminal keys", "keysVisible": True, "keysWidth": 48, "keysHeight": 48,
         },
-        "promptDictationFromDock": {
-            "entry": "mobile-dock Dictate",
-            "recording": {"state": "recording"},
-            "transcribing": {"state": "transcribing"},
-            "review": {"state": "review", "draftLabel": "Editable transcript", "draftReadOnly": "false"},
-            "editable": True,
-            "actions": ["Discard", "Insert", "Send"],
-        },
         "composerKeysTransition": {
             "draftBefore": "keep this prompt",
             "draftAfterReturn": "keep this prompt",
@@ -2395,17 +2407,17 @@ def sample_journey() -> dict[str, object]:
             "stableDockControls": [
                 {"label": label, "width": 48, "height": 48, "insideViewport": True,
                  "hitTarget": True,
-                 "visibleText": {0: "Prompt", 1: "Dictate", 2: "↑", 3: "↓", 4: "Enter", 5: "", 6: "Cursor"}.get(index, label),
-                 "iconCount": 1 if index in (0, 1, 5, 6) else 0}
+                 "visibleText": {0: "Prompt", 1: "↑", 2: "↓", 3: "Enter", 4: "", 5: "Dictate"}.get(index, label),
+                 "iconCount": 1 if index in (0, 4, 5) else 0}
                 for index, label in enumerate((
-                    "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
-                    "Send Up arrow", "Send Down arrow", "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
+                    "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow",
+                    "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
                 ))
             ],
             "inlineDictationMic": {
                 "label": "Dictate at terminal cursor", "left": 360.0, "right": 408.0,
                 "top": 700.0, "bottom": 748.0, "width": 48.0, "height": 48.0,
-                "visibleText": "Cursor", "destinationLabels": [], "destinationLabelBounds": None,
+                "visibleText": "Dictate", "destinationLabels": [], "destinationLabelBounds": None,
             },
         },
         "terminalNativeDictation": {
@@ -2433,7 +2445,8 @@ def sample_journey() -> dict[str, object]:
             "scrollable": False,
             "ptyWritesBefore": 2,
             "ptyWritesAfter": 2,
-            "finalMic": {"label": "Dictate at terminal cursor", "title": "Dictate at terminal cursor", "visibleText": "Cursor",
+            "finalMic": {"left": 281, "right": 329,
+                "label": "Dictate at terminal cursor", "title": "Dictate at terminal cursor", "visibleText": "Dictate",
                 "iconVisible": True, "width": 48, "height": 48,
                 "insideToolbar": True, "hitTarget": True},
             "targets": [
@@ -2442,10 +2455,9 @@ def sample_journey() -> dict[str, object]:
                  "hitTarget": True, "insideToolbar": True, "disabled": False}
                 for label, visible_text in (
                     ("Open prompt composer to type or dictate a prompt", "Prompt"),
-                    ("Dictate a prompt and review it before Insert or Send", "Dictate"),
                     ("Send Up arrow", "↑"), ("Send Down arrow", "↓"),
                     ("Send Enter", "Enter"), ("More terminal keys", ""),
-                    ("Dictate at terminal cursor", "Cursor"),
+                    ("Dictate at terminal cursor", "Dictate"),
                 )
             ],
         },
@@ -3085,6 +3097,16 @@ def with_missing_prompt_composer_launcher(journey: dict[str, object]) -> dict[st
     return copied
 
 
+def with_separate_prompt_dictation_shortcut(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
+    item["promptDictationLauncher"] = {
+        "label": "Dictate a prompt and review it before Insert or Send",
+        "visibleText": "Dictate", "width": 48, "height": 48,
+    }
+    return copied
+
+
 def with_oversized_prompt_composer_launcher(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
@@ -3124,6 +3146,13 @@ def with_visible_terminal_mic_caption(journey: dict[str, object]) -> dict[str, o
     return copied
 
 
+def with_old_terminal_idle_mic_caption(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    item = next(item for item in copied["geometryTrace"] if item["stage"] == "dictation-idle-ime-open")
+    item["inlineDictationMic"]["visibleText"] = "Cursor"
+    return copied
+
+
 def with_hidden_prompt_composer_icon(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     item = next(item for item in copied["geometryTrace"] if item["stage"] == "fast-keys-main-open-ime-up")
@@ -3142,6 +3171,21 @@ def with_reordered_narrow_toolbar_targets(journey: dict[str, object]) -> dict[st
     copied = json.loads(json.dumps(journey))
     targets = copied["narrowToolbarReachability"]["targets"]
     targets[0], targets[1] = targets[1], targets[0]
+    return copied
+
+
+def with_unnecessary_narrow_toolbar_scroll(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    row = copied["narrowToolbarReachability"]
+    row["scrollWidth"] = row["clientWidth"] + 8
+    row["maxScrollLeft"] = 8
+    row["scrollable"] = True
+    return copied
+
+
+def with_clipped_narrow_toolbar_dictation_target(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    copied["narrowToolbarReachability"]["targets"][-1]["visibleWidth"] = 47
     return copied
 
 
