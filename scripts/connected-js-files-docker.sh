@@ -153,11 +153,13 @@ else
   exit "$test_exit_code"
 fi
 
-python3 - "$RESULTS_DIR" <<'PY'
+python3 - "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results" <<'PY'
 from pathlib import Path
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 results = Path(sys.argv[1])
+evidence = Path(sys.argv[2])
 reports = list(results.rglob('TEST-*.xml')) if results.is_dir() else []
 cases = []
 for report in reports:
@@ -171,16 +173,27 @@ if len(matched) != 1:
 case = matched[0]
 if list(case.iter('failure')) or list(case.iter('error')) or list(case.iter('skipped')):
     raise SystemExit('J10 packaged test has a failed, errored, or skipped result')
+evidence.mkdir(parents=True, exist_ok=True)
+for report in reports:
+    shutil.copy2(report, evidence / report.name)
 print(f'PASS: packaged J10 executed {case.attrib.get("classname")}#{case.attrib.get("name")}')
 PY
 
-[[ "$(ssh_remote "cat '$REMOTE_ROOT/editable.txt'")" == 'changed-remotely' ]] \
-  || fail 'edit conflict handling overwrote the remote contents'
-[[ "$(ssh_remote "cat '$REMOTE_ROOT/save-success.txt'")" == 'saved-through-ui' ]] \
-  || fail 'the Android file editor did not save exact text bytes on the Docker host'
-ssh_remote "cmp -s '$REMOTE_ROOT/uploaded.bin' '$REMOTE_ROOT/expected-upload.bin'" \
-  || fail 'the Android document-provider upload did not persist exact binary bytes on the Docker host'
-printf 'PASS: Docker host retained the concurrent edit, successful editor save, and exact uploaded binary bytes\n'
+{
+  printf 'run_id=%s\nremote_root=%s\n' "$RUN_ID" "$REMOTE_ROOT"
+  editable_actual="$(ssh_remote "cat '$REMOTE_ROOT/editable.txt'")"
+  [[ "$editable_actual" == 'changed-remotely' ]] \
+    || fail 'edit conflict handling overwrote the remote contents'
+  printf 'edit_conflict expected=changed-remotely actual=%s PASS\n' "$editable_actual"
+  saved_actual="$(ssh_remote "cat '$REMOTE_ROOT/save-success.txt'")"
+  [[ "$saved_actual" == 'saved-through-ui' ]] \
+    || fail 'the Android file editor did not save exact text bytes on the Docker host'
+  printf 'editor_save expected=saved-through-ui actual=%s PASS\n' "$saved_actual"
+  ssh_remote "cmp -s '$REMOTE_ROOT/uploaded.bin' '$REMOTE_ROOT/expected-upload.bin'" \
+    || fail 'the Android document-provider upload did not persist exact binary bytes on the Docker host'
+  uploaded_bytes="$(ssh_remote "wc -c < '$REMOTE_ROOT/uploaded.bin'")"
+  printf 'binary_upload compared=uploaded.bin:expected-upload.bin bytes=%s PASS\n' "$uploaded_bytes"
+} | tee "$ARTIFACTS_DIR/host-oracle.txt"
 
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/J10/$RUN_ID"
 mkdir -p "$ARTIFACTS_DIR/device-screenshots"

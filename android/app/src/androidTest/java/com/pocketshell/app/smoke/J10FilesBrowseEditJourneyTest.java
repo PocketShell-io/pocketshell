@@ -110,6 +110,7 @@ public final class J10FilesBrowseEditJourneyTest {
                 + " && !!document.querySelector('[data-testid=file-list]')"
                 + " && document.querySelector('[data-testid=file-loading]') === null"
                 + " && document.querySelectorAll('.files-row').length > 0");
+        assertFilesIsOnlyVisibleScreen();
 
         setValue("[data-testid=file-path]", "/etc/passwd");
         click(".files-goto button[type=submit]");
@@ -153,6 +154,7 @@ public final class J10FilesBrowseEditJourneyTest {
 
         click("[data-file-name='binary.bin'] .files-row-open");
         awaitJsTrue("!!document.querySelector('[data-testid=file-binary-viewer]')");
+        awaitFileDownloadReady();
 
         File downloadedFile = new File(targetContext().getCacheDir(), "js2858-download-result.bin");
         downloadedFixture = downloadedFile;
@@ -166,10 +168,29 @@ public final class J10FilesBrowseEditJourneyTest {
         Intents.intending(IntentMatchers.hasAction(Intent.ACTION_CREATE_DOCUMENT))
                 .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, createResult));
         click("[data-testid=file-download]");
-        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Saved') === true");
+        awaitFileDownloadSaved(downloadedFile.getName());
+        Intents.intended(IntentMatchers.hasAction(Intent.ACTION_CREATE_DOCUMENT));
+        int createDocumentCount = 0;
+        Intent dispatchedCreateDocument = null;
+        for (Intent intent : Intents.getIntents()) {
+            if (Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())) {
+                createDocumentCount++;
+                dispatchedCreateDocument = intent;
+            }
+        }
+        assertEquals("downloading binary.bin must dispatch exactly one ACTION_CREATE_DOCUMENT", 1, createDocumentCount);
+        assertTrue("the ACTION_CREATE_DOCUMENT request must name binary.bin: " + dispatchedCreateDocument,
+                dispatchedCreateDocument != null
+                        && "binary.bin".equals(dispatchedCreateDocument.getStringExtra(Intent.EXTRA_TITLE)));
         byte[] expectedBinary = new byte[] {0, (byte) 0xff, 'B', 'I', 'N', 'A', 'R', 'Y'};
-        assertTrue("the SAF content URI must receive the exact remote binary bytes",
-                Arrays.equals(expectedBinary, readAllBytes(downloadedFile)));
+        byte[] actualBinary = readAllBytes(downloadedFile);
+        assertTrue("the completed SAF write must contain the exact remote bytes; expected="
+                        + Arrays.toString(expectedBinary) + " actual=" + Arrays.toString(actualBinary),
+                Arrays.equals(expectedBinary, actualBinary));
+        System.out.println("J10_FILES_DOWNLOAD_EVIDENCE action=ACTION_CREATE_DOCUMENT title=binary.bin"
+                + " result=" + evalString("document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? ''")
+                + " bytes=" + actualBinary.length + " exact=true");
+        File downloadedScreenshot = new File(artifacts, "files-downloaded.png");
         captureScreenshot(artifacts, "files-downloaded.png");
 
         File uploadSource = new File(targetContext().getCacheDir(), "uploaded.bin");
@@ -185,7 +206,17 @@ public final class J10FilesBrowseEditJourneyTest {
         click("[data-testid=file-upload]");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === 'uploaded.bin')");
         awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Uploaded uploaded.bin') === true");
+        click("[data-testid=file-close]");
+        awaitJsTrue("document.querySelector('[data-testid=file-viewer]') === null");
+        evalString("(() => {const list=document.querySelector('[data-testid=file-list]');"
+                + "const row=Array.from(document.querySelectorAll('[data-file-name]')).find(node=>node.dataset.fileName==='uploaded.bin');"
+                + "if(!list||!row)throw new Error('uploaded row is missing before screenshot');"
+                + "row.scrollIntoView({block:'center',inline:'nearest'});return 'scrolled';})()");
+        assertUploadedResultIsVisible();
         captureScreenshot(artifacts, "files-uploaded.png");
+        File uploadedScreenshot = new File(artifacts, "files-uploaded.png");
+        assertTrue("the post-upload screenshot must show a visibly different UI state from the download screenshot",
+                !Arrays.equals(readAllBytes(downloadedScreenshot), readAllBytes(uploadedScreenshot)));
         System.out.println("J10_FILES_EVIDENCE root=" + fixtureRoot + " listCount="
                 + evalString("document.querySelectorAll('[data-file-name]').length")
                 + " downloadedBytes=" + expectedBinary.length + " uploadedBytes=" + uploadBytes.length
@@ -242,6 +273,51 @@ public final class J10FilesBrowseEditJourneyTest {
                 + "return JSON.stringify({bad});})()");
         JSONObject report = new JSONObject(result);
         assertTrue("visible file controls must retain 48 dp touch targets: " + report, report.getJSONArray("bad").length() == 0);
+    }
+
+    private void assertFilesIsOnlyVisibleScreen() throws Exception {
+        String geometry = evalString("(() => {const home=document.querySelector('.home-screen');"
+                + "const files=document.querySelector('[data-testid=files-screen]');"
+                + "const rect=files?.getBoundingClientRect();"
+                + "const visibleScreens=Array.from(document.querySelectorAll('main.screen-content')).filter(node=>{"
+                + "const style=getComputedStyle(node);const box=node.getBoundingClientRect();"
+                + "return style.display!=='none'&&style.visibility!=='hidden'&&box.width>0&&box.height>0;});"
+                + "return JSON.stringify({route:document.querySelector('.app-shell')?.dataset.route,"
+                + "homeHidden:!!home&&getComputedStyle(home).display==='none'&&home.getAttribute('aria-hidden')==='true'&&home.hasAttribute('inert'),"
+                + "visibleScreens:visibleScreens.map(node=>node.dataset.testid),filesVisible:!!files&&!!rect&&rect.width>0&&rect.height>0,"
+                + "filesInsideViewport:!!rect&&rect.top>=0&&rect.left>=0&&rect.bottom<=window.innerHeight+1&&rect.right<=window.innerWidth+1});})()");
+        JSONObject state = new JSONObject(geometry);
+        assertEquals("opening Files must change the active app route", "files", state.getString("route"));
+        assertTrue("the retained Sessions surface must be hidden and inert on the Files route: " + state,
+                state.getBoolean("homeHidden"));
+        assertEquals("Files must be the only visible app screen: " + state,
+                "files-screen", state.getJSONArray("visibleScreens").getString(0));
+        assertEquals("no other app screen may remain visible behind Files: " + state,
+                1, state.getJSONArray("visibleScreens").length());
+        assertTrue("the Files screen must fit the visible app viewport: " + state, state.getBoolean("filesInsideViewport"));
+    }
+
+    private void assertUploadedResultIsVisible() throws Exception {
+        String geometry = evalString("(() => {const browser=document.querySelector('.files-browser');"
+                + "const list=document.querySelector('[data-testid=file-list]');"
+                + "const row=Array.from(document.querySelectorAll('[data-file-name]')).find(node=>node.dataset.fileName==='uploaded.bin');"
+                + "const status=document.querySelector('[data-testid=file-status]');"
+                + "const browserRect=browser?.getBoundingClientRect();const listRect=list?.getBoundingClientRect();"
+                + "const rowRect=row?.getBoundingClientRect();const statusRect=status?.getBoundingClientRect();"
+                + "return JSON.stringify({rowText:row?.innerText??'',statusText:status?.textContent?.trim()??'',"
+                + "viewerClosed:document.querySelector('[data-testid=file-viewer]')===null,"
+                + "rowVisible:!!rowRect&&!!listRect&&rowRect.width>0&&rowRect.height>0&&rowRect.top>=listRect.top&&rowRect.bottom<=listRect.bottom,"
+                + "statusVisible:!!statusRect&&!!browserRect&&statusRect.width>0&&statusRect.height>0&&statusRect.top>=browserRect.top&&statusRect.bottom<=browserRect.bottom});})()");
+        JSONObject state = new JSONObject(geometry);
+        assertTrue("the uploaded row must be visible within the file list for its screenshot: " + state,
+                state.getBoolean("rowVisible"));
+        assertTrue("the upload status must be visible in the browser for its screenshot: " + state,
+                state.getBoolean("statusVisible"));
+        assertTrue("the uploaded screenshot must show the listing rather than a stale file viewer: " + state,
+                state.getBoolean("viewerClosed"));
+        assertTrue("the visible listing row must name uploaded.bin: " + state, state.getString("rowText").contains("uploaded.bin"));
+        assertTrue("the visible status must identify the successful upload: " + state,
+                state.getString("statusText").contains("Uploaded uploaded.bin"));
     }
 
     private void captureScreenshot(File directory, String name) throws Exception {
@@ -314,7 +390,59 @@ public final class J10FilesBrowseEditJourneyTest {
 
     private void click(String selector) throws Exception {
         evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
-                + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");node.click();return 'clicked';})()");
+                + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
+                + "if('disabled' in node && node.disabled)throw new Error('disabled ' + " + JSONObject.quote(selector)
+                + " + '; loading=' + (document.querySelector('[data-testid=file-loading]')?.textContent.trim() ?? 'none')"
+                + " + '; status=' + (document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? 'none')"
+                + " + '; error=' + (document.querySelector('[data-testid=file-error]')?.textContent.trim() ?? 'none'));"
+                + "node.click();return 'clicked';})()");
+    }
+
+    private void awaitFileDownloadReady() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject state = readFileDownloadUiState();
+        while (SystemClock.uptimeMillis() < deadline) {
+            if ("binary.bin".equals(state.optString("openedName"))
+                    && state.optBoolean("downloadButtonEnabled")
+                    && state.isNull("loading")) {
+                return;
+            }
+            Thread.sleep(80);
+            state = readFileDownloadUiState();
+        }
+        throw new AssertionError("binary.bin must finish loading and enable Download before the tap; UI=" + state);
+    }
+
+    private void awaitFileDownloadSaved(String destinationName) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject state = readFileDownloadUiState();
+        while (SystemClock.uptimeMillis() < deadline) {
+            String status = state.optString("status");
+            if (status.startsWith("Saved ") && status.endsWith(" to " + destinationName + ".")
+                    && state.isNull("loading")) {
+                return;
+            }
+            String error = state.optString("error");
+            if (!error.isEmpty()) {
+                throw new AssertionError("binary.bin download failed before SAF completion; UI=" + state);
+            }
+            Thread.sleep(80);
+            state = readFileDownloadUiState();
+        }
+        throw new AssertionError("binary.bin download did not report a completed SAF save; UI=" + state);
+    }
+
+    private JSONObject readFileDownloadUiState() throws Exception {
+        String state = evalString("(() => {const button=document.querySelector('[data-testid=file-download]');"
+                + "const loading=document.querySelector('[data-testid=file-loading]');"
+                + "const status=document.querySelector('[data-testid=file-status]');"
+                + "const error=document.querySelector('[data-testid=file-error]');"
+                + "const opened=document.querySelector('[data-testid=file-open-name]');"
+                + "const statusText=status?.textContent.trim() ?? '';"
+                + "return JSON.stringify({openedName:opened?.textContent.trim() ?? '',"
+                + "downloadButtonExists:!!button,downloadButtonEnabled:!!button&&!button.disabled,"
+                + "loading:loading?.textContent.trim() ?? null,status:statusText,error:error?.textContent.trim() ?? ''});})()");
+        return new JSONObject(state);
     }
 
     private void awaitJsTrue(String expression) throws Exception {

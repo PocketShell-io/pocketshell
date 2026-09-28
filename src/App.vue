@@ -118,6 +118,7 @@ const portManualDesiredPorts = ref<number[]>([]);
 const portDisabledPorts = ref<number[]>([]);
 const portScanCount = ref(0);
 const retainedHomeScreenStyle = ref<CSSProperties>();
+const hiddenHomeScreenStyle: CSSProperties = { display: 'none' };
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
 const terminalInputPending = ref(0);
@@ -1052,7 +1053,7 @@ onBeforeUnmount(() => {
       v-if="connectionSnapshot || navigation.route === 'home'"
       class="screen-content home-screen"
       :class="{ 'home-screen--workspace': !!connectionSnapshot }"
-      :style="navigation.route === 'home' ? undefined : retainedHomeScreenStyle"
+      :style="navigation.route === 'home' ? undefined : (retainedHomeScreenStyle ?? hiddenHomeScreenStyle)"
       :aria-hidden="navigation.route !== 'home'"
       :inert="navigation.route !== 'home'"
     >
@@ -1285,8 +1286,6 @@ onBeforeUnmount(() => {
       :initial-root-directory="fileRootDirectory"
       :capability="sshCapability"
     />
-    <SettingsScreen v-if="navigation.route.startsWith('settings')" />
-    <DiagnosticsScreen v-if="navigation.route.startsWith('diagnostics')" />
     <AboutScreen
       v-if="navigation.route === 'about' || navigation.route === 'about-update'"
       :build-verification="buildVerification"
