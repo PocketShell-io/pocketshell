@@ -650,7 +650,7 @@ function startPromptDictation() {
           />
           <button v-if="mobileSheet" class="composer-dictate composer-dictate--mic" type="button"
             data-testid="composer-dictate" :disabled="sendingIntent !== null || !targetKey"
-            title="Dictate into prompt draft" aria-label="Dictate prompt draft" @click="startPromptDictation">
+            title="Dictate into prompt draft" aria-label="Dictate prompt draft" @pointerdown.prevent @click="startPromptDictation">
             <DictationMicIcon :size="20" />
           </button>
         </template>

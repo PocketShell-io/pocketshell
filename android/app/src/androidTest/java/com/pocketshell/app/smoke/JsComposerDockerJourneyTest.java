@@ -1069,10 +1069,20 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         checkpoint("dictation-ime-open");
         checkpoint("dictation-before-prompt-action-tap");
+        installComposerDictatePointerDownProbe();
         tapDomCenter("[data-testid=composer-dictate]");
         checkpoint("dictation-prompt-action-tapped");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         checkpoint("dictation-recording-visible");
+        JSONObject dictatePointerDown = readComposerDictatePointerDownEvidence();
+        Log.i("PS2857Checkpoint", "DICTATE_POINTERDOWN|" + runId + "|" + dictatePointerDown);
+        assertTrue("keyboard-up Dictate tap must be a trusted touch on the mobile mic",
+                dictatePointerDown.optBoolean("isTrusted")
+                        && dictatePointerDown.optBoolean("targetMatchesButton")
+                        && dictatePointerDown.optBoolean("keyboardVisibleAtPointerDown"));
+        assertTrue("mobile Dictate target must prevent its cancelable pointerdown before click: " + dictatePointerDown,
+                dictatePointerDown.optBoolean("cancelable")
+                        && dictatePointerDown.optBoolean("defaultPreventedAtDocumentBubble"));
         checkpoint("dictation-before-ime-dismiss");
         awaitImeVisible(false);
         checkpoint("dictation-ime-dismissed");
@@ -2210,6 +2220,24 @@ public final class JsComposerDockerJourneyTest {
             Thread.sleep(60);
         }
         return false;
+    }
+
+    private void installComposerDictatePointerDownProbe() throws Exception {
+        evalString("(() => {const key='__ps2857ComposerDictatePointerDownEvents';window[key]=[];"
+                + "if(window.__ps2857ComposerDictatePointerDownProbeInstalled)return 'installed';"
+                + "document.addEventListener('pointerdown',event=>{const target=event.target;"
+                + "const button=target instanceof Element?target.closest('[data-testid=composer-dictate]'):null;"
+                + "const sheet=document.querySelector('.composer-panel--sheet');"
+                + "if(!button||!sheet?.contains(button)||!button.classList.contains('composer-dictate--mic'))return;"
+                + "const record={isTrusted:event.isTrusted,targetMatchesButton:button.contains(target),"
+                + "keyboardVisibleAtPointerDown:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
+                + "cancelable:event.cancelable,defaultPreventedAtDocumentBubble:event.defaultPrevented,timeStamp:event.timeStamp};"
+                + "window[key].push(record);},false);window.__ps2857ComposerDictatePointerDownProbeInstalled=true;return 'installed';})()");
+    }
+
+    private JSONObject readComposerDictatePointerDownEvidence() throws Exception {
+        return evalJson("(() => {const events=window.__ps2857ComposerDictatePointerDownEvents||[];"
+                + "return JSON.stringify(events[events.length-1]??{});})()");
     }
 
     private void installFocusTapEventRecorder() throws Exception {
