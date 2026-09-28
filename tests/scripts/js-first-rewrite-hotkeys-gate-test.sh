@@ -221,9 +221,10 @@ if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobil
         or 'class="terminal-dictation-action sr-only"' in terminal_dictation
         or ':aria-label="buttonLabel()"' not in terminal_dictation
         or ':title="buttonLabel()"' not in terminal_dictation
-        or '<DictationMicIcon :size="20" />' not in terminal_dictation
+        or '<DictationMicIcon :size="20" :stopped="state.phase === \'listening\'" />' not in terminal_dictation
         or 'data-testid="inline-dictation-dock-label"' not in terminal_dictation
-        or '>Dictate</span>' not in terminal_dictation
+        or '{{ buttonDockLabel() }}</span>' not in terminal_dictation
+        or "return 'Cursor';" not in terminal_dictation
         or any(label not in terminal_dictation for label in (
             "Dictate at terminal cursor", "Stop dictating at terminal cursor", "Cancel terminal cursor dictation request",
             "Cancelling terminal dictation", "Transcribing speech for terminal cursor", "Inserting speech at terminal cursor",
@@ -237,12 +238,12 @@ if ("offers a labeled 48px Prompt launcher with an accessible route to the promp
         or "labels both dictation routes distinctly while keeping 48dp dock controls" not in unit_test
         or "inline-dictation-destination')).toBeUndefined()" not in unit_test
         or 'visibleText") != "Prompt"' not in extractor
-        or 'visibleText") != "Dictate"' not in extractor
+        or 'visibleText") != "Cursor"' not in extractor
         or "visible Prompt caption inside the dock launcher accepted" not in extractor
         or "missing Prompt destination caption rejected" not in extractor
         or "dynamic Stop caption on the terminal mic rejected" not in extractor
         or '"visibleText": "Prompt"' not in extractor
-        or '"visibleText": "Dictate"' not in extractor
+        or '"visibleText": "Cursor"' not in extractor
         or 'visibleText:promptComposerLauncherNode.innerText.trim()' not in journey
         or 'visibleText:inlineDictationMicNode.innerText.trim()' not in journey):
     raise AssertionError("component and packaged gates must verify visible Prompt and Dictate destinations, accessible names, and route separation")
@@ -530,8 +531,10 @@ if ("mic.get(\"title\") != expected_accessible_name" not in extractor
 if ("prompt_icon_matches_computed_size" not in extractor
         or "iconComputedWidth" not in extractor
         or "iconComputedHeight" not in extractor
-        or "expected_narrow_labels" not in extractor):
-    raise AssertionError("artifact validator must enforce the Prompt icon geometry and six-control narrow-toolbar order")
+        or "expected_narrow_labels" not in extractor
+        or "Dictate a prompt and review it before Insert or Send" not in extractor
+        or "len(narrow_targets) != 7" not in extractor):
+    raise AssertionError("artifact validator must enforce both Dictate destinations and seven-control narrow-toolbar order")
 if ("Listening ·" not in extractor
         or 'listening.get("inlineDictationPreview") != dictation.get("partialText")' not in extractor
         or 'listening.get("inlineDictationStatusVisible") is not True' not in extractor):

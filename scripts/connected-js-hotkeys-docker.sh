@@ -147,6 +147,21 @@ stop_asset_logcat() {
     asset_logcat_pid=""
   fi
 }
+write_run_exit_metadata() {
+  local run_exit_code="$1"
+  python3 - "$evidence_dir/hotkeys-run-metadata.txt" "$run_exit_code" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+exit_code = sys.argv[2]
+preserved = [line for line in path.read_text(encoding="utf-8").splitlines()
+             if not line.startswith(("exit_code=", "finished_utc="))]
+preserved.extend((f"exit_code={exit_code}",))
+path.write_text("\n".join(preserved) + "\n", encoding="utf-8")
+PY
+  printf 'finished_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$evidence_dir/hotkeys-run-metadata.txt"
+}
 finish_hotkeys_run() {
   local exit_status=$?
   set +e
@@ -160,10 +175,10 @@ finish_hotkeys_run() {
       if [[ -f "$RESULTS_DIR/$diagnostic" ]]; then cp -- "$RESULTS_DIR/$diagnostic" "$evidence_dir/wrapper-$diagnostic"; fi
     done
   fi
-  {
-    printf 'exit_code=%s\n' "$exit_status"
-    printf 'finished_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } >> "$evidence_dir/hotkeys-run-metadata.txt"
+  write_run_exit_metadata "$exit_status"
+  if [[ -d "$RESULTS_DIR" ]]; then
+    cp -- "$evidence_dir/hotkeys-run-metadata.txt" "$RESULTS_DIR/hotkeys-run-metadata.txt"
+  fi
   pocketshell_release_all
   exit "$exit_status"
 }
@@ -173,7 +188,7 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I PS2884DictationFailure:I > "$asset_logcat" 2>&1 &
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I PS2884DictationFailure:I PS2897Prompt:I > "$asset_logcat" 2>&1 &
 asset_logcat_pid=$!
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live fast-key artifact logcat collector'
@@ -214,7 +229,6 @@ fi
 
 stop_asset_logcat
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 12000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1
-"$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"
 "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir"
 
@@ -280,4 +294,7 @@ python3 "$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py" \
   printf 'screenshot_sha256=\n'; sha256sum "$evidence_dir"/*.png
 } | tee "$evidence_dir/hotkeys-host-oracle.txt"
 
+write_run_exit_metadata 0
+cp -- "$evidence_dir/hotkeys-run-metadata.txt" "$RESULTS_DIR/hotkeys-run-metadata.txt"
+"$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"
 printf 'Evidence directory: %s\n' "$evidence_dir"

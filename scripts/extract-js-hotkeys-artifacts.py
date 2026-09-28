@@ -15,6 +15,11 @@ from pathlib import Path
 
 
 TAG = "PS2884Asset:"
+PROMPT_DICTATION_SCREENSHOTS = {
+    "fastkeys-prompt-dictation-recording.png",
+    "fastkeys-prompt-dictation-transcribing.png",
+    "fastkeys-prompt-dictation-review.png",
+}
 SCREENSHOTS = {
     "fastkeys-ime-open.png",
     "fastkeys-row-closed-ime-open.png",
@@ -37,6 +42,9 @@ SCREENSHOTS = {
     "fastkeys-dictation-reattached-ime-open.png",
     "fastkeys-dictation-background-cancel-resumed.png",
     "fastkeys-dictation-post-resume-ime-open.png",
+    "fastkeys-prompt-dictation-recording.png",
+    "fastkeys-prompt-dictation-transcribing.png",
+    "fastkeys-prompt-dictation-review.png",
 }
 VIEWPORT_SCREENSHOTS = {
     "fastkeys-row-closed-ime-open-viewport.png",
@@ -109,7 +117,7 @@ def format_timing_summary(journey: dict[str, object]) -> str:
     )
 
 
-def expected_terminal_dictation_accessible_name(phase: object, disabled: object) -> str:
+def expected_terminal_dictation_accessible_name(phase: object, tone: object, disabled: object) -> str:
     phase_names = {
         "listening": "Stop dictating at terminal cursor",
         "starting": "Cancel terminal cursor dictation request",
@@ -119,7 +127,21 @@ def expected_terminal_dictation_accessible_name(phase: object, disabled: object)
     }
     if isinstance(phase, str) and phase in phase_names:
         return phase_names[phase]
+    if tone == "error":
+        return "Retry terminal cursor dictation"
     return "Terminal cursor dictation unavailable" if disabled is True else "Dictate at terminal cursor"
+
+
+def expected_terminal_dictation_caption(phase: object, tone: object) -> str:
+    if phase == "listening":
+        return "Stop"
+    if phase == "starting":
+        return "Cancel"
+    if phase in {"stopping", "cancelling", "inserting"}:
+        return "Wait"
+    if tone == "error":
+        return "Retry"
+    return "Cursor"
 
 
 def expected_terminal_dictation_mic_state(phase: object, tone: object, disabled: object) -> str:
@@ -307,12 +329,15 @@ def validate_docked_dictation_geometry(
             or not isinstance(mic.get("height"), (int, float)) or mic["height"] < 47.9):
         raise ExtractionFailure(f"{label} mic target is smaller than 48dp")
     phase = item.get("inlineDictationPhase")
-    expected_accessible_name = expected_terminal_dictation_accessible_name(phase, mic.get("disabled"))
+    expected_accessible_name = expected_terminal_dictation_accessible_name(
+        phase, item.get("inlineDictationTone"), mic.get("disabled"),
+    )
     if mic.get("label") != expected_accessible_name or mic.get("title") != expected_accessible_name:
         raise ExtractionFailure(f"{label} dictation button lacks its phase-specific accessible name")
-    if (mic.get("visibleText") != "Dictate" or mic.get("destinationLabels") != []
+    expected_caption = expected_terminal_dictation_caption(phase, item.get("inlineDictationTone"))
+    if (mic.get("visibleText") != expected_caption or mic.get("destinationLabels") != []
             or mic.get("destinationLabelBounds") is not None):
-        raise ExtractionFailure(f"{label} terminal mic must keep the visible Dictate destination label inside its target")
+        raise ExtractionFailure(f"{label} terminal mic caption must match its active phase and keep the Cursor destination inside its target")
     if mic.get("iconVisible") is not True or not icon_is_inside_button(mic, mic.get("iconBounds")):
         raise ExtractionFailure(f"{label} dictation icon is missing or outside its 48dp button")
     expected_mic_state = expected_terminal_dictation_mic_state(
@@ -370,9 +395,9 @@ def validate_docked_dictation_geometry(
                 or status_metrics.get("height", 0) < 29.5):
             raise ExtractionFailure(f"{label} status chip lacks readable text and vertical padding")
         status_text = item.get("inlineDictationStatusText", "")
-        if item.get("inlineDictationTone") == "error" and not status_text.startswith("Error ·"):
+        if item.get("inlineDictationTone") == "error" and not status_text.startswith("Terminal · Error ·"):
             raise ExtractionFailure(f"{label} terminal dictation error is not named in the status chip")
-        if phase == "listening" and (not status_text.startswith("Listening ·")
+        if phase == "listening" and (not status_text.startswith("Terminal · Listening ·")
                                       or not item.get("inlineDictationPreview")):
             raise ExtractionFailure(f"{label} listening state lacks a visible partial preview")
     elif (item.get("inlineDictationPhase") != "idle"
@@ -672,6 +697,20 @@ def validate_journey(journey: object) -> None:
             or composer_entry.get("micWidth", 0) < 47.9
             or composer_entry.get("micHeight", 0) < 47.9):
         raise ExtractionFailure("prompt composer entry does not prove a reachable dictation action in the modal composer")
+    prompt_dictation = journey.get("promptDictationFromDock")
+    recording = prompt_dictation.get("recording") if isinstance(prompt_dictation, dict) else None
+    transcribing = prompt_dictation.get("transcribing") if isinstance(prompt_dictation, dict) else None
+    review = prompt_dictation.get("review") if isinstance(prompt_dictation, dict) else None
+    if (not isinstance(prompt_dictation, dict)
+            or prompt_dictation.get("entry") != "mobile-dock Dictate"
+            or not isinstance(recording, dict) or recording.get("state") != "recording"
+            or not isinstance(transcribing, dict) or transcribing.get("state") != "transcribing"
+            or not isinstance(review, dict) or review.get("state") != "review"
+            or "editable" not in str(review.get("draftLabel", "")).lower()
+            or review.get("draftReadOnly") != "false"
+            or prompt_dictation.get("editable") is not True
+            or prompt_dictation.get("actions") != ["Discard", "Insert", "Send"]):
+        raise ExtractionFailure("mobile-dock Dictate must prove recording, transcribing, editable review, and Discard/Insert/Send")
     if (composer_entry.get("keysLabel") != "More terminal keys"
             or composer_entry.get("keysVisible") is not True
             or composer_entry.get("keysWidth", 0) < 47.9
@@ -680,8 +719,8 @@ def validate_journey(journey: object) -> None:
     transition = journey.get("composerKeysTransition")
     controls = transition.get("stableDockControls") if isinstance(transition, dict) else None
     expected_dock_labels = (
-        "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter",
-        "Close terminal keys", "Dictate at terminal cursor",
+        "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
+        "Send Up arrow", "Send Down arrow", "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
     )
     before_grid = transition.get("terminalGridBefore") if isinstance(transition, dict) else None
     keys_grid = transition.get("terminalGridDuringKeys") if isinstance(transition, dict) else None
@@ -696,7 +735,7 @@ def validate_journey(journey: object) -> None:
             or transition.get("imeVisibleAfterReturn") is not True
             or transition.get("keyboardVisibleAfterReturn") is not True
             or not isinstance(before_grid, dict) or before_grid != keys_grid
-            or not isinstance(controls, list) or len(controls) != 6
+            or not isinstance(controls, list) or len(controls) != 7
             or tuple(control.get("label") for control in controls if isinstance(control, dict)) != expected_dock_labels
             or any(not isinstance(control, dict)
                    or abs(control.get("width", 0) - 48) >= 0.5
@@ -704,12 +743,14 @@ def validate_journey(journey: object) -> None:
                    or control.get("insideViewport") is not True
                    or control.get("hitTarget") is not True
                    for control in controls)
-            or any(controls[index].get("visibleText") != expected_text or controls[index].get("iconCount") != 1
-                   for index, expected_text in ((0, "Prompt"), (4, ""), (5, "Dictate")))):
+            or any(controls[index].get("visibleText") != expected_text
+                   for index, expected_text in ((0, "Prompt"), (1, "Dictate"), (2, "↑"), (3, "↓"),
+                                                (4, "Enter"), (5, ""), (6, "Cursor")))
+            or any(controls[index].get("iconCount") != 1 for index in (0, 1, 5, 6))):
         raise ExtractionFailure("composer-to-keys journey does not prove a draft-preserving exclusive 48dp dock handoff with stable PTY grid")
     mic = transition.get("inlineDictationMic")
     label_bounds = mic.get("destinationLabelBounds") if isinstance(mic, dict) else None
-    if (not isinstance(mic, dict) or mic.get("visibleText") != "Dictate"
+    if (not isinstance(mic, dict) or mic.get("visibleText") != "Cursor"
             or mic.get("destinationLabels") != [] or label_bounds is not None):
         raise ExtractionFailure("terminal mic must visibly identify its terminal dictation destination")
     native_dictation = journey.get("terminalNativeDictation")
@@ -743,8 +784,8 @@ def validate_journey(journey: object) -> None:
     narrow_targets = narrow_row.get("targets") if isinstance(narrow_row, dict) else None
     narrow_mic = narrow_row.get("finalMic") if isinstance(narrow_row, dict) else None
     expected_narrow_labels = (
-        "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter",
-        "More terminal keys", "Dictate at terminal cursor",
+        "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
+        "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor",
     )
     if (not isinstance(narrow_row, dict)
             or abs(narrow_row.get("clientWidth", 0) - 330) > 1
@@ -752,18 +793,19 @@ def validate_journey(journey: object) -> None:
             or narrow_row.get("maxScrollLeft", -1) < 0
             or narrow_row.get("ptyWritesBefore") != narrow_row.get("ptyWritesAfter")
             or not isinstance(narrow_targets, list)
-            or len(narrow_targets) != 6
+            or len(narrow_targets) != 7
             or not isinstance(narrow_mic, dict)
             or narrow_mic.get("label") != "Dictate at terminal cursor"
             or narrow_mic.get("title") != "Dictate at terminal cursor"
-            or narrow_mic.get("visibleText") != "Dictate"
+            or narrow_mic.get("visibleText") != "Cursor"
             or narrow_mic.get("iconVisible") is not True
             or narrow_mic.get("width", 0) < 47.9 or narrow_mic.get("height", 0) < 47.9
             or narrow_mic.get("insideToolbar") is not True or narrow_mic.get("hitTarget") is not True
             or tuple(target.get("label") for target in narrow_targets if isinstance(target, dict)) != expected_narrow_labels
             or any(not isinstance(narrow_targets[index], dict)
                    or narrow_targets[index].get("visibleText") != expected_text
-                   for index, expected_text in ((0, "Prompt"), (4, ""), (5, "Dictate")))
+                   for index, expected_text in ((0, "Prompt"), (1, "Dictate"), (2, "↑"), (3, "↓"),
+                                                (4, "Enter"), (5, ""), (6, "Cursor")))
             or any(not isinstance(target, dict)
                    or target.get("width", 0) < 47.9 or target.get("height", 0) < 47.9
                    or target.get("visibleWidth", 0) < 47.9 or target.get("visibleHeight", 0) < 47.9
@@ -1748,16 +1790,19 @@ def self_test() -> int:
         }).encode(),
     }
 
-    def make_failure_log(assets: dict[str, bytes]) -> str:
+    def make_asset_log(assets: dict[str, bytes], run_id: str) -> str:
         lines = []
         for name, payload in assets.items():
             encoded = base64.b64encode(payload).decode()
             chunks = [encoded[index:index + 512] for index in range(0, len(encoded), 512)]
-            lines.append(f"I/{TAG} BEGIN|{failure_run_id}|{name}|{len(chunks)}|{hashlib.sha256(payload).hexdigest()}")
-            lines.extend(f"I/{TAG} DATA|{failure_run_id}|{name}|{index}|{chunk}"
+            lines.append(f"I/{TAG} BEGIN|{run_id}|{name}|{len(chunks)}|{hashlib.sha256(payload).hexdigest()}")
+            lines.extend(f"I/{TAG} DATA|{run_id}|{name}|{index}|{chunk}"
                          for index, chunk in enumerate(chunks))
-            lines.append(f"I/{TAG} END|{failure_run_id}|{name}")
+            lines.append(f"I/{TAG} END|{run_id}|{name}")
         return "\n".join(lines)
+
+    def make_failure_log(assets: dict[str, bytes]) -> str:
+        return make_asset_log(assets, failure_run_id)
 
     try:
         preserved = parse_assets(make_failure_log(failure_assets), failure_run_id, preserve_on_failure=True)
@@ -1770,6 +1815,35 @@ def self_test() -> int:
     else:
         print("PASS: marker-failure capture preserves hash-checked same-run screenshot and terminal state")
     diagnostic_png = b"\x89PNG\r\n\x1a\n" + b"diagnostic-pixels" * 100
+    prompt_phase_assets = {
+        name: diagnostic_png for name in REQUIRED_ASSETS
+        if name.endswith(".png")
+    }
+    prompt_phase_assets["fastkeys-journey.json"] = json.dumps(sample_journey()).encode()
+    prompt_phase_run_id = "js2897-prompt-dictation-self-test"
+    try:
+        accepted = parse_assets(make_asset_log(prompt_phase_assets, prompt_phase_run_id), prompt_phase_run_id)
+        prompt_phases_accepted = PROMPT_DICTATION_SCREENSHOTS.issubset(accepted)
+    except ExtractionFailure:
+        prompt_phases_accepted = False
+    if not prompt_phases_accepted:
+        print("FAIL: complete prompt dictation recording/transcribing/review artifacts are not accepted", file=sys.stderr)
+        failures += 1
+    else:
+        print("PASS: complete prompt dictation recording/transcribing/review artifacts are accepted")
+    for missing_phase in PROMPT_DICTATION_SCREENSHOTS:
+        incomplete_phases = dict(prompt_phase_assets)
+        incomplete_phases.pop(missing_phase)
+        try:
+            parse_assets(make_asset_log(incomplete_phases, prompt_phase_run_id), prompt_phase_run_id)
+            missing_phase_rejected = False
+        except ExtractionFailure:
+            missing_phase_rejected = True
+        if not missing_phase_rejected:
+            print(f"FAIL: completed journey missing {missing_phase} was accepted", file=sys.stderr)
+            failures += 1
+        else:
+            print(f"PASS: completed journey requires {missing_phase}")
     keyboard_failure_assets = {
         "fastkeys-ime-open.png": diagnostic_png,
         "fastkeys-row-closed-ime-open.png": diagnostic_png,
@@ -1897,7 +1971,7 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationMic": {
             "label": "Dictate at terminal cursor", "top": 208, "bottom": 256, "left": 235, "right": 283,
             "width": 48, "height": 48, "insideViewport": True, "disabled": False, "micState": "idle",
-            "title": "Dictate at terminal cursor", "visibleText": "Dictate", "destinationLabels": [],
+            "title": "Dictate at terminal cursor", "visibleText": "Cursor", "destinationLabels": [],
             "destinationLabelBounds": None, "iconVisible": True,
             "iconBounds": {"left": 249, "top": 222, "right": 269, "bottom": 242, "width": 20, "height": 20},
             "pressed": False, "hitTarget": True,
@@ -2058,7 +2132,7 @@ def sample_journey() -> dict[str, object]:
         **dictation_idle,
         "inlineDictationPhase": "listening",
         "inlineDictationPreview": dictate_text,
-        "inlineDictationStatusText": f"Listening · {dictate_text}",
+        "inlineDictationStatusText": f"Terminal · Listening · {dictate_text}",
         "inlineDictationStatusRow": {"top": 203, "bottom": 235, "left": 0, "right": 400, "width": 400, "height": 32},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
@@ -2072,7 +2146,7 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
         "inlineDictationMic": {**base["inlineDictationMic"], "label": "Stop dictating at terminal cursor",
             "title": "Stop dictating at terminal cursor", "micState": "listening",
-            "pressed": True,
+            "pressed": True, "visibleText": "Stop",
             "top": 235, "bottom": 283},
     }
     final_pending = {
@@ -2091,7 +2165,7 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
         "inlineDictationMic": {**base["inlineDictationMic"], "label": "Transcribing speech for terminal cursor",
             "title": "Transcribing speech for terminal cursor", "disabled": True, "micState": "transcribing",
-            "top": 235, "bottom": 283},
+            "visibleText": "Wait", "top": 235, "bottom": 283},
     }
     final_inserted = {
         **dictation_idle,
@@ -2123,7 +2197,7 @@ def sample_journey() -> dict[str, object]:
         "resizeAcks": 6,
         "resizeStatus": "38 × 6 accepted by SSH",
         "inlineDictationTone": "error",
-        "inlineDictationStatusText": "Error · Dictation failed: network",
+        "inlineDictationStatusText": "Terminal · Error · Dictation failed: network",
         "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
@@ -2133,7 +2207,9 @@ def sample_journey() -> dict[str, object]:
         "terminalHotkeysDockHeightPx": 81,
         "terminalViewportDockCapPx": 144,
         "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
-        "inlineDictationMic": {**base["inlineDictationMic"], "micState": "error", "top": 235, "bottom": 283},
+        "inlineDictationMic": {**base["inlineDictationMic"], "label": "Retry terminal cursor dictation",
+            "title": "Retry terminal cursor dictation", "visibleText": "Retry", "micState": "error",
+            "top": 235, "bottom": 283},
     }
     for status_stage in (listening, final_pending, final_inserted, post_stop, error):
         status_stage["inlineDictationStatusMetrics"] = {
@@ -2297,6 +2373,14 @@ def sample_journey() -> dict[str, object]:
             "micVisible": True, "micWidth": 48, "micHeight": 48,
             "keysLabel": "More terminal keys", "keysVisible": True, "keysWidth": 48, "keysHeight": 48,
         },
+        "promptDictationFromDock": {
+            "entry": "mobile-dock Dictate",
+            "recording": {"state": "recording"},
+            "transcribing": {"state": "transcribing"},
+            "review": {"state": "review", "draftLabel": "Editable transcript", "draftReadOnly": "false"},
+            "editable": True,
+            "actions": ["Discard", "Insert", "Send"],
+        },
         "composerKeysTransition": {
             "draftBefore": "keep this prompt",
             "draftAfterReturn": "keep this prompt",
@@ -2310,17 +2394,18 @@ def sample_journey() -> dict[str, object]:
             "terminalGridDuringKeys": {"cols": 38, "rows": 6, "cellHeight": 22.6},
             "stableDockControls": [
                 {"label": label, "width": 48, "height": 48, "insideViewport": True,
-                 "hitTarget": True, "visibleText": {0: "Prompt", 4: "", 5: "Dictate"}.get(index, label),
-                 "iconCount": 1 if index in (0, 4, 5) else 0}
+                 "hitTarget": True,
+                 "visibleText": {0: "Prompt", 1: "Dictate", 2: "↑", 3: "↓", 4: "Enter", 5: "", 6: "Cursor"}.get(index, label),
+                 "iconCount": 1 if index in (0, 1, 5, 6) else 0}
                 for index, label in enumerate((
-                    "Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter",
-                    "Close terminal keys", "Dictate at terminal cursor",
+                    "Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
+                    "Send Up arrow", "Send Down arrow", "Send Enter", "Close terminal keys", "Dictate at terminal cursor",
                 ))
             ],
             "inlineDictationMic": {
                 "label": "Dictate at terminal cursor", "left": 360.0, "right": 408.0,
                 "top": 700.0, "bottom": 748.0, "width": 48.0, "height": 48.0,
-                "visibleText": "Dictate", "destinationLabels": [], "destinationLabelBounds": None,
+                "visibleText": "Cursor", "destinationLabels": [], "destinationLabelBounds": None,
             },
         },
         "terminalNativeDictation": {
@@ -2348,7 +2433,7 @@ def sample_journey() -> dict[str, object]:
             "scrollable": False,
             "ptyWritesBefore": 2,
             "ptyWritesAfter": 2,
-            "finalMic": {"label": "Dictate at terminal cursor", "title": "Dictate at terminal cursor", "visibleText": "Dictate",
+            "finalMic": {"label": "Dictate at terminal cursor", "title": "Dictate at terminal cursor", "visibleText": "Cursor",
                 "iconVisible": True, "width": 48, "height": 48,
                 "insideToolbar": True, "hitTarget": True},
             "targets": [
@@ -2357,9 +2442,10 @@ def sample_journey() -> dict[str, object]:
                  "hitTarget": True, "insideToolbar": True, "disabled": False}
                 for label, visible_text in (
                     ("Open prompt composer to type or dictate a prompt", "Prompt"),
-                    ("Send Up arrow", "Send Up arrow"), ("Send Down arrow", "Send Down arrow"),
-                    ("Send Enter", "Send Enter"), ("More terminal keys", ""),
-                    ("Dictate at terminal cursor", "Dictate"),
+                    ("Dictate a prompt and review it before Insert or Send", "Dictate"),
+                    ("Send Up arrow", "↑"), ("Send Down arrow", "↓"),
+                    ("Send Enter", "Enter"), ("More terminal keys", ""),
+                    ("Dictate at terminal cursor", "Cursor"),
                 )
             ],
         },
@@ -3291,7 +3377,7 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
         "dictationSheetHeader": {"top": 299, "bottom": 347, "left": 0, "right": 400, "width": 400, "height": 48},
         "inlineDictationPhase": "listening",
         "inlineDictationTone": "quiet",
-        "inlineDictationStatusText": "Listening · echo test",
+        "inlineDictationStatusText": "Terminal · Listening · echo test",
         "inlineDictationPreview": "echo test",
         "inlineDictationStatusRow": {"top": 234, "bottom": 266, "left": 89, "right": 336, "width": 247, "height": 32},
         "inlineDictationStatusMetrics": {"height": 30, "fontSize": 11, "lineHeight": 16,
@@ -3303,7 +3389,7 @@ def with_ctrl_dictation_status(journey: dict[str, object]) -> dict[str, object]:
         "inlineDictationStatusInsideSheetHeader": False,
         "inlineDictationMic": {
             **ctrl["inlineDictationMic"], "label": "Stop dictating at terminal cursor", "title": "Stop dictating at terminal cursor",
-            "micState": "listening", "pressed": True,
+            "visibleText": "Stop", "micState": "listening", "pressed": True,
             "top": 250, "bottom": 298, "left": 235, "right": 283,
         },
     })

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -19,6 +20,36 @@ class GateFailure(ValueError):
     """The packaged journey result is missing, extra, skipped, or red."""
 
 
+def require_successful_run_metadata(results_dir: Path, junit_path: Path) -> None:
+    metadata_path = junit_path.parent / "hotkeys-run-metadata.txt"
+    if not metadata_path.is_file():
+        raise GateFailure(f"{junit_path}: run metadata is missing: {metadata_path}")
+    values: dict[str, str] = {}
+    for line_number, raw_line in enumerate(metadata_path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        key, separator, value = raw_line.partition("=")
+        if not separator or not key.strip() or key.strip() in values:
+            raise GateFailure(f"{metadata_path}:{line_number}: malformed or duplicate run metadata")
+        values[key.strip()] = value.strip()
+    try:
+        exit_code = int(values["exit_code"])
+    except (KeyError, ValueError) as exc:
+        raise GateFailure(f"{metadata_path}: missing or invalid exit_code") from exc
+    if exit_code != 0:
+        raise GateFailure(f"{metadata_path}: run exit_code is {exit_code}, expected 0")
+
+
+def require_valid_duration(path: Path, element: ET.Element, label: str) -> None:
+    value = element.attrib.get("time")
+    try:
+        duration = float(value) if value is not None else math.nan
+    except ValueError:
+        duration = math.nan
+    if not math.isfinite(duration) or duration < 0:
+        raise GateFailure(f"{path}: {label} has an invalid or negative JUnit duration: {value!r}")
+
+
 def validate_results(results_dir: Path) -> None:
     if not results_dir.is_dir():
         raise GateFailure(f"instrumentation results directory is missing: {results_dir}")
@@ -28,6 +59,7 @@ def validate_results(results_dir: Path) -> None:
 
     cases: list[tuple[str, str, ET.Element]] = []
     for path in xml_files:
+        require_successful_run_metadata(results_dir, path)
         try:
             root = ET.parse(path).getroot()
         except (OSError, ET.ParseError) as exc:
@@ -38,6 +70,7 @@ def validate_results(results_dir: Path) -> None:
         if not suites:
             raise GateFailure(f"{path}: report contains no suites")
         for suite in suites:
+            require_valid_duration(path, suite, "testsuite")
             suite_cases = list(suite.findall("testcase"))
             try:
                 declared = int(suite.attrib["tests"])
@@ -54,6 +87,7 @@ def validate_results(results_dir: Path) -> None:
                 if declared_count != actual_count:
                     raise GateFailure(f"{path}: declares {declared_count} {summary} but contains {actual_count}")
             for case in suite_cases:
+                require_valid_duration(path, case, "testcase")
                 classname, method = case.attrib.get("classname", ""), case.attrib.get("name", "")
                 if not classname or not method:
                     raise GateFailure(f"{path}: testcase is missing its class or method")
@@ -93,14 +127,51 @@ def self_test() -> int:
                     "failures": str(sum(result == "failed" for _, _, result in probe)),
                     "errors": "0",
                     "skipped": str(sum(result == "skipped" for _, _, result in probe)),
+                    "time": "0.01",
                 })
                 for classname, method, result in probe:
-                    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": method})
+                    case = ET.SubElement(suite, "testcase", {"classname": classname, "name": method, "time": "0.01"})
                     if result == "failed":
                         ET.SubElement(case, "failure", {"message": "synthetic failure"})
                     elif result == "skipped":
                         ET.SubElement(case, "skipped", {"message": "synthetic skip"})
                 ET.ElementTree(suite).write(directory / "TEST-fastkeys.xml", encoding="utf-8", xml_declaration=True)
+                (directory / "hotkeys-run-metadata.txt").write_text("run_id=self-test\nexit_code=0\n", encoding="utf-8")
+            try:
+                validate_results(directory)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected:
+                print(f"FAIL: self-test {label}", file=sys.stderr)
+                failures += 1
+            else:
+                print(f"PASS: self-test {label}")
+
+        def write_report(directory: Path, *, exit_code: str = "0", duration: str = "0.01",
+                         include_metadata: bool = True) -> None:
+            directory.mkdir()
+            suite = ET.Element("testsuite", {
+                "tests": "1", "failures": "0", "errors": "0", "skipped": "0", "time": "0.01",
+            })
+            ET.SubElement(suite, "testcase", {
+                "classname": REQUIRED_CLASS, "name": REQUIRED_METHOD, "time": duration,
+            })
+            ET.ElementTree(suite).write(directory / "TEST-fastkeys.xml", encoding="utf-8", xml_declaration=True)
+            if include_metadata:
+                (directory / "hotkeys-run-metadata.txt").write_text(
+                    f"run_id=self-test\nexit_code={exit_code}\n", encoding="utf-8")
+
+        strict_probes = [
+            ("exit 143 with a 0/1 JUnit report fails closed", {"exit_code": "143"}, "0.01", True, False),
+            ("negative testcase duration fails closed", {"exit_code": "0"}, "-1.790577107471E9", True, False),
+            ("invalid testcase duration fails closed", {"exit_code": "0"}, "NaN", True, False),
+            ("missing run metadata fails closed", {}, "0.01", False, False),
+        ]
+        for index, (label, metadata, duration, include_metadata, expected) in enumerate(strict_probes, start=len(probes)):
+            directory = root / f"strict-{index}"
+            write_report(directory, exit_code=metadata.get("exit_code", "0"), duration=duration,
+                         include_metadata=include_metadata)
             try:
                 validate_results(directory)
                 passed = True
