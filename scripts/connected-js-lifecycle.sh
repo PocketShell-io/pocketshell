@@ -89,14 +89,14 @@ done
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-results.py" ]] || fail 'lifecycle result verifier is missing'
 [[ -x "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" ]] || fail 'independent host evidence verifier is missing'
 [[ -x "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" ]] || fail 'Docker SSH socket watcher is missing'
+[[ -x "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" ]] || fail 'same-run lifecycle artifact pull helper is missing'
 command -v tesseract >/dev/null 2>&1 || fail 'Tesseract OCR is required to prove the screenshot contains the current terminal marker'
 printf 'Using screenshot OCR engine: %s\n' "$(tesseract --version | head -n1)"
 command -v convert >/dev/null 2>&1 || fail 'ImageMagick convert is required to crop the measured terminal marker before OCR'
 "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" --self-test
+"$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" --self-test
 "$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
-[[ -x "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" ]] || fail 'lifecycle artifact extractor is missing'
-
-  "$ROOT_DIR/scripts/check-js-lifecycle-results.py" --self-test
+"$ROOT_DIR/scripts/check-js-lifecycle-results.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
@@ -138,6 +138,9 @@ pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-lifecycle/$RUN_ID"
+HOST_EVIDENCE_DIR="$ARTIFACTS_DIR/host-evidence"
+APP_ID="com.pocketshell.app.$SUFFIX"
+EXPECTED_DEVICE_ARTIFACT_DIRECTORY="/sdcard/Android/data/$APP_ID/files/pocketshell-lifecycle/$RUN_ID"
 if [[ -e "$ARTIFACTS_DIR" ]]; then
   fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 fi
@@ -191,7 +194,13 @@ PY
 
 HOST_SOCKET_WATCHER_PID=""
 LIVE_ASSET_LOGCAT_PID=""
+ARTIFACT_PULL_WATCHER_PID=""
 stop_host_socket_watcher() {
+  if [[ -n "$ARTIFACT_PULL_WATCHER_PID" ]]; then
+    kill "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || true
+    wait "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || true
+    ARTIFACT_PULL_WATCHER_PID=""
+  fi
   if [[ -n "$HOST_SOCKET_WATCHER_PID" ]]; then
     kill "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || true
     wait "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || true
@@ -202,6 +211,13 @@ stop_host_socket_watcher() {
     wait "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || true
     LIVE_ASSET_LOGCAT_PID=""
   fi
+}
+capture_device_artifact_state() {
+  local phase="$1"
+  "$ADB" -s "$ANDROID_SERIAL" shell pm list packages "$APP_ID" \
+    > "$ARTIFACTS_DIR/device-packages-$phase-gradle.txt" 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" shell ls -la "$EXPECTED_DEVICE_ARTIFACT_DIRECTORY" \
+    > "$ARTIFACTS_DIR/device-artifacts-$phase-gradle.txt" 2>&1 || true
 }
 pocketshell_install_js_lifecycle_cleanup_trap
 record_host_timebase before || fail 'could not capture the host/device clock offset before the packaged journey'
@@ -220,6 +236,14 @@ python3 "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" \
 HOST_SOCKET_WATCHER_PID=$!
 sleep 1
 kill -0 "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || fail 'Docker SSH socket watcher exited before the packaged journey'
+capture_device_artifact_state before
+python3 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" \
+  --adb "$ADB" --serial "$ANDROID_SERIAL" --logcat "$LIVE_ASSET_LOGCAT" \
+  --run-id "$RUN_ID" --expected-package "$APP_ID" --output-directory "$ARTIFACTS_DIR" \
+  > "$ARTIFACTS_DIR/artifact-pull-watcher.log" 2>&1 &
+ARTIFACT_PULL_WATCHER_PID=$!
+sleep 0.2
+kill -0 "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || fail 'same-run artifact pull watcher exited before the packaged journey'
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
@@ -228,10 +252,14 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
+  wait "$ARTIFACT_PULL_WATCHER_PID" || fail "same-run lifecycle artifact pull failed; see $ARTIFACTS_DIR/artifact-pull-watcher.log"
+  ARTIFACT_PULL_WATCHER_PID=""
+  capture_device_artifact_state after
   record_host_timebase after || fail 'could not capture the host/device clock offset after the packaged journey'
   stop_host_socket_watcher
 else
   test_exit_code=$?
+  capture_device_artifact_state after
   record_host_timebase after || true
   stop_host_socket_watcher
   printf 'Packaged lifecycle journey failed; collecting emulator and fixture evidence.\n' >&2
@@ -242,20 +270,24 @@ else
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
   docker logs --timestamps "$CONTAINER" \
     > "$ARTIFACTS_DIR/failure-diagnostics/docker-agents.log" 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" pull "$EXPECTED_DEVICE_ARTIFACT_DIRECTORY" \
+    "$ARTIFACTS_DIR/failure-diagnostics" \
+    >> "$ARTIFACTS_DIR/failure-diagnostics/adb-pull.log" 2>&1 || true
   exit "$test_exit_code"
 fi
 
 cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
-"$ROOT_DIR/scripts/check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
   > "$ARTIFACTS_DIR/lifecycle-logcat.txt"
-"$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
-  --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" \
-  --output-dir "$ARTIFACTS_DIR/$RUN_ID"
+[[ -s "$ARTIFACTS_DIR/$RUN_ID/artifact-manifest.json" ]] \
+  || fail "same-run device artifact manifest was not pulled before instrumentation cleanup"
+"$ROOT_DIR/scripts/check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"
 docker inspect "$CONTAINER" > "$ARTIFACTS_DIR/docker-agents-inspect.json"
 docker logs --timestamps "$CONTAINER" > "$ARTIFACTS_DIR/docker-agents.log" 2>&1 || true
 "$ROOT_DIR/scripts/check-js-lifecycle-host-evidence.py" \
   --run-id "$RUN_ID" --container "$CONTAINER" --artifact-directory "$ARTIFACTS_DIR/$RUN_ID" \
+  --host-evidence-directory "$HOST_EVIDENCE_DIR" \
   --host-connections "$ARTIFACTS_DIR/host-ssh-connections.jsonl" \
   --timebase "$ARTIFACTS_DIR/host-time-offset.json"
+"$ROOT_DIR/scripts/check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"
 printf 'PASS: complete packaged lifecycle and A→B→C→A evidence is in %s\n' "$ARTIFACTS_DIR"

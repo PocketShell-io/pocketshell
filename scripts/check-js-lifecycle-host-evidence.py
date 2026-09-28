@@ -427,6 +427,25 @@ def _validate_native_expiry_event_timing(timing: dict[str, Any], event: dict[str
 
 
 def _self_test() -> int:
+    with tempfile.TemporaryDirectory(prefix="pocketshell-lifecycle-host-output-") as scratch:
+        device_directory = Path(scratch) / "js-selftest"
+        device_directory.mkdir()
+        default_output = _host_evidence_output_directory(device_directory)
+        explicit_output = _host_evidence_output_directory(device_directory, Path(scratch) / "host-evidence")
+        if default_output != Path(scratch) / "host-evidence" or explicit_output != default_output:
+            print("FAIL: host evidence sidecars do not resolve to the run-level host-evidence directory", file=sys.stderr)
+            return 1
+        for nested_output in (device_directory, device_directory / "host-evidence"):
+            try:
+                _host_evidence_output_directory(device_directory, nested_output)
+            except EvidenceFailure:
+                continue
+            print("FAIL: host evidence sidecars were allowed inside the exact device artifact directory", file=sys.stderr)
+            return 1
+    print("ok [host output 1/3] sidecars default to a sibling host-evidence directory")
+    print("ok [host output 2/3] explicit run-level host-evidence directory is accepted")
+    print("ok [host output 3/3] sidecars inside device artifact directory are rejected")
+
     marker = "REMOTE_OUTPUT_JS2861FIX0923_A_SWITCH"
     probes = [
         ("standalone output accepted", f"prompt$ printf '\\n%s\\n' '{marker}'\r\n{marker}\r\nprompt$", True),
@@ -1148,8 +1167,24 @@ def _device_to_host_epoch_offset(path: Path) -> int:
     return round((offsets[0] + offsets[1]) / 2)
 
 
+def _host_evidence_output_directory(
+    artifact_directory: Path, requested_directory: Path | None = None
+) -> Path:
+    device_directory = artifact_directory.resolve()
+    output_directory = (
+        requested_directory if requested_directory is not None
+        else device_directory.parent / "host-evidence"
+    ).resolve()
+    try:
+        output_directory.relative_to(device_directory)
+    except ValueError:
+        return output_directory
+    raise EvidenceFailure("host evidence sidecars must be written outside the exact device artifact directory")
+
+
 def validate(
-    run_id: str, container: str, artifact_directory: Path, host_connections_path: Path, timebase_path: Path
+    run_id: str, container: str, artifact_directory: Path, host_connections_path: Path,
+    timebase_path: Path, host_evidence_directory: Path | None = None,
 ) -> dict[str, Any]:
     if not RUN_ID_RE.fullmatch(run_id):
         raise EvidenceFailure("run ID has an invalid tag-safe format")
@@ -1284,16 +1319,18 @@ def validate(
         by_checkpoint["reconnected-after-expiry"].get("capturedAtEpochMs", 0),
     )
     socket_samples = socket_timeline.pop("samples")
-    socket_timeline_path = artifact_directory / "host-socket-timeline.json"
+    host_evidence_directory = _host_evidence_output_directory(artifact_directory, host_evidence_directory)
+    host_evidence_directory.mkdir(parents=True, exist_ok=True)
+    socket_timeline_path = host_evidence_directory / "host-socket-timeline.json"
     socket_timeline_path.write_text(json.dumps({
         "schema": 1,
         "runId": run_id,
         **socket_timeline,
         "samples": socket_samples,
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    copied_socket_samples = artifact_directory / "host-ssh-connections.jsonl"
+    copied_socket_samples = host_evidence_directory / "host-ssh-connections.jsonl"
     shutil.copy2(host_connections_path, copied_socket_samples)
-    copied_timebase = artifact_directory / "host-time-offset.json"
+    copied_timebase = host_evidence_directory / "host-time-offset.json"
     shutil.copy2(timebase_path, copied_timebase)
 
     after = by_checkpoint["reconnected-after-expiry"]
@@ -1340,7 +1377,7 @@ def validate(
         "docker", "exec", "-u", "testuser", "-e", "HOME=/home/testuser", container,
         "/usr/bin/a", "snapshot", "--json",
     ])
-    snapshot_path = artifact_directory / "host-aplexer-snapshot.json"
+    snapshot_path = host_evidence_directory / "host-aplexer-snapshot.json"
     snapshot_path.write_text(raw_snapshot, encoding="utf-8")
     try:
         host_rows = json.loads(raw_snapshot)
@@ -1371,13 +1408,13 @@ def validate(
             "docker", "exec", "-u", "testuser", "-e", "HOME=/home/testuser", container,
             "/usr/bin/a", "capture", "--bytes", "65536", str(expected["id"]),
         ])
-        history_capture_path = artifact_directory / f"host-aplexer-history-capture-{tag}.txt"
+        history_capture_path = host_evidence_directory / f"host-aplexer-history-capture-{tag}.txt"
         history_capture_path.write_text(raw_history, encoding="utf-8")
         raw_screen = _run([
             "docker", "exec", "-u", "testuser", "-e", "HOME=/home/testuser", container,
             "/usr/bin/a", "capture", str(expected["id"]), "--screen", "--plain",
         ])
-        screen_capture_path = artifact_directory / f"host-aplexer-screen-capture-{tag}.txt"
+        screen_capture_path = host_evidence_directory / f"host-aplexer-screen-capture-{tag}.txt"
         screen_capture_path.write_text(raw_screen, encoding="utf-8")
         markers = {
             checkpoint.get("marker") for checkpoint in checkpoints
@@ -1410,10 +1447,10 @@ def validate(
         "hostDeviceTimebaseFile": copied_timebase.name,
         "result": "PASS",
     }
-    timeline_report_path = artifact_directory / "clock-adjusted-timeline.md"
+    timeline_report_path = host_evidence_directory / "clock-adjusted-timeline.md"
     timeline_report_path.write_text(render_clock_adjusted_timeline_report(socket_timeline), encoding="utf-8")
     oracle["clockAdjustedTimelineReportFile"] = timeline_report_path.name
-    oracle_path = artifact_directory / "host-oracle-summary.json"
+    oracle_path = host_evidence_directory / "host-oracle-summary.json"
     oracle_path.write_text(json.dumps(oracle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return oracle
 
@@ -1490,6 +1527,10 @@ def main() -> int:
     parser.add_argument("--artifact-directory", type=Path)
     parser.add_argument("--host-connections", type=Path)
     parser.add_argument("--timebase", type=Path)
+    parser.add_argument(
+        "--host-evidence-directory", type=Path,
+        help="directory for host-generated sidecars (defaults to artifact-directory's sibling host-evidence/)",
+    )
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -1497,7 +1538,10 @@ def main() -> int:
     if not args.run_id or not args.container or args.artifact_directory is None or args.host_connections is None or args.timebase is None:
         parser.error("--run-id, --container, --artifact-directory, --host-connections, and --timebase are required unless --self-test is used")
     try:
-        oracle = validate(args.run_id, args.container, args.artifact_directory, args.host_connections, args.timebase)
+        oracle = validate(
+            args.run_id, args.container, args.artifact_directory, args.host_connections, args.timebase,
+            args.host_evidence_directory,
+        )
     except EvidenceFailure as error:
         print(f"FAIL: lifecycle host evidence: {error}", file=sys.stderr)
         return 1
