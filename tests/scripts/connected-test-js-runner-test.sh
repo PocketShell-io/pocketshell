@@ -336,6 +336,8 @@ old_gradle_selectors_are_not_forwarded() {
 
 real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   local source="$ROOT_DIR/scripts/connected-js-smoke.sh"
+  local lifecycle_script="$ROOT_DIR/scripts/connected-js-lifecycle.sh"
+  local host_check_line recheck_line
   [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'JS Android Gradle wrapper is missing'
   [[ -x "$source" && -x "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
      && -x "$ROOT_DIR/scripts/connected-js-composer-docker.sh" ]] \
@@ -345,12 +347,18 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'smoke runner does not use the JS-first :app task under android/'
   grep -Fq 'check-js-smoke-results.py" --results-dir "$RESULTS_DIR"' "$source" \
     || fail 'smoke runner does not validate the report from its own run'
-  grep -Fq 'check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"' \
-    "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
+  grep -Fq 'check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"' "$lifecycle_script" \
     || fail 'lifecycle runner does not validate its exact same-run JUnit report'
-  grep -Fq 'check-js-lifecycle-host-evidence.py"' \
-    "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
+  grep -Fq 'check-js-lifecycle-host-evidence.py"' "$lifecycle_script" \
     || fail 'lifecycle runner does not validate independent Docker host evidence'
+  grep -Fq -- '--host-evidence-directory "$HOST_EVIDENCE_DIR"' "$lifecycle_script" \
+    || fail 'lifecycle host oracle does not keep sidecars outside the exact device artifact directory'
+  host_check_line="$(grep -nF 'check-js-lifecycle-host-evidence.py' "$lifecycle_script" | tail -n1 | cut -d: -f1)"
+  recheck_line="$(grep -nF 'check-js-lifecycle-results.py" --results-dir "$RESULTS_DIR"' "$lifecycle_script" | tail -n1 | cut -d: -f1)"
+  [[ "$host_check_line" =~ ^[0-9]+$ && "$recheck_line" =~ ^[0-9]+$ ]] \
+    || fail 'lifecycle runner is missing its host check or post-host exact result revalidation'
+  (( recheck_line > host_check_line )) \
+    || fail 'lifecycle runner does not revalidate the exact result bundle after writing host evidence'
   grep -Fq 'check-js-composer-journey-results.py" --results-dir "$RESULTS_DIR"' \
     "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
     || fail 'composer runner does not validate its exact same-run JUnit report'

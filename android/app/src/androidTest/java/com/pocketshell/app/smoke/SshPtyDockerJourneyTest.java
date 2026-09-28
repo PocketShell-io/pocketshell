@@ -40,6 +40,7 @@ import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -93,10 +94,13 @@ public final class SshPtyDockerJourneyTest {
         String markerAReturn = marker(runId, "A_RETURN");
         String markerAWithinGrace = marker(runId, "A_WITHIN_GRACE");
         String markerAAfterExpiry = marker(runId, "A_AFTER_EXPIRY");
-        File artifactDirectory = new File(
-                InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null),
-                "pocketshell-lifecycle/" + runId);
+        android.content.Context targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File externalFilesDirectory = targetContext.getExternalFilesDir(null);
+        assertNotNull("target app external files directory must be available for same-run artifacts", externalFilesDirectory);
+        File artifactDirectory = new File(externalFilesDirectory, "pocketshell-lifecycle/" + runId);
         assertTrue("run artifact directory must be new", artifactDirectory.mkdirs());
+        Log.i("PocketshellJourneyAsset", "DIRECTORY|" + runId + "|" + targetContext.getPackageName()
+                + "|" + artifactDirectory.getAbsolutePath());
         org.json.JSONArray checkpoints = new org.json.JSONArray();
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
@@ -289,6 +293,7 @@ public final class SshPtyDockerJourneyTest {
                 evalString("document.querySelector('[data-testid=ssh-resource-sftp]')?.textContent.trim() ?? ''"));
         assertEquals("native port-forward count after close must be zero", "0",
                 evalString("document.querySelector('[data-testid=ssh-resource-forwards]')?.textContent.trim() ?? ''"));
+        writeArtifactManifest(artifactDirectory);
     }
 
     private void createSession(String tag) throws Exception {
@@ -1102,18 +1107,59 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void emitArtifact(String name, byte[] bytes) throws Exception {
-        String encoded = Base64.getEncoder().encodeToString(bytes);
-        int chunkSize = 1_800;
-        int chunks = (encoded.length() + chunkSize - 1) / chunkSize;
         String sha256 = hex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        Log.i("PocketshellJourneyAsset", "BEGIN|" + activeRunId + "|" + name + "|" + chunks + "|" + sha256);
-        for (int index = 0; index < chunks; index += 1) {
-            int start = index * chunkSize;
-            int end = Math.min(encoded.length(), start + chunkSize);
-            Log.i("PocketshellJourneyAsset", "DATA|" + activeRunId + "|" + name + "|" + index + "|" + encoded.substring(start, end));
-            Thread.sleep(15);
+        Log.i("PocketshellJourneyAsset", "FILE|" + activeRunId + "|" + name + "|" + bytes.length + "|" + sha256);
+    }
+
+    private void writeArtifactManifest(File artifactDirectory) throws Exception {
+        File manifestFile = new File(artifactDirectory, "artifact-manifest.json");
+        assertFalse("run artifact manifest must not already exist", manifestFile.exists());
+        File[] files = artifactDirectory.listFiles();
+        assertNotNull("run artifact directory must remain readable", files);
+        Arrays.sort(files, (first, second) -> first.getName().compareTo(second.getName()));
+
+        org.json.JSONArray artifacts = new org.json.JSONArray();
+        for (File file : files) {
+            if (file.equals(manifestFile)) continue;
+            assertTrue("run artifacts must be regular files with safe names: " + file.getName(),
+                    file.isFile() && file.getName().matches("[A-Za-z0-9._-]{1,100}"));
+            byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
+            artifacts.put(new JSONObject()
+                    .put("name", file.getName())
+                    .put("sizeBytes", bytes.length)
+                    .put("sha256", hex(MessageDigest.getInstance("SHA-256").digest(bytes))));
         }
-        Log.i("PocketshellJourneyAsset", "END|" + activeRunId + "|" + name);
+
+        byte[] manifest = new JSONObject()
+                .put("schema", 1)
+                .put("runId", activeRunId)
+                .put("artifacts", artifacts)
+                .toString(2)
+                .getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(manifestFile)) {
+            output.write(manifest);
+        }
+        String manifestDigest = hex(MessageDigest.getInstance("SHA-256").digest(manifest));
+        Log.i("PocketshellJourneyAsset", "MANIFEST|" + activeRunId + "|" + artifacts.length() + "|" + manifestDigest);
+        awaitHostArtifactPull(artifactDirectory.getParentFile(), manifestDigest);
+    }
+
+    private void awaitHostArtifactPull(File artifactParent, String manifestDigest) throws Exception {
+        File acknowledgment = new File(artifactParent, ".host-pull-complete-" + activeRunId);
+        File failure = new File(artifactParent, ".host-pull-failed-" + activeRunId);
+        assertFalse("same-run host pull acknowledgment must be unique", acknowledgment.exists());
+        long deadline = SystemClock.elapsedRealtime() + 60_000;
+        while (SystemClock.elapsedRealtime() < deadline && !acknowledgment.isFile() && !failure.isFile()) {
+            SystemClock.sleep(100);
+        }
+        if (failure.isFile()) {
+            assertTrue("host artifact pull failure signal must be removable", failure.delete());
+            throw new AssertionError("host failed to pull and verify the same-run lifecycle artifacts");
+        }
+        assertTrue("host must pull and verify the exact same-run artifacts before instrumentation exits",
+                acknowledgment.isFile());
+        assertTrue("same-run host pull acknowledgment must be removable", acknowledgment.delete());
+        Log.i("PocketshellJourneyAsset", "PULLED|" + activeRunId + "|" + manifestDigest);
     }
 
     private String hex(byte[] bytes) {

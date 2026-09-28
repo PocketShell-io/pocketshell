@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
 import re
@@ -126,64 +125,143 @@ def _find_same_run_directory(results: Path) -> Path:
     return candidates[-1]
 
 
-def _read_same_run_assets(logcat: Path, run_id: str) -> dict[str, bytes]:
+def _read_same_run_assets(
+    run_directory: Path, run_id: str, logcat: Path, *, require_pull_ack: bool = True
+) -> dict[str, bytes]:
     try:
         lines = logcat.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as error:
         raise GateFailure(f"could not read same-run lifecycle artifact log {logcat}: {error}") from error
 
-    assets: dict[str, dict[str, Any]] = {}
+    file_records: dict[str, tuple[int, str]] = {}
+    manifest_record: tuple[int, str] | None = None
+    directory_record: tuple[str, str] | None = None
+    pull_record: str | None = None
     for line in lines:
         if ASSET_TAG not in line:
             continue
         message = line.split(ASSET_TAG, 1)[1].strip()
-        parts = message.split("|", 4)
-        if len(parts) < 3 or parts[1] != run_id:
+        parts = message.split("|")
+        if len(parts) < 2 or parts[1] != run_id:
             continue
-        kind, _, name = parts[:3]
-        if not SAFE_ASSET_NAME.fullmatch(name):
-            raise GateFailure(f"same-run artifact has an unsafe name: {name!r}")
-        if kind == "BEGIN":
-            if len(parts) != 5 or name in assets:
-                raise GateFailure(f"same-run artifact has a duplicate or malformed BEGIN: {name}")
+        kind = parts[0]
+        if kind == "DIRECTORY":
+            if len(parts) != 4 or directory_record is not None:
+                raise GateFailure("same-run target artifact directory record is missing, duplicated, or malformed")
+            directory_record = (parts[2], parts[3])
+        elif kind == "FILE":
+            if len(parts) != 5:
+                raise GateFailure("same-run artifact file record is malformed")
+            name = parts[2]
+            if not SAFE_ASSET_NAME.fullmatch(name) or name == "artifact-manifest.json":
+                raise GateFailure(f"same-run artifact has an unsafe or reserved name: {name!r}")
+            if name in file_records:
+                raise GateFailure(f"same-run artifact has a duplicate file record: {name}")
             try:
-                chunks = int(parts[3])
+                size = int(parts[3])
             except ValueError as error:
-                raise GateFailure(f"same-run artifact has an invalid chunk count: {name}") from error
-            if chunks < 1 or not re.fullmatch(r"[a-f0-9]{64}", parts[4]):
-                raise GateFailure(f"same-run artifact has an invalid chunk count or digest: {name}")
-            assets[name] = {"count": chunks, "sha256": parts[4], "parts": {}, "ended": False}
-        elif kind == "DATA":
-            if len(parts) != 5 or name not in assets or assets[name]["ended"]:
-                raise GateFailure(f"same-run artifact DATA has no active BEGIN: {name}")
+                raise GateFailure(f"same-run artifact has an invalid byte count: {name}") from error
+            if size < 0 or not re.fullmatch(r"[a-f0-9]{64}", parts[4]):
+                raise GateFailure(f"same-run artifact has an invalid byte count or digest: {name}")
+            file_records[name] = (size, parts[4])
+        elif kind == "MANIFEST":
+            if len(parts) != 4 or manifest_record is not None:
+                raise GateFailure("same-run artifact manifest record is missing, duplicated, or malformed")
             try:
-                index = int(parts[3])
+                count = int(parts[2])
             except ValueError as error:
-                raise GateFailure(f"same-run artifact has an invalid chunk index: {name}") from error
-            chunks = assets[name]["parts"]
-            if index in chunks:
-                raise GateFailure(f"same-run artifact repeats chunk {index}: {name}")
-            chunks[index] = parts[4]
-        elif kind == "END":
-            if len(parts) != 3 or name not in assets or assets[name]["ended"]:
-                raise GateFailure(f"same-run artifact END has no matching BEGIN: {name}")
-            assets[name]["ended"] = True
+                raise GateFailure("same-run artifact manifest has an invalid file count") from error
+            if count < 1 or not re.fullmatch(r"[a-f0-9]{64}", parts[3]):
+                raise GateFailure("same-run artifact manifest has an invalid file count or digest")
+            manifest_record = (count, parts[3])
+        elif kind == "PULLED":
+            if len(parts) != 3 or pull_record is not None or not re.fullmatch(r"[a-f0-9]{64}", parts[2]):
+                raise GateFailure("same-run host pull acknowledgment is missing, duplicated, or malformed")
+            pull_record = parts[2]
         else:
             raise GateFailure(f"same-run artifact has an unknown record kind: {kind!r}")
 
+    if manifest_record is None:
+        raise GateFailure("same-run lifecycle artifact manifest record is missing")
+    if pull_record is None and require_pull_ack:
+        raise GateFailure("same-run lifecycle artifacts were not acknowledged as pulled by the host")
+    if directory_record is None:
+        raise GateFailure("same-run instrumentation target artifact directory record is missing")
+    package, directory = directory_record
+    if not re.fullmatch(r"com\.pocketshell\.app\.[A-Za-z0-9._]+", package):
+        raise GateFailure(f"same-run instrumentation target package is unsafe: {package!r}")
+    reported_directory = Path(directory)
+    expected_tail = ("Android", "data", package, "files", "pocketshell-lifecycle", run_id)
+    if not reported_directory.is_absolute() or reported_directory.parts[-len(expected_tail):] != expected_tail:
+        raise GateFailure(f"same-run instrumentation reported an unexpected artifact directory: {directory!r}")
+
+    asset_directory = run_directory / run_id
+    manifest_path = asset_directory / "artifact-manifest.json"
+    if not asset_directory.is_dir() or asset_directory.is_symlink():
+        raise GateFailure(f"same-run pulled device artifact directory is missing or unsafe: {asset_directory}")
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise GateFailure(f"same-run device artifact manifest is missing or unsafe: {manifest_path}")
+    try:
+        manifest_bytes = manifest_path.read_bytes()
+    except OSError as error:
+        raise GateFailure(f"could not read same-run device artifact manifest {manifest_path}: {error}") from error
+    manifest_count, expected_manifest_digest = manifest_record
+    if pull_record is not None and pull_record != expected_manifest_digest:
+        raise GateFailure("same-run host pull acknowledgment names a different device manifest digest")
+    if hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_digest:
+        raise GateFailure("same-run device artifact manifest SHA-256 does not match its lifecycle log record")
+    try:
+        manifest = json.loads(manifest_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise GateFailure(f"same-run device artifact manifest is invalid: {error}") from error
+    if not isinstance(manifest, dict) or manifest.get("schema") != 1 or manifest.get("runId") != run_id:
+        raise GateFailure("same-run device artifact manifest has the wrong schema or run ID")
+    entries = manifest.get("artifacts")
+    if not isinstance(entries, list) or len(entries) != manifest_count:
+        raise GateFailure("same-run device artifact manifest has the wrong number of files")
+
+    manifest_records: dict[str, tuple[int, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or set(entry) != {"name", "sizeBytes", "sha256"}:
+            raise GateFailure("same-run device artifact manifest contains a malformed file entry")
+        name = entry["name"]
+        size = entry["sizeBytes"]
+        digest = entry["sha256"]
+        if not isinstance(name, str) or not SAFE_ASSET_NAME.fullmatch(name) or name == "artifact-manifest.json":
+            raise GateFailure(f"same-run artifact manifest has an unsafe or reserved name: {name!r}")
+        if name in manifest_records:
+            raise GateFailure(f"same-run device artifact manifest repeats a file: {name}")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+            raise GateFailure(f"same-run artifact manifest has an invalid byte count: {name}")
+        if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+            raise GateFailure(f"same-run artifact manifest has an invalid SHA-256: {name}")
+        manifest_records[name] = (size, digest)
+
+    if file_records != manifest_records:
+        raise GateFailure("same-run artifact file records do not exactly match the device manifest")
+    try:
+        actual_names: set[str] = set()
+        for path in asset_directory.iterdir():
+            if path.is_symlink() or not path.is_file():
+                raise GateFailure(f"same-run device artifact directory contains an unsafe entry: {path.name}")
+            actual_names.add(path.name)
+    except OSError as error:
+        raise GateFailure(f"could not enumerate same-run device artifacts {asset_directory}: {error}") from error
+    expected_names = set(manifest_records) | {"artifact-manifest.json"}
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        extra = sorted(actual_names - expected_names)
+        raise GateFailure(f"same-run pulled device artifact set is incomplete (missing={missing}, extra={extra})")
+
     decoded: dict[str, bytes] = {}
-    for name, asset in assets.items():
-        parts = asset["parts"]
-        count = asset["count"]
-        if not asset["ended"] or len(parts) != count or set(parts) != set(range(count)):
-            raise GateFailure(f"same-run artifact is incomplete: {name} ({len(parts)}/{count} chunks)")
-        encoded = "".join(parts[index] for index in range(count))
+    for name, (expected_size, expected_digest) in manifest_records.items():
+        path = asset_directory / name
         try:
-            payload = base64.b64decode(encoded, validate=True)
-        except (ValueError, base64.binascii.Error) as error:
-            raise GateFailure(f"same-run artifact is invalid base64: {name}") from error
-        if hashlib.sha256(payload).hexdigest() != asset["sha256"]:
-            raise GateFailure(f"same-run artifact SHA-256 does not match its manifest: {name}")
+            payload = path.read_bytes()
+        except OSError as error:
+            raise GateFailure(f"same-run pulled artifact is missing: {name}: {error}") from error
+        if len(payload) != expected_size or hashlib.sha256(payload).hexdigest() != expected_digest:
+            raise GateFailure(f"same-run pulled artifact size or SHA-256 does not match its manifest: {name}")
         decoded[name] = payload
     return decoded
 
@@ -198,6 +276,21 @@ def _parse_summary(assets: dict[str, bytes], run_id: str) -> dict[str, Any]:
         raise GateFailure(f"same-run lifecycle summary is invalid: {error}") from error
     if not isinstance(summary, dict) or summary.get("schema") != 1 or summary.get("runId") != run_id:
         raise GateFailure("same-run lifecycle summary has the wrong schema or run ID")
+    checkpoints = summary.get("checkpoints")
+    if not isinstance(checkpoints, list):
+        raise GateFailure("same-run lifecycle summary is missing checkpoint artifact names")
+    referenced = set(REQUIRED_ARTIFACTS)
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict):
+            raise GateFailure("same-run lifecycle summary contains an invalid checkpoint")
+        for field in ("visibleTerminalFile", "viewportPng"):
+            name = checkpoint.get(field)
+            if not isinstance(name, str) or not SAFE_ASSET_NAME.fullmatch(name):
+                raise GateFailure(f"same-run lifecycle checkpoint has an invalid {field} name")
+            referenced.add(name)
+    missing_checkpoint_artifacts = sorted(referenced - set(assets))
+    if missing_checkpoint_artifacts:
+        raise GateFailure("same-run checkpoint artifact files are missing: " + ", ".join(missing_checkpoint_artifacts))
     return summary
 
 
@@ -317,6 +410,20 @@ def _validate_summary(summary: dict[str, Any], assets: dict[str, bytes], run_id:
     return port, session["id"], marker
 
 
+def verify_artifact_transfer(
+    run_directory: Path, run_id: str, *, require_pull_ack: bool = True
+) -> tuple[dict[str, bytes], dict[str, Any], Path]:
+    if not SAFE_RUN_ID.fullmatch(run_id):
+        raise GateFailure(f"run ID is unsafe: {run_id!r}")
+    logcat = run_directory / "lifecycle-assets-live-logcat.txt"
+    if not logcat.is_file():
+        raise GateFailure(f"same-run lifecycle artifact log is missing: {logcat}")
+    assets = _read_same_run_assets(run_directory, run_id, logcat, require_pull_ack=require_pull_ack)
+    summary = _parse_summary(assets, run_id)
+    _validate_summary(summary, assets, run_id)
+    return assets, summary, logcat
+
+
 def _validate_lifecycle_logs(logcat: Path, run_id: str) -> None:
     try:
         lines = logcat.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -424,11 +531,7 @@ def validate(
     if not run_directory.is_dir():
         raise GateFailure(f"same-run lifecycle evidence directory is missing: {run_directory}")
     run_id = run_directory.name
-    logcat = run_directory / "lifecycle-assets-live-logcat.txt"
-    if not logcat.is_file():
-        raise GateFailure(f"same-run lifecycle artifact log is missing: {logcat}")
-    assets = _read_same_run_assets(logcat, run_id)
-    summary = _parse_summary(assets, run_id)
+    assets, summary, logcat = verify_artifact_transfer(run_directory, run_id)
     port, session_id, marker = _validate_summary(summary, assets, run_id)
     _validate_lifecycle_logs(logcat, run_id)
     container = _container_for_ssh_port(port) if host_oracle is None else "synthetic-docker-host"
@@ -515,6 +618,11 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         "runId": run_id,
         "sshPort": 2222,
         "sessions": [{"tag": f"{run_id}-a", "id": session_id}],
+        "checkpoints": [{
+            "checkpoint": "switch-a-return",
+            "visibleTerminalFile": "switch-a-return-visible-terminal.txt",
+            "viewportPng": "switch-a-return-viewport.png",
+        }],
         "abruptTransportDrop": drop,
     }
     visible = f"command echo\n{marker}\n"
@@ -525,6 +633,8 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         "abrupt-drop-recovered-visible-terminal.txt": visible.encode("utf-8"),
         "abrupt-drop-recovered-viewport.png": png,
         "abrupt-drop-recovered-full-screen.png": png,
+        "switch-a-return-visible-terminal.txt": b"remote output\nREMOTE_OUTPUT_SELFTEST_AR\n",
+        "switch-a-return-viewport.png": png,
     }
     if mutation == "missing-artifact":
         del assets["abrupt-drop-recovered-full-screen.png"]
@@ -532,17 +642,52 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         f"09-28 12:00:00.001 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_SERVER_KILL_REQUESTED {{}}",
         f"09-28 12:00:00.002 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_NATIVE_LOST {{}}",
         f"09-28 12:00:00.003 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_RECOVERED {{}}",
+        f"09-28 12:00:00.004 I {ASSET_TAG} DIRECTORY|{run_id}|com.pocketshell.app.iSelfTest|"
+        f"/storage/emulated/0/Android/data/com.pocketshell.app.iSelfTest/files/pocketshell-lifecycle/{run_id}",
     ]
-    for name, payload in assets.items():
-        encoded = base64.b64encode(payload).decode("ascii")
-        chunks = [encoded[index:index + 1800] for index in range(0, len(encoded), 1800)]
-        digest = hashlib.sha256(payload).hexdigest()
-        lines.append(f"09-28 12:00:01.001 I {ASSET_TAG} BEGIN|{run_id}|{name}|{len(chunks)}|{digest}")
-        for index, chunk in enumerate(chunks):
-            lines.append(f"09-28 12:00:01.002 I {ASSET_TAG} DATA|{run_id}|{name}|{index}|{chunk}")
-        lines.append(f"09-28 12:00:01.003 I {ASSET_TAG} END|{run_id}|{name}")
+    if mutation == "wrong-device-directory":
+        lines[-1] = (
+            f"09-28 12:00:00.004 I {ASSET_TAG} DIRECTORY|{run_id}|com.pocketshell.app.iSelfTest|"
+            f"/storage/emulated/0/Android/data/com.pocketshell.app.iSelfTest/files/other/{run_id}"
+        )
+    asset_directory = directory / run_id
+    asset_directory.mkdir(parents=True, exist_ok=True)
+    manifest_entries = []
+    for name, payload in sorted(assets.items()):
+        (asset_directory / name).write_bytes(payload)
+        manifest_entries.append({
+            "name": name,
+            "sizeBytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        })
+        if mutation != "missing-file-record" or name != "switch-a-return-viewport.png":
+            lines.append(
+                f"09-28 12:00:01.001 I {ASSET_TAG} FILE|{run_id}|{name}|{len(payload)}|"
+                f"{hashlib.sha256(payload).hexdigest()}"
+            )
+    manifest_bytes = (json.dumps({
+        "schema": 1,
+        "runId": run_id,
+        "artifacts": manifest_entries,
+    }, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    (asset_directory / "artifact-manifest.json").write_bytes(manifest_bytes)
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    if mutation == "wrong-manifest-digest":
+        manifest_digest = "0" * 64
+    lines.append(
+        f"09-28 12:00:01.002 I {ASSET_TAG} MANIFEST|{run_id}|{len(manifest_entries)}|{manifest_digest}"
+    )
+    if mutation != "missing-pull-ack":
+        pulled_digest = "0" * 64 if mutation == "wrong-pull-ack" else manifest_digest
+        lines.append(f"09-28 12:00:01.003 I {ASSET_TAG} PULLED|{run_id}|{pulled_digest}")
     if mutation == "missing-log":
         lines = [line for line in lines if "ABRUPT_DROP_NATIVE_LOST" not in line]
+    if mutation == "missing-pulled-viewport":
+        (asset_directory / "switch-a-return-viewport.png").unlink()
+    elif mutation == "corrupt-pulled-viewport":
+        (asset_directory / "switch-a-return-viewport.png").write_bytes(png + b"corrupt")
+    elif mutation == "unmanifested-pulled-file":
+        (asset_directory / "unmanifested-device-file.bin").write_bytes(b"not listed in the device manifest")
     (directory / "lifecycle-assets-live-logcat.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {
         "proof": proof,
@@ -567,6 +712,14 @@ def self_test() -> int:
     ]
     evidence_probes = [
         ("missing abrupt artifact blocks", "missing-artifact", False),
+        ("unmanifested pulled device file blocks", "unmanifested-pulled-file", False),
+        ("missing pulled A-return screenshot blocks", "missing-pulled-viewport", False),
+        ("corrupt pulled A-return screenshot blocks", "corrupt-pulled-viewport", False),
+        ("missing screenshot digest record blocks", "missing-file-record", False),
+        ("manifest digest mismatch blocks", "wrong-manifest-digest", False),
+        ("missing in-test host pull acknowledgment blocks", "missing-pull-ack", False),
+        ("host pull acknowledgment with a different manifest digest blocks", "wrong-pull-ack", False),
+        ("unexpected app external directory blocks", "wrong-device-directory", False),
         ("missing named assertion blocks", "missing-assertion", False),
         ("stale transport identity blocks", "wrong-transport", False),
         ("mismatched Docker proof blocks", "wrong-proof", False),
@@ -602,10 +755,19 @@ def self_test() -> int:
             host_oracle = write_synthetic_evidence(evidence_dir, evidence_dir.name, mutation)
             try:
                 validate(report_dir, evidence_dir, host_oracle)
-                passed = True
-            except GateFailure:
-                passed = False
-            if passed != expected:
+                failure_message = None
+            except GateFailure as error:
+                failure_message = str(error)
+            if mutation == "unmanifested-pulled-file":
+                probe_passed = (
+                    not expected
+                    and failure_message is not None
+                    and failure_message.startswith("same-run pulled device artifact set is incomplete")
+                    and "extra=['unmanifested-device-file.bin']" in failure_message
+                )
+            else:
+                probe_passed = (failure_message is None) == expected
+            if not probe_passed:
                 print(f"FAIL: lifecycle result guard probe {index + 1}: {label}", file=sys.stderr)
                 return 1
             print(f"ok [{index + 1}/{total}] {label}")
@@ -618,9 +780,31 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--verify-assets", action="store_true",
+                        help="verify a live same-run file pull before the instrumentation test exits")
+    parser.add_argument("--verify-assets-before-ack", action="store_true",
+                        help="verify the file pull before its instrumentation acknowledgment is logged")
+    parser.add_argument("--run-directory", type=Path)
+    parser.add_argument("--run-id")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if args.verify_assets or args.verify_assets_before_ack:
+        if args.run_directory is None or not args.run_id:
+            parser.error("--verify-assets requires --run-directory and --run-id")
+        if args.verify_assets and args.verify_assets_before_ack:
+            parser.error("--verify-assets and --verify-assets-before-ack cannot be combined")
+        try:
+            verify_artifact_transfer(
+                args.run_directory, args.run_id, require_pull_ack=not args.verify_assets_before_ack
+            )
+        except GateFailure as error:
+            print(f"FAIL: packaged JS lifecycle artifact transfer: {error}", file=sys.stderr)
+            return 1
+        print("PASS: exact same-run artifact files, manifest, sizes, and SHA-256 values")
+        return 0
+    if args.run_directory is not None or args.run_id:
+        parser.error("--run-directory and --run-id require an artifact verification mode")
     try:
         validate(args.results_dir)
     except GateFailure as error:
