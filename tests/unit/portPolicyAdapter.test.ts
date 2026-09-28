@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type {
   SshCapability,
@@ -11,17 +12,10 @@ import { PortForwardController } from '../../src/policy/portForwardController';
 import { scanRemotePorts } from '../../src/policy/ports';
 
 const connection: SshConnectionRef = { connectionId: 'conn-1', generationId: 'gen-1' };
-const listenerOutput = [
-  '<<<PS_SS_TLN>>>',
-  'State Recv-Q Send-Q Local Address:Port Peer Address:Port',
-  'LISTEN 0 128 0.0.0.0:22 0.0.0.0:*',
-  'LISTEN 0 128 0.0.0.0:3000 0.0.0.0:*',
-  '<<<PS_SS_TLNP>>>',
-  'State Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
-  'LISTEN 0 128 0.0.0.0:3000 0.0.0.0:* users:(("python3",pid=705,fd=3))',
-  '<<<PS_NETSTAT_TLNP>>>',
-  '<<<PS_NETSTAT_TLN>>>',
-].join('\n');
+const listenerOutput = readFileSync(
+  new URL('../../vendor/pocketshell-core/tests/fixtures/portscan/portscan-wire-alpine-root.txt', import.meta.url),
+  'utf8',
+);
 
 function execResult(options: SshExecOptions, overrides: Partial<SshExecResult> = {}): SshExecResult {
   return {
@@ -39,7 +33,7 @@ function execResult(options: SshExecOptions, overrides: Partial<SshExecResult> =
 function makeCapability() {
   const exec = vi.fn(async (options: SshExecOptions) => {
     if (/readlink/.test(options.command)) {
-      return execResult(options, { stdout: '705\t/home/testuser/project\n' });
+      return execResult(options, { stdout: '4460\t/home/testuser/project\n' });
     }
     return execResult(options);
   });
@@ -79,12 +73,12 @@ describe('native-backed port discovery and tunnel adapter', () => {
     });
     expect(result).toMatchObject({
       ok: true,
-      ports: [
-        { port: 22, process: null, pid: null, cwd: null },
-        { port: 3000, process: 'python3', pid: 705, cwd: '/home/testuser/project' },
-      ],
+      ports: expect.arrayContaining([
+        { port: 22, process: 'sshd', pid: 1, cwd: null },
+        { port: 8000, process: 'python3', pid: 4460, cwd: '/home/testuser/project' },
+      ]),
     });
-    expect(exec.mock.calls[1]?.[0].command).toContain('for pid in 705;');
+    expect(exec.mock.calls[1]?.[0].command).toContain('for pid in 1 4460;');
   });
 
   it('uses JS desired-port policy and native socket effects, then restores manual intent after reconnect', async () => {
@@ -101,15 +95,15 @@ describe('native-backed port discovery and tunnel adapter', () => {
       ok: true,
       ports: [
         { port: 22, process: 'sshd', pid: 1, cwd: null },
-        { port: 3000, process: 'python3', pid: 705, cwd: null },
+        { port: 8000, process: 'python3', pid: 4460, cwd: null },
       ],
       error: null,
     });
     expect(first.activeForwards).toEqual([
       { remotePort: 22, localPort: 40_001, origin: 'manual' },
-      { remotePort: 3000, localPort: 40_002, origin: 'auto' },
+      { remotePort: 8000, localPort: 40_002, origin: 'auto' },
     ]);
-    expect(openPortForward.mock.calls.map(([call]) => call.remotePort)).toEqual([22, 3000]);
+    expect(openPortForward.mock.calls.map(([call]) => call.remotePort)).toEqual([22, 8000]);
     expect(openPortForward.mock.calls.every(([call]) => call.localPort === undefined)).toBe(true);
 
     await controller.setConnection({ connectionId: 'conn-1', generationId: 'gen-2' });
@@ -153,5 +147,32 @@ describe('native-backed port discovery and tunnel adapter', () => {
     await controller.closeAll();
     expect(controller.snapshot().activeForwards).toEqual([]);
     expect(closePortForward).toHaveBeenCalledTimes(2);
+  });
+
+  it('automatically forwards 9638 while retaining discovered rows 22 and 33307', async () => {
+    const { capability, openPortForward } = makeCapability();
+    const controller = new PortForwardController(capability, connection, {
+      createRequestId: (() => {
+        let id = 0;
+        return () => `matrix-${++id}`;
+      })(),
+    });
+    const scan = {
+      ok: true,
+      ports: [22, 9638, 33307].map((port) => ({ port, process: null, pid: null, cwd: null })),
+      error: null,
+    };
+
+    const snapshot = await controller.reconcile(scan);
+    expect(snapshot.scan.ports.map((port) => port.port)).toEqual([22, 9638, 33307]);
+    expect(snapshot.activeForwards.map((forward) => forward.remotePort)).toEqual([9638]);
+    expect(openPortForward.mock.calls.map(([call]) => call.remotePort)).toEqual([9638]);
+
+    controller.setManualDesiredPort(22, true);
+    controller.setAutoEnabled(false);
+    const autoOffSnapshot = await controller.reconcile(scan);
+    expect(autoOffSnapshot.activeForwards).toEqual([
+      expect.objectContaining({ remotePort: 22, origin: 'manual' }),
+    ]);
   });
 });
