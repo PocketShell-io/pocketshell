@@ -212,6 +212,10 @@ if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
 if ('aria-label="Open prompt composer"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
+        or 'mobile-hotkeys__destination-label' not in mobile_hotkeys
+        or 'data-testid="inline-dictation-destination"' not in mobile_hotkeys
+        or 'data-testid="mobile-hotkeys-main-scroll-hint"' not in mobile_hotkeys
+        or 'Swipe →' not in mobile_hotkeys
         or 'class="terminal-dictation-action sr-only"' in terminal_dictation
         or ':aria-label="buttonLabel()"' not in terminal_dictation
         or '<DictationMicIcon :size="20" />' not in terminal_dictation
@@ -221,7 +225,7 @@ if ('aria-label="Open prompt composer"' not in mobile_hotkeys
             "Terminal dictation unavailable",
         ))
         or ".terminal-dictation-button__label" in styles):
-    raise AssertionError("Compose, More keys, and terminal mic must stay icon-only with accessible names and a stable mic glyph")
+    raise AssertionError("Compose and terminal dictation must show their route labels inside the existing 48dp targets")
 if ("More terminal keys" not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
@@ -473,6 +477,8 @@ for catalog_contract in ("catalogHeaderControlsDoNotOverlap", "catalogTitle", "c
 for dictation_contract in (
     "inlineDictationMicInsideBar",
     "inlineDictationMicCount",
+    "destinationLabels",
+    "destinationLabelBounds",
     "inlineDictationTargetKey",
     "sshAttachEpoch",
     "dictation-final-awaiting-stopped",
@@ -495,7 +501,7 @@ for journey_contract in (
     "hitTarget:!!hit&&(hit===n||n.contains(hit))",
 ):
     if journey_contract not in journey:
-        raise AssertionError(f"Fast Keys journey omits icon-only dictation evidence: {journey_contract}")
+        raise AssertionError(f"Fast Keys journey omits visible dictation action evidence: {journey_contract}")
 if ("mic.get(\"title\") != expected_accessible_name" not in extractor
         or 'mic.get("iconVisible") is not True' not in extractor
         or 'mic.get("pressed") is not (phase == "listening")' not in extractor):

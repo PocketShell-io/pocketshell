@@ -171,7 +171,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertUnchangedTerminalGrid("composer-to-keys handoff with IME open", composerKeyboardGrid,
                 runtimeGrid(composerKeys));
         assertHotkeyBarReachable(composerKeys);
-        assertIconOnlyDockContract(composerKeys);
+        assertDockDestinationLabels(composerKeys);
         captureScreenshot("fastkeys-composer-keys-ime-open.png");
         tapDomCenter("[data-testid=prompt-composer-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
@@ -205,7 +205,8 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("keyboardVisibleAfterReturn", composerReturn.getBoolean("keyboardVisible"))
                 .put("terminalGridBefore", composerKeyboardGrid)
                 .put("terminalGridDuringKeys", runtimeGrid(composerKeys))
-                .put("stableDockControls", composerKeys.getJSONArray("stableDockControls")));
+                .put("stableDockControls", composerKeys.getJSONArray("stableDockControls"))
+                .put("inlineDictationMic", composerKeys.getJSONObject("inlineDictationMic")));
         setValue("[data-testid=prompt-draft]", "");
         closePromptComposerSheet();
         awaitRenderedFrame();
@@ -1648,8 +1649,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationMicIcon=inlineDictationMicNode?.querySelector('svg');"
                 + "const inlineDictationMicIconStyle=inlineDictationMicIcon?getComputedStyle(inlineDictationMicIcon):null;"
                 + "const inlineDictationMicIconRect=inlineDictationMicIcon?.getBoundingClientRect();"
+                + "const inlineDictationDestination=inlineDictationMicNode?.parentElement?.querySelector('[data-testid=inline-dictation-destination]');"
+                + "const inlineDictationDestinationLabels=inlineDictationDestination?Array.from(inlineDictationDestination.children).map(node=>node.textContent.trim()):[];"
                 + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),"
                 + "title:inlineDictationMicNode.getAttribute('title')??'',"
+                + "destinationLabels:inlineDictationDestinationLabels,destinationLabelBounds:rect('[data-testid=inline-dictation-destination]'),"
                 + "iconBounds:inlineDictationMicIconRect?{top:inlineDictationMicIconRect.top,bottom:inlineDictationMicIconRect.bottom,left:inlineDictationMicIconRect.left,right:inlineDictationMicIconRect.right,width:inlineDictationMicIconRect.width,height:inlineDictationMicIconRect.height}:null,"
                 + "iconVisible:!!inlineDictationMicIcon&&inlineDictationMicIconStyle?.display!=='none'"
                 + "&&inlineDictationMicIconStyle?.visibility!=='hidden'&&Number.parseFloat(inlineDictationMicIconStyle?.opacity??'1')>0"
@@ -1905,7 +1909,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
     }
 
-    private void assertIconOnlyDockContract(JSONObject geometry) throws Exception {
+    private void assertDockDestinationLabels(JSONObject geometry) throws Exception {
         JSONArray controls = geometry.getJSONArray("stableDockControls");
         assertEquals("the mobile dock keeps Compose, arrows, Enter, More keys, and Mic in Kotlin order", 6, controls.length());
         List<String> expected = List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
@@ -1920,12 +1924,21 @@ public final class JsFastKeysDockerJourneyTest {
         }
         for (int index : List.of(0, 4, 5)) {
             JSONObject iconControl = controls.getJSONObject(index);
-            assertEquals("compose, keys, and mic controls carry no competing visible row text", "",
+            String expectedVisibleText = index == 0 ? "Prompt" : "";
+            assertEquals("destination captions stay within their existing dock targets", expectedVisibleText,
                     iconControl.getString("visibleText"));
-            assertEquals("icon-only dock action has one visual glyph", 1, iconControl.getInt("iconCount"));
+            assertEquals("Compose, keys, and mic retain one visual icon", 1, iconControl.getInt("iconCount"));
         }
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
         assertEquals("Mic accessible action remains stable in the idle phase", "Dictate to terminal", mic.getString("label"));
+        assertEquals("idle terminal mic visibly names its action", new JSONArray(List.of("Dictate")),
+                mic.getJSONArray("destinationLabels"));
+        JSONObject labelBounds = mic.getJSONObject("destinationLabelBounds");
+        assertTrue("terminal mic caption stays inside its 48dp hit target",
+                labelBounds.getDouble("left") >= mic.getDouble("left") - 0.5
+                        && labelBounds.getDouble("right") <= mic.getDouble("right") + 0.5
+                        && labelBounds.getDouble("top") >= mic.getDouble("top") - 0.5
+                        && labelBounds.getDouble("bottom") <= mic.getDouble("bottom") + 0.5);
         assertEquals("the idle mic remains the microphone icon", "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
                 mic.getJSONArray("iconPaths").toString());
     }

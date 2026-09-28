@@ -701,9 +701,19 @@ def validate_journey(journey: object) -> None:
                    or control.get("insideViewport") is not True
                    or control.get("hitTarget") is not True
                    for control in controls)
+            or controls[0].get("visibleText") != "Prompt"
             or any(controls[index].get("visibleText") != "" or controls[index].get("iconCount") != 1
-                   for index in (0, 4, 5))):
+                   for index in (4, 5))):
         raise ExtractionFailure("composer-to-keys journey does not prove a draft-preserving exclusive 48dp dock handoff with stable PTY grid")
+    mic = transition.get("inlineDictationMic")
+    label_bounds = mic.get("destinationLabelBounds") if isinstance(mic, dict) else None
+    if (not isinstance(mic, dict) or mic.get("destinationLabels") != ["Dictate"]
+            or not isinstance(label_bounds, dict)
+            or label_bounds.get("left", -10**9) < mic.get("left", 0) - 0.5
+            or label_bounds.get("right", 10**9) > mic.get("right", 0) + 0.5
+            or label_bounds.get("top", -10**9) < mic.get("top", 0) - 0.5
+            or label_bounds.get("bottom", 10**9) > mic.get("bottom", 0) + 0.5):
+        raise ExtractionFailure("terminal mic action and destination labels are not visible inside the existing 48dp control")
     native_dictation = journey.get("terminalNativeDictation")
     if not isinstance(native_dictation, dict):
         raise ExtractionFailure("journey is missing the terminal bar's actual Android speech bridge proof")
@@ -2288,13 +2298,20 @@ def sample_journey() -> dict[str, object]:
             "terminalGridDuringKeys": {"cols": 38, "rows": 6, "cellHeight": 22.6},
             "stableDockControls": [
                 {"label": label, "width": 48, "height": 48, "insideViewport": True,
-                 "hitTarget": True, "visibleText": "" if index in (0, 4, 5) else label,
+                 "hitTarget": True, "visibleText": "Prompt" if index == 0 else "" if index in (4, 5) else label,
                  "iconCount": 1 if index in (0, 4, 5) else 0}
                 for index, label in enumerate((
                     "Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
                     "Close terminal keys", "Dictate to terminal",
                 ))
             ],
+            "inlineDictationMic": {
+                "label": "Dictate to terminal", "left": 360.0, "right": 408.0,
+                "top": 700.0, "bottom": 748.0, "width": 48.0, "height": 48.0,
+                "destinationLabels": ["Dictate"],
+                "destinationLabelBounds": {"top": 733.0, "bottom": 746.0, "left": 364.0,
+                                           "right": 404.0, "width": 40.0, "height": 13.0},
+            },
         },
         "terminalNativeDictation": {
             "bridge": "Capacitor SpeechRecognition plugin",
