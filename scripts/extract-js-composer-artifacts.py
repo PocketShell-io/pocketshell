@@ -846,6 +846,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                             or mode_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
                             or mode_geometry.get("stopVisible") is not True
                             or mode_geometry.get("stopEnabled") is not True
+                            or mode_geometry.get("stopInRecordingHeader") is not True
                             or mode_geometry.get("stopGlyphPresent") is not True
                             or not _has_48dp_square_bounds(mode_geometry.get("stop"))
                             or not str(mode_geometry.get("previewText", "")).strip()
@@ -910,7 +911,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
                         raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Insert during recording")
                     required_rects.append("insert")
-                    expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
+                    expected_actions = "composer-recording-cancel,composer-insert,composer-dictation-send"
                 else:
                     if (mode_geometry.get("insertAccessible") is not False
                             or mode_geometry.get("insertEnabled") is not False
@@ -969,11 +970,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                     or restart_geometry.get("recordingControlsSeparate") is not True
                     or restart_geometry.get("cancelText") != "Discard"
                     or restart_geometry.get("cancelAriaLabel") != "Discard recording without transcribing"
-                    or restart_geometry.get("actionOrder") != "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
+                    or restart_geometry.get("actionOrder") != "composer-recording-cancel,composer-insert,composer-dictation-send"
                     or restart_geometry.get("stopText") != ""
                     or restart_geometry.get("stopAccessibleName") != STOP_ACCESSIBLE_NAME
                     or restart_geometry.get("stopVisible") is not True
                     or restart_geometry.get("stopEnabled") is not True
+                    or restart_geometry.get("stopInRecordingHeader") is not True
                     or restart_geometry.get("stopGlyphPresent") is not True
                     or not _has_48dp_square_bounds(restart_geometry.get("stop"))):
                 raise ExtractionFailure("natural-restart capture does not prove active recording, preview, and Stop")
@@ -1328,6 +1330,7 @@ def self_test() -> None:
             "stopAccessibleName": STOP_ACCESSIBLE_NAME if recording else "",
             "stopVisible": recording,
             "stopEnabled": recording,
+            "stopInRecordingHeader": recording,
             "stopGlyphPresent": recording,
             "insertAccessible": recording or state == "review",
             "insertEnabled": recording or state == "review",
@@ -1359,7 +1362,7 @@ def self_test() -> None:
             payload["dictationSend"] = rect
             payload["recordingActions"] = rect
             payload["actionOrder"] = (
-                "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop"
+                "composer-recording-cancel,composer-insert,composer-dictation-send"
                 if recording else "composer-recording-cancel,composer-dictation-send"
             )
             if recording:
@@ -1465,6 +1468,9 @@ def self_test() -> None:
     wrong_stop_size_value = json.loads(mode_geometry_payload("recording"))
     wrong_stop_size_value["stop"]["width"] = 47.0
     wrong_stop_size_geometry = json.dumps(wrong_stop_size_value).encode()
+    misplaced_stop_value = json.loads(mode_geometry_payload("recording"))
+    misplaced_stop_value["stopInRecordingHeader"] = False
+    misplaced_stop_geometry = json.dumps(misplaced_stop_value).encode()
     cancel_labeled_recording_discard = json.loads(mode_geometry_payload("recording"))
     cancel_labeled_recording_discard["cancelText"] = "Cancel"
     cancel_labeled_recording_discard["cancelAriaLabel"] = "Cancel dictation and restore the original draft"
@@ -1779,6 +1785,8 @@ def self_test() -> None:
          make_lines(recording_geometry_bytes=missing_stop_glyph_geometry)),
         ("recording Stop bounds are not 48dp square",
          make_lines(recording_geometry_bytes=wrong_stop_size_geometry)),
+        ("recording Stop is outside the capture header",
+         make_lines(recording_geometry_bytes=misplaced_stop_geometry)),
         ("recording action is labeled Cancel instead of Discard",
          make_lines(recording_geometry_bytes=cancel_labeled_recording_discard_geometry)),
         ("transcribing Cancel is labeled Discard",

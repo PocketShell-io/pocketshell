@@ -3,11 +3,14 @@ defineProps<{
   state: 'starting' | 'recording' | 'transcribing';
   elapsedLabel: string;
   livePreview: string;
+  stopDisabled: boolean;
 }>();
+const emit = defineEmits<{ stop: [] }>();
 </script>
 
 <template>
-  <section class="recording-mode" role="group" data-testid="composer-recording-mode" :data-recording-state="state"
+  <section class="recording-mode" :class="{ 'recording-mode--recording': state === 'recording' }"
+    role="group" data-testid="composer-recording-mode" :data-recording-state="state"
     :aria-label="state === 'recording' ? 'Prompt dictation recording' : state === 'transcribing' ? 'Transcribing prompt' : 'Starting prompt dictation'">
     <div v-if="state === 'recording'" class="recording-mode__live-row">
       <span class="recording-mode__phase">Listening</span>
@@ -18,6 +21,13 @@ defineProps<{
         aria-label="Speech capture is active. The animated bars show recording state, not volume.">
         <span v-for="bar in 30" :key="bar" :style="{ '--bar': bar - 1 }"></span>
       </div>
+      <button class="recording-mode__stop" type="button" data-testid="composer-recording-stop"
+        aria-label="Stop dictation and keep the recognized text in the editable draft"
+        title="Stop dictation" :disabled="stopDisabled" @click="emit('stop')">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
+        </svg>
+      </button>
     </div>
 
     <div v-else-if="state === 'transcribing'" class="recording-mode__transcribing-row" role="status" aria-live="polite">
@@ -49,12 +59,14 @@ defineProps<{
   padding: var(--sp-3);
 }
 
+.recording-mode--recording { padding-block: var(--sp-1); }
+
 .recording-mode__live-row {
   display: flex;
   min-width: 0;
-  min-height: 32px;
+  min-height: 48px;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
 }
 
 .recording-mode__live-row time {
@@ -70,6 +82,24 @@ defineProps<{
   font-size: var(--fs-200);
   font-weight: var(--fw-semibold);
 }
+
+.recording-mode__stop {
+  display: inline-flex;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  padding: 0;
+  color: var(--on-accent);
+  cursor: pointer;
+}
+.recording-mode__stop:disabled { opacity: var(--disabled-opacity); cursor: default; }
+.recording-mode__stop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.recording-mode__stop:active:not(:disabled) { filter: brightness(1.12); }
 
 .recording-mode__waveform {
   display: flex;

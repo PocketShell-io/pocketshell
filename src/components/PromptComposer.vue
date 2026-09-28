@@ -610,6 +610,8 @@ function startPromptDictation() {
         :state="dictationPhase"
         :elapsed-label="elapsedLabel"
         :live-preview="dictationPreview"
+        :stop-disabled="sendingIntent !== null"
+        @stop="activeDictation && stopDictation(activeDictation)"
       />
       <p v-else-if="dictationPhase === 'review'" class="composer-review" data-testid="composer-dictation-review"
         role="status" aria-live="polite">
@@ -673,15 +675,6 @@ function startPromptDictation() {
             data-testid="composer-dictation-send" :disabled="!canDeliver || sendingIntent !== null"
             @click="deliver('submit')">
             {{ sendingIntent === 'submit' ? 'Sending…' : 'Send' }}
-          </button>
-          <button v-if="dictationPhase === 'recording'" class="composer-recording-action composer-recording-action--stop"
-            type="button" data-testid="composer-recording-stop"
-            aria-label="Stop dictation and keep the recognized text in the editable draft"
-            :disabled="sendingIntent !== null"
-            @click="activeDictation && stopDictation(activeDictation)">
-            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-              <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
-            </svg>
           </button>
         </div>
       </div>
@@ -808,16 +801,6 @@ function startPromptDictation() {
   border-color: var(--accent-dim);
   background: var(--surface-2);
   color: var(--accent);
-}
-.composer-recording-action--stop {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  border-color: var(--accent);
-  border-radius: 50%;
-  background: var(--accent);
-  padding: 0;
-  color: var(--on-accent);
 }
 .composer-recording-action:disabled { opacity: var(--disabled-opacity); cursor: default; }
 .composer-recording-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

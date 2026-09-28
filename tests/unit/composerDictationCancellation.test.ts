@@ -363,7 +363,10 @@ describe('composer dictation cancellation', () => {
     expect(send).toContain('background: var(--surface-2)');
     expect(send).toContain('color: var(--accent)');
 
-    const stop = cssRule(composerStyles, '.composer-recording-action--stop');
+    const recordingStyles = styleSource(composerRecordingModeSource, 'ComposerRecordingMode');
+    const liveRow = cssRule(recordingStyles, '.recording-mode__live-row');
+    expect(liveRow).toContain('min-height: 48px');
+    const stop = cssRule(recordingStyles, '.recording-mode__stop');
     expect(stop).toContain('width: 48px');
     expect(stop).toContain('height: 48px');
     expect(stop).toContain('flex: 0 0 48px');
@@ -371,8 +374,7 @@ describe('composer dictation cancellation', () => {
     expect(stop).toContain('background: var(--accent)');
     expect(stop).toContain('color: var(--on-accent)');
 
-    const recordingStyles = styleSource(composerRecordingModeSource, 'ComposerRecordingMode');
-    expect(cssRule(recordingStyles, '.recording-mode__live-row')).toContain('display: flex');
+    expect(liveRow).toContain('display: flex');
     expect(cssRule(recordingStyles, '.recording-mode__waveform')).toContain('flex: 1 1 auto');
     expect(composerRecordingModeSource).toContain('class="recording-mode__phase">Listening</span>');
     expect(composerRecordingModeSource).toContain('v-for="bar in 30"');
@@ -702,17 +704,19 @@ describe('composer dictation cancellation', () => {
     expect(writePty).not.toHaveBeenCalled();
     expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation');
     const actions = findByTestId(root, 'composer-recording-actions');
+    const mode = findByTestId(root, 'composer-recording-mode');
     expect(findAll(actions!, (child) => child.type === 'button')
       .map((child) => child.props['data-testid']))
-      .toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop']);
+      .toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send']);
     expect(isDescendantOf(actions!, findByTestId(root, 'composer-actions')!)).toBe(true);
-    expect(isDescendantOf(actions!, findByTestId(root, 'composer-recording-mode')!)).toBe(false);
+    expect(isDescendantOf(actions!, mode!)).toBe(false);
     const recordingSend = findByTestId(root, 'composer-dictation-send');
     const stopButton = findByTestId(root, 'composer-recording-stop');
     expect(recordingSend?.props.class)
       .toBe('composer-recording-action composer-recording-action--send');
-    expect(stopButton?.props.class)
-      .toBe('composer-recording-action composer-recording-action--stop');
+    expect(stopButton?.props.class).toBe('recording-mode__stop');
+    expect(isDescendantOf(stopButton!, mode!)).toBe(true);
+    expect(isDescendantOf(stopButton!, findByTestId(root, 'composer-actions')!)).toBe(false);
     expect(stopButton?.props['aria-label'])
       .toBe('Stop dictation and keep the recognized text in the editable draft');
     expect(stopButton?.children[0]?.type).toBe('svg');

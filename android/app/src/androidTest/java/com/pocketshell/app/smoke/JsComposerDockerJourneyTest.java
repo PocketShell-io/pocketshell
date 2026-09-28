@@ -1096,7 +1096,8 @@ public final class JsComposerDockerJourneyTest {
                 + "const actions=document.querySelector('[data-testid=composer-recording-actions]');"
                 + "const cancel=actions?.querySelector('[data-testid=composer-recording-cancel]');"
                 + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
-                + "const stop=actions?.querySelector('[data-testid=composer-recording-stop]');"
+                + "const stop=mode?.querySelector('[data-testid=composer-recording-stop]');"
+                + "const header=mode?.querySelector('.recording-mode__live-row');"
                 + "const stopStyle=stop&&getComputedStyle(stop);const stopRect=stop?.getBoundingClientRect();"
                 + "const stopGlyph=stop?.querySelector(\"svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']\");"
                 + "return draft?.classList.contains('composer-draft--dictation-anchor')===true"
@@ -1107,8 +1108,11 @@ public final class JsComposerDockerJourneyTest {
                 + " && mode?.getClientRects().length>0 && preview?.textContent.includes('discard this dictated phrase')"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Your draft stays in the composer until you tap Insert or Send')"
                 + " && actions?.getAttribute('role')==='group'"
+                + " && Array.from(actions?.querySelectorAll('button')??[]).map(button=>button.getAttribute('data-testid')).join(',')"
+                + "==='composer-recording-cancel,composer-insert,composer-dictation-send'"
                 + " && cancel?.textContent.trim()==='Discard'"
                 + " && cancel?.getAttribute('aria-label')==='Discard recording without transcribing'"
+                + " && !!header&&header.contains(stop)"
                 + " && stop?.innerText.trim()===''"
                 + " && stop?.getAttribute('aria-label')==='Stop dictation and keep the recognized text in the editable draft'"
                 + " && !!stop&&stop.getClientRects().length>0&&stopStyle?.display!=='none'"
@@ -1251,6 +1255,16 @@ public final class JsComposerDockerJourneyTest {
 
         setComposerDraft("");
         String dictationWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
+        // The writer count is incremented inside each acknowledgement, so it
+        // can reach two before deliver() resumes and clears sendingIntent.
+        // Wait for the actual idle, enabled Dictate target to settle before
+        // this one-shot physical tap; do not retry or weaken the start proof.
+        awaitJsTrue("(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const dictate=composer?.querySelector('[data-testid=composer-dictate]');"
+                + "const status=document.querySelector('[data-testid=composer-status]');"
+                + "return composer?.dataset.dictationState==='idle'&&!!dictate&&!dictate.disabled"
+                + "&&status?.dataset.deliveryIntent==='';})()");
+        awaitPromptDictateTargetSettled();
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
@@ -1727,6 +1741,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                + "const recordingHeader=mode?.querySelector('.recording-mode__live-row');"
                 + "const preview=document.querySelector('[data-testid=composer-recording-preview]');"
                 + "const composerStatus=document.querySelector('[data-testid=composer-status]');"
                 + "const actionRow=composer?.querySelector('[data-testid=composer-recording-actions]');"
@@ -1744,6 +1759,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const cancelText=(cancelButton?.textContent??'').trim();"
                 + "const cancelAriaLabel=cancelButton?.getAttribute('aria-label')??'';"
                 + "const stopText=(stopButton?.innerText??'').trim();"
+                + "const stopInRecordingHeader=!!recordingHeader&&recordingHeader.contains(stopButton);"
                 + "const stopAccessibleName=stopButton?.getAttribute('aria-label')??'';"
                 + "const stopStyle=stopButton?getComputedStyle(stopButton):null;"
                 + "return JSON.stringify({runId:" + JSONObject.quote(runId) + ",state:" + JSONObject.quote(state)
@@ -1781,6 +1797,7 @@ public final class JsComposerDockerJourneyTest {
                 + "stopText,stopAccessibleName,"
                 + "stopVisible:!!stopButton&&stopButton.getClientRects().length>0&&stopStyle?.display!=='none'"
                 + "&&stopStyle?.visibility!=='hidden'&&Number(stopStyle?.opacity??0)>0.95,"
+                + "stopInRecordingHeader:stopInRecordingHeader,"
                 + "stopEnabled:!!stopButton&&!stopButton.disabled,"
                 + "stopGlyphPresent:!!stopButton?.querySelector(\"svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']\"),"
                 + "insertAccessible:!!insertButton&&(insertButton.textContent??'').trim()==='Insert'&&insertButton.getClientRects().length>0,"
@@ -1870,8 +1887,8 @@ public final class JsComposerDockerJourneyTest {
                             && measured.getString("draftDescribedBy").contains("composer-status")
                             && measured.getBoolean("cancelAccessible"));
             if (state.startsWith("recording")) {
-                assertEquals("recording actions must follow the Kotlin composer row: Discard, Insert, Send, Stop",
-                        "composer-recording-cancel,composer-insert,composer-dictation-send,composer-recording-stop",
+                assertEquals("recording actions must follow the Kotlin composer row: Discard, Insert, Send",
+                        "composer-recording-cancel,composer-insert,composer-dictation-send",
                         measured.getString("actionOrder"));
                 assertEquals("recording must use the Kotlin discard label", "Discard", measured.getString("cancelText"));
                 assertEquals("discard must explain that this throws away the recording",
@@ -1881,9 +1898,10 @@ public final class JsComposerDockerJourneyTest {
                                 && measured.getJSONObject("insert").getDouble("height") >= 47.9
                                 && measured.getBoolean("dictationSendAccessible") && measured.getBoolean("dictationSendEnabled")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
-                assertTrue("recording preview and trailing icon-only Stop control must be visible, enabled, accessible, and 48dp square",
+                assertTrue("recording preview and header Stop control must be visible, enabled, accessible, and 48dp square",
                         measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
                                 && measured.getString("stopText").isEmpty()
+                                && measured.getBoolean("stopInRecordingHeader")
                                 && "Stop dictation and keep the recognized text in the editable draft".equals(
                                         measured.getString("stopAccessibleName"))
                                 && measured.getBoolean("stopVisible") && measured.getBoolean("stopEnabled")

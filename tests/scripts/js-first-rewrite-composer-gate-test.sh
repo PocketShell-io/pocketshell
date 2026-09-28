@@ -270,6 +270,7 @@ def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
         '"stopText,stopAccessibleName,"',
         '"stopVisible:!!stopButton',
         '"stopEnabled:!!stopButton&&!stopButton.disabled,"',
+        '"stopInRecordingHeader:stopInRecordingHeader,"',
         "svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']",
         '"stopGlyphPresent:!!stopButton?.querySelector(',
     )
@@ -285,6 +286,7 @@ def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
         '"recording Stop is disabled"',
         '"recording Stop omits the square SVG glyph"',
         '"recording Stop bounds are not 48dp square"',
+        '"recording Stop is outside the capture header"',
     )
     for needle in extractor_cases:
         if needle not in extractor_source:
@@ -307,7 +309,8 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
         '"previewAccessible:!!preview&&preview.getAttribute(\'id\')===\'composer-recording-preview\'"',
         '"reviewEditable:!!draft&&!draft.readOnly&&draft.getAttribute(\'aria-readonly\')===\'false\',',
         "textContent.includes('Transcript ready')",
-        '"recording actions must follow the Kotlin composer row: Discard, Insert, Send, Stop"',
+        '"recording actions must follow the Kotlin composer row: Discard, Insert, Send"',
+        '"stopInRecordingHeader:stopInRecordingHeader,"',
         '"transcribing Cancel must be distinct from recording Discard"',
         '"transcribing state must expose Cancel, timer, live preview, and Send without Insert"',
         '"editable review must restore its explicit, enabled Insert action"',
@@ -336,6 +339,7 @@ def require_kotlin_dictation_contract(source: str, extractor_source: str) -> Non
         '"recording timer is stacked below its waveform"',
         '"recording transcript lacks live accessible text"',
         '"recording controls are nested inside the status card"',
+        'mode_geometry.get("stopInRecordingHeader") is not True',
         '"post-stop review is no longer editable"',
     )
     for needle in extractor_evidence:
@@ -373,7 +377,7 @@ def require_obvious_prompt_dictation_mode() -> None:
         "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation')",
         "const reviewInsert = findByTestId(root, 'composer-insert');",
         "expect(reviewInsert?.props.disabled).toBe(false);",
-        "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send', 'composer-recording-stop'])",
+        "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send'])",
         "toEqual(['composer-recording-cancel', 'composer-dictation-send'])",
         "expect(findByTestId(root, 'composer-insert')).toBeUndefined();",
         "expect(writePty).not.toHaveBeenCalled();",
