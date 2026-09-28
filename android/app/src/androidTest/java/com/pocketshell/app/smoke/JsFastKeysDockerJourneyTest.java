@@ -119,9 +119,17 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const describeFocusNode=node=>{if(!(node instanceof Element))return null;return {tag:node.tagName.toLowerCase(),"
                 + "id:node.id||null,testId:node.getAttribute('data-testid'),className:String(node.className||'').slice(0,80)};};"
                 + "for(const type of ['focusin','focusout'])document.addEventListener(type,event=>{"
-                + "const entries=window.__ps2884FocusEvents;entries.push({type,atMs:Math.round(performance.now()),"
+                + "const entries=window.__ps2884FocusEvents;const shell=document.querySelector('.app-shell');"
+                + "const gate=window.__ps2884AttachAutofocusGate;entries.push({type,atMs:Math.round(performance.now()),"
                 + "target:describeFocusNode(event.target),related:describeFocusNode(event.relatedTarget),"
-                + "active:describeFocusNode(document.activeElement),keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible||'false'});"
+                + "active:describeFocusNode(document.activeElement),keyboardVisible:shell?.dataset.keyboardVisible||'false',"
+                + "attachEpoch:shell?.dataset.sshAttachEpoch??null,attachFocusPending:shell?.dataset.sshAttachFocusPending??null,"
+                + "attachPromptFocusEpoch:shell?.dataset.sshAttachPromptFocusEpoch??null,"
+                + "attachResizeAckEpoch:shell?.dataset.sshAttachResizeAckEpoch??null,"
+                + "terminalAutofocusAllowed:shell?.dataset.sshTerminalAutofocusAllowed??null,"
+                + "composerOpen:shell?.dataset.promptComposerOpen??null,"
+                + "attachAutofocusGate:gate?{pending:gate.pending??0,released:gate.released??false,"
+                + "entered:(gate.entered??[]).map(entry=>({source:entry.source,atMs:entry.atMs}))}:null});"
                 + "if(entries.length>40)entries.shift();},true);"
                 + "window.__ps2884JsDiagnostics={events:[]};const recordJsDiagnostic=(kind,value)=>{const events=window.__ps2884JsDiagnostics.events;"
                 + "events.push({kind,atMs:Math.round(performance.now()),value:String(value).slice(0,500)});if(events.length>30)events.shift();};"
@@ -2978,11 +2986,28 @@ public final class JsFastKeysDockerJourneyTest {
             }
             SystemClock.sleep(100);
         }
-        String webState = evalString("JSON.stringify({activeElement:document.activeElement?.outerHTML?.slice(0,160)??null,"
-                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
-                + "paletteOpen:document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen??null,"
-                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-20)})");
-        throw new AssertionError("Android IME visibility did not become " + visible + " (WebView=" + webState + ")");
+        String webState = evalString("(() => {const shell=document.querySelector('.app-shell');"
+                + "const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const active=document.activeElement;const gate=window.__ps2884AttachAutofocusGate;"
+                + "const describe=node=>node instanceof Element?{tag:node.tagName.toLowerCase(),id:node.id||null,"
+                + "testId:node.getAttribute('data-testid'),className:String(node.className||'').slice(0,80)}:null;"
+                + "return JSON.stringify({sshPhase:shell?.dataset.sshPhase??null,homeSurface:shell?.dataset.homeSurface??null,"
+                + "attachEpoch:shell?.dataset.sshAttachEpoch??null,attachFocusPending:shell?.dataset.sshAttachFocusPending??null,"
+                + "attachPromptFocusEpoch:shell?.dataset.sshAttachPromptFocusEpoch??null,"
+                + "attachResizeAckEpoch:shell?.dataset.sshAttachResizeAckEpoch??null,"
+                + "terminalAutofocusAllowed:shell?.dataset.sshTerminalAutofocusAllowed??null,"
+                + "resizePending:shell?.dataset.sshTerminalResizePending??null,"
+                + "resizeFailures:shell?.dataset.sshTerminalResizeFailures??null,"
+                + "keyboardVisible:shell?.dataset.keyboardVisible??null,keyboardComposerMode:shell?.dataset.keyboardComposerMode??null,"
+                + "composerOpen:shell?.dataset.promptComposerOpen??null,composerPresent:!!panel,"
+                + "draftConnected:draft?.isConnected??false,draftVisible:!!draft&&draft.getClientRects().length>0,"
+                + "draftFocused:active===draft,activeElement:describe(active),"
+                + "attachAutofocusGate:gate?{entered:gate.entered??[],pending:gate.pending??0,released:gate.released??false}:null,"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-24)});})()");
+        boolean androidImeVisible = isImeVisible();
+        throw new AssertionError("Android IME visibility did not become " + visible
+                + " (AndroidImeVisible=" + androidImeVisible + "; attach/composer=" + webState + ")");
     }
 
     private void installAttachAutofocusGate() throws Exception {
