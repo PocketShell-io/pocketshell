@@ -113,7 +113,7 @@ const buttonDockLabel = () => {
   if (state.value.phase === 'starting') return 'Cancel';
   if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
   if (state.value.tone === 'error') return 'Retry';
-  return 'Cursor';
+  return 'Dictate';
 };
 </script>
 

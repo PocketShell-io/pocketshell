@@ -129,7 +129,6 @@ const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const mobilePromptComposerOpen = ref(false);
-const mobilePromptComposerStartDictation = ref(false);
 const promptComposerHasFocus = ref(false);
 const mobileHotkeysHasFocus = ref(false);
 const terminalViewportHasFocus = ref(false);
@@ -280,7 +279,6 @@ const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
 
 function navigateHomeSurface(action: HomeSurfaceAction) {
   mobilePromptComposerOpen.value = false;
-  mobilePromptComposerStartDictation.value = false;
   if (action !== 'session-attached' && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
@@ -493,9 +491,8 @@ watch(() => navigation.route, (route) => {
   if (route === 'ports') void refreshPorts();
 });
 
-function openPromptComposer(intent: 'compose' | 'dictate' = 'compose') {
+function openPromptComposer() {
   mobileHotkeys.value?.closePalette();
-  mobilePromptComposerStartDictation.value = intent === 'dictate';
   mobilePromptComposerOpen.value = true;
 }
 
@@ -514,7 +511,6 @@ async function openTerminalKeysFromComposer() {
 function setMobilePromptComposerOpen(open: boolean) {
   mobilePromptComposerOpen.value = open;
   if (!open) {
-    mobilePromptComposerStartDictation.value = false;
     void nextTick(() => {
       document.querySelector<HTMLButtonElement>('[data-testid="prompt-composer-launcher"]')
         ?.focus({ preventScroll: true });
@@ -1200,7 +1196,6 @@ watchEffect(() => {
 watch(() => navigation.route, (route) => {
   if (route !== 'home') {
     mobilePromptComposerOpen.value = false;
-    mobilePromptComposerStartDictation.value = false;
   }
 });
 
@@ -1606,7 +1601,6 @@ onBeforeUnmount(() => {
           :write-pty="writeComposerPty"
           :mobile-sheet="Capacitor.getPlatform() === 'android'"
           :open="mobilePromptComposerOpen"
-          :start-dictation-on-open="mobilePromptComposerStartDictation"
           @open-change="setMobilePromptComposerOpen"
           @open-keys="openTerminalKeysFromComposer"
         />

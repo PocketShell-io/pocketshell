@@ -355,7 +355,7 @@ describe('composer dictation cancellation', () => {
     composerTeleportTarget = null;
   });
 
-  it('opens the mobile sheet directly into recording once for a dock Dictate request', async () => {
+  it('keeps prompt dictation inside the composer instead of auto-starting from the terminal dock', async () => {
     mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
       mocks.appStateListener = listener;
       return { remove: vi.fn(async () => {}) };
@@ -369,17 +369,16 @@ describe('composer dictation cancellation', () => {
       onRequestId: (id: string) => void,
     ) => {
       dictationEvent = onEvent;
-      onRequestId('dictation-dock-speak-1');
-      dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'started' });
-      return { requestId: 'dictation-dock-speak-1', stop, cancel: vi.fn(async () => {}) };
+      onRequestId('dictation-composer-speak-1');
+      dictationEvent?.({ requestId: 'dictation-composer-speak-1', type: 'started' });
+      return { requestId: 'dictation-composer-speak-1', stop, cancel: vi.fn(async () => {}) };
     });
 
-    const targetKey = 'host/mobile-dock-speak';
+    const targetKey = 'host/mobile-composer-speak';
     const pinia = createPinia();
     const root = node('root');
     const portal = node('portal');
     composerTeleportTarget = portal;
-    const autoStart = ref(true);
     const Host = {
       setup: () => () => h(PromptComposer, {
         targetKey,
@@ -387,7 +386,6 @@ describe('composer dictation cancellation', () => {
         writePty: vi.fn(async () => ({ ok: true })),
         mobileSheet: true,
         open: true,
-        startDictationOnOpen: autoStart.value,
       }),
     };
     const app = renderer.createApp(Host);
@@ -396,31 +394,33 @@ describe('composer dictation cancellation', () => {
 
     await flushPromises();
     await nextTick();
-    autoStart.value = false;
-    await nextTick();
-    autoStart.value = true;
-    await nextTick();
+    expect(mocks.startDictation).not.toHaveBeenCalled();
+    expect(composerState(portal)).toBe('idle');
+    expect(findByTestId(portal, 'prompt-draft')?.focusCalls).toBe(1);
+    const composerMic = findByTestId(portal, 'composer-dictate');
+    expect(composerMic?.props['aria-label']).toBe('Dictate prompt draft');
+    (composerMic?.props.onClick as () => void)();
     await flushPromises();
-
     expect(mocks.startDictation).toHaveBeenCalledTimes(1);
     expect(composerState(portal)).toBe('recording');
-    expect(findByTestId(portal, 'prompt-draft')?.focusCalls).toBe(0);
+    expect(findByTestId(portal, 'prompt-draft')?.focusCalls).toBe(1);
     expect(textContent(findAll(portal, (candidate) => candidate.props.id === 'composer-title')[0]!))
       .toBe('Prompt dictation');
     expect(findByTestId(portal, 'composer-recording-stop')?.props['aria-label'])
       .toBe('Stop dictation and keep the recognized text in the editable draft');
 
-    dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'partial', text: 'check the release notes' });
+    dictationEvent?.({ requestId: 'dictation-composer-speak-1', type: 'partial', text: 'check the release notes' });
     await nextTick();
     expect(textContent(findByTestId(portal, 'composer-recording-preview')!)).toBe('check the release notes');
     const stopButton = findByTestId(portal, 'composer-recording-stop')!;
     (stopButton.props.onClick as () => void)();
     await flushPromises();
     expect(composerState(portal)).toBe('transcribing');
-    dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'stopped' });
+    dictationEvent?.({ requestId: 'dictation-composer-speak-1', type: 'stopped' });
     await flushPromises();
     expect(composerState(portal)).toBe('review');
     expect(findByTestId(portal, 'composer-dictation-review')).toBeDefined();
+    expect(findByTestId(portal, 'prompt-draft')?.props.value).toBe('check the release notes');
     expect(findByTestId(portal, 'prompt-draft')?.props).toMatchObject({
       'aria-label': 'Dictation transcript, editable before inserting or sending',
       disabled: false,

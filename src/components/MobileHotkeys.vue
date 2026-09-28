@@ -10,7 +10,6 @@ import {
 import { AppIcon } from '@pocketshell/ui';
 import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkeysPage } from './mobileHotkeysModel';
 import type { InlineDictationState } from '../session/inlineDictation';
-import DictationMicIcon from './DictationMicIcon.vue';
 
 // Keep the one-tap keys in the terminal flow. The full catalog is a compact,
 // on-demand grid with its own vertical scroll area.
@@ -54,8 +53,8 @@ const emit = defineEmits<{
   pageChange: [page: MobileHotkeysPage];
   /** Re-focuses the prompt after a physical hotkey tap so Android keeps the IME open. */
   keepKeyboardOpen: [];
-  /** Opens the shared prompt composer, including its prompt-dictation mode. */
-  openComposer: [intent: 'compose' | 'dictate'];
+  /** Opens the shared prompt composer; prompt dictation starts from within it. */
+  openComposer: [];
 }>();
 
 const slots = useSlots();
@@ -146,9 +145,6 @@ function restoreKeyboardAfterPointerClick(event: MouseEvent): void {
   const pointer = keyboardPointer;
   keyboardPointer = null;
   const target = event.target as Element | null;
-  // Prompt dictation needs the IME to stay dismissed while recognition starts.
-  // The regular fast-key controls still restore draft focus after pointer taps.
-  if (target?.closest?.('[data-testid="prompt-dictation-launcher"]')) return;
   if (event.detail > 0 && pointer && target?.closest?.('button') === pointer.button) {
     emit('keepKeyboardOpen');
   }
@@ -245,25 +241,10 @@ defineExpose({
             aria-label="Open prompt composer to type or dictate a prompt"
             title="Open prompt composer to type or dictate a prompt"
             :disabled="!enabled"
-            @click="emit('openComposer', 'compose')"
+            @click="emit('openComposer')"
           >
             <AppIcon name="edit-2" aria-hidden="true" />
             <span class="mobile-hotkeys__dock-label" data-testid="prompt-composer-launcher-label" aria-hidden="true">Prompt</span>
-          </button>
-
-          <button
-            v-if="dictationAvailable"
-            class="mobile-hotkeys__prompt-dictation"
-            type="button"
-            data-testid="prompt-dictation-launcher"
-            aria-label="Dictate a prompt and review it before Insert or Send"
-            title="Dictate a prompt and review it before Insert or Send"
-            aria-haspopup="dialog"
-            :disabled="!enabled"
-            @click="emit('openComposer', 'dictate')"
-          >
-            <DictationMicIcon :size="18" />
-            <span class="mobile-hotkeys__dock-label" data-testid="prompt-dictation-launcher-label" aria-hidden="true">Dictate</span>
           </button>
         </div>
 
@@ -536,17 +517,13 @@ defineExpose({
 }
 .mobile-hotkeys__input-group { gap: 2px; }
 .mobile-hotkeys__terminal-group { gap: var(--sp-1); }
-.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher,
-.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation {
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher {
   border-color: transparent;
   background: transparent;
+  border-radius: var(--r-md);
 }
-.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher { border-radius: var(--r-md) 0 0 var(--r-md); }
-.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation { border-radius: 0 var(--r-md) var(--r-md) 0; }
 .mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher:hover:not(:disabled),
-.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher:active:not(:disabled),
-.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation:hover:not(:disabled),
-.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation:active:not(:disabled) {
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher:active:not(:disabled) {
   background: var(--state-selected);
 }
 .mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-1); }
@@ -571,14 +548,12 @@ defineExpose({
 }
 .mobile-hotkeys__key:hover:not(:disabled),
 .mobile-hotkeys__launcher:hover:not(:disabled),
-.mobile-hotkeys__prompt-dictation:hover:not(:disabled),
 .mobile-hotkeys__page-tab:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--state-hover);
 }
 .mobile-hotkeys__key:active:not(:disabled),
 .mobile-hotkeys__launcher[aria-expanded="true"],
-.mobile-hotkeys__prompt-dictation:active:not(:disabled),
 .mobile-hotkeys__page-tab:active:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
@@ -616,32 +591,6 @@ defineExpose({
 .mobile-hotkeys__keys-icon { width: 20px; height: 20px; }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 20px; height: 20px; }
 .mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui); white-space: nowrap; }
-.mobile-hotkeys__prompt-dictation {
-  display: inline-flex;
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-  border: 1px solid var(--accent-dim);
-  border-radius: var(--r-md);
-  background: var(--surface-2);
-  color: var(--accent);
-  cursor: pointer;
-  padding: 0;
-}
-.mobile-hotkeys__prompt-dictation .mobile-hotkeys__dock-label { color: var(--fg); }
-.mobile-hotkeys__prompt-dictation:hover:not(:disabled),
-.mobile-hotkeys__prompt-dictation:active:not(:disabled) {
-  border-color: var(--accent);
-  background: var(--state-selected);
-  color: var(--accent);
-}
-.mobile-hotkeys__prompt-dictation:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 2px; }
-
 .mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
 .mobile-hotkeys__persistent-status :deep(*) { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

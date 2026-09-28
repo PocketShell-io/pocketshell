@@ -173,7 +173,7 @@ describe('terminal dictation bar lifecycle', () => {
 
     const toggle = findByTestId(root, 'inline-dictation-toggle');
     expect(toggle?.props['aria-label']).toBe('Dictate at terminal cursor');
-    expect(findByTestId(root, 'inline-dictation-dock-label')?.text).toBe('Cursor');
+    expect(findByTestId(root, 'inline-dictation-dock-label')?.text).toBe('Dictate');
     expect(toggle?.props['data-mic-state']).toBe('idle');
     const idleMicSvg = findAllByType(toggle!, 'svg')[0];
     expect(idleMicSvg?.props['aria-hidden']).toBe('true');
