@@ -18,9 +18,12 @@ const props = withDefaults(defineProps<{
   /** Android opens the shared composer in a modal sheet from the terminal dock. */
   mobileSheet?: boolean;
   open?: boolean;
+  /** Opens the sheet directly into its Kotlin-style prompt recording mode. */
+  startDictationOnOpen?: boolean;
 }>(), {
   mobileSheet: false,
   open: false,
+  startDictationOnOpen: false,
 });
 const emit = defineEmits<{
   openChange: [open: boolean];
@@ -62,6 +65,7 @@ let recordingTimer: ReturnType<typeof setInterval> | null = null;
 let appStateListener: PluginListenerHandle | null = null;
 let composerUnmounting = false;
 let deliveryEpoch = 0;
+let startDictationConsumedForOpen = false;
 
 function createObservedDelivery() {
   const epoch = deliveryEpoch;
@@ -169,11 +173,15 @@ watch(() => props.targetKey, () => {
   if (props.mobileSheet) emit('openChange', false);
 }, { flush: 'sync' });
 
-watch(() => props.open, (open, previousOpen) => {
+watch(() => [props.open, props.startDictationOnOpen] as const, ([open, startDictationOnOpen], previous) => {
   if (!props.mobileSheet) return;
   if (open) {
     void nextTick(() => {
-      if (props.mobileSheet && draftInput.value) {
+      if (props.mobileSheet && (startDictationOnOpen || startDictationConsumedForOpen)) {
+        // Keep the IME dismissed while the one-shot Dictate request starts.
+        // Compose still places focus in the editable draft below.
+        sheetCloseButton.value?.focus({ preventScroll: true });
+      } else if (props.mobileSheet && draftInput.value) {
         draftInput.value.focus({ preventScroll: true });
         const cursor = draftInput.value.value.length;
         draftInput.value.setSelectionRange(cursor, cursor);
@@ -181,12 +189,23 @@ watch(() => props.open, (open, previousOpen) => {
         sheetCloseButton.value?.focus({ preventScroll: true });
       }
     });
-  } else if (previousOpen) {
+    if (startDictationOnOpen && !startDictationConsumedForOpen) {
+      // Consume the one-shot intent before scheduling native recognition so a
+      // batched prop update cannot start two recognizers for a single tap.
+      startDictationConsumedForOpen = true;
+      void nextTick(() => {
+        if (props.open && props.startDictationOnOpen) startPromptDictation();
+      });
+    }
+  } else if (previous?.[0]) {
+    startDictationConsumedForOpen = false;
     const operation = activeDictation.value;
     if (operation) cancelDictation(operation, false);
     draftInput.value?.blur();
+  } else {
+    startDictationConsumedForOpen = false;
   }
-});
+}, { immediate: true });
 
 onBeforeUnmount(() => {
   composerUnmounting = true;

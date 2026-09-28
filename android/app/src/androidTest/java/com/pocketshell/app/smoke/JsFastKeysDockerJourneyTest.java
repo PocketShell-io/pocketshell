@@ -7,13 +7,16 @@ import static org.junit.Assert.assertTrue;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.os.Build;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.Choreographer;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewTreeObserver;
 import android.view.WindowInsets;
 import android.webkit.WebView;
 
@@ -40,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -49,6 +53,7 @@ public final class JsFastKeysDockerJourneyTest {
     private static final String ASSET_TAG = "PS2884Asset";
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+    private static final long UI_CALLBACK_TIMEOUT_MILLIS = 8_000;
     private static final int ASSET_CHUNK_SIZE = 2_800;
     private static final int MAX_CATALOG_SWIPE_ATTEMPTS = 8;
     private static final int ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP = 144;
@@ -56,6 +61,8 @@ public final class JsFastKeysDockerJourneyTest {
     private static final double TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01;
 
     private ActivityScenario<MainActivity> scenario;
+    private MainActivity packagedActivity;
+    private WebView packagedWebView;
     private String artifactRunId;
     private String firstSession;
     private JSONObject acceptedKeyboardGrid;
@@ -65,6 +72,11 @@ public final class JsFastKeysDockerJourneyTest {
     @Before
     public void launchPackagedShell() {
         scenario = ActivityScenario.launch(MainActivity.class);
+        scenario.onActivity(activity -> {
+            packagedActivity = activity;
+            packagedWebView = findWebView(activity.getWindow().getDecorView());
+        });
+        assertNotNull("packaged activity must start with its WebView", packagedWebView);
     }
 
     @After
@@ -97,8 +109,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "window.__ps2884PointerEvents = []; window.__ps2884FocusEvents = [];"
                 + "for (const type of ['pointerdown','pointerup','pointercancel','click']) window.addEventListener(type, event => {"
                 + "const button=event.target instanceof Element ? event.target.closest('button') : null;"
-                + "window.__ps2884PointerEvents.push({type,pointerId:event.pointerId??null,detail:event.detail??null,"
-                + "key:button?.dataset.keyId??button?.getAttribute('aria-label')??null,defaultPrevented:event.defaultPrevented,"
+                + "window.__ps2884PointerEvents.push({type,pointerId:event.pointerId??null,pointerType:event.pointerType??null,"
+                + "detail:event.detail??null,clientX:event.clientX??null,clientY:event.clientY??null,"
+                + "targetTestId:event.target instanceof Element?event.target.getAttribute('data-testid'):null,"
+                + "buttonTestId:button?.dataset.testid??null,key:button?.dataset.keyId??button?.getAttribute('aria-label')??null,"
+                + "buttonDisabled:button?.disabled??null,defaultPrevented:event.defaultPrevented,"
                 + "activeElement:document.activeElement?.getAttribute('data-testid')??document.activeElement?.tagName??null});"
                 + "});"
                 + "const describeFocusNode=node=>{if(!(node instanceof Element))return null;return {tag:node.tagName.toLowerCase(),"
@@ -147,6 +162,16 @@ public final class JsFastKeysDockerJourneyTest {
                         && promptComposerEntry.optDouble("keysWidth") >= 47.9
                         && promptComposerEntry.optDouble("keysHeight") >= 47.9);
         journey.put("promptComposerEntry", promptComposerEntry);
+        JSONObject promptDictationLauncher = evalJson("(() => {const node=document.querySelector('[data-testid=prompt-dictation-launcher]');"
+                + "const r=node?.getBoundingClientRect();return JSON.stringify({label:node?.getAttribute('aria-label')??'',"
+                + "title:node?.getAttribute('title')??'',visibleText:node?.innerText?.trim()??'',width:r?.width??0,height:r?.height??0});})()");
+        assertTrue("the dock must expose a visibly distinct one-tap prompt dictation entry: " + promptDictationLauncher,
+                "Dictate a prompt and review it before Insert or Send".equals(promptDictationLauncher.optString("label"))
+                        && promptDictationLauncher.optString("label").equals(promptDictationLauncher.optString("title"))
+                        && "Dictate".equals(promptDictationLauncher.optString("visibleText"))
+                        && Math.abs(promptDictationLauncher.optDouble("width") - 48.0) < 0.5
+                        && Math.abs(promptDictationLauncher.optDouble("height") - 48.0) < 0.5);
+        journey.put("promptDictationLauncher", promptDictationLauncher);
         tapDomCenter("[data-testid=prompt-draft]");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
@@ -358,6 +383,7 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("firstSessionGeometryOracleFile", firstRaw + ".geometry");
 
         exerciseDockedDictation(nameBase, dictationTargetSession);
+        exercisePromptDictationFromDock();
 
         // The dictation journey switches sessions and backgrounds/resumes the
         // app. Re-establish the exact precondition for the layered Back check
@@ -948,6 +974,208 @@ public final class JsFastKeysDockerJourneyTest {
         attachSession(firstSession);
     }
 
+    private void exercisePromptDictationFromDock() throws Exception {
+        Log.i("PS2897Prompt", "checkpoint prompt flow waiting for live terminal");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('[data-testid=prompt-dictation-launcher]')?.disabled === false");
+        JSONObject dockReady = awaitPromptDictationDockReady();
+        journey.put("promptDictationDockReady", dockReady);
+        Log.i("PS2897Prompt", "checkpoint Prompt Dictate dock ready after IME/resize/frame settle " + dockReady);
+        int writesBefore = terminalInputAcknowledgements();
+        int startsBefore = controlledSpeechCallCount("startCount");
+        int stopsBefore = controlledSpeechCallCount("stopCount");
+        int pointerEventsBefore = pointerEventCount();
+        tapDomCenter("[data-testid=prompt-dictation-launcher]");
+        JSONObject dictateTapState = capturePromptDictationDockTapState(pointerEventsBefore);
+        journey.put("promptDictationDockTap", dictateTapState);
+        Log.i("PS2897Prompt", "checkpoint prompt Dictate tap returned " + dictateTapState);
+        try {
+            awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                    + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'");
+        } catch (AssertionError error) {
+            JSONObject failedState = capturePromptDictationDockTapState(pointerEventsBefore);
+            Log.e("PS2897Prompt", "prompt Dictate failed to reach recording " + failedState, error);
+            throw new AssertionError("Prompt Dictate did not open in recording state; tap diagnostics=" + failedState, error);
+        }
+        Log.i("PS2897Prompt", "checkpoint dock Dictate reached recording");
+        assertEquals("one Dictate tap starts exactly one prompt recognizer", startsBefore + 1,
+                controlledSpeechCallCount("startCount"));
+        assertEquals("prompt dictation stays separate from terminal-cursor dictation", "idle",
+                evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? ''"));
+        assertEquals("opening prompt dictation must not write to the terminal", writesBefore,
+                terminalInputAcknowledgements());
+        String transcript = "explain why the build failed";
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(transcript) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=composer-recording-preview]')?.textContent.trim() === "
+                + JSONObject.quote(transcript));
+        awaitRenderedFrame();
+        JSONObject keyboardHidden;
+        try {
+            keyboardHidden = awaitPromptDictationKeyboardHidden();
+        } catch (AssertionError error) {
+            // Preserve the live recording surface if either keyboard source
+            // remains visible so a failed hide transition has visual evidence.
+            captureScreenshot("fastkeys-prompt-dictation-recording.png");
+            throw error;
+        }
+        awaitRenderedFrame();
+        JSONObject recording = evalJson("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
+                + "return JSON.stringify({state:panel?.dataset.dictationState??'',title:document.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "stopLabel:stop?.getAttribute('aria-label')??'',draft:document.querySelector('[data-testid=prompt-draft]')?.value??'',"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true'});})()");
+        recording.put("nativeIme", keyboardHidden.getJSONObject("nativeIme"));
+        assertEquals("one-tap Prompt Dictate must open the explicit Kotlin-style recording state", "recording",
+                recording.getString("state"));
+        assertEquals("recording names its prompt destination", "Prompt dictation", recording.getString("title"));
+        assertEquals("recording provides a visible accessible Stop action",
+                "Stop dictation and keep the recognized text in the editable draft", recording.getString("stopLabel"));
+        assertEquals("the recording sheet hides the Android keyboard", false,
+                recording.getBoolean("keyboardVisible"));
+        assertEquals("native WindowInsets confirms Prompt Dictate dismissed Android's IME", false,
+                recording.getJSONObject("nativeIme").getBoolean("visible"));
+        captureScreenshot("fastkeys-prompt-dictation-recording.png");
+
+        Log.i("PS2897Prompt", "checkpoint before tapping explicit Stop");
+        tapDomCenter("[data-testid=composer-recording-stop]");
+        Log.i("PS2897Prompt", "checkpoint Stop tap returned; waiting for Transcribing");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
+        Log.i("PS2897Prompt", "checkpoint DOM reached Transcribing; checking native stop count");
+        assertEquals("explicit Stop reaches the native adapter exactly once", stopsBefore + 1,
+                controlledSpeechCallCount("stopCount"));
+        JSONObject transcribing = evalJson("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "return JSON.stringify({state:panel?.dataset.dictationState??'',title:document.querySelector('#composer-title')?.textContent.trim()??''});})()");
+        assertEquals("explicit Stop exposes the transcribing phase before review", "transcribing",
+                transcribing.getString("state"));
+        awaitRenderedFrame();
+        Log.i("PS2897Prompt", "checkpoint native stop count passed; capturing Transcribing screenshot");
+        captureScreenshot("fastkeys-prompt-dictation-transcribing.png");
+        Log.i("PS2897Prompt", "checkpoint Transcribing screenshot returned; emitting final result");
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(transcript) + "); 'result emitted'");
+        Log.i("PS2897Prompt", "checkpoint final result emitted; emitting stopped callback");
+        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        Log.i("PS2897Prompt", "checkpoint stopped callback emitted; waiting for editable review");
+        awaitJsTrue("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
+                + "return panel?.dataset.dictationState==='review'"
+                + "&& document.querySelector('[data-testid=prompt-draft]')?.value===" + JSONObject.quote(transcript)
+                + "&& document.querySelector('#composer-title')?.textContent.trim()==='Review dictation'"
+                + "&& document.querySelector('[data-testid=composer-mode-status]')?.textContent.trim()==='REVIEW'"
+                + "&& !!document.querySelector('[data-testid=composer-dictation-review]')"
+                + "&& !document.querySelector('[data-testid=composer-recording-mode]');})()");
+        Log.i("PS2897Prompt", "checkpoint transcript reached editable review");
+        JSONObject review = evalJson("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const actions=Array.from(document.querySelectorAll('[data-testid=composer-actions] button')).map(node=>node.textContent.trim()||node.title);"
+                + "return JSON.stringify({state:document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState??'',"
+                + "title:document.querySelector('#composer-title')?.textContent.trim()??'',"
+                + "mode:document.querySelector('[data-testid=composer-mode-status]')?.textContent.trim()??'',"
+                + "reviewText:document.querySelector('[data-testid=composer-dictation-review]')?.textContent.trim()??'',"
+                + "recordingModePresent:!!document.querySelector('[data-testid=composer-recording-mode]'),"
+                + "draftLabel:draft?.getAttribute('aria-label')??'',draftReadOnly:draft?.getAttribute('aria-readonly')??'',"
+                + "discard:!!document.querySelector('[data-testid=composer-discard]'),insert:!!document.querySelector('[data-testid=composer-insert]'),"
+                + "send:!!document.querySelector('.composer-shared-controls .send'),actions});})()");
+        assertEquals("the stopped prompt transcript enters editable review", "review", review.getString("state"));
+        assertEquals("review title must be part of the rendered sheet", "Review dictation", review.getString("title"));
+        assertEquals("review phase must be visibly labeled", "REVIEW", review.getString("mode"));
+        assertTrue("editable review copy must be visible in the rendered sheet", review.getString("reviewText").contains("Transcript ready"));
+        assertEquals("recording/transcribing surface must be removed before the review screenshot", false,
+                review.getBoolean("recordingModePresent"));
+        assertTrue("review labels the transcript as editable", review.getString("draftLabel").contains("editable"));
+        assertEquals("review unlocks the transcript field", "false", review.getString("draftReadOnly"));
+        assertTrue("review offers Discard, Insert, and Send", review.getBoolean("discard")
+                && review.getBoolean("insert") && review.getBoolean("send"));
+        assertEquals("recognition review never sends automatically", writesBefore, terminalInputAcknowledgements());
+        awaitRenderedFrame();
+        captureScreenshot("fastkeys-prompt-dictation-review.png");
+
+        String editedTranscript = "edited: " + transcript;
+        setValue("[data-testid=prompt-draft]", editedTranscript);
+        assertEquals("the recognized transcript remains editable before delivery", editedTranscript,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        tapDomCenter("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-discard]')?.textContent.trim() === 'Discard?'");
+        tapDomCenter("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'");
+        assertEquals("Discard clears the reviewed prompt without touching the terminal", writesBefore,
+                terminalInputAcknowledgements());
+        JSONObject evidence = new JSONObject().put("entry", "mobile-dock Dictate")
+                .put("nativeStartCalls", controlledSpeechCallCount("startCount") - startsBefore)
+                .put("nativeStopCalls", controlledSpeechCallCount("stopCount") - stopsBefore)
+                .put("recording", recording).put("transcribing", transcribing).put("review", review).put("transcript", transcript)
+                .put("editedTranscript", editedTranscript).put("editable", true)
+                .put("actions", new JSONArray().put("Discard").put("Insert").put("Send"))
+                .put("discardCleared", true).put("terminalWrites", terminalInputAcknowledgements() - writesBefore);
+        journey.put("promptDictationFromDock", evidence);
+        tapDomCenter("[data-testid=composer-close]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
+    }
+
+    private JSONObject awaitPromptDictationKeyboardHidden() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 6_000;
+        boolean nativeImeVisible = true;
+        String appKeyboardVisible = "unknown";
+        while (SystemClock.uptimeMillis() < deadline) {
+            nativeImeVisible = isImeVisible();
+            appKeyboardVisible = evalString("document.querySelector('.app-shell')?.dataset.keyboardVisible ?? 'missing'");
+            if (!nativeImeVisible && "false".equals(appKeyboardVisible)) {
+                SystemClock.sleep(120);
+                if (!isImeVisible()
+                        && "false".equals(evalString("document.querySelector('.app-shell')?.dataset.keyboardVisible ?? 'missing'"))) {
+                    JSONObject settled = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                            + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible??null,"
+                            + "keyboardComposerMode:shell?.dataset.keyboardComposerMode??null,"
+                            + "activeElement:document.activeElement?.outerHTML?.slice(0,180)??null,"
+                            + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-10),"
+                            + "visualViewport:{height:window.visualViewport?.height??innerHeight,offsetTop:window.visualViewport?.offsetTop??0}});})()");
+                    settled.put("nativeIme", readNativeImeState());
+                    Log.i("PS2897Prompt", "recording state has both native and app keyboard hidden " + settled);
+                    return settled;
+                }
+            }
+            SystemClock.sleep(100);
+        }
+        JSONObject failedState = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible??null,"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode??null,"
+                + "activeElement:document.activeElement?.outerHTML?.slice(0,180)??null,"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-12),"
+                + "visualViewport:{height:window.visualViewport?.height??innerHeight,offsetTop:window.visualViewport?.offsetTop??0}});})()");
+        failedState.put("nativeIme", readNativeImeState());
+        Log.e("PS2897Prompt", "timed out waiting for both native and app keyboard state to hide: " + failedState);
+        throw new AssertionError("Prompt dictation recording must dismiss both the native IME and app keyboard state "
+                + "within 6000ms; lastNativeVisible=" + nativeImeVisible + ", lastAppKeyboardVisible="
+                + appKeyboardVisible + ", state=" + failedState);
+    }
+
+    private JSONObject awaitPromptDictationDockReady() throws Exception {
+        Log.i("PS2897Prompt", "waiting for native IME visible before Prompt Dictate tap");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        awaitTerminalResizeIdle();
+        awaitRenderedFrame();
+
+        JSONObject state = capturePromptDictationDockTapState(pointerEventCount());
+        JSONObject button = state.getJSONObject("button");
+        JSONObject bounds = button.getJSONObject("bounds");
+        JSONObject hit = button.getJSONObject("centerTarget");
+        JSONObject nativeIme = state.getJSONObject("nativeIme");
+        assertTrue("Prompt Dictate must be enabled, at least 48dp, and fully visible after IME resize settles: " + state,
+                !button.getBoolean("disabled") && button.getBoolean("visible")
+                        && bounds.getDouble("width") >= 47.9 && bounds.getDouble("height") >= 47.9);
+        assertEquals("the center of the dock Dictate target must hit that same button before touch injection: " + state,
+                "prompt-dictation-launcher", hit.optString("buttonTestId"));
+        assertTrue("Prompt Dictate tap requires the native and WebView keyboard state to agree: " + state,
+                nativeIme.getBoolean("visible") && "true".equals(state.optString("keyboardVisible"))
+                        && state.getBoolean("keyboardComposerMode"));
+        assertEquals("Prompt Dictate tap requires an idle PTY resize pipeline: " + state, 0,
+                state.getInt("resizePending"));
+        assertTrue("Prompt Dictate tap requires an acknowledged, failure-free PTY resize: " + state,
+                state.getInt("resizeAcks") > 0 && state.getInt("resizeFailures") == 0);
+        return state;
+    }
+
     private void assertDictationMicReachable(JSONObject geometry) throws Exception {
         JSONObject bar = geometry.optJSONObject("inlineDictationBar");
         JSONObject mic = geometry.optJSONObject("inlineDictationMic");
@@ -982,22 +1210,30 @@ public final class JsFastKeysDockerJourneyTest {
                 : "cancelling".equals(phase) ? "Cancelling terminal dictation"
                 : "stopping".equals(phase) ? "Transcribing speech for terminal cursor"
                 : "inserting".equals(phase) ? "Inserting speech at terminal cursor"
-                : mic.getBoolean("disabled") ? "Terminal cursor dictation unavailable" : "Dictate at terminal cursor";
+                : mic.getBoolean("disabled") ? "Terminal cursor dictation unavailable"
+                : "error".equals(tone) ? "Retry terminal cursor dictation" : "Dictate at terminal cursor";
         String expectedMicState = "listening".equals(phase) ? "listening"
                 : transcribing ? "transcribing" : "starting".equals(phase) ? "starting"
                 : "error".equals(tone) ? "error" : "idle";
+        String expectedDockLabel = "listening".equals(phase) ? "Stop"
+                : "starting".equals(phase) ? "Cancel" : transcribing ? "Wait"
+                : "error".equals(tone) ? "Retry" : "Cursor";
         assertEquals("inline dictation keeps a phase-specific accessible action label: " + geometry,
                 expectedAccessibleLabel, mic.getString("label"));
         assertEquals("inline dictation title mirrors its phase-specific accessible action: " + geometry,
                 expectedAccessibleLabel, mic.getString("title"));
         assertTrue("inline dictation keeps a visible microphone icon: " + geometry, mic.getBoolean("iconVisible"));
-        assertEquals("mic glyph stays constant through idle, listening, transcribing, and error states",
-                "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
+        String expectedIconPaths = "listening".equals(phase) ? "[\"M7 7h10v10H7z\"]"
+                : "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]";
+        assertEquals("active terminal dictation exposes a Stop glyph, returning to the microphone afterward",
+                expectedIconPaths,
                 mic.getJSONArray("iconPaths").toString());
         assertEquals("only the listening mic is exposed as pressed: " + geometry,
                 "listening".equals(phase), mic.getBoolean("pressed"));
         assertEquals("inline dictation exposes its idle/listening/transcribing/error state: " + geometry,
                 expectedMicState, mic.getString("micState"));
+        assertEquals("visible terminal control names its current action: " + geometry,
+                expectedDockLabel, mic.getString("visibleText"));
         assertEquals("only the in-flight transcription action disables the microphone: " + geometry,
                 transcribing, mic.getBoolean("disabled"));
         assertTrue("inline dictation mic center remains a direct hit target: " + mic, mic.getBoolean("hitTarget"));
@@ -1027,12 +1263,12 @@ public final class JsFastKeysDockerJourneyTest {
                     && statusMetrics.getDouble("paddingBottom") >= 6);
             assertTrue("dictation status chip fits the padded line", statusMetrics.getDouble("height") >= 29.5);
             if ("listening".equals(phase)) {
-                assertTrue("Listening status names the phase and exposes a one-line partial preview: " + geometry,
-                        geometry.getString("inlineDictationStatusText").startsWith("Listening ·")
+                assertTrue("Listening status names its terminal destination and exposes a one-line partial preview: " + geometry,
+                        geometry.getString("inlineDictationStatusText").contains("Terminal · Listening ·")
                                 && !geometry.getString("inlineDictationPreview").isEmpty());
             } else if ("error".equals(tone)) {
-                assertTrue("terminal dictation errors are named in the status chip: " + geometry,
-                        geometry.getString("inlineDictationStatusText").startsWith("Error ·"));
+                assertTrue("terminal cursor destination and error are named in the status chip: " + geometry,
+                        geometry.getString("inlineDictationStatusText").contains("Terminal · Error ·"));
             }
         } else {
             assertEquals("idle default hint must not consume a status row", "idle", geometry.getString("inlineDictationPhase"));
@@ -1577,6 +1813,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const catalogSurfaceStyle=catalogSheetNode?(()=>{const s=getComputedStyle(catalogSheetNode);return {backgroundColor:s.backgroundColor,borderRadius:s.borderRadius,"
                 + "borderTopWidth:s.borderTopWidth,borderRightWidth:s.borderRightWidth,borderBottomWidth:s.borderBottomWidth,borderLeftWidth:s.borderLeftWidth,boxShadow:s.boxShadow};})():null;"
                 + "const promptComposerLauncherNode=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const promptDictationLauncherNode=document.querySelector('[data-testid=prompt-dictation-launcher]');"
+                + "const promptInputGroupNode=document.querySelector('[data-testid=mobile-hotkeys-prompt-group]');"
+                + "const terminalControlsGroupNode=document.querySelector('[data-testid=mobile-hotkeys-terminal-group]');"
+                + "const groupInfo=node=>{if(!node)return null;const r=node.getBoundingClientRect();return {role:node.getAttribute('role')??'',label:node.getAttribute('aria-label')??'',"
+                + "left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height};};"
                 + "const promptComposerIconNode=promptComposerLauncherNode?.querySelector('svg');"
                 + "const measuredBounds=node=>{if(!node)return null;const r=node.getBoundingClientRect();"
                 + "return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};"
@@ -1595,6 +1836,9 @@ public final class JsFastKeysDockerJourneyTest {
                 + "&&promptComposerIconStyle?.visibility!=='hidden'&&Number.parseFloat(promptComposerIconStyle?.opacity??'1')>0"
                 + "&&!!promptComposerIconBounds&&promptComposerIconBounds.width>0&&promptComposerIconBounds.height>0,"
                 + "iconInside:insideBounds(promptComposerBounds,promptComposerIconBounds)}:null;"
+                + "const promptDictationLauncher=promptDictationLauncherNode?{...target(promptDictationLauncherNode),"
+                + "visibleText:promptDictationLauncherNode.innerText.trim(),iconCount:promptDictationLauncherNode.querySelectorAll('svg').length}:null;"
+                + "const promptInputGroup=groupInfo(promptInputGroupNode),terminalControlsGroup=groupInfo(terminalControlsGroupNode);"
                 + "const pageActionNode=tray?.querySelector(tray.dataset.palettePage==='ctrl'?'[data-testid=mobile-hotkeys-back-main-page]':'[data-testid=mobile-hotkeys-open-ctrl-page]');"
                 + "const pageAction=pageActionNode?target(pageActionNode):null;"
                 + "const catalogTabsNode=tray?.querySelector('.mobile-hotkeys__page-tabs');"
@@ -1683,7 +1927,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "&&inlineDictationStatusNode.clientHeight>0&&inlineDictationStatusNode.scrollHeight<=inlineDictationStatusNode.clientHeight+1;"
                 + "const keys=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys] .mobile-hotkeys__navigation button,"
                 + "[data-testid=mobile-hotkeys-launcher]')).map(target);"
-                + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-key-id=arrow-up]',"
+                + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-testid=prompt-dictation-launcher]','[data-key-id=arrow-up]',"
                 + "'[data-key-id=arrow-down]','[data-key-id=enter]','[data-testid=mobile-hotkeys-launcher]',"
                 + "'[data-testid=inline-dictation-toggle]'].map(selector=>document.querySelector(selector)).filter(Boolean).map(node=>({"
                 + "...target(node),visibleText:node.innerText.trim(),iconCount:node.querySelectorAll('svg').length}));"
@@ -1714,7 +1958,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "left:catalogScrollerRect.left,right:catalogScrollerRect.right,width:catalogScrollerRect.width,height:catalogScrollerRect.height}:null,"
                 + "terminalViewportDockCapPx:Number(slot?.dataset.terminalViewportDockCap??0),"
                 + "terminalHotkeysDockHeightPx:Number(slot?.dataset.terminalHotkeysDockHeight??0),"
-                + "mobileHotkeys:trayRect,navigationTargets:keys,stableDockControls,promptComposerLauncher,enterDivider,persistentRowMetrics,hotkeyControls,"
+                + "mobileHotkeys:trayRect,navigationTargets:keys,stableDockControls,promptComposerLauncher,promptDictationLauncher,promptInputGroup,terminalControlsGroup,enterDivider,persistentRowMetrics,hotkeyControls,"
                 + "catalogSheet,catalogSheetRole,catalogSheetModal:catalogSheetNode?.getAttribute('aria-modal')??null,catalogSurfaceStyle,"
                 + "visibleTerminalRows,runtimeGeometry,"
                 + "catalogSheetBelowTerminalViewport:!!catalogSheet&&!!terminalRect&&catalogSheet.top>=terminalRect.bottom,"
@@ -1806,31 +2050,25 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private JSONObject readNativeImeState() throws Exception {
-        AtomicReference<JSONObject> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
-            View decor = activity.getWindow().getDecorView();
+        return runOnUiThread("read native IME state", () -> {
+            View decor = packagedActivity.getWindow().getDecorView();
             WindowInsets insets = decor.getRootWindowInsets();
-            WebView webView = findWebView(decor);
-            float density = activity.getResources().getDisplayMetrics().density;
+            WebView webView = packagedWebView;
+            float density = packagedActivity.getResources().getDisplayMetrics().density;
             Insets ime = insets == null ? Insets.NONE : insets.getInsets(WindowInsets.Type.ime());
             Insets bars = insets == null ? Insets.NONE : insets.getInsets(WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
-            try {
-                int[] location = new int[2];
-                if (webView != null) webView.getLocationOnScreen(location);
-                result.set(new JSONObject()
-                        .put("visible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
-                        .put("imeBottomDp", ime.bottom / density)
-                        .put("statusTopDp", bars.top / density)
-                        .put("density", density)
-                        .put("webViewScreenX", location[0])
-                        .put("webViewScreenY", location[1])
-                        .put("webViewWidthPx", webView == null ? 0 : webView.getWidth())
-                        .put("webViewHeightPx", webView == null ? 0 : webView.getHeight()));
-            } catch (JSONException error) {
-                throw new RuntimeException(error);
-            }
+            int[] location = new int[2];
+            if (webView != null) webView.getLocationOnScreen(location);
+            return new JSONObject()
+                    .put("visible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                    .put("imeBottomDp", ime.bottom / density)
+                    .put("statusTopDp", bars.top / density)
+                    .put("density", density)
+                    .put("webViewScreenX", location[0])
+                    .put("webViewScreenY", location[1])
+                    .put("webViewWidthPx", webView == null ? 0 : webView.getWidth())
+                    .put("webViewHeightPx", webView == null ? 0 : webView.getHeight());
         });
-        return result.get() == null ? new JSONObject() : result.get();
     }
 
     private void assertHotkeyBarReachable(JSONObject geometry) throws Exception {
@@ -1874,6 +2112,18 @@ public final class JsFastKeysDockerJourneyTest {
                         && promptIconBounds.getDouble("top") >= composeLauncher.getDouble("top")
                         && promptIconBounds.getDouble("bottom") <= composeLauncher.getDouble("bottom")
                         && composeLauncher.getBoolean("iconInside"));
+        JSONObject promptVoice = geometry.optJSONObject("promptDictationLauncher");
+        assertNotNull("the dock must expose a separate one-tap prompt-voice action", promptVoice);
+        assertTrue("Dictate must remain fully visible above the keyboard with a clear prompt-review label: " + promptVoice,
+                "Dictate a prompt and review it before Insert or Send".equals(promptVoice.getString("label"))
+                        && promptVoice.getString("label").equals(promptVoice.getString("title"))
+                        && "Dictate".equals(promptVoice.getString("visibleText"))
+                        && Math.abs(promptVoice.getDouble("width") - 48.0) < 0.5
+                        && Math.abs(promptVoice.getDouble("height") - 48.0) < 0.5
+                        && promptVoice.getDouble("visibleWidthInKeybar") >= 47.9
+                        && promptVoice.getDouble("visibleHeightInKeybar") >= 47.9
+                        && promptVoice.getBoolean("insideViewport") && promptVoice.getBoolean("hitTarget")
+                        && !promptVoice.getBoolean("disabled"));
         int expectedTargetCount = 4;
         assertEquals("compact hotkey row must expose navigation and the More keys launcher",
                 expectedTargetCount, targets.length());
@@ -1915,30 +2165,58 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void assertDockDestinationLabels(JSONObject geometry) throws Exception {
         JSONArray controls = geometry.getJSONArray("stableDockControls");
-        assertEquals("the mobile dock keeps Compose, arrows, Enter, More keys, and Mic in Kotlin order", 6, controls.length());
-        List<String> expected = List.of("Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter",
+        assertEquals("the mobile dock keeps prompt actions, terminal keys, and Cursor in grouped order", 7, controls.length());
+        JSONObject promptGroup = geometry.optJSONObject("promptInputGroup");
+        JSONObject terminalGroup = geometry.optJSONObject("terminalControlsGroup");
+        assertNotNull("Prompt and Dictate share a measured group", promptGroup);
+        assertNotNull("navigation keys, More, and Cursor share a measured terminal group", terminalGroup);
+        assertEquals("prompt group has a distinct accessible name", "Prompt input", promptGroup.getString("label"));
+        assertEquals("prompt controls use group semantics", "group", promptGroup.getString("role"));
+        assertEquals("terminal group has a distinct accessible name", "Terminal controls", terminalGroup.getString("label"));
+        assertEquals("terminal actions use group semantics", "group", terminalGroup.getString("role"));
+        assertTrue("prompt group preserves a 48dp row height", Math.abs(promptGroup.getDouble("height") - 48.0) < 0.5);
+        assertTrue("terminal group preserves a 48dp row height", Math.abs(terminalGroup.getDouble("height") - 48.0) < 0.5);
+        List<String> expected = List.of("Open prompt composer to type or dictate a prompt",
+                "Dictate a prompt and review it before Insert or Send", "Send Up arrow", "Send Down arrow", "Send Enter",
                 "Close terminal keys", "Dictate at terminal cursor");
         for (int index = 0; index < controls.length(); index += 1) {
             JSONObject control = controls.getJSONObject(index);
             assertEquals("dock control accessibility name follows its slot", expected.get(index), control.getString("label"));
-            assertTrue("Kotlin dock control stays in its 48dp touch slot: " + control,
-                    Math.abs(control.getDouble("width") - 48.0) < 0.5
+            double expectedWidth = 48.0;
+            assertTrue("dock controls retain their measured touch target: " + control,
+                    Math.abs(control.getDouble("width") - expectedWidth) < 0.5
                             && Math.abs(control.getDouble("height") - 48.0) < 0.5
                             && control.getBoolean("insideViewport") && control.getBoolean("hitTarget"));
         }
+        JSONObject promptButton = controls.getJSONObject(0);
+        JSONObject dictateButton = controls.getJSONObject(1);
+        assertTrue("Prompt and Dictate targets remain inside their shared group",
+                promptGroup.getDouble("left") <= promptButton.getDouble("left") + 0.5
+                        && promptGroup.getDouble("right") >= dictateButton.getDouble("right") - 0.5
+                        && promptGroup.getDouble("top") <= promptButton.getDouble("top") + 0.5
+                        && promptGroup.getDouble("bottom") >= dictateButton.getDouble("bottom") - 0.5);
+        JSONObject upButton = controls.getJSONObject(2);
+        JSONObject cursorButton = controls.getJSONObject(6);
+        assertTrue("navigation and Cursor targets remain inside their shared terminal group",
+                terminalGroup.getDouble("left") <= upButton.getDouble("left") + 0.5
+                        && terminalGroup.getDouble("right") >= cursorButton.getDouble("right") - 0.5
+                        && terminalGroup.getDouble("top") <= upButton.getDouble("top") + 0.5
+                        && terminalGroup.getDouble("bottom") >= cursorButton.getDouble("bottom") - 0.5);
         assertEquals("Prompt launcher keeps a short visible destination label", "Prompt",
                 controls.getJSONObject(0).getString("visibleText"));
-        assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(4).getString("visibleText"));
-        assertEquals("terminal dictation destination stays visible", "Dictate",
-                controls.getJSONObject(5).getString("visibleText"));
-        for (int index : List.of(0, 4, 5)) {
-            assertEquals("Compose, keys, and mic retain one visual icon", 1,
+        assertEquals("the prompt voice action is a visible Dictate control", "Dictate",
+                controls.getJSONObject(1).getString("visibleText"));
+        assertEquals("More keys stays a compact icon control", "", controls.getJSONObject(5).getString("visibleText"));
+        assertEquals("terminal cursor dictation remains a distinct destination", "Cursor",
+                controls.getJSONObject(6).getString("visibleText"));
+        for (int index : List.of(0, 1, 5, 6)) {
+            assertEquals("Prompt, Dictate, keys, and Cursor retain one visual icon", 1,
                     controls.getJSONObject(index).getInt("iconCount"));
         }
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
         assertEquals("Mic accessible action names its destination", "Dictate at terminal cursor", mic.getString("label"));
         assertEquals("terminal mic keeps its accessible title", "Dictate at terminal cursor", mic.getString("title"));
-        assertEquals("terminal mic visibly names its destination", "Dictate", mic.getString("visibleText"));
+        assertEquals("terminal mic visibly names its destination", "Cursor", mic.getString("visibleText"));
         assertEquals("terminal mic does not add a visible caption beside its icon", new JSONArray(),
                 mic.getJSONArray("destinationLabels"));
         assertTrue("terminal mic does not add a duplicate caption beside its icon", mic.isNull("destinationLabelBounds"));
@@ -1956,8 +2234,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "bar.scrollLeft=0;const clientWidth=bar.clientWidth,scrollWidth=bar.scrollWidth;"
                 + "const b=bar.getBoundingClientRect(),clip={left:b.left+bar.clientLeft,top:b.top+bar.clientTop,"
                 + "right:b.left+bar.clientLeft+bar.clientWidth,bottom:b.top+bar.clientTop+bar.clientHeight};"
-                + "const targets=Array.from(bar.querySelectorAll('button')).map(node=>{"
-                + "const r=node.getBoundingClientRect();"
+                + "const buttons=Array.from(bar.querySelectorAll('button'));"
+                + "const targets=buttons.map(node=>{let r=node.getBoundingClientRect();"
+                + "if(r.left<clip.left)bar.scrollLeft=Math.max(0,bar.scrollLeft-(clip.left-r.left)-1);"
+                + "else if(r.right>clip.right)bar.scrollLeft=Math.min(bar.scrollWidth-bar.clientWidth,bar.scrollLeft+(r.right-clip.right)+1);"
+                + "r=node.getBoundingClientRect();"
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
                 + "const visibleHeight=Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top));"
                 + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2),icon=node.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
@@ -1983,18 +2264,20 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("narrow toolbar overflow state must match its measured scroll range: " + result,
                 result.getDouble("scrollWidth") > result.getDouble("clientWidth") + 1,
                 result.getBoolean("scrollable"));
-        assertTrue("at 330px the persistent dock must fit without scrolling any 48dp control out of view: " + result,
-                !result.getBoolean("scrollable") && result.getDouble("maxScrollLeft") <= 1);
+        assertTrue("at 330px the persistent dock must scroll horizontally to keep all actions reachable: " + result,
+                result.getBoolean("scrollable") && result.getDouble("maxScrollLeft") > 1);
         JSONArray targets = result.getJSONArray("targets");
-        assertEquals("narrow-width toolbar keeps Compose, navigation, Fast Keys, and mic reachable", 6, targets.length());
-        assertTrue("narrow-width toolbar exposes the Compose entry", targets.toString().contains("Open prompt composer to type or dictate a prompt"));
-        assertEquals("narrow dock exposes the Kotlin-parity accessible control order",
-                List.of("Open prompt composer to type or dictate a prompt", "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor"),
+        assertEquals("narrow-width toolbar keeps Prompt, Dictate, navigation, Fast Keys, and Cursor reachable", 7, targets.length());
+        assertEquals("narrow dock exposes both distinct dictation destinations in the accessible control order",
+                List.of("Open prompt composer to type or dictate a prompt", "Dictate a prompt and review it before Insert or Send",
+                        "Send Up arrow", "Send Down arrow", "Send Enter", "More terminal keys", "Dictate at terminal cursor"),
                 narrowToolbarLabels(targets));
         for (int index = 0; index < targets.length(); index += 1) {
             JSONObject target = targets.getJSONObject(index);
-            assertTrue("narrow toolbar target remains >=48dp and scroll-reachable: " + target,
-                    target.getDouble("width") >= 47.9 && target.getDouble("height") >= 47.9
+            double expectedWidth = 48.0;
+            assertTrue("narrow toolbar target remains reachable at its measured width: " + target,
+                    Math.abs(target.getDouble("width") - expectedWidth) < 0.5
+                            && target.getDouble("height") >= 47.9
                             && target.getDouble("visibleWidth") >= 47.9 && target.getDouble("visibleHeight") >= 47.9
                             && target.getBoolean("hitTarget") && target.getBoolean("insideToolbar")
                             && !target.getBoolean("disabled"));
@@ -2002,11 +2285,15 @@ public final class JsFastKeysDockerJourneyTest {
                     target.getString("title").isEmpty() || target.getString("label").equals(target.getString("title")));
         }
         assertTrue("narrow dock keeps the Compose icon visible", targets.getJSONObject(0).getBoolean("iconVisible"));
+        assertEquals("Dictate stays a visible, labeled one-tap prompt capture action", "Dictate",
+                targets.getJSONObject(1).getString("visibleText"));
+        assertTrue("Dictate icon remains visible after bringing it into the 330px viewport", targets.getJSONObject(1).getBoolean("iconVisible"));
         JSONObject finalMic = result.getJSONObject("finalMic");
-        assertTrue("narrow-width terminal dictation remains a fully visible 48dp hit target: " + result,
+        assertTrue("narrow-width Cursor remains a fully visible 48dp hit target after scrolling: " + result,
                 finalMic.getDouble("width") >= 47.9 && finalMic.getDouble("height") >= 47.9
                         && finalMic.getBoolean("insideToolbar") && finalMic.getBoolean("hitTarget")
                         && finalMic.getBoolean("iconVisible")
+                        && "Cursor".equals(finalMic.getString("visibleText"))
                         && "Dictate at terminal cursor".equals(finalMic.getString("label"))
                         && finalMic.getString("label").equals(finalMic.getString("title")));
         int writesAfter = hotkeyWrites().length();
@@ -2370,8 +2657,8 @@ public final class JsFastKeysDockerJourneyTest {
                 + "return 'scheduled';})()");
         awaitJsTrue("window.__ps2884RenderedFrame === true");
         CountDownLatch visualStateReady = new CountDownLatch(1);
-        scenario.onActivity(activity -> {
-            WebView webView = findWebView(activity.getWindow().getDecorView());
+        runOnUiThread("request WebView visual state", () -> {
+            WebView webView = packagedWebView;
             assertNotNull("packaged activity must contain a WebView before screenshot capture", webView);
             webView.postVisualStateCallback(SystemClock.uptimeMillis(), new WebView.VisualStateCallback() {
                 @Override
@@ -2379,9 +2666,47 @@ public final class JsFastKeysDockerJourneyTest {
                     visualStateReady.countDown();
                 }
             });
+            return null;
         });
         assertTrue("WebView visual state must be ready before screenshot capture",
                 visualStateReady.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        CountDownLatch decorDrawReady = new CountDownLatch(1);
+        runOnUiThread("wait for rendered Android decor frames", () -> {
+            View decor = packagedActivity.getWindow().getDecorView();
+            ViewTreeObserver observer = decor.getViewTreeObserver();
+            int[] drawCount = {0};
+            ViewTreeObserver.OnDrawListener[] listener = new ViewTreeObserver.OnDrawListener[1];
+            listener[0] = () -> {
+                drawCount[0] += 1;
+                if (drawCount[0] >= 2) {
+                    decor.post(() -> {
+                        ViewTreeObserver current = decor.getViewTreeObserver();
+                        if (current.isAlive()) current.removeOnDrawListener(listener[0]);
+                        decorDrawReady.countDown();
+                    });
+                } else {
+                    decor.postInvalidateOnAnimation();
+                }
+            };
+            observer.addOnDrawListener(listener[0]);
+            decor.postInvalidateOnAnimation();
+            return null;
+        });
+        assertTrue("Android decor must draw two frames after the WebView visual state before screenshot capture",
+                decorDrawReady.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        CountDownLatch nativeFramesReady = new CountDownLatch(2);
+        runOnUiThread("wait for Android frames after WebView visual state", () -> {
+            Choreographer choreographer = Choreographer.getInstance();
+            Choreographer.FrameCallback[] callback = new Choreographer.FrameCallback[1];
+            callback[0] = frameTimeNanos -> {
+                nativeFramesReady.countDown();
+                if (nativeFramesReady.getCount() > 0) choreographer.postFrameCallback(callback[0]);
+            };
+            choreographer.postFrameCallback(callback[0]);
+            return null;
+        });
+        assertTrue("Android must draw two frames after the WebView visual state before screenshot capture",
+                nativeFramesReady.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
     }
 
     private JSONObject runtimeGrid(JSONObject geometry) throws Exception {
@@ -2406,6 +2731,37 @@ public final class JsFastKeysDockerJourneyTest {
 
     private int pointerEventCount() throws Exception {
         return Integer.parseInt(evalString("String((window.__ps2884PointerEvents ?? []).length)"));
+    }
+
+    private JSONObject capturePromptDictationDockTapState(int pointerEventOffset) throws Exception {
+        JSONObject state = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "const button=document.querySelector('[data-testid=prompt-dictation-launcher]');"
+                + "const rect=button?.getBoundingClientRect();const viewport=window.visualViewport;"
+                + "const center=rect?document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2):null;"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const active=document.activeElement;const events=window.__ps2884PointerEvents??[];"
+                + "return JSON.stringify({atMs:Math.round(performance.now()),route:shell?.dataset.route??null,"
+                + "sshPhase:shell?.dataset.sshPhase??null,keyboardVisible:shell?.dataset.keyboardVisible??null,"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "resizePending:Number(shell?.dataset.sshTerminalResizePending??0),"
+                + "resizeAcks:Number(shell?.dataset.sshTerminalResizeAcks??0),"
+                + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),"
+                + "paletteOpen:document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen??null,"
+                + "button:button?{disabled:button.disabled,connected:button.isConnected,"
+                + "bounds:{left:rect.left,top:rect.top,right:rect.right,bottom:rect.bottom,width:rect.width,height:rect.height},"
+                + "visible:rect.top>=0&&rect.left>=0&&rect.bottom<=(viewport?.height??innerHeight)+0.5"
+                + "&&rect.right<=innerWidth+0.5&&button.getClientRects().length>0,"
+                + "visualViewport:{height:viewport?.height??innerHeight,offsetTop:viewport?.offsetTop??0},"
+                + "centerTarget:{tag:center?.tagName?.toLowerCase()??null,testId:center?.getAttribute('data-testid')??null,"
+                + "buttonTestId:center?.closest('button')?.dataset.testid??null}}:null,"
+                + "composer:composer?{role:composer.getAttribute('role'),state:composer.dataset.dictationState??null,"
+                + "visible:composer.getClientRects().length>0,text:composer.innerText?.slice(0,240)??''}:null,"
+                + "activeElement:active?.outerHTML?.slice(0,180)??null,"
+                + "speechStartCount:window.__ps2857ControlledSpeech?.startCount??null,"
+                + "pointerEvents:events.slice(" + pointerEventOffset + ").slice(-12),"
+                + "jsDiagnostics:window.__ps2884JsDiagnostics?.events?.slice(-8)??[]});})()")
+                .put("nativeIme", readNativeImeState());
+        return state;
     }
 
     private boolean hotkeyClickSince(String keyId, int offset) throws Exception {
@@ -2451,30 +2807,31 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void captureScreenshot(String name) throws Exception {
-        AtomicReference<byte[]> pngBytes = new AtomicReference<>();
-        scenario.onActivity(activity -> {
-            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-            if (screenshot == null) return;
-            ByteArrayOutputStream output = new ByteArrayOutputStream();
-            boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, output);
-            screenshot.recycle();
-            if (compressed && output.size() >= 1_024) pngBytes.set(output.toByteArray());
-        });
-        assertNotNull("full-screen screenshot must be captured for " + name, pngBytes.get());
-        emitArtifact(name, pngBytes.get());
+        assertTrue("UiAutomation screenshot capture must not block the WebView main thread",
+                Thread.currentThread() != Looper.getMainLooper().getThread());
+        Log.i("PS2897Prompt", "screenshot " + name + " before instrumentation-thread capture");
+        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        Log.i("PS2897Prompt", "screenshot " + name + " takeScreenshot returned=" + (screenshot != null));
+        assertNotNull("full-screen screenshot must be captured for " + name, screenshot);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, output);
+        screenshot.recycle();
+        byte[] pngBytes = compressed && output.size() >= 1_024 ? output.toByteArray() : null;
+        assertNotNull("full-screen screenshot must be encoded for " + name, pngBytes);
+        emitArtifact(name, pngBytes);
+        Log.i("PS2897Prompt", "screenshot " + name + " artifact emitted");
     }
 
     private void captureTerminalViewportScreenshot(String name, JSONObject geometry) throws Exception {
         JSONObject viewport = geometry.getJSONObject("terminalViewport");
         float[] topLeft = screenPoint((float) viewport.getDouble("left"), (float) viewport.getDouble("top"));
         float[] bottomRight = screenPoint((float) viewport.getDouble("right"), (float) viewport.getDouble("bottom"));
-        AtomicReference<byte[]> pngBytes = new AtomicReference<>();
         AtomicReference<String> cropError = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        byte[] pngBytes = runOnUiThread("capture terminal viewport " + name, () -> {
             Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
             if (screenshot == null) {
                 cropError.set("device screenshot was unavailable");
-                return;
+                return null;
             }
             int left = Math.round(topLeft[0]);
             int top = Math.round(topLeft[1]);
@@ -2485,18 +2842,18 @@ public final class JsFastKeysDockerJourneyTest {
                 cropError.set("terminal viewport bounds escaped device screenshot: crop=" + left + "," + top + ","
                         + right + "," + bottom + " screenshot=" + screenshot.getWidth() + "x" + screenshot.getHeight());
                 screenshot.recycle();
-                return;
+                return null;
             }
             Bitmap crop = Bitmap.createBitmap(screenshot, left, top, right - left, bottom - top);
             screenshot.recycle();
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             boolean compressed = crop.compress(Bitmap.CompressFormat.PNG, 100, output);
             crop.recycle();
-            if (compressed && output.size() >= 1_024) pngBytes.set(output.toByteArray());
+            return compressed && output.size() >= 1_024 ? output.toByteArray() : null;
         });
         if (cropError.get() != null) throw new AssertionError(cropError.get());
-        assertNotNull("terminal viewport crop must be captured for " + name, pngBytes.get());
-        emitArtifact(name, pngBytes.get());
+        assertNotNull("terminal viewport crop must be captured for " + name, pngBytes);
+        emitArtifact(name, pngBytes);
     }
 
     private void emitArtifact(String name, byte[] bytes) throws Exception {
@@ -2514,12 +2871,14 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private boolean isImeVisible() {
-        AtomicReference<Boolean> visible = new AtomicReference<>(false);
-        scenario.onActivity(activity -> {
-            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
-            visible.set(insets != null && insets.isVisible(WindowInsets.Type.ime()));
-        });
-        return visible.get();
+        try {
+            return runOnUiThread("read Android IME visibility", () -> {
+                WindowInsets insets = packagedActivity.getWindow().getDecorView().getRootWindowInsets();
+                return insets != null && insets.isVisible(WindowInsets.Type.ime());
+            });
+        } catch (Exception error) {
+            throw new AssertionError("could not read Android IME visibility", error);
+        }
     }
 
     private void awaitImeVisible(boolean visible) throws Exception {
@@ -2623,17 +2982,15 @@ public final class JsFastKeysDockerJourneyTest {
     private float[] screenPoint(float cssX, float cssY) throws Exception {
         double cssWidth = Double.parseDouble(evalString("String(innerWidth)"));
         double cssHeight = Double.parseDouble(evalString("String(innerHeight)"));
-        AtomicReference<float[]> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
-            WebView webView = findWebView(activity.getWindow().getDecorView());
+        return runOnUiThread("map CSS point to Android screen", () -> {
+            WebView webView = packagedWebView;
             assertNotNull("packaged screen must contain a WebView", webView);
             int[] location = new int[2];
             webView.getLocationOnScreen(location);
             float scaleX = webView.getWidth() / (float) cssWidth;
             float scaleY = webView.getHeight() / (float) cssHeight;
-            result.set(new float[]{location[0] + cssX * scaleX, location[1] + cssY * scaleY});
+            return new float[]{location[0] + cssX * scaleX, location[1] + cssY * scaleY};
         });
-        return result.get();
     }
 
     private void injectTouch(int action, float x, float y, long downTime, long eventTime) {
@@ -2655,16 +3012,59 @@ public final class JsFastKeysDockerJourneyTest {
                 + "if(!node)throw new Error('missing '+ " + JSONObject.quote(selector) + ");node.click();return 'clicked';})()");
     }
 
+    private <T> T runOnUiThread(String label, Callable<T> action) throws Exception {
+        WebView webView = packagedWebView;
+        assertNotNull("packaged activity must contain a WebView for " + label, webView);
+        CountDownLatch completed = new CountDownLatch(1);
+        AtomicReference<T> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        boolean posted = webView.post(() -> {
+            try {
+                result.set(action.call());
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                completed.countDown();
+            }
+        });
+        assertTrue("could not enqueue UI operation: " + label, posted);
+        if (!completed.await(UI_CALLBACK_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
+            String mainThread = mainLooperThreadState();
+            Log.e("PS2897Prompt", label + " timed out waiting for WebView main-thread dispatch: " + mainThread);
+            throw new AssertionError(label + " timed out waiting for WebView main-thread dispatch: " + mainThread);
+        }
+        Throwable error = failure.get();
+        if (error instanceof Exception) throw (Exception) error;
+        if (error instanceof Error) throw (Error) error;
+        if (error != null) throw new RuntimeException(error);
+        return result.get();
+    }
+
+    private String mainLooperThreadState() {
+        Thread mainThread = Looper.getMainLooper().getThread();
+        StringBuilder result = new StringBuilder("state=").append(mainThread.getState());
+        StackTraceElement[] stack = mainThread.getStackTrace();
+        for (int index = 0; index < Math.min(stack.length, 20); index += 1) {
+            result.append("\n  at ").append(stack[index]);
+        }
+        return result.toString();
+    }
+
     private void awaitJsTrue(String expression) throws Exception {
         awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
     }
 
     private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+        boolean traceTranscribing = expression.contains("dataset.dictationState === 'transcribing'");
+        if (traceTranscribing) Log.i("PS2897Prompt", "awaiting transcribing DOM state; timeoutMs=" + timeoutMillis);
         long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
             last = evalRaw(expression);
-            if ("true".equals(last)) return;
+            if ("true".equals(last)) {
+                if (traceTranscribing) Log.i("PS2897Prompt", "transcribing DOM condition returned true");
+                return;
+            }
             Thread.sleep(60);
         }
         throw new AssertionError("WebView condition did not become true: " + expression
@@ -2681,17 +3081,24 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private String evalRaw(String expression) throws Exception {
+        boolean traceTranscribing = expression.contains("dataset.dictationState === 'transcribing'");
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
-            WebView webView = findWebView(activity.getWindow().getDecorView());
-            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+        WebView webView = packagedWebView;
+        assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+        if (traceTranscribing) Log.i("PS2897Prompt", "transcribing eval before bounded WebView.post");
+        boolean posted = webView.post(() -> {
+            if (traceTranscribing) Log.i("PS2897Prompt", "transcribing WebView.post callback entered");
             webView.evaluateJavascript(expression, value -> {
+                if (traceTranscribing) Log.i("PS2897Prompt", "transcribing evaluateJavascript callback value=" + value);
                 result.set(value);
                 latch.countDown();
             });
         });
+        assertTrue("could not enqueue JavaScript evaluation on the packaged WebView", posted);
+        if (traceTranscribing) Log.i("PS2897Prompt", "transcribing eval WebView.post returned; awaiting JS callback");
         assertTrue("timed out evaluating packaged WebView JavaScript", latch.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+        if (traceTranscribing) Log.i("PS2897Prompt", "transcribing eval JS callback completed");
         if (result.get() == null || "null".equals(result.get())) throw new JSONException("JavaScript returned null: " + expression);
         return result.get();
     }

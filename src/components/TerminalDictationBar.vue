@@ -96,6 +96,7 @@ const buttonLabel = () => {
   if (state.value.phase === 'stopping') return 'Transcribing speech for terminal cursor';
   if (state.value.phase === 'inserting') return 'Inserting speech at terminal cursor';
   if (buttonDisabled()) return 'Terminal cursor dictation unavailable';
+  if (state.value.tone === 'error') return 'Retry terminal cursor dictation';
   return 'Dictate at terminal cursor';
 };
 
@@ -105,6 +106,14 @@ const buttonState = () => {
   if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'transcribing';
   if (state.value.tone === 'error') return 'error';
   return buttonDisabled() ? 'disabled' : 'idle';
+};
+
+const buttonDockLabel = () => {
+  if (state.value.phase === 'listening') return 'Stop';
+  if (state.value.phase === 'starting') return 'Cancel';
+  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
+  if (state.value.tone === 'error') return 'Retry';
+  return 'Cursor';
 };
 </script>
 
@@ -121,7 +130,7 @@ const buttonState = () => {
     :disabled="buttonDisabled()"
     @click="toggleDictation"
   >
-    <DictationMicIcon :size="20" />
-    <span class="terminal-dictation-label" data-testid="inline-dictation-dock-label" aria-hidden="true">Dictate</span>
+    <DictationMicIcon :size="20" :stopped="state.phase === 'listening'" />
+    <span class="terminal-dictation-label" data-testid="inline-dictation-dock-label" aria-hidden="true">{{ buttonDockLabel() }}</span>
   </button>
 </template>

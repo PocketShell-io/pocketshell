@@ -181,6 +181,7 @@ describe('mobile fast-key behavior', () => {
       expect(mobileHotkeysSource).toContain('.mobile-hotkeys__composer-launcher {\n  flex-direction: column;\n  gap: 1px;\n  width: 48px;');
       click(launcher);
       expect(mounted.composerOpenRequests()).toBe(1);
+      expect(mounted.composerOpenIntents()).toEqual(['compose']);
       expect(mounted.sent).toEqual([]);
     } finally {
       mounted.app.unmount();
@@ -188,16 +189,20 @@ describe('mobile fast-key behavior', () => {
   });
 
   it('labels both dictation routes distinctly while keeping 48dp dock controls', async () => {
-    const mounted = mountMobileHotkeys(false, true, false, true);
+    const mounted = mountMobileHotkeys(false, true, false, true, undefined, true);
     try {
       const prompt = findButton(mounted.root, { 'data-testid': 'prompt-composer-launcher' });
+      const promptDictation = findButton(mounted.root, { 'data-testid': 'prompt-dictation-launcher' });
       const terminalMic = findButton(mounted.root, { 'data-testid': 'inline-dictation-toggle' });
+      const promptGroup = findByTestId(mounted.root, 'mobile-hotkeys-prompt-group');
+      const terminalGroup = findByTestId(mounted.root, 'mobile-hotkeys-terminal-group');
       const bar = findAll(mounted.root, (node) => node.props.class === 'mobile-hotkeys__bar')[0];
       if (!bar) throw new Error('The persistent terminal bar did not mount');
       const barButtons = findAll(bar, (node) => node.tag === 'button');
       expect(barButtons.map((node) => node.props['data-testid'] ?? node.props['data-key-id']))
         .toEqual([
           'prompt-composer-launcher',
+          'prompt-dictation-launcher',
           'arrow-up',
           'arrow-down',
           'enter',
@@ -205,13 +210,39 @@ describe('mobile fast-key behavior', () => {
           'inline-dictation-toggle',
       ]);
       expect(prompt.props.title).toBe('Open prompt composer to type or dictate a prompt');
+      expect(promptGroup?.props).toMatchObject({ role: 'group', 'aria-label': 'Prompt input' });
+      expect(terminalGroup?.props).toMatchObject({ role: 'group', 'aria-label': 'Terminal controls' });
+      expect(promptDictation.props).toMatchObject({
+        'aria-label': 'Dictate a prompt and review it before Insert or Send',
+        title: 'Dictate a prompt and review it before Insert or Send',
+        'aria-haspopup': 'dialog',
+      });
       expect(terminalMic.props['aria-label']).toBe('Dictate at terminal cursor');
       expect(findByTestId(mounted.root, 'mobile-hotkeys-launcher-label')).toBeUndefined();
       expect(findByTestId(mounted.root, 'prompt-composer-launcher-label')?.text).toBe('Prompt');
-      expect(findByTestId(mounted.root, 'inline-dictation-dock-label')?.text).toBe('Dictate');
+      expect(findByTestId(mounted.root, 'prompt-dictation-launcher-label')?.text).toBe('Dictate');
+      expect(findByTestId(mounted.root, 'inline-dictation-dock-label')?.text).toBe('Cursor');
       expect(findAll(prompt, (node) => node.tag === 'svg')).toHaveLength(1);
       expect(findAll(prompt, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Prompt']);
-      expect(findAll(terminalMic, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Dictate']);
+      expect(findAll(promptDictation, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Dictate']);
+      expect(findAll(terminalMic, (node) => node.tag === 'span').map((node) => node.text)).toEqual(['Cursor']);
+      expect(findAll(promptDictation, (node) => node.tag === 'svg')).toHaveLength(1);
+      expect(promptDictation.props.class).toBe('mobile-hotkeys__prompt-dictation');
+      expect(mobileHotkeysSource).toContain('width: 48px;\n  min-width: 48px;\n  height: 48px;');
+      expect(mobileHotkeysSource).toContain('flex-direction: column;\n  align-items: center;\n  justify-content: center;\n  gap: 1px;');
+      const dock = findByTestId(mounted.root, 'mobile-hotkeys')!;
+      const dictationTarget = {
+        closest: (selector: string) => selector === 'button'
+          || selector === '[data-testid="prompt-dictation-launcher"]' ? promptDictation : null,
+      } as unknown as Element;
+      dispatch(dock, 'Pointerdown', {
+        target: dictationTarget,
+        pointerId: 71,
+        button: 0,
+        isPrimary: true,
+      });
+      dispatch(dock, 'Click', { target: dictationTarget, detail: 1 });
+      expect(mounted.keyboardOpenRequests()).toBe(0);
       const keysButton = findButton(mounted.root, { 'data-testid': 'mobile-hotkeys-launcher' });
       expect(keysButton.props.title).toBe('More terminal keys');
       const keysGlyph = findAll(keysButton, (node) => node.tag === 'svg')[0];
@@ -227,6 +258,9 @@ describe('mobile fast-key behavior', () => {
       expect(terminalMic.props['aria-label']).toContain('terminal cursor');
       expect(findAll(mounted.root, (node) => node.tag === 'button' && node.props['data-testid'] === 'inline-dictation-toggle'))
         .toHaveLength(1);
+      click(promptDictation);
+      expect(mounted.composerOpenIntents()).toEqual(['dictate']);
+      expect(mounted.sent).toEqual([]);
     } finally {
       mounted.app.unmount();
     }
@@ -330,6 +364,8 @@ describe('mobile fast-key behavior', () => {
           expect(findByTestId(withStatus.root, 'inline-dictation-status-row')?.parent)
             .toBe(findByTestId(withStatus.root, 'inline-dictation-bar'));
           expect(status?.props).toMatchObject({ role: 'status', 'aria-live': 'polite' });
+          expect(findAll(status!, (node) => node.props.class === 'mobile-hotkeys__dictation-destination')
+            .map((node) => node.text).join('')).toBe('Terminal · ');
           expect(findAll(status!, (node) => node.props.class === 'mobile-hotkeys__dictation-phase')
             .map((node) => node.text).join('').trimEnd()).toBe(label);
           expect(findByTestId(withStatus.root, 'inline-dictation-destination')).toBeUndefined();
@@ -568,6 +604,7 @@ function mountMobileHotkeys(
   activeDictationStatus: boolean | InlineDictationState = false,
   promptComposerAvailable = false,
   showInlineDictationStatus?: boolean,
+  keyboardVisible = false,
 ) {
   const root: TestElement = {
     tag: 'root', props: {}, children: [], parent: null, text: '', setPointerCapture: () => {},
@@ -575,7 +612,8 @@ function mountMobileHotkeys(
   const enabled = ref(true);
   const sent: Array<{ bytes: Uint8Array; key: string }> = [];
   const paletteChanges: boolean[] = [];
-  let composerOpenRequests = 0;
+  let keyboardOpenRequests = 0;
+  const composerOpenIntents: Array<'compose' | 'dictate'> = [];
   const Host = defineComponent({
     setup: () => {
       const dictationState = activeDictationStatus === true
@@ -596,25 +634,29 @@ function mountMobileHotkeys(
             'data-testid': 'inline-dictation-toggle',
             class: 'terminal-dictation-button',
             'aria-label': 'Dictate at terminal cursor',
-          }, [h('span', { 'data-testid': 'inline-dictation-dock-label' }, 'Dictate')]),
+          }, [h('span', { 'data-testid': 'inline-dictation-dock-label' }, 'Cursor')]),
         } : {}),
       };
       return () => h(MobileHotkeys, {
         enabled: enabled.value,
         dictationAvailable,
+        keyboardVisible,
         promptComposerAvailable,
         ...(showInlineDictationStatus === undefined ? {} : { showInlineDictationStatus }),
         dictationState,
         holdThresholdMs: 500,
         onSend: (bytes: Uint8Array, key: string) => sent.push({ bytes, key }),
         onPaletteChange: (open: boolean) => paletteChanges.push(open),
-        onOpenComposer: () => { composerOpenRequests += 1; },
+        onKeepKeyboardOpen: () => { keyboardOpenRequests += 1; },
+        onOpenComposer: (intent: 'compose' | 'dictate') => { composerOpenIntents.push(intent); },
       }, slots);
     },
   });
   const app = renderer.createApp(Host) as App;
   app.mount(root as unknown as Element);
-  return { root, app, sent, paletteChanges, composerOpenRequests: () => composerOpenRequests,
+  return { root, app, sent, paletteChanges, composerOpenRequests: () => composerOpenIntents.length,
+    composerOpenIntents: () => [...composerOpenIntents],
+    keyboardOpenRequests: () => keyboardOpenRequests,
     setEnabled: (value: boolean) => { enabled.value = value; } };
 }
 

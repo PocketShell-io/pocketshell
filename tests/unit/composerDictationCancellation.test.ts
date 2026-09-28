@@ -1,4 +1,4 @@
-import { createRenderer } from 'vue';
+import { createRenderer, h, nextTick, ref } from 'vue';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useComposerDrafts } from '../../src/stores/composerDrafts';
@@ -26,10 +26,20 @@ interface HostNode {
   parent?: HostNode;
   text?: string;
   focus?: () => void;
+  focusCalls: number;
+  blur?: () => void;
+  value?: string;
+  setSelectionRange?: (start: number, end: number) => void;
 }
 
 function node(type: string, text = ''): HostNode {
-  return { type, props: {}, children: [], text, focus: () => {} };
+  const host: HostNode = {
+    type, props: {}, children: [], text, focusCalls: 0, value: '',
+    focus: () => { host.focusCalls += 1; },
+    blur: () => {},
+    setSelectionRange: () => {},
+  };
+  return host;
 }
 
 let composerTeleportTarget: HostNode | null = null;
@@ -316,6 +326,7 @@ describe('composer dictation cancellation', () => {
       && candidate.props.title === 'Send (Enter)')[0];
 
     expect(composer?.props).toMatchObject({ role: 'dialog', 'aria-modal': 'true' });
+    expect(findByTestId(portal, 'prompt-draft')?.focusCalls).toBe(1);
     expect(draftRow).toBeDefined();
     expect(openKeys?.parent?.props.class).toBe('composer-heading');
     expect(openKeys?.props).toMatchObject({
@@ -339,6 +350,85 @@ describe('composer dictation cancellation', () => {
       && (typeof candidate.props['data-testid'] === 'string' || candidate.props.title === 'Send (Enter)'))
       .map((candidate) => candidate.props['data-testid'] ?? candidate.props.title))
       .toEqual(['composer-insert', 'Send (Enter)', 'composer-dictate']);
+
+    app.unmount();
+    composerTeleportTarget = null;
+  });
+
+  it('opens the mobile sheet directly into recording once for a dock Dictate request', async () => {
+    mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
+      mocks.appStateListener = listener;
+      return { remove: vi.fn(async () => {}) };
+    });
+
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    const stop = vi.fn(async () => {});
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dictation-dock-speak-1');
+      dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'started' });
+      return { requestId: 'dictation-dock-speak-1', stop, cancel: vi.fn(async () => {}) };
+    });
+
+    const targetKey = 'host/mobile-dock-speak';
+    const pinia = createPinia();
+    const root = node('root');
+    const portal = node('portal');
+    composerTeleportTarget = portal;
+    const autoStart = ref(true);
+    const Host = {
+      setup: () => () => h(PromptComposer, {
+        targetKey,
+        transportState: 'connected',
+        writePty: vi.fn(async () => ({ ok: true })),
+        mobileSheet: true,
+        open: true,
+        startDictationOnOpen: autoStart.value,
+      }),
+    };
+    const app = renderer.createApp(Host);
+    app.use(pinia);
+    app.mount(root);
+
+    await flushPromises();
+    await nextTick();
+    autoStart.value = false;
+    await nextTick();
+    autoStart.value = true;
+    await nextTick();
+    await flushPromises();
+
+    expect(mocks.startDictation).toHaveBeenCalledTimes(1);
+    expect(composerState(portal)).toBe('recording');
+    expect(findByTestId(portal, 'prompt-draft')?.focusCalls).toBe(0);
+    expect(textContent(findAll(portal, (candidate) => candidate.props.id === 'composer-title')[0]!))
+      .toBe('Prompt dictation');
+    expect(findByTestId(portal, 'composer-recording-stop')?.props['aria-label'])
+      .toBe('Stop dictation and keep the recognized text in the editable draft');
+
+    dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'partial', text: 'check the release notes' });
+    await nextTick();
+    expect(textContent(findByTestId(portal, 'composer-recording-preview')!)).toBe('check the release notes');
+    const stopButton = findByTestId(portal, 'composer-recording-stop')!;
+    (stopButton.props.onClick as () => void)();
+    await flushPromises();
+    expect(composerState(portal)).toBe('transcribing');
+    dictationEvent?.({ requestId: 'dictation-dock-speak-1', type: 'stopped' });
+    await flushPromises();
+    expect(composerState(portal)).toBe('review');
+    expect(findByTestId(portal, 'composer-dictation-review')).toBeDefined();
+    expect(findByTestId(portal, 'prompt-draft')?.props).toMatchObject({
+      'aria-label': 'Dictation transcript, editable before inserting or sending',
+      disabled: false,
+    });
+    expect(findByTestId(portal, 'composer-recording-actions')).toBeUndefined();
+    expect(findByTestId(portal, 'composer-insert')).toBeDefined();
+    expect(findAll(portal, (candidate) => candidate.type === 'button'
+      && candidate.props.title === 'Send (Enter)')).toHaveLength(1);
 
     app.unmount();
     composerTeleportTarget = null;

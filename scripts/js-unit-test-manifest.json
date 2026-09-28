@@ -246,7 +246,7 @@
     "tests/unit/terminalDictationBarUnmount.test.ts": {
       "suite": "terminal dictation bar lifecycle",
       "tests": [
-        "keeps a mic glyph while idle and listening, with accessible action and state tint",
+        "shows a distinct Stop glyph while listening, with an accessible action and state tint",
         "cancels on unmount, clears parent state, and ignores late transcript events"
       ]
     },
@@ -257,6 +257,7 @@
         "keeps Cancel distinct from Discard while transcription is finishing",
         "keeps recording and transcribing preview regions present before speech arrives",
         "places the mobile Dictate prompt microphone in the composer action row",
+        "opens the mobile sheet directly into recording once for a dock Dictate request",
         "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",

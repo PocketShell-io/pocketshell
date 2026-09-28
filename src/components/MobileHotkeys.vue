@@ -10,6 +10,7 @@ import {
 import { AppIcon } from '@pocketshell/ui';
 import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkeysPage } from './mobileHotkeysModel';
 import type { InlineDictationState } from '../session/inlineDictation';
+import DictationMicIcon from './DictationMicIcon.vue';
 
 // Keep the one-tap keys in the terminal flow. The full catalog is a compact,
 // on-demand grid with its own vertical scroll area.
@@ -54,7 +55,7 @@ const emit = defineEmits<{
   /** Re-focuses the prompt after a physical hotkey tap so Android keeps the IME open. */
   keepKeyboardOpen: [];
   /** Opens the shared prompt composer, including its prompt-dictation mode. */
-  openComposer: [];
+  openComposer: [intent: 'compose' | 'dictate'];
 }>();
 
 const slots = useSlots();
@@ -145,6 +146,9 @@ function restoreKeyboardAfterPointerClick(event: MouseEvent): void {
   const pointer = keyboardPointer;
   keyboardPointer = null;
   const target = event.target as Element | null;
+  // Prompt dictation needs the IME to stay dismissed while recognition starts.
+  // The regular fast-key controls still restore draft focus after pointer taps.
+  if (target?.closest?.('[data-testid="prompt-dictation-launcher"]')) return;
   if (event.detail > 0 && pointer && target?.closest?.('button') === pointer.button) {
     emit('keepKeyboardOpen');
   }
@@ -210,6 +214,7 @@ defineExpose({
       <div v-if="dictationStatusVisible" class="mobile-hotkeys__dictation-status-row" data-testid="inline-dictation-status-row">
         <p class="mobile-hotkeys__dictation-status" :data-dictation-tone="dictationState.tone"
           :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
+          <span class="mobile-hotkeys__dictation-destination">Terminal · </span>
           <span v-if="dictationState.tone === 'error'" class="mobile-hotkeys__dictation-phase">Error · </span>
           <span v-else-if="dictationState.tone === 'warning'" class="mobile-hotkeys__dictation-phase">Warning · </span>
           <span v-else-if="dictationState.phase === 'starting'" class="mobile-hotkeys__dictation-phase">Starting · </span>
@@ -226,69 +231,93 @@ defineExpose({
       </div>
 
       <div class="mobile-hotkeys__bar" role="toolbar" aria-label="Persistent terminal keys">
-        <button
+        <div
           v-if="promptComposerAvailable"
-          class="mobile-hotkeys__key mobile-hotkeys__composer-launcher"
-          type="button"
-          data-testid="prompt-composer-launcher"
-          aria-label="Open prompt composer to type or dictate a prompt"
-          title="Open prompt composer to type or dictate a prompt"
-          :disabled="!enabled"
-          @click="emit('openComposer')"
+          class="mobile-hotkeys__input-group"
+          data-testid="mobile-hotkeys-prompt-group"
+          role="group"
+          aria-label="Prompt input"
         >
-          <AppIcon name="edit-2" aria-hidden="true" />
-          <span class="mobile-hotkeys__dock-label" data-testid="prompt-composer-launcher-label" aria-hidden="true">Prompt</span>
-        </button>
-
-        <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
-          <template v-for="key in SESSION_BAR_NAV_KEYS" :key="key.id">
           <button
-            class="mobile-hotkeys__key mobile-hotkeys__key--navigation"
-            :class="{ 'mobile-hotkeys__key--enter': key.id === 'enter' }"
+            class="mobile-hotkeys__key mobile-hotkeys__composer-launcher"
             type="button"
-            :data-key-id="key.id"
-            :aria-label="key.id === 'arrow-up' ? 'Send Up arrow' : key.id === 'arrow-down' ? 'Send Down arrow' : 'Send Enter'"
+            data-testid="prompt-composer-launcher"
+            aria-label="Open prompt composer to type or dictate a prompt"
+            title="Open prompt composer to type or dictate a prompt"
             :disabled="!enabled"
-            @click="sendKey(key.id)"
+            @click="emit('openComposer', 'compose')"
           >
-            {{ key.label }}
+            <AppIcon name="edit-2" aria-hidden="true" />
+            <span class="mobile-hotkeys__dock-label" data-testid="prompt-composer-launcher-label" aria-hidden="true">Prompt</span>
           </button>
-          <span
-            v-if="key.id === 'arrow-down'"
-            class="mobile-hotkeys__enter-divider"
-            data-testid="mobile-hotkeys-enter-divider"
-            aria-hidden="true"
-          />
-          </template>
+
+          <button
+            v-if="dictationAvailable"
+            class="mobile-hotkeys__prompt-dictation"
+            type="button"
+            data-testid="prompt-dictation-launcher"
+            aria-label="Dictate a prompt and review it before Insert or Send"
+            title="Dictate a prompt and review it before Insert or Send"
+            aria-haspopup="dialog"
+            :disabled="!enabled"
+            @click="emit('openComposer', 'dictate')"
+          >
+            <DictationMicIcon :size="18" />
+            <span class="mobile-hotkeys__dock-label" data-testid="prompt-dictation-launcher-label" aria-hidden="true">Dictate</span>
+          </button>
         </div>
 
-        <button
-          class="mobile-hotkeys__launcher"
-          type="button"
-          data-testid="mobile-hotkeys-launcher"
-          :aria-controls="!paletteOpen ? undefined : page === 'ctrl' ? 'mobile-hotkeys-ctrl-page' : 'mobile-hotkeys-main-page'"
-          :aria-label="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
-          :title="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
-          :aria-expanded="paletteOpen"
-          :disabled="!enabled"
-          @click="onLauncherClick"
-        >
-          <svg class="mobile-hotkeys__keys-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" aria-hidden="true" focusable="false">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="M7 9h.01M10.5 9h.01M14 9h.01M17.5 9h.01M7 12h.01M10.5 12h.01M14 12h.01M17.5 12h.01M8.5 15.5h7" />
-          </svg>
-        </button>
+        <div class="mobile-hotkeys__terminal-group" data-testid="mobile-hotkeys-terminal-group" role="group" aria-label="Terminal controls">
+          <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
+            <template v-for="key in SESSION_BAR_NAV_KEYS" :key="key.id">
+              <button
+                class="mobile-hotkeys__key mobile-hotkeys__key--navigation"
+                :class="{ 'mobile-hotkeys__key--enter': key.id === 'enter' }"
+                type="button"
+                :data-key-id="key.id"
+                :aria-label="key.id === 'arrow-up' ? 'Send Up arrow' : key.id === 'arrow-down' ? 'Send Down arrow' : 'Send Enter'"
+                :disabled="!enabled"
+                @click="sendKey(key.id)"
+              >
+                {{ key.label }}
+              </button>
+              <span
+                v-if="key.id === 'arrow-down'"
+                class="mobile-hotkeys__enter-divider"
+                data-testid="mobile-hotkeys-enter-divider"
+                aria-hidden="true"
+              />
+            </template>
+          </div>
 
-        <div v-if="hasPersistentStatus || hasPersistentControls || hasPersistentAccessory || dictationAvailable" class="mobile-hotkeys__persistent-slots">
-          <div v-if="hasPersistentStatus" class="mobile-hotkeys__persistent-status" data-testid="mobile-hotkeys-persistent-status">
-            <slot name="persistent-status" />
-          </div>
-          <div v-if="hasPersistentControls" class="mobile-hotkeys__persistent-controls" data-testid="mobile-hotkeys-persistent-controls">
-            <slot name="persistent-controls" />
-          </div>
-          <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
-            <slot name="persistent-accessory" />
+          <button
+            class="mobile-hotkeys__launcher"
+            type="button"
+            data-testid="mobile-hotkeys-launcher"
+            :aria-controls="!paletteOpen ? undefined : page === 'ctrl' ? 'mobile-hotkeys-ctrl-page' : 'mobile-hotkeys-main-page'"
+            :aria-label="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
+            :title="paletteOpen ? 'Close terminal keys' : 'More terminal keys'"
+            :aria-expanded="paletteOpen"
+            :disabled="!enabled"
+            @click="onLauncherClick"
+          >
+            <svg class="mobile-hotkeys__keys-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" aria-hidden="true" focusable="false">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="M7 9h.01M10.5 9h.01M14 9h.01M17.5 9h.01M7 12h.01M10.5 12h.01M14 12h.01M17.5 12h.01M8.5 15.5h7" />
+            </svg>
+          </button>
+
+          <div v-if="hasPersistentStatus || hasPersistentControls || hasPersistentAccessory || dictationAvailable" class="mobile-hotkeys__persistent-slots">
+            <div v-if="hasPersistentStatus" class="mobile-hotkeys__persistent-status" data-testid="mobile-hotkeys-persistent-status">
+              <slot name="persistent-status" />
+            </div>
+            <div v-if="hasPersistentControls" class="mobile-hotkeys__persistent-controls" data-testid="mobile-hotkeys-persistent-controls">
+              <slot name="persistent-controls" />
+            </div>
+            <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
+              <slot name="persistent-accessory" />
+            </div>
           </div>
         </div>
       </div>
@@ -462,6 +491,7 @@ defineExpose({
 .mobile-hotkeys__dictation-status[data-dictation-tone="warning"] .mobile-hotkeys__dictation-phase { color: var(--warning); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="error"] .mobile-hotkeys__dictation-phase { color: var(--error); }
 .mobile-hotkeys__dictation-phase { color: var(--fg-secondary); font-weight: 600; }
+.mobile-hotkeys__dictation-destination { color: var(--fg-muted); font-weight: 600; }
 .mobile-hotkeys__dictation-status .terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="success"] .terminal-dictation-preview { color: var(--success); }
 .mobile-hotkeys__dictation-status[data-dictation-tone="error"] .terminal-dictation-preview { color: var(--error); }
@@ -493,6 +523,32 @@ defineExpose({
   background: transparent;
 }
 .mobile-hotkeys__bar::-webkit-scrollbar { display: none; }
+.mobile-hotkeys__input-group,
+.mobile-hotkeys__terminal-group {
+  display: flex;
+  height: 48px;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  border-radius: var(--r-md);
+  background: var(--surface-1);
+  box-shadow: inset 0 0 0 1px var(--border-soft);
+}
+.mobile-hotkeys__input-group { gap: 2px; }
+.mobile-hotkeys__terminal-group { gap: var(--sp-1); }
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher,
+.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation {
+  border-color: transparent;
+  background: transparent;
+}
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher { border-radius: var(--r-md) 0 0 var(--r-md); }
+.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation { border-radius: 0 var(--r-md) var(--r-md) 0; }
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher:hover:not(:disabled),
+.mobile-hotkeys__input-group .mobile-hotkeys__composer-launcher:active:not(:disabled),
+.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation:hover:not(:disabled),
+.mobile-hotkeys__input-group .mobile-hotkeys__prompt-dictation:active:not(:disabled) {
+  background: var(--state-selected);
+}
 .mobile-hotkeys__navigation { display: flex; flex: 0 0 auto; align-items: center; gap: var(--sp-1); }
 .mobile-hotkeys__enter-divider { width: 1px; height: 24px; flex: 0 0 1px; background: var(--border-soft); }
 .mobile-hotkeys__key,
@@ -515,12 +571,14 @@ defineExpose({
 }
 .mobile-hotkeys__key:hover:not(:disabled),
 .mobile-hotkeys__launcher:hover:not(:disabled),
+.mobile-hotkeys__prompt-dictation:hover:not(:disabled),
 .mobile-hotkeys__page-tab:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--state-hover);
 }
 .mobile-hotkeys__key:active:not(:disabled),
 .mobile-hotkeys__launcher[aria-expanded="true"],
+.mobile-hotkeys__prompt-dictation:active:not(:disabled),
 .mobile-hotkeys__page-tab:active:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
@@ -558,6 +616,31 @@ defineExpose({
 .mobile-hotkeys__keys-icon { width: 20px; height: 20px; }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher :deep(svg) { width: 20px; height: 20px; }
 .mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui); white-space: nowrap; }
+.mobile-hotkeys__prompt-dictation {
+  display: inline-flex;
+  width: 48px;
+  min-width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+.mobile-hotkeys__prompt-dictation .mobile-hotkeys__dock-label { color: var(--fg); }
+.mobile-hotkeys__prompt-dictation:hover:not(:disabled),
+.mobile-hotkeys__prompt-dictation:active:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--state-selected);
+  color: var(--accent);
+}
+.mobile-hotkeys__prompt-dictation:focus-visible { outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 2px; }
 
 .mobile-hotkeys__persistent-slots { display: flex; min-width: 0; flex: 0 0 auto; align-items: center; justify-content: flex-end; gap: 0; }
 .mobile-hotkeys__persistent-status { min-width: 0; flex: 1 1 auto; overflow: hidden; color: var(--fg-secondary); font-size: var(--fs-100); line-height: var(--lh-100); text-overflow: ellipsis; white-space: nowrap; }
