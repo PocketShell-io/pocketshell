@@ -51,6 +51,17 @@ else
   usage_status=$?
 fi
 
+if scripts/connected-js-files-docker.sh \
+  --suffix i2858ci \
+  --port 2222 \
+  --container pocketshell-test-agents \
+  --run-id "js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  files_status=0
+else
+  files_status=$?
+fi
+
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
@@ -97,13 +108,13 @@ if ! scripts/check-js-hotkeys-journey-results.py --results-dir "$connected_resul
   hotkeys_junit_status=1
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$composer_status" \
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
   "$hotkeys_junit_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || composer_status != 0 \
-      || composer_junit_copy_status != 0 || composer_junit_status != 0 \
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 \
+      || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
       || hotkeys_status != 0 || hotkeys_junit_status != 0 || copy_status != 0 )); then
   exit 1
 fi

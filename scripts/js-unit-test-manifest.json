@@ -30,33 +30,6 @@
         "fails closed when a bundle asset is missing"
       ]
     },
-    "tests/unit/sshCapabilityBridge.test.ts": {
-      "suite": "Capacitor SSH resource snapshot bridge",
-      "tests": [
-        "wraps the core request ID in Capacitor method options",
-        "rejects a mismatched request ID instead of accepting an unverified snapshot",
-        "rejects a missing counter instead of accepting an unverified snapshot",
-        "rejects a negative counter instead of accepting an unverified snapshot",
-        "propagates a native bridge rejection"
-      ]
-    },
-    "tests/unit/usagePolicyAdapter.test.ts": {
-      "suite": "host usage adapter",
-      "tests": [
-        "runs the canonical host command on the active generation and parses provider quota states",
-        "reports command, timeout, and cross-generation failures rather than returning empty usage",
-        "keeps provider schema failures distinct from an unavailable command",
-        "parses the packaged Docker fixture states that the Usage screen displays"
-      ]
-    },
-    "tests/unit/portPolicyAdapter.test.ts": {
-      "suite": "native-backed port discovery and tunnel adapter",
-      "tests": [
-        "runs the listener and cwd probes through the current SSH generation",
-        "uses JS desired-port policy and native socket effects, then restores manual intent after reconnect",
-        "closes auto tunnels only after bounded successful misses and closes all owned handles"
-      ]
-    },
     "tests/unit/composerDelivery.test.ts": {
       "suite": "composer delivery adapter and per-target drafts",
       "tests": [
@@ -65,14 +38,23 @@
         "keeps one session draft separate from another and clears only after acknowledged delivery"
       ]
     },
-    "tests/unit/platformInput.test.ts": {
-      "suite": "Android platform input adapter",
+    "tests/unit/composerDictationCancellation.test.ts": {
+      "suite": "composer dictation cancellation",
       "tests": [
-        "reads selected documents in ordered bounded chunks and returns exact attachment bytes",
-        "preserves valid files when one selection is over the shared native transfer limit",
-        "rejects mismatched chunk identity and still releases the native document reference",
-        "materializes incoming shared text and files before delivering the share callback",
-        "registers before starting speech, filters foreign events, and stops the matching request"
+        "labels the recording Discard action and restores the original draft",
+        "keeps Cancel distinct from Discard while transcription is finishing",
+        "keeps recording and transcribing preview regions present before speech arrives",
+        "places the mobile Dictate prompt microphone in the composer action row",
+        "keeps prompt dictation inside the composer instead of auto-starting from the terminal dock",
+        "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
+        "cancels a pending start on background, restores the base draft, and rejects late partials",
+        "uses the latest persisted voice settings on the next composer start",
+        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",
+        "blocks an unedited error dictation review from sending until deliberate text edits",
+        "blocks an unedited empty dictation review from sending until deliberate text edits",
+        "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
+        "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
+        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
       ]
     },
     "tests/unit/destinationInventory.test.ts": {
@@ -93,6 +75,16 @@
       "suite": "mounted dictation settings controls",
       "tests": [
         "binds the production Voice and Advanced templates to accessible persisted settings"
+      ]
+    },
+    "tests/unit/documentTransfers.test.ts": {
+      "suite": "bounded Android document transfers",
+      "tests": [
+        "reads selected content URIs in ordered byte chunks and releases the URI",
+        "treats picker and Save As cancellation as no-ops",
+        "rejects a mismatched source chunk and still releases its document ID",
+        "writes exact binary bytes to the selected document and completes the byte count",
+        "aborts a partial save when the document provider rejects a chunk"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {
@@ -185,6 +177,7 @@
         "keeps nested settings and support routes reachable through Back",
         "retains a selected report ID and resets the stack when returning home",
         "clears the selected event when opening the whole-log export preview",
+        "opens the SSH file workspace as a back-navigable full-screen destination",
         "does not push the current destination a second time",
         "keeps usage and port tools as Settings child routes without changing the live home destination"
       ]
@@ -199,6 +192,15 @@
         "registers before starting speech, filters foreign events, and stops the matching request",
         "cancels a request and drops even a late queued partial or final event",
         "cancels a pending native start without allowing its eventual session or events through"
+      ]
+    },
+    "tests/unit/portPolicyAdapter.test.ts": {
+      "suite": "native-backed port discovery and tunnel adapter",
+      "tests": [
+        "runs the listener and cwd probes through the current SSH generation",
+        "uses JS desired-port policy and native socket effects, then restores manual intent after reconnect",
+        "closes auto tunnels only after bounded successful misses and closes all owned handles",
+        "automatically forwards 9638 while retaining discovered rows 22 and 33307"
       ]
     },
     "tests/unit/speechRecognition.test.ts": {
@@ -235,6 +237,13 @@
         "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
       ]
     },
+    "tests/unit/terminalDictationBarUnmount.test.ts": {
+      "suite": "terminal dictation bar lifecycle",
+      "tests": [
+        "keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint",
+        "cancels on unmount, clears parent state, and ignores late transcript events"
+      ]
+    },
     "tests/unit/terminalFocus.test.ts": {
       "suite": "terminal focus after attach",
       "tests": [
@@ -244,30 +253,13 @@
         "still gives the terminal focus when no composer has claimed it"
       ]
     },
-    "tests/unit/terminalDictationBarUnmount.test.ts": {
-      "suite": "terminal dictation bar lifecycle",
+    "tests/unit/usagePolicyAdapter.test.ts": {
+      "suite": "host usage adapter",
       "tests": [
-        "keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint",
-        "cancels on unmount, clears parent state, and ignores late transcript events"
-      ]
-    },
-    "tests/unit/composerDictationCancellation.test.ts": {
-      "suite": "composer dictation cancellation",
-      "tests": [
-        "labels the recording Discard action and restores the original draft",
-        "keeps Cancel distinct from Discard while transcription is finishing",
-        "keeps recording and transcribing preview regions present before speech arrives",
-        "places the mobile Dictate prompt microphone in the composer action row",
-        "keeps prompt dictation inside the composer instead of auto-starting from the terminal dock",
-        "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
-        "cancels a pending start on background, restores the base draft, and rejects late partials",
-        "uses the latest persisted voice settings on the next composer start",
-        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",
-        "blocks an unedited error dictation review from sending until deliberate text edits",
-        "blocks an unedited empty dictation review from sending until deliberate text edits",
-        "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
-        "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
-        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
+        "runs the canonical host command on the active generation and parses canonical UsageRows",
+        "reports command, timeout, and cross-generation failures rather than returning empty usage",
+        "keeps host-reported provider errors and named custom windows in canonical rows",
+        "parses the packaged Docker fixture states that the Usage screen displays"
       ]
     }
   }
