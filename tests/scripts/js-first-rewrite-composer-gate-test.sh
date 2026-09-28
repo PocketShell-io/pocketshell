@@ -71,13 +71,19 @@ def require_contract(source: str, packaged_script: str) -> None:
     if "--port 2222" not in packaged_script or "--container pocketshell-test-agents" not in packaged_script:
         raise AssertionError("packaged wrapper changed the lifecycle Docker fixture contract")
     usage = packaged_script.index("scripts/connected-js-usage-ports.sh")
+    files = packaged_script.index("scripts/connected-js-files-docker.sh")
     composer = packaged_script.index("scripts/connected-js-composer-docker.sh")
     lifecycle = packaged_script.index("scripts/connected-js-lifecycle.sh")
-    if not lifecycle < usage < composer:
-        raise AssertionError("usage/ports must run after lifecycle and before the composer journey")
+    if not lifecycle < usage < files < composer:
+        raise AssertionError("usage/ports and Files must run after lifecycle, in order, before the composer journey")
     if "--run-id \"js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script:
         raise AssertionError("usage/ports run identity is not forwarded to the packaged journey")
-    for lane in ("smoke_status", "lifecycle_status", "usage_status", "composer_status", "copy_status"):
+    if "--suffix i2858ci" not in packaged_script or "--port 2222" not in packaged_script or \
+       "--container pocketshell-test-agents" not in packaged_script or \
+       "--run-id \"js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script or \
+       "--test-only" not in packaged_script:
+        raise AssertionError("Files lane invocation must preserve its packaged fixture arguments and run identity")
+    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -203,7 +209,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
-                            usage: int = 0, composer: int = 0, omit_junit: bool = False,
+                            usage: int = 0, files: int = 0, composer: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
         fixture = Path(temporary)
@@ -251,6 +257,13 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "exit \"$FIXTURE_USAGE_STATUS\"\n"
         )
         fake_usage.chmod(0o755)
+        fake_files = fake_scripts / "connected-js-files-docker.sh"
+        fake_files.write_text(
+            "#!/bin/bash\n"
+            "printf 'files\\t%s\\t%s\\n' \"$FIXTURE_FILES_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
+            "exit \"$FIXTURE_FILES_STATUS\"\n"
+        )
+        fake_files.chmod(0o755)
         fake_composer = fake_scripts / "connected-js-composer-docker.sh"
         fake_composer.write_text(
             "#!/bin/bash\n"
@@ -270,6 +283,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_SMOKE_STATUS": str(smoke),
             "FIXTURE_LIFECYCLE_STATUS": str(lifecycle),
             "FIXTURE_USAGE_STATUS": str(usage),
+            "FIXTURE_FILES_STATUS": str(files),
             "FIXTURE_COMPOSER_STATUS": str(composer),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
@@ -286,23 +300,31 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         expected_copy = 31 if fail_junit_copy else (1 if omit_junit else 0)
         expected_summary = (
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
-            f"usage-ports={usage} composer={composer} smoke-junit-copy={expected_copy}"
+            f"usage-ports={usage} files={files} composer={composer} smoke-junit-copy={expected_copy}"
         )
-        expected_exit = 1 if any((smoke, lifecycle, usage, composer, expected_copy)) else 0
+        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
         trace_lines = trace.read_text().splitlines()
-        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "composer"]:
+        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "files", "composer"]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
             raise AssertionError(f"{label}: lifecycle run identity was not forwarded: {trace_lines[1]!r}")
         if "--run-id js2859-run-1" not in trace_lines[2]:
             raise AssertionError(f"{label}: usage/ports run identity was not forwarded: {trace_lines[2]!r}")
-        if "--session-prefix js2891-run-1" not in trace_lines[3]:
-            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[3]!r}")
+        expected_files_args = (
+            "--suffix i2858ci --port 2222 --container pocketshell-test-agents "
+            "--run-id js2858-run-1 --test-only"
+        )
+        if trace_lines[3] != f"files\t{files}\t{expected_files_args}":
+            raise AssertionError(
+                f"{label}: Files lane arguments/status were not preserved: {trace_lines[3]!r}"
+            )
+        if "--session-prefix js2891-run-1" not in trace_lines[4]:
+            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[4]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -323,6 +345,7 @@ exercise_packaged_lanes("success")
 exercise_packaged_lanes("smoke failure is fail-closed", smoke=17)
 exercise_packaged_lanes("lifecycle failure is fail-closed", lifecycle=19)
 exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)
+exercise_packaged_lanes("Files failure is fail-closed", files=25)
 exercise_packaged_lanes("composer failure is fail-closed", composer=23)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
