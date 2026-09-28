@@ -3,6 +3,7 @@ package com.pocketshell.app.smoke;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
@@ -39,6 +40,7 @@ import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
@@ -71,7 +73,7 @@ public final class SshPtyDockerJourneyTest {
     }
 
     @Test
-    public void sshSessionSwitchingAndBackgroundGraceAgainstDockerFixture() throws Exception {
+    public void sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture() throws Exception {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
@@ -92,10 +94,13 @@ public final class SshPtyDockerJourneyTest {
         String markerAReturn = marker(runId, "A_RETURN");
         String markerAWithinGrace = marker(runId, "A_WITHIN_GRACE");
         String markerAAfterExpiry = marker(runId, "A_AFTER_EXPIRY");
-        File artifactDirectory = new File(
-                InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null),
-                "pocketshell-lifecycle/" + runId);
+        android.content.Context targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        File externalFilesDirectory = targetContext.getExternalFilesDir(null);
+        assertNotNull("target app external files directory must be available for same-run artifacts", externalFilesDirectory);
+        File artifactDirectory = new File(externalFilesDirectory, "pocketshell-lifecycle/" + runId);
         assertTrue("run artifact directory must be new", artifactDirectory.mkdirs());
+        Log.i("PocketshellJourneyAsset", "DIRECTORY|" + runId + "|" + targetContext.getPackageName()
+                + "|" + artifactDirectory.getAbsolutePath());
         org.json.JSONArray checkpoints = new org.json.JSONArray();
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
@@ -238,12 +243,17 @@ public final class SshPtyDockerJourneyTest {
         JSONObject afterExpiry = sendMarkerAndCapture("reconnected-after-expiry", markerAAfterExpiry, artifactDirectory);
         checkpoints.put(afterExpiry);
 
+        String markerAfterAbruptDrop = marker(runId, "A_AFTER_ABRUPT_DROP");
+        JSONObject abruptTransportDrop = abruptlyDropServerTransportAndRecover(
+                runId, rowA, markerAfterAbruptDrop, artifactDirectory);
+
         org.json.JSONArray phaseEvents = new org.json.JSONArray(evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
         org.json.JSONArray diagnosticEvents = new org.json.JSONArray(evalString("JSON.stringify(JSON.parse(localStorage.getItem('pocketshell.js.diagnostics.v1') || '[]'))"));
         assertDiagnosticLifecycle(diagnosticEvents);
         JSONObject summary = new JSONObject()
                 .put("schema", 1)
                 .put("runId", runId)
+                .put("sshPort", Integer.parseInt(port))
                 .put("graceMs", BACKGROUND_GRACE_MILLIS)
                 .put("initialConnectionId", originalConnectionId)
                 .put("connectionAfterWithinGrace", connectionAfterGrace)
@@ -259,6 +269,7 @@ public final class SshPtyDockerJourneyTest {
                 .put("phaseEvents", phaseEvents)
                 .put("bridgeEvents", bridgeEvents)
                 .put("diagnosticEvents", diagnosticEvents);
+        summary.put("abruptTransportDrop", abruptTransportDrop);
         writeText(new File(artifactDirectory, "journey-summary.json"), summary.toString(2));
         Log.i("SshPtyDockerJourney", "RUN " + runId + " " + summary);
 
@@ -282,6 +293,7 @@ public final class SshPtyDockerJourneyTest {
                 evalString("document.querySelector('[data-testid=ssh-resource-sftp]')?.textContent.trim() ?? ''"));
         assertEquals("native port-forward count after close must be zero", "0",
                 evalString("document.querySelector('[data-testid=ssh-resource-forwards]')?.textContent.trim() ?? ''"));
+        writeArtifactManifest(artifactDirectory);
     }
 
     private void createSession(String tag) throws Exception {
@@ -1095,18 +1107,59 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private void emitArtifact(String name, byte[] bytes) throws Exception {
-        String encoded = Base64.getEncoder().encodeToString(bytes);
-        int chunkSize = 1_800;
-        int chunks = (encoded.length() + chunkSize - 1) / chunkSize;
         String sha256 = hex(MessageDigest.getInstance("SHA-256").digest(bytes));
-        Log.i("PocketshellJourneyAsset", "BEGIN|" + activeRunId + "|" + name + "|" + chunks + "|" + sha256);
-        for (int index = 0; index < chunks; index += 1) {
-            int start = index * chunkSize;
-            int end = Math.min(encoded.length(), start + chunkSize);
-            Log.i("PocketshellJourneyAsset", "DATA|" + activeRunId + "|" + name + "|" + index + "|" + encoded.substring(start, end));
-            Thread.sleep(15);
+        Log.i("PocketshellJourneyAsset", "FILE|" + activeRunId + "|" + name + "|" + bytes.length + "|" + sha256);
+    }
+
+    private void writeArtifactManifest(File artifactDirectory) throws Exception {
+        File manifestFile = new File(artifactDirectory, "artifact-manifest.json");
+        assertFalse("run artifact manifest must not already exist", manifestFile.exists());
+        File[] files = artifactDirectory.listFiles();
+        assertNotNull("run artifact directory must remain readable", files);
+        Arrays.sort(files, (first, second) -> first.getName().compareTo(second.getName()));
+
+        org.json.JSONArray artifacts = new org.json.JSONArray();
+        for (File file : files) {
+            if (file.equals(manifestFile)) continue;
+            assertTrue("run artifacts must be regular files with safe names: " + file.getName(),
+                    file.isFile() && file.getName().matches("[A-Za-z0-9._-]{1,100}"));
+            byte[] bytes = java.nio.file.Files.readAllBytes(file.toPath());
+            artifacts.put(new JSONObject()
+                    .put("name", file.getName())
+                    .put("sizeBytes", bytes.length)
+                    .put("sha256", hex(MessageDigest.getInstance("SHA-256").digest(bytes))));
         }
-        Log.i("PocketshellJourneyAsset", "END|" + activeRunId + "|" + name);
+
+        byte[] manifest = new JSONObject()
+                .put("schema", 1)
+                .put("runId", activeRunId)
+                .put("artifacts", artifacts)
+                .toString(2)
+                .getBytes(StandardCharsets.UTF_8);
+        try (FileOutputStream output = new FileOutputStream(manifestFile)) {
+            output.write(manifest);
+        }
+        String manifestDigest = hex(MessageDigest.getInstance("SHA-256").digest(manifest));
+        Log.i("PocketshellJourneyAsset", "MANIFEST|" + activeRunId + "|" + artifacts.length() + "|" + manifestDigest);
+        awaitHostArtifactPull(artifactDirectory.getParentFile(), manifestDigest);
+    }
+
+    private void awaitHostArtifactPull(File artifactParent, String manifestDigest) throws Exception {
+        File acknowledgment = new File(artifactParent, ".host-pull-complete-" + activeRunId);
+        File failure = new File(artifactParent, ".host-pull-failed-" + activeRunId);
+        assertFalse("same-run host pull acknowledgment must be unique", acknowledgment.exists());
+        long deadline = SystemClock.elapsedRealtime() + 60_000;
+        while (SystemClock.elapsedRealtime() < deadline && !acknowledgment.isFile() && !failure.isFile()) {
+            SystemClock.sleep(100);
+        }
+        if (failure.isFile()) {
+            assertTrue("host artifact pull failure signal must be removable", failure.delete());
+            throw new AssertionError("host failed to pull and verify the same-run lifecycle artifacts");
+        }
+        assertTrue("host must pull and verify the exact same-run artifacts before instrumentation exits",
+                acknowledgment.isFile());
+        assertTrue("same-run host pull acknowledgment must be removable", acknowledgment.delete());
+        Log.i("PocketshellJourneyAsset", "PULLED|" + activeRunId + "|" + manifestDigest);
     }
 
     private String hex(byte[] bytes) {
@@ -1124,6 +1177,7 @@ public final class SshPtyDockerJourneyTest {
             case "A_RETURN": phase = "AR"; break;
             case "A_WITHIN_GRACE": phase = "AG"; break;
             case "A_AFTER_EXPIRY": phase = "AE"; break;
+            case "A_AFTER_ABRUPT_DROP": phase = "AD"; break;
             default: throw new IllegalArgumentException("unknown lifecycle marker phase: " + session);
         }
         try {
@@ -1133,6 +1187,287 @@ public final class SshPtyDockerJourneyTest {
         } catch (Exception error) {
             throw new IllegalStateException("SHA-256 is required to create unique lifecycle markers", error);
         }
+    }
+
+    private JSONObject abruptlyDropServerTransportAndRecover(
+            String runId, JSONObject expectedSession, String marker, File artifactDirectory
+    ) throws Exception {
+        String oldConnectionId = currentConnectionId();
+        String oldGenerationId = currentGenerationId();
+        String expectedTag = expectedSession.getString("tag");
+        String expectedSessionId = expectedSession.getString("id");
+        assertEquals("abrupt server-drop trigger must run while the selected PTY is live", "live", currentPhase());
+        assertEquals("abrupt server-drop trigger must run on the selected A session", expectedTag, currentSelectedTag());
+        assertEquals("abrupt server-drop trigger must retain the selected A session identity",
+                expectedSessionId, selectedSessionId());
+        awaitTerminalReady("before abrupt server-side transport drop");
+
+        int resizeAckBeforeDrop = terminalResizeStats().getInt("ackCount");
+        String triggerRequestId = "abrupt-drop-trigger-" + runId;
+        String proofPath = "/tmp/pocketshell-server-transport-drop-" + runId + ".txt";
+        String triggerCommand = "set -eu\n"
+                + "parent_pid=\"$PPID\"\n"
+                + "parent_args=$(ps -p \"$parent_pid\" -o args=)\n"
+                + "parent_uid=$(ps -p \"$parent_pid\" -o uid= | tr -d ' ')\n"
+                + "case \"$parent_args\" in *\"sshd-session: testuser@pts/\"*) ;; *) "
+                + "printf 'unexpected SSH server parent: %s\\n' \"$parent_args\" >&2; exit 97 ;; esac\n"
+                + "printf 'run_id=%s\\nserver_pid=%s\\nserver_uid=%s\\nserver_args=%s\\nsignal=SIGKILL\\n' "
+                + JSONObject.quote(runId) + " \"$parent_pid\" \"$parent_uid\" \"$parent_args\" > "
+                + shellQuote(proofPath) + "\n"
+                + "kill -KILL \"$parent_pid\"\n";
+        long dropRequestedAtEpochMs = System.currentTimeMillis();
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " ABRUPT_DROP_SERVER_KILL_REQUESTED "
+                + new JSONObject().put("connectionId", oldConnectionId)
+                .put("generationId", oldGenerationId)
+                .put("selectedTag", expectedTag)
+                .put("selectedId", expectedSessionId)
+                .put("requestId", triggerRequestId)
+                .put("signal", "SIGKILL"));
+        evalString(nativeExecLaunchScript(triggerRequestId, oldConnectionId, oldGenerationId, triggerCommand, 12_000));
+
+        awaitJsTrue("window.__pocketshellJourney?.bridgeEvents?.filter((event) => event.state === 'lost' "
+                + "&& event.connectionId === " + JSONObject.quote(oldConnectionId) + ").length === 1 "
+                + "|| window.__pocketshellJourney?.sshExecs?.[" + JSONObject.quote(triggerRequestId)
+                + "]?.settled === true", 20_000);
+        JSONObject triggerState = new JSONObject(evalString("JSON.stringify(window.__pocketshellJourney.sshExecs["
+                + JSONObject.quote(triggerRequestId) + "])"));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " ABRUPT_DROP_TRIGGER_EXEC_SETTLED " + triggerState);
+        String triggerError = triggerState.optString("error").toLowerCase(java.util.Locale.ROOT);
+        assertTrue("server-side SIGKILL must interrupt its SSH command through transport closure: " + triggerState,
+                triggerState.optJSONObject("result") == null
+                        && (triggerError.contains("broken transport") || triggerError.contains("eof")
+                        || triggerError.contains("connection reset") || triggerError.contains("socket closed")));
+
+        awaitJsTrue("window.__pocketshellJourney?.bridgeEvents?.filter((event) => event.state === 'lost' "
+                + "&& event.connectionId === " + JSONObject.quote(oldConnectionId) + ").length === 1", 20_000);
+        JSONObject lostEvent = findNativeLostEvent(oldConnectionId);
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " ABRUPT_DROP_NATIVE_LOST " + lostEvent);
+
+        try {
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshConnectionId !== "
+                    + JSONObject.quote(oldConnectionId)
+                    + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === "
+                    + JSONObject.quote(expectedTag), 90_000);
+        } catch (AssertionError reconnectFailure) {
+            try {
+                logForegroundReconnectDebug();
+            } catch (Exception diagnosticFailure) {
+                Log.w("SshPtyDockerJourney", "RUN " + runId + " abrupt-drop reconnect diagnostics failed: "
+                        + diagnosticFailure.getClass().getSimpleName());
+            }
+            throw reconnectFailure;
+        }
+
+        long reconnectLiveAtEpochMs = System.currentTimeMillis();
+        awaitNativeResizeAckAfter(resizeAckBeforeDrop, "abrupt-server-drop-recovered");
+        String newConnectionId = currentConnectionId();
+        String newGenerationId = currentGenerationId();
+        assertTrue("server-side SSH termination must create a fresh native connection", !newConnectionId.isEmpty()
+                && !oldConnectionId.equals(newConnectionId));
+        assertTrue("server-side SSH termination must attach a fresh PTY generation", !newGenerationId.isEmpty()
+                && !oldGenerationId.equals(newGenerationId));
+        assertEquals("abrupt-drop recovery must select the same aplexer session ID", expectedSessionId, selectedSessionId());
+        assertEquals("abrupt-drop recovery must keep the same selected session tag", expectedTag, currentSelectedTag());
+        assertEquals("abrupt-drop recovery must keep the same selected session name",
+                expectedSession.getString("name"), selectedSessionName());
+        awaitTerminalReady("after abrupt server-side transport recovery");
+
+        org.json.JSONArray phasesAfterDrop = new org.json.JSONArray(
+                evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
+        int reconnectingPhases = 0;
+        int recoveredLivePhaseObservations = 0;
+        java.util.Set<String> recoveredLiveAttachIdentities = new java.util.HashSet<>();
+        for (int index = 0; index < phasesAfterDrop.length(); index += 1) {
+            JSONObject phase = phasesAfterDrop.getJSONObject(index);
+            if (phase.optLong("at") < dropRequestedAtEpochMs) continue;
+            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
+            if ("live".equals(phase.optString("phase"))
+                    && newConnectionId.equals(phase.optString("connectionId"))
+                    && expectedSessionId.equals(phase.optString("selectedId"))
+                    && expectedTag.equals(phase.optString("tag"))) {
+                recoveredLivePhaseObservations += 1;
+                recoveredLiveAttachIdentities.add(phase.optString("connectionId") + ":"
+                        + phase.optString("generationId"));
+            }
+        }
+        int recoveredLivePhases = recoveredLiveAttachIdentities.size();
+        assertEquals("one JS reconnect state must follow the single server-side SSH loss", 1, reconnectingPhases);
+        assertTrue("fresh JS session attach must become live for the selected host session",
+                recoveredLivePhaseObservations > 0);
+        assertEquals("one JS live attach identity must recover the selected host session", 1, recoveredLivePhases);
+
+        JSONObject proofResult = awaitNativeSshExec("abrupt-drop-proof-" + runId,
+                "cat " + shellQuote(proofPath), 15_000);
+        assertEquals("server-side transport termination proof must be read on the fresh SSH connection", 0,
+                proofResult.getInt("exitCode"));
+        assertFalse("server-side transport termination proof command must not time out",
+                proofResult.getBoolean("timedOut"));
+        String serverProof = proofResult.getString("stdout");
+        assertTrue("Docker sshd must record the unique journey before killing its current SSH process",
+                serverProof.contains("run_id=" + runId + "\n")
+                        && serverProof.contains("server_pid=")
+                        && serverProof.contains("server_uid=")
+                        && serverProof.contains("sshd")
+                        && serverProof.contains("testuser@pts/")
+                        && serverProof.contains("signal=SIGKILL"));
+        writeText(new File(artifactDirectory, "abrupt-drop-server-proof.txt"), serverProof);
+
+        JSONObject inputBefore = terminalInputStats();
+        JSONObject recoveryCheckpoint = sendMarkerAndCapture("abrupt-drop-recovered", marker, artifactDirectory);
+        JSONObject inputAfter = terminalInputStats();
+        assertEquals("post-reconnect PTY input must leave no pending bytes", 0, inputAfter.getInt("pending"));
+        assertEquals("post-reconnect PTY input must not fail", inputBefore.getInt("failureCount"),
+                inputAfter.getInt("failureCount"));
+        assertTrue("post-reconnect marker command must be acknowledged by the native PTY bridge",
+                inputAfter.getInt("ackCount") > inputBefore.getInt("ackCount"));
+        assertEquals("post-reconnect viewport must bind to the fresh SSH connection", newConnectionId,
+                recoveryCheckpoint.getString("connectionId"));
+        assertEquals("post-reconnect viewport must bind to the fresh PTY generation", newGenerationId,
+                recoveryCheckpoint.getString("generationId"));
+        captureFullScreenPng("abrupt-drop-recovered-full-screen.png", artifactDirectory);
+
+        JSONObject hostCaptureResult = awaitNativeSshExec("abrupt-drop-host-capture-" + runId,
+                "/usr/bin/a capture --bytes 65536 " + expectedSessionId, 20_000);
+        assertEquals("the recovered host CLI capture must complete successfully", 0,
+                hostCaptureResult.getInt("exitCode"));
+        assertFalse("the recovered host CLI capture must not time out", hostCaptureResult.getBoolean("timedOut"));
+        int markerLineCount = countExactMarkerLines(hostCaptureResult.getString("stdout"), marker);
+        assertEquals("a fresh host-side a capture must contain the post-reconnect PTY marker exactly once",
+                1, markerLineCount);
+
+        JSONObject result = new JSONObject()
+                .put("assertions", new org.json.JSONArray()
+                        .put("server-side-sshd-transport-killed")
+                        .put("native-transport-loss-observed-once")
+                        .put("single-js-reconnect-and-session-reattach")
+                        .put("fresh-terminal-viewport-captured")
+                        .put("post-reconnect-pty-bytes-present-on-host-exactly-once"))
+                .put("trigger", "server-side-sshd-session-sigkill")
+                .put("triggerRequestId", triggerRequestId)
+                .put("triggerSignal", "SIGKILL")
+                .put("triggerProofFile", "abrupt-drop-server-proof.txt")
+                .put("oldConnectionId", oldConnectionId)
+                .put("oldGenerationId", oldGenerationId)
+                .put("newConnectionId", newConnectionId)
+                .put("newGenerationId", newGenerationId)
+                .put("nativeLostEventCount", 1)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("recoveredLivePhaseCount", recoveredLivePhases)
+                .put("dropRequestedAtEpochMs", dropRequestedAtEpochMs)
+                .put("lossObservedAtEpochMs", lostEvent.getLong("atEpochMs"))
+                .put("reconnectLiveAtEpochMs", reconnectLiveAtEpochMs)
+                .put("selectedTag", expectedTag)
+                .put("selectedId", expectedSessionId)
+                .put("serverPid", extractProofInteger(serverProof, "server_pid="))
+                .put("serverUid", extractProofInteger(serverProof, "server_uid="))
+                .put("serverArgs", proofLine(serverProof, "server_args="))
+                .put("hostInputMarker", marker)
+                .put("hostCaptureSource", "SshCapability.exec /usr/bin/a capture --bytes 65536")
+                .put("hostCaptureExactMarkerLineCount", markerLineCount)
+                .put("inputAckCountBefore", inputBefore.getInt("ackCount"))
+                .put("inputAckCountAfter", inputAfter.getInt("ackCount"))
+                .put("inputFailureCountAfter", inputAfter.getInt("failureCount"))
+                .put("inputPendingAfter", inputAfter.getInt("pending"))
+                .put("recoveryCheckpoint", recoveryCheckpoint)
+                .put("fullScreenPng", "abrupt-drop-recovered-full-screen.png");
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " ABRUPT_DROP_RECOVERED " + result);
+        return result;
+    }
+
+    private String nativeExecLaunchScript(
+            String requestId, String connectionId, String generationId, String command, int timeoutMs
+    ) {
+        return "(() => {const journey=window.__pocketshellJourney;"
+                + "if(!journey) throw new Error('lifecycle recorder missing');"
+                + "journey.sshExecs=journey.sshExecs||{};"
+                + "const entry={settled:false,result:null,error:''};journey.sshExecs[" + JSONObject.quote(requestId) + "]=entry;"
+                + "const plugin=window.Capacitor?.Plugins?.SshCapability;"
+                + "if(!plugin?.exec) throw new Error('SSH exec bridge missing');"
+                + "plugin.exec({requestId:" + JSONObject.quote(requestId)
+                + ",connectionId:" + JSONObject.quote(connectionId)
+                + ",generationId:" + JSONObject.quote(generationId)
+                + ",command:" + JSONObject.quote(command)
+                + ",timeoutMs:" + timeoutMs + "}).then((result)=>{entry.result=result;entry.settled=true;},(error)=>{"
+                + "entry.error=String(error?.message??error);entry.settled=true;});return 'started';})()";
+    }
+
+    private String shellQuote(String value) {
+        return "'" + value.replace("'", "'\"'\"'") + "'";
+    }
+
+    private JSONObject awaitNativeSshExec(String requestId, String command, long timeoutMs) throws Exception {
+        String connectionId = currentConnectionId();
+        String generationId = currentGenerationId();
+        assertEquals("host exec oracle requires the recovered live connection", "live", currentPhase());
+        assertEquals("native host exec launch must be accepted", "started", evalString(nativeExecLaunchScript(
+                requestId, connectionId, generationId, command, Math.toIntExact(timeoutMs))));
+        awaitJsTrue("window.__pocketshellJourney?.sshExecs?.[" + JSONObject.quote(requestId) + "]?.settled === true",
+                timeoutMs + 5_000);
+        JSONObject state = new JSONObject(evalString("JSON.stringify(window.__pocketshellJourney.sshExecs["
+                + JSONObject.quote(requestId) + "])"));
+        assertEquals("native host exec must not reject on the recovered transport: " + state.optString("error"),
+                "", state.optString("error"));
+        JSONObject result = state.optJSONObject("result");
+        assertNotNull("native host exec result must be present", result);
+        assertEquals("native host exec result must echo its request ID", requestId, result.getString("requestId"));
+        assertEquals("native host exec result must echo the active connection", connectionId,
+                result.getString("connectionId"));
+        assertEquals("native host exec result must echo the active generation", generationId,
+                result.getString("generationId"));
+        return result;
+    }
+
+    private JSONObject findNativeLostEvent(String connectionId) throws Exception {
+        org.json.JSONArray events = new org.json.JSONArray(
+                evalString("JSON.stringify(window.__pocketshellJourney?.bridgeEvents ?? [])"));
+        JSONObject found = null;
+        for (int index = 0; index < events.length(); index += 1) {
+            JSONObject event = events.getJSONObject(index);
+            if ("lost".equals(event.optString("state")) && connectionId.equals(event.optString("connectionId"))) {
+                assertNull("one abrupt server-side transport must emit exactly one native lost event", found);
+                found = event;
+            }
+        }
+        assertNotNull("server-side SSH termination must reach the native transport listener", found);
+        return found;
+    }
+
+    private int countExactMarkerLines(String raw, String marker) {
+        String plain = Pattern.compile("\\u001B\\[[0-?]*[ -/]*[@-~]").matcher(raw).replaceAll("");
+        int count = 0;
+        for (String line : plain.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
+            if (marker.equals(line.trim())) count += 1;
+        }
+        return count;
+    }
+
+    private int extractProofInteger(String proof, String prefix) {
+        try {
+            return Integer.parseInt(proofLine(proof, prefix));
+        } catch (NumberFormatException error) {
+            throw new AssertionError("server-side SSH termination proof has invalid " + prefix, error);
+        }
+    }
+
+    private String proofLine(String proof, String prefix) {
+        for (String line : proof.split("\\R")) {
+            if (line.startsWith(prefix)) return line.substring(prefix.length()).trim();
+        }
+        throw new AssertionError("server-side SSH termination proof is missing " + prefix);
+    }
+
+    private void captureFullScreenPng(String name, File artifactDirectory) throws Exception {
+        Bitmap fullScreen = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull("Android must provide a same-run full-screen capture after abrupt transport recovery", fullScreen);
+        File png = new File(artifactDirectory, name);
+        try (FileOutputStream output = new FileOutputStream(png)) {
+            assertTrue("full-screen bitmap must encode as PNG", fullScreen.compress(Bitmap.CompressFormat.PNG, 100, output));
+        } finally {
+            fullScreen.recycle();
+        }
+        assertTrue("full-screen PNG must be non-empty", png.isFile() && png.length() > 100);
+        emitArtifact(name, java.nio.file.Files.readAllBytes(png.toPath()));
     }
 
     private int currentTerminalColumns() throws Exception {
