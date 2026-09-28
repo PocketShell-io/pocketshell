@@ -212,12 +212,13 @@ if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
 if ('aria-label="Open prompt composer"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
-        or 'mobile-hotkeys__destination-label' not in mobile_hotkeys
-        or 'data-testid="inline-dictation-destination"' not in mobile_hotkeys
+        or 'mobile-hotkeys__destination-label' in mobile_hotkeys
+        or 'data-testid="inline-dictation-destination"' in mobile_hotkeys
         or 'data-testid="mobile-hotkeys-main-scroll-hint"' not in mobile_hotkeys
         or 'Swipe →' not in mobile_hotkeys
         or 'class="terminal-dictation-action sr-only"' in terminal_dictation
         or ':aria-label="buttonLabel()"' not in terminal_dictation
+        or ':title="buttonLabel()"' not in terminal_dictation
         or '<DictationMicIcon :size="20" />' not in terminal_dictation
         or any(label not in terminal_dictation for label in (
             "Dictate to terminal", "Stop terminal dictation", "Cancel terminal dictation request",
@@ -225,7 +226,16 @@ if ('aria-label="Open prompt composer"' not in mobile_hotkeys
             "Terminal dictation unavailable",
         ))
         or ".terminal-dictation-button__label" in styles):
-    raise AssertionError("Compose and terminal dictation must show their route labels inside the existing 48dp targets")
+    raise AssertionError("Compose and terminal dictation must be icon-only while keeping accessible destination and phase names")
+if ("icon-only Android Compose launcher" not in unit_test
+        or "icon-only 48dp toolbar controls" not in unit_test
+        or "inline-dictation-destination')).toBeUndefined()" not in unit_test
+        or '"visibleText": ""' not in extractor
+        or "visible Prompt caption inside the dock launcher rejected" not in extractor
+        or "visible terminal mic state caption rejected" not in extractor
+        or 'visibleText:promptComposerLauncherNode.innerText.trim()' not in journey
+        or 'visibleText:inlineDictationMicNode.innerText.trim()' not in journey):
+    raise AssertionError("component and packaged gates must reject visible captions while retaining accessible names")
 if ("More terminal keys" not in mobile_hotkeys
         or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
@@ -479,6 +489,7 @@ for dictation_contract in (
     "inlineDictationMicCount",
     "destinationLabels",
     "destinationLabelBounds",
+    "visibleText",
     "inlineDictationTargetKey",
     "sshAttachEpoch",
     "dictation-final-awaiting-stopped",

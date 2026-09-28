@@ -323,22 +323,22 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or route_state.get("promptAccessibleName") != "Open prompt composer"
                 or route_state.get("expectedPromptAccessibleName") != "Open prompt composer"
                 or route_state.get("promptTitle") != "Open prompt composer"
-                or route_state.get("promptLabel") != "Prompt"
-                or route_state.get("expectedPromptLabel") != "Prompt"
-                or route_state.get("promptLabelVisible") is not True
+                or route_state.get("promptVisibleText") != ""
+                or route_state.get("expectedPromptVisibleText") != ""
                 or route_state.get("promptIconVisible") is not True
                 or route_state.get("promptCenterHit") is not True
                 or route_state.get("inlineMicVisible") is not True or route_state.get("inlineMicEnabled") is not True
                 or route_state.get("inlineMicLabel") != "Dictate to terminal"
                 or route_state.get("expectedInlineMicLabel") != "Dictate to terminal"
                 or route_state.get("inlineMicTitle") != "Dictate to terminal"
-                or route_state.get("terminalDestinationLabels") != ["Dictate"]
-                or route_state.get("expectedTerminalDestinationLabels") != ["Dictate"]
-                or route_state.get("terminalDestinationVisible") is not True
+                or route_state.get("inlineMicVisibleText") != ""
+                or route_state.get("terminalDestinationLabels") != []
+                or route_state.get("expectedTerminalDestinationLabels") != []
+                or route_state.get("terminalDestinationVisible") is not False
                 or route_state.get("inlineMicIconVisible") is not True
                 or route_state.get("inlineMicCenterHit") is not True
                 or route_state.get("targetsSeparated") is not True):
-            raise ExtractionFailure("idle terminal evidence does not prove visibly labeled, separate Prompt and terminal dictation controls")
+            raise ExtractionFailure("idle terminal evidence does not prove icon-only, accessible, separate Prompt and terminal dictation controls")
         route_session = route_state.get("expectedSession")
         route_heading = route_state.get("terminalHeading")
         if (not isinstance(route_session, str) or not route_session or not isinstance(route_heading, str)
@@ -1109,9 +1109,8 @@ def self_test() -> None:
         "promptAccessibleName": "Open prompt composer",
         "expectedPromptAccessibleName": "Open prompt composer",
         "promptTitle": "Open prompt composer",
-        "promptLabel": "Prompt",
-        "expectedPromptLabel": "Prompt",
-        "promptLabelVisible": True,
+        "promptVisibleText": "",
+        "expectedPromptVisibleText": "",
         "promptIconVisible": True,
         "promptCenterHit": True,
         "inlineMicVisible": True,
@@ -1119,9 +1118,10 @@ def self_test() -> None:
         "inlineMicLabel": "Dictate to terminal",
         "expectedInlineMicLabel": "Dictate to terminal",
         "inlineMicTitle": "Dictate to terminal",
-        "terminalDestinationLabels": ["Dictate"],
-        "expectedTerminalDestinationLabels": ["Dictate"],
-        "terminalDestinationVisible": True,
+        "inlineMicVisibleText": "",
+        "terminalDestinationLabels": [],
+        "expectedTerminalDestinationLabels": [],
+        "terminalDestinationVisible": False,
         "inlineMicIconVisible": True,
         "inlineMicCenterHit": True,
         "targetsSeparated": True,
@@ -1144,18 +1144,17 @@ def self_test() -> None:
     hidden_prompt_icon_value = json.loads(route_state)
     hidden_prompt_icon_value["promptIconVisible"] = False
     hidden_prompt_icon = json.dumps(hidden_prompt_icon_value).encode()
-    missing_prompt_label_value = json.loads(route_state)
-    missing_prompt_label_value["promptLabel"] = ""
-    missing_prompt_label = json.dumps(missing_prompt_label_value).encode()
-    hidden_prompt_label_value = json.loads(route_state)
-    hidden_prompt_label_value["promptLabelVisible"] = False
-    hidden_prompt_label = json.dumps(hidden_prompt_label_value).encode()
-    missing_terminal_destination_value = json.loads(route_state)
-    missing_terminal_destination_value["terminalDestinationLabels"] = []
-    missing_terminal_destination = json.dumps(missing_terminal_destination_value).encode()
-    hidden_terminal_destination_value = json.loads(route_state)
-    hidden_terminal_destination_value["terminalDestinationVisible"] = False
-    hidden_terminal_destination = json.dumps(hidden_terminal_destination_value).encode()
+    visible_prompt_caption_value = json.loads(route_state)
+    visible_prompt_caption_value["promptVisibleText"] = "Prompt"
+    visible_prompt_caption = json.dumps(visible_prompt_caption_value).encode()
+    visible_terminal_mic_caption_value = json.loads(route_state)
+    visible_terminal_mic_caption_value["inlineMicVisibleText"] = "Dictate"
+    visible_terminal_mic_caption = json.dumps(visible_terminal_mic_caption_value).encode()
+    visible_terminal_destination_value = json.loads(route_state)
+    visible_terminal_destination_value["terminalDestinationLabels"] = ["Dictate"]
+    visible_terminal_destination_value["expectedTerminalDestinationLabels"] = ["Dictate"]
+    visible_terminal_destination_value["terminalDestinationVisible"] = True
+    visible_terminal_destination = json.dumps(visible_terminal_destination_value).encode()
     missed_prompt_center_value = json.loads(route_state)
     missed_prompt_center_value["promptCenterHit"] = False
     missed_prompt_center = json.dumps(missed_prompt_center_value).encode()
@@ -1685,10 +1684,9 @@ def self_test() -> None:
         ("Prompt composer has no accessible name", make_lines(route_state_bytes=unnamed_prompt_route)),
         ("Prompt composer has the wrong title", make_lines(route_state_bytes=mismatched_prompt_title)),
         ("Prompt composer icon is hidden", make_lines(route_state_bytes=hidden_prompt_icon)),
-        ("idle Prompt caption is missing", make_lines(route_state_bytes=missing_prompt_label)),
-        ("idle Prompt caption is hidden", make_lines(route_state_bytes=hidden_prompt_label)),
-        ("terminal dictation action/destination caption is incomplete", make_lines(route_state_bytes=missing_terminal_destination)),
-        ("terminal dictation action/destination caption is hidden", make_lines(route_state_bytes=hidden_terminal_destination)),
+        ("visible Prompt caption is rejected", make_lines(route_state_bytes=visible_prompt_caption)),
+        ("visible terminal mic caption is rejected", make_lines(route_state_bytes=visible_terminal_mic_caption)),
+        ("visible terminal destination caption is rejected", make_lines(route_state_bytes=visible_terminal_destination)),
         ("Prompt composer center misses its target", make_lines(route_state_bytes=missed_prompt_center)),
         ("terminal dictation mic has the wrong title",
          make_lines(route_state_bytes=mismatched_inline_mic_title)),

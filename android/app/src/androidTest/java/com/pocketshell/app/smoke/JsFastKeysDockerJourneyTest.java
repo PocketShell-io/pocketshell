@@ -171,7 +171,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertUnchangedTerminalGrid("composer-to-keys handoff with IME open", composerKeyboardGrid,
                 runtimeGrid(composerKeys));
         assertHotkeyBarReachable(composerKeys);
-        assertDockDestinationLabels(composerKeys);
+        assertDockIconOnlyPresentation(composerKeys);
         captureScreenshot("fastkeys-composer-keys-ime-open.png");
         tapDomCenter("[data-testid=prompt-composer-launcher]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
@@ -1587,6 +1587,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "&&inner.top>=outer.top-0.5&&inner.bottom<=outer.bottom+0.5;"
                 + "const promptComposerLauncher=promptComposerLauncherNode?{...target(promptComposerLauncherNode),"
                 + "iconBounds:promptComposerIconBounds,"
+                + "visibleText:promptComposerLauncherNode.innerText.trim(),"
                 + "title:promptComposerLauncherNode.getAttribute('title')??'',"
                 + "iconComputedWidth:promptComposerIconNode?getComputedStyle(promptComposerIconNode).width:'',"
                 + "iconComputedHeight:promptComposerIconNode?getComputedStyle(promptComposerIconNode).height:'',"
@@ -1653,6 +1654,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const inlineDictationDestinationLabels=inlineDictationDestination?Array.from(inlineDictationDestination.children).map(node=>node.textContent.trim()):[];"
                 + "const inlineDictationMic=inlineDictationMicNode?{...target(inlineDictationMicNode),"
                 + "title:inlineDictationMicNode.getAttribute('title')??'',"
+                + "visibleText:inlineDictationMicNode.innerText.trim(),"
                 + "destinationLabels:inlineDictationDestinationLabels,destinationLabelBounds:rect('[data-testid=inline-dictation-destination]'),"
                 + "iconBounds:inlineDictationMicIconRect?{top:inlineDictationMicIconRect.top,bottom:inlineDictationMicIconRect.bottom,left:inlineDictationMicIconRect.left,right:inlineDictationMicIconRect.right,width:inlineDictationMicIconRect.width,height:inlineDictationMicIconRect.height}:null,"
                 + "iconVisible:!!inlineDictationMicIcon&&inlineDictationMicIconStyle?.display!=='none'"
@@ -1684,7 +1686,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const stableDockControls=['[data-testid=prompt-composer-launcher]','[data-key-id=arrow-up]',"
                 + "'[data-key-id=arrow-down]','[data-key-id=enter]','[data-testid=mobile-hotkeys-launcher]',"
                 + "'[data-testid=inline-dictation-toggle]'].map(selector=>document.querySelector(selector)).filter(Boolean).map(node=>({"
-                + "...target(node),visibleText:node.textContent.trim(),iconCount:node.querySelectorAll('svg').length}));"
+                + "...target(node),visibleText:node.innerText.trim(),iconCount:node.querySelectorAll('svg').length}));"
                 + "const hotkeyControls=Array.from(document.querySelectorAll('[data-testid=mobile-hotkeys],"
                 + "[data-testid=mobile-hotkeys-launcher],[data-testid=mobile-hotkeys-main-page],"
                 + "[data-testid=mobile-hotkeys-ctrl-page],[data-key-id]')).map(node=>({"
@@ -1909,7 +1911,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("keyboard geometry must include a positive native IME inset", geometry.getJSONObject("androidIme").getDouble("imeBottomDp") > 0);
     }
 
-    private void assertDockDestinationLabels(JSONObject geometry) throws Exception {
+    private void assertDockIconOnlyPresentation(JSONObject geometry) throws Exception {
         JSONArray controls = geometry.getJSONArray("stableDockControls");
         assertEquals("the mobile dock keeps Compose, arrows, Enter, More keys, and Mic in Kotlin order", 6, controls.length());
         List<String> expected = List.of("Open prompt composer", "Send Up arrow", "Send Down arrow", "Send Enter",
@@ -1924,21 +1926,17 @@ public final class JsFastKeysDockerJourneyTest {
         }
         for (int index : List.of(0, 4, 5)) {
             JSONObject iconControl = controls.getJSONObject(index);
-            String expectedVisibleText = index == 0 ? "Prompt" : "";
-            assertEquals("destination captions stay within their existing dock targets", expectedVisibleText,
+            assertEquals("dictation destinations use icon-only toolbar targets", "",
                     iconControl.getString("visibleText"));
             assertEquals("Compose, keys, and mic retain one visual icon", 1, iconControl.getInt("iconCount"));
         }
         JSONObject mic = geometry.getJSONObject("inlineDictationMic");
         assertEquals("Mic accessible action remains stable in the idle phase", "Dictate to terminal", mic.getString("label"));
-        assertEquals("idle terminal mic visibly names its action", new JSONArray(List.of("Dictate")),
+        assertEquals("terminal mic keeps its accessible title", "Dictate to terminal", mic.getString("title"));
+        assertEquals("terminal mic has no visible text inside its 48dp target", "", mic.getString("visibleText"));
+        assertEquals("terminal mic does not add a visible caption beside its icon", new JSONArray(),
                 mic.getJSONArray("destinationLabels"));
-        JSONObject labelBounds = mic.getJSONObject("destinationLabelBounds");
-        assertTrue("terminal mic caption stays inside its 48dp hit target",
-                labelBounds.getDouble("left") >= mic.getDouble("left") - 0.5
-                        && labelBounds.getDouble("right") <= mic.getDouble("right") + 0.5
-                        && labelBounds.getDouble("top") >= mic.getDouble("top") - 0.5
-                        && labelBounds.getDouble("bottom") <= mic.getDouble("bottom") + 0.5);
+        assertTrue("terminal mic has no caption node or bounds", mic.isNull("destinationLabelBounds"));
         assertEquals("the idle mic remains the microphone icon", "[\"M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z\",\"M19 10v2a7 7 0 0 1-14 0v-2\",\"M12 19v3M8 22h8\"]",
                 mic.getJSONArray("iconPaths").toString());
     }
@@ -1958,7 +1956,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const visibleWidth=Math.max(0,Math.min(r.right,clip.right)-Math.max(r.left,clip.left));"
                 + "const visibleHeight=Math.max(0,Math.min(r.bottom,clip.bottom)-Math.max(r.top,clip.top));"
                 + "const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2),icon=node.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
-                + "return {label:node.getAttribute('aria-label')||node.textContent.trim(),title:node.getAttribute('title')||'',"
+                + "return {label:node.getAttribute('aria-label')||node.textContent.trim(),title:node.getAttribute('title')||'',visibleText:node.innerText.trim(),"
                 + "iconVisible:!!icon&&iconStyle?.display!=='none'&&iconStyle?.visibility!=='hidden'"
                 + "&&Number.parseFloat(iconStyle?.opacity??'1')>0&&icon.getBoundingClientRect().width>0&&icon.getBoundingClientRect().height>0,"
                 + "left:r.left,right:r.right,width:r.width,height:r.height,insideToolbar:r.left>=clip.left-0.5&&r.right<=clip.right+0.5,"
@@ -1967,6 +1965,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const mic=bar.querySelector('[data-testid=inline-dictation-toggle]'),m=mic?.getBoundingClientRect();let finalMic=null;if(m){const hit=document.elementFromPoint(m.left+m.width/2,m.top+m.height/2),icon=mic.querySelector('svg'),iconStyle=icon?getComputedStyle(icon):null;"
                 + "finalMic={left:m.left,right:m.right,top:m.top,bottom:m.bottom,width:m.width,height:m.height,"
                 + "label:mic.getAttribute('aria-label')||'',title:mic.getAttribute('title')||'',"
+                + "visibleText:mic.innerText.trim(),"
                 + "iconVisible:!!icon&&iconStyle?.display!=='none'&&iconStyle?.visibility!=='hidden'"
                 + "&&Number.parseFloat(iconStyle?.opacity??'1')>0&&icon.getBoundingClientRect().width>0&&icon.getBoundingClientRect().height>0,"
                 + "insideToolbar:m.left>=clip.left-0.5&&m.right<=clip.right+0.5&&m.top>=clip.top-0.5&&m.bottom<=clip.bottom+0.5,"

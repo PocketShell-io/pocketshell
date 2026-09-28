@@ -97,18 +97,18 @@ def require_dictate_prompt_journey(source: str) -> None:
 require_dictate_prompt_journey(journey)
 
 
-def require_labeled_terminal_route_contract(source: str, extractor_source: str) -> None:
+def require_icon_only_terminal_route_contract(source: str, extractor_source: str) -> None:
     start = source.index("private void capturePromptComposerRoute(")
     end = source.index("private void ", start + len("private void "))
     route_capture = source[start:end]
     journey_evidence = (
         "promptAccessibleName:launcher?.getAttribute('aria-label')??''",
         "promptTitle:launcher?.getAttribute('title')??''",
-        "promptLabel:promptLabel?.textContent.trim()??''",
-        "promptLabelVisible:visible(promptLabel)",
+        "promptVisibleText:launcher?.innerText.trim()??''",
         "promptIconVisible:!!promptIcon&&visible(promptIcon)",
         "promptCenterHit:hitCenter(launcher)",
         "inlineMicTitle:inlineMic?.getAttribute('title')??''",
+        "inlineMicVisibleText:inlineMic?.innerText.trim()??''",
         "terminalDestinationLabels,terminalDestinationVisible:visible(terminalDestination)",
         "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)",
         "inlineMicCenterHit:hitCenter(inlineMic)",
@@ -116,9 +116,12 @@ def require_labeled_terminal_route_contract(source: str, extractor_source: str) 
         '"Open prompt composer".equals(state.getString("promptAccessibleName"))',
         '"Open prompt composer".equals(state.getString("promptTitle"))',
         '.put("expectedPromptAccessibleName", "Open prompt composer")',
-        '.put("expectedPromptLabel", "Prompt")',
-        '.put("expectedTerminalDestinationLabels", new JSONArray(List.of("Dictate")))',
-        '"[\\"Dictate\\"]".equals(state.getJSONArray("terminalDestinationLabels").toString())',
+        '.put("expectedPromptVisibleText", "")',
+        'state.getString("promptVisibleText").isEmpty()',
+        'state.getString("inlineMicVisibleText").isEmpty()',
+        '.put("expectedTerminalDestinationLabels", new JSONArray())',
+        '"[]".equals(state.getJSONArray("terminalDestinationLabels").toString())',
+        '!state.getBoolean("terminalDestinationVisible")',
         '"Dictate to terminal".equals(state.getString("inlineMicTitle"))',
         'state.getBoolean("promptIconVisible")',
         'state.getBoolean("promptCenterHit")',
@@ -129,22 +132,22 @@ def require_labeled_terminal_route_contract(source: str, extractor_source: str) 
     for needle in journey_evidence:
         if needle not in route_capture:
             raise AssertionError(f"labeled terminal route journey is missing {needle}")
-    if ('const promptLabel=launcher?.querySelector(\'.mobile-hotkeys__destination-label\')' not in route_capture
+    if ('promptLabel=launcher?.querySelector' in route_capture
             or 'const terminalDestinationLabels=terminalDestination?Array.from(terminalDestination.children).map(node=>node.textContent.trim()):[];' not in route_capture):
-        raise AssertionError("terminal route evidence must capture visible Prompt and Dictate captions")
+        raise AssertionError("terminal route evidence must capture icon-only controls and reject visible captions")
 
     extractor_evidence = (
         'route_state.get("promptAccessibleName") != "Open prompt composer"',
         'route_state.get("promptTitle") != "Open prompt composer"',
-        'route_state.get("promptLabel") != "Prompt"',
-        'route_state.get("expectedPromptLabel") != "Prompt"',
-        'route_state.get("promptLabelVisible") is not True',
+        'route_state.get("promptVisibleText") != ""',
+        'route_state.get("expectedPromptVisibleText") != ""',
+        'route_state.get("inlineMicVisibleText") != ""',
         'route_state.get("promptIconVisible") is not True',
         'route_state.get("promptCenterHit") is not True',
         'route_state.get("inlineMicTitle") != "Dictate to terminal"',
-        'route_state.get("terminalDestinationLabels") != ["Dictate"]',
-        'route_state.get("expectedTerminalDestinationLabels") != ["Dictate"]',
-        'route_state.get("terminalDestinationVisible") is not True',
+        'route_state.get("terminalDestinationLabels") != []',
+        'route_state.get("expectedTerminalDestinationLabels") != []',
+        'route_state.get("terminalDestinationVisible") is not False',
         'route_state.get("inlineMicIconVisible") is not True',
         'route_state.get("inlineMicCenterHit") is not True',
         'route_state.get("targetsSeparated") is not True',
@@ -152,10 +155,9 @@ def require_labeled_terminal_route_contract(source: str, extractor_source: str) 
         '"Prompt composer has no accessible name"',
         '"Prompt composer has the wrong title"',
         '"Prompt composer icon is hidden"',
-        '"idle Prompt caption is missing"',
-        '"idle Prompt caption is hidden"',
-        '"terminal dictation action/destination caption is incomplete"',
-        '"terminal dictation action/destination caption is hidden"',
+        '"visible Prompt caption is rejected"',
+        '"visible terminal mic caption is rejected"',
+        '"visible terminal destination caption is rejected"',
         '"Prompt composer center misses its target"',
         '"terminal dictation mic has the wrong title"',
         '"terminal dictation mic icon is hidden"',
@@ -168,7 +170,7 @@ def require_labeled_terminal_route_contract(source: str, extractor_source: str) 
             raise AssertionError(f"composer artifact extractor is missing a visible route-label regression check: {needle}")
 
 
-require_labeled_terminal_route_contract(journey, extractor)
+require_icon_only_terminal_route_contract(journey, extractor)
 
 
 def require_open_composer_physical_target_settles(source: str) -> None:

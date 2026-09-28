@@ -1421,7 +1421,6 @@ public final class JsComposerDockerJourneyTest {
         String report = evalString("(() => {const shell=document.querySelector('.app-shell');"
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
-                + "const promptLabel=launcher?.querySelector('.mobile-hotkeys__destination-label');"
                 + "const promptIcon=launcher?.querySelector('svg');const promptIconStyle=promptIcon?getComputedStyle(promptIcon):null;"
                 + "const inlineMic=document.querySelector('[data-testid=inline-dictation-toggle]');"
                 + "const terminalDestination=inlineMic?.parentElement?.querySelector('[data-testid=inline-dictation-destination]');"
@@ -1437,12 +1436,13 @@ public final class JsComposerDockerJourneyTest {
                 + "viewport:{width:window.visualViewport?.width??window.innerWidth,height:window.visualViewport?.height??window.innerHeight},"
                 + "composerPresent:!!composer,launcherVisible:visible(launcher),launcherEnabled:!!launcher&&!launcher.disabled,"
                 + "promptAccessibleName:launcher?.getAttribute('aria-label')??'',promptTitle:launcher?.getAttribute('title')??'',"
-                + "promptLabel:promptLabel?.textContent.trim()??'',promptLabelVisible:visible(promptLabel),"
+                + "promptVisibleText:launcher?.innerText.trim()??'',"
                 + "promptIconVisible:!!promptIcon&&visible(promptIcon)&&Number.parseFloat(promptIconStyle?.opacity??'1')>0"
                 + "&&promptIcon.getBoundingClientRect().width>0&&promptIcon.getBoundingClientRect().height>0,"
                 + "promptCenterHit:hitCenter(launcher),inlineMicVisible:visible(inlineMic),"
                 + "inlineMicEnabled:!!inlineMic&&!inlineMic.disabled,inlineMicLabel:inlineMic?.getAttribute('aria-label')??'',"
                 + "inlineMicTitle:inlineMic?.getAttribute('title')??'',"
+                + "inlineMicVisibleText:inlineMic?.innerText.trim()??'',"
                 + "terminalDestinationLabels,terminalDestinationVisible:visible(terminalDestination),"
                 + "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)&&Number.parseFloat(inlineMicIconStyle?.opacity??'1')>0"
                 + "&&inlineMicIcon.getBoundingClientRect().width>0&&inlineMicIcon.getBoundingClientRect().height>0,"
@@ -1452,9 +1452,9 @@ public final class JsComposerDockerJourneyTest {
                 + "promptBounds,inlineMicBounds});})() ");
         JSONObject state = new JSONObject(report).put("runId", runId)
                 .put("expectedPromptAccessibleName", "Open prompt composer")
-                .put("expectedPromptLabel", "Prompt")
+                .put("expectedPromptVisibleText", "")
                 .put("expectedInlineMicLabel", "Dictate to terminal")
-                .put("expectedTerminalDestinationLabels", new JSONArray(List.of("Dictate")))
+                .put("expectedTerminalDestinationLabels", new JSONArray())
                 .put("expectedSession", bytesSession);
         emitArtifact(runId, "composer-route.json", state.toString().getBytes(StandardCharsets.UTF_8));
         emitCurrentScreen(runId, "composer-route.png");
@@ -1465,13 +1465,15 @@ public final class JsComposerDockerJourneyTest {
                         && state.getBoolean("launcherEnabled")
                         && "Open prompt composer".equals(state.getString("promptAccessibleName"))
                         && "Open prompt composer".equals(state.getString("promptTitle"))
-                        && "Prompt".equals(state.getString("promptLabel")) && state.getBoolean("promptLabelVisible")
+                        && state.getString("promptVisibleText").isEmpty()
                         && state.getBoolean("promptIconVisible") && state.getBoolean("promptCenterHit")
                         && state.getBoolean("inlineMicVisible") && state.getBoolean("inlineMicEnabled")
                         && "Dictate to terminal".equals(state.getString("inlineMicLabel"))
                         && "Dictate to terminal".equals(state.getString("inlineMicTitle"))
-                        && "[\"Dictate\"]".equals(state.getJSONArray("terminalDestinationLabels").toString())
-                        && state.getBoolean("terminalDestinationVisible")
+                        && state.getString("inlineMicVisibleText").isEmpty()
+                        && "[]".equals(state.getJSONArray("terminalDestinationLabels").toString())
+                        && "[]".equals(state.getJSONArray("expectedTerminalDestinationLabels").toString())
+                        && !state.getBoolean("terminalDestinationVisible")
                         && state.getBoolean("inlineMicIconVisible") && state.getBoolean("inlineMicCenterHit")
                         && state.getBoolean("targetsSeparated")
                         && state.getString("terminalHeading").contains(bytesSession)

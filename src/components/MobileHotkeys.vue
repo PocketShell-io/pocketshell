@@ -83,12 +83,6 @@ const dictationStatusVisible = computed(() => props.dictationAvailable && (
   || props.dictationState.tone === 'error'
   || props.dictationState.tone === 'warning'
 ));
-const terminalDictationLabel = computed(() => {
-  if (props.dictationState.phase === 'listening') return 'Stop';
-  if (props.dictationState.phase === 'starting') return 'Cancel';
-  if (['stopping', 'cancelling', 'inserting'].includes(props.dictationState.phase)) return 'Wait';
-  return 'Dictate';
-});
 const sendKey = actions.sendKey;
 let keyboardPointer: { id: number; button: Element } | null = null;
 
@@ -237,7 +231,6 @@ defineExpose({
           @click="emit('openComposer')"
         >
           <AppIcon name="edit-2" aria-hidden="true" />
-          <span class="mobile-hotkeys__destination-label" aria-hidden="true">Prompt</span>
         </button>
 
         <div class="mobile-hotkeys__navigation" data-testid="mobile-hotkeys-navigation">
@@ -289,14 +282,6 @@ defineExpose({
           </div>
           <div v-if="hasPersistentAccessory" class="mobile-hotkeys__persistent-accessory" data-testid="mobile-hotkeys-persistent-accessory">
             <slot name="persistent-accessory" />
-            <span
-              v-if="dictationAvailable"
-              class="mobile-hotkeys__destination-label mobile-hotkeys__terminal-dictation-label"
-              data-testid="inline-dictation-destination"
-              aria-hidden="true"
-            >
-              <span>{{ terminalDictationLabel }}</span>
-            </span>
           </div>
         </div>
       </div>
@@ -539,12 +524,10 @@ defineExpose({
   width: 48px;
   min-width: 48px;
   flex: 0 0 48px;
-  flex-direction: column;
-  gap: 1px;
   border-color: var(--border-soft);
   background: var(--surface-2);
   color: var(--fg);
-  padding: 2px 0;
+  padding: 0;
 }
 .mobile-hotkeys__bar button.mobile-hotkeys__composer-launcher {
   color: var(--fg);
@@ -554,18 +537,6 @@ defineExpose({
 .mobile-hotkeys__composer-launcher:active:not(:disabled) {
   border-color: var(--accent-dim);
   background: var(--state-selected);
-  color: var(--accent);
-}
-.mobile-hotkeys__composer-launcher :deep(svg) { width: 16px; height: 16px; }
-.mobile-hotkeys__destination-label {
-  display: block;
-  color: var(--fg-secondary);
-  font: 500 11px/13px var(--font-ui);
-  letter-spacing: 0;
-  white-space: nowrap;
-}
-.mobile-hotkeys__composer-launcher:hover:not(:disabled) .mobile-hotkeys__destination-label,
-.mobile-hotkeys__composer-launcher:active:not(:disabled) .mobile-hotkeys__destination-label {
   color: var(--accent);
 }
 .mobile-hotkeys__launcher {
@@ -597,27 +568,6 @@ defineExpose({
   border-color: var(--accent-dim);
   color: var(--accent);
 }
-.mobile-hotkeys__terminal-dictation-label {
-  position: absolute;
-  z-index: 1;
-  inset-inline: 0;
-  bottom: 3px;
-  display: block;
-  min-width: 0;
-  color: var(--fg-secondary);
-  font: 500 11px/13px var(--font-ui);
-  pointer-events: none;
-}
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]) + .mobile-hotkeys__terminal-dictation-label,
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) + .mobile-hotkeys__terminal-dictation-label {
-  color: var(--accent);
-}
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="transcribing"]) + .mobile-hotkeys__terminal-dictation-label {
-  color: var(--warning);
-}
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="error"]) + .mobile-hotkeys__terminal-dictation-label {
-  color: var(--error);
-}
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) {
   align-items: center;
   justify-content: center;
@@ -626,10 +576,6 @@ defineExpose({
   background: var(--surface-2);
   padding: 0;
   color: var(--fg-secondary);
-}
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button svg) {
-  width: 16px;
-  height: 16px;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]),
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {
@@ -666,9 +612,7 @@ defineExpose({
   padding: 0;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button) {
-  flex-direction: column;
   justify-content: center;
-  padding: 0 0 12px;
   color: var(--fg);
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="idle"]) {
