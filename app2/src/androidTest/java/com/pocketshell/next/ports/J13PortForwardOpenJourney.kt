@@ -24,12 +24,14 @@ import com.pocketshell.next.connect.JourneyScreenshots
 import com.pocketshell.next.connect.SeedBeforeLaunchRule
 import com.pocketshell.next.connect.appGraph
 import com.pocketshell.next.connect.awaitIdle
+import com.pocketshell.next.connect.awaitImeViewportAck
 import com.pocketshell.next.connect.openQuietHost
 import com.pocketshell.next.tree.SESSION_TREE_PORTS_TAG
 import com.pocketshell.next.tree.SESSION_TREE_USAGE_TAG
 import com.pocketshell.next.usage.USAGE_PROVIDER_LIST_TAG
 import com.pocketshell.next.usage.USAGE_SCREEN_TAG
 import com.pocketshell.next.usage.usageProviderRowTag
+import java.io.File
 import kotlinx.coroutines.runBlocking
 import com.pocketshell.next.workspaces.HOST_WORKSPACES_ACTIONS_TAG
 import dagger.hilt.android.testing.HiltAndroidRule
@@ -37,7 +39,6 @@ import dagger.hilt.android.testing.HiltAndroidTest
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
-import org.junit.Ignore
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.RuleChain
@@ -133,7 +134,6 @@ class J13PortForwardOpenJourney {
      * screen (issue #2611 acceptance: a real navigation path is exercised).
      */
     @Test
-    @Ignore("quarantined: #2679, expires 2026-09-27 — session-tree ports row not displayed when tapped (runs 34779999990, 34820243551, 34870815039 on f7feb8338/69aa7c28c/a3404ec67, assertIsDisplayed 'The component is not displayed!'); identical signature all three times, every other journey green")
     fun tappingPortsOnTheSessionTreeOpensThePortForwardScreen() {
         when (phase()) {
             PHASE_SETUP -> runSetupPhase()
@@ -148,7 +148,7 @@ class J13PortForwardOpenJourney {
         openServices()
         awaitText("No active tunnels")
         compose.onNodeWithText("No active tunnels").assertIsDisplayed()
-        JourneyScreenshots.capture("02-services-off", JOURNEY)
+        capture("02-services-off")
         enableDiscoveryAndOpenAddTunnel()
         addManualTunnel()
         awaitForwardingAndHttp("05-tunnel-active-before-process-death")
@@ -161,7 +161,7 @@ class J13PortForwardOpenJourney {
         awaitForwardingAndHttp("06-process-death-remounted")
         removeManualTunnel()
         awaitMappingAbsent(DISCOVERED_PORT)
-        JourneyScreenshots.capture("07-tunnel-removed", JOURNEY)
+        capture("07-tunnel-removed")
     }
 
     /** The third phase starts after a second external force-stop/relaunch. */
@@ -179,7 +179,7 @@ class J13PortForwardOpenJourney {
             .performScrollTo()
             .assertIsDisplayed()
             .assertTextContains("Not forwarded", substring = true)
-        JourneyScreenshots.capture("08-reopened-available", JOURNEY)
+        capture("08-reopened-available")
         openUsageFromServices()
     }
 
@@ -188,13 +188,13 @@ class J13PortForwardOpenJourney {
         openServices()
         awaitText("No active tunnels")
         compose.onNodeWithText("No active tunnels").assertIsDisplayed()
-        JourneyScreenshots.capture("02-services-off", JOURNEY)
+        capture("02-services-off")
         enableDiscoveryAndOpenAddTunnel()
         addManualTunnel()
         awaitForwardingAndHttp("05-tunnel-active")
         removeManualTunnel()
         awaitMappingAbsent(DISCOVERED_PORT)
-        JourneyScreenshots.capture("07-tunnel-removed", JOURNEY)
+        capture("07-tunnel-removed")
 
         // The mapping is gone before the screen is mounted again, so the
         // supervisor must expose the discovered service as available rather
@@ -209,13 +209,13 @@ class J13PortForwardOpenJourney {
             .performScrollTo()
             .assertIsDisplayed()
             .assertTextContains("Not forwarded", substring = true)
-        JourneyScreenshots.capture("08-reopened-available", JOURNEY)
+        capture("08-reopened-available")
         openUsageFromServices()
     }
 
     private fun openServices() {
         compose.openQuietHost(hostId, TIMEOUT_MS)
-        JourneyScreenshots.capture("01-workspaces", JOURNEY)
+        capture("01-workspaces")
 
         awaitTag(HOST_WORKSPACES_ACTIONS_TAG, "the host actions menu")
         compose.onNodeWithTag(HOST_WORKSPACES_ACTIONS_TAG).performClick()
@@ -230,21 +230,34 @@ class J13PortForwardOpenJourney {
     private fun enableDiscoveryAndOpenAddTunnel() {
         compose.onNodeWithTag("$SERVICES_DISCOVERY_TAG-on").performClick()
         awaitTag(servicesRowTag(DISCOVERED_PORT), "the discovered service")
-        JourneyScreenshots.capture("03-services-discovered", JOURNEY)
+        capture("03-services-discovered")
         compose.onNodeWithTag(servicesRowTag(DISCOVERED_PORT)).performClick()
         awaitTag(ADD_TUNNEL_SCREEN_TAG, "the add-tunnel form")
+        capture("04-add-tunnel-form")
     }
 
     private fun addManualTunnel() {
-        compose.onNodeWithTag(ADD_TUNNEL_NAME_TAG).performTextReplacement("Fixture HTTP")
+        val nameField = compose.onNodeWithTag(ADD_TUNNEL_NAME_TAG)
+        nameField.performClick()
+        nameField.performTextReplacement("Fixture HTTP")
+        compose.awaitImeViewportAck(
+            what = "J13 add-tunnel name field",
+            imeVisible = true,
+            timeoutMs = TIMEOUT_MS,
+            view = { compose.activity.window.decorView },
+            capture = ::capture,
+        )
+        capture("04-add-tunnel-name-ime")
+        compose.onNodeWithTag(ADD_TUNNEL_SUBMIT_TAG).performScrollTo()
+        capture("04-add-tunnel-submit-after-scroll")
         compose.onNodeWithTag(ADD_TUNNEL_SUBMIT_TAG).assertIsDisplayed()
         compose.onNodeWithTag(ADD_TUNNEL_REMOTE_TAG).performTextReplacement("0")
         compose.onNodeWithTag(ADD_TUNNEL_SUBMIT_TAG).assertIsNotEnabled()
-        JourneyScreenshots.capture("04-add-tunnel-invalid", JOURNEY)
+        capture("04-add-tunnel-invalid")
         compose.onNodeWithTag(ADD_TUNNEL_REMOTE_TAG).performTextReplacement(DISCOVERED_PORT.toString())
         compose.onNodeWithTag(ADD_TUNNEL_LOCAL_TAG).performTextReplacement(LOCAL_PORT.toString())
         compose.onNodeWithTag(ADD_TUNNEL_SUBMIT_TAG).performScrollTo().assertIsEnabled()
-        JourneyScreenshots.capture("04-add-tunnel", JOURNEY)
+        capture("04-add-tunnel")
         compose.onNodeWithTag(ADD_TUNNEL_SUBMIT_TAG).performClick()
 
         awaitTag(SERVICES_SCREEN_TAG, "the Services & tunnels screen after submit")
@@ -257,7 +270,7 @@ class J13PortForwardOpenJourney {
         awaitForwardService()
         reportForwardingSnapshot("before-http-$screenshot")
         awaitForwardedHttpBody()
-        JourneyScreenshots.capture(screenshot, JOURNEY)
+        capture(screenshot)
     }
 
     private fun reportForwardingSnapshot(label: String) {
@@ -279,7 +292,7 @@ class J13PortForwardOpenJourney {
         compose.onNodeWithText("Manual tunnel").assertIsDisplayed()
         compose.onNodeWithTag(TUNNEL_STOP_TAG).performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Remove tunnel").assertIsDisplayed()
-        JourneyScreenshots.capture("06-tunnel-detail", JOURNEY)
+        capture("06-tunnel-detail")
         compose.onNodeWithTag(TUNNEL_STOP_TAG).performClick()
 
         awaitTag(SERVICES_SCREEN_TAG, "Services after manual removal")
@@ -295,7 +308,7 @@ class J13PortForwardOpenJourney {
         awaitTag(USAGE_PROVIDER_LIST_TAG, "host-scoped Usage providers")
         awaitTag(usageProviderRowTag("codex"), "the host Usage Codex row")
         compose.onNodeWithText("docker-fixture").assertIsDisplayed()
-        JourneyScreenshots.capture("09-host-usage", JOURNEY)
+        capture("09-host-usage")
     }
 
     private fun awaitMappingPresent(remotePort: Int, localPort: Int) {
@@ -336,7 +349,7 @@ class J13PortForwardOpenJourney {
             if (running) return
             SystemClock.sleep(POLL_MS)
         }
-        val shot = JourneyScreenshots.capture("failure-foreground-service", JOURNEY)
+        val shot = capture("failure-foreground-service")
         throw AssertionError("ForwardService was not running. Screenshot: ${shot.absolutePath}")
     }
 
@@ -381,6 +394,26 @@ class J13PortForwardOpenJourney {
         )
     }
 
+    /** Preserve this journey's screenshots after the connected-test app is removed. */
+    private fun capture(name: String): File {
+        val file = JourneyScreenshots.capture(name, JOURNEY)
+        val outputDir = InstrumentationRegistry.getArguments()
+            .getString("additionalTestOutputDir")
+            ?.takeIf { it.isNotBlank() }
+            ?: return file
+        runCatching {
+            val targetDir = File(outputDir, JOURNEY).apply { mkdirs() }
+            file.parentFile?.listFiles()
+                ?.filter { it.isFile && it.name.startsWith(file.nameWithoutExtension) }
+                ?.forEach { artifact ->
+                    val target = File(targetDir, artifact.name)
+                    artifact.copyTo(target, overwrite = true)
+                    println("J13_SCREENSHOT ${target.absolutePath}")
+                }
+        }
+        return file
+    }
+
     private fun awaitTag(tag: String, what: String = tag) {
         val deadline = SystemClock.elapsedRealtime() + TIMEOUT_MS
         while (SystemClock.elapsedRealtime() < deadline) {
@@ -388,7 +421,7 @@ class J13PortForwardOpenJourney {
             if (compose.onAllNodesWithTag(tag).fetchSemanticsNodes().isNotEmpty()) return
             SystemClock.sleep(POLL_MS)
         }
-        val shot = JourneyScreenshots.capture("failure-${what.replace(' ', '-')}", JOURNEY)
+        val shot = capture("failure-${what.replace(' ', '-')}")
         throw AssertionError(
             "$what never appeared within ${TIMEOUT_MS}ms.\n" +
                 "Screenshot: ${shot.absolutePath}",
@@ -402,7 +435,7 @@ class J13PortForwardOpenJourney {
             if (compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()) return
             SystemClock.sleep(POLL_MS)
         }
-        val shot = JourneyScreenshots.capture("failure-text", JOURNEY)
+        val shot = capture("failure-text")
         throw AssertionError(
             "text '$text' never appeared within ${TIMEOUT_MS}ms.\n" +
                 "Screenshot: ${shot.absolutePath}",
@@ -419,7 +452,7 @@ class J13PortForwardOpenJourney {
             ) return
             SystemClock.sleep(POLL_MS)
         }
-        val shot = JourneyScreenshots.capture("failure-text", JOURNEY)
+        val shot = capture("failure-text")
         throw AssertionError(
             "text containing '$text' never appeared within ${TIMEOUT_MS}ms.\n" +
                 "Screenshot: ${shot.absolutePath}",
