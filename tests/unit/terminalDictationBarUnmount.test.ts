@@ -145,7 +145,7 @@ describe('terminal dictation bar lifecycle', () => {
     vi.clearAllMocks();
   });
 
-  it('shows a distinct Stop glyph while listening, with an accessible action and state tint', async () => {
+  it('keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint', async () => {
     let recognitionEvent: ((event: DictationEvent) => void) | undefined;
     const session: DictationSession = {
       requestId: 'inline-glyph-1',
@@ -174,6 +174,7 @@ describe('terminal dictation bar lifecycle', () => {
     const toggle = findByTestId(root, 'inline-dictation-toggle');
     expect(toggle?.props['aria-label']).toBe('Dictate at terminal cursor');
     expect(findByTestId(root, 'inline-dictation-dock-label')?.text).toBe('Dictate');
+    expect(findAllByType(toggle!, 'span').map((span) => span.text)).toEqual(['Dictate']);
     expect(toggle?.props['data-mic-state']).toBe('idle');
     const idleMicSvg = findAllByType(toggle!, 'svg')[0];
     expect(idleMicSvg?.props['aria-hidden']).toBe('true');
@@ -189,10 +190,11 @@ describe('terminal dictation bar lifecycle', () => {
 
     const listeningToggle = findByTestId(root, 'inline-dictation-toggle');
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
-    expect(listeningToggle?.props['aria-label']).toBe('Stop dictating at terminal cursor');
-    expect(listeningToggle?.props.title).toBe('Stop dictating at terminal cursor');
+    expect(listeningToggle?.props['aria-label']).toBe('Stop dictation and insert at terminal cursor');
+    expect(listeningToggle?.props.title).toBe('Stop dictation and insert at terminal cursor');
     expect(listeningToggle?.props['aria-pressed']).toBe(true);
     expect(findByTestId(root, 'inline-dictation-dock-label')?.text).toBe('Stop');
+    expect(findAllByType(listeningToggle!, 'span').map((span) => span.text)).toEqual(['Stop']);
     expect(listeningToggle?.props['data-mic-state']).toBe('listening');
     const listeningMicSvg = findAllByType(listeningToggle!, 'svg')[0];
     expect(listeningMicSvg?.props['aria-hidden']).toBe('true');

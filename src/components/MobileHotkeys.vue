@@ -88,8 +88,23 @@ const dictationStatusVisible = computed(() => props.showInlineDictationStatus ??
     || props.dictationState.tone === 'warning'
   )
 ));
+const dictationElapsedMs = ref(0);
+const dictationElapsedLabel = computed(() => {
+  const totalSeconds = Math.floor(dictationElapsedMs.value / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+});
+const dictationWaveformBars = [8, 15, 11, 21, 13, 18, 9, 16, 11, 20, 12, 17];
 const sendKey = actions.sendKey;
 let keyboardPointer: { id: number; button: Element } | null = null;
+let dictationStartedAt = 0;
+let dictationClock: ReturnType<typeof setInterval> | undefined;
+
+function stopDictationClock(): void {
+  if (dictationClock !== undefined) clearInterval(dictationClock);
+  dictationClock = undefined;
+}
 
 function closePalette(): void { actions.closePalette(); }
 function showCtrlPage(): void { actions.showCtrlPage(); }
@@ -168,9 +183,28 @@ function accessibleKeyName(key: TerminalHotkey): string {
 }
 
 watch(() => props.enabled, actions.setEnabled);
+watch(() => props.dictationState.phase, (phase) => {
+  stopDictationClock();
+  if (phase === 'starting') {
+    dictationElapsedMs.value = 0;
+    actions.closePalette();
+  } else if (phase === 'listening') {
+    dictationElapsedMs.value = 0;
+    dictationStartedAt = Date.now();
+    dictationClock = setInterval(() => {
+      dictationElapsedMs.value = Date.now() - dictationStartedAt;
+    }, 250);
+    actions.closePalette();
+  } else if (phase === 'idle') {
+    dictationElapsedMs.value = 0;
+  }
+}, { immediate: true, flush: 'sync' });
 watch(page, (current) => emit('pageChange', current), { immediate: true, flush: 'sync' });
 
-onBeforeUnmount(() => actions.closePalette());
+onBeforeUnmount(() => {
+  stopDictationClock();
+  actions.closePalette();
+});
 
 defineExpose({
   closePalette: actions.closePalette,
@@ -188,6 +222,7 @@ defineExpose({
       'mobile-hotkeys--main-open': paletteOpen && page === 'main',
       'mobile-hotkeys--ctrl-open': paletteOpen && page === 'ctrl',
       'mobile-hotkeys--dictation-status-open': dictationStatusVisible,
+      'mobile-hotkeys--dictation-listening': dictationStatusVisible && dictationState.phase === 'listening',
       'mobile-hotkeys--dictation-available': dictationAvailable,
     }"
     data-testid="mobile-hotkeys"
@@ -207,21 +242,38 @@ defineExpose({
       :data-dictation-tone="dictationState.tone"
       :data-target-key="dictationTargetKey"
     >
-      <div v-if="dictationStatusVisible" class="mobile-hotkeys__dictation-status-row" data-testid="inline-dictation-status-row">
+      <div v-if="dictationStatusVisible" class="mobile-hotkeys__dictation-status-row"
+        :class="{ 'mobile-hotkeys__dictation-status-row--recording': dictationState.phase === 'listening' }"
+        data-testid="inline-dictation-status-row">
+        <div v-if="dictationState.phase === 'listening'" class="mobile-hotkeys__recording-status"
+          data-testid="inline-dictation-status" data-dictation-tone="quiet" data-dictation-phase="listening"
+          role="status" aria-live="polite" aria-label="Terminal listening. Stop inserts the final transcript at the terminal cursor.">
+          <span class="mobile-hotkeys__recording-heading">
+            <span class="mobile-hotkeys__dictation-destination">{{ 'Terminal' }}</span>
+            <span class="mobile-hotkeys__recording-separator" aria-hidden="true">·</span>
+            <span class="mobile-hotkeys__dictation-phase">{{ 'Listening' }}</span>
+          </span>
+          <span class="mobile-hotkeys__recording-elapsed" data-testid="inline-dictation-elapsed" aria-hidden="true">{{ dictationElapsedLabel }}</span>
+          <span class="mobile-hotkeys__recording-waveform" data-testid="inline-dictation-waveform" aria-hidden="true">
+            <i v-for="(height, index) in dictationWaveformBars" :key="index"
+              :style="{ '--wave-height': `${height}px`, '--wave-delay': `${index * 55}ms` }" />
+          </span>
+          <span v-if="dictationState.preview" class="terminal-dictation-preview mobile-hotkeys__recording-preview"
+            data-testid="inline-dictation-preview" aria-live="off">{{ dictationState.preview }}</span>
+          <span v-else class="mobile-hotkeys__recording-preview" data-testid="inline-dictation-message" aria-live="off">{{ 'Speak now' }}</span>
+        </div>
         <p class="mobile-hotkeys__dictation-status" :data-dictation-tone="dictationState.tone"
-          :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
+          v-else :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
           <span class="mobile-hotkeys__dictation-destination">Terminal · </span>
           <span v-if="dictationState.tone === 'error'" class="mobile-hotkeys__dictation-phase">Error · </span>
           <span v-else-if="dictationState.tone === 'warning'" class="mobile-hotkeys__dictation-phase">Warning · </span>
           <span v-else-if="dictationState.phase === 'starting'" class="mobile-hotkeys__dictation-phase">Starting · </span>
-          <span v-else-if="dictationState.phase === 'listening'" class="mobile-hotkeys__dictation-phase">Listening · </span>
           <span v-else-if="dictationState.phase === 'stopping'" class="mobile-hotkeys__dictation-phase">Transcribing · </span>
           <span v-else-if="dictationState.phase === 'cancelling'" class="mobile-hotkeys__dictation-phase">Cancelling · </span>
           <span v-else-if="dictationState.phase === 'inserting'" class="mobile-hotkeys__dictation-phase">Inserting · </span>
           <span v-if="dictationState.preview" class="terminal-dictation-preview" data-testid="inline-dictation-preview" aria-live="off">
             {{ dictationState.preview }}
           </span>
-          <span v-else-if="dictationState.phase === 'listening'" data-testid="inline-dictation-message">Speak now. Stop to insert.</span>
           <span v-else data-testid="inline-dictation-message">{{ dictationState.message }}</span>
         </p>
       </div>
@@ -420,14 +472,20 @@ defineExpose({
 .mobile-hotkeys--main-open,
 .mobile-hotkeys--ctrl-open { height: 144px; }
 .mobile-hotkeys--dictation-status-open { height: 80px; }
+.mobile-hotkeys--dictation-listening { height: 89px; }
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 176px; }
+.mobile-hotkeys--dictation-listening.mobile-hotkeys--main-open,
+.mobile-hotkeys--dictation-listening.mobile-hotkeys--ctrl-open { height: 185px; }
 .mobile-hotkeys--dictation-available { height: 49px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open { height: 81px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening { height: 89px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 177px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--main-open,
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--ctrl-open { height: 185px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -447,6 +505,73 @@ defineExpose({
   height: 32px;
   flex: 0 0 32px;
   padding: 0 4px;
+}
+.mobile-hotkeys--dictation-listening .mobile-hotkeys__dictation-status-row,
+.mobile-hotkeys__dictation-status-row--recording {
+  height: 40px;
+  flex-basis: 40px;
+  padding: 0 4px;
+}
+.mobile-hotkeys__recording-status {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--r-sm);
+  background: var(--state-selected);
+  box-shadow: inset 3px 0 var(--accent);
+  padding: 0 8px 0 10px;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.mobile-hotkeys__recording-heading { display: inline-flex; min-width: max-content; align-items: center; gap: 4px; }
+.mobile-hotkeys__recording-heading::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: terminal-recording-pulse 1.2s ease-in-out infinite alternate;
+}
+.mobile-hotkeys__recording-separator { color: var(--fg-muted); }
+.mobile-hotkeys__recording-elapsed {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font: 600 11px/1 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.mobile-hotkeys__recording-waveform { display: inline-flex; width: 40px; height: 24px; flex: 0 0 40px; align-items: center; justify-content: space-between; }
+.mobile-hotkeys__recording-waveform i {
+  display: block;
+  width: 2px;
+  height: var(--wave-height);
+  max-height: 21px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: terminal-recording-wave 620ms ease-in-out var(--wave-delay) infinite alternate;
+}
+.mobile-hotkeys__recording-preview {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--fg-secondary);
+  font: 11px/1.2 var(--font-mono);
+  text-overflow: ellipsis;
+}
+.mobile-hotkeys__recording-preview.terminal-dictation-preview { color: var(--fg); }
+@keyframes terminal-recording-pulse { from { opacity: 1; } to { opacity: 0.5; } }
+@keyframes terminal-recording-wave { from { transform: scaleY(0.28); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .mobile-hotkeys__recording-heading::before,
+  .mobile-hotkeys__recording-waveform i { animation: none; }
 }
 .mobile-hotkeys__dictation-status {
   overflow: hidden;
@@ -619,18 +744,25 @@ defineExpose({
   border-radius: var(--r-md);
   background: var(--surface-2);
   padding: 0;
-  color: var(--fg-secondary);
+  color: var(--accent);
+  font: 600 9px/1 var(--font-ui);
 }
-.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label) {
-  color: var(--fg-muted);
-  font: 600 var(--fs-100)/1 var(--font-ui);
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button .terminal-dictation-label) {
+  color: inherit;
   white-space: nowrap;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="starting"]),
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"]) {
-  border-color: var(--accent-dim);
-  background: var(--state-selected);
+  border-color: var(--accent);
+  background: var(--surface-2);
   color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent-soft);
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"] .terminal-dictation-label) {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="transcribing"]) {
   border-color: var(--warning);
@@ -643,7 +775,9 @@ defineExpose({
   color: var(--error);
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="idle"]) {
-  color: var(--fg);
+  border-color: var(--accent-dim);
+  background: var(--surface-2);
+  color: var(--accent);
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button:disabled[data-mic-state="transcribing"]) {
   background: var(--state-selected);

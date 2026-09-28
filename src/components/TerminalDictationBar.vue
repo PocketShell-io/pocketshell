@@ -90,7 +90,7 @@ const buttonDisabled = () => !props.enabled
   || ['stopping', 'cancelling', 'inserting'].includes(state.value.phase);
 
 const buttonLabel = () => {
-  if (state.value.phase === 'listening') return 'Stop dictating at terminal cursor';
+  if (state.value.phase === 'listening') return 'Stop dictation and insert at terminal cursor';
   if (state.value.phase === 'starting') return 'Cancel terminal cursor dictation request';
   if (state.value.phase === 'cancelling') return 'Cancelling terminal dictation';
   if (state.value.phase === 'stopping') return 'Transcribing speech for terminal cursor';
@@ -98,6 +98,14 @@ const buttonLabel = () => {
   if (buttonDisabled()) return 'Terminal cursor dictation unavailable';
   if (state.value.tone === 'error') return 'Retry terminal cursor dictation';
   return 'Dictate at terminal cursor';
+};
+
+const buttonCaption = () => {
+  if (state.value.phase === 'listening') return 'Stop';
+  if (state.value.phase === 'starting') return 'Cancel';
+  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
+  if (state.value.tone === 'error') return 'Retry';
+  return buttonDisabled() ? 'Unavailable' : 'Dictate';
 };
 
 const buttonState = () => {
@@ -108,13 +116,6 @@ const buttonState = () => {
   return buttonDisabled() ? 'disabled' : 'idle';
 };
 
-const buttonDockLabel = () => {
-  if (state.value.phase === 'listening') return 'Stop';
-  if (state.value.phase === 'starting') return 'Cancel';
-  if (['stopping', 'cancelling', 'inserting'].includes(state.value.phase)) return 'Wait';
-  if (state.value.tone === 'error') return 'Retry';
-  return 'Dictate';
-};
 </script>
 
 <template>
@@ -131,6 +132,6 @@ const buttonDockLabel = () => {
     @click="toggleDictation"
   >
     <DictationMicIcon :size="20" :stopped="state.phase === 'listening'" />
-    <span class="terminal-dictation-label" data-testid="inline-dictation-dock-label" aria-hidden="true">{{ buttonDockLabel() }}</span>
+    <span class="terminal-dictation-label" data-testid="inline-dictation-dock-label" aria-hidden="true">{{ buttonCaption() }}</span>
   </button>
 </template>

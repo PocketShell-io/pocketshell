@@ -137,6 +137,7 @@ const terminalViewportDockBaseCapPx = ref<number | null>(null);
 const mobileHotkeysPaletteOpen = ref(false);
 const mobileHotkeysPage = ref<'main' | 'ctrl'>('main');
 const inlineDictationStatusRowHeightPx = 32;
+const inlineDictationListeningStatusRowHeightPx = 40;
 const terminalViewportDockPreferredCapPx = 144;
 const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
@@ -232,14 +233,18 @@ const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 
   || inlineDictationState.value.tone === 'warning'
 ));
 const mobileHotkeysDockHeight = computed(() => {
-  const dictationStatusRowHeight = inlineDictationStatusVisible.value ? inlineDictationStatusRowHeightPx : 0;
+  const dictationStatusRowHeight = inlineDictationStatusVisible.value
+    ? inlineDictationState.value.phase === 'listening'
+      ? inlineDictationListeningStatusRowHeightPx
+      : inlineDictationStatusRowHeightPx
+    : 0;
   const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;
   const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
   return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
 });
 watch(
   () => [keyboardVisible.value, keyboardComposerMode.value, mobileHotkeysPaletteOpen.value,
-    inlineDictationStatusVisible.value] as const,
+    inlineDictationStatusVisible.value, inlineDictationState.value.phase] as const,
   ([imeOpen, keyboardMode, paletteOpen, dictationStatusOpen]) => {
     const androidKeyboardUp = Capacitor.getPlatform() === 'android' && imeOpen && keyboardMode;
     if (!paletteOpen && !dictationStatusOpen && !androidKeyboardUp) {
