@@ -27,6 +27,10 @@ workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lane
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
+usage_ports_journey_path = workflow_path.parent.parent.parent / (
+    "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+)
+usage_ports_journey = usage_ports_journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 ast.parse(extractor_path.read_text(), filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
@@ -477,6 +481,247 @@ if "--preserve-on-failure" not in runner or '--output-dir "$evidence_dir"' not i
 if 'tee "$evidence_dir/composer-gradle.log"' not in runner:
     raise AssertionError("composer runner does not retain its packaged Gradle output")
 
+
+def journey_method(source: str, name: str) -> str:
+    declaration = re.search(
+        rf"(?m)^    (?:public|private|protected)\s+[^\n]*\b{re.escape(name)}\s*\(",
+        source,
+    )
+    if declaration is None:
+        raise AssertionError(f"Usage/Ports journey is missing {name}()")
+    following = re.search(
+        r"(?m)^    (?:public|private|protected)\s+|^    @(?:Before|After|Test)\b",
+        source[declaration.end():],
+    )
+    end = declaration.end() + following.start() if following is not None else len(source)
+    return source[declaration.start():end]
+
+
+def require_usage_ports_composer_contract(source: str) -> None:
+    primary = journey_method(source, "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+    after = journey_method(source, "closeShell")
+    strict_stop = journey_method(source, "stopHttpServerStrictly")
+    send = journey_method(source, "sendComposerCommandAndAwaitMarker")
+    opener = journey_method(source, "openHomeLiveComposerAndAwaitConnectedTransport")
+    focus_action = journey_method(source, "focusComposerDraft")
+    visible = journey_method(source, "visibleComposerExpression")
+
+    if re.search(r"(?i)\b(?:send[A-Za-z0-9_]*|write[A-Za-z0-9_]*|setValue|clear[A-Za-z0-9_]*)\s*\(", opener) \
+       or re.search(r"(?i)\bclick\s*\([^;\n]*(?:send|submit)", opener) \
+       or re.search(r"(?i)\.value\s*=", opener):
+        raise AssertionError("closed-Composer opener must not send, write terminal input, or mutate a draft")
+
+    route_guard = 'assertEquals("HTTP cleanup must start from the Ports screen", "ports"'
+    hidden_guard = 'assertEquals("the live Composer must be absent from the visible Usage/Ports route", "false"'
+    route_at = primary.find(route_guard)
+    hidden_at = primary.find(hidden_guard)
+    route_record_at = primary.find("HTTP_CLEANUP_START route=ports composerVisible=false")
+    stop_at = primary.find("stopHttpServerStrictly(")
+    if min(route_at, hidden_at, route_record_at, stop_at) < 0 or not route_at < hidden_at < route_record_at < stop_at:
+        raise AssertionError("primary cleanup must prove Ports + hidden Composer immediately before strict cleanup")
+    cleanup_window = primary[primary.find("int scansBeforeStop"):stop_at]
+    if "click(\"[aria-label='PocketShell home']\")" in cleanup_window:
+        raise AssertionError("primary journey opens Home before invoking cleanup from Usage/Ports")
+    if "document.querySelector('.app-shell')?.dataset.sshPhase ?? ''" not in primary[hidden_at:route_record_at]:
+        raise AssertionError("primary cleanup setup must keep a live selected PTY while the Composer is hidden")
+
+    for label, needle, haystack in (
+        ("strict stop routes through the Composer sender", "sendComposerCommandAndAwaitMarker(", strict_stop),
+        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);", send),
+        ("Composer sender waits for visible state", "awaitJsTrue(visibleComposerExpression(), 15_000);", send),
+        ("Composer sender waits for connected transport", "dataset.transportState === 'connected'", send),
+        ("Composer sender drafts through the packaged Composer", 'setValue("[data-testid=prompt-draft]", command)', send),
+        ("Composer sender submits through the packaged Composer", 'click(".composer-shared-controls .send")', send),
+    ):
+        if needle not in haystack:
+            raise AssertionError(f"Usage/Ports cleanup is missing {label}")
+    sender_order = (
+        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);"),
+        send.index("awaitJsTrue(visibleComposerExpression(), 15_000);"),
+        send.index("dataset.transportState === 'connected'"),
+        send.index('setValue("[data-testid=prompt-draft]", command)'),
+        send.index('click(".composer-shared-controls .send")'),
+    )
+    if sender_order != tuple(sorted(sender_order)):
+        raise AssertionError("cleanup must open and show Home Composer, await its connected transport, then send")
+
+    for label, needle in (
+        ("Home route action", 'click("[aria-label=\'PocketShell home\']")'),
+        ("Home route readiness", "dataset.route === 'home'"),
+        ("session list for reattach", '[data-testid=open-sessions]'),
+        ("selected session lookup", "matchingSession"),
+        ("selected session reattach", "[data-session-tag=\\\""),
+        ("idempotent draft focus check", "composerDraftFocused"),
+        ("draft focus action only while unfocused", 'if (!"true".equals(composerDraftFocused)) {'),
+        ("mobile Composer draft open action", "focusComposerDraft();"),
+        ("visible Composer wait", "awaitJsTrue(visibleComposerExpression(), 15_000)"),
+        ("focused Composer confirmation", "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"),
+        ("connected Composer wait", "dataset.transportState === 'connected'"),
+    ):
+        if needle not in opener:
+            raise AssertionError(f"Usage/Ports closed-Composer opener is missing {label}")
+    for label, needle in (
+        ("draft snapshot before opening", "String draftBeforeOpen = evalString("),
+        ("input counters snapshot before opening", "JSONObject inputBeforeOpen = terminalInputStats();"),
+        ("draft unchanged after opening", "opening Home Composer must preserve the existing draft"),
+        ("terminal writes unchanged after opening", "opening Home Composer must not write terminal input"),
+        ("terminal failures unchanged after opening", "opening Home Composer must not add terminal input failures"),
+        ("pending writes unchanged after opening", "opening Home Composer must leave terminal input pending count unchanged"),
+    ):
+        if needle not in send:
+            raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
+    opener_live_ready_at = opener.find("dataset.enabled === 'true'")
+    opener_action_at = opener.find("focusComposerDraft();")
+    opener_visible_at = opener.find("awaitJsTrue(visibleComposerExpression(), 15_000)")
+    opener_focus_at = opener.find("awaitJsTrue(\"document.activeElement === document.querySelector('[data-testid=prompt-draft]')\"")
+    opener_connected_at = opener.find("dataset.transportState === 'connected'")
+    if min(opener_live_ready_at, opener_action_at, opener_visible_at, opener_focus_at, opener_connected_at) < 0 \
+       or not opener_live_ready_at < opener_action_at < opener_visible_at < opener_focus_at < opener_connected_at:
+        raise AssertionError("mobile Composer must be opened and shown focused before connected transport")
+    if not send.index("String draftBeforeOpen = evalString(") < send.index(
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);") < send.index(
+            "opening Home Composer must preserve the existing draft") < send.index(
+                "opening Home Composer must not write terminal input") < send.index(
+                    'setValue("[data-testid=prompt-draft]", command)'):
+        raise AssertionError("opener must preserve draft and terminal input state before cleanup drafts its command")
+    if "draft.focus()" not in focus_action or "document.activeElement === draft" not in focus_action:
+        raise AssertionError("mobile Composer open action must focus and verify its draft")
+    for label, needle in (
+        ("Home live surface", "shell.dataset.homeSurface==='live'"),
+        ("live PTY", "shell.dataset.sshPhase==='live'"),
+        ("on-screen bounds", "composer.getBoundingClientRect()"),
+        ("visible CSS state", "style.visibility!=='hidden'"),
+        ("non-inert route", "composer.closest('[inert],[aria-hidden=true]')"),
+    ):
+        if needle not in visible:
+            raise AssertionError(f"Usage/Ports Composer visibility proof is missing {label}")
+
+    if "sendComposerCommandAndAwaitMarker(" not in after or "sendCommandAndAwaitMarker(" in after:
+        raise AssertionError("@After HTTP cleanup must use the Composer-backed sender and opener")
+    if "sendComposerCommandAndAwaitMarker(" not in strict_stop or "sendCommandAndAwaitMarker(" in strict_stop:
+        raise AssertionError("strict HTTP process stop must use the Composer-backed sender and opener")
+
+
+require_usage_ports_composer_contract(usage_ports_journey)
+
+
+def expect_usage_ports_contract_rejection(label: str, damaged: str) -> None:
+    try:
+        require_usage_ports_composer_contract(damaged)
+    except (AssertionError, ValueError):
+        print(f"PASS: {label} fails the closed-Composer route contract")
+    else:
+        raise AssertionError(f"closed-Composer route contract missed {label}")
+
+
+sender_source = journey_method(usage_ports_journey, "sendComposerCommandAndAwaitMarker")
+opener_source = journey_method(usage_ports_journey, "openHomeLiveComposerAndAwaitConnectedTransport")
+after_source = journey_method(usage_ports_journey, "closeShell")
+expect_usage_ports_contract_rejection(
+    "removing the Home/live Composer opener",
+    usage_ports_journey.replace(
+        sender_source,
+        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the route-opening action",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace('click("[aria-label=\'PocketShell home\']");', "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the mobile Composer draft open action",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("focusComposerDraft();", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "bypassing the mobile Composer draft open action",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace('if (!"true".equals(composerDraftFocused)) {', "if (false) {", 1),
+        1,
+    ),
+)
+
+delayed_composer_open = opener_source.replace("focusComposerDraft();", "", 1)
+connected_wait_end = delayed_composer_open.index("15_000);", delayed_composer_open.index("dataset.transportState === 'connected'")) + len("15_000);")
+delayed_composer_open = (
+    delayed_composer_open[:connected_wait_end]
+    + "\n            focusComposerDraft();"
+    + delayed_composer_open[connected_wait_end:]
+)
+expect_usage_ports_contract_rejection(
+    "opening the mobile Composer after its connected transport wait",
+    usage_ports_journey.replace(opener_source, delayed_composer_open, 1),
+)
+late_after_send = usage_ports_journey.replace(
+    opener_source,
+    opener_source.replace("focusComposerDraft();", "", 1),
+    1,
+)
+late_sender_source = journey_method(late_after_send, "sendComposerCommandAndAwaitMarker")
+late_after_send = late_after_send.replace(
+    late_sender_source,
+    late_sender_source.replace(
+        'click(".composer-shared-controls .send");',
+        'click(".composer-shared-controls .send");\n        focusComposerDraft();',
+        1,
+    ),
+    1,
+)
+expect_usage_ports_contract_rejection(
+    "opening the mobile Composer after sending cleanup",
+    late_after_send,
+)
+expect_usage_ports_contract_rejection(
+    "sending cleanup while opening the mobile Composer",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "focusComposerDraft();",
+            'click(".composer-shared-controls .send");\n            focusComposerDraft();',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "mutating the Prompt draft while opening the mobile Composer",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "focusComposerDraft();",
+            'setValue("[data-testid=prompt-draft]", "unexpected command");\n            focusComposerDraft();',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "falsifying the Ports hidden-Composer precondition",
+    usage_ports_journey.replace(
+        'assertEquals("HTTP cleanup must start from the Ports screen", "ports"',
+        'assertEquals("HTTP cleanup must start from the Ports screen", "home"',
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "routing @After through direct terminal input",
+    usage_ports_journey.replace(
+        after_source,
+        after_source.replace("sendComposerCommandAndAwaitMarker(", "sendCommandAndAwaitMarker(", 1),
+        1,
+    ),
+)
+
 print("PASS: rewrite composer and Usage/Ports CI run on API 35, validate exact JUnit, and upload run-scoped evidence")
 print("PASS: packaged lanes execute fail-closed in one shell and preserve the captured Node/pnpm runtime")
+print("PASS: Usage/Ports regression opens and verifies the focused Home Composer before cleanup and @After fallback")
 PY

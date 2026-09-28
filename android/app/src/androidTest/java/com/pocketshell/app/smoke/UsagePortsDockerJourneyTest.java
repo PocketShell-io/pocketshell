@@ -46,6 +46,7 @@ public final class UsagePortsDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
+    private String activeSessionTag;
     private int httpRemotePort;
     private boolean fixtureHttpServerMayBeRunning;
 
@@ -58,26 +59,21 @@ public final class UsagePortsDockerJourneyTest {
     public void closeShell() {
         if (fixtureHttpServerMayBeRunning && scenario != null && activeRunId != null) {
             try {
-                if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
-                    click("[aria-label='PocketShell home']");
-                }
-                if ("live".equals(evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''"))) {
-                    String stem = serverStem(activeRunId);
-                    String cleanupMarker = marker(activeRunId, "HTTP_CLEANUP");
-                    sendCommandAndAwaitMarker(
-                            "pidfile=" + stem + ".pid; checkfile=" + stem + ".cleanup-check; "
-                                    + "if [ -r \"$pidfile\" ]; then pid=\"$(cat \"$pidfile\" 2>/dev/null || true)\"; "
-                                    + "case \"$pid\" in ''|*[!0-9]*) printf 'decision=cleanup-invalid-pid\\n' > \"$checkfile\";; "
-                                    + "*) if [ -r \"/proc/$pid/cmdline\" ]; then "
-                                    + "args=\"$(tr '\\000' ' ' < \"/proc/$pid/cmdline\" 2>/dev/null || true)\"; "
-                                    + "case \"$args\" in *'python3 -m http.server " + httpRemotePort
-                                    + " --bind 127.0.0.1'*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-kill\\n' \"$pid\" \"$args\" > \"$checkfile\"; "
-                                    + "kill \"$pid\" 2>/dev/null || true;; "
-                                    + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
-                                    + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
-                                    + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
-                            cleanupMarker, "cleanup test HTTP service");
-                }
+                String stem = serverStem(activeRunId);
+                String cleanupMarker = marker(activeRunId, "HTTP_CLEANUP");
+                sendComposerCommandAndAwaitMarker(
+                        "pidfile=" + stem + ".pid; checkfile=" + stem + ".cleanup-check; "
+                                + "if [ -r \"$pidfile\" ]; then pid=\"$(cat \"$pidfile\" 2>/dev/null || true)\"; "
+                                + "case \"$pid\" in ''|*[!0-9]*) printf 'decision=cleanup-invalid-pid\\n' > \"$checkfile\";; "
+                                + "*) if [ -r \"/proc/$pid/cmdline\" ]; then "
+                                + "args=\"$(tr '\\000' ' ' < \"/proc/$pid/cmdline\" 2>/dev/null || true)\"; "
+                                + "case \"$args\" in *'python3 -m http.server " + httpRemotePort
+                                + " --bind 127.0.0.1'*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-kill\\n' \"$pid\" \"$args\" > \"$checkfile\"; "
+                                + "kill \"$pid\" 2>/dev/null || true;; "
+                                + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
+                                + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
+                                + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
+                        cleanupMarker, "cleanup test HTTP service", activeSessionTag);
             } catch (Exception | AssertionError cleanupFailure) {
                 Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " HTTP fixture cleanup failed: "
                         + cleanupFailure.getClass().getSimpleName());
@@ -99,6 +95,8 @@ public final class UsagePortsDockerJourneyTest {
         assertTrue("run ID must be a safe, unique fixture tag prefix",
                 runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
+        String sessionTag = runId + "-usage";
+        activeSessionTag = sessionTag;
         httpRemotePort = 8_000 + Math.floorMod(runId.hashCode(), 2_001);
         File artifactDirectory = new File(
                 InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null),
@@ -124,7 +122,6 @@ public final class UsagePortsDockerJourneyTest {
         String firstConnectionId = currentConnectionId();
         String firstGenerationId = currentGenerationId();
 
-        String sessionTag = runId + "-usage";
         setValue("[data-testid=new-session-name]", sessionTag);
         click("[data-testid=create-session]");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-session-tag]')).some((node) => node.dataset.sessionTag === "
@@ -198,12 +195,16 @@ public final class UsagePortsDockerJourneyTest {
         int scansBeforeStop = portScanCount();
         assertTrue("the in-range listener must have been discovered by a completed scan", scansBeforeStop > 0);
 
-        click("[aria-label='PocketShell home']");
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
-                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
-                + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'");
+        assertEquals("HTTP cleanup must start from the Ports screen", "ports",
+                evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"));
+        assertEquals("the live Composer must be absent from the visible Usage/Ports route", "false",
+                evalString(visibleComposerExpression()));
+        assertEquals("the selected session must still have a live PTY before cleanup", "live",
+                evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''"));
+        Log.i("UsagePortsDockerJourney", "RUN " + runId
+                + " HTTP_CLEANUP_START route=ports composerVisible=false sshPhase=live selectedTag=" + sessionTag);
         String stopCheckFile = stem + ".stop-check";
-        stopHttpServerStrictly(runId, stem, stopCheckFile, httpRemotePort);
+        stopHttpServerStrictly(runId, stem, stopCheckFile, httpRemotePort, sessionTag);
         fixtureHttpServerMayBeRunning = false;
 
         click("[aria-label='Settings']");
@@ -343,7 +344,8 @@ public final class UsagePortsDockerJourneyTest {
         return "REMOTE_OUTPUT_" + token + "_" + suffix;
     }
 
-    private void stopHttpServerStrictly(String runId, String stem, String checkFile, int remotePort) throws Exception {
+    private void stopHttpServerStrictly(String runId, String stem, String checkFile, int remotePort,
+                                        String sessionTag) throws Exception {
         String pidFile = stem + ".pid";
         String stoppedMarker = marker(runId, "HTTP_STOPPED");
         String command = "f=" + pidFile + "; c=" + checkFile + "; "
@@ -359,7 +361,7 @@ public final class UsagePortsDockerJourneyTest {
                 + "if [ -e /proc/$p ] && [ \"$s\" != Z ]; then echo exitDecision=still-running >>\"$c\"; exit 1; fi; "
                 + "echo exitDecision=process-exited >>\"$c\"; printf '%s\\n' '" + stoppedMarker + "'";
         // Send the long fixture-control command through the packaged composer; keyboard injection can reorder PTY bytes.
-        sendComposerCommandAndAwaitMarker(command, stoppedMarker, "stop test HTTP service");
+        sendComposerCommandAndAwaitMarker(command, stoppedMarker, "stop test HTTP service", sessionTag);
     }
 
     private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
@@ -376,11 +378,30 @@ public final class UsagePortsDockerJourneyTest {
         waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
     }
 
-    private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
+    private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint,
+                                                   String sessionTag) throws Exception {
+        String draftBeforeOpen = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        JSONObject inputBeforeOpen = terminalInputStats();
+        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);
+        awaitJsTrue(visibleComposerExpression(), 15_000);
+        assertEquals("opening Home Composer must preserve the existing draft", draftBeforeOpen,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        JSONObject inputAfterOpen = terminalInputStats();
+        assertEquals("opening Home Composer must not write terminal input",
+                inputBeforeOpen.getInt("ackCount"), inputAfterOpen.getInt("ackCount"));
+        assertEquals("opening Home Composer must not add terminal input failures",
+                inputBeforeOpen.getInt("failureCount"), inputAfterOpen.getInt("failureCount"));
+        assertEquals("opening Home Composer must leave terminal input pending count unchanged",
+                inputBeforeOpen.getInt("pending"), inputAfterOpen.getInt("pending"));
         JSONObject before = terminalInputStats();
         assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'");
+        awaitJsTrue(visibleComposerExpression()
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
+                15_000);
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " HTTP_CLEANUP_COMPOSER_READY route=home homeSurface=live composerVisible=true "
+                + "transportState=connected selectedTag=" + sessionTag);
         setValue("[data-testid=prompt-draft]", command);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(command));
         click(".composer-shared-controls .send");
@@ -393,6 +414,86 @@ public final class UsagePortsDockerJourneyTest {
         assertEquals("terminal input must remain drained after " + checkpoint, 0, after.getInt("pending"));
         assertEquals("terminal input failures must remain unchanged after " + checkpoint,
                 before.getInt("failureCount"), after.getInt("failureCount"));
+    }
+
+    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag) throws Exception {
+        if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
+            click("[aria-label='PocketShell home']");
+        }
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'", 10_000);
+
+        String phase = evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''");
+        if (!"live".equals(phase) && !"connected".equals(phase) && !"listing".equals(phase)) {
+            if (!"connection".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))
+                    && "true".equals(evalString("!!document.querySelector('[data-testid=open-connection]')"))) {
+                click("[data-testid=open-connection]");
+            }
+            awaitJsTrue("!!document.querySelector('[data-testid=ssh-connect]')", 10_000);
+            click("[data-testid=ssh-connect]");
+            awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')"
+                    + " || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)",
+                    30_000);
+            if ("true".equals(evalString("!!document.querySelector('[data-testid=host-key-decision]')"))) {
+                click("[data-testid=trust-host-key]");
+            }
+            awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)",
+                    30_000);
+        }
+
+        if (!"live".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))
+                || !sessionTag.equals(evalString("document.querySelector('.app-shell')?.dataset.sshSelectedTag ?? ''"))) {
+            if (!"sessions".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+                click("[data-testid=open-sessions]");
+            }
+            String matchingSession = "Array.from(document.querySelectorAll('[data-session-tag]')).find((node)=>node.dataset.sessionTag === "
+                    + JSONObject.quote(sessionTag) + ")";
+            awaitJsTrue(matchingSession + " !== undefined", 15_000);
+            click("[data-session-tag=\"" + sessionTag + "\"]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                    + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === "
+                    + JSONObject.quote(sessionTag), 30_000);
+        }
+
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === "
+                + JSONObject.quote(sessionTag)
+                + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
+
+        // Focusing the draft is the mobile Composer's open action. It is safe to
+        // repeat from Home and after returning from a routed screen: it only
+        // focuses the empty draft and never changes or sends its contents.
+        String composerDraftFocused = evalString("document.activeElement === document.querySelector('[data-testid=prompt-draft]')");
+        if (!"true".equals(composerDraftFocused)) {
+            focusComposerDraft();
+        }
+        awaitJsTrue(visibleComposerExpression(), 15_000);
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
+                + " && " + visibleComposerExpression(), 15_000);
+        awaitJsTrue(visibleComposerExpression()
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
+                15_000);
+    }
+
+    private void focusComposerDraft() throws Exception {
+        evalString("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "if(!draft) throw new Error('missing Prompt Composer draft');"
+                + "draft.focus(); return document.activeElement === draft ? 'focused' : 'not-focused';})()");
+    }
+
+    private String visibleComposerExpression() {
+        return "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "if(!shell||!composer)return false;const rect=composer.getBoundingClientRect();"
+                + "const style=getComputedStyle(composer);"
+                + "return shell.dataset.route==='home'&&shell.dataset.homeSurface==='live'"
+                + "&&shell.dataset.sshPhase==='live'&&rect.width>0&&rect.height>0"
+                + "&&rect.right>0&&rect.bottom>0&&rect.left<innerWidth&&rect.top<innerHeight"
+                + "&&style.display!=='none'&&style.visibility!=='hidden'&&style.opacity!=='0'"
+                + "&&!composer.closest('[inert],[aria-hidden=true]');})()";
     }
 
     private void awaitTerminalReady() throws Exception {
