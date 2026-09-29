@@ -218,7 +218,7 @@ printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run 
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/usage-ports-assets-live-logcat.txt"
 : > "$LIVE_ASSET_LOGCAT"
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
   > "$LIVE_ASSET_LOGCAT" 2>&1 &
 LIVE_ASSET_LOGCAT_PID=$!
 sleep 0.2
@@ -238,8 +238,13 @@ if pocketshell_run_connected_js_usage_ports_gradle \
 else
   test_exit_code=$?
   mkdir -p "$ARTIFACTS_DIR/failure-diagnostics"
-  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
     > "$ARTIFACTS_DIR/failure-diagnostics/usage-ports-logcat.txt" 2>&1 || true
+  "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
+    --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" --output-dir "$ARTIFACTS_DIR/$RUN_ID" \
+    > "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" 2>&1 \
+    || printf 'WARNING: could not extract all same-run failure artifacts; see %s\n' \
+      "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" >&2
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
   docker logs --timestamps "$CONTAINER" \
@@ -252,7 +257,7 @@ fi
 
 cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
 "$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR"
-"$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+"$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
   > "$ARTIFACTS_DIR/usage-ports-logcat.txt"
 "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
   --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" --output-dir "$ARTIFACTS_DIR/$RUN_ID"
