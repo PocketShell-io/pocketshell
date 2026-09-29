@@ -4,7 +4,13 @@ import {
   MAX_SFTP_FILE_BYTES,
   type AttachmentSource,
 } from '../../src/session/files';
-import type { SshCapabilityPlugin, SshConnectionRef, SshSftpEntry } from '../../src/native/sshCapability';
+import type {
+  SshCapabilityPlugin,
+  SshConnectionRef,
+  SshSftpEntry,
+  SshSftpWriteProgressEvent,
+} from '../../src/native/sshCapability';
+import type { AttachmentUploadProgressSnapshot } from '@pocketshell/core';
 
 interface MockFile {
   bytes: Uint8Array;
@@ -16,6 +22,7 @@ interface MockSftp {
   capability: SshCapabilityPlugin;
   files: Map<string, MockFile>;
   directories: Set<string>;
+  emitProgress: (event: SshSftpWriteProgressEvent) => void;
   atomicWrite: (options: {
     requestId: string;
     path: string;
@@ -62,6 +69,14 @@ function createMockSftp(seed?: {
 }): MockSftp {
   const files = new Map<string, MockFile>(Object.entries(seed?.files ?? {}));
   const directories = new Set(['/home', '/home/alex', '/home/alex/project', ...(seed?.directories ?? [])]);
+  const progressListeners = new Set<(event: SshSftpWriteProgressEvent) => void>();
+  const emitProgress = (event: SshSftpWriteProgressEvent) => {
+    for (const listener of progressListeners) listener(event);
+  };
+  const addListener = vi.fn(async (_eventName: string, listener: (event: SshSftpWriteProgressEvent) => void) => {
+    progressListeners.add(listener);
+    return { remove: vi.fn(async () => { progressListeners.delete(listener); }) };
+  });
   const list = vi.fn(async (options: { requestId: string; path: string }) => {
     if (!directories.has(options.path)) throw new Error(`No such directory: ${options.path}`);
     const entries: Array<SshSftpEntry & { type?: string }> = [];
@@ -101,9 +116,29 @@ function createMockSftp(seed?: {
     if (!file) throw new Error(`No such file: ${options.path}`);
     return { requestId: options.requestId, dataBase64: bytesToBase64(file.bytes.subarray(0, options.maxBytes)) };
   });
-  const write = vi.fn(async (options: { requestId: string; path: string; dataBase64: string; createOnly?: boolean }) => {
+  const write = vi.fn(async (options: {
+    requestId: string;
+    connectionId: string;
+    generationId: string;
+    path: string;
+    dataBase64: string;
+    createOnly?: boolean;
+    reportProgress?: boolean;
+  }) => {
     if (options.createOnly && files.has(options.path)) throw new Error(`Already exists: ${options.path}`);
     const content = base64ToBytes(options.dataBase64);
+    if (options.reportProgress) {
+      for (let offset = 0; offset < content.byteLength; offset += 2) {
+        emitProgress({
+          requestId: options.requestId,
+          connectionId: options.connectionId,
+          generationId: options.generationId,
+          path: options.path,
+          bytesWritten: Math.min(content.byteLength, offset + 2),
+          totalBytes: content.byteLength,
+        });
+      }
+    }
     files.set(options.path, { bytes: content, modifiedEpochMs: 2_000 });
     return { requestId: options.requestId, bytesWritten: content.byteLength };
   });
@@ -145,7 +180,7 @@ function createMockSftp(seed?: {
     return { requestId: options.requestId };
   });
   const capability = {
-    addListener: vi.fn(),
+    addListener,
     removeAllListeners: vi.fn(),
     sftpList: list,
     sftpRead: read,
@@ -159,6 +194,7 @@ function createMockSftp(seed?: {
     capability,
     files,
     directories,
+    emitProgress,
     atomicWrite,
     calls: { list, read, write, conditionalWrite, mkdir, rename, remove },
   };
@@ -401,6 +437,182 @@ describe('SFTP file workspace policy and byte-I/O adapter', () => {
     });
     expect(plan.pathsToDelete).toContain(`${staged.directory}/old.txt`);
     expect(plan.pathsToDelete).not.toContain(`${staged.directory}/new.txt`);
+  });
+
+  it('aggregates only request-matched SFTP callback bytes across staged files', async () => {
+    const mock = createMockSftp();
+    const updates: Array<{
+      fileName: string;
+      fileIndex: number;
+      fileBytesWritten: number;
+      batchBytesWritten: number;
+      batchBytesTotal: number;
+    }> = [];
+    const staged = await serviceFor(mock).stageAttachments({
+      directory: '/home/alex/project/uploads',
+      scopeKey: 'session-a',
+      timestamp: '20260102-030405',
+      attachments: [
+        { name: 'first.bin', bytes: Uint8Array.from([1, 2, 3, 4, 5]) },
+        { name: 'second.bin', bytes: Uint8Array.from([6, 7]) },
+        { name: 'empty.bin', bytes: new Uint8Array(0) },
+      ],
+      onProgress: (progress) => updates.push({
+        fileName: progress.fileName,
+        fileIndex: progress.fileIndex,
+        fileBytesWritten: progress.fileBytesWritten,
+        batchBytesWritten: progress.batchBytesWritten,
+        batchBytesTotal: progress.batchBytesTotal,
+      }),
+    });
+
+    expect(staged.decision.kind).toBe('complete');
+    expect(mock.calls.write).toHaveBeenCalledTimes(3);
+    expect(mock.calls.write.mock.calls.map(([options]) => options.reportProgress)).toEqual([true, true, false]);
+    expect(updates.map((progress) => progress.batchBytesWritten)).toEqual([2, 4, 5, 5, 7, 7]);
+    expect(updates.map((progress) => progress.fileIndex)).toEqual([0, 0, 0, 0, 1, 1]);
+    expect(updates.at(-1)).toMatchObject({
+      fileName: 'second.bin',
+      fileBytesWritten: 2,
+      batchBytesWritten: 7,
+      batchBytesTotal: 7,
+    });
+    expect(updates.every((progress, index) => index === 0
+      || progress.batchBytesWritten >= updates[index - 1]!.batchBytesWritten)).toBe(true);
+  });
+
+  it('stops accepting byte callbacks when a write fails or its connection goes stale', async () => {
+    const failedMock = createMockSftp();
+    const failedUpdates: number[] = [];
+    failedMock.calls.write.mockImplementationOnce(async (options: {
+      requestId: string;
+      connectionId: string;
+      generationId: string;
+      path: string;
+      dataBase64: string;
+    }) => {
+      failedMock.emitProgress({ ...options, bytesWritten: 2, totalBytes: 4 });
+      throw new Error('SFTP write failed');
+    });
+    const failed = await serviceFor(failedMock).stageAttachments({
+      directory: '/home/alex/project/uploads',
+      scopeKey: 'failed-session',
+      timestamp: '20260102-030405',
+      attachments: [{ name: 'failed.bin', bytes: Uint8Array.from([1, 2, 3, 4]) }],
+      onProgress: (progress) => failedUpdates.push(progress.fileBytesWritten),
+    });
+    const failedRequest = failedMock.calls.write.mock.calls[0]?.[0];
+    failedMock.emitProgress({
+      requestId: failedRequest?.requestId ?? 'late',
+      connectionId: connection.connectionId,
+      generationId: connection.generationId,
+      path: failedRequest?.path ?? '/late',
+      bytesWritten: 4,
+      totalBytes: 4,
+    });
+
+    expect(failed.decision.kind).toBe('failed');
+    expect(failedUpdates).toEqual([2]);
+
+    const closedMock = createMockSftp();
+    let current = true;
+    const closedUpdates: number[] = [];
+    closedMock.calls.write.mockImplementationOnce(async (options: {
+      requestId: string;
+      connectionId: string;
+      generationId: string;
+      path: string;
+      dataBase64: string;
+    }) => {
+      closedMock.emitProgress({ ...options, bytesWritten: 2, totalBytes: 4 });
+      current = false;
+      closedMock.emitProgress({ ...options, bytesWritten: 4, totalBytes: 4 });
+      return { requestId: options.requestId, bytesWritten: 4 };
+    });
+    await expect(createFileWorkspaceService(closedMock.capability, {
+      connection,
+      rootDirectory: '/home/alex/project',
+      isCurrent: () => current,
+      nextRequestId: (() => { let request = 0; return () => `closed-${++request}`; })(),
+    }).stageAttachments({
+      directory: '/home/alex/project/uploads',
+      scopeKey: 'closed-session',
+      timestamp: '20260102-030405',
+      attachments: [{ name: 'closed.bin', bytes: Uint8Array.from([1, 2, 3, 4]) }],
+      onProgress: (progress) => closedUpdates.push(progress.fileBytesWritten),
+    })).rejects.toMatchObject({ code: 'stale-generation' });
+
+    expect(closedUpdates).toEqual([2]);
+  });
+
+  it('clears failed-file progress while continuing a later upload without reporting fabricated bytes', async () => {
+    const mock = createMockSftp();
+    let startSecondWrite!: () => void;
+    const secondWriteStarted = new Promise<void>((resolve) => { startSecondWrite = resolve; });
+    let continueSecondWrite!: () => void;
+    const secondWriteGate = new Promise<void>((resolve) => { continueSecondWrite = resolve; });
+    const secondWriteCapture: { options?: {
+      requestId: string;
+      connectionId: string;
+      generationId: string;
+      path: string;
+      dataBase64: string;
+    } } = {};
+    mock.calls.write.mockImplementation(async (options: {
+      requestId: string;
+      connectionId: string;
+      generationId: string;
+      path: string;
+      dataBase64: string;
+    }) => {
+      const bytes = base64ToBytes(options.dataBase64);
+      if (options.path.endsWith('first.bin')) {
+        mock.emitProgress({ ...options, bytesWritten: 2, totalBytes: bytes.byteLength });
+        throw new Error('SFTP write failed');
+      }
+      secondWriteCapture.options = options;
+      startSecondWrite();
+      await secondWriteGate;
+      return { requestId: options.requestId, bytesWritten: bytes.byteLength };
+    });
+
+    const progressUpdates: Array<AttachmentUploadProgressSnapshot> = [];
+    const clears: string[] = [];
+    let settled = false;
+    const staging = serviceFor(mock).stageAttachments({
+      directory: '/home/alex/project/uploads',
+      scopeKey: 'failure-then-next-session',
+      timestamp: '20260102-030405',
+      attachments: [
+        { name: 'first.bin', bytes: Uint8Array.from([1, 2, 3, 4]) },
+        { name: 'second.bin', bytes: Uint8Array.from([5, 6, 7, 8]) },
+      ],
+      onProgress: (progress) => progressUpdates.push(progress),
+      onProgressCleared: () => clears.push('cleared'),
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await secondWriteStarted;
+    expect(settled).toBe(false);
+    expect(progressUpdates).toHaveLength(1);
+    expect(progressUpdates[0]).toMatchObject({ fileName: 'first.bin', fileBytesWritten: 2 });
+    expect(clears).toEqual(['cleared']);
+
+    const secondWriteOptions = secondWriteCapture.options;
+    if (!secondWriteOptions) throw new Error('The second SFTP write did not start.');
+    mock.emitProgress({ ...secondWriteOptions, bytesWritten: 2, totalBytes: 4 });
+    expect(progressUpdates).toHaveLength(1);
+    expect(clears).toEqual(['cleared']);
+
+    continueSecondWrite();
+    const staged = await staging;
+    expect(staged.decision.kind).toBe('partial');
+    expect(staged.failures.map((failure) => failure.sourceName)).toEqual(['first.bin']);
+    expect(staged.decision.kind === 'partial' ? staged.decision.attachments.map((file) => file.sourceName) : [])
+      .toEqual(['second.bin']);
+    expect(progressUpdates).toHaveLength(1);
   });
 
   it('creates the desktop-compatible hidden attachment tree and writes exact bytes', async () => {

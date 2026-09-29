@@ -95,13 +95,14 @@ verdict.
 The 24 feature journey classes mapped from app2 are registered in
 [`scripts/js-journey-class-manifest.json`](../scripts/js-journey-class-manifest.json).
 Run `scripts/check-js-journey-results.py --json --results-dir <connected-XML-dir>`
-to get a machine-readable qualification result. It blocks missing classes,
-zero-test runs, skips, failures, duplicates, malformed summaries, and extra
-classes. The foundation lane intentionally does not invoke this checker while
-the feature journeys are absent, so product PRs can keep building the shell.
-At the current foundation state the checker reports all 24 journeys missing.
-Its class-level contract must be tightened to exact method names as the real
-journeys land.
+to qualify the full 24-class inventory. It blocks missing classes, zero-test
+runs, skips, failures, duplicates, malformed summaries, and extra classes.
+While that full suite is being migrated, a connected workflow can select one or
+more registered classes with repeated `--journey-class` options. The selected
+scope applies the same XML validation and blocks if any selected class is
+missing. The upload-progress J20 journey uses this path against its own
+run-scoped connected-test XML; its dedicated checker also pins its exact test
+method. The full 24-class D36 gate remains part of #2863.
 
 The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached to
 `main` and `stable`; they are not valid for this JS tree because their Kotlin

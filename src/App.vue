@@ -12,6 +12,7 @@ import {
   type SshHostTarget,
   type SshResourceSnapshot,
   type AttachmentSource,
+  type AttachmentUploadProgressSnapshot,
 } from '@pocketshell/core';
 import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
@@ -196,6 +197,8 @@ watch(composerTargetKey, flushIncomingShares);
 async function stageComposerAttachments(
   targetKey: string,
   pending: readonly PendingComposerAttachment[],
+  onProgress?: (progress: AttachmentUploadProgressSnapshot) => void,
+  onProgressCleared?: () => void,
 ): Promise<ComposerAttachmentStageResult> {
   const snapshot = connectionSnapshot.value;
   const session = snapshot?.selectedSession;
@@ -242,6 +245,17 @@ async function stageComposerAttachments(
       : session.name,
     timestamp: nextAttachmentTimestamp(),
     attachments: sources,
+    ...(onProgress ? {
+      onProgress: (progress: AttachmentUploadProgressSnapshot) => {
+        const source = pending[progress.fileIndex];
+        if (!source) return;
+        onProgress({
+          ...progress,
+          fileName: source.source.name || 'Shared file',
+        });
+      },
+    } : {}),
+    ...(onProgressCleared ? { onProgressCleared } : {}),
   });
   const staged = result.decision.kind === 'complete' || result.decision.kind === 'partial'
     ? result.decision.attachments

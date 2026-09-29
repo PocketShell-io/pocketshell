@@ -629,6 +629,7 @@ public final class SshCapabilityPlugin extends Plugin {
             String path = requiredString(options, "path");
             String rootPath = optionalString(options, "rootPath");
             boolean createOnly = Boolean.TRUE.equals(options.getBool("createOnly"));
+            boolean reportProgress = Boolean.TRUE.equals(options.getBool("reportProgress"));
             String encoded = requiredString(options, "dataBase64");
             byte[] bytes;
             try {
@@ -652,7 +653,19 @@ public final class SshCapabilityPlugin extends Plugin {
                     Set<OpenMode> modes = new HashSet<>(Arrays.asList(OpenMode.WRITE, OpenMode.CREAT));
                     modes.add(createOnly ? OpenMode.EXCL : OpenMode.TRUNC);
                     try (RemoteFile file = client.open(writePath, modes)) {
-                        file.write(0, bytes, 0, bytes.length);
+                        if (reportProgress && bytes.length > 0) {
+                            SftpWriteProgress.write(bytes,
+                                (offset, data, dataOffset, length) -> {
+                                    if (!connection.state.equals("connected") || !connection.client.isConnected()) {
+                                        throw new PluginFailure("CONNECTION_LOST", "SSH connection is no longer available.");
+                                    }
+                                    file.write(offset, data, dataOffset, length);
+                                },
+                                (bytesWritten, totalBytes) -> emitSftpWriteProgress(
+                                    connection, requestId, path, bytesWritten, totalBytes));
+                        } else {
+                            file.write(0, bytes, 0, bytes.length);
+                        }
                     }
                 } catch (Exception error) {
                     throw failureFor(error);
@@ -660,6 +673,30 @@ public final class SshCapabilityPlugin extends Plugin {
             }
             return ack(requestId).put("bytesWritten", bytes.length);
         });
+    }
+
+    private void emitSftpWriteProgress(
+        SshConnection connection,
+        String requestId,
+        String path,
+        long bytesWritten,
+        long totalBytes
+    ) {
+        SftpWriteProgress.postIfConnected(
+            () -> connection.state.equals("connected") && connection.client.isConnected(),
+            callback -> mainHandler.post(callback),
+            (acknowledgedBytes, payloadBytes) -> {
+                JSObject event = new JSObject()
+                    .put("requestId", requestId)
+                    .put("connectionId", connection.connectionId)
+                    .put("generationId", connection.generationId)
+                    .put("path", path)
+                    .put("bytesWritten", acknowledgedBytes)
+                    .put("totalBytes", payloadBytes);
+                notifyListeners("sftpWriteProgress", event);
+            },
+            bytesWritten,
+            totalBytes);
     }
 
     @PluginMethod

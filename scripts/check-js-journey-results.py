@@ -2,12 +2,13 @@
 """Qualify JS-first Android feature journeys without accepting a vacuous run.
 
 The manifest names the 24 user-visible journeys mapped from the removed
-app2 suite. This checker is deliberately NOT wired into the foundation PR
-workflow while those feature journeys are absent; it emits a machine-readable
-BLOCK result until every registered journey has actually executed.
+app2 suite. By default this checker requires all 24 classes. `--journey-class`
+can qualify one registered class against its own connected-test XML while the
+full suite is still being migrated; both modes use the same strict XML checks.
 
 Usage:
   scripts/check-js-journey-results.py --results-dir <connected-XML-dir>
+  scripts/check-js-journey-results.py --journey-class J20ComposerUploadProgressJourney --results-dir <connected-XML-dir>
   scripts/check-js-journey-results.py --results-dir <dir> --json
   scripts/check-js-journey-results.py --self-test
 """
@@ -27,7 +28,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / "scripts/js-journey-class-manifest.json"
 DEFAULT_RESULTS_DIR = ROOT / "android/app/build/outputs/androidTest-results/connected/debug"
-SELF_TEST_CASES = 9
+SELF_TEST_CASES = 12
 REQUIRED_CLASS_COUNT = 24
 
 
@@ -35,6 +36,7 @@ def _new_result(required: list[str]) -> dict[str, Any]:
     return {
         "schema": 1,
         "suite": "js-first-feature-journeys",
+        "scope": "full",
         "result": "BLOCK",
         "requiredJourneyClasses": len(required),
         "executedJourneyClasses": [],
@@ -88,15 +90,34 @@ def _class_name(raw: str) -> str:
     return raw.rsplit(".", 1)[-1]
 
 
-def qualify_results(results_dir: Path, manifest_path: Path = MANIFEST) -> dict[str, Any]:
+def qualify_results(
+    results_dir: Path,
+    manifest_path: Path = MANIFEST,
+    required_classes: list[str] | None = None,
+) -> dict[str, Any]:
     try:
-        required = load_manifest(manifest_path)
+        manifest_classes = load_manifest(manifest_path)
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         result = _new_result([])
         result["blockers"] = [f"could not load required journey manifest: {exc}"]
         return result
 
+    if required_classes is None:
+        required = manifest_classes
+    elif (
+        not required_classes
+        or any(not isinstance(name, str) or not name for name in required_classes)
+        or len(required_classes) != len(set(required_classes))
+        or any(name not in manifest_classes for name in required_classes)
+    ):
+        result = _new_result([])
+        result["blockers"] = ["requested journey classes must be unique names registered in the manifest"]
+        return result
+    else:
+        required = required_classes
+
     result = _new_result(required)
+    result["scope"] = "selected" if required_classes is not None else "full"
     blockers: list[str] = result["blockers"]
     if not results_dir.is_dir():
         blockers.append(f"instrumentation result directory is missing: {results_dir}")
@@ -275,13 +296,30 @@ def self_test() -> int:
                 print(f"FAIL: self-test #{index + 1}: {label}: {json.dumps(result, sort_keys=True)}", file=sys.stderr)
             else:
                 print(f"  ok  [{index + 1}/{SELF_TEST_CASES}] {label}")
-    if len(probes) != SELF_TEST_CASES:
+        selected_j20 = "J20ComposerUploadProgressJourney"
+        selected_method = "aThreeFileUploadShowsTheBarMidFlightAndLeavesNoResidueAfterCompletion"
+        selected_probes = [
+            ("selected J20 class passes from its connected XML", [(selected_j20, selected_method, "passed")], [selected_j20], True),
+            ("selected J20 missing from connected XML blocks", [("J19HostFormImeJourney", "differentJourney", "passed")], [selected_j20], False),
+            ("unregistered selected class blocks", [(selected_j20, selected_method, "passed")], ["UnknownJourney"], False),
+        ]
+        for offset, (label, entries, selected, should_pass) in enumerate(selected_probes, start=len(probes)):
+            report_dir = root / f"selected-case-{offset}"
+            _write_report(report_dir, entries)
+            result = qualify_results(report_dir, MANIFEST, selected)
+            passed = result["result"] == "PASS"
+            if passed != should_pass:
+                failures += 1
+                print(f"FAIL: self-test #{offset + 1}: {label}: {json.dumps(result, sort_keys=True)}", file=sys.stderr)
+            else:
+                print(f"  ok  [{offset + 1}/{SELF_TEST_CASES}] {label}")
+    if len(probes) + len(selected_probes) != SELF_TEST_CASES:
         failures += 1
-        print(f"FAIL: self-test defined {len(probes)} probes, expected {SELF_TEST_CASES}", file=sys.stderr)
+        print(f"FAIL: self-test defined {len(probes) + len(selected_probes)} probes, expected {SELF_TEST_CASES}", file=sys.stderr)
     if failures:
         print(f"FAIL: {failures} journey result guard self-tests failed", file=sys.stderr)
         return 1
-    print(f"SELF-TEST OK: missing, zero, skipped, failed, extra and duplicate journey cases block ({SELF_TEST_CASES}/{SELF_TEST_CASES})")
+    print(f"SELF-TEST OK: full-suite and selected-class result gates fail closed ({SELF_TEST_CASES}/{SELF_TEST_CASES})")
     return 0
 
 
@@ -289,17 +327,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument(
+        "--journey-class",
+        action="append",
+        dest="journey_classes",
+        help="qualify only these manifest-registered classes; repeat to select more than one (default: all 24)",
+    )
     parser.add_argument("--json", action="store_true", help="emit only the machine-readable qualification object")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
 
-    result = qualify_results(args.results_dir, args.manifest)
+    result = qualify_results(args.results_dir, args.manifest, args.journey_classes)
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:
-        print(f"{result['result']}: JS feature journey qualification")
+        print(f"{result['result']}: JS feature journey qualification ({result['scope']} scope)")
         print(
             f"  required classes: {result['requiredJourneyClasses']}; "
             f"executed classes: {len(result['executedJourneyClasses'])}; tests: {result['executedTests']}"

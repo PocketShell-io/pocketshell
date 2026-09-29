@@ -3,7 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vu
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ComposerControls } from '@pocketshell/ui';
-import type { AttachmentSource, ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
+import {
+  formatBytes,
+  type AttachmentSource,
+  type AttachmentUploadProgressSnapshot,
+  type ComposerDeliveryIntent,
+  type ComposerDeliveryResult,
+} from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
 import {
   appendAttachmentPaths,
@@ -24,6 +30,8 @@ const props = defineProps<{
   stageAttachments: (
     targetKey: string,
     pending: readonly PendingComposerAttachment[],
+    onProgress?: (progress: AttachmentUploadProgressSnapshot) => void,
+    onProgressCleared?: () => void,
   ) => Promise<ComposerAttachmentStageResult>;
 }>();
 
@@ -47,6 +55,72 @@ let partialTranscript = '';
 let appStateListener: PluginListenerHandle | null = null;
 let composerUnmounting = false;
 let deliveryEpoch = 0;
+let attachmentProgressEpoch = 0;
+let attachmentProgressFrame: number | null = null;
+let latestAttachmentProgress: AttachmentUploadProgressSnapshot | null = null;
+
+const attachmentProgress = shallowRef<AttachmentUploadProgressSnapshot | null>(null);
+const attachmentProgressPercent = computed(() => {
+  const progress = attachmentProgress.value;
+  if (!progress || progress.batchBytesTotal <= 0) return 0;
+  return Math.max(0, Math.min(100, progress.batchBytesWritten / progress.batchBytesTotal * 100));
+});
+const attachmentProgressValue = computed(() => Math.floor(attachmentProgressPercent.value));
+const attachmentProgressLabel = computed(() => {
+  const progress = attachmentProgress.value;
+  if (!progress) return '';
+  return `Uploading ${progress.fileName || 'Shared file'} (${progress.fileIndex + 1}/${progress.fileCount}) · ${attachmentProgressValue.value}%`;
+});
+const attachmentProgressDescription = computed(() => {
+  const progress = attachmentProgress.value;
+  if (!progress) return '';
+  return `Uploading ${progress.fileName || 'Shared file'}, file ${progress.fileIndex + 1} of ${progress.fileCount}; `
+    + `${formatBytes(progress.fileBytesWritten)} of ${formatBytes(progress.fileBytesTotal)} for this file; `
+    + `${formatBytes(progress.batchBytesWritten)} of ${formatBytes(progress.batchBytesTotal)} overall.`;
+});
+
+function clearAttachmentProgress(): number {
+  attachmentProgressEpoch += 1;
+  if (attachmentProgressFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(attachmentProgressFrame);
+  }
+  attachmentProgressFrame = null;
+  latestAttachmentProgress = null;
+  attachmentProgress.value = null;
+  return attachmentProgressEpoch;
+}
+
+function observeAttachmentProgress(
+  targetKey: string,
+  runEpoch: number,
+  progress: AttachmentUploadProgressSnapshot,
+): void {
+  if (targetKey !== props.targetKey || runEpoch !== attachmentProgressEpoch) return;
+  latestAttachmentProgress = progress;
+  if (typeof requestAnimationFrame !== 'function') {
+    attachmentProgress.value = progress;
+    return;
+  }
+  if (attachmentProgressFrame !== null) return;
+  // Coalesce native byte callbacks at the display's frame cadence. Each value
+  // still comes from an acknowledged SFTP write; no time estimate is added.
+  attachmentProgressFrame = requestAnimationFrame(() => {
+    attachmentProgressFrame = null;
+    if (targetKey === props.targetKey && runEpoch === attachmentProgressEpoch) {
+      attachmentProgress.value = latestAttachmentProgress;
+    }
+  });
+}
+
+function clearObservedAttachmentProgress(targetKey: string, runEpoch: number): void {
+  if (targetKey !== props.targetKey || runEpoch !== attachmentProgressEpoch) return;
+  if (attachmentProgressFrame !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(attachmentProgressFrame);
+  }
+  attachmentProgressFrame = null;
+  latestAttachmentProgress = null;
+  attachmentProgress.value = null;
+}
 
 function createObservedDelivery() {
   const epoch = deliveryEpoch;
@@ -90,6 +164,7 @@ watch(() => props.writePty, () => {
   delivery.value.setTransportState(props.transportState);
 });
 watch(() => props.targetKey, () => {
+  clearAttachmentProgress();
   if (dictationTargetKey && dictationTargetKey !== props.targetKey) {
     requestDictationStop();
   }
@@ -109,6 +184,7 @@ watch(() => props.targetKey, () => {
 
 onBeforeUnmount(() => {
   composerUnmounting = true;
+  clearAttachmentProgress();
   void appStateListener?.remove();
   requestDictationStop();
 });
@@ -180,11 +256,17 @@ async function stagePendingAttachments(
     .filter((attachment) => onlyIds === undefined || onlyIds.has(attachment.id));
   if (pending.length === 0) return;
   const attemptedIds = new Set(pending.map((attachment) => attachment.id));
+  const progressEpoch = clearAttachmentProgress();
   stagingAttachments.value = true;
   statusTone.value = 'quiet';
   statusText.value = `Uploading ${pending.length} attachment(s)…`;
   try {
-    const result = await props.stageAttachments(targetKey, pending);
+    const result = await props.stageAttachments(
+      targetKey,
+      pending,
+      (progress) => observeAttachmentProgress(targetKey, progressEpoch, progress),
+      () => clearObservedAttachmentProgress(targetKey, progressEpoch),
+    );
     drafts.markAttachmentsStaged(targetKey, result.staged);
     for (const failure of result.failures) {
       drafts.addAttachmentIssue(targetKey, failure);
@@ -209,6 +291,7 @@ async function stagePendingAttachments(
       statusText.value = `Attachments could not be staged: ${errorMessage(error)}. The draft and file bytes are retained.`;
     }
   } finally {
+    if (progressEpoch === attachmentProgressEpoch) clearAttachmentProgress();
     stagingAttachments.value = false;
     const targetNow = props.targetKey;
     const newlyAdded = drafts.pendingAttachmentsFor(targetKey)
@@ -468,9 +551,20 @@ function discardDraft() {
       <li v-for="issue in attachmentIssues" :key="issue.id"><strong>{{ issue.name }}:</strong> {{ issue.message }}</li>
     </ul>
 
-    <p class="composer-status" role="status" aria-live="polite" data-testid="composer-status"
+    <p class="composer-status" data-testid="composer-status"
       :data-delivery-state="statusTone" :data-delivery-intent="sendingIntent ?? ''">
-      {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
+      <span v-if="attachmentProgress" class="composer-upload-progress" role="progressbar"
+        aria-label="Attachment upload progress" aria-valuemin="0" aria-valuemax="100"
+        :aria-valuenow="attachmentProgressValue" :aria-valuetext="attachmentProgressDescription"
+        data-testid="composer-upload-progress" :data-upload-percent="attachmentProgressValue">
+        <span class="composer-upload-progress__label">{{ attachmentProgressLabel }}</span>
+        <span class="composer-upload-progress__track" aria-hidden="true">
+          <span class="composer-upload-progress__fill" :style="{ width: `${attachmentProgressPercent}%` }"></span>
+        </span>
+      </span>
+      <span v-else role="status" aria-live="polite">
+        {{ statusText || (transportState === 'connected' ? 'Insert leaves the line at the terminal prompt. Send presses Enter.' : 'Reconnect or attach a live session to send input.') }}
+      </span>
     </p>
 
     <div class="composer-actions" data-testid="composer-actions">
@@ -555,5 +649,33 @@ function errorMessage(error: unknown): string {
   padding: 0 var(--sp-3) var(--sp-2);
   color: var(--error);
   font-size: var(--fs-100);
+}
+.composer-upload-progress {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+.composer-upload-progress__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.composer-upload-progress__track {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border-soft);
+}
+.composer-upload-progress__fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
 }
 </style>
