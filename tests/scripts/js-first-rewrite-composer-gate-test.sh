@@ -505,6 +505,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
     opener = journey_method(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     physical_open = journey_method(source, "openComposerWithPhysicalDraftTap")
     physical_tap = journey_method(source, "tapComposerDraftCenter")
+    draft_tap_target = journey_method(source, "composerDraftTapTargetExpression")
     open_diagnostics = journey_method(source, "readComposerOpenState")
     visible = journey_method(source, "visibleComposerExpression")
 
@@ -554,6 +555,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
         ("session list for reattach", '[data-testid=open-sessions]'),
         ("selected session lookup", "matchingSession"),
         ("selected session reattach", "[data-session-tag=\\\""),
+        ("physical draft target readiness", "awaitJsTrue(composerDraftTapReady, 15_000);"),
         ("Composer visibility and focus check", "boolean composerDraftFocused = "),
         ("physical open only when closed or unfocused", "if (!composerVisible || !composerDraftFocused) {"),
         ("native physical draft tap action", "openComposerWithPhysicalDraftTap(sessionTag);"),
@@ -574,13 +576,17 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if needle not in send:
             raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
     opener_live_ready_at = opener.find("dataset.enabled === 'true'")
+    opener_tap_ready_at = opener.find("awaitJsTrue(composerDraftTapReady, 15_000);")
     opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag);")
     opener_visible_at = opener.find("awaitJsTrue(composerReady, 15_000);")
     opener_focus_at = opener.find("String composerReady = visibleComposerExpression()", opener_action_at)
     opener_connected_at = opener.find("dataset.transportState === 'connected'")
-    if min(opener_live_ready_at, opener_action_at, opener_visible_at, opener_focus_at, opener_connected_at) < 0 \
-       or not opener_live_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
-        raise AssertionError("mobile Composer must be physically opened and shown focused before connected transport")
+    if min(opener_live_ready_at, opener_tap_ready_at, opener_action_at, opener_visible_at, opener_focus_at, opener_connected_at) < 0 \
+       or not opener_live_ready_at < opener_tap_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
+        raise AssertionError("Home Composer must become physically tappable, open, and focus before connected transport")
+    if "composerDraftTapTargetExpression()" not in opener or "elementFromPoint" not in draft_tap_target \
+       or "===draft" not in draft_tap_target:
+        raise AssertionError("Home Composer tap readiness must verify the draft itself receives the center hit")
     composer_ready = opener[opener_focus_at:opener_visible_at]
     if "document.activeElement === document.querySelector('[data-testid=prompt-draft]')" not in composer_ready:
         raise AssertionError("mobile Composer readiness must require focus on the Prompt draft")
@@ -657,6 +663,20 @@ expect_usage_ports_contract_rejection(
     usage_ports_journey.replace(
         opener_source,
         opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the visible physical draft target wait",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        String composerDraftTapReady = visibleComposerExpression()\n"
+            "                + \" && \" + composerDraftTapTargetExpression();\n"
+            "        awaitJsTrue(composerDraftTapReady, 15_000);\n",
+            "        // no wait for the Home draft touch target\n",
+            1,
+        ),
         1,
     ),
 )

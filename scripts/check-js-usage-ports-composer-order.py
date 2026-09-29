@@ -69,6 +69,8 @@ def validate(source: str) -> None:
     helper = method_body(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     focused_draft = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
     required = (
+        "String composerDraftTapReady = visibleComposerExpression()",
+        "awaitJsTrue(composerDraftTapReady, 15_000);",
         "boolean composerVisible = \"true\".equals(evalRaw(visibleComposerExpression()))",
         "boolean composerDraftFocused = \"true\".equals(evalRaw(",
         "if (!composerVisible || !composerDraftFocused)",
@@ -83,7 +85,19 @@ def validate(source: str) -> None:
             raise GateFailure(f"Composer helper is missing required step: {token}")
         positions.append(position)
     if positions != sorted(positions):
-        raise GateFailure("Composer must be visibly open and draft-focused before connected transport is read")
+        raise GateFailure("the returned Home Composer must be visibly tappable before its state or transport is read")
+
+    tap_ready_match = re.search(r"String\s+composerDraftTapReady\s*=\s*(.*?);", helper, re.DOTALL)
+    if tap_ready_match is None:
+        raise GateFailure("Composer must define a physical draft target readiness predicate")
+    tap_ready_predicate = tap_ready_match.group(1)
+    if "visibleComposerExpression()" not in tap_ready_predicate or "composerDraftTapTargetExpression()" not in tap_ready_predicate:
+        raise GateFailure("Composer tap readiness must require a visible surface and hittable draft center")
+    if "awaitJsTrue(composerDraftTapReady, 15_000);" not in helper:
+        raise GateFailure("Composer tap readiness must be awaited before checking focus or opening it")
+    tap_target = method_body(source, "composerDraftTapTargetExpression")
+    if "elementFromPoint" not in tap_target or "===draft" not in tap_target:
+        raise GateFailure("Composer tap readiness must verify Android's CSS center maps to the draft itself")
 
     ready_match = re.search(r"String\s+composerReady\s*=\s*(.*?);", helper, re.DOTALL)
     if ready_match is None:
@@ -132,9 +146,16 @@ def validate(source: str) -> None:
 def self_test() -> int:
     source = DEFAULT_SOURCE.read_text(encoding="utf-8")
     validate(source)
-    print("ok [1/7] physical Composer open and readiness precede Composer transport read")
+    print("ok [1/8] Composer waits for a visible, hittable draft before physical open")
 
     mutants = (
+        (
+            "physical draft target wait removed",
+            "        String composerDraftTapReady = visibleComposerExpression()\n"
+            "                + \" && \" + composerDraftTapTargetExpression();\n"
+            "        awaitJsTrue(composerDraftTapReady, 15_000);\n\n",
+            "        // no wait for Home to become tappable\n\n",
+        ),
         (
             "transport readiness read before physical Composer open",
             "        boolean composerVisible = \"true\".equals(evalRaw(visibleComposerExpression()));",
@@ -178,10 +199,10 @@ def self_test() -> int:
         try:
             validate(mutant)
         except GateFailure:
-            print(f"ok [{index}/7] {label} is rejected")
+            print(f"ok [{index}/8] {label} is rejected")
         else:
             raise GateFailure(f"source gate accepted invalid mutant: {label}")
-    print("PASS: Usage/Ports Composer ordering gate checks (7/7)")
+    print("PASS: Usage/Ports Composer ordering gate checks (8/8)")
     return 0
 
 

@@ -467,6 +467,13 @@ public final class UsagePortsDockerJourneyTest {
                 + JSONObject.quote(sessionTag)
                 + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
 
+        // Returning from Usage/Ports updates the route before the retained Home
+        // surface becomes visible again. Wait for the draft to be a real touch
+        // target before mapping its CSS coordinates into Android screen space.
+        String composerDraftTapReady = visibleComposerExpression()
+                + " && " + composerDraftTapTargetExpression();
+        awaitJsTrue(composerDraftTapReady, 15_000);
+
         boolean composerVisible = "true".equals(evalRaw(visibleComposerExpression()));
         boolean composerDraftFocused = "true".equals(evalRaw(
                 "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
@@ -677,6 +684,12 @@ public final class UsagePortsDockerJourneyTest {
                 + "&&rect.right>0&&rect.bottom>0&&rect.left<innerWidth&&rect.top<innerHeight"
                 + "&&style.display!=='none'&&style.visibility!=='hidden'&&style.opacity!=='0'"
                 + "&&!composer.closest('[inert],[aria-hidden=true]');})()";
+    }
+
+    private String composerDraftTapTargetExpression() {
+        return "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "if(!draft||draft.disabled)return false;const rect=draft.getBoundingClientRect();"
+                + "return document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)===draft;})()";
     }
 
     private void awaitTerminalReady() throws Exception {
