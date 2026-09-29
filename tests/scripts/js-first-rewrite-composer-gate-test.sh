@@ -477,6 +477,32 @@ if "--preserve-on-failure" not in runner or '--output-dir "$evidence_dir"' not i
 if 'tee "$evidence_dir/composer-gradle.log"' not in runner:
     raise AssertionError("composer runner does not retain its packaged Gradle output")
 
+def require_android_test_gradle_output_capture(source: str) -> None:
+    capture = re.search(
+        r'(?m)^"\$ROOT_DIR/android/gradlew" -p "\$ROOT_DIR/android" :app:assembleDebugAndroidTest \\\n'
+        r'(?:[ \t]+[^\n]*\\\n)*'
+        r'[ \t]+2>&1 \| tee -a "\$evidence_dir/composer-gradle\.log"$',
+        source,
+    )
+    if capture is None:
+        raise AssertionError("composer runner does not append AndroidTest Gradle output to its run bundle")
+
+
+require_android_test_gradle_output_capture(runner)
+missing_android_test_append = runner.replace(
+    '  2>&1 | tee -a "$evidence_dir/composer-gradle.log"\n',
+    "",
+    1,
+)
+if missing_android_test_append == runner:
+    raise AssertionError("AndroidTest Gradle append regression fixture did not match the runner")
+try:
+    require_android_test_gradle_output_capture(missing_android_test_append)
+except AssertionError:
+    print("PASS: missing AndroidTest Gradle output append fails the composer runner contract")
+else:
+    raise AssertionError("composer runner contract missed a removed AndroidTest Gradle output append")
+
 print("PASS: rewrite composer and Usage/Ports CI run on API 35, validate exact JUnit, and upload run-scoped evidence")
 print("PASS: packaged lanes execute fail-closed in one shell and preserve the captured Node/pnpm runtime")
 PY

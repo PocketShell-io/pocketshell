@@ -111,9 +111,10 @@ ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 \
   'command -v a >/dev/null && command -v aplexer >/dev/null && command -v pocketshell >/dev/null' \
   || fail "agents lane $PORT does not authenticate with the committed test key or lacks the aplexer tools"
 
-"$ROOT_DIR/scripts/assemble-debug.sh" --suffix "$SUFFIX"
+"$ROOT_DIR/scripts/assemble-debug.sh" --suffix "$SUFFIX" 2>&1 | tee "$evidence_dir/composer-gradle.log"
 "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:assembleDebugAndroidTest \
-  "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain
+  "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain \
+  2>&1 | tee -a "$evidence_dir/composer-gradle.log"
 
 if [[ -z "${ANDROID_SERIAL:-}" ]]; then
   mapfile -t online_emulators < <("$ADB" devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1 }')
