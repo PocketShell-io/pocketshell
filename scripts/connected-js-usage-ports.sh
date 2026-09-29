@@ -90,10 +90,12 @@ export ANDROID_HOME="${ANDROID_HOME:-$ANDROID_SDK}"
 export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_SDK}"
 [[ -x "$ROOT_DIR/scripts/check-js-usage-ports-results.py" ]] || fail 'exact usage/ports JUnit checker is missing'
 [[ -x "$ROOT_DIR/scripts/check-js-usage-ports-host-evidence.py" ]] || fail 'usage/ports host evidence checker is missing'
+[[ -x "$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py" ]] || fail 'Usage/Ports Composer ordering gate is missing'
 [[ -x "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" ]] || fail 'same-run artifact extractor is missing'
 
 "$ROOT_DIR/scripts/check-js-usage-ports-results.py" --self-test
 "$ROOT_DIR/scripts/check-js-usage-ports-host-evidence.py" --self-test
+"$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"

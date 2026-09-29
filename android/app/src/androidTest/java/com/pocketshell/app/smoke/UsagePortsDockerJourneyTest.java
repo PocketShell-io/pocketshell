@@ -6,10 +6,14 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
+import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -463,25 +467,204 @@ public final class UsagePortsDockerJourneyTest {
                 + JSONObject.quote(sessionTag)
                 + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
 
-        // Focusing the draft is the mobile Composer's open action. It is safe to
-        // repeat from Home and after returning from a routed screen: it only
-        // focuses the empty draft and never changes or sends its contents.
-        String composerDraftFocused = evalString("document.activeElement === document.querySelector('[data-testid=prompt-draft]')");
-        if (!"true".equals(composerDraftFocused)) {
-            focusComposerDraft();
+        boolean composerVisible = "true".equals(evalRaw(visibleComposerExpression()));
+        boolean composerDraftFocused = "true".equals(evalRaw(
+                "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
+        if (!composerVisible || !composerDraftFocused) {
+            openComposerWithPhysicalDraftTap(sessionTag);
         }
-        awaitJsTrue(visibleComposerExpression(), 15_000);
-        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
-                + " && " + visibleComposerExpression(), 15_000);
+        String composerReady = visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
+        awaitJsTrue(composerReady, 15_000);
+        // Read Composer transport readiness only after its visible UI is open
+        // and the draft has focus through the Android touch path.
         awaitJsTrue(visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
                 15_000);
     }
 
-    private void focusComposerDraft() throws Exception {
-        evalString("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
-                + "if(!draft) throw new Error('missing Prompt Composer draft');"
-                + "draft.focus(); return document.activeElement === draft ? 'focused' : 'not-focused';})()");
+    private void openComposerWithPhysicalDraftTap(String sessionTag) throws Exception {
+        JSONObject before = readComposerOpenState("before-physical-draft-tap");
+        installComposerOpenTapRecorder();
+        evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
+
+        JSONObject tap;
+        try {
+            tap = tapComposerDraftCenter();
+        } catch (AssertionError error) {
+            JSONObject after = readComposerOpenState("draft-tap-target-rejected");
+            throw new AssertionError("Composer could not be opened by a physical draft tap; sessionTag="
+                    + sessionTag + "; before=" + before + "; targetFailure=" + error.getMessage()
+                    + "; after=" + after, error);
+        }
+        long pointerDeadline = SystemClock.uptimeMillis() + 1_500;
+        boolean trustedDraftPointerDown = false;
+        while (SystemClock.uptimeMillis() < pointerDeadline) {
+            trustedDraftPointerDown = "true".equals(evalRaw(
+                    "window.__ps2908ComposerOpenPointerEvents?.some(event=>event.type==='pointerdown'"
+                            + "&&event.isTrusted===true&&event.targetIsDraft===true)===true"));
+            if (trustedDraftPointerDown) break;
+            Thread.sleep(30);
+        }
+
+        String ready = visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
+        try {
+            awaitJsTrue(ready, 8_000);
+        } catch (AssertionError error) {
+            JSONObject after = readComposerOpenState("physical-draft-tap-did-not-open-composer");
+            throw new AssertionError("Android physical draft tap did not open and focus the Home Composer; "
+                    + "trustedDraftPointerDown=" + trustedDraftPointerDown + "; before=" + before
+                    + "; tap=" + tap + "; after=" + after + "; waitFailure=" + error.getMessage(), error);
+        }
+        JSONObject after = readComposerOpenState("after-physical-draft-tap");
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " HTTP_CLEANUP_COMPOSER_TAP sessionTag=" + sessionTag
+                + " trustedDraftPointerDown=" + trustedDraftPointerDown
+                + " before=" + before + " tap=" + tap + " after=" + after);
+        assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="
+                        + before + "; tap=" + tap + "; after=" + after,
+                trustedDraftPointerDown);
+    }
+
+    private void installComposerOpenTapRecorder() throws Exception {
+        evalString("(() => {if(window.__ps2908ComposerOpenRecorderInstalled)return 'installed';"
+                + "window.__ps2908ComposerOpenPointerEvents=[];"
+                + "document.addEventListener('pointerdown',event=>{const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "window.__ps2908ComposerOpenPointerEvents.push({type:'pointerdown',isTrusted:event.isTrusted===true,"
+                + "targetIsDraft:event.target===draft,pointerType:event.pointerType||'',clientX:event.clientX,clientY:event.clientY});},true);"
+                + "window.__ps2908ComposerOpenRecorderInstalled=true;return 'installed';})()");
+    }
+
+    private JSONObject tapComposerDraftCenter() throws Exception {
+        JSONObject point = new JSONObject(evalString("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "if(!draft)return JSON.stringify({missing:true});const rect=draft.getBoundingClientRect();"
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "return JSON.stringify({missing:false,disabled:!!draft.disabled,connected:draft.isConnected,"
+                + "x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,"
+                + "centerHitIsDraft:hit===draft,centerHitTag:hit?.tagName||'',"
+                + "activeElementTag:document.activeElement?.tagName||'',activeElementTestId:document.activeElement?.getAttribute?.('data-testid')||''});})()"));
+        assertTrue("Composer draft is missing at the Home touch target: " + point, !point.optBoolean("missing"));
+        assertTrue("Composer draft is detached from the rendered route: " + point, point.optBoolean("connected"));
+        assertTrue("Composer draft is disabled at the Home touch target: " + point, !point.optBoolean("disabled"));
+        assertTrue("Composer draft has no visible physical tap target: " + point,
+                point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("cssHeight") + 0.5
+                        && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5
+                        && point.optDouble("right") > point.optDouble("left")
+                        && point.optDouble("bottom") > point.optDouble("top"));
+        assertTrue("Composer draft center is intercepted by another DOM element: " + point,
+                point.optBoolean("centerHitIsDraft"));
+
+        AtomicReference<float[]> screenPoint = new AtomicReference<>();
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            double cssWidth = point.optDouble("width");
+            double cssHeight = point.optDouble("cssHeight");
+            float scaleX = webView.getWidth() / (float) cssWidth;
+            float scaleY = webView.getHeight() / (float) cssHeight;
+            float screenX = location[0] + (float) point.optDouble("x") * scaleX;
+            float screenY = location[1] + (float) point.optDouble("y") * scaleY;
+            screenPoint.set(new float[]{screenX, screenY});
+            View decor = activity.getWindow().getDecorView();
+            WindowInsets insets = decor.getRootWindowInsets();
+            View focusedView = decor.findFocus();
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("cssWidth", cssWidth)
+                        .put("cssHeight", cssHeight)
+                        .put("scaleX", scaleX)
+                        .put("scaleY", scaleY)
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("webViewHasFocus", webView.hasFocus())
+                        .put("nativeFocusedView", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                                && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null || Build.VERSION.SDK_INT < 30 ? 0
+                                : insets.getInsets(WindowInsets.Type.ime()).bottom));
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+
+        float[] screen = screenPoint.get();
+        assertNotNull("native screen point for Composer draft was not mapped", screen);
+        long downTime = SystemClock.uptimeMillis();
+        var instrumentation = InstrumentationRegistry.getInstrumentation();
+        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
+        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
+        down.recycle();
+        assertTrue("Android touchscreen ACTION_DOWN for the Composer draft must be injected", downInjected);
+        SystemClock.sleep(60);
+        long upTime = SystemClock.uptimeMillis();
+        MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, screen[0], screen[1], 0);
+        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
+        up.recycle();
+        assertTrue("Android touchscreen ACTION_UP for the Composer draft must be injected", upInjected);
+        return new JSONObject(point.toString())
+                .put("nativeMapping", nativeMapping.get())
+                .put("screenX", screen[0])
+                .put("screenY", screen[1])
+                .put("touchDownUptimeMs", downTime)
+                .put("touchUpUptimeMs", upTime)
+                .put("downInjected", downInjected)
+                .put("upInjected", upInjected);
+    }
+
+    private JSONObject readComposerOpenState(String stage) throws Exception {
+        JSONObject dom = new JSONObject(evalString("(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                + "const style=composer?getComputedStyle(composer):null;const draftRect=rect(draft);"
+                + "const hit=draftRect?document.elementFromPoint(draftRect.left+draftRect.width/2,draftRect.top+draftRect.height/2):null;"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||''}:null;"
+                + "return JSON.stringify({route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "sshPhase:shell?.dataset.sshPhase||'',selectedTag:shell?.dataset.sshSelectedTag||'',"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "composerPresent:!!composer,composerConnected:!!composer?.isConnected,composerRect:rect(composer),"
+                + "composerDisplay:style?.display||'',composerVisibility:style?.visibility||'',composerOpacity:style?.opacity||'',"
+                + "composerInert:!!composer?.closest('[inert],[aria-hidden=true]'),"
+                + "draftPresent:!!draft,draftConnected:!!draft?.isConnected,draftDisabled:!!draft?.disabled,"
+                + "draftFocused:document.activeElement===draft,activeElement:label(document.activeElement),"
+                + "draftRect, draftCenterHit:label(hit),draftCenterHitIsDraft:hit===draft,"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},innerWidth,innerHeight});})()"));
+        AtomicReference<JSONObject> nativeState = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            View focusedView = decor.findFocus();
+            WebView webView = findWebView(decor);
+            WindowInsets insets = decor.getRootWindowInsets();
+            try {
+                nativeState.set(new JSONObject()
+                        .put("androidApi", Build.VERSION.SDK_INT)
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("decorHasFocus", decor.hasFocus())
+                        .put("focusedViewClass", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("webViewPresent", webView != null)
+                        .put("webViewHasFocus", webView != null && webView.hasFocus())
+                        .put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                                && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null || Build.VERSION.SDK_INT < 30 ? 0
+                                : insets.getInsets(WindowInsets.Type.ime()).bottom));
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        return dom.put("stage", stage)
+                .put("capturedAtUptimeMs", SystemClock.uptimeMillis())
+                .put("native", nativeState.get() == null ? new JSONObject() : nativeState.get());
     }
 
     private String visibleComposerExpression() {

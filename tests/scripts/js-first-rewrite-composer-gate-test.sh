@@ -503,13 +503,16 @@ def require_usage_ports_composer_contract(source: str) -> None:
     strict_stop = journey_method(source, "stopHttpServerStrictly")
     send = journey_method(source, "sendComposerCommandAndAwaitMarker")
     opener = journey_method(source, "openHomeLiveComposerAndAwaitConnectedTransport")
-    focus_action = journey_method(source, "focusComposerDraft")
+    physical_open = journey_method(source, "openComposerWithPhysicalDraftTap")
+    physical_tap = journey_method(source, "tapComposerDraftCenter")
+    open_diagnostics = journey_method(source, "readComposerOpenState")
     visible = journey_method(source, "visibleComposerExpression")
 
-    if re.search(r"(?i)\b(?:send[A-Za-z0-9_]*|write[A-Za-z0-9_]*|setValue|clear[A-Za-z0-9_]*)\s*\(", opener) \
-       or re.search(r"(?i)\bclick\s*\([^;\n]*(?:send|submit)", opener) \
-       or re.search(r"(?i)\.value\s*=", opener):
-        raise AssertionError("closed-Composer opener must not send, write terminal input, or mutate a draft")
+    for label, open_method in (("Home route opener", opener), ("physical-tap opener", physical_open)):
+        if re.search(r"(?i)\b(?:send[A-Za-z0-9_]*|write[A-Za-z0-9_]*|setValue|clear[A-Za-z0-9_]*)\s*\(", open_method) \
+           or re.search(r"(?i)\bclick\s*\([^;\n]*(?:send|submit)", open_method) \
+           or re.search(r"(?i)\.value\s*=", open_method):
+            raise AssertionError(f"{label} must not send, write terminal input, or mutate a draft")
 
     route_guard = 'assertEquals("HTTP cleanup must start from the Ports screen", "ports"'
     hidden_guard = 'assertEquals("the live Composer must be absent from the visible Usage/Ports route", "false"'
@@ -551,10 +554,10 @@ def require_usage_ports_composer_contract(source: str) -> None:
         ("session list for reattach", '[data-testid=open-sessions]'),
         ("selected session lookup", "matchingSession"),
         ("selected session reattach", "[data-session-tag=\\\""),
-        ("idempotent draft focus check", "composerDraftFocused"),
-        ("draft focus action only while unfocused", 'if (!"true".equals(composerDraftFocused)) {'),
-        ("mobile Composer draft open action", "focusComposerDraft();"),
-        ("visible Composer wait", "awaitJsTrue(visibleComposerExpression(), 15_000)"),
+        ("Composer visibility and focus check", "boolean composerDraftFocused = "),
+        ("physical open only when closed or unfocused", "if (!composerVisible || !composerDraftFocused) {"),
+        ("native physical draft tap action", "openComposerWithPhysicalDraftTap(sessionTag);"),
+        ("visible and focused Composer wait", "awaitJsTrue(composerReady, 15_000);"),
         ("focused Composer confirmation", "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"),
         ("connected Composer wait", "dataset.transportState === 'connected'"),
     ):
@@ -571,21 +574,36 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if needle not in send:
             raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
     opener_live_ready_at = opener.find("dataset.enabled === 'true'")
-    opener_action_at = opener.find("focusComposerDraft();")
-    opener_visible_at = opener.find("awaitJsTrue(visibleComposerExpression(), 15_000)")
-    opener_focus_at = opener.find("awaitJsTrue(\"document.activeElement === document.querySelector('[data-testid=prompt-draft]')\"")
+    opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag);")
+    opener_visible_at = opener.find("awaitJsTrue(composerReady, 15_000);")
+    opener_focus_at = opener.find("String composerReady = visibleComposerExpression()", opener_action_at)
     opener_connected_at = opener.find("dataset.transportState === 'connected'")
     if min(opener_live_ready_at, opener_action_at, opener_visible_at, opener_focus_at, opener_connected_at) < 0 \
-       or not opener_live_ready_at < opener_action_at < opener_visible_at < opener_focus_at < opener_connected_at:
-        raise AssertionError("mobile Composer must be opened and shown focused before connected transport")
+       or not opener_live_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
+        raise AssertionError("mobile Composer must be physically opened and shown focused before connected transport")
+    composer_ready = opener[opener_focus_at:opener_visible_at]
+    if "document.activeElement === document.querySelector('[data-testid=prompt-draft]')" not in composer_ready:
+        raise AssertionError("mobile Composer readiness must require focus on the Prompt draft")
     if not send.index("String draftBeforeOpen = evalString(") < send.index(
         "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);") < send.index(
             "opening Home Composer must preserve the existing draft") < send.index(
                 "opening Home Composer must not write terminal input") < send.index(
                     'setValue("[data-testid=prompt-draft]", command)'):
         raise AssertionError("opener must preserve draft and terminal input state before cleanup drafts its command")
-    if "draft.focus()" not in focus_action or "document.activeElement === draft" not in focus_action:
-        raise AssertionError("mobile Composer open action must focus and verify its draft")
+    if "tapComposerDraftCenter();" not in physical_open \
+       or "event.isTrusted===true&&event.targetIsDraft===true" not in physical_open \
+       or 'assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="' not in physical_open:
+        raise AssertionError("mobile Composer must open through the physical draft tap and confirm its trusted pointer event")
+    if "MotionEvent.ACTION_DOWN" not in physical_tap or "MotionEvent.ACTION_UP" not in physical_tap \
+       or "InputDevice.SOURCE_TOUCHSCREEN" not in physical_tap or "injectInputEvent" not in physical_tap:
+        raise AssertionError("mobile Composer open action must inject Android touchscreen down and up events")
+    if 'assertTrue("Android touchscreen ACTION_DOWN for the Composer draft must be injected", downInjected)' not in physical_tap \
+       or 'assertTrue("Android touchscreen ACTION_UP for the Composer draft must be injected", upInjected)' not in physical_tap:
+        raise AssertionError("mobile Composer open action must require both touchscreen events to be injected")
+    if "centerHitIsDraft" not in physical_tap or "draftCenterHitIsDraft" not in open_diagnostics:
+        raise AssertionError("mobile Composer tap target must resolve to the Prompt draft")
+    if 'assertTrue("Composer draft center is intercepted by another DOM element: " + point' not in physical_tap:
+        raise AssertionError("mobile Composer touch point must not be intercepted by another DOM element")
     for label, needle in (
         ("Home live surface", "shell.dataset.homeSurface==='live'"),
         ("live PTY", "shell.dataset.sshPhase==='live'"),
@@ -616,6 +634,7 @@ def expect_usage_ports_contract_rejection(label: str, damaged: str) -> None:
 
 sender_source = journey_method(usage_ports_journey, "sendComposerCommandAndAwaitMarker")
 opener_source = journey_method(usage_ports_journey, "openHomeLiveComposerAndAwaitConnectedTransport")
+physical_open_source = journey_method(usage_ports_journey, "openComposerWithPhysicalDraftTap")
 after_source = journey_method(usage_ports_journey, "closeShell")
 expect_usage_ports_contract_rejection(
     "removing the Home/live Composer opener",
@@ -634,36 +653,48 @@ expect_usage_ports_contract_rejection(
     ),
 )
 expect_usage_ports_contract_rejection(
-    "removing the mobile Composer draft open action",
+    "removing the physical mobile Composer draft tap",
     usage_ports_journey.replace(
         opener_source,
-        opener_source.replace("focusComposerDraft();", "", 1),
+        opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1),
         1,
     ),
 )
 expect_usage_ports_contract_rejection(
-    "bypassing the mobile Composer draft open action",
+    "bypassing the physical mobile Composer draft tap",
     usage_ports_journey.replace(
         opener_source,
-        opener_source.replace('if (!"true".equals(composerDraftFocused)) {', "if (false) {", 1),
+        opener_source.replace("if (!composerVisible || !composerDraftFocused) {", "if (false) {", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "dropping the trusted physical pointer-down assertion",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            'assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="',
+            'assertTrue("Composer pointer-down proof removed; before="',
+            1,
+        ),
         1,
     ),
 )
 
-delayed_composer_open = opener_source.replace("focusComposerDraft();", "", 1)
+delayed_composer_open = opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1)
 connected_wait_end = delayed_composer_open.index("15_000);", delayed_composer_open.index("dataset.transportState === 'connected'")) + len("15_000);")
 delayed_composer_open = (
     delayed_composer_open[:connected_wait_end]
-    + "\n            focusComposerDraft();"
+    + "\n            openComposerWithPhysicalDraftTap(sessionTag);"
     + delayed_composer_open[connected_wait_end:]
 )
 expect_usage_ports_contract_rejection(
-    "opening the mobile Composer after its connected transport wait",
+    "physically opening the mobile Composer after its connected transport wait",
     usage_ports_journey.replace(opener_source, delayed_composer_open, 1),
 )
 late_after_send = usage_ports_journey.replace(
     opener_source,
-    opener_source.replace("focusComposerDraft();", "", 1),
+    opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1),
     1,
 )
 late_sender_source = journey_method(late_after_send, "sendComposerCommandAndAwaitMarker")
@@ -671,22 +702,22 @@ late_after_send = late_after_send.replace(
     late_sender_source,
     late_sender_source.replace(
         'click(".composer-shared-controls .send");',
-        'click(".composer-shared-controls .send");\n        focusComposerDraft();',
+        'click(".composer-shared-controls .send");\n        openComposerWithPhysicalDraftTap(sessionTag);',
         1,
     ),
     1,
 )
 expect_usage_ports_contract_rejection(
-    "opening the mobile Composer after sending cleanup",
+    "physically opening the mobile Composer after sending cleanup",
     late_after_send,
 )
 expect_usage_ports_contract_rejection(
     "sending cleanup while opening the mobile Composer",
     usage_ports_journey.replace(
-        opener_source,
-        opener_source.replace(
-            "focusComposerDraft();",
-            'click(".composer-shared-controls .send");\n            focusComposerDraft();',
+        physical_open_source,
+        physical_open_source.replace(
+            "tapComposerDraftCenter();",
+            'click(".composer-shared-controls .send");\n        tapComposerDraftCenter();',
             1,
         ),
         1,
@@ -695,10 +726,10 @@ expect_usage_ports_contract_rejection(
 expect_usage_ports_contract_rejection(
     "mutating the Prompt draft while opening the mobile Composer",
     usage_ports_journey.replace(
-        opener_source,
-        opener_source.replace(
-            "focusComposerDraft();",
-            'setValue("[data-testid=prompt-draft]", "unexpected command");\n            focusComposerDraft();',
+        physical_open_source,
+        physical_open_source.replace(
+            "tapComposerDraftCenter();",
+            'setValue("[data-testid=prompt-draft]", "unexpected command");\n        tapComposerDraftCenter();',
             1,
         ),
         1,
