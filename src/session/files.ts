@@ -2,6 +2,7 @@ import {
   classifyFileByName,
   classifyFileBytes,
   composeAttachmentFilename,
+  createAttachmentUploadProgressTracker,
   decideAttachmentStage,
   evaluateFileEditSave,
   isEditableFileKind,
@@ -18,6 +19,7 @@ import {
   sortFileEntries,
   type AttachmentRetentionPolicy,
   type AttachmentStageDecision,
+  type AttachmentUploadProgressSnapshot,
   type FileClassification,
   type FileEditSaveVerdict,
   type RemoteFileMetadata,
@@ -354,14 +356,38 @@ export function createFileWorkspaceService(
     }
   }
 
-  async function writeBytes(path: string, bytes: Uint8Array, createOnly = true): Promise<FileUploadResult> {
+  async function writeBytes(
+    path: string,
+    bytes: Uint8Array,
+    createOnly = true,
+    onProgress?: (bytesWritten: number, totalBytes: number) => void,
+  ): Promise<FileUploadResult> {
     checkByteLimit(bytes);
-    const options = { ...requestOptions(path), createOnly, dataBase64: encodeBase64(bytes) };
-    const response = await checkedResponse(capability.sftpWrite(options), options.requestId);
-    if (!Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP write byte count did not match the uploaded content.');
+    const options = {
+      ...requestOptions(path),
+      createOnly,
+      reportProgress: onProgress != null && bytes.byteLength > 0,
+      dataBase64: encodeBase64(bytes),
+    };
+    const progressListener = onProgress && bytes.byteLength > 0
+      ? await capability.addListener('sftpWriteProgress', (event) => {
+        if (event.requestId !== options.requestId
+            || event.connectionId !== options.connectionId
+            || event.generationId !== options.generationId
+            || event.path !== options.path
+            || configuration.isCurrent?.() === false) return;
+        onProgress(event.bytesWritten, event.totalBytes);
+      })
+      : null;
+    try {
+      const response = await checkedResponse(capability.sftpWrite(options), options.requestId);
+      if (!Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
+        throw new FileWorkspaceError('invalid-response', 'The native SFTP write byte count did not match the uploaded content.');
+      }
+      return { path, bytesWritten: response.bytesWritten };
+    } finally {
+      await progressListener?.remove().catch(() => undefined);
     }
-    return { path, bytesWritten: response.bytesWritten };
   }
 
   async function readFile(path: string, maxBytes = DEFAULT_FILE_READ_BYTES): Promise<FileReadResult> {
@@ -456,6 +482,8 @@ export function createFileWorkspaceService(
     timestamp: string;
     attachments: readonly AttachmentSource[];
     isCancelled?: () => boolean;
+    onProgress?: (progress: AttachmentUploadProgressSnapshot) => void;
+    onProgressCleared?: () => void;
   }): Promise<AttachmentStageResult> {
     const base = resolvePath(input.directory);
     const scope = sanitizeAttachmentScope(input.scopeKey);
@@ -481,59 +509,99 @@ export function createFileWorkspaceService(
       sourceIndex: index,
       filename: composeAttachmentFilename(input.timestamp, index, sanitizeFilename(source.name)),
     }));
+    const progress = input.onProgress
+      ? createAttachmentUploadProgressTracker(prepared.map(({ source }) => ({
+        name: source.name,
+        sizeBytes: source.bytes instanceof Uint8Array ? source.bytes.byteLength : 0,
+      })))
+      : null;
+    const publishProgress = (update: AttachmentUploadProgressSnapshot | null): void => {
+      if (!update) return;
+      try {
+        input.onProgress?.(update);
+      } catch {
+        // A presentation observer must not turn an acknowledged upload into a failure.
+      }
+    };
+    const stopProgressAtFailure = (fileIndex: number): void => {
+      if (!progress) return;
+      progress.fail(fileIndex);
+      try {
+        input.onProgressCleared?.();
+      } catch {
+        // A presentation observer must not turn an upload failure into a batch failure.
+      }
+    };
     await ensureDirectory(directory);
     const initialListing = await listDirectoryAt(directory);
     const occupiedNames = new Set(initialListing.entries.map((entry) => entry.name));
 
-    for (const { source, sourceIndex, filename } of prepared) {
-      if (input.isCancelled?.() === true) {
-        return { directory, decision: decideAttachmentStage(attempts, true), failures };
-      }
+    try {
+      for (const { source, sourceIndex, filename } of prepared) {
+        if (input.isCancelled?.() === true) {
+          return { directory, decision: decideAttachmentStage(attempts, true), failures };
+        }
 
-      const child = joinRemoteChildPath(directory, filename);
-      if (!child.ok) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
-        continue;
-      }
-      if (!isRemotePathWithin(normalizedRoot, child.path)) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
-        continue;
-      }
-      if (occupiedNames.has(filename)) {
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceIndex, sourceName: source.name, message: 'An attachment with this generated name already exists.' });
-        continue;
-      }
-      if (!(source.bytes instanceof Uint8Array) || source.bytes.byteLength > MAX_SFTP_FILE_BYTES) {
-        attempts.push({ kind: 'failed' });
-        failures.push({
-          sourceIndex,
-          sourceName: source.name,
-          message: source.bytes instanceof Uint8Array
-            ? `The native SFTP bridge accepts at most ${MAX_SFTP_FILE_BYTES} bytes per transfer.`
-            : 'Attachment content must be a byte array.',
-        });
-        continue;
-      }
+        const child = joinRemoteChildPath(directory, filename);
+        if (!child.ok) {
+          attempts.push({ kind: 'failed' });
+          failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+          stopProgressAtFailure(sourceIndex);
+          continue;
+        }
+        if (!isRemotePathWithin(normalizedRoot, child.path)) {
+          attempts.push({ kind: 'failed' });
+          failures.push({ sourceIndex, sourceName: source.name, message: 'The attachment name could not be made into a safe remote path.' });
+          stopProgressAtFailure(sourceIndex);
+          continue;
+        }
+        if (occupiedNames.has(filename)) {
+          attempts.push({ kind: 'failed' });
+          failures.push({ sourceIndex, sourceName: source.name, message: 'An attachment with this generated name already exists.' });
+          stopProgressAtFailure(sourceIndex);
+          continue;
+        }
+        if (!(source.bytes instanceof Uint8Array) || source.bytes.byteLength > MAX_SFTP_FILE_BYTES) {
+          attempts.push({ kind: 'failed' });
+          failures.push({
+            sourceIndex,
+            sourceName: source.name,
+            message: source.bytes instanceof Uint8Array
+              ? `The native SFTP bridge accepts at most ${MAX_SFTP_FILE_BYTES} bytes per transfer.`
+              : 'Attachment content must be a byte array.',
+          });
+          stopProgressAtFailure(sourceIndex);
+          continue;
+        }
 
-      try {
-        const uploaded = await writeBytes(child.path, source.bytes);
-        const attachment = {
-          sourceIndex,
-          path: uploaded.path,
-          filename,
-          sourceName: source.name,
-          sizeBytes: uploaded.bytesWritten,
-        };
-        attempts.push({ kind: 'uploaded', attachment });
-        occupiedNames.add(filename);
-      } catch (error) {
-        assertCurrent();
-        attempts.push({ kind: 'failed' });
-        failures.push({ sourceIndex, sourceName: source.name, message: errorMessage(error) });
+        try {
+          const uploaded = await writeBytes(
+            child.path,
+            source.bytes,
+            true,
+            progress ? (bytesWritten, totalBytes) => {
+              publishProgress(progress.report(sourceIndex, bytesWritten, totalBytes));
+            } : undefined,
+          );
+          const attachment = {
+            sourceIndex,
+            path: uploaded.path,
+            filename,
+            sourceName: source.name,
+            sizeBytes: uploaded.bytesWritten,
+          };
+          attempts.push({ kind: 'uploaded', attachment });
+          occupiedNames.add(filename);
+          publishProgress(progress?.complete(sourceIndex, uploaded.bytesWritten) ?? null);
+        } catch (error) {
+          stopProgressAtFailure(sourceIndex);
+          assertCurrent();
+          attempts.push({ kind: 'failed' });
+          failures.push({ sourceIndex, sourceName: source.name, message: errorMessage(error) });
+        }
       }
+    } finally {
+      progress?.stop();
     }
 
     return { directory, decision: decideAttachmentStage(attempts), failures };

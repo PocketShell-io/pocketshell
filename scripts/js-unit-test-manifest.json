@@ -65,6 +65,15 @@
         "creates unique host-compatible stage prefixes for picks in the same second"
       ]
     },
+    "tests/unit/composerUploadProgress.test.ts": {
+      "suite": "prompt composer upload progress",
+      "tests": [
+        "shows the latest byte-derived percentage while staging and clears it on success",
+        "removes progress after failure and retains the pending file bytes for retry",
+        "clears a failed file bar while the next upload remains pending",
+        "keeps progress inside the existing single status row"
+      ]
+    },
     "tests/unit/inlineDictation.test.ts": {
       "suite": "inline terminal dictation",
       "tests": [
@@ -169,6 +178,9 @@
         "does not offer binary magic content to the text editor",
         "uploads bytes through a resolved path and prevents implicit overwrite",
         "stages sanitized attachment names, preserves partial success, and returns retention candidates",
+        "aggregates only request-matched SFTP callback bytes across staged files",
+        "stops accepting byte callbacks when a write fails or its connection goes stale",
+        "clears failed-file progress while continuing a later upload without reporting fabricated bytes",
         "creates the desktop-compatible hidden attachment tree and writes exact bytes",
         "does not return completed uploads as attachments after cancellation",
         "leaves the remote tree untouched for an empty attachment batch",

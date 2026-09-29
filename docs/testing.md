@@ -50,6 +50,10 @@ scripts/connected-test.sh lifecycle --suffix i2863 --port 2222 \
 scripts/agents-pool.sh up 2245
 scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
   --session-prefix js2863-local
+source scripts/lib/agents-pool.sh
+pocketshell_network_fault_fixture_up "$PWD" 2245
+scripts/connected-js-upload-progress-docker.sh --agents-port 2245 \
+  --artifact-run-id i2929-local --suffix i2929
 ```
 
 The smoke lane requires exactly the three registered packaged-shell JUnit
@@ -64,7 +68,12 @@ Gradle's suffixed-app cleanup does not remove them.
 Each connected phase owns the Android output tree and selected emulator,
 removes stale JUnit XML before instrumentation, and checks the report from that
 run. Provide a new suffix for each worktree so parallel APK installs have
-distinct package IDs.
+distinct package IDs. The upload-progress lane also needs the matching isolated
+Toxiproxy fixture running for its agents port. It saves the J20 JUnit XML,
+keyboard-open progress/completion screenshots, and logcat, then independently
+checks all three remote payload hashes and removes the run-scoped files. Its
+exact-method guard and selected-class feature-result checker both consume the
+connected XML from that run.
 
 For a session-runtime change, also run the focused fixture contract checks:
 

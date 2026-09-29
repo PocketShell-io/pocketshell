@@ -30,6 +30,7 @@ export type {
   SshSftpEntry,
   SshSftpOptions,
   SshSftpWriteOptions,
+  SshSftpWriteProgressEvent,
   HostKeyTrustPin,
   PresentedHostKey,
 } from '@pocketshell/core';

@@ -27,9 +27,11 @@ run selected on another branch is rejected by all jobs.
 The 0.6.0 release remains blocked. The 24 replacement feature journey classes
 are registered in `scripts/js-journey-class-manifest.json`;
 `scripts/check-js-journey-results.py --json` emits their fail-closed
-qualification result. The current packaged smoke XML has 3 tests and reports
-all 24 required journeys missing. The JS branch has no scheduled full-suite
-D36 verdict or exact-commit D37 fault verdict. Do not merge this branch to
+qualification result. The current packaged smoke XML has 6 tests and reports
+all 24 required journeys missing in the full-suite scope. Individual migrated
+journeys can also be qualified through `--journey-class` using their own
+connected-test XML. The JS branch has no scheduled full-suite D36 verdict or
+exact-commit D37 fault verdict. Do not merge this branch to
 `main`, dispatch the publisher, or tag 0.6.0 until those journeys and both
 blocking release signals are migrated and reviewer-validated.
 

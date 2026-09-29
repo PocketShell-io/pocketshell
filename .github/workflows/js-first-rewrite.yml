@@ -65,7 +65,10 @@ jobs:
           scripts/run-js-unit-gate.sh
 
       - name: Check fail-closed feature journey qualification guard
-        run: scripts/check-js-journey-results.py --self-test
+        run: |
+          scripts/check-js-journey-results.py --self-test
+          scripts/check-js-upload-progress-results.py --self-test
+          scripts/verify-j20-upload-host-oracle.py --self-test
 
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
@@ -75,6 +78,7 @@ jobs:
           tests/scripts/connected-test-js-runner-test.sh
           tests/scripts/connected-test-root-guard-test.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
+          tests/scripts/js-upload-progress-gate-test.sh
 
       - name: Prepare the Android project for JVM tests
         run: |
@@ -129,6 +133,22 @@ jobs:
           export_agents_fixture_version_for_run 0 android/app/build/outputs/apk/debug/app-debug.apk
           scripts/agents-pool.sh up 2245
 
+      - name: Start isolated Toxiproxy lane for upload progress
+        run: |
+          set -euo pipefail
+          source scripts/lib/agents-pool.sh
+          pocketshell_network_fault_fixture_up "$GITHUB_WORKSPACE" 2245
+          api_port="$(pocketshell_toxiproxy_api_port 2245)"
+          for attempt in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:$api_port/proxies" >/dev/null; then
+              printf 'PASS: isolated Toxiproxy API is ready on %s\n' "$api_port"
+              exit 0
+            fi
+            sleep 1
+          done
+          printf 'FAIL: isolated Toxiproxy API did not become ready on %s\n' "$api_port" >&2
+          exit 1
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -162,6 +182,10 @@ jobs:
             mkdir -p android/app/build/outputs/js-smoke-results
             cp -a android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml android/app/build/outputs/js-smoke-results/
             scripts/connected-js-lifecycle.sh --suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id "js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --test-only
+            scripts/connected-js-upload-progress-docker.sh \
+              --agents-port 2245 \
+              --artifact-run-id "i2929-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+              --suffix i2857ci
             session_prefix="js2857-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             export POCKETSHELL_JS_COMPOSER_EVIDENCE_DIR="$GITHUB_WORKSPACE/android/app/build/outputs/js-composer/$session_prefix"
             scripts/connected-js-composer-docker.sh --port 2245 --session-prefix "$session_prefix" --suffix i2857ci
@@ -172,6 +196,21 @@ jobs:
           scripts/check-js-composer-journey-results.py --self-test
           scripts/check-js-composer-journey-results.py \
             --results-dir android/app/build/outputs/androidTest-results/connected/debug
+
+      - name: Assert the packaged J20 upload-progress journey executed exactly once
+        if: always()
+        run: |
+          scripts/check-js-upload-progress-results.py --self-test
+          scripts/verify-j20-upload-host-oracle.py --self-test
+          scripts/check-js-upload-progress-results.py \
+            --results-dir "android/app/build/outputs/js-upload-progress/i2929-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/junit"
+
+      - name: Qualify J20 through the JS feature-result checker
+        if: always()
+        run: |
+          scripts/check-js-journey-results.py \
+            --journey-class J20ComposerUploadProgressJourney \
+            --results-dir "android/app/build/outputs/js-upload-progress/i2929-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/junit"
 
       - name: Collect isolated composer fixture diagnostics
         if: always()
@@ -189,6 +228,7 @@ jobs:
           name: pocketshell-js-first-composer-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/js-composer/
+            android/app/build/outputs/js-upload-progress/
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
           if-no-files-found: error
