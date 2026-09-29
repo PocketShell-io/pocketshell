@@ -26,12 +26,23 @@ REQUIRED_ASSERTIONS = {
     "fresh-terminal-viewport-captured",
     "post-reconnect-pty-bytes-present-on-host-exactly-once",
 }
+REQUIRED_UNCERTAIN_MUTATION_ASSERTIONS = {
+    "real-host-session-create-completed-before-response-drop",
+    "ssh-create-response-withheld-before-android-received-it",
+    "controller-reported-create-uncertainty-before-fresh-list-completed",
+    "no-automatic-create-replay",
+    "fresh-session-list-reconciled-created-row",
+    "independent-docker-aplexer-snapshot-confirmed-created-row",
+}
+
 REQUIRED_ARTIFACTS = {
     "journey-summary.json",
     "abrupt-drop-server-proof.txt",
     "abrupt-drop-recovered-visible-terminal.txt",
     "abrupt-drop-recovered-viewport.png",
     "abrupt-drop-recovered-full-screen.png",
+    "uncertain-mutation-server-proof.txt",
+    "uncertain-mutation-fixture-events.txt",
 }
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,38}$")
 SAFE_ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -373,7 +384,7 @@ def _validate_summary(summary: dict[str, Any], assets: dict[str, bytes], run_id:
         raise GateFailure("abrupt-drop request, transport loss, and recovery timestamps are invalid")
 
     marker = drop.get("hostInputMarker")
-    expected_marker = f"REMOTE_OUTPUT_{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:10].upper()}_AD"
+    expected_marker = "REMOTE_OUTPUT_TREASURE_AD"
     if marker != expected_marker or drop.get("hostCaptureExactMarkerLineCount") != 1:
         raise GateFailure("post-reconnect host capture does not prove the unique run marker exactly once")
     if drop.get("hostCaptureSource") != "SshCapability.exec /usr/bin/a capture --bytes 65536":
@@ -424,12 +435,176 @@ def verify_artifact_transfer(
     return assets, summary, logcat
 
 
+def _parse_uncertain_fixture_events(raw: str) -> list[tuple[str, int, list[str]]]:
+    events: list[tuple[str, int, list[str]]] = []
+    for index, line in enumerate(raw.splitlines(), 1):
+        parts = line.split("|")
+        if len(parts) < 3:
+            raise GateFailure(f"uncertain-mutation fixture event {index} is malformed")
+        try:
+            at = int(parts[1])
+        except ValueError as error:
+            raise GateFailure(f"uncertain-mutation fixture event {index} has an invalid timestamp") from error
+        if at <= 0:
+            raise GateFailure(f"uncertain-mutation fixture event {index} has a non-positive timestamp")
+        events.append((parts[0], at, parts[2:]))
+    return events
+
+
+def _device_to_host_epoch_offset(run_directory: Path) -> int:
+    path = run_directory / "host-time-offset.json"
+    try:
+        timebase = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateFailure(f"same-run host/device clock evidence is missing or invalid: {error}") from error
+    if not isinstance(timebase, dict) or timebase.get("schema") != 1:
+        raise GateFailure("same-run host/device clock evidence has an unsupported schema")
+    before = timebase.get("before")
+    after = timebase.get("after")
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        raise GateFailure("same-run host/device clock evidence needs before and after samples")
+    offsets = [before.get("offsetMs"), after.get("offsetMs")]
+    if any(not isinstance(offset, int) or isinstance(offset, bool) for offset in offsets):
+        raise GateFailure("same-run host/device clock offset is missing or invalid")
+    if abs(offsets[1] - offsets[0]) > 1_000:
+        raise GateFailure("same-run host/device clock offset changed by more than one second")
+    return round((offsets[0] + offsets[1]) / 2)
+
+
+def _validate_uncertain_mutation(
+    summary: dict[str, Any], assets: dict[str, bytes], run_id: str, device_to_host_offset_ms: int
+) -> dict[str, Any]:
+    mutation = summary.get("uncertainMutation")
+    if not isinstance(mutation, dict):
+        raise GateFailure("same-run summary is missing uncertain host-mutation evidence")
+    assertions = mutation.get("assertions")
+    if not isinstance(assertions, list) or not REQUIRED_UNCERTAIN_MUTATION_ASSERTIONS.issubset(set(assertions)):
+        missing = sorted(REQUIRED_UNCERTAIN_MUTATION_ASSERTIONS - set(assertions if isinstance(assertions, list) else []))
+        raise GateFailure("named uncertain-mutation assertions are missing: " + ", ".join(missing))
+
+    target = f"{run_id}-uncertain-create"
+    if mutation.get("kind") != "create-session" or mutation.get("target") != target:
+        raise GateFailure("uncertain-mutation evidence must identify this run's create-session target")
+    old_connection = mutation.get("oldConnectionId")
+    new_connection = mutation.get("newConnectionId")
+    if not all(isinstance(value, str) and value for value in (old_connection, new_connection)) or old_connection == new_connection:
+        raise GateFailure("uncertain create must recover over a new SSH connection")
+    times = [mutation.get(key) for key in (
+        "mutationRequestedAtEpochMs", "uncertaintyObservedAtEpochMs", "freshListObservedAtEpochMs",
+    )]
+    if any(not isinstance(value, int) or isinstance(value, bool) for value in times):
+        raise GateFailure("uncertain create is missing request, uncertainty, or reconciliation timestamps")
+    if not times[0] <= times[1] < times[2]:
+        raise GateFailure("uncertainty must be reported before the fresh session list reconciles the create")
+    fresh_list_started_at = mutation.get("freshListStartedAtEpochMs")
+    if not isinstance(fresh_list_started_at, int) or isinstance(fresh_list_started_at, bool):
+        raise GateFailure("same-run summary is missing the fresh host-list start timestamp")
+    if mutation.get("uncertaintyPhase") != "listing" or mutation.get("targetRowCountBeforeFreshList") != 0:
+        raise GateFailure("uncertainty must be observed while the fresh listing is pending and before the row appears")
+    if mutation.get("initialControllerState") != "unknown" or mutation.get("reconciledControllerState") != "observed-applied":
+        raise GateFailure("the JS controller must retain uncertainty until the fresh listing observes the create")
+    if mutation.get("reconnectingPhaseCount") != 1 or mutation.get("freshListPhaseCount") != 1:
+        raise GateFailure("uncertain create must use one reconnect and one fresh session-list phase")
+    warning = mutation.get("reportedWarning")
+    if not isinstance(warning, str) or not all(token in warning for token in (target, "may have completed", "Refresh sessions")):
+        raise GateFailure("the Android UI did not report the pending uncertain create to the user")
+
+    row = mutation.get("sessionRow")
+    if (
+        not isinstance(row, dict)
+        or row.get("tag") != target
+        or not isinstance(row.get("name"), str)
+        or not row["name"].endswith(":" + target)
+        or not isinstance(row.get("id"), str)
+        or not re.fullmatch(r"[a-f0-9-]{36}", row["id"])
+        or not isinstance(row.get("workspace"), str)
+        or not row["workspace"].startswith("/")
+    ):
+        raise GateFailure("fresh Android session listing is missing the created target's host identity")
+    if mutation.get("serverProofFile") != "uncertain-mutation-server-proof.txt":
+        raise GateFailure("uncertain create server-side proof is not named in the same-run summary")
+    if mutation.get("fixtureEventsFile") != "uncertain-mutation-fixture-events.txt":
+        raise GateFailure("uncertain create fixture event log is not named in the same-run summary")
+
+    try:
+        proof_text = assets["uncertain-mutation-server-proof.txt"].decode("utf-8")
+        event_text = assets["uncertain-mutation-fixture-events.txt"].decode("utf-8")
+    except (KeyError, UnicodeDecodeError) as error:
+        raise GateFailure("uncertain create proof or event artifact is missing or invalid UTF-8") from error
+    proof = _parse_proof(proof_text)
+    expected_fields = {
+        "schema": "1",
+        "run_id": run_id,
+        "kind": "create-session",
+        "target": target,
+        "host_cli_exit_code": "0",
+        "host_cli_created": "true",
+        "host_cli_name": row["name"],
+        "host_cli_session_id": row["id"],
+        "response_forwarded": "false",
+        "signal": "SIGKILL",
+        "list_delay_seconds": "10",
+    }
+    if any(proof.get(key) != value for key, value in expected_fields.items()):
+        raise GateFailure("server proof does not show one successful host create with its response withheld")
+    if not re.fullmatch(r"[a-f0-9]{64}", proof.get("response_sha256", "")):
+        raise GateFailure("server proof is missing the captured host create-response digest")
+    try:
+        server_pid = int(proof["server_pid"])
+        server_uid = int(proof["server_uid"])
+        host_mutation_time = int(proof["host_side_effect_epoch_ms"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise GateFailure("uncertain create server proof is missing process or side-effect metadata") from error
+    if server_pid <= 1 or server_uid <= 0 or not all(
+        token in proof.get("server_args", "") for token in ("sshd-session:", "testuser@")
+    ):
+        raise GateFailure("uncertain create proof must identify the non-root authenticated sshd session killed by this run")
+
+    events = _parse_uncertain_fixture_events(event_text)
+    expected_kinds = [
+        "CREATE_ATTEMPT", "HOST_CREATE_COMPLETED", "CREATE_RESPONSE_DROPPED",
+        "FRESH_LIST_STARTED", "FRESH_LIST_COMPLETED",
+    ]
+    if [kind for kind, _, _ in events] != expected_kinds:
+        raise GateFailure("fixture events must prove one create attempt, response drop, and one completed fresh list")
+    attempt_kind, attempt_time, attempt_values = events[0]
+    completed_kind, completed_time, completed_values = events[1]
+    dropped_kind, dropped_time, dropped_values = events[2]
+    list_started_kind, list_started_time, list_started_values = events[3]
+    list_completed_kind, list_completed_time, list_completed_values = events[4]
+    if attempt_values != ["1", target]:
+        raise GateFailure("fixture observed an automatic replay or a create request for another target")
+    if completed_values != [target, "true", row["id"], str(server_pid)]:
+        raise GateFailure("fixture host-create event does not match the server proof and fresh Android session row")
+    if dropped_values != [target, "SIGKILL"]:
+        raise GateFailure("fixture did not record a SIGKILL after the host-side create completed")
+    if list_started_values != [target] or list_completed_values != [target]:
+        raise GateFailure("fixture fresh-list events do not identify the uncertain create target")
+    if fresh_list_started_at != list_started_time:
+        raise GateFailure("Android journey summary does not preserve the fixture's exact fresh-list start event")
+    if not attempt_time <= host_mutation_time == completed_time < dropped_time < list_started_time:
+        raise GateFailure("host create, response interruption, and fresh session-list events are out of order")
+    request_host_time, uncertainty_host_time, reconciled_host_time = (
+        value + device_to_host_offset_ms for value in times
+    )
+    if request_host_time > attempt_time:
+        raise GateFailure("host create attempt preceded the Android mutation request")
+    if not list_started_time <= uncertainty_host_time < list_completed_time:
+        raise GateFailure("Android uncertainty was not captured while the fresh host list was still in flight")
+    if reconciled_host_time < list_completed_time:
+        raise GateFailure("Android create reconciliation preceded the fresh host list response")
+    return mutation
+
+
 def _validate_lifecycle_logs(logcat: Path, run_id: str) -> None:
     try:
         lines = logcat.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as error:
         raise GateFailure(f"could not read same-run lifecycle logs {logcat}: {error}") from error
     steps = (
+        "UNCERTAIN_MUTATION_ARMED",
+        "UNCERTAIN_MUTATION_REPORTED",
+        "UNCERTAIN_MUTATION_RECONCILED",
         "ABRUPT_DROP_SERVER_KILL_REQUESTED",
         "ABRUPT_DROP_NATIVE_LOST",
         "ABRUPT_DROP_RECOVERED",
@@ -480,17 +655,22 @@ def _docker_exec(container: str, command: list[str], *, user: str | None = None)
 
 def _validate_host_oracle(
     container: str, run_id: str, session_id: str, marker: str, assets: dict[str, bytes],
-    injected: dict[str, str] | None = None,
+    uncertain_mutation: dict[str, Any], injected: dict[str, str] | None = None,
 ) -> None:
     if injected is None:
         proof_path = f"/tmp/pocketshell-server-transport-drop-{run_id}.txt"
+        mutation_prefix = f"/tmp/pocketshell-uncertain-mutation-{uncertain_mutation['target']}"
         proof = _docker_exec(container, ["cat", proof_path])
+        mutation_proof = _docker_exec(container, ["cat", f"{mutation_prefix}.proof"])
+        mutation_events = _docker_exec(container, ["cat", f"{mutation_prefix}.events"])
         snapshot_raw = _docker_exec(container, ["/usr/bin/a", "snapshot", "--json"], user="testuser")
         history = _docker_exec(
             container, ["/usr/bin/a", "capture", "--bytes", "65536", session_id], user="testuser"
         )
     else:
         proof = injected["proof"]
+        mutation_proof = injected["mutation_proof"]
+        mutation_events = injected["mutation_events"]
         snapshot_raw = injected["snapshot"]
         history = injected["history"]
 
@@ -520,6 +700,31 @@ def _validate_host_oracle(
     if marker_count != 1:
         raise GateFailure(f"independent Docker a capture must contain exactly one post-reconnect marker line; found {marker_count}")
 
+    try:
+        artifact_mutation_proof = assets["uncertain-mutation-server-proof.txt"].decode("utf-8")
+        artifact_mutation_events = assets["uncertain-mutation-fixture-events.txt"].decode("utf-8")
+    except (KeyError, UnicodeDecodeError) as error:
+        raise GateFailure("uncertain-mutation artifacts are missing or invalid UTF-8") from error
+    if mutation_proof != artifact_mutation_proof or mutation_events != artifact_mutation_events:
+        raise GateFailure("independent Docker uncertain-mutation proof/event files do not match the Android artifacts")
+    mutation_row = uncertain_mutation["sessionRow"]
+    try:
+        snapshot_matches = [
+            row for row in json.loads(snapshot_raw)
+            if isinstance(row, dict)
+            and row.get("id") == mutation_row["id"]
+            and row.get("tag") == mutation_row["tag"]
+            and row.get("workspace") == mutation_row["workspace"]
+        ]
+    except (json.JSONDecodeError, TypeError) as error:
+        raise GateFailure(f"independent Docker snapshot could not reconcile the uncertain create: {error}") from error
+    if (
+        len(snapshot_matches) != 1
+        or snapshot_matches[0].get("state") != "running"
+        or snapshot_matches[0].get("worker_alive") is not True
+    ):
+        raise GateFailure("independent Docker aplexer snapshot must contain exactly one live uncertain-create session")
+
 
 def validate(
     results: Path,
@@ -533,9 +738,12 @@ def validate(
     run_id = run_directory.name
     assets, summary, logcat = verify_artifact_transfer(run_directory, run_id)
     port, session_id, marker = _validate_summary(summary, assets, run_id)
+    uncertain_mutation = _validate_uncertain_mutation(
+        summary, assets, run_id, _device_to_host_epoch_offset(run_directory)
+    )
     _validate_lifecycle_logs(logcat, run_id)
     container = _container_for_ssh_port(port) if host_oracle is None else "synthetic-docker-host"
-    _validate_host_oracle(container, run_id, session_id, marker, assets, host_oracle)
+    _validate_host_oracle(container, run_id, session_id, marker, assets, uncertain_mutation, host_oracle)
 
 
 def write_report(directory: Path, cases: list[tuple[str, str, str]]) -> None:
@@ -558,8 +766,22 @@ def write_report(directory: Path, cases: list[tuple[str, str, str]]) -> None:
 
 def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -> dict[str, str]:
     directory.mkdir(parents=True, exist_ok=True)
+    timebase_path = directory / "host-time-offset.json"
+    if mutation != "missing-timebase":
+        offset_ms = 20 if mutation == "nonzero-timebase" else 0
+        timebase_path.write_text(json.dumps({
+            "schema": 1,
+            "before": {"offsetMs": offset_ms},
+            "after": {"offsetMs": offset_ms},
+        }), encoding="utf-8")
+    if mutation == "unstable-timebase":
+        timebase_path.write_text(json.dumps({
+            "schema": 1,
+            "before": {"offsetMs": 0},
+            "after": {"offsetMs": 1_001},
+        }), encoding="utf-8")
     session_id = "12345678-1234-1234-1234-123456789abc"
-    marker = f"REMOTE_OUTPUT_{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:10].upper()}_AD"
+    marker = "REMOTE_OUTPUT_TREASURE_AD"
     proof = (
         f"run_id={run_id}\nserver_pid=4321\nserver_uid=1000\n"
         "server_args=sshd-session: testuser@pts/7\nsignal=SIGKILL\n"
@@ -613,6 +835,87 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
     if mutation == "wrong-proof":
         proof = proof.replace("signal=SIGKILL", "signal=TERM")
 
+    mutation_target = f"{run_id}-uncertain-create"
+    mutation_session_id = "abcdefab-cdef-abcd-efab-cdefabcdefab"
+    mutation_proof = (
+        "schema=1\n"
+        f"run_id={run_id}\n"
+        "kind=create-session\n"
+        f"target={mutation_target}\n"
+        "host_cli_exit_code=0\n"
+        "host_cli_created=true\n"
+        f"host_cli_name=testuser:{mutation_target}\n"
+        f"host_cli_session_id={mutation_session_id}\n"
+        "host_side_effect_epoch_ms=210\n"
+        "response_forwarded=false\n"
+        f"response_sha256={'a' * 64}\n"
+        "server_pid=4322\n"
+        "server_uid=1000\n"
+        "server_args=sshd-session: testuser@notty\n"
+        "signal=SIGKILL\n"
+        "list_delay_seconds=10\n"
+    )
+    mutation_events = (
+        f"CREATE_ATTEMPT|200|1|{mutation_target}\n"
+        f"HOST_CREATE_COMPLETED|210|{mutation_target}|true|{mutation_session_id}|4322\n"
+        f"CREATE_RESPONSE_DROPPED|220|{mutation_target}|SIGKILL\n"
+        f"FRESH_LIST_STARTED|230|{mutation_target}\n"
+        f"FRESH_LIST_COMPLETED|250|{mutation_target}\n"
+    )
+    uncertain = {
+        "assertions": sorted(REQUIRED_UNCERTAIN_MUTATION_ASSERTIONS),
+        "kind": "create-session",
+        "target": mutation_target,
+        "oldConnectionId": "old-connection",
+        "newConnectionId": "fresh-connection",
+        "mutationRequestedAtEpochMs": 190,
+        "uncertaintyObservedAtEpochMs": 235,
+        "freshListStartedAtEpochMs": 230,
+        "freshListObservedAtEpochMs": 260,
+        "uncertaintyPhase": "listing",
+        "initialControllerState": "unknown",
+        "reconciledControllerState": "observed-applied",
+        "targetRowCountBeforeFreshList": 0,
+        "reportedWarning": f"create-session “{mutation_target}” may have completed. Refresh sessions before retrying.",
+        "reconnectingPhaseCount": 1,
+        "freshListPhaseCount": 1,
+        "sessionRow": {
+            "name": f"testuser:{mutation_target}",
+            "tag": mutation_target,
+            "id": mutation_session_id,
+            "workspace": "/home/testuser",
+        },
+        "serverProofFile": "uncertain-mutation-server-proof.txt",
+        "fixtureEventsFile": "uncertain-mutation-fixture-events.txt",
+    }
+    if mutation == "missing-mutation-assertion":
+        uncertain["assertions"].remove("no-automatic-create-replay")
+    if mutation == "nonzero-timebase":
+        uncertain["mutationRequestedAtEpochMs"] = 175
+        uncertain["uncertaintyObservedAtEpochMs"] = 215
+        uncertain["freshListObservedAtEpochMs"] = 235
+    if mutation == "uncertainty-after-list":
+        uncertain["uncertaintyObservedAtEpochMs"] = 251
+    if mutation == "missing-list-start":
+        uncertain.pop("freshListStartedAtEpochMs")
+    if mutation == "mismatched-list-start":
+        uncertain["freshListStartedAtEpochMs"] = 231
+    if mutation == "not-reconciled":
+        uncertain["reconciledControllerState"] = "unknown"
+    if mutation == "mismatched-host-cli-name":
+        mutation_proof = mutation_proof.replace(
+            f"host_cli_name=testuser:{mutation_target}",
+            f"host_cli_name=other:{mutation_target}",
+        )
+    if mutation == "duplicate-create":
+        mutation_events = mutation_events.replace(
+            f"HOST_CREATE_COMPLETED|210|{mutation_target}",
+            f"CREATE_ATTEMPT|205|2|{mutation_target}\nHOST_CREATE_COMPLETED|210|{mutation_target}",
+        )
+    host_mutation_proof = mutation_proof
+    if mutation == "mismatched-mutation-proof":
+        host_mutation_proof = mutation_proof.replace("response_forwarded=false", "response_forwarded=true")
+
     summary = {
         "schema": 1,
         "runId": run_id,
@@ -624,6 +927,7 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
             "viewportPng": "switch-a-return-viewport.png",
         }],
         "abruptTransportDrop": drop,
+        "uncertainMutation": uncertain,
     }
     visible = f"command echo\n{marker}\n"
     png = b"\x89PNG\r\n\x1a\n" + b"synthetic-image" * 20
@@ -635,10 +939,17 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         "abrupt-drop-recovered-full-screen.png": png,
         "switch-a-return-visible-terminal.txt": b"remote output\nREMOTE_OUTPUT_SELFTEST_AR\n",
         "switch-a-return-viewport.png": png,
+        "uncertain-mutation-server-proof.txt": mutation_proof.encode("utf-8"),
+        "uncertain-mutation-fixture-events.txt": mutation_events.encode("utf-8"),
     }
     if mutation == "missing-artifact":
         del assets["abrupt-drop-recovered-full-screen.png"]
+    if mutation == "missing-mutation-proof":
+        del assets["uncertain-mutation-server-proof.txt"]
     lines = [
+        f"09-28 12:00:00.000 I SshPtyDockerJourney: RUN {run_id} UNCERTAIN_MUTATION_ARMED {{}}",
+        f"09-28 12:00:00.001 I SshPtyDockerJourney: RUN {run_id} UNCERTAIN_MUTATION_REPORTED {{}}",
+        f"09-28 12:00:00.002 I SshPtyDockerJourney: RUN {run_id} UNCERTAIN_MUTATION_RECONCILED {{}}",
         f"09-28 12:00:00.001 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_SERVER_KILL_REQUESTED {{}}",
         f"09-28 12:00:00.002 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_NATIVE_LOST {{}}",
         f"09-28 12:00:00.003 I SshPtyDockerJourney: RUN {run_id} ABRUPT_DROP_RECOVERED {{}}",
@@ -688,12 +999,25 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         (asset_directory / "switch-a-return-viewport.png").write_bytes(png + b"corrupt")
     elif mutation == "unmanifested-pulled-file":
         (asset_directory / "unmanifested-device-file.bin").write_bytes(b"not listed in the device manifest")
+    if mutation == "missing-mutation-log":
+        lines = [line for line in lines if "UNCERTAIN_MUTATION_REPORTED" not in line]
     (directory / "lifecycle-assets-live-logcat.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    host_rows = [{
+        "tag": f"{run_id}-a", "id": session_id, "state": "running", "worker_alive": True,
+    }]
+    if mutation != "wrong-mutation-host-row":
+        host_rows.append({
+            "tag": mutation_target,
+            "id": mutation_session_id,
+            "workspace": "/home/testuser",
+            "state": "running",
+            "worker_alive": True,
+        })
     return {
         "proof": proof,
-        "snapshot": json.dumps([{
-            "tag": f"{run_id}-a", "id": session_id, "state": "running", "worker_alive": True,
-        }]),
+        "mutation_proof": host_mutation_proof,
+        "mutation_events": mutation_events,
+        "snapshot": json.dumps(host_rows),
         "history": f"command echo\n{marker}\n",
     }
 
@@ -725,6 +1049,20 @@ def self_test() -> int:
         ("mismatched Docker proof blocks", "wrong-proof", False),
         ("duplicate post-reconnect host marker blocks", "wrong-host-count", False),
         ("missing same-run native loss log blocks", "missing-log", False),
+        ("missing uncertain-mutation proof blocks", "missing-mutation-proof", False),
+        ("missing same-run clock evidence blocks", "missing-timebase", False),
+        ("device timestamps normalize with the same-run clock offset", "nonzero-timebase", True),
+        ("unstable same-run clock evidence blocks", "unstable-timebase", False),
+        ("missing uncertainty assertion blocks", "missing-mutation-assertion", False),
+        ("automatic create replay blocks", "duplicate-create", False),
+        ("missing exact fresh-list start blocks", "missing-list-start", False),
+        ("mismatched fresh-list start blocks", "mismatched-list-start", False),
+        ("uncertainty after fresh list blocks", "uncertainty-after-list", False),
+        ("unreconciled controller uncertainty blocks", "not-reconciled", False),
+        ("mismatched host CLI session identity blocks", "mismatched-host-cli-name", False),
+        ("mismatched mutation proof blocks", "mismatched-mutation-proof", False),
+        ("missing independent created host row blocks", "wrong-mutation-host-row", False),
+        ("missing uncertainty lifecycle record blocks", "missing-mutation-log", False),
     ]
     total = len(result_probes) + len(evidence_probes)
     with tempfile.TemporaryDirectory(prefix="pocketshell-js-lifecycle-results-") as scratch:
@@ -810,7 +1148,7 @@ def main() -> int:
     except GateFailure as error:
         print(f"FAIL: packaged JS lifecycle journey: {error}", file=sys.stderr)
         return 1
-    print(f"PASS: {REQUIRED_CLASS}#{REQUIRED_METHOD} and same-run abrupt-drop Docker evidence")
+    print(f"PASS: {REQUIRED_CLASS}#{REQUIRED_METHOD}, abrupt-drop evidence, and uncertain-mutation Docker evidence")
     return 0
 
 
