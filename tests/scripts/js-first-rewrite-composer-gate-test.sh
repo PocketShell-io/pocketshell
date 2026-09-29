@@ -24,6 +24,7 @@ import tempfile
 from pathlib import Path
 
 workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path = map(Path, sys.argv[1:])
+repository_root = workflow_path.parents[2]
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
@@ -39,9 +40,13 @@ def require_contract(source: str, packaged_script: str) -> None:
     required = (
         ("isolated fixture", "scripts/agents-pool.sh up 2245"),
         ("single packaged-lanes wrapper invocation", "script: scripts/ci-js-first-packaged-lanes.sh"),
-        ("exact result guard", "scripts/check-js-composer-journey-results.py"),
+        ("always-run exact result guard", "- name: Require exact reports for every packaged JS lane"),
+        ("smoke result guard", "scripts/check-js-smoke-results.py"),
+        ("lifecycle result guard", "scripts/check-js-lifecycle-results.py"),
+        ("Files result guard", "scripts/check-js-files-results.py"),
+        ("Usage/Ports result guard", "scripts/check-js-usage-ports-results.py"),
+        ("Composer result guard", "scripts/check-js-composer-journey-results.py"),
         ("run-scoped artifact output", "android/app/build/outputs/js-composer/"),
-        ("usage/ports result guard", "scripts/check-js-usage-ports-results.py"),
         ("usage/ports run-scoped artifacts", "android/app/build/outputs/js-usage-ports/"),
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
         ("artifact uploader", "uses: actions/upload-artifact@v6"),
@@ -90,14 +95,35 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper must copy smoke JUnit evidence")
     if "android/app/build/outputs/js-smoke-results" not in packaged_script:
         raise AssertionError("packaged wrapper must save the smoke JUnit copy under its upload path")
-    guard_start = source.index("- name: Assert packaged JS composer and Usage/Ports journeys executed exactly once")
+    guard_start = source.index("- name: Require exact reports for every packaged JS lane")
     guard_end = source.index("- name:", guard_start + 8)
     guard = source[guard_start:guard_end]
-    if "if: always()" not in guard or "--results-dir android/app/build/outputs/androidTest-results/connected/debug" not in guard:
-        raise AssertionError("the exact JUnit result guard must run after the emulator step even when it fails")
-    if "scripts/check-js-usage-ports-results.py \\" not in guard or \
-       'js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results' not in guard:
-        raise AssertionError("the usage/ports result guard must check the preserved same-run JUnit report")
+    if "if: always()" not in guard or "shell: bash" not in guard:
+        raise AssertionError("exact lane report checks must run after the emulator step even when it fails")
+    exact_lane_reports = (
+        ("smoke", "android/app/build/outputs/js-smoke-results"),
+        ("lifecycle", "js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("Files", "js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("Usage/Ports", "js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+    )
+    for lane, report_path in exact_lane_reports:
+        if report_path not in guard:
+            raise AssertionError(f"the {lane} result guard must use its preserved run report: {report_path}")
+    if 'composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"' not in guard or \
+       'composer_runs=("$composer_root/$composer_prefix"*)' not in guard or \
+       '"${composer_runs[0]}"' not in guard:
+        raise AssertionError("the Composer checker must use the unique run-scoped artifact directory")
+    for checker in (
+        "scripts/check-js-smoke-results.py",
+        "scripts/check-js-lifecycle-results.py",
+        "scripts/check-js-files-results.py",
+        "scripts/check-js-usage-ports-results.py",
+        "scripts/check-js-composer-journey-results.py",
+    ):
+        if f"run_check " not in guard or checker not in guard:
+            raise AssertionError(f"the always-run result guard does not invoke {checker}")
+    if "if (( failed != 0 )); then" not in guard:
+        raise AssertionError("any missing exact lane report must fail the overall workflow step")
     upload_start = source.index("- name: Upload packaged JS composer run evidence")
     upload_end = source.index("- name:", upload_start + 8)
     upload = source[upload_start:upload_end]
@@ -195,6 +221,79 @@ for label, damaged in (
         print(f"PASS: missing {label} fails the rewrite composer workflow contract")
     else:
         raise AssertionError(f"workflow contract missed a removed {label}")
+
+
+def workflow_run_script(source: str, step_name: str) -> str:
+    step_start = source.index(f"- name: {step_name}")
+    step_end = source.find("\n      - name:", step_start + 8)
+    if step_end < 0:
+        step_end = len(source)
+    lines = source[step_start:step_end].splitlines()
+    run_index = next(
+        index for index, line in enumerate(lines)
+        if re.match(r"\s+run:\s*\|\s*$", line)
+    )
+    run_indent = len(lines[run_index]) - len(lines[run_index].lstrip())
+    script_lines = []
+    for line in lines[run_index + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= run_indent:
+            break
+        script_lines.append(
+            line[run_indent + 2:]
+            if line.startswith(" " * (run_indent + 2)) else ""
+        )
+    return "\n".join(script_lines)
+
+
+# Model the reviewer's dormant Files call: its wrapper status can be zero while
+# the run-scoped Files directory has no JUnit. The actual always-run workflow
+# step must still fail after checking the other lanes.
+guard_script = workflow_run_script(workflow, "Require exact reports for every packaged JS lane")
+with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temporary:
+    fake_repo = Path(temporary)
+    fake_scripts = fake_repo / "scripts"
+    fake_scripts.mkdir()
+    result_trace = fake_repo / "result-check-trace.txt"
+    for checker, lane in (
+        ("check-js-smoke-results.py", "smoke"),
+        ("check-js-lifecycle-results.py", "lifecycle"),
+        ("check-js-usage-ports-results.py", "usage-ports"),
+        ("check-js-composer-journey-results.py", "composer"),
+    ):
+        stub = fake_scripts / checker
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\t%s\\n' '{lane}' \"$*\" >> \"$RESULT_CHECK_TRACE\"\n"
+        )
+        stub.chmod(0o755)
+    files_checker = fake_scripts / "check-js-files-results.py"
+    files_checker.write_text((repository_root / "scripts/check-js-files-results.py").read_text())
+    files_checker.chmod(0o755)
+    composer_dir = fake_repo / "android/app/build/outputs/js-composer/js2891-fixture-1-123"
+    composer_dir.mkdir(parents=True)
+    result = subprocess.run(
+        ["bash", "-e", "-u", "-o", "pipefail"],
+        input=guard_script,
+        cwd=fake_repo,
+        env={
+            **os.environ,
+            "GITHUB_RUN_ID": "fixture",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "RESULT_CHECK_TRACE": str(result_trace),
+        },
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode == 0 or "Files result check exited" not in result.stderr or \
+       "instrumentation results directory is missing" not in result.stderr:
+        raise AssertionError(
+            "the always-run lane guard accepted a dormant Files runner: "
+            f"exit={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
+        )
+    checked_lanes = [line.split("\t", 1)[0] for line in result_trace.read_text().splitlines()]
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer"]:
+        raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
+print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
 # The emulator action splits multiline scripts across child shells. Require
 # exactly one executable wrapper invocation so all lane statuses share one Bash.
