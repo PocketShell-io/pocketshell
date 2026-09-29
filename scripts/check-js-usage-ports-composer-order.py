@@ -17,7 +17,7 @@ class GateFailure(ValueError):
 
 
 def method_body(source: str, method_name: str) -> str:
-    signature = re.search(rf"\bprivate\s+[\w<>]+\s+{re.escape(method_name)}\s*\(", source)
+    signature = re.search(rf"\b(?:public|private|protected)\s+[\w<>]+\s+{re.escape(method_name)}\s*\(", source)
     if signature is None:
         raise GateFailure(f"missing method {method_name}")
     start = signature.start()
@@ -66,6 +66,18 @@ def method_body(source: str, method_name: str) -> str:
 
 
 def validate(source: str) -> None:
+    primary = method_body(source, "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+    start_marker_at = primary.find('String serverStartedMarker = marker(runId, "HTTP_STARTED")')
+    settings_at = primary.find('click("[aria-label=\'Settings\']")')
+    start_send_at = primary.find("sendComposerCommandAndAwaitMarker(", start_marker_at, settings_at)
+    if min(start_marker_at, settings_at, start_send_at) < 0 or not start_marker_at < start_send_at < settings_at:
+        raise GateFailure("HTTP fixture startup must use the packaged Composer before opening Settings")
+    start_send = primary[start_send_at:settings_at]
+    if "serverStartedMarker" not in start_send or '"start test HTTP service", sessionTag, "HTTP_START"' not in start_send:
+        raise GateFailure("HTTP fixture startup must retain its marker and HTTP_START evidence phase")
+    if "sendCommandAndAwaitMarker(" in primary[start_marker_at:settings_at]:
+        raise GateFailure("HTTP fixture startup must not inject the command through native terminal input")
+
     helper = method_body(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     focused_draft = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
     required = (
@@ -74,7 +86,7 @@ def validate(source: str) -> None:
         "boolean composerVisible = \"true\".equals(evalRaw(visibleComposerExpression()))",
         "boolean composerDraftFocused = \"true\".equals(evalRaw(",
         "if (!composerVisible || !composerDraftFocused)",
-        "openComposerWithPhysicalDraftTap(sessionTag);",
+        "openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);",
         "awaitJsTrue(composerReady, 15_000);",
         "document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
     )
@@ -133,7 +145,7 @@ def validate(source: str) -> None:
 
     sender = method_body(source, "sendComposerCommandAndAwaitMarker")
     sender_order = (
-        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);",
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);",
         "awaitJsTrue(visibleComposerExpression(), 15_000);",
         "setValue(\"[data-testid=prompt-draft]\", command);",
         "click(\".composer-shared-controls .send\");",
@@ -146,7 +158,7 @@ def validate(source: str) -> None:
 def self_test() -> int:
     source = DEFAULT_SOURCE.read_text(encoding="utf-8")
     validate(source)
-    print("ok [1/8] Composer waits for a visible, hittable draft before physical open")
+    print("ok [1/9] startup and cleanup commands use the visible packaged Composer")
 
     mutants = (
         (
@@ -164,7 +176,7 @@ def self_test() -> int:
         ),
         (
             "native tap removed",
-            "openComposerWithPhysicalDraftTap(sessionTag);",
+            "openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);",
             "// Composer already appears open",
         ),
         (
@@ -174,6 +186,11 @@ def self_test() -> int:
         ),
     )
     mutants += (
+        (
+            "HTTP fixture startup routes through native terminal input",
+            'sendComposerCommandAndAwaitMarker(\n                "python3 -m http.server',
+            'sendCommandAndAwaitMarker(\n                "python3 -m http.server',
+        ),
         (
             "visible Composer readiness predicate removed",
             "String composerReady = visibleComposerExpression()",
@@ -199,10 +216,10 @@ def self_test() -> int:
         try:
             validate(mutant)
         except GateFailure:
-            print(f"ok [{index}/8] {label} is rejected")
+            print(f"ok [{index}/9] {label} is rejected")
         else:
             raise GateFailure(f"source gate accepted invalid mutant: {label}")
-    print("PASS: Usage/Ports Composer ordering gate checks (8/8)")
+    print("PASS: Usage/Ports Composer ordering gate checks (9/9)")
     return 0
 
 

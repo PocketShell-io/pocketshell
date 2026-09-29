@@ -529,9 +529,20 @@ def require_usage_ports_composer_contract(source: str) -> None:
     if "document.querySelector('.app-shell')?.dataset.sshPhase ?? ''" not in primary[hidden_at:route_record_at]:
         raise AssertionError("primary cleanup setup must keep a live selected PTY while the Composer is hidden")
 
+    start_marker_at = primary.find('String serverStartedMarker = marker(runId, "HTTP_STARTED")')
+    settings_at = primary.find('click("[aria-label=\'Settings\']")')
+    start_send_at = primary.find("sendComposerCommandAndAwaitMarker(", start_marker_at, settings_at)
+    if min(start_marker_at, settings_at, start_send_at) < 0 or not start_marker_at < start_send_at < settings_at:
+        raise AssertionError("HTTP fixture startup must use the packaged Composer before opening Settings")
+    start_send = primary[start_send_at:settings_at]
+    if "serverStartedMarker" not in start_send or '"start test HTTP service", sessionTag, "HTTP_START"' not in start_send:
+        raise AssertionError("HTTP fixture startup must use its start marker, selected session, and HTTP_START evidence phase")
+    if "sendCommandAndAwaitMarker(" in primary[start_marker_at:settings_at]:
+        raise AssertionError("HTTP fixture startup must not inject the command through native terminal input")
+
     for label, needle, haystack in (
         ("strict stop routes through the Composer sender", "sendComposerCommandAndAwaitMarker(", strict_stop),
-        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);", send),
+        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);", send),
         ("Composer sender waits for visible state", "awaitJsTrue(visibleComposerExpression(), 15_000);", send),
         ("Composer sender waits for connected transport", "dataset.transportState === 'connected'", send),
         ("Composer sender drafts through the packaged Composer", 'setValue("[data-testid=prompt-draft]", command)', send),
@@ -540,7 +551,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if needle not in haystack:
             raise AssertionError(f"Usage/Ports cleanup is missing {label}")
     sender_order = (
-        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);"),
+        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);"),
         send.index("awaitJsTrue(visibleComposerExpression(), 15_000);"),
         send.index("dataset.transportState === 'connected'"),
         send.index('setValue("[data-testid=prompt-draft]", command)'),
@@ -558,7 +569,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
         ("physical draft target readiness", "awaitJsTrue(composerDraftTapReady, 15_000);"),
         ("Composer visibility and focus check", "boolean composerDraftFocused = "),
         ("physical open only when closed or unfocused", "if (!composerVisible || !composerDraftFocused) {"),
-        ("native physical draft tap action", "openComposerWithPhysicalDraftTap(sessionTag);"),
+        ("native physical draft tap action", "openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);"),
         ("visible and focused Composer wait", "awaitJsTrue(composerReady, 15_000);"),
         ("focused Composer confirmation", "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"),
         ("connected Composer wait", "dataset.transportState === 'connected'"),
@@ -577,7 +588,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
             raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
     opener_live_ready_at = opener.find("dataset.enabled === 'true'")
     opener_tap_ready_at = opener.find("awaitJsTrue(composerDraftTapReady, 15_000);")
-    opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag);")
+    opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);")
     opener_visible_at = opener.find("awaitJsTrue(composerReady, 15_000);")
     opener_focus_at = opener.find("String composerReady = visibleComposerExpression()", opener_action_at)
     opener_connected_at = opener.find("dataset.transportState === 'connected'")
@@ -591,7 +602,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
     if "document.activeElement === document.querySelector('[data-testid=prompt-draft]')" not in composer_ready:
         raise AssertionError("mobile Composer readiness must require focus on the Prompt draft")
     if not send.index("String draftBeforeOpen = evalString(") < send.index(
-        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);") < send.index(
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);") < send.index(
             "opening Home Composer must preserve the existing draft") < send.index(
                 "opening Home Composer must not write terminal input") < send.index(
                     'setValue("[data-testid=prompt-draft]", command)'):
@@ -622,8 +633,12 @@ def require_usage_ports_composer_contract(source: str) -> None:
 
     if "sendComposerCommandAndAwaitMarker(" not in after or "sendCommandAndAwaitMarker(" in after:
         raise AssertionError("@After HTTP cleanup must use the Composer-backed sender and opener")
+    if 'activeSessionTag, "HTTP_CLEANUP")' not in after:
+        raise AssertionError("@After cleanup must retain its HTTP_CLEANUP evidence phase")
     if "sendComposerCommandAndAwaitMarker(" not in strict_stop or "sendCommandAndAwaitMarker(" in strict_stop:
         raise AssertionError("strict HTTP process stop must use the Composer-backed sender and opener")
+    if 'sessionTag, "HTTP_CLEANUP")' not in strict_stop:
+        raise AssertionError("strict process stop must retain its HTTP_CLEANUP evidence phase")
 
 
 require_usage_ports_composer_contract(usage_ports_journey)
@@ -642,11 +657,12 @@ sender_source = journey_method(usage_ports_journey, "sendComposerCommandAndAwait
 opener_source = journey_method(usage_ports_journey, "openHomeLiveComposerAndAwaitConnectedTransport")
 physical_open_source = journey_method(usage_ports_journey, "openComposerWithPhysicalDraftTap")
 after_source = journey_method(usage_ports_journey, "closeShell")
+primary_source = journey_method(usage_ports_journey, "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
 expect_usage_ports_contract_rejection(
     "removing the Home/live Composer opener",
     usage_ports_journey.replace(
         sender_source,
-        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);", "", 1),
+        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);", "", 1),
         1,
     ),
 )
@@ -662,7 +678,7 @@ expect_usage_ports_contract_rejection(
     "removing the physical mobile Composer draft tap",
     usage_ports_journey.replace(
         opener_source,
-        opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1),
+        opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1),
         1,
     ),
 )
@@ -701,11 +717,11 @@ expect_usage_ports_contract_rejection(
     ),
 )
 
-delayed_composer_open = opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1)
+delayed_composer_open = opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1)
 connected_wait_end = delayed_composer_open.index("15_000);", delayed_composer_open.index("dataset.transportState === 'connected'")) + len("15_000);")
 delayed_composer_open = (
     delayed_composer_open[:connected_wait_end]
-    + "\n            openComposerWithPhysicalDraftTap(sessionTag);"
+    + "\n            openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);"
     + delayed_composer_open[connected_wait_end:]
 )
 expect_usage_ports_contract_rejection(
@@ -714,7 +730,7 @@ expect_usage_ports_contract_rejection(
 )
 late_after_send = usage_ports_journey.replace(
     opener_source,
-    opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag);", "", 1),
+    opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1),
     1,
 )
 late_sender_source = journey_method(late_after_send, "sendComposerCommandAndAwaitMarker")
@@ -722,7 +738,7 @@ late_after_send = late_after_send.replace(
     late_sender_source,
     late_sender_source.replace(
         'click(".composer-shared-controls .send");',
-        'click(".composer-shared-controls .send");\n        openComposerWithPhysicalDraftTap(sessionTag);',
+        'click(".composer-shared-controls .send");\n        openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);',
         1,
     ),
     1,
@@ -768,6 +784,18 @@ expect_usage_ports_contract_rejection(
     usage_ports_journey.replace(
         after_source,
         after_source.replace("sendComposerCommandAndAwaitMarker(", "sendCommandAndAwaitMarker(", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "routing HTTP fixture startup through direct terminal input",
+    usage_ports_journey.replace(
+        primary_source,
+        primary_source.replace(
+            'sendComposerCommandAndAwaitMarker(\n                "python3 -m http.server',
+            'sendCommandAndAwaitMarker(\n                "python3 -m http.server',
+            1,
+        ),
         1,
     ),
 )

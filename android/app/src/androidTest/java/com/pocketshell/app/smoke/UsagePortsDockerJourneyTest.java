@@ -77,7 +77,7 @@ public final class UsagePortsDockerJourneyTest {
                                 + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
                                 + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
                                 + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
-                        cleanupMarker, "cleanup test HTTP service", activeSessionTag);
+                        cleanupMarker, "cleanup test HTTP service", activeSessionTag, "HTTP_CLEANUP");
             } catch (Exception | AssertionError cleanupFailure) {
                 Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " HTTP fixture cleanup failed: "
                         + cleanupFailure.getClass().getSimpleName());
@@ -142,11 +142,11 @@ public final class UsagePortsDockerJourneyTest {
         String serverStartedMarker = marker(runId, "HTTP_STARTED");
         String serverStoppedMarker = marker(runId, "HTTP_STOPPED");
         fixtureHttpServerMayBeRunning = true;
-        sendCommandAndAwaitMarker(
+        sendComposerCommandAndAwaitMarker(
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
                         + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
                         + serverStartedMarker + "'",
-                serverStartedMarker, "start test HTTP service");
+                serverStartedMarker, "start test HTTP service", sessionTag, "HTTP_START");
 
         click("[aria-label='Settings']");
         click("[data-testid=open-usage]");
@@ -365,7 +365,8 @@ public final class UsagePortsDockerJourneyTest {
                 + "if [ -e /proc/$p ] && [ \"$s\" != Z ]; then echo exitDecision=still-running >>\"$c\"; exit 1; fi; "
                 + "echo exitDecision=process-exited >>\"$c\"; printf '%s\\n' '" + stoppedMarker + "'";
         // Send the long fixture-control command through the packaged composer; keyboard injection can reorder PTY bytes.
-        sendComposerCommandAndAwaitMarker(command, stoppedMarker, "stop test HTTP service", sessionTag);
+        sendComposerCommandAndAwaitMarker(
+                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP");
     }
 
     private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
@@ -383,10 +384,10 @@ public final class UsagePortsDockerJourneyTest {
     }
 
     private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint,
-                                                   String sessionTag) throws Exception {
+                                                   String sessionTag, String eventPrefix) throws Exception {
         String draftBeforeOpen = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
         JSONObject inputBeforeOpen = terminalInputStats();
-        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag);
+        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);
         awaitJsTrue(visibleComposerExpression(), 15_000);
         assertEquals("opening Home Composer must preserve the existing draft", draftBeforeOpen,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
@@ -404,7 +405,7 @@ public final class UsagePortsDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
                 15_000);
         Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
-                + " HTTP_CLEANUP_COMPOSER_READY route=home homeSurface=live composerVisible=true "
+                + " " + eventPrefix + "_COMPOSER_READY route=home homeSurface=live composerVisible=true "
                 + "transportState=connected selectedTag=" + sessionTag);
         setValue("[data-testid=prompt-draft]", command);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(command));
@@ -420,7 +421,7 @@ public final class UsagePortsDockerJourneyTest {
                 before.getInt("failureCount"), after.getInt("failureCount"));
     }
 
-    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag) throws Exception {
+    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag, String eventPrefix) throws Exception {
         if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
             click("[aria-label='PocketShell home']");
         }
@@ -478,7 +479,7 @@ public final class UsagePortsDockerJourneyTest {
         boolean composerDraftFocused = "true".equals(evalRaw(
                 "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
         if (!composerVisible || !composerDraftFocused) {
-            openComposerWithPhysicalDraftTap(sessionTag);
+            openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);
         }
         String composerReady = visibleComposerExpression()
                 + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
@@ -491,7 +492,7 @@ public final class UsagePortsDockerJourneyTest {
                 15_000);
     }
 
-    private void openComposerWithPhysicalDraftTap(String sessionTag) throws Exception {
+    private void openComposerWithPhysicalDraftTap(String sessionTag, String eventPrefix) throws Exception {
         JSONObject before = readComposerOpenState("before-physical-draft-tap");
         installComposerOpenTapRecorder();
         evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
@@ -527,7 +528,7 @@ public final class UsagePortsDockerJourneyTest {
         }
         JSONObject after = readComposerOpenState("after-physical-draft-tap");
         Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
-                + " HTTP_CLEANUP_COMPOSER_TAP sessionTag=" + sessionTag
+                + " " + eventPrefix + "_COMPOSER_TAP sessionTag=" + sessionTag
                 + " trustedDraftPointerDown=" + trustedDraftPointerDown
                 + " before=" + before + " tap=" + tap + " after=" + after);
         assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="
