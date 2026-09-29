@@ -97,6 +97,7 @@ export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_SDK}"
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/connected-js-usage-ports-artifacts.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-usage-ports.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-usage-ports.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -149,18 +150,11 @@ pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
+REPORTS_DIR="$ROOT_DIR/android/app/build/reports/androidTests/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-usage-ports/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
-python3 - "$RESULTS_DIR" <<'PY'
-from pathlib import Path
-import shutil
-import sys
-
-results = Path(sys.argv[1])
-if results.exists():
-    shutil.rmtree(results)
-PY
+pocketshell_reset_connected_js_usage_ports_outputs "$RESULTS_DIR" "$REPORTS_DIR"
 
 HOST_SERVER_PID_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.pid"
 HOST_SERVER_STOP_CHECK_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.stop-check"
@@ -230,7 +224,9 @@ LIVE_ASSET_LOGCAT_PID=$!
 sleep 0.2
 kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the same-run artifact logcat collector'
 
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+if pocketshell_run_connected_js_usage_ports_gradle \
+    "$RESULTS_DIR" "$REPORTS_DIR" "$ARTIFACTS_DIR" \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
