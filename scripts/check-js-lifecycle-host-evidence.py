@@ -1647,7 +1647,7 @@ def validate(
         "docker", "exec", "-u", "testuser", "-e", "HOME=/home/testuser", container,
         "/usr/local/bin/pocketshell-real", "sessions", "list", "--json",
     ])
-    session_list_path = artifact_directory / "host-pocketshell-sessions-list.json"
+    session_list_path = host_evidence_directory / "host-pocketshell-sessions-list.json"
     session_list_path.write_text(raw_session_list, encoding="utf-8")
     try:
         host_listing = json.loads(raw_session_list)
