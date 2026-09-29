@@ -235,6 +235,7 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("settings");
+        scrollDomTargetIntoWebViewViewport("[data-testid=open-diagnostics]");
         tapDomCenter("[data-testid=open-diagnostics]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'diagnostics' && !!document.querySelector('#diagnostics-page-title')");
         awaitJsTrue("document.querySelector('[data-testid=diagnostics-events] li button') !== null");
