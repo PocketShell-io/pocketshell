@@ -123,6 +123,8 @@ describe('pending dictation start cancellation', () => {
     const app = renderer.createApp(mountedPromptComposer, {
       targetKey: 'host/session',
       targetLabel: 'session',
+      hostId: 'host',
+      keyboardVisible: false,
       transportState: 'connected',
       writePty: vi.fn(async () => ({ ok: true })),
     });
