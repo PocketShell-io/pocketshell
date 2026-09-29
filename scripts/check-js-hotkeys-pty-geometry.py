@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,8 @@ def validate(journey: object, samples_text: str) -> dict[tuple[int, int], int]:
     missing = [stage for stage in STEADY_STAGES if stage not in by_stage]
     if missing:
         raise OracleFailure(f"journey is missing local steady-state checkpoints: {', '.join(missing)}")
+
+    validate_error_status_dock(by_stage["dictation-error-ime-open"])
 
     host_counts: dict[tuple[int, int], int] = {}
     for line_number, line in enumerate(samples_text.splitlines(), start=1):
@@ -91,6 +94,78 @@ def validate(journey: object, samples_text: str) -> dict[tuple[int, int], int]:
     return host_counts
 
 
+def _number(value: object, label: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise OracleFailure(f"error-state {label} is missing or non-numeric")
+    if not math.isfinite(value):
+        raise OracleFailure(f"error-state {label} is not finite")
+    return float(value)
+
+
+def _expect_near(value: object, expected: float, label: str) -> None:
+    actual = _number(value, label)
+    if abs(actual - expected) > 0.5:
+        raise OracleFailure(f"error-state {label} is {actual:g}px; expected the measured {expected:g}px contract")
+
+
+def validate_error_status_dock(stage: object) -> None:
+    """Pin the visible error dock geometry while preserving the terminal viewport."""
+    if not isinstance(stage, dict):
+        raise OracleFailure("dictation-error-ime-open geometry is not an object")
+    if (stage.get("stage") != "dictation-error-ime-open"
+            or stage.get("inlineDictationPhase") != "idle"
+            or stage.get("inlineDictationTone") != "error"
+            or stage.get("inlineDictationStatusVisible") is not True
+            or stage.get("inlineDictationStatusOneLine") is not True
+            or stage.get("inlineDictationStatusInsideBar") is not True
+            or stage.get("inlineDictationStatusAboveKeybar") is not True):
+        raise OracleFailure("recognizer error is not visibly contained in the one-line terminal status row")
+
+    _expect_near(stage.get("terminalHotkeysDockHeightPx"), 81, "slot reservation")
+    _expect_near(stage.get("inlineDictationStatusRow", {}).get("height")
+                 if isinstance(stage.get("inlineDictationStatusRow"), dict) else None,
+                 32, "settled status row height")
+    _expect_near(stage.get("keybarRect", {}).get("height")
+                 if isinstance(stage.get("keybarRect"), dict) else None,
+                 48, "fast-key row height")
+    status = stage["inlineDictationStatusRow"]
+    keybar = stage["keybarRect"]
+    _expect_near(status.get("bottom"), _number(keybar.get("top"), "fast-key row top"),
+                 "status-to-keybar gap")
+
+    dock = stage.get("mobileHotkeys")
+    tray = stage.get("fastKeysTray")
+    if not isinstance(dock, dict) or not isinstance(tray, dict) or not isinstance(tray.get("bounds"), dict):
+        raise OracleFailure("error-state rendered dock bounds are missing")
+    bounds = tray["bounds"]
+    _expect_near(dock.get("height"), 81, "settled status-visible dock height")
+    _expect_near(bounds.get("height"), 81, "tray height")
+    if (_number(bounds.get("top"), "tray top") > _number(status.get("top"), "status row top") + 0.5
+            or _number(bounds.get("bottom"), "tray bottom") < _number(keybar.get("bottom"), "fast-key row bottom") - 0.5):
+        raise OracleFailure("rendered status or fast-key row extends outside the settled 81px error dock")
+    if (tray.get("insideSlot") is not True
+            or tray.get("insideTerminalPanel") is not True
+            or tray.get("belowTerminalViewport") is not True
+            or tray.get("intersectsTerminalViewport") is not False
+            or tray.get("intersectsComposerPanel") is not False
+            or stage.get("terminalCanvasEndsAtDock") is not True):
+        raise OracleFailure("error dock is outside the terminal flow or overlaps the viewport/composer")
+
+    _expect_near(stage.get("terminalViewportDockCapPx"), 144, "terminal viewport cap")
+    _expect_near(stage.get("terminalGridViewport", {}).get("height")
+                 if isinstance(stage.get("terminalGridViewport"), dict) else None,
+                 144, "xterm viewport height")
+    visible_rows = stage.get("visibleTerminalRows")
+    if isinstance(visible_rows, bool) or not isinstance(visible_rows, int) or visible_rows < 5:
+        raise OracleFailure("error dock leaves fewer than five terminal rows visible")
+    runtime = stage.get("runtimeGeometry")
+    if not isinstance(runtime, dict) or runtime.get("cols") != 38 or runtime.get("rows") != 6:
+        raise OracleFailure("error dock changed the accepted API 35 38×6 PTY grid")
+    if (stage.get("resizePending") != 0 or stage.get("resizeFailures") != 0
+            or stage.get("resizeStatus") != "38 × 6 accepted by SSH"):
+        raise OracleFailure("error dock geometry is not settled at the accepted 38×6 SSH size")
+
+
 def self_test() -> int:
     stages = [
         {"stage": name, "runtimeGeometry": {"cols": cols, "rows": rows},
@@ -116,6 +191,67 @@ def self_test() -> int:
         ("unacknowledged local resume geometry is rejected", "6 38\n24 37\n" * 10, False),
     ]
     failed = False
+
+    error_stage = {
+        "stage": "dictation-error-ime-open",
+        "inlineDictationPhase": "idle",
+        "inlineDictationTone": "error",
+        "inlineDictationStatusVisible": True,
+        "inlineDictationStatusOneLine": True,
+        "inlineDictationStatusInsideBar": True,
+        "inlineDictationStatusAboveKeybar": True,
+        "terminalHotkeysDockHeightPx": 81,
+        "inlineDictationStatusRow": {"top": 201, "bottom": 233, "height": 32},
+        "keybarRect": {"top": 233, "bottom": 281, "height": 48},
+        "mobileHotkeys": {"top": 200, "bottom": 281, "height": 81},
+        "fastKeysTray": {
+            "bounds": {"top": 200, "bottom": 281, "height": 81},
+            "insideSlot": True, "insideTerminalPanel": True, "belowTerminalViewport": True,
+            "intersectsTerminalViewport": False, "intersectsComposerPanel": False,
+        },
+        "terminalCanvasEndsAtDock": True,
+        "terminalViewportDockCapPx": 144,
+        "terminalGridViewport": {"top": 0, "bottom": 144, "height": 144},
+        "visibleTerminalRows": 5,
+        "runtimeGeometry": {"cols": 38, "rows": 6},
+        "resizePending": 0,
+        "resizeFailures": 0,
+        "resizeStatus": "38 × 6 accepted by SSH",
+    }
+    next(stage for stage in journey["geometryTrace"]
+         if stage["stage"] == "dictation-error-ime-open").update(error_stage)
+    error_dock_cases = [
+        ("settled 81px status-visible error dock passes", error_stage, True),
+        ("unsettled 89px status-visible error dock fails", {
+            **error_stage,
+            "inlineDictationStatusRow": {**error_stage["inlineDictationStatusRow"], "bottom": 241, "height": 40},
+            "keybarRect": {**error_stage["keybarRect"], "top": 241},
+            "mobileHotkeys": {**error_stage["mobileHotkeys"], "bottom": 289, "height": 89},
+            "fastKeysTray": {**error_stage["fastKeysTray"], "bounds": {"top": 200, "bottom": 289, "height": 89}},
+        }, False),
+        ("hidden recognizer error status fails", {**error_stage, "inlineDictationStatusVisible": False}, False),
+        ("error dock overlapping xterm fails", {
+            **error_stage,
+            "fastKeysTray": {**error_stage["fastKeysTray"], "intersectsTerminalViewport": True},
+        }, False),
+        ("error dock with fewer than five rows fails", {**error_stage, "visibleTerminalRows": 4}, False),
+        ("error dock with a changed PTY grid fails", {
+            **error_stage, "runtimeGeometry": {"cols": 38, "rows": 5},
+        }, False),
+    ]
+    for label, stage, should_pass in error_dock_cases:
+        try:
+            validate_error_status_dock(stage)
+        except OracleFailure:
+            accepted = False
+        else:
+            accepted = True
+        if accepted != should_pass:
+            print(f"FAIL: {label}", file=sys.stderr)
+            failed = True
+        else:
+            print(f"PASS: {label}")
+
     for index, (label, samples, should_pass) in enumerate(cases):
         case = json.loads(json.dumps(journey))
         if index == 2:

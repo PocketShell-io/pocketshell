@@ -944,6 +944,7 @@ public final class JsFastKeysDockerJourneyTest {
         evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
+        awaitDockGeometrySettled("showing recognizer error status");
         JSONObject errorGeometry = captureGeometry("dictation-error-ime-open");
         assertTerminalViewportCap("showing recognizer error status", idle, errorGeometry);
         assertTrayBelowTerminalViewport(errorGeometry);
