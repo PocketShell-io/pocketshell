@@ -75,6 +75,14 @@ jobs:
           scripts/check-js-usage-ports-results.py --self-test
           scripts/check-js-usage-ports-host-evidence.py --self-test
 
+      - name: Check fail-closed packaged Files result guard
+        run: scripts/check-js-files-results.py --self-test
+
+      - name: Check JS Android journey dispatch guard
+        run: |
+          scripts/check-test-validity.sh --j1-only --self-test
+          scripts/check-test-validity.sh --j1-only
+
       - name: Check JS-first connected-test dispatch and lock contracts
         run: |
           tests/scripts/connected-test-js-runner-test.sh
