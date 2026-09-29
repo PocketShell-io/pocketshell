@@ -201,8 +201,11 @@ jobs:
           shopt -s nullglob
           composer_runs=("$composer_root/$composer_prefix"*)
           if (( ${#composer_runs[@]} == 1 )); then
-            run_check Composer scripts/check-js-composer-journey-results.py \
-              --results-dir "${composer_runs[0]}"
+            composer_run="${composer_runs[0]}"
+            run_check "Composer prepare" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-prepare"
+            run_check "Composer resume" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-resume"
           else
             printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
               "$composer_prefix" "${#composer_runs[@]}" >&2

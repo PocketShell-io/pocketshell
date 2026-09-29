@@ -111,8 +111,11 @@ def require_contract(source: str, packaged_script: str) -> None:
             raise AssertionError(f"the {lane} result guard must use its preserved run report: {report_path}")
     if 'composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"' not in guard or \
        'composer_runs=("$composer_root/$composer_prefix"*)' not in guard or \
-       '"${composer_runs[0]}"' not in guard:
-        raise AssertionError("the Composer checker must use the unique run-scoped artifact directory")
+       'composer_run="${composer_runs[0]}"' not in guard:
+        raise AssertionError("the Composer checkers must use the unique run-scoped artifact directory")
+    for phase in ("prepare", "resume"):
+        if f'--results-dir "$composer_run/phase-{phase}"' not in guard:
+            raise AssertionError(f"the Composer {phase} result guard must read that phase's isolated JUnit")
     for checker in (
         "scripts/check-js-smoke-results.py",
         "scripts/check-js-lifecycle-results.py",
@@ -260,17 +263,32 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-usage-ports-results.py", "usage-ports"),
         ("check-js-composer-journey-results.py", "composer"),
     ):
+        execute = (
+            'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
+            if checker == "check-js-composer-journey-results.py" else ""
+        )
         stub = fake_scripts / checker
         stub.write_text(
             "#!/usr/bin/env bash\n"
             f"printf '%s\\t%s\\n' '{lane}' \"$*\" >> \"$RESULT_CHECK_TRACE\"\n"
+            + execute
         )
         stub.chmod(0o755)
     files_checker = fake_scripts / "check-js-files-results.py"
     files_checker.write_text((repository_root / "scripts/check-js-files-results.py").read_text())
     files_checker.chmod(0o755)
     composer_dir = fake_repo / "android/app/build/outputs/js-composer/js2891-fixture-1-123"
-    composer_dir.mkdir(parents=True)
+    composer_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<testsuite name="com.pocketshell.app.smoke.JsComposerDockerJourneyTest" '
+        'tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase name="composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop" '
+        'classname="com.pocketshell.app.smoke.JsComposerDockerJourneyTest"/></testsuite>\n'
+    )
+    for relative in ("", "phase-prepare", "phase-resume"):
+        report_dir = composer_dir / relative
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "TEST-composer.xml").write_text(composer_xml)
     result = subprocess.run(
         ["bash", "-e", "-u", "-o", "pipefail"],
         input=guard_script,
@@ -280,6 +298,8 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
             "GITHUB_RUN_ID": "fixture",
             "GITHUB_RUN_ATTEMPT": "1",
             "RESULT_CHECK_TRACE": str(result_trace),
+            "PYTHON": sys.executable,
+            "ACTUAL_COMPOSER_CHECKER": str(repository_root / "scripts/check-js-composer-journey-results.py"),
         },
         text=True,
         capture_output=True,
@@ -290,9 +310,15 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
             "the always-run lane guard accepted a dormant Files runner: "
             f"exit={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
         )
-    checked_lanes = [line.split("\t", 1)[0] for line in result_trace.read_text().splitlines()]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer"]:
+    if "Composer prepare result check exited" in result.stderr or \
+       "Composer resume result check exited" in result.stderr:
+        raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
+    checked_lines = result_trace.read_text().splitlines()
+    checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer", "composer"]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
+    if "/phase-prepare" not in checked_lines[3] or "/phase-resume" not in checked_lines[4]:
+        raise AssertionError(f"the guard did not check the two Composer process phases independently: {checked_lines!r}")
 print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
 # The emulator action splits multiline scripts across child shells. Require

@@ -11,9 +11,36 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPER = ROOT / "scripts/lib/connected-js-usage-ports-artifacts.sh"
+RUNNER = ROOT / "scripts/connected-js-usage-ports.sh"
+JOURNEY = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+
+
+def check_failure_diagnostic_contract() -> None:
+    runner = RUNNER.read_text(encoding="utf-8")
+    journey = JOURNEY.read_text(encoding="utf-8")
+    failure_branch = runner.split("\nelse\n", 1)[1].split("\nfi\n", 1)[0]
+    required_journey_fragments = (
+        "captureFailureDiagnostics(failure)",
+        "awaitJsTrue(\"!!document.querySelector('[data-testid=ports-screen]')\")",
+        "scanReadiness",
+        "route:shell?.dataset.route",
+        "ssh:{phase:shell?.dataset.sshPhase",
+        "rows:Array.from(document.querySelectorAll('[data-testid=port-row]'))",
+        "jsErrors:window.__usagePortsJourneyErrors??[]",
+        "captureFailureScreenshot(artifactDirectory)",
+        'new File(artifactDirectory, "journey-summary.json")',
+    )
+    missing_journey = [fragment for fragment in required_journey_fragments if fragment not in journey]
+    if missing_journey:
+        raise AssertionError("journey failure diagnostics are missing: " + ", ".join(missing_journey))
+    if "chromium Chromium" not in runner:
+        raise AssertionError("the Usage/Ports runner does not capture Chromium logcat")
+    if "extract-js-lifecycle-artifacts.py" not in failure_branch:
+        raise AssertionError("the runner does not extract packaged failure artifacts before teardown evidence is lost")
 
 
 def main() -> int:
+    check_failure_diagnostic_contract()
     with tempfile.TemporaryDirectory(prefix="pocketshell-usage-ports-failure-") as raw_temp:
         temp = Path(raw_temp)
         results = temp / "results"
@@ -91,6 +118,7 @@ printf '%s' "$status" > "$STATUS_PATH"
         print("PASS: stale JUnit and HTML outputs are removed before the run")
         print("PASS: partial JUnit and HTML report are preserved after Gradle failure")
         print("PASS: the original Gradle exit code is returned after evidence capture")
+        print("PASS: packaged failure route, SSH, Ports, JS error, screenshot, and Chromium diagnostics are wired")
     return 0
 
 
