@@ -40,6 +40,7 @@ import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGat
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
+import { syncSelectedHosts } from './sync/settingsSync';
 import TerminalViewport from './components/TerminalViewport.vue';
 import MobileHotkeys from './components/MobileHotkeys.vue';
 import TerminalDictationBar from './components/TerminalDictationBar.vue';
@@ -100,6 +101,11 @@ type ComposerSmokeEvidenceWindow = Window & {
 
 const MAX_APP_TERMINAL_INPUT_EVIDENCE_CHUNKS = 128;
 const MAX_APP_TERMINAL_INPUT_EVIDENCE_CHARS = 2_048;
+
+type SettingsSyncProbeWindow = Window & {
+  __ps2852RunSettingsSync?: typeof syncSelectedHosts;
+};
+const SETTINGS_SYNC_PROBE_STORAGE_KEY = 'pocketshell.settings-sync-test-probe';
 
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
@@ -1083,6 +1089,19 @@ function reloadAfterSettingsImport(settingsWritten: boolean) {
 }
 
 onMounted(() => {
+  // Packaged instrumentation opts in through isolated app storage before
+  // launch. This exposes the real core-backed policy with fake platform
+  // effects; the production settings screen has no sync action or network
+  // adapter until native OAuth, encryption, and secure storage are ready.
+  try {
+    if (Capacitor.isNativePlatform()
+      && window.localStorage.getItem(SETTINGS_SYNC_PROBE_STORAGE_KEY) === 'enabled') {
+      (window as SettingsSyncProbeWindow).__ps2852RunSettingsSync = syncSelectedHosts;
+    }
+  } catch {
+    // A denied browser-storage read simply leaves the instrumentation probe off.
+  }
+
   diagnostics.record('app-started', 'startup', 'OK');
   const updateKeyboardViewport = () => {
     if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
@@ -1548,7 +1567,8 @@ onBeforeUnmount(() => {
           </ul>
           <p v-else class="empty-sessions" data-testid="empty-sessions">No sessions on this host yet.</p>
         </template>
-        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation">
+        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation"
+          :data-state="connectionSnapshot.uncertainMutation.state">
           {{ connectionSnapshot.uncertainMutation.kind }} “{{ connectionSnapshot.uncertainMutation.target }}” may have completed. Refresh sessions before retrying.
         </p>
       </section>

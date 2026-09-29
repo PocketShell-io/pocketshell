@@ -52,7 +52,7 @@ scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
   --session-prefix js2863-local
 ```
 
-The smoke lane requires exactly the three registered packaged-shell JUnit
+The smoke lane requires exactly the six registered packaged-shell JUnit
 methods. The lifecycle lane requires its one registered JUnit method, then
 checks run-scoped screenshots, session rows, PTY state, and grace/reconnect
 evidence against the Docker host. The composer lane requires its one registered

@@ -188,7 +188,7 @@ function setVoiceSilence(event: Event) {
       <h1 id="account-settings-title">Account sync</h1>
       <div class="settings-empty-state">
         <AppIcon name="folder" :size="16" />
-        <div><strong>Account sync is not connected.</strong><p>Sign-in, credential storage, and merge behavior are being implemented separately. No account details are stored or requested here.</p></div>
+        <div><strong>Account sync is unavailable in this build.</strong><p>Google sign-in and the secure sync adapter are not configured, so PocketShell sends no request and does not change account data.</p></div>
       </div>
     </section>
   </main>

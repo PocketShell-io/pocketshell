@@ -1,9 +1,11 @@
 # Settings sync — optional Google sign-in
 
-One optional feature: sign in with a Google account and the hosts you pick
-sync to it, encrypted so the server cannot read them. Everything here is
-opt-in — with no account signed in, PocketShell behaves exactly as it did
-before this existed.
+The earlier Android app let a user sign in with Google and sync selected host
+settings in an encrypted payload. The JS-first rewrite currently contains the
+portable payload policy only. Account sync is unavailable in this build: no
+OAuth flow, secure credential storage, encryption adapter, or network service
+is connected. The Settings screen makes no account request and changes no
+account data.
 
 This is the Android half of the feature the desktop client already ships
 (`~/git/pocketshell-electron/docs/SYNC.md`). The backend is unchanged and
@@ -11,24 +13,29 @@ shared: API Gateway + Lambda + DynamoDB, deployed from
 `aws-infra/sandbox/pocketshell-sync`, whose wire contract lives in that repo's
 `docs/CLIENT-INTEGRATION.md`. Same API URL, same `main` slot, same
 `{"hosts":[…]}` payload, same envelope — so one account works from the phone
-and the laptop at once.
+and the laptop at once once platform integration is restored.
 
-Code: `app2/src/main/java/com/pocketshell/next/sync/`. Entry point: Settings →
-**Account & sync**.
+The rewrite adapter is `src/sync/settingsSync.ts`; it calls the pinned
+`vendor/pocketshell-core/src/syncMerge.ts` functions. Settings → Advanced →
+Account sync is informational until native integration is available.
 
-## Status: blocked on one Google Cloud Console action
+## JS-first rewrite status
 
-Everything below is implemented and tested EXCEPT the two live calls to
-Google, which need an OAuth client that does not exist yet.
+The Android JS adapter owns selection and retry orchestration through the
+shared core. It does not own credentials, encryption, network requests, or
+persistent storage. Its platform effects are injected at the boundary; there
+is no production implementation in this rewrite.
 
-`SyncConfig.GOOGLE_ANDROID_CLIENT_ID` is a placeholder. Until it is replaced,
-`SyncConfig.isGoogleClientConfigured` is false, the settings screen says so,
-and the sign-in button is disabled rather than opening a browser at a 400.
+The payload parser refuses malformed JSON, invalid entries, unsupported
+`schemaVersion`, and unknown top-level fields before a replacement can be
+assembled. An explicit `{"hosts":[]}` remains a valid payload, but the normal
+sync flow refuses to upload an empty assembled host list. Clearing an account
+needs its own explicit user action.
 
-To unblock, register an OAuth client of type **Android** (not "Desktop", not
-"Web") in the SAME Google Cloud project as the desktop client's
-`GOOGLE_CLIENT_ID` — reusing the project is what keeps the server-side email
-allowlist and the deployed API working unchanged. It needs:
+The earlier Android integration was blocked on an Android OAuth client. If
+that flow is resumed, register an OAuth client of type **Android** (not
+"Desktop" or "Web") in the same Google Cloud project as the desktop client's
+`GOOGLE_CLIENT_ID`. It needs:
 
 | Field | Value |
 | --- | --- |
@@ -38,17 +45,15 @@ allowlist and the deployed API working unchanged. It needs:
 (The debug certificate is the committed `debug.keystore`, shared by every
 build on the dev box. A release-signing SHA-1 is a separate, later step.)
 
-Then, in the same change:
+The legacy app then required both of these values in the same change:
 
 1. Put the issued client ID in `SyncConfig.GOOGLE_ANDROID_CLIENT_ID`.
 2. Update the `android:scheme` of the sync redirect `<intent-filter>` in
-   `app2/src/main/AndroidManifest.xml` to the reversed form
+   `android/app/src/main/AndroidManifest.xml` to the reversed form
    (`com.googleusercontent.apps.<the-id-without-the-suffix>`).
 
-Both, or neither. `SyncConfigTest` asks the real `PackageManager` whether the
-manifest resolves the redirect URI this build asks Google for, and fails if
-the two drift — a mismatch is silent at build time and shows up only as a
-sign-in that never comes back.
+Both, or neither. The legacy `SyncConfigTest` asked the real `PackageManager`
+whether the manifest resolved the redirect URI the app requested.
 
 ## Why the desktop flow could not be ported as-is
 
@@ -75,7 +80,10 @@ The `state` nonce matters more here than it does on the desktop: on Android
 the redirect arrives as an `Intent`, which any installed app can send, so the
 nonce is what makes an injected authorization code unusable.
 
-## Encryption is unchanged, deliberately
+## Legacy encryption behavior
+
+The rewrite does not yet contain a native encryption adapter. This section
+records the earlier Android/Desktop wire contract for that future integration.
 
 `SyncCrypto` is a byte-for-byte port: PBKDF2-SHA256, 600 000 iterations,
 256-bit key over a fresh 16-byte salt; AES-256-GCM under a fresh 12-byte IV;
@@ -94,45 +102,50 @@ Two things the port had to add, both covered by `SyncCryptoTest`:
   is the only assertion that proves the wire format still matches; a
   round-trip test would pass just as happily against a drifted format.
 
-The passphrase is typed in Settings, lives in the screen's composition memory
-for that session, and is written nowhere — not preferences, not the Keystore,
-not the server. Losing it loses the stored blob, and the screen says so.
+In the earlier app the passphrase lived only in the Settings screen's
+composition memory for that session. The rewrite does not currently request
+or store it.
 
-## What syncs: the selection
+## Payload compatibility and selection
 
-Sync is selective, same model as the desktop client. The Account & sync
-section lists saved hosts with a checkbox each; ONLY ticked hosts are
-uploaded. An unticked host never leaves the device, encrypted or otherwise —
-that is the privacy property, and it is why the payload is *assembled* rather
-than merged: pushing replaces the account's content with the ticked set.
+The encrypted plaintext remains the versionless JSON object `{"hosts":[…]}`
+in the existing `main` slot. Do not add `schemaVersion` to this current
+format. The backend's integer version is an optimistic concurrency revision
+for the whole slot; the encryption envelope's `v` versions encryption. Neither
+versions the host payload.
 
-The ticks persist per device (`SyncSelectionStore`). That is load-bearing, not
-housekeeping: a selection that forgot itself across a relaunch would turn the
-next "Sync now" into a silent wipe of the account.
+Unknown JSON fields inside host entries are data. For each selected alias the
+shared core uses explicitly present local fields when a local host exists and
+carries remote-only fields through unchanged. If a selected host exists only
+in the account, its remote entry is retained. Unticked aliases are omitted
+from the replacement list, so selection still controls which entries leave
+the device and which entries remain in the account.
 
-The account is part of the selection rather than a rival to it. Aliases pulled
-from the account tick themselves on — but only ones the local host list lacks,
-so an alias this device can see is one the user has decided about and their
-untick stands. Together those give the flows that matter: a fresh device pulls
-and auto-ticks everything, so its next push re-uploads the account instead of
-wiping it; and removing a host from the account is untick + Sync now, nowhere
-else.
+The legacy selection ticks persisted per device. Account-only aliases
+auto-select when the local host list lacks that alias; a locally available
+alias the user unticked stays unticked. This lets a fresh device preserve its
+account entries while keeping an explicit deletion as untick + sync.
 
-Entries carry connection metadata only — name, hostname, port, user. Private
-keys are files in app-private storage and never leave it. Fields the desktop
-client models and this one does not (`proxyJump`, forwards, `identityFile`)
-ride through untouched, so a phone push cannot quietly strip a laptop's entry.
+Host entries contain connection metadata, never private key material. Fields
+the local client does not model (`proxyJump`, forwards, `identityFile`, and
+future extensions) must survive a sync round trip through shared core.
 
-A push reads the version the pull returned as its conflict base; a 409
-(another device wrote first) re-pulls, re-absorbs its aliases, re-assembles
-and retries up to three times. The 8 KB ceiling the Lambda enforces is checked
-before upload, in bytes.
+On a conflict, the adapter pulls the latest account again, parses it strictly,
+recomputes the selected set through shared core, and retries up to three
+conflicts. A future platform adapter must continue to check the backend's 8 KB
+limit in bytes before upload.
 
-## Not built yet
+Malformed account data must stop the upload; it must never be treated as an
+empty list and silently replace the account. The shared vector fixture at
+`vendor/pocketshell-core/tests/fixtures/settings-sync-vectors.json` is the
+cross-client contract for serialization, unknown fields, selection deletion,
+auto-selection, and strict parsing. Its `fixtureSchemaVersion` is test
+metadata and is not sent to the backend.
 
-Writing account-only hosts back into this device's `hosts` table. The desktop
-client can append to `~/.ssh/config` because an entry there is just text; a
-Room `HostEntity` needs a `keyId` pointing at a private key this device may
-not have, so "restore this host to my phone" needs a key-selection step that
-is its own piece of UX. Today the account's extra aliases are shown in the
-picker and preserved across syncs, which is what keeps them safe until then.
+## Legacy restore limitation
+
+The earlier Android app preserved account-only host aliases during sync but
+did not write them into its local `hosts` table. Its Room `HostEntity` needed
+a `keyId` pointing at a private key that might not exist on this device, so
+restoring a host required a separate key-selection step. The JS-first rewrite
+has not implemented account restore or the sync selection UI yet.

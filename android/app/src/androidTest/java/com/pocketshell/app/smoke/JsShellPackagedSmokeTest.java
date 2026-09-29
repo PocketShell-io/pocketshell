@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
@@ -256,6 +257,7 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("settings");
+        scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");
         tapDomCenter("[data-testid=open-about]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about' && !!document.querySelector('#about-title')");
         awaitJsTrue("document.querySelector('[data-testid=about-core-revision]')?.textContent.trim().length === 40");
@@ -266,8 +268,129 @@ public final class JsShellPackagedSmokeTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("settings");
 
+        runSettingsSyncPackagedSmokeChecks();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitHomeAfterBack();
+    }
+
+    private void runSettingsSyncPackagedSmokeChecks() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+        evalRaw("window.__ps2852NetworkRequestCount = 0;"
+                + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
+                + "return Promise.reject(new Error('unexpected sync network request'));};"
+                + "const originalXhrOpen = XMLHttpRequest.prototype.open;"
+                + "XMLHttpRequest.prototype.open = function(...args) {"
+                + "window.__ps2852NetworkRequestCount += 1; return originalXhrOpen.apply(this, args);};"
+                + "'network-guard-armed'");
+        assertEquals("production exposes no test sync entry point", "undefined",
+                evalString("typeof window.__ps2852RunSettingsSync"));
+
+        tapDomCenter("[data-testid=open-advanced-settings]");
+        awaitJsTrue("document.querySelector('[data-testid=open-account-sync]') !== null");
+        tapDomCenter("[data-testid=open-account-sync]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-account'");
+        awaitJsTrue("document.querySelector('[data-testid=account-settings-screen]')?.innerText.includes('Account sync is unavailable in this build.') === true");
+        assertEquals("unavailable account sync makes no network request", 0,
+                Integer.parseInt(evalString("window.__ps2852NetworkRequestCount")));
+
+        String probeStorageKey = "pocketshell.settings-sync-test-probe";
+        try {
+            evalRaw("localStorage.setItem(" + JSONObject.quote(probeStorageKey) + ", 'enabled');"
+                    + "window.location.reload(); 'reload-requested'");
+            awaitJsTrue("typeof window.__ps2852RunSettingsSync === 'function'");
+            awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+            evalRaw("window.__ps2852NetworkRequestCount = 0;"
+                    + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
+                    + "return Promise.reject(new Error('unexpected sync network request'));};"
+                    + "const originalXhrOpen = XMLHttpRequest.prototype.open;"
+                    + "XMLHttpRequest.prototype.open = function(...args) {"
+                    + "window.__ps2852NetworkRequestCount += 1; return originalXhrOpen.apply(this, args);};"
+                    + "'network-guard-rearmed'");
+
+            JSONObject localHost = new JSONObject()
+                    .put("name", "prod")
+                    .put("hostname", "prod-phone.example.net")
+                    .put("port", 2222)
+                    .put("user", "alexey");
+            JSONObject remoteHost = new JSONObject()
+                    .put("name", "prod")
+                    .put("hostname", "prod-desktop.example.net")
+                    .put("port", 22)
+                    .put("user", "old-user")
+                    .put("proxyJump", "bastion")
+                    .put("futureDirective", new JSONObject()
+                            .put("mode", "opaque")
+                            .put("tags", new JSONArray().put("desk").put("keep")));
+            String remotePlaintext = new JSONObject()
+                    .put("hosts", new JSONArray().put(remoteHost))
+                    .toString();
+            JSONArray localHosts = new JSONArray().put(localHost);
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "pull: async () => ({kind: 'ok', version: 7, plaintext: " + JSONObject.quote(remotePlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 8};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject preserved = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject preservedResult = preserved.getJSONObject("result");
+            assertEquals("synced", preservedResult.getString("kind"));
+            JSONObject mergedHost = preservedResult.getJSONArray("hosts").getJSONObject(0);
+            assertEquals("the local phone address wins", "prod-phone.example.net", mergedHost.getString("hostname"));
+            assertEquals("the desktop jump host survives", "bastion", mergedHost.getString("proxyJump"));
+            assertEquals("unknown desktop extensions survive", "opaque",
+                    mergedHost.getJSONObject("futureDirective").getString("mode"));
+            JSONObject upload = preserved.getJSONArray("uploads").getJSONObject(0);
+            assertEquals(7, upload.getInt("baseVersion"));
+            JSONObject uploadedPayload = new JSONObject(upload.getString("plaintext"));
+            assertEquals("the existing payload stays versionless", 1, uploadedPayload.length());
+            assertEquals("keep", uploadedPayload.getJSONArray("hosts").getJSONObject(0)
+                    .getJSONObject("futureDirective").getJSONArray("tags").getString(1));
+
+            String invalidPlaintext = "{\"schemaVersion\":2,\"hosts\":[]}";
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "pull: async () => ({kind: 'ok', version: 9, plaintext: " + JSONObject.quote(invalidPlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 10};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject refused = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject refusedResult = refused.getJSONObject("result");
+            assertEquals("invalid-payload", refusedResult.getString("kind"));
+            assertEquals("unsupported-version", refusedResult.getString("reason"));
+            assertTrue("a rejected payload has no replacement body",
+                    !refusedResult.has("hosts") && !refusedResult.has("plaintext"));
+            assertEquals("malformed remote data must not reach upload", 0,
+                    refused.getJSONArray("uploads").length());
+
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "pull: async () => ({kind: 'ok', version: 11, plaintext: '{\"hosts\":[]}'}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 12};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject empty = evalJson("window.__ps2852SyncProbeResult");
+            assertEquals("empty-selection", empty.getJSONObject("result").getString("kind"));
+            assertEquals("an empty selection never uploads", 0, empty.getJSONArray("uploads").length());
+
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "pull: async () => ({kind: 'absent'}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'error', message: 'service unavailable'};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject pushError = evalJson("window.__ps2852SyncProbeResult");
+            assertEquals("error", pushError.getJSONObject("result").getString("kind"));
+            assertEquals("push", pushError.getJSONObject("result").getString("stage"));
+            assertEquals("service unavailable", pushError.getJSONObject("result").getString("message"));
+            assertEquals("injected platform effects do not fall through to networking", 0,
+                    Integer.parseInt(evalString("window.__ps2852NetworkRequestCount")));
+        } finally {
+            evalRaw("localStorage.removeItem(" + JSONObject.quote(probeStorageKey) + ")");
+        }
     }
 
     private void awaitRoute(String route) throws Exception {
@@ -550,23 +673,66 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    private void scrollDomTargetIntoWebViewViewport(String selector) throws Exception {
+        String quotedSelector = JSONObject.quote(selector);
+        String found = evalRaw("(() => {const element = document.querySelector(" + quotedSelector + ");"
+                + "if (!element) return false;"
+                + "element.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});"
+                + "return true;})()");
+        assertEquals("WebView target element must exist before scrolling", "true", found);
+        awaitJsTrue(webViewViewportContainsTargetExpression(selector));
+    }
+
+    private String webViewViewportContainsTargetExpression(String selector) {
+        return "(() => {const element = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!element) return false;"
+                + "const rect = element.getBoundingClientRect();"
+                + "return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0"
+                + " && rect.right <= innerWidth && rect.bottom <= innerHeight;})()";
+    }
+
     private void tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector("
                 + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing: true});"
                 + "const rect = element.getBoundingClientRect();"
-                + "return JSON.stringify({x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: innerWidth});})()");
+                + "return JSON.stringify({x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,"
+                + "left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,"
+                + "viewportWidth: innerWidth, viewportHeight: innerHeight});})()");
         assertTrue("WebView target element must exist", !point.optBoolean("missing"));
+        assertTrue("WebView tap target must be fully inside its viewport before coordinate tap: "
+                        + selector + " bounds=" + point,
+                point.optDouble("left") >= 0
+                        && point.optDouble("top") >= 0
+                        && point.optDouble("right") <= point.optDouble("viewportWidth")
+                        && point.optDouble("bottom") <= point.optDouble("viewportHeight"));
 
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("the packaged activity must contain its Capacitor WebView", webView);
             int[] webViewLocation = new int[2];
             webView.getLocationOnScreen(webViewLocation);
-            float pixelsPerCssPixel = webView.getWidth() / (float) point.optDouble("width");
+            double viewportWidth = point.optDouble("viewportWidth");
+            assertTrue("WebView tap target must report a positive viewport width before coordinate tap: "
+                            + selector + " bounds=" + point,
+                    viewportWidth > 0 && !Double.isInfinite(viewportWidth));
+            float pixelsPerCssPixel = webView.getWidth() / (float) viewportWidth;
+            float xOnScreen = webViewLocation[0] + (float) point.optDouble("x") * pixelsPerCssPixel;
+            float yOnScreen = webViewLocation[1] + (float) point.optDouble("y") * pixelsPerCssPixel;
+            assertTrue("WebView tap center must map to finite on-screen pixels before coordinate tap: "
+                            + selector + " point=(" + xOnScreen + ", " + yOnScreen + ")",
+                    !Float.isNaN(xOnScreen) && !Float.isInfinite(xOnScreen)
+                            && !Float.isNaN(yOnScreen) && !Float.isInfinite(yOnScreen));
+            Rect visibleWebViewBounds = new Rect();
+            assertTrue("the packaged WebView must have visible on-screen bounds",
+                    webView.getGlobalVisibleRect(visibleWebViewBounds));
+            assertTrue("WebView tap center must map to visible on-screen pixels before coordinate tap: "
+                            + selector + " point=(" + xOnScreen + ", " + yOnScreen + ") bounds=" + visibleWebViewBounds,
+                    visibleWebViewBounds.contains(Math.round(xOnScreen), Math.round(yOnScreen)));
             screenPoint.set(new float[] {
-                    webViewLocation[0] + (float) point.optDouble("x") * pixelsPerCssPixel,
-                    webViewLocation[1] + (float) point.optDouble("y") * pixelsPerCssPixel
+                    xOnScreen,
+                    yOnScreen
             });
         });
 

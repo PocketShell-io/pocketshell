@@ -95,7 +95,7 @@ The phone shell keeps desktop colors, wording, icon family, type hierarchy, spac
 ## CI and release-gate boundary
 
 The temporary `rewrite/js-first-0.6.0` CI requires the exact JS unit suite,
-packages the Android debug APK, runs the three-test packaged API 35 shell smoke
+packages the Android debug APK, runs the six-method packaged API 35 shell smoke
 suite, and exercises the unchanged Docker fixture. The smoke test checks
 visible core/asset identity, Android Back from Settings, and composer placement
 above the real IME with safe-area insets. It does not cover feature parity,

@@ -88,12 +88,12 @@ public final class SshPtyDockerJourneyTest {
         String sessionA = runId + "-a";
         String sessionB = runId + "-b";
         String sessionC = runId + "-c";
-        String markerASwitch = marker(runId, "A_SWITCH");
-        String markerBSwitch = marker(runId, "B_SWITCH");
-        String markerCSwitch = marker(runId, "C_SWITCH");
-        String markerAReturn = marker(runId, "A_RETURN");
-        String markerAWithinGrace = marker(runId, "A_WITHIN_GRACE");
-        String markerAAfterExpiry = marker(runId, "A_AFTER_EXPIRY");
+        String markerASwitch = marker("A_SWITCH");
+        String markerBSwitch = marker("B_SWITCH");
+        String markerCSwitch = marker("C_SWITCH");
+        String markerAReturn = marker("A_RETURN");
+        String markerAWithinGrace = marker("A_WITHIN_GRACE");
+        String markerAAfterExpiry = marker("A_AFTER_EXPIRY");
         android.content.Context targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
         File externalFilesDirectory = targetContext.getExternalFilesDir(null);
         assertNotNull("target app external files directory must be available for same-run artifacts", externalFilesDirectory);
@@ -143,6 +143,8 @@ public final class SshPtyDockerJourneyTest {
         assertFalse("A and B must be distinct host sessions", rowA.getString("id").equals(rowB.getString("id")));
         assertFalse("B and C must be distinct host sessions", rowB.getString("id").equals(rowC.getString("id")));
         assertFalse("A and C must be distinct host sessions", rowA.getString("id").equals(rowC.getString("id")));
+
+        JSONObject uncertainMutation = createAmbiguousSessionAndReconcile(runId, artifactDirectory);
 
         JSONObject switchA = attachAndCapture(rowA, "switch-a", markerASwitch, artifactDirectory);
         assertUnchangedViewportFitsAreCoalesced("switch-a");
@@ -243,7 +245,7 @@ public final class SshPtyDockerJourneyTest {
         JSONObject afterExpiry = sendMarkerAndCapture("reconnected-after-expiry", markerAAfterExpiry, artifactDirectory);
         checkpoints.put(afterExpiry);
 
-        String markerAfterAbruptDrop = marker(runId, "A_AFTER_ABRUPT_DROP");
+        String markerAfterAbruptDrop = marker("A_AFTER_ABRUPT_DROP");
         JSONObject abruptTransportDrop = abruptlyDropServerTransportAndRecover(
                 runId, rowA, markerAfterAbruptDrop, artifactDirectory);
 
@@ -270,6 +272,7 @@ public final class SshPtyDockerJourneyTest {
                 .put("bridgeEvents", bridgeEvents)
                 .put("diagnosticEvents", diagnosticEvents);
         summary.put("abruptTransportDrop", abruptTransportDrop);
+        summary.put("uncertainMutation", uncertainMutation);
         writeText(new File(artifactDirectory, "journey-summary.json"), summary.toString(2));
         Log.i("SshPtyDockerJourney", "RUN " + runId + " " + summary);
 
@@ -316,6 +319,166 @@ public final class SshPtyDockerJourneyTest {
         return row;
     }
 
+    private JSONObject createAmbiguousSessionAndReconcile(String runId, File artifactDirectory) throws Exception {
+        String target = runId + "-uncertain-create";
+        String oldConnectionId = currentConnectionId();
+        assertTrue("uncertain create must start on a connected host transport after session refresh",
+                "connected".equals(currentPhase()) || "listing".equals(currentPhase()));
+        assertTrue("uncertain create must start with a physical SSH connection", !oldConnectionId.isEmpty());
+
+        String prefix = "/tmp/pocketshell-uncertain-mutation-" + target;
+        JSONObject arm = awaitNativeSshExecOnCurrentConnection(
+                "uncertain-mutation-arm-" + runId,
+                ": > " + shellQuote(prefix + ".armed"),
+                15_000);
+        assertEquals("Docker fixture must arm the exact one-shot uncertain create", 0, arm.getInt("exitCode"));
+        assertFalse("Docker fixture arm command must not time out", arm.getBoolean("timedOut"));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_ARMED "
+                + new JSONObject().put("target", target).put("connectionId", oldConnectionId));
+
+        setValue("[data-testid=new-session-name]", target);
+        long mutationRequestedAtEpochMs = System.currentTimeMillis();
+        click("[data-testid=create-session]");
+        awaitJsTrue("(() => {"
+                + "const root=document.querySelector('.app-shell');"
+                + "const warning=document.querySelector('[data-testid=uncertain-mutation]');"
+                + "const target=" + JSONObject.quote(target) + ";"
+                + "return !!warning && warning.textContent.includes(target)"
+                + " && warning.textContent.includes('may have completed')"
+                + " && warning.dataset.state === 'unknown'"
+                + " && root?.dataset.sshPhase === 'listing'"
+                + " && !!root.dataset.sshConnectionId"
+                + " && root.dataset.sshConnectionId !== " + JSONObject.quote(oldConnectionId)
+                + " && !Array.from(document.querySelectorAll('[data-session-tag]'))"
+                + ".some((node)=>node.dataset.sessionTag===target);})()", 20_000);
+        String connectionDuringFreshList = currentConnectionId();
+        assertTrue("the fresh list must use a different SSH transport", !connectionDuringFreshList.isEmpty()
+                && !oldConnectionId.equals(connectionDuringFreshList));
+        // The fixture records FRESH_LIST_STARTED at the first instruction of its list wrapper,
+        // then sleeps for ten seconds. Allow the new channel request to reach that wrapper
+        // before sampling the state; the result checker later verifies the exact host event
+        // timestamp against this device sample using the same-run clock-offset evidence.
+        SystemClock.sleep(1_000);
+        awaitJsTrue("(() => {"
+                + "const root=document.querySelector('.app-shell');"
+                + "const warning=document.querySelector('[data-testid=uncertain-mutation]');"
+                + "const target=" + JSONObject.quote(target) + ";"
+                + "return !!warning && warning.dataset.state === 'unknown'"
+                + " && root?.dataset.sshPhase === 'listing'"
+                + " && root.dataset.sshConnectionId === " + JSONObject.quote(connectionDuringFreshList)
+                + " && !Array.from(document.querySelectorAll('[data-session-tag]'))"
+                + ".some((node)=>node.dataset.sessionTag===target);})()", 2_000);
+        long uncertaintyObservedAtEpochMs = System.currentTimeMillis();
+        String uncertaintyWarning = evalString(
+                "document.querySelector('[data-testid=uncertain-mutation]')?.textContent.trim() ?? ''");
+        String initialMutationState = evalString(
+                "document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state ?? ''");
+        assertEquals("the JS controller must expose an unknown result before its fresh listing completes",
+                "unknown", initialMutationState);
+        assertTrue("the fresh listing must use a new SSH transport", !connectionDuringFreshList.isEmpty()
+                && !oldConnectionId.equals(connectionDuringFreshList));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_REPORTED "
+                + new JSONObject().put("target", target)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", connectionDuringFreshList)
+                .put("phase", currentPhase())
+                .put("observedAtEpochMs", uncertaintyObservedAtEpochMs)
+                .put("warning", uncertaintyWarning));
+
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'connected'"
+                + " && document.querySelector('.app-shell')?.dataset.sshConnectionId === "
+                + JSONObject.quote(connectionDuringFreshList)
+                + " && document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state === 'observed-applied'"
+                + " && Array.from(document.querySelectorAll('[data-session-tag]'))"
+                + ".filter((node)=>node.dataset.sessionTag === " + JSONObject.quote(target) + ").length === 1",
+                25_000);
+        long reconciledAtEpochMs = System.currentTimeMillis();
+        JSONObject createdRow = findSessionRow(target);
+
+        JSONObject proofResult = awaitNativeSshExecOnCurrentConnection(
+                "uncertain-mutation-proof-" + runId,
+                "cat " + shellQuote(prefix + ".proof"),
+                15_000);
+        assertEquals("Docker create proof must be readable over the fresh SSH connection", 0,
+                proofResult.getInt("exitCode"));
+        assertFalse("Docker create proof read must not time out", proofResult.getBoolean("timedOut"));
+        String serverProof = proofResult.getString("stdout");
+        assertTrue("Docker create proof must identify the run and prove the response was withheld",
+                serverProof.contains("run_id=" + runId + "\n")
+                        && serverProof.contains("target=" + target + "\n")
+                        && serverProof.contains("host_cli_exit_code=0\n")
+                        && serverProof.contains("host_cli_created=true\n")
+                        && serverProof.contains("response_forwarded=false\n")
+                        && serverProof.contains("signal=SIGKILL\n"));
+
+        JSONObject eventsResult = awaitNativeSshExecOnCurrentConnection(
+                "uncertain-mutation-events-" + runId,
+                "cat " + shellQuote(prefix + ".events"),
+                15_000);
+        assertEquals("Docker mutation event log must be readable over the fresh SSH connection", 0,
+                eventsResult.getInt("exitCode"));
+        assertFalse("Docker mutation event log read must not time out", eventsResult.getBoolean("timedOut"));
+        String fixtureEvents = eventsResult.getString("stdout");
+        long freshListStartedAtEpochMs = fixtureEventTimestamp(fixtureEvents, "FRESH_LIST_STARTED", target);
+        writeText(new File(artifactDirectory, "uncertain-mutation-server-proof.txt"), serverProof);
+        writeText(new File(artifactDirectory, "uncertain-mutation-fixture-events.txt"), fixtureEvents);
+
+        org.json.JSONArray phases = new org.json.JSONArray(
+                evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
+        int reconnectingPhases = 0;
+        int listingPhases = 0;
+        for (int index = 0; index < phases.length(); index += 1) {
+            JSONObject phase = phases.getJSONObject(index);
+            if (phase.optLong("at") < mutationRequestedAtEpochMs) continue;
+            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
+            if ("listing".equals(phase.optString("phase"))
+                    && connectionDuringFreshList.equals(phase.optString("connectionId"))) listingPhases += 1;
+        }
+        assertEquals("one JS reconnect must follow the lost create response", 1, reconnectingPhases);
+        assertEquals("one fresh session-list phase must reconcile the uncertain create", 1, listingPhases);
+        assertEquals("the fixture's host CLI create identity must match the session shown in the refreshed UI",
+                createdRow.getString("name"), proofLine(serverProof, "host_cli_name="));
+        assertTrue("the host CLI identity must be qualified with the requested session tag",
+                createdRow.getString("name").endsWith(":" + target));
+        assertEquals("the fresh session list must expose the independent host UUID", createdRow.getString("id"),
+                proofLine(serverProof, "host_cli_session_id="));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_RECONCILED "
+                + new JSONObject().put("target", target)
+                .put("sessionId", createdRow.getString("id"))
+                .put("connectionId", connectionDuringFreshList)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases)
+                .put("reconciledAtEpochMs", reconciledAtEpochMs));
+
+        return new JSONObject()
+                .put("assertions", new org.json.JSONArray()
+                        .put("real-host-session-create-completed-before-response-drop")
+                        .put("ssh-create-response-withheld-before-android-received-it")
+                        .put("controller-reported-create-uncertainty-before-fresh-list-completed")
+                        .put("no-automatic-create-replay")
+                        .put("fresh-session-list-reconciled-created-row")
+                        .put("independent-docker-aplexer-snapshot-confirmed-created-row"))
+                .put("kind", "create-session")
+                .put("target", target)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", connectionDuringFreshList)
+                .put("mutationRequestedAtEpochMs", mutationRequestedAtEpochMs)
+                .put("uncertaintyObservedAtEpochMs", uncertaintyObservedAtEpochMs)
+                .put("freshListStartedAtEpochMs", freshListStartedAtEpochMs)
+                .put("freshListObservedAtEpochMs", reconciledAtEpochMs)
+                .put("uncertaintyPhase", "listing")
+                .put("initialControllerState", initialMutationState)
+                .put("reconciledControllerState", evalString(
+                        "document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state ?? ''"))
+                .put("targetRowCountBeforeFreshList", 0)
+                .put("reportedWarning", uncertaintyWarning)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases)
+                .put("sessionRow", createdRow)
+                .put("serverProofFile", "uncertain-mutation-server-proof.txt")
+                .put("fixtureEventsFile", "uncertain-mutation-fixture-events.txt");
+    }
+
     private JSONObject attachAndCapture(JSONObject row, String checkpoint, String marker, File artifactDirectory) throws Exception {
         String tag = row.getString("tag");
         JSONObject resizeBefore = terminalResizeStats();
@@ -348,7 +511,7 @@ public final class SshPtyDockerJourneyTest {
         JSONObject before = terminalInputStats();
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        int markerAccent = markerAccentColor(marker);
+        int markerAccent = markerAccentColor(activeRunId, marker);
         String markerFormat = String.format(Locale.ROOT,
                 "\\033[38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m\\n",
                 Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent));
@@ -812,7 +975,7 @@ public final class SshPtyDockerJourneyTest {
                 * (float) rect.optDouble("devicePixelRatio"));
         assertTrue("marker row must map inside the physical viewport crop", markerLeft >= crop[0] && markerTop >= crop[1]
                 && markerRight <= crop[2] && markerBottom <= crop[3] && markerRight > markerLeft && markerBottom > markerTop);
-        int markerAccent = markerAccentColor(marker);
+        int markerAccent = markerAccentColor(activeRunId, marker);
         Bitmap full = takeScreenshotWhenMarkerIsPainted(
                 markerLeft, markerTop, markerRight, markerBottom, checkpoint, markerAccent, artifactDirectory);
         assertTrue("viewport crop must stay within the captured device image", crop[0] >= 0 && crop[1] >= 0
@@ -1086,8 +1249,9 @@ public final class SshPtyDockerJourneyTest {
         return count;
     }
 
-    private int markerAccentColor(String marker) throws Exception {
-        byte[] digest = MessageDigest.getInstance("SHA-256").digest(marker.getBytes(StandardCharsets.UTF_8));
+    private int markerAccentColor(String runId, String marker) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256")
+                .digest((runId + "\0" + marker).getBytes(StandardCharsets.UTF_8));
         int[] rgb = new int[] {
                 24 + (digest[2] & 0x3f),
                 24 + (digest[3] & 0x3f),
@@ -1184,7 +1348,7 @@ public final class SshPtyDockerJourneyTest {
         return result.toString();
     }
 
-    private String marker(String runId, String session) {
+    private String marker(String session) {
         String phase;
         switch (session) {
             case "A_SWITCH": phase = "AS"; break;
@@ -1196,13 +1360,7 @@ public final class SshPtyDockerJourneyTest {
             case "A_AFTER_ABRUPT_DROP": phase = "AD"; break;
             default: throw new IllegalArgumentException("unknown lifecycle marker phase: " + session);
         }
-        try {
-            String runToken = hex(MessageDigest.getInstance("SHA-256").digest(runId.getBytes(StandardCharsets.UTF_8)))
-                    .substring(0, 10).toUpperCase();
-            return "REMOTE_OUTPUT_" + runToken + "_" + phase;
-        } catch (Exception error) {
-            throw new IllegalStateException("SHA-256 is required to create unique lifecycle markers", error);
-        }
+        return "REMOTE_OUTPUT_TREASURE_" + phase;
     }
 
     private JSONObject abruptlyDropServerTransportAndRecover(
@@ -1413,9 +1571,14 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private JSONObject awaitNativeSshExec(String requestId, String command, long timeoutMs) throws Exception {
+        assertEquals("host exec oracle requires the recovered live connection", "live", currentPhase());
+        return awaitNativeSshExecOnCurrentConnection(requestId, command, timeoutMs);
+    }
+
+    private JSONObject awaitNativeSshExecOnCurrentConnection(String requestId, String command, long timeoutMs) throws Exception {
         String connectionId = currentConnectionId();
         String generationId = currentGenerationId();
-        assertEquals("host exec oracle requires the recovered live connection", "live", currentPhase());
+        assertTrue("host exec oracle requires an active native connection", !connectionId.isEmpty() && !generationId.isEmpty());
         assertEquals("native host exec launch must be accepted", "started", evalString(nativeExecLaunchScript(
                 requestId, connectionId, generationId, command, Math.toIntExact(timeoutMs))));
         awaitJsTrue("window.__pocketshellJourney?.sshExecs?.[" + JSONObject.quote(requestId) + "]?.settled === true",
@@ -1471,6 +1634,23 @@ public final class SshPtyDockerJourneyTest {
             if (line.startsWith(prefix)) return line.substring(prefix.length()).trim();
         }
         throw new AssertionError("server-side SSH termination proof is missing " + prefix);
+    }
+
+    private long fixtureEventTimestamp(String events, String kind, String target) {
+        Long found = null;
+        for (String line : events.split("\\R")) {
+            String[] fields = line.split("\\|", -1);
+            if (fields.length == 3 && kind.equals(fields[0]) && target.equals(fields[2])) {
+                assertNull("Docker fixture must report one " + kind + " event for " + target, found);
+                try {
+                    found = Long.parseLong(fields[1]);
+                } catch (NumberFormatException error) {
+                    throw new AssertionError("Docker fixture event has an invalid host timestamp: " + line, error);
+                }
+            }
+        }
+        assertNotNull("Docker fixture must report " + kind + " for " + target, found);
+        return found;
     }
 
     private void captureFullScreenPng(String name, File artifactDirectory) throws Exception {
