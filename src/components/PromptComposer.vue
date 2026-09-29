@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ComposerControls } from '@pocketshell/ui';
@@ -8,15 +8,25 @@ import { createComposerDeliveryController, type PtyWriteEffect } from '../sessio
 import { createDictationStartCancellation } from '../session/dictationStartCancellation';
 import { platformInput, type DictationEvent } from '../session/platformInput';
 import { useComposerDrafts } from '../stores/composerDrafts';
+import { hostSnippets, insertLiteralAtDraftSelection, type ManagedHostItem } from '../stores/hostSnippets';
 
 const props = defineProps<{
   targetKey: string;
   targetLabel: string;
+  hostId: string;
+  keyboardVisible: boolean;
   transportState: 'connected' | 'lost' | 'closed';
   writePty: PtyWriteEffect;
 }>();
 
+defineEmits<{ manage: [] }>();
+
 const drafts = useComposerDrafts();
+const draftInput = ref<HTMLTextAreaElement | null>(null);
+const selectedChipKey = ref('');
+const selectionTargetKey = ref('');
+const lastSelectionStart = ref(0);
+const lastSelectionEnd = ref(0);
 const sendingIntent = ref<ComposerDeliveryIntent | null>(null);
 const acknowledgedWrites = ref(0);
 const statusText = ref('');
@@ -45,6 +55,7 @@ function createObservedDelivery() {
 
 const delivery = shallowRef(createObservedDelivery());
 const draft = computed(() => drafts.draftFor(props.targetKey));
+const commandChips = computed(() => hostSnippets.itemsForHost(props.hostId));
 const canDeliver = computed(() => props.targetKey.length > 0
   && props.transportState === 'connected'
   && draft.value.length > 0
@@ -74,6 +85,10 @@ watch(() => props.targetKey, () => {
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+  selectionTargetKey.value = props.targetKey;
+  lastSelectionStart.value = draft.value.length;
+  lastSelectionEnd.value = draft.value.length;
+  selectedChipKey.value = '';
 }, { flush: 'sync' });
 
 onBeforeUnmount(() => {
@@ -97,9 +112,59 @@ function setDraft(event: Event) {
   const target = event.target;
   if (!(target instanceof HTMLTextAreaElement)) return;
   drafts.setDraft(props.targetKey, target.value);
+  selectionTargetKey.value = props.targetKey;
+  lastSelectionStart.value = target.selectionStart;
+  lastSelectionEnd.value = target.selectionEnd;
+  selectedChipKey.value = '';
   statusText.value = '';
   statusTone.value = 'quiet';
   discardArmed.value = false;
+}
+
+function rememberDraftSelection(event?: Event) {
+  const target = event?.target instanceof HTMLTextAreaElement ? event.target : draftInput.value;
+  if (!target || target !== document.activeElement) return;
+  selectionTargetKey.value = props.targetKey;
+  lastSelectionStart.value = target.selectionStart;
+  lastSelectionEnd.value = target.selectionEnd;
+}
+
+function chipLabel(item: ManagedHostItem): string {
+  const savedLabel = item.label?.trim();
+  if (savedLabel) return savedLabel;
+  const firstLine = item.body.split(/\r?\n/u, 1)[0]?.trim();
+  return firstLine || (item.collection === 'template' ? 'Command template' : 'Snippet');
+}
+
+function insertChip(item: ManagedHostItem) {
+  if (!props.targetKey) return;
+  const insertion = hostSnippets.insertionFor(props.hostId, item.collection, item.id);
+  if (!insertion || insertion.submit !== false) return;
+  const current = drafts.draftFor(props.targetKey);
+  let start = current.length;
+  let end = current.length;
+  if (selectionTargetKey.value === props.targetKey) {
+    start = lastSelectionStart.value;
+    end = lastSelectionEnd.value;
+  }
+  if (draftInput.value && document.activeElement === draftInput.value) {
+    start = draftInput.value.selectionStart;
+    end = draftInput.value.selectionEnd;
+  }
+  const result = insertLiteralAtDraftSelection(current, insertion.text, start, end);
+  drafts.setDraft(props.targetKey, result.draft);
+  selectionTargetKey.value = props.targetKey;
+  lastSelectionStart.value = result.caret;
+  lastSelectionEnd.value = result.caret;
+  selectedChipKey.value = item.key;
+  statusTone.value = 'quiet';
+  statusText.value = `${chipLabel(item)} added to the draft. Send is separate.`;
+  discardArmed.value = false;
+  void nextTick(() => {
+    if (draftInput.value && document.activeElement === draftInput.value) {
+      draftInput.value.setSelectionRange(result.caret, result.caret);
+    }
+  });
 }
 
 function nextOperationId(): string {
@@ -255,7 +320,7 @@ function discardDraft() {
 <template>
   <section class="composer-panel" aria-labelledby="composer-title" data-testid="prompt-composer"
     :data-target-key="targetKey" :data-transport-state="transportState"
-    :data-acknowledged-writes="acknowledgedWrites">
+    :data-acknowledged-writes="acknowledgedWrites" :data-snippet-host-id="hostId">
     <div class="composer-heading">
       <div>
         <p class="eyebrow">PROMPT</p>
@@ -266,8 +331,31 @@ function discardDraft() {
       </span>
     </div>
 
+    <div v-show="!keyboardVisible" class="command-chips" data-testid="command-chips" role="group"
+      :aria-label="hostId ? `Command chips for ${targetLabel}` : 'Command chips'">
+      <div class="command-chips__rail" data-testid="command-chip-list">
+        <button
+          v-for="item in commandChips"
+          :key="item.key"
+          class="command-chip"
+          type="button"
+          data-testid="snippet-chip"
+          :data-chip-key="item.key"
+          :aria-label="`Insert ${chipLabel(item)}`"
+          :aria-current="selectedChipKey === item.key ? 'true' : undefined"
+          :title="chipLabel(item)"
+          @click="insertChip(item)"
+        >{{ chipLabel(item) }}</button>
+        <span v-if="commandChips.length === 0" class="command-chips__empty">No chips saved for this host.</span>
+        <button class="command-chip command-chip--manage" type="button" data-testid="manage-snippets" aria-label="Manage command chips" @click="$emit('manage')">
+          <span>Manage</span>
+        </button>
+      </div>
+    </div>
+
     <label class="sr-only" for="prompt-draft">Prompt draft</label>
     <textarea
+      ref="draftInput"
       id="prompt-draft"
       class="composer-draft"
       data-testid="prompt-draft"
@@ -279,6 +367,9 @@ function discardDraft() {
       autocapitalize="sentences"
       enterkeyhint="enter"
       @input="setDraft"
+      @select="rememberDraftSelection"
+      @keyup="rememberDraftSelection"
+      @click="rememberDraftSelection"
     />
 
     <p class="composer-status" role="status" aria-live="polite" data-testid="composer-status"

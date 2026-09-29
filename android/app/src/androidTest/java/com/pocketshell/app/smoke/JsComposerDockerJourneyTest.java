@@ -15,7 +15,9 @@ import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
+import android.view.inputmethod.InputMethodManager;
 
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -57,6 +59,7 @@ public final class JsComposerDockerJourneyTest {
     private boolean forceFirstPostAttachTapMiss;
     private int composerFocusMaxAttempts = 2;
     private final JSONArray focusTapAttempts = new JSONArray();
+    private final JSONArray composerActionTapEvidence = new JSONArray();
     private JSONObject lastPhysicalTapEvidence;
     private boolean focusTraceEmitted;
     private boolean focusFailureCaptured;
@@ -84,7 +87,9 @@ public final class JsComposerDockerJourneyTest {
         String port = arguments.getString("sshPort");
         String encodedKey = arguments.getString("sshPrivateKeyBase64");
         String nameBase = arguments.getString("sshSessionName");
-        artifactRunId = arguments.getString("artifactRunId", nameBase);
+        String phase = arguments.getString("composerPhase", "resume");
+        assertTrue("composerPhase must be prepare or resume", phase.equals("prepare") || phase.equals("resume"));
+        artifactRunId = phase.equals("resume") ? arguments.getString("artifactRunId", nameBase) : null;
         forceFirstPostAttachTapMiss = Boolean.parseBoolean(
                 arguments.getString("composerForceFirstPostAttachTapMiss", "false"));
         try {
@@ -102,7 +107,33 @@ public final class JsComposerDockerJourneyTest {
         uncertainSession = nameBase + "-uncertain";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
-        evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled'");
+        String testTag = nameBase.substring(Math.max(0, nameBase.length() - 5));
+        String chipLabel = "PS2885-M-" + testTag;
+        String chipOutputPath = "/tmp/" + bytesSession + "-snippet-lines.txt";
+        String chipBody = "printf 'alpha\\nβeta\\n🙂\\n' > " + chipOutputPath;
+        String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
+        String uncertainCommand = "printf '%s' '" + uncertainMarker + "' > /tmp/" + uncertainSession + "-uncertain.marker\n"
+                + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
+        String uncertainChipLabel = "PS2885-R-" + testTag;
+        String transientChipLabel = "PS2885-X-" + testTag;
+        if (phase.equals("prepare")) {
+            prepareHostSnippets(host, port, privateKey, bytesSession, uncertainSession,
+                    chipLabel, chipBody, uncertainChipLabel, uncertainCommand, transientChipLabel, testTag);
+            return;
+        }
+        chipLabel = "PS2885-ME-" + testTag;
+
+        String oldPid = arguments.getString("oldAppPid");
+        String stoppedStatus = arguments.getString("stoppedAppStatus");
+        String resolvedActivity = arguments.getString("resolvedActivity");
+        assertNotNull("resume phase requires the app PID captured before force-stop", oldPid);
+        assertNotNull("resume phase requires the external force-stop result", stoppedStatus);
+        assertNotNull("resume phase requires the activity component resolved by the host", resolvedActivity);
+        assertTrue("wrapper must verify that the target process is absent between invocations",
+                !oldPid.isEmpty() && stoppedStatus.equals("absent"));
+        assertTrue("resolved launch activity must belong to the installed target package",
+                resolvedActivity.startsWith(InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName() + "/"));
+        evalString("window.__ps2857CaptureTerminalEvidence = true; 'terminal evidence enabled after relaunch'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
@@ -110,11 +141,57 @@ public final class JsComposerDockerJourneyTest {
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
-
-        createSession(bytesSession);
-        createSession(uncertainSession);
         attachSession(bytesSession);
-        verifyNestedAndroidBackKeepsLiveSession();
+        JSONObject restartEvidence = verifyRestartAndReconnect(oldPid, stoppedStatus, resolvedActivity, bytesSession,
+                chipLabel, chipBody, uncertainChipLabel, uncertainCommand);
+        emitArtifact(artifactRunId, "snippet-restart-evidence.json",
+                restartEvidence.toString(2).getBytes(StandardCharsets.UTF_8));
+        evalString("window.__ps2885CaptureSnippetEvidence = true; window.__ps2885ComposerWriteCount = 0; 'enabled'");
+        awaitImeVisible(false);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+        JSONObject chipsDown = readSnippetChipGeometry(chipLabel, chipBody)
+                .put("imeVisible", isImeVisible()).put("expectedLabel", "Insert " + chipLabel);
+        saveSnippetScreenshot(artifactRunId, "snippet-keyboard-down.png");
+        emitArtifact(artifactRunId, "snippet-keyboard-down-geometry.json", chipsDown.toString().getBytes(StandardCharsets.UTF_8));
+        assertSnippetChipLayout(chipsDown, false);
+
+        JSONObject accessibility = activateSnippetThroughAccessibility("Insert " + chipLabel);
+        String selectedChipExpression = "Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".some(node => node.getAttribute('aria-label') === "
+                + JSONObject.quote("Insert " + chipLabel)
+                + " && node.getAttribute('aria-current') === 'true')";
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(chipBody)
+                + " && " + selectedChipExpression);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
+                + " && (window.__ps2885ComposerWriteCount ?? 0) === 0");
+        JSONObject chipSelected = readSnippetChipGeometry(chipLabel, chipBody)
+                .put("imeVisible", isImeVisible()).put("expectedLabel", "Insert " + chipLabel)
+                .put("accessibilityNode", accessibility)
+                .put("composerWriteCountBeforeSend", Integer.parseInt(evalString("String(window.__ps2885ComposerWriteCount ?? 0)")))
+                .put("acknowledgedWritesBeforeSend", Integer.parseInt(evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? '0'")));
+        assertSnippetChipLayout(chipSelected, true);
+        saveSnippetScreenshot(artifactRunId, "snippet-selected-chip.png");
+        emitArtifact(artifactRunId, "snippet-selected-chip-geometry.json", chipSelected.toString().getBytes(StandardCharsets.UTF_8));
+
+        // The selected here-document must stay a draft until this explicit Send.
+        assertEquals("chip selection has not called the composer PTY writer", 0,
+                Integer.parseInt(evalString("String(window.__ps2885ComposerWriteCount ?? 0)")));
+        String preSendMarker = "/tmp/" + bytesSession + "-snippet-before-send.marker";
+        String preSendGuard = "if test -e " + chipOutputPath + "; then printf EXECUTED > " + preSendMarker
+                + "; else printf NOT_EXECUTED > " + preSendMarker + "; fi";
+        attachSession(uncertainSession);
+        setComposerDraft(preSendGuard);
+        tapComposerAction(".composer-shared-controls .send", "snippet-no-execution-check");
+        awaitDeliveredAndCleared();
+        attachSession(bytesSession);
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(chipBody));
+        evalString("window.__ps2885ComposerWriteCount = 0; 'count reset before explicit snippet Send'");
+        awaitJsTrue("(window.__ps2885ComposerWriteCount ?? 0) === 0"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'");
+        tapComposerAction(".composer-shared-controls .send", "snippet-explicit-send");
+        awaitDeliveredAndCleared();
+        assertTrue("snippet send must use the composer PTY writer", Integer.parseInt(
+                evalString("String(window.__ps2885ComposerWriteCount ?? 0)")) > 0);
 
         String sentMarker = "PS2857_SENT_" + nameBase;
         String sentMarkerPrefix = "PS2857_SENT_";
@@ -163,10 +240,23 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Draft cleared')");
 
         attachSession(uncertainSession);
-        String uncertainMarker = "PS2857_UNCERTAIN_" + nameBase;
-        String uncertainCommand = "printf '%s' '" + uncertainMarker + "' > /tmp/" + uncertainSession + "-uncertain.marker\n"
-                + "# PS2857_MULTILINE_SUFFIX_" + nameBase;
-        setComposerDraft(uncertainCommand);
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".some(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + uncertainChipLabel) + ")");
+        awaitAppWindowActive("before hiding the IME for the reconnected chip");
+        hideImeUntilStableWithoutEditableFocus();
+        awaitAppWindowActive("after hiding the IME for the reconnected chip");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
+        evalString("window.__ps2885ComposerWriteCount = 0; 'counter reset before reconnect chip selection'");
+        JSONObject uncertainAccessibility = activateSnippetThroughAccessibility("Insert " + uncertainChipLabel);
+        assertEquals("reconnected per-host chip keeps its accessible label", "Insert " + uncertainChipLabel,
+                uncertainAccessibility.getString("label"));
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand)
+                + " && Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".some(node=>node.getAttribute('aria-label')===" + JSONObject.quote("Insert " + uncertainChipLabel)
+                + "&&node.getAttribute('aria-current')==='true')"
+                + " && (window.__ps2885ComposerWriteCount ?? 0) === 0"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'");
         armDisconnectAfterFirstAcknowledgement();
         tapComposerAction(".composer-shared-controls .send", "uncertain-session-after-attach");
         assertTrue("uncertain-session attach must recover composer focus from a physical draft tap",
@@ -181,7 +271,31 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(uncertainCommand));
         assertEquals("uncertain delivery must keep the exact draft after reattach", uncertainCommand,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".some(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + uncertainChipLabel) + ")");
         emitFocusTraceIfNeeded();
+    }
+
+    private void prepareHostSnippets(String host, String port, String privateKey, String bytesSession,
+            String uncertainSession, String chipLabel, String chipBody, String uncertainChipLabel,
+            String uncertainCommand, String transientChipLabel, String testTag) throws Exception {
+        setValue("[data-testid=ssh-host]", host);
+        setValue("[data-testid=ssh-port]", port);
+        setValue("[data-testid=ssh-username]", "testuser");
+        setValue("[data-testid=ssh-private-key]", privateKey);
+        click("[data-testid=ssh-connect]");
+        awaitTrustOrConnected();
+        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+
+        createSession(bytesSession);
+        createSession(uncertainSession);
+        attachSession(bytesSession);
+        verifyNestedAndroidBackKeepsLiveSession();
+        deletePriorTestChips();
+        createHostSnippet(chipLabel, chipBody);
+        createHostSnippet(uncertainChipLabel, uncertainCommand);
+        createHostSnippet(transientChipLabel, "This temporary test chip must be deleted.");
+        exerciseSnippetEditReorderAndDelete(chipLabel, uncertainChipLabel, transientChipLabel, chipBody, testTag);
     }
 
     private void awaitTrustOrConnected() throws Exception {
@@ -206,6 +320,380 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && !!document.querySelector('[data-testid=prompt-composer]')");
+    }
+
+    private void createHostSnippet(String label, String body) throws Exception {
+        click("[data-testid=manage-snippets]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
+        awaitJsTrue("document.querySelector('[data-testid=host-snippets-screen]')?.dataset.hostId === "
+                + "document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId");
+        setValue("[data-testid=snippet-label]", label);
+        setValue("[data-testid=snippet-body]", body);
+        click("[data-testid=save-snippet]");
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=host-snippet-list] li'))"
+                + ".some(row => row.textContent.includes(" + JSONObject.quote(label) + "))");
+        click("button[aria-label='Back']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        click("button[aria-label='Back']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'");
+    }
+
+    private void deletePriorTestChips() throws Exception {
+        openSnippetManager();
+        JSONArray labels = new JSONArray(evalString("JSON.stringify(Array.from(document.querySelectorAll('[data-testid=host-snippet-list] li'))"
+                + ".map(row=>row.querySelector('.managed-snippet__heading strong')?.textContent.trim()||'')"
+                + ".filter(label=>/^PS2885-(M|ME|R|X)-/.test(label)))"));
+        for (int index = 0; index < labels.length(); index += 1) deleteManagedSnippet(labels.getString(index));
+        leaveSnippetManager();
+    }
+
+    private String exerciseSnippetEditReorderAndDelete(String mainLabel, String retryLabel,
+            String transientLabel, String exactBody, String testTag) throws Exception {
+        openSnippetManager();
+        int mainBefore = managedSnippetIndex(mainLabel);
+        int retryBefore = managedSnippetIndex(retryLabel);
+        assertTrue("newly created host chips begin in saved order", mainBefore >= 0 && retryBefore > mainBefore);
+        click("button[aria-label=" + JSONObject.quote("Move " + retryLabel + " up") + "]");
+        awaitJsTrue("(" + managedSnippetIndexExpression(retryLabel) + ") < (" + managedSnippetIndexExpression(mainLabel) + ")");
+
+        click("button[aria-label=" + JSONObject.quote("Edit " + mainLabel) + "]");
+        String editedLabel = "PS2885-ME-" + testTag;
+        setValue("[data-testid=snippet-label]", editedLabel);
+        assertEquals("editing a chip must keep its exact multiline body", exactBody,
+                evalString("document.querySelector('[data-testid=snippet-body]')?.value ?? ''"));
+        click("[data-testid=save-snippet]");
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=host-snippet-list] li'))"
+                + ".some(row=>row.querySelector('.managed-snippet__heading strong')?.textContent.trim()==="
+                + JSONObject.quote(editedLabel) + ")");
+        assertTrue("editing a chip persists its position", managedSnippetIndex(retryLabel) < managedSnippetIndex(editedLabel));
+        deleteManagedSnippet(transientLabel);
+        leaveSnippetManager();
+        return editedLabel;
+    }
+
+    private int managedSnippetIndex(String label) throws Exception {
+        return Integer.parseInt(evalString(managedSnippetIndexExpression(label)));
+    }
+
+    private String managedSnippetIndexExpression(String label) {
+        return "Array.from(document.querySelectorAll('[data-testid=host-snippet-list] li'))"
+                + ".findIndex(row=>row.querySelector('.managed-snippet__heading strong')?.textContent.trim()==="
+                + JSONObject.quote(label) + ")";
+    }
+
+    private void openSnippetManager() throws Exception {
+        click("[data-testid=manage-snippets]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
+    }
+
+    private void leaveSnippetManager() throws Exception {
+        click("button[aria-label='Back']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
+        click("button[aria-label='Back']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'");
+    }
+
+    private void deleteManagedSnippet(String label) throws Exception {
+        String deleteSelector = "button[aria-label=" + JSONObject.quote("Delete " + label) + "]";
+        String confirmSelector = "button[aria-label=" + JSONObject.quote("Confirm delete " + label) + "]";
+        click(deleteSelector);
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(confirmSelector) + ")");
+        click(confirmSelector);
+        awaitJsTrue("!Array.from(document.querySelectorAll('[data-testid=host-snippet-list] li'))"
+                + ".some(row=>row.querySelector('.managed-snippet__heading strong')?.textContent.trim()==="
+                + JSONObject.quote(label) + ")");
+        JSONObject storage = readHostSnippetStorage();
+        Log.i("PS2885Storage", "after-delete|label=" + label + "|" + storage);
+        assertTrue("confirmed deletion must be durable before restart; snapshot=" + storage,
+                !containsString(storage.getJSONArray("snippetLabels"), label));
+    }
+
+    private JSONObject verifyRestartAndReconnect(String oldPid, String stoppedStatus, String resolvedActivity,
+            String session, String chipLabel, String chipBody,
+            String uncertainChipLabel, String uncertainCommand) throws Exception {
+        String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        String processIds = new String(executeShellCommand("pidof " + packageName), StandardCharsets.UTF_8).trim();
+        String restartedPid = processIds.isEmpty() ? "" : processIds.split("\\s+")[0];
+        assertTrue("external wrapper force-stop must have launched a new packaged process on resume",
+                !restartedPid.isEmpty() && !oldPid.equals(restartedPid));
+        JSONObject storageAtResume = readHostSnippetStorage();
+        Log.i("PS2885Storage", "after-resume-attach|" + storageAtResume);
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".filter(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + chipLabel) + ").length === 1"
+                + " && Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".filter(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + uncertainChipLabel) + ").length === 1");
+        JSONArray restoredOrder = new JSONArray(evalString(
+                "JSON.stringify(Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                        + ".map(node=>node.textContent.trim()))"));
+        assertEquals("the reordered host chip order must persist after process restart and reconnect",
+                new JSONArray().put(uncertainChipLabel).put(chipLabel).toString(), restoredOrder.toString());
+        JSONObject storage = evalJson("(() => {const hostId=document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId||'';"
+                + "const saved=JSON.parse(localStorage.getItem('pocketshell.js.host-snippets.v1')||'null');"
+                + "const hostSnippets=saved?.snippets?.filter(item=>item.hostId===hostId)||[];"
+                + "return JSON.stringify({hostId,storedSnippetCount:hostSnippets.length,exactMain:hostSnippets.filter(item=>item.label==="
+                + JSONObject.quote(chipLabel) + "&&item.body===" + JSONObject.quote(chipBody) + ").length===1,"
+                + "exactUncertain:hostSnippets.filter(item=>item.label===" + JSONObject.quote(uncertainChipLabel)
+                + "&&item.body===" + JSONObject.quote(uncertainCommand) + ").length===1});})()");
+        assertTrue("durable host identity must remain stable after force-stop/reconnect", !storage.getString("hostId").isEmpty());
+        assertTrue("main snippet label and exact body must survive a real process restart", storage.getBoolean("exactMain"));
+        assertTrue("second snippet label and exact body must survive a real process restart", storage.getBoolean("exactUncertain"));
+        Log.i("PS2885Restart", "RELAUNCH|" + packageName + "|oldPid=" + oldPid
+                + "|stoppedStatus=" + stoppedStatus + "|newPid=" + restartedPid
+                + "|activity=" + resolvedActivity + "|hostId=" + storage.getString("hostId"));
+        return new JSONObject()
+                .put("appPackage", packageName)
+                .put("launchableActivity", resolvedActivity)
+                .put("oldPid", oldPid)
+                .put("stoppedPid", "")
+                .put("stoppedStatus", stoppedStatus)
+                .put("newPid", restartedPid)
+                .put("hostId", storage.getString("hostId"))
+                .put("storedSnippetCount", storage.getInt("storedSnippetCount"))
+                .put("mainSnippetExact", storage.getBoolean("exactMain"))
+                .put("uncertainSnippetExact", storage.getBoolean("exactUncertain"))
+                .put("mainLabel", chipLabel)
+                .put("uncertainLabel", uncertainChipLabel)
+                .put("storageKey", "pocketshell.js.host-snippets.v1");
+    }
+
+    private JSONObject readHostSnippetStorage() throws Exception {
+        return evalJson("(() => {const hostId=document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId||'';"
+                + "const saved=JSON.parse(localStorage.getItem('pocketshell.js.host-snippets.v1')||'null');"
+                + "const snippets=saved?.snippets?.filter(item=>item.hostId===hostId)||[];"
+                + "return JSON.stringify({hostId,legacyImportComplete:saved?.legacyImportComplete??false,"
+                + "snippetLabels:snippets.map(item=>item.label),"
+                + "snippets:snippets.map(({label,body,sortOrder})=>({label,body,sortOrder}))});})()");
+    }
+
+    private boolean containsString(JSONArray values, String expected) throws JSONException {
+        for (int index = 0; index < values.length(); index += 1) {
+            if (expected.equals(values.getString(index))) return true;
+        }
+        return false;
+    }
+
+    private JSONObject readSnippetChipGeometry(String label, String expectedBody) throws Exception {
+        String labelExpression = JSONObject.quote("Insert " + label);
+        String bodyExpression = JSONObject.quote(expectedBody);
+        return evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "const row=document.querySelector('[data-testid=command-chips]');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const terminal=document.querySelector('.terminal-viewport');"
+                + "const target=Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".find(node=>node.getAttribute('aria-label')===" + labelExpression + ");"
+                + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                + "const chips=Array.from(document.querySelectorAll('[data-testid=snippet-chip]')).map(node=>({tag:node.tagName,"
+                + "label:node.getAttribute('aria-label')||'',width:rect(node)?.width??0,height:rect(node)?.height??0,"
+                + "top:rect(node)?.top??0,bottom:rect(node)?.bottom??0,left:rect(node)?.left??0,right:rect(node)?.right??0,"
+                + "current:node.getAttribute('aria-current')||''}));"
+                + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible==='true',hostId:composer?.dataset.snippetHostId||'',"
+                + "viewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight},"
+                + "rowVisible:!!row&&getComputedStyle(row).display!=='none'&&rect(row)?.height>0,chipRow:rect(row),composer:rect(composer),terminal:rect(terminal),"
+                + "target:{tag:target?.tagName||'',label:target?.getAttribute('aria-label')||'',current:target?.getAttribute('aria-current')||'',"
+                + "top:rect(target)?.top??0,bottom:rect(target)?.bottom??0,left:rect(target)?.left??0,right:rect(target)?.right??0,"
+                + "width:rect(target)?.width??0,height:rect(target)?.height??0},"
+                + "chips,draftMatchesExact:document.querySelector('[data-testid=prompt-draft]')?.value===" + bodyExpression + ","
+                + "composerWriteCount:window.__ps2885ComposerWriteCount??0,"
+                + "acknowledgedWrites:Number(composer?.dataset.acknowledgedWrites??0),"
+                + "screenScrollTop:document.querySelector('.screen-content')?.scrollTop??0,documentScrollTop:document.scrollingElement?.scrollTop??0});})()");
+    }
+
+    private void assertSnippetChipLayout(JSONObject geometry, boolean selected) throws Exception {
+        assertTrue("command chip rail must be visible with the Android keyboard down", geometry.getBoolean("rowVisible")
+                && !geometry.getBoolean("keyboardVisible"));
+        JSONObject chipRow = geometry.getJSONObject("chipRow");
+        JSONObject composer = geometry.getJSONObject("composer");
+        JSONObject terminal = geometry.getJSONObject("terminal");
+        JSONObject viewport = geometry.getJSONObject("viewport");
+        assertTrue("keyboard-down chips, terminal, and composer must fit without overlap or page scrolling",
+                chipRow.getDouble("top") >= composer.getDouble("top")
+                        && chipRow.getDouble("bottom") <= composer.getDouble("bottom") + 0.5
+                        && terminal.getDouble("bottom") <= composer.getDouble("top") + 0.5
+                        && chipRow.getDouble("top") >= 0
+                        && chipRow.getDouble("bottom") <= viewport.getDouble("height") + 0.5
+                        && chipRow.getDouble("left") >= 0
+                        && chipRow.getDouble("right") <= viewport.getDouble("width") + 0.5
+                        && !geometry.getBoolean("imeVisible")
+                        && geometry.getInt("screenScrollTop") == 0
+                        && geometry.getInt("documentScrollTop") == 0);
+        JSONArray chips = geometry.getJSONArray("chips");
+        assertTrue("a saved snippet chip must be present", chips.length() > 0);
+        for (int index = 0; index < chips.length(); index += 1) {
+            JSONObject chip = chips.getJSONObject(index);
+            assertEquals("command chip is exposed as a native button", "BUTTON", chip.getString("tag"));
+            assertTrue("command chip has an accessible spoken label", chip.getString("label").startsWith("Insert "));
+            assertTrue("command chip keeps at least a 48dp width and height",
+                    chip.getDouble("width") >= 47.9 && chip.getDouble("height") >= 47.9);
+            assertTrue("command chip target is inside the screen; geometry=" + chip + "; viewport=" + viewport,
+                    chip.getDouble("top") >= 0
+                    && chip.getDouble("bottom") <= viewport.getDouble("height") + 0.5 && chip.getDouble("left") >= 0
+                    && chip.getDouble("right") <= viewport.getDouble("width") + 0.5);
+        }
+        JSONObject target = geometry.getJSONObject("target");
+        assertTrue("the target chip uses the expected accessible name and hit area",
+                geometry.getString("expectedLabel").equals(target.getString("label"))
+                        && target.getDouble("width") >= 47.9 && target.getDouble("height") >= 47.9);
+        if (selected) {
+            assertTrue("selected chip inserts exact text and has a visible selected state without a PTY write",
+                    geometry.getBoolean("draftMatchesExact")
+                            && "true".equals(target.getString("current"))
+                            && geometry.getInt("composerWriteCount") == 0
+                            && geometry.getInt("acknowledgedWrites") == 0);
+        }
+    }
+
+    private JSONObject activateSnippetThroughAccessibility(String expectedLabel) throws Exception {
+        AccessibilityNodeInfo root = null;
+        AccessibilityNodeInfo target = null;
+        for (int attempt = 0; attempt < 20 && target == null; attempt += 1) {
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            root = InstrumentationRegistry.getInstrumentation().getUiAutomation().getRootInActiveWindow();
+            if (root != null) target = findAccessibilityNode(root, expectedLabel);
+            if (target == null) SystemClock.sleep(250);
+        }
+        assertNotNull("the packaged WebView must expose an accessibility tree", root);
+        if (target == null) {
+            String tree = describeAccessibilityTree(root, 0);
+            try {
+                JSONObject failureEvidence = readSnippetAccessibilityFailureEvidence(expectedLabel, tree);
+                Log.e("PS2885A11y", "accessibility miss evidence: " + failureEvidence);
+                if (artifactRunId != null) {
+                    byte[] evidence = failureEvidence.toString(2).getBytes(StandardCharsets.UTF_8);
+                    scenario.onActivity(activity -> {
+                        try (FileOutputStream output = new FileOutputStream(
+                                new File(activity.getFilesDir(), "snippet-a11y-failure.json"))) {
+                            output.write(evidence);
+                        } catch (Exception error) {
+                            throw new RuntimeException(error);
+                        }
+                    });
+                    emitArtifact(artifactRunId, "snippet-a11y-failure.json", evidence);
+                }
+            } catch (Exception error) {
+                Log.e("PS2885A11y", "could not capture state for missing chip " + expectedLabel, error);
+            }
+            Log.e("PS2885A11y", "could not find " + expectedLabel + " in Android accessibility tree: " + tree);
+        }
+        assertNotNull("the snippet chip's accessible label must be present in the native accessibility tree: " + expectedLabel, target);
+        CharSequence description = target.getContentDescription();
+        CharSequence text = target.getText();
+        String observedLabel = description != null && description.length() > 0
+                ? description.toString() : text == null ? "" : text.toString();
+        String labelSource = description != null && description.length() > 0 ? "contentDescription" : "text";
+        assertEquals("the chip's aria-label is exposed as its Android accessibility name", expectedLabel, observedLabel);
+        assertTrue("snippet chip is actionable in the accessibility tree", target.isClickable());
+        boolean focused = target.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS);
+        assertTrue("TalkBack-style accessibility focus reaches the selected chip", focused);
+        boolean clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+        assertTrue("TalkBack-style accessibility activation selects the chip", clicked);
+        return new JSONObject()
+                .put("label", observedLabel)
+                .put("labelSource", labelSource)
+                .put("clickable", target.isClickable())
+                .put("accessibilityFocusAccepted", focused)
+                .put("accessibilityClickAccepted", clicked);
+    }
+
+    private JSONObject readSnippetAccessibilityFailureEvidence(String expectedLabel, String tree) throws Exception {
+        JSONObject dom = evalJson("(() => {"
+                + "const shell=document.querySelector('.app-shell');"
+                + "const rail=document.querySelector('[data-testid=command-chips]');"
+                + "const rect=(node)=>{if(!node)return null;const r=node.getBoundingClientRect();const s=getComputedStyle(node);"
+                + "return {display:s.display,visibility:s.visibility,opacity:s.opacity,hidden:node.hidden,"
+                + "ariaHidden:node.getAttribute('aria-hidden'),top:r.top,bottom:r.bottom,left:r.left,right:r.right,"
+                + "width:r.width,height:r.height};};"
+                + "return JSON.stringify({route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "sshPhase:shell?.dataset.sshPhase||'',keyboardVisible:shell?.dataset.keyboardVisible||'',"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode||'',activeElement:{tag:document.activeElement?.tagName||'',"
+                + "id:document.activeElement?.id||'',className:document.activeElement?.className||''},"
+                + "railPresent:!!rail,rail:rect(rail),chips:Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
+                + ".map(node=>({label:node.getAttribute('aria-label')||'',current:node.getAttribute('aria-current')||'',rect:rect(node)}))});})()");
+        AtomicReference<JSONObject> nativeState = new AtomicReference<>(new JSONObject());
+        AtomicReference<Boolean> windowFocused = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            windowFocused.set(activity.hasWindowFocus());
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            JSONObject state = new JSONObject();
+            try {
+                state.put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                        && insets.isVisible(WindowInsets.Type.ime()));
+                state.put("imeBottomPx", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom);
+                state.put("windowHasFocus", activity.hasWindowFocus());
+                state.put("activity", activity.getClass().getName());
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+            nativeState.set(state);
+        });
+        AccessibilityNodeInfo activeRoot = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .getRootInActiveWindow();
+        CharSequence activePackage = activeRoot == null ? null : activeRoot.getPackageName();
+        return new JSONObject()
+                .put("expectedLabel", expectedLabel)
+                .put("capturedAtAndroidUptimeMs", SystemClock.uptimeMillis())
+                .put("appWindowFocused", windowFocused.get())
+                .put("activeAccessibilityPackage", activePackage == null ? "" : activePackage.toString())
+                .put("nativeInsets", nativeState.get())
+                .put("dom", dom)
+                .put("accessibilityTree", tree);
+    }
+
+    private AccessibilityNodeInfo findAccessibilityNode(AccessibilityNodeInfo parent, String expectedLabel) {
+        CharSequence description = parent.getContentDescription();
+        if (description != null && expectedLabel.contentEquals(description)) return parent;
+        CharSequence text = parent.getText();
+        if (text != null && expectedLabel.contentEquals(text)) return parent;
+        for (int index = 0; index < parent.getChildCount(); index += 1) {
+            AccessibilityNodeInfo child = parent.getChild(index);
+            if (child == null) continue;
+            AccessibilityNodeInfo match = findAccessibilityNode(child, expectedLabel);
+            if (match != null) return match;
+        }
+        return null;
+    }
+
+    private String describeAccessibilityTree(AccessibilityNodeInfo node, int depth) {
+        if (node == null) return "<null>";
+        StringBuilder summary = new StringBuilder();
+        summary.append("\n").append("  ".repeat(Math.min(depth, 12)))
+                .append(node.getClassName()).append(" text=").append(node.getText())
+                .append(" desc=").append(node.getContentDescription())
+                .append(" clickable=").append(node.isClickable())
+                .append(" children=").append(node.getChildCount());
+        for (int index = 0; index < node.getChildCount(); index += 1) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child != null) summary.append(describeAccessibilityTree(child, depth + 1));
+        }
+        return summary.toString();
+    }
+
+    private void saveSnippetScreenshot(String runId, String name) throws Exception {
+        awaitWebViewVisualState();
+        AtomicReference<byte[]> artifact = new AtomicReference<>();
+        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            try {
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                if (screenshot == null) return;
+                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                byte[] png = encoded.toByteArray();
+                if (compressed && png.length >= 1024) {
+                    try (FileOutputStream output = new FileOutputStream(new File(activity.getFilesDir(), name))) {
+                        output.write(png);
+                    }
+                    artifact.set(png);
+                    saved.set(true);
+                }
+                screenshot.recycle();
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        assertTrue("same-run Android screenshot must be captured: " + name, saved.get());
+        emitArtifact(runId, name, artifact.get());
     }
 
     private void createSession(String name) throws Exception {
@@ -419,7 +907,135 @@ public final class JsComposerDockerJourneyTest {
     private long tapComposerAction(String selector, String focusStage) throws Exception {
         ensureImeVisible(focusStage);
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
-        return tapDomCenter(selector);
+        awaitStableComposerActionTarget(selector);
+        beginComposerActionTapObservation(selector);
+        long touchUpUptimeMs = tapDomCenter(selector);
+        JSONObject physicalTap = awaitComposerActionPhysicalClick(selector, touchUpUptimeMs, 1_200);
+        composerActionTapEvidence.put(physicalTap);
+        Log.i("PS2920Tap", "ACTION|" + artifactRunId + "|" + physicalTap);
+        assertTrue("Android touchscreen tap must deliver trusted down, up, and click events to " + selector
+                        + ": " + physicalTap,
+                physicalTap.optBoolean("trustedPointerDownOnTarget")
+                        && physicalTap.optBoolean("trustedPointerUpOnTarget")
+                        && physicalTap.optBoolean("trustedClickOnTarget"));
+        return touchUpUptimeMs;
+    }
+
+    private void awaitStableComposerActionTarget(String selector) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject previous = null;
+        JSONObject last = null;
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = readComposerActionTapLayout(selector);
+            boolean valid = !last.optBoolean("missing")
+                    && !last.optBoolean("disabled")
+                    && last.optBoolean("centerHitMatchesTarget")
+                    && last.optDouble("top", -1) >= 0
+                    && last.optDouble("bottom", Double.MAX_VALUE) <= last.optDouble("innerHeight") + 0.5
+                    && last.optDouble("left", -1) >= 0
+                    && last.optDouble("right", Double.MAX_VALUE) <= last.optDouble("innerWidth") + 0.5;
+            if (valid && previous != null && sameComposerActionTapLayout(previous, last)) {
+                stableSamples += 1;
+            } else {
+                stableSamples = valid ? 1 : 0;
+            }
+            if (stableSamples >= 3) {
+                Log.i("PS2920Tap", "LAYOUT_STABLE|" + artifactRunId + "|" + selector + "|" + last);
+                return;
+            }
+            previous = valid ? last : null;
+            Thread.sleep(75);
+        }
+        throw new AssertionError("Composer action target did not reach three stable visible layout samples before its physical tap: "
+                + selector + " (last=" + last + ")");
+    }
+
+    private JSONObject readComposerActionTapLayout(String selector) throws Exception {
+        JSONObject layout = evalJson("(() => {const element=document.querySelector(" + JSONObject.quote(selector)
+                + ");if(!element)return JSON.stringify({missing:true});const rect=element.getBoundingClientRect();"
+                + "const height=window.visualViewport?.height??innerHeight;"
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "return JSON.stringify({selector:" + JSONObject.quote(selector)
+                + ",innerWidth,innerHeight,visualViewportHeight:height,"
+                + "visualViewportOffsetTop:window.visualViewport?.offsetTop??0,top:rect.top,bottom:rect.bottom,"
+                + "left:rect.left,right:rect.right,width:rect.width,height:rect.height,"
+                + "centerHitMatchesTarget:!!hit?.closest?.(" + JSONObject.quote(selector) + "),disabled:!!element.disabled});})()");
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime())));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        });
+        layout.put("nativeMapping", nativeMapping.get());
+        return layout;
+    }
+
+    private boolean sameComposerActionTapLayout(JSONObject left, JSONObject right) throws JSONException {
+        for (String key : new String[]{"innerWidth", "innerHeight", "visualViewportHeight", "visualViewportOffsetTop",
+                "top", "bottom", "left", "right", "width", "height"}) {
+            if (Math.abs(left.getDouble(key) - right.getDouble(key)) > 0.5) return false;
+        }
+        JSONObject leftNative = left.getJSONObject("nativeMapping");
+        JSONObject rightNative = right.getJSONObject("nativeMapping");
+        for (String key : new String[]{"webViewScreenX", "webViewScreenY", "webViewWidthPx", "webViewHeightPx"}) {
+            if (leftNative.getInt(key) != rightNative.getInt(key)) return false;
+        }
+        return left.getBoolean("centerHitMatchesTarget") == right.getBoolean("centerHitMatchesTarget")
+                && left.getBoolean("disabled") == right.getBoolean("disabled")
+                && leftNative.getBoolean("imeVisible") == rightNative.getBoolean("imeVisible");
+    }
+
+    private void beginComposerActionTapObservation(String selector) throws Exception {
+        evalString("(() => {let state=window.__ps2920ComposerActionTap;"
+                + "if(!state){state={selector:'',events:[]};window.__ps2920ComposerActionTap=state;"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "for(const type of ['pointerdown','pointerup','click'])document.addEventListener(type,event=>{"
+                + "const current=window.__ps2920ComposerActionTap;if(!current?.selector)return;const target=event.target;"
+                + "const matches=!!target?.closest?.(current.selector);current.events.push({type,isTrusted:event.isTrusted,"
+                + "targetMatchesRequested:matches,target:label(target),clientX:event.clientX??null,clientY:event.clientY??null,"
+                + "timeStamp:event.timeStamp});},true);}state.selector=" + JSONObject.quote(selector)
+                + ";state.events=[];state.startedAt=performance.now();return 'armed';})()");
+    }
+
+    private JSONObject awaitComposerActionPhysicalClick(String selector, long touchUpUptimeMs, long timeoutMillis)
+            throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        JSONObject observation = readComposerActionTapObservation(selector, touchUpUptimeMs);
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (observation.optBoolean("trustedPointerDownOnTarget")
+                    && observation.optBoolean("trustedPointerUpOnTarget")
+                    && observation.optBoolean("trustedClickOnTarget")) return observation;
+            Thread.sleep(30);
+            observation = readComposerActionTapObservation(selector, touchUpUptimeMs);
+        }
+        return observation;
+    }
+
+    private JSONObject readComposerActionTapObservation(String selector, long touchUpUptimeMs) throws Exception {
+        JSONObject observation = evalJson("(() => {const state=window.__ps2920ComposerActionTap;"
+                + "const events=state?.events||[];const event=(type)=>events.some(item=>item.type===type"
+                + "&&item.isTrusted===true&&item.targetMatchesRequested===true);"
+                + "return JSON.stringify({selector:state?.selector||'',events,"
+                + "trustedPointerDownOnTarget:event('pointerdown'),trustedPointerUpOnTarget:event('pointerup'),"
+                + "trustedClickOnTarget:event('click')});})()");
+        observation.put("touchUpUptimeMs", touchUpUptimeMs)
+                .put("physicalTap", lastPhysicalTapEvidence == null
+                        ? JSONObject.NULL : new JSONObject(lastPhysicalTapEvidence.toString()));
+        return observation;
     }
 
     private void installFocusTapEventRecorder() throws Exception {
@@ -498,13 +1114,15 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void emitFocusTraceIfNeeded() throws Exception {
-        if (focusTraceEmitted || focusTapAttempts.length() == 0 || artifactRunId == null) return;
+        if (focusTraceEmitted || (focusTapAttempts.length() == 0 && composerActionTapEvidence.length() == 0)
+                || artifactRunId == null) return;
         JSONObject trace = new JSONObject()
                 .put("runId", artifactRunId)
                 .put("androidApi", Build.VERSION.SDK_INT)
                 .put("maxAttempts", composerFocusMaxAttempts)
                 .put("forcedFirstPostAttachMiss", forceFirstPostAttachTapMiss)
-                .put("attempts", focusTapAttempts);
+                .put("attempts", focusTapAttempts)
+                .put("composerActionTaps", composerActionTapEvidence);
         byte[] bytes = trace.toString(2).getBytes(StandardCharsets.UTF_8);
         scenario.onActivity(activity -> {
             try (FileOutputStream output = new FileOutputStream(
@@ -539,6 +1157,7 @@ public final class JsComposerDockerJourneyTest {
                     .put("imeAndWindowState", readNativeFocusState())
                     .put("webViewState", readFocusDomState())
                     .put("lastPhysicalTap", lastPhysicalTapEvidence)
+                    .put("composerActionTaps", composerActionTapEvidence)
                     .put("attempts", focusTapAttempts);
             byte[] reportBytes = report.toString(2).getBytes(StandardCharsets.UTF_8);
             scenario.onActivity(activity -> {
@@ -897,6 +1516,98 @@ public final class JsComposerDockerJourneyTest {
             Thread.sleep(100);
         }
         throw new AssertionError("Android IME visibility did not become " + visible);
+    }
+
+    private void requestImeHide() {
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            android.view.WindowInsetsController controller = decor.getWindowInsetsController();
+            if (controller != null) controller.hide(WindowInsets.Type.ime());
+            InputMethodManager inputMethodManager = activity.getSystemService(InputMethodManager.class);
+            if (inputMethodManager != null) {
+                inputMethodManager.hideSoftInputFromWindow(decor.getWindowToken(), 0);
+            }
+        });
+    }
+
+    private void hideImeUntilStableWithoutEditableFocus() throws Exception {
+        String editableFocus = "document.activeElement instanceof HTMLInputElement"
+                + " || document.activeElement instanceof HTMLTextAreaElement"
+                + " || document.activeElement instanceof HTMLSelectElement"
+                + " || (document.activeElement instanceof HTMLElement && document.activeElement.isContentEditable)";
+        awaitStableFocusTarget();
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int stableHiddenSamples = 0;
+        boolean lastImeVisible = true;
+        while (SystemClock.uptimeMillis() < deadline) {
+            lastImeVisible = isImeVisible();
+            if (lastImeVisible) {
+                evalString("(() => {const active=document.activeElement;"
+                        + "if(active instanceof HTMLElement) active.blur();"
+                        + "return 'active editor blurred before native IME hide';})()");
+                requestImeHide();
+                stableHiddenSamples = 0;
+            } else {
+                stableHiddenSamples += 1;
+                if (stableHiddenSamples >= 4) {
+                    if (!("true".equals(evalString(editableFocus)))) return;
+                    evalString("(() => {const active=document.activeElement;"
+                            + "if(active instanceof HTMLElement) active.blur();"
+                            + "return 'late editor focus cleared after native IME hide';})()");
+                    requestImeHide();
+                    stableHiddenSamples = 0;
+                }
+            }
+            Thread.sleep(100);
+        }
+        JSONObject appState = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible||'',"
+                + "sshPhase:shell?.dataset.sshPhase||'',activeElement:{tag:document.activeElement?.tagName||'',"
+                + "id:document.activeElement?.id||'',className:document.activeElement?.className||''}});})()");
+        throw new AssertionError("Android IME did not remain hidden without an editable focus"
+                + " (nativeImeVisible=" + lastImeVisible + "; app=" + appState + ")");
+    }
+
+    private void awaitStableFocusTarget() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        String current = evalString("(() => {const node=document.activeElement;return JSON.stringify({"
+                + "tag:node?.tagName||'',id:node?.id||'',className:node?.className||''});})()");
+        long stableSince = SystemClock.uptimeMillis();
+        while (SystemClock.uptimeMillis() < deadline) {
+            Thread.sleep(100);
+            String latest = evalString("(() => {const node=document.activeElement;return JSON.stringify({"
+                    + "tag:node?.tagName||'',id:node?.id||'',className:node?.className||''});})()");
+            if (!current.equals(latest)) {
+                current = latest;
+                stableSince = SystemClock.uptimeMillis();
+            } else if (SystemClock.uptimeMillis() - stableSince >= 500) {
+                return;
+            }
+        }
+        throw new AssertionError("focused editor did not settle after session attach: " + current);
+    }
+
+    private void awaitAppWindowActive(String stage) throws Exception {
+        String expectedPackage = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String observedPackage = "";
+        boolean windowFocused = false;
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<Boolean> focused = new AtomicReference<>(false);
+            scenario.onActivity(activity -> focused.set(activity.hasWindowFocus()));
+            windowFocused = focused.get();
+            InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                    .getRootInActiveWindow();
+            observedPackage = root == null || root.getPackageName() == null
+                    ? "" : root.getPackageName().toString();
+            if (windowFocused && expectedPackage.equals(observedPackage)) return;
+            Thread.sleep(100);
+        }
+        assertTrue(stage + " must leave the PocketShell Activity with window focus; package=" + observedPackage,
+                windowFocused);
+        assertEquals(stage + " must leave PocketShell as the active accessibility window",
+                expectedPackage, observedPackage);
     }
 
     private void setValue(String selector, String value) throws Exception {

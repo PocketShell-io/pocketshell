@@ -20,6 +20,11 @@ REQUIRED_NAMES = {
     "composer-post-send.png",
     "composer-post-send-terminal.json",
     "composer-focus-trace.json",
+    "snippet-keyboard-down.png",
+    "snippet-keyboard-down-geometry.json",
+    "snippet-selected-chip.png",
+    "snippet-selected-chip-geometry.json",
+    "snippet-restart-evidence.json",
 }
 OPTIONAL_NAMES = {
     "composer-focus-failure.png",
@@ -32,6 +37,121 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
 class ExtractionFailure(ValueError):
     pass
+
+
+def _validate_snippet_restart_evidence(payload: bytes | None) -> None:
+    if payload is None:
+        raise ExtractionFailure("snippet-restart-evidence.json is missing")
+    try:
+        evidence = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ExtractionFailure(f"snippet-restart-evidence.json is invalid JSON: {error}") from error
+    if not isinstance(evidence, dict):
+        raise ExtractionFailure("snippet restart evidence must be a JSON object")
+    package_name = evidence.get("appPackage")
+    old_pid = evidence.get("oldPid")
+    stopped_pid = evidence.get("stoppedPid")
+    new_pid = evidence.get("newPid")
+    launchable_activity = evidence.get("launchableActivity")
+    host_id = evidence.get("hostId")
+    if not isinstance(package_name, str) or not re.fullmatch(r"[A-Za-z0-9_.]+", package_name):
+        raise ExtractionFailure("restart evidence has an invalid package name")
+    if not isinstance(old_pid, str) or not old_pid.isdecimal() or not isinstance(new_pid, str) or not new_pid.isdecimal():
+        raise ExtractionFailure("restart evidence is missing numeric old and new process IDs")
+    if old_pid == new_pid or stopped_pid != "":
+        raise ExtractionFailure("restart evidence does not prove the old app process stopped before relaunch")
+    if not isinstance(launchable_activity, str) or not launchable_activity.startswith(f"{package_name}/"):
+        raise ExtractionFailure("restart evidence is missing the target package's resolved launchable activity")
+    if not isinstance(host_id, str) or not host_id:
+        raise ExtractionFailure("restart evidence is missing the reconnected host identity")
+    if evidence.get("mainSnippetExact") is not True or evidence.get("uncertainSnippetExact") is not True:
+        raise ExtractionFailure("restart evidence does not prove both exact snippet records survived")
+    stored_count = evidence.get("storedSnippetCount")
+    if not isinstance(stored_count, int) or isinstance(stored_count, bool) or stored_count < 2:
+        raise ExtractionFailure("restart evidence contains fewer than two stored host snippets")
+    if not isinstance(evidence.get("mainLabel"), str) or not evidence["mainLabel"]:
+        raise ExtractionFailure("restart evidence is missing the main snippet label")
+    if not isinstance(evidence.get("uncertainLabel"), str) or not evidence["uncertainLabel"]:
+        raise ExtractionFailure("restart evidence is missing the reconnect snippet label")
+    if evidence.get("storageKey") != "pocketshell.js.host-snippets.v1":
+        raise ExtractionFailure("restart evidence does not identify the durable JS snippet storage key")
+
+
+def _validate_snippet_geometry(decoded: dict[str, bytes], name: str, *, selected: bool) -> None:
+    payload = decoded.get(name)
+    if payload is None:
+        raise ExtractionFailure(f"{name} is missing")
+    try:
+        geometry = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ExtractionFailure(f"{name} is invalid JSON: {error}") from error
+    if not isinstance(geometry, dict):
+        raise ExtractionFailure(f"{name} must be a JSON object")
+    if geometry.get("keyboardVisible") is not False or geometry.get("imeVisible") is not False:
+        raise ExtractionFailure(f"{name} does not prove the keyboard was down")
+    if geometry.get("rowVisible") is not True:
+        raise ExtractionFailure(f"{name} does not prove the chip rail is visible")
+    viewport = geometry.get("viewport")
+    row = geometry.get("chipRow")
+    composer = geometry.get("composer")
+    terminal = geometry.get("terminal")
+    chips = geometry.get("chips")
+    target = geometry.get("target")
+    if not all(isinstance(value, dict) for value in (viewport, row, composer, terminal, target)) or not isinstance(chips, list):
+        raise ExtractionFailure(f"{name} is missing viewport, chip rail, terminal, composer, or chip bounds")
+    try:
+        width = float(viewport["width"])
+        height = float(viewport["height"])
+        if width <= 0 or height <= 0:
+            raise ValueError("non-positive viewport")
+        def read_rect(rect: dict[str, object], context: str) -> tuple[float, float, float, float, float, float]:
+            left = float(rect["left"])
+            right = float(rect["right"])
+            top = float(rect["top"])
+            bottom = float(rect["bottom"])
+            rect_width = float(rect["width"])
+            rect_height = float(rect["height"])
+            if left < 0 or top < 0 or right > width + 0.5 or bottom > height + 0.5:
+                raise ExtractionFailure(f"{name} {context} is outside the visible viewport")
+            if rect_width < 47.9 or rect_height < 47.9:
+                raise ExtractionFailure(f"{name} {context} is below the 48dp minimum target")
+            return left, right, top, bottom, rect_width, rect_height
+        _, _, row_top, row_bottom, _, _ = read_rect(row, "chip rail")
+        composer_top = float(composer["top"])
+        composer_bottom = float(composer["bottom"])
+        terminal_bottom = float(terminal["bottom"])
+        if row_top < composer_top - 0.5 or row_bottom > composer_bottom + 0.5:
+            raise ExtractionFailure(f"{name} chip rail is outside the composer")
+        if terminal_bottom > composer_top + 0.5:
+            raise ExtractionFailure(f"{name} terminal overlaps the composer")
+        if int(geometry.get("screenScrollTop", -1)) != 0 or int(geometry.get("documentScrollTop", -1)) != 0:
+            raise ExtractionFailure(f"{name} requires page scrolling to see the chips")
+        if not chips:
+            raise ExtractionFailure(f"{name} has no visible saved command chip")
+        for index, chip in enumerate(chips):
+            if not isinstance(chip, dict) or chip.get("tag") != "BUTTON":
+                raise ExtractionFailure(f"{name} chip {index} is not a button")
+            label = chip.get("label")
+            if not isinstance(label, str) or not label.startswith("Insert ") or len(label) <= len("Insert "):
+                raise ExtractionFailure(f"{name} chip {index} has no accessible insert label")
+            read_rect(chip, f"chip {index}")
+        if target.get("tag") != "BUTTON" or not isinstance(target.get("label"), str) or not target["label"].startswith("Insert "):
+            raise ExtractionFailure(f"{name} target is missing its accessible button label")
+        read_rect(target, "target chip")
+        expected_label = geometry.get("expectedLabel")
+        if target.get("label") != expected_label:
+            raise ExtractionFailure(f"{name} target does not match the expected snippet chip")
+        if selected:
+            if target.get("current") != "true" or geometry.get("draftMatchesExact") is not True:
+                raise ExtractionFailure(f"{name} does not prove literal selected-chip insertion")
+            if int(geometry.get("composerWriteCount", -1)) != 0 or int(geometry.get("acknowledgedWrites", -1)) != 0:
+                raise ExtractionFailure(f"{name} shows a PTY write before explicit Send")
+        elif target.get("current") not in ("", None):
+            raise ExtractionFailure(f"{name} target was selected before the selected-chip capture")
+    except (KeyError, TypeError, ValueError) as error:
+        if isinstance(error, ExtractionFailure):
+            raise
+        raise ExtractionFailure(f"{name} has invalid viewport or chip bounds") from error
 
 
 def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
@@ -97,7 +217,7 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png"):
+    for name in ("composer-keyboard.png", "composer-post-send.png", "snippet-keyboard-down.png", "snippet-selected-chip.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
@@ -250,6 +370,14 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send terminal viewport is clipped or too small")
         if post_send.get("keyboardVisible") is not False:
             raise ExtractionFailure("post-send terminal screenshot was not captured after the Android keyboard closed")
+
+        _validate_snippet_geometry(decoded, "snippet-keyboard-down-geometry.json", selected=False)
+        _validate_snippet_geometry(decoded, "snippet-selected-chip-geometry.json", selected=True)
+        _validate_snippet_restart_evidence(decoded.get("snippet-restart-evidence.json"))
+        for name in ("snippet-keyboard-down.png", "snippet-selected-chip.png"):
+            screenshot = decoded.get(name)
+            if screenshot is None or not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024:
+                raise ExtractionFailure(f"{name} is not a non-empty PNG")
         focus_trace_bytes = decoded.get("composer-focus-trace.json")
         try:
             focus_trace = json.loads(focus_trace_bytes)
@@ -386,13 +514,82 @@ def self_test() -> None:
 
     geometry = geometry_payload()
 
-    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send) -> list[str]:
+    def snippet_geometry(*, selected: bool, keyboard_visible: bool = False,
+                         write_count: int = 0, ack_count: int = 0,
+                         chip_height: float = 48.0, terminal_bottom: float = 80.0,
+                         page_scroll: int = 0, include_target_bounds: bool = True) -> bytes:
+        chip = {"tag": "BUTTON", "label": "Insert Multiline", "width": 92.0, "height": chip_height,
+                "top": 112.0, "bottom": 112.0 + chip_height, "left": 12.0, "right": 104.0,
+                "current": "true" if selected else ""}
+        geometry = {
+            "keyboardVisible": keyboard_visible,
+            "imeVisible": keyboard_visible,
+            "rowVisible": True,
+            "viewport": {"width": 400.0, "height": 240.0},
+            "chipRow": {"top": 108.0, "bottom": 164.0, "left": 0.0, "right": 400.0, "width": 400.0, "height": 56.0},
+            "composer": {"top": 100.0, "bottom": 236.0, "left": 0.0, "right": 400.0, "width": 400.0, "height": 136.0},
+            "terminal": {"top": 20.0, "bottom": terminal_bottom, "left": 0.0, "right": 400.0, "width": 400.0, "height": terminal_bottom - 20.0},
+            "target": dict(chip),
+            "chips": [chip],
+            "expectedLabel": "Insert Multiline",
+            "draftMatchesExact": selected,
+            "composerWriteCount": write_count,
+            "acknowledgedWrites": ack_count,
+            "screenScrollTop": page_scroll,
+            "documentScrollTop": page_scroll,
+        }
+        if not include_target_bounds:
+            for key in ("top", "bottom", "left", "right"):
+                del geometry["target"][key]
+        return json.dumps(geometry).encode()
+
+    chip_down = snippet_geometry(selected=False)
+    chip_selected = snippet_geometry(selected=True)
+    chip_selected_write = snippet_geometry(selected=True, write_count=1)
+    chip_selected_small = snippet_geometry(selected=True, chip_height=44.0)
+    restart_evidence = json.dumps({
+        "appPackage": "com.pocketshell.app.i2885",
+        "oldPid": "401",
+        "stoppedPid": "",
+        "newPid": "455",
+        "launchableActivity": "com.pocketshell.app.i2885/com.pocketshell.app.MainActivity",
+        "hostId": "testuser@10.0.2.2:2243",
+        "storedSnippetCount": 2,
+        "mainSnippetExact": True,
+        "uncertainSnippetExact": True,
+        "mainLabel": "Multiline",
+        "uncertainLabel": "Uncertain",
+        "storageKey": "pocketshell.js.host-snippets.v1",
+    }).encode()
+    bad_restart_evidence = json.dumps({
+        "appPackage": "com.pocketshell.app.i2885",
+        "oldPid": "401",
+        "stoppedPid": "401",
+        "newPid": "455",
+        "launchableActivity": "com.pocketshell.app.i2885/com.pocketshell.app.MainActivity",
+        "hostId": "testuser@10.0.2.2:2243",
+        "storedSnippetCount": 2,
+        "mainSnippetExact": True,
+        "uncertainSnippetExact": True,
+        "mainLabel": "Multiline",
+        "uncertainLabel": "Uncertain",
+        "storageKey": "pocketshell.js.host-snippets.v1",
+    }).encode()
+
+    def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
+                   chip_down_bytes: bytes = chip_down, chip_selected_bytes: bytes = chip_selected,
+                   restart_bytes: bytes = restart_evidence) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
             ("composer-post-send.png", png),
             ("composer-post-send-terminal.json", post_send_bytes),
             ("composer-focus-trace.json", focus_trace),
+            ("snippet-keyboard-down.png", png),
+            ("snippet-keyboard-down-geometry.json", chip_down_bytes),
+            ("snippet-selected-chip.png", png),
+            ("snippet-selected-chip-geometry.json", chip_selected_bytes),
+            ("snippet-restart-evidence.json", restart_bytes),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -427,6 +624,14 @@ def self_test() -> None:
         ("post-send screenshot captured with keyboard open", make_lines(post_send_bytes=keyboard_up_post_send)),
         ("post-send output latency missing", make_lines(post_send_bytes=missing_latency_post_send)),
         ("post-send output latency negative", make_lines(post_send_bytes=negative_latency_post_send)),
+        ("snippet chips captured with keyboard open", make_lines(chip_down_bytes=snippet_geometry(selected=False, keyboard_visible=True))),
+        ("snippet selected capture lacks a PTY write-before-send check", make_lines(chip_selected_bytes=chip_selected_write)),
+        ("snippet touch target below 48dp", make_lines(chip_selected_bytes=chip_selected_small)),
+        ("snippet target omits its DOM rect bounds", make_lines(chip_down_bytes=snippet_geometry(selected=False, include_target_bounds=False))),
+        ("snippet restart evidence missing", [line for line in lines if "snippet-restart-evidence.json" not in line]),
+        ("snippet restart did not prove a terminated process", make_lines(restart_bytes=bad_restart_evidence)),
+        ("snippet rail requires page scrolling", make_lines(chip_down_bytes=snippet_geometry(selected=False, page_scroll=1))),
+        ("snippet rail overlaps terminal", make_lines(chip_down_bytes=snippet_geometry(selected=False, terminal_bottom=120.0))),
     ):
         try:
             parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)

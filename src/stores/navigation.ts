@@ -9,6 +9,7 @@ export const SHELL_ROUTES = [
   'settings-connections',
   'settings-advanced',
   'settings-account',
+  'settings-snippets',
   'usage',
   'ports',
   'diagnostics',
