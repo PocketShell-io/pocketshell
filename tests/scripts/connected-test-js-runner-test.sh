@@ -337,6 +337,7 @@ old_gradle_selectors_are_not_forwarded() {
 real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   local source="$ROOT_DIR/scripts/connected-js-smoke.sh"
   local lifecycle_script="$ROOT_DIR/scripts/connected-js-lifecycle.sh"
+  local smoke_test_source="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsShellPackagedSmokeTest.java"
   local host_check_line recheck_line
   [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'JS Android Gradle wrapper is missing'
   [[ -x "$source" && -x "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
@@ -364,6 +365,18 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'composer runner does not validate its exact same-run JUnit report'
   grep -Fq 'PASS: host PTY output contained' "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
     || fail 'composer runner lost its independent remote PTY output oracle'
+  grep -Fq 'Exact packaged-shell smoke suite (6 JUnit methods)' "$WRAPPER" \
+    || fail 'connected-test help does not describe the six-method packaged smoke contract'
+  grep -Fq 'scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");' "$smoke_test_source" \
+    || fail 'About navigation does not scroll its target into the WebView viewport first'
+  grep -Fq 'WebView tap target must be fully inside its viewport before coordinate tap:' "$smoke_test_source" \
+    || fail 'physical DOM taps do not assert the target is inside the WebView viewport'
+  grep -Fq 'WebView tap center must map to visible on-screen pixels before coordinate tap:' "$smoke_test_source" \
+    || fail 'physical DOM taps do not assert their mapped point is within visible WebView pixels'
+  grep -Fq 'point.optDouble("viewportWidth")' "$smoke_test_source" \
+    || fail 'physical DOM tap mapping is not scaled from the captured CSS viewport width'
+  grep -Fq 'WebView tap center must map to finite on-screen pixels before coordinate tap:' "$smoke_test_source" \
+    || fail 'physical DOM tap mapping does not reject non-finite screen coordinates'
 
   "$ROOT_DIR/scripts/check-js-smoke-results.py" --self-test
   "$ROOT_DIR/scripts/check-js-lifecycle-results.py" --self-test

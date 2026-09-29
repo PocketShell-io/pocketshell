@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Insets;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.SystemClock;
@@ -256,6 +257,7 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("settings");
+        scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");
         tapDomCenter("[data-testid=open-about]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about' && !!document.querySelector('#about-title')");
         awaitJsTrue("document.querySelector('[data-testid=about-core-revision]')?.textContent.trim().length === 40");
@@ -550,23 +552,66 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    private void scrollDomTargetIntoWebViewViewport(String selector) throws Exception {
+        String quotedSelector = JSONObject.quote(selector);
+        String found = evalRaw("(() => {const element = document.querySelector(" + quotedSelector + ");"
+                + "if (!element) return false;"
+                + "element.scrollIntoView({block:'center',inline:'nearest',behavior:'instant'});"
+                + "return true;})()");
+        assertEquals("WebView target element must exist before scrolling", "true", found);
+        awaitJsTrue(webViewViewportContainsTargetExpression(selector));
+    }
+
+    private String webViewViewportContainsTargetExpression(String selector) {
+        return "(() => {const element = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!element) return false;"
+                + "const rect = element.getBoundingClientRect();"
+                + "return rect.width > 0 && rect.height > 0 && rect.left >= 0 && rect.top >= 0"
+                + " && rect.right <= innerWidth && rect.bottom <= innerHeight;})()";
+    }
+
     private void tapDomCenter(String selector) throws Exception {
         JSONObject point = evalJson("(() => {const element = document.querySelector("
                 + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing: true});"
                 + "const rect = element.getBoundingClientRect();"
-                + "return JSON.stringify({x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: innerWidth});})()");
+                + "return JSON.stringify({x: rect.left + rect.width / 2, y: rect.top + rect.height / 2,"
+                + "left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,"
+                + "viewportWidth: innerWidth, viewportHeight: innerHeight});})()");
         assertTrue("WebView target element must exist", !point.optBoolean("missing"));
+        assertTrue("WebView tap target must be fully inside its viewport before coordinate tap: "
+                        + selector + " bounds=" + point,
+                point.optDouble("left") >= 0
+                        && point.optDouble("top") >= 0
+                        && point.optDouble("right") <= point.optDouble("viewportWidth")
+                        && point.optDouble("bottom") <= point.optDouble("viewportHeight"));
 
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("the packaged activity must contain its Capacitor WebView", webView);
             int[] webViewLocation = new int[2];
             webView.getLocationOnScreen(webViewLocation);
-            float pixelsPerCssPixel = webView.getWidth() / (float) point.optDouble("width");
+            double viewportWidth = point.optDouble("viewportWidth");
+            assertTrue("WebView tap target must report a positive viewport width before coordinate tap: "
+                            + selector + " bounds=" + point,
+                    viewportWidth > 0 && !Double.isInfinite(viewportWidth));
+            float pixelsPerCssPixel = webView.getWidth() / (float) viewportWidth;
+            float xOnScreen = webViewLocation[0] + (float) point.optDouble("x") * pixelsPerCssPixel;
+            float yOnScreen = webViewLocation[1] + (float) point.optDouble("y") * pixelsPerCssPixel;
+            assertTrue("WebView tap center must map to finite on-screen pixels before coordinate tap: "
+                            + selector + " point=(" + xOnScreen + ", " + yOnScreen + ")",
+                    !Float.isNaN(xOnScreen) && !Float.isInfinite(xOnScreen)
+                            && !Float.isNaN(yOnScreen) && !Float.isInfinite(yOnScreen));
+            Rect visibleWebViewBounds = new Rect();
+            assertTrue("the packaged WebView must have visible on-screen bounds",
+                    webView.getGlobalVisibleRect(visibleWebViewBounds));
+            assertTrue("WebView tap center must map to visible on-screen pixels before coordinate tap: "
+                            + selector + " point=(" + xOnScreen + ", " + yOnScreen + ") bounds=" + visibleWebViewBounds,
+                    visibleWebViewBounds.contains(Math.round(xOnScreen), Math.round(yOnScreen)));
             screenPoint.set(new float[] {
-                    webViewLocation[0] + (float) point.optDouble("x") * pixelsPerCssPixel,
-                    webViewLocation[1] + (float) point.optDouble("y") * pixelsPerCssPixel
+                    xOnScreen,
+                    yOnScreen
             });
         });
 
