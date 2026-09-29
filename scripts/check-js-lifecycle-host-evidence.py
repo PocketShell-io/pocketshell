@@ -37,6 +37,7 @@ MARKER_PHASES = {
 }
 MAX_NATIVE_CLOSE_COMPLETION_LAG_MS = 2_000
 MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS = 8_000
+MAX_FINAL_NATIVE_CLOSE_MS = 2_000
 MIN_HOST_ZERO_SOCKET_STABILITY_MS = 1_000
 MIN_SCREENSHOT_OCR_CONFIDENCE = 75.0
 MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 4_096
@@ -89,8 +90,9 @@ def _canonical_ocr_token(text: str) -> str:
 
 def _screenshot_marker_accent_rgb(run_id: str, marker: str) -> str:
     digest = hashlib.sha256(f"{run_id}\0{marker}".encode("utf-8")).digest()
-    rgb = [24 + (component & 0x3F) for component in digest[2:5]]
-    rgb[digest[0] % 3] = 240 + (digest[1] & 0x0F)
+    # Match the packaged marker's bright yellow palette so black ANSI text is
+    # easy to read while retaining a marker/run-specific screenshot color.
+    rgb = [240 + (digest[2] & 0x0F), 224 + (digest[3] & 0x1F), digest[4] & 0x3F]
     return ",".join(str(component) for component in rgb)
 
 
@@ -251,7 +253,11 @@ def _screenshot_marker_ocr(
         crop_path = Path(temporary_directory) / "marker.png"
         try:
             subprocess.run(
-                [convert, str(path), "-crop", f"{crop_width}x{crop_height}+{crop_left}+{crop_top}", "+repage", str(crop_path)],
+                [
+                    convert, str(path), "-crop", f"{crop_width}x{crop_height}+{crop_left}+{crop_top}",
+                    "+repage",
+                    str(crop_path),
+                ],
                 check=True, text=True, capture_output=True, timeout=20,
             )
         except (OSError, subprocess.SubprocessError) as error:
@@ -261,7 +267,7 @@ def _screenshot_marker_ocr(
         try:
             result = subprocess.run(
                 [
-                    "tesseract", str(crop_path), "stdout", "--psm", "7", "tsv",
+                    "tesseract", str(crop_path), "stdout", "--psm", "8", "tsv",
                     "-c", "tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_",
                 ],
                 check=True,
@@ -470,6 +476,10 @@ def _self_test() -> int:
             {"text": screenshot_marker, "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], True),
+        ("one-pixel marker-row bottom boundary rejected", [
+            {"text": screenshot_marker, "confidence": 91.0,
+             "left": 26, "top": 80, "width": 675, "height": 2},
+        ], False),
         ("lookalike digit inside readable run token rejected", [
             {"text": "REMOTE_OUTPUT_TREA5URE_AS", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
@@ -565,8 +575,12 @@ def _self_test() -> int:
     print("ok [accent identity] screenshot marker accent is keyed to this run and phase")
     valid_marker_crop = [expected_accent_rgb] * MIN_SCREENSHOT_MARKER_ACCENT_PIXELS
     stale_light_text_crop = [(224, 224, 232)] * (MIN_SCREENSHOT_MARKER_ACCENT_PIXELS * 4)
-    if not (max(expected_accent_rgb) >= 240 and min(expected_accent_rgb) <= 87):
-        print("FAIL: screenshot marker accent palette is not high-chroma", file=sys.stderr)
+    if not (
+        expected_accent_rgb[0] >= 240
+        and expected_accent_rgb[1] >= 224
+        and expected_accent_rgb[2] <= 63
+    ):
+        print("FAIL: screenshot marker accent palette is not bright enough for black marker text", file=sys.stderr)
         return 1
     if sum(_pixel_matches_marker_accent(pixel, test_run_id, screenshot_marker) for pixel in valid_marker_crop) < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
         print("FAIL: valid marker crop did not meet the screenshot accent pixel minimum", file=sys.stderr)
@@ -664,11 +678,64 @@ def _self_test() -> int:
         sample(54_000, 1, "01001EAC:D55C"), sample(54_500, 1, "01001EAC:D55C"),
         sample(55_000, 0), sample(55_500, 0), sample(56_000, 0), sample(60_000, 0), sample(61_000, 0),
         sample(62_800, 1, "01001EAC:ADF0"), sample(63_200, 1, "01001EAC:ADF0"),
+        sample(63_600, 1, "01001EAC:ADF0"), sample(64_000, 1, "01001EAC:ADF0"),
+        sample(64_500, 0), sample(65_000, 0), sample(65_500, 0),
     ]
+    native_resource_close = {
+        "connectionId": "reconnected-connection",
+        "generationId": "reconnected-generation",
+        "disconnectRequestedAtEpochMs": 64_000,
+        "disconnectRequestedAtElapsedRealtimeMs": 200_000,
+        "snapshotVerifiedAtEpochMs": 64_100,
+        "snapshotVerifiedAtElapsedRealtimeMs": 200_100,
+        "nativeCloseBoundMs": 2_000,
+        "snapshot": {
+            "connections": 0, "ptys": 0, "sftpClients": 0, "forwards": 0,
+            "activeForwardWorkers": 0, "activeExecStreamReaders": 0,
+        },
+        "forward": {
+            "forwardId": "forward-1", "localPort": 41235,
+            "sshBannerVerified": True, "connectionRefusedAfterClose": True,
+        },
+    }
     validate_host_transport_timeline(
         timing, good_samples, epoch_offset, 0, initial_live_checkpoint_epoch_ms, 64_000
     )
     print("ok [7/15] serialized pin probe and uncertain-mutation reconnect precede stable socket timeline")
+    final_close = validate_final_native_resource_close(native_resource_close, good_samples, epoch_offset)
+    if final_close["hostSocketCloseLagAfterDisconnectRequestMs"] != 500:
+        print("FAIL: final native resource-close timeline did not use the first host zero-socket sample", file=sys.stderr)
+        return 1
+    print("ok [native close] physical SSH, PTY, SFTP, forward and worker closure is joined to the Docker socket timeline")
+    final_close_mutations = [
+        ("native channel leak rejected", {**native_resource_close, "snapshot": {**native_resource_close["snapshot"], "ptys": 1}}, good_samples),
+        ("native worker leak rejected", {**native_resource_close, "snapshot": {**native_resource_close["snapshot"], "activeForwardWorkers": 1}}, good_samples),
+        ("native close outside two-second bound rejected", {
+            **native_resource_close,
+            "snapshotVerifiedAtElapsedRealtimeMs": 202_001,
+            "snapshotVerifiedAtEpochMs": 66_001,
+        }, good_samples),
+        ("host socket persisting beyond eight-second close bound rejected", native_resource_close, [
+            {**row, "count": 1, "establishedSshConnections": [{"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:ADF0"}]}
+            if 64_500 <= row["sampledEpochMs"] <= 73_000 else row
+            for row in good_samples
+        ]),
+        ("SSH socket reopening after final close rejected", native_resource_close, [
+            {**row, "count": 1, "establishedSshConnections": [
+                {"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:ADF0"}
+            ]}
+            if row["sampledEpochMs"] == 65_000 else row
+            for row in good_samples
+        ]),
+    ]
+    for index, (label, altered_close, altered_samples) in enumerate(final_close_mutations, 1):
+        try:
+            validate_final_native_resource_close(altered_close, altered_samples, epoch_offset)
+        except EvidenceFailure:
+            print(f"ok [native close {index}/5] {label}")
+        else:
+            print(f"FAIL: final native close mutation probe {index}: {label}", file=sys.stderr)
+            return 1
 
     boundary_summary = {
         "uncertainMutation": {
@@ -1298,6 +1365,8 @@ def validate_host_transport_timeline(
         tuple(sorted(row["lifecycleSocketIds"] - baseline_set))
         for row in reconnected_samples
     }
+
+
     if len(reconnected_sockets) != 1 or len(next(iter(reconnected_sockets))) != 1:
         raise EvidenceFailure("post-expiry SSH socket identity changed or was ambiguous")
     reconnected_identity = next(iter(reconnected_sockets))[0]
@@ -1362,6 +1431,119 @@ def validate_host_transport_timeline(
     }
 
 
+def validate_final_native_resource_close(
+    close: dict[str, Any], samples: list[dict[str, Any]], device_to_host_offset_ms: int,
+) -> dict[str, Any]:
+    def timestamp(key: str) -> int:
+        value = close.get(key)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise EvidenceFailure(f"final native close evidence is missing integer {key}")
+        return value
+
+    connection_id = close.get("connectionId")
+    generation_id = close.get("generationId")
+    if not isinstance(connection_id, str) or not connection_id or not isinstance(generation_id, str) or not generation_id:
+        raise EvidenceFailure("final native close evidence is not bound to the JS-owned SSH connection generation")
+    bound = close.get("nativeCloseBoundMs")
+    if bound != MAX_FINAL_NATIVE_CLOSE_MS:
+        raise EvidenceFailure("final native close evidence must use the two-second bound")
+    request_epoch = timestamp("disconnectRequestedAtEpochMs")
+    request_elapsed = timestamp("disconnectRequestedAtElapsedRealtimeMs")
+    verified_epoch = timestamp("snapshotVerifiedAtEpochMs")
+    verified_elapsed = timestamp("snapshotVerifiedAtElapsedRealtimeMs")
+    epoch_lag = verified_epoch - request_epoch
+    elapsed_lag = verified_elapsed - request_elapsed
+    if not 0 <= epoch_lag <= MAX_FINAL_NATIVE_CLOSE_MS or not 0 <= elapsed_lag <= MAX_FINAL_NATIVE_CLOSE_MS:
+        raise EvidenceFailure("native resource snapshot did not reach zero within two seconds of JS disconnect")
+
+    snapshot = close.get("snapshot")
+    resource_counts = (
+        "connections", "ptys", "sftpClients", "forwards",
+        "activeForwardWorkers", "activeExecStreamReaders",
+    )
+    if not isinstance(snapshot, dict):
+        raise EvidenceFailure("final native close evidence is missing the native resource snapshot")
+    for key in resource_counts:
+        value = snapshot.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value != 0:
+            raise EvidenceFailure(f"native resource or worker {key} remains after disconnect")
+
+    forward = close.get("forward")
+    if (
+        not isinstance(forward, dict)
+        or not isinstance(forward.get("forwardId"), str)
+        or not forward.get("forwardId")
+        or not isinstance(forward.get("localPort"), int)
+        or isinstance(forward.get("localPort"), bool)
+        or not 1 <= forward["localPort"] <= 65_535
+        or forward.get("sshBannerVerified") is not True
+        or forward.get("connectionRefusedAfterClose") is not True
+    ):
+        raise EvidenceFailure("final close did not prove a live SSH forward became unreachable")
+
+    host_request_epoch = request_epoch + device_to_host_offset_ms
+    ordered = sorted(samples, key=lambda row: row.get("sampledEpochMs", -1))
+    normalized: list[dict[str, Any]] = []
+    for sample in ordered:
+        sampled_at = sample.get("sampledEpochMs")
+        sockets = sample.get("establishedSshConnections")
+        count = sample.get("count")
+        if not isinstance(sampled_at, int) or sample.get("error"):
+            raise EvidenceFailure("final native close host samples have an invalid timestamp or watcher error")
+        if not isinstance(sockets, list) or not isinstance(count, int) or count != len(sockets):
+            raise EvidenceFailure("final native close host sample has an invalid SSH socket count")
+        nonloopback = [row for row in sockets if isinstance(row, dict) and not _is_loopback_socket(row)]
+        normalized.append({
+            "sampledEpochMs": sampled_at,
+            "lifecycleCount": len(nonloopback),
+            "lifecycleSocketIds": {_socket_identity(row) for row in nonloopback},
+        })
+
+    before = [row for row in normalized if host_request_epoch - 2_000 <= row["sampledEpochMs"] <= host_request_epoch]
+    if not before or any(row["lifecycleCount"] != 1 for row in before):
+        raise EvidenceFailure("Docker must show exactly one established app SSH socket immediately before disconnect")
+    socket_identity = next(iter(before[-1]["lifecycleSocketIds"]))
+    if not socket_identity or any(row["lifecycleSocketIds"] != {socket_identity} for row in before):
+        raise EvidenceFailure("the final close must target one stable Docker SSH socket identity")
+
+    after = [row for row in normalized if row["sampledEpochMs"] >= host_request_epoch]
+    gone_at: int | None = None
+    zero_samples: list[dict[str, Any]] = []
+    for row in after:
+        if row["lifecycleCount"] == 0:
+            gone_at = row["sampledEpochMs"] if gone_at is None else gone_at
+            zero_samples.append(row)
+            continue
+        if gone_at is not None:
+            raise EvidenceFailure("Docker observed the app SSH socket reopen after final disconnect")
+        if row["lifecycleCount"] != 1 or row["lifecycleSocketIds"] != {socket_identity}:
+            raise EvidenceFailure("the final app SSH socket changed identity or became ambiguous during close")
+    if gone_at is None:
+        raise EvidenceFailure("Docker still observes the app SSH socket after the packaged disconnect")
+    close_lag = gone_at - host_request_epoch
+    if close_lag < 0 or close_lag > MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS:
+        raise EvidenceFailure(
+            f"Docker SSH socket remained established {close_lag}ms after disconnect request "
+            f"(limit {MAX_HOST_SOCKET_CLOSE_LAG_AFTER_NATIVE_MS}ms)"
+        )
+    if (
+        len(zero_samples) < 3
+        or zero_samples[-1]["sampledEpochMs"] - zero_samples[0]["sampledEpochMs"] < MIN_HOST_ZERO_SOCKET_STABILITY_MS
+    ):
+        raise EvidenceFailure("Docker did not retain stable zero-app-socket evidence after final disconnect")
+    return {
+        "connectionId": connection_id,
+        "generationId": generation_id,
+        "nativeCloseBoundMs": bound,
+        "nativeSnapshotLagEpochMs": epoch_lag,
+        "nativeSnapshotLagElapsedRealtimeMs": elapsed_lag,
+        "hostDisconnectRequestedAtEpochMs": host_request_epoch,
+        "hostSocketDisappearedAtEpochMs": gone_at,
+        "hostSocketCloseLagAfterDisconnectRequestMs": close_lag,
+        "hostSocketZeroStableMs": zero_samples[-1]["sampledEpochMs"] - zero_samples[0]["sampledEpochMs"],
+        "hostZeroSocketSamples": len(zero_samples),
+        "result": "PASS",
+    }
 def render_clock_adjusted_timeline_report(timeline: dict[str, Any]) -> str:
     adjusted = timeline.get("clockAdjustedTimeline")
     if not isinstance(adjusted, dict):
@@ -1567,13 +1749,18 @@ def validate(
         timing["beyondGraceDeadlineEpochMs"]
     )) > 2_000:
         raise EvidenceFailure("native epoch deadline does not match the selected grace period")
+    host_socket_samples = _read_socket_samples(host_connections_path)
+    device_to_host_offset_ms = _device_to_host_epoch_offset(timebase_path)
     socket_timeline = validate_host_transport_timeline(
         timing,
-        _read_socket_samples(host_connections_path),
-        _device_to_host_epoch_offset(timebase_path),
+        host_socket_samples,
+        device_to_host_offset_ms,
         summary.get("graceMs", 0),
         initial_live_checkpoint_epoch_ms,
         by_checkpoint["reconnected-after-expiry"].get("capturedAtEpochMs", 0),
+    )
+    native_resource_close = validate_final_native_resource_close(
+        summary.get("nativeResourceClose"), host_socket_samples, device_to_host_offset_ms,
     )
     socket_samples = socket_timeline.pop("samples")
     host_evidence_directory = _host_evidence_output_directory(artifact_directory, host_evidence_directory)
@@ -1749,6 +1936,7 @@ def validate(
         "packagedCheckpoints": sorted(expected_names),
         "screenshotMarkerOcr": screenshot_marker_evidence,
         "nativeGraceExpiry": native_expiry,
+        "nativeResourceClose": native_resource_close,
         "hostSocketTimeline": socket_timeline,
         "hostSocketTimelineFile": socket_timeline_path.name,
         "rawHostSocketSamplesFile": copied_socket_samples.name,
