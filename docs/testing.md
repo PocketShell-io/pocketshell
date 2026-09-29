@@ -86,9 +86,14 @@ Run its synthetic contract checks with
 selectors and exact result-checker method sets, rejects missing/extra dispatch
 and unjustified journey classes, and retains a synthetic app2 whole-suite
 regression case. The Files result contract is also self-tested by
-`scripts/check-js-files-results.py --self-test`. J1 only proves dispatch of the
-existing packaged tests; it does not qualify the separate 24-class feature
-inventory or complete the 0.6.0 release gates.
+`scripts/check-js-files-results.py --self-test`. In hosted CI, an
+`if: always()` report step independently runs each lane's exact JUnit checker
+against that run's preserved smoke, lifecycle, Files, Usage/Ports, or Composer
+results. This catches an omitted or dormant runner even if the packaged-lanes
+wrapper reports a zero status for it; in particular, Files must leave its
+exact report under `js-files/<run-id>/instrumentation-results`. J1 only proves
+dispatch of the existing packaged tests; it does not qualify the separate
+24-class feature inventory or complete the 0.6.0 release gates.
 
 For a session-runtime change, also run the focused fixture contract checks:
 

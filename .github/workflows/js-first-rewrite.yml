@@ -169,14 +169,49 @@ jobs:
           emulator-boot-timeout: 900
           script: scripts/ci-js-first-packaged-lanes.sh
 
-      - name: Assert packaged JS composer and Usage/Ports journeys executed exactly once
+      - name: Require exact reports for every packaged JS lane
         if: always()
+        shell: bash
         run: |
-          scripts/check-js-composer-journey-results.py --self-test
-          scripts/check-js-composer-journey-results.py \
-            --results-dir android/app/build/outputs/androidTest-results/connected/debug
-          scripts/check-js-usage-ports-results.py \
+          set -euo pipefail
+          failed=0
+          run_check() {
+            local lane="$1"
+            shift
+            if "$@"; then
+              return 0
+            else
+              local status=$?
+              printf 'FAIL: %s result check exited %s\n' "$lane" "$status" >&2
+              failed=1
+            fi
+          }
+
+          run_check smoke scripts/check-js-smoke-results.py \
+            --results-dir android/app/build/outputs/js-smoke-results
+          run_check lifecycle scripts/check-js-lifecycle-results.py \
+            --results-dir "android/app/build/outputs/js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Files scripts/check-js-files-results.py \
+            --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+
+          composer_root="android/app/build/outputs/js-composer"
+          composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          composer_runs=("$composer_root/$composer_prefix"*)
+          if (( ${#composer_runs[@]} == 1 )); then
+            run_check Composer scripts/check-js-composer-journey-results.py \
+              --results-dir "${composer_runs[0]}"
+          else
+            printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
+              "$composer_prefix" "${#composer_runs[@]}" >&2
+            failed=1
+          fi
+
+          if (( failed != 0 )); then
+            exit 1
+          fi
 
       - name: Collect isolated composer fixture diagnostics
         if: always()
