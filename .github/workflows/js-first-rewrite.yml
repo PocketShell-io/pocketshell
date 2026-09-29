@@ -78,6 +78,14 @@ jobs:
       - name: Check fail-closed packaged fast-key result guard
         run: scripts/check-js-hotkeys-journey-results.py --self-test
 
+      - name: Check fail-closed packaged Files result guard
+        run: scripts/check-js-files-results.py --self-test
+
+      - name: Check JS Android journey dispatch guard
+        run: |
+          scripts/check-test-validity.sh --j1-only --self-test
+          scripts/check-test-validity.sh --j1-only
+
       - name: Check JS-first connected-test dispatch and lock contracts
         run: |
           tests/scripts/connected-test-js-runner-test.sh
@@ -168,21 +176,55 @@ jobs:
           emulator-boot-timeout: 900
           script: scripts/ci-js-first-packaged-lanes.sh
 
-      - name: Assert packaged JS composer and Usage/Ports journeys executed exactly once
+      - name: Require exact reports for every packaged JS lane
         if: always()
+        shell: bash
         run: |
-          scripts/check-js-composer-journey-results.py --self-test
-          scripts/check-js-composer-journey-results.py \
-            --results-dir android/app/build/outputs/js-composer-results
-          scripts/check-js-usage-ports-results.py \
+          set -euo pipefail
+          failed=0
+          run_check() {
+            local lane="$1"
+            shift
+            if "$@"; then
+              return 0
+            else
+              local status=$?
+              printf 'FAIL: %s result check exited %s\n' "$lane" "$status" >&2
+              failed=1
+            fi
+          }
+
+          run_check smoke scripts/check-js-smoke-results.py \
+            --results-dir android/app/build/outputs/js-smoke-results
+          run_check lifecycle scripts/check-js-lifecycle-results.py \
+            --results-dir "android/app/build/outputs/js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Files scripts/check-js-files-results.py \
+            --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
 
-      - name: Assert the packaged JS mobile fast-key journey executed exactly once
-        if: always()
-        run: |
-          scripts/check-js-hotkeys-journey-results.py --self-test
-          scripts/check-js-hotkeys-journey-results.py \
+          composer_root="android/app/build/outputs/js-composer"
+          composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          composer_runs=("$composer_root/$composer_prefix"*)
+          if (( ${#composer_runs[@]} == 1 )); then
+            composer_run="${composer_runs[0]}"
+            run_check "Composer prepare" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-prepare"
+            run_check "Composer resume" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-resume"
+          else
+            printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
+              "$composer_prefix" "${#composer_runs[@]}" >&2
+            failed=1
+          fi
+
+          run_check fast-key scripts/check-js-hotkeys-journey-results.py \
             --results-dir android/app/build/outputs/js-hotkeys
+
+          if (( failed != 0 )); then
+            exit 1
+          fi
 
       - name: Collect isolated composer fixture diagnostics
         if: always()
@@ -209,7 +251,7 @@ jobs:
           name: pocketshell-js-first-composer-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             android/app/build/outputs/js-composer/
-            android/app/build/outputs/js-composer-results/TEST-*.xml
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
           if-no-files-found: error
 
       - name: Upload packaged JS fast-key run evidence
@@ -217,8 +259,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: pocketshell-js-first-hotkeys-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            android/app/build/outputs/js-hotkeys/
+          path: android/app/build/outputs/js-hotkeys/
           if-no-files-found: error
 
       - name: Stop isolated composer Docker agents lane

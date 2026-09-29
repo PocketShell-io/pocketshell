@@ -289,6 +289,39 @@
         "keeps host-reported provider errors and named custom windows in canonical rows",
         "parses the packaged Docker fixture states that the Usage screen displays"
       ]
+    },
+    "tests/unit/hostSnippets.test.ts": {
+      "suite": "per-host command chips",
+      "tests": [
+        "imports exact legacy snippets and templates for their host and restores them after restart",
+        "creates, edits, deletes, and reorders only the selected host items",
+        "appends new chips after imported items even when earlier rows were deleted",
+        "inserts selected chip text at the draft selection without adding bytes or submitting",
+        "retains a selected chip draft after not-sent or uncertain PTY writes"
+      ]
+    },
+    "tests/unit/dictationStartCancellation.test.ts": {
+      "suite": "pending dictation start cancellation",
+      "tests": [
+        "stops a pending start once when the mounted composer backgrounds"
+      ]
+    },
+    "tests/unit/keyboardInsetsState.test.ts": {
+      "suite": "native keyboard insets state synchronization",
+      "tests": [
+        "coalesces plugin notifications and applies a fresh native state read",
+        "ignores an in-flight response after a newer invalidation and serializes the next read",
+        "does not apply a pending native response after disposal"
+      ]
+    },
+    "tests/unit/sessionAgentMetadata.test.ts": {
+      "suite": "session agent metadata projection",
+      "tests": [
+        "uses the pinned HostCliCore row for known host-reported identities",
+        "shows only the three fresh host-reported states",
+        "does not infer identity and suppresses non-reported or unknown state",
+        "keeps A→B→A chrome bound to the selected host id when metadata arrives late"
+      ]
     }
   }
 }

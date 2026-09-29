@@ -430,6 +430,10 @@ same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
     || fail 'fake emulator recorded a cross-worktree overlap'
 }
 
+failure_artifacts_are_preserved_after_gradle_failure() {
+  python3 "$ROOT_DIR/tests/scripts/connected-js-usage-ports-failure-artifacts-test.py"
+}
+
 CASES=(
   no_lane_and_unknown_lane_fail_closed
   suffix_is_required_and_validated_once
@@ -440,8 +444,9 @@ CASES=(
   old_gradle_selectors_are_not_forwarded
   real_js_lanes_keep_exact_same_run_guards_and_host_oracles
   same_emulator_is_serialized_across_worktrees_and_reports_are_run_local
+  failure_artifacts_are_preserved_after_gradle_failure
 )
-EXPECTED_FULL_CASES=9
+EXPECTED_FULL_CASES=10
 (( ${#CASES[@]} == EXPECTED_FULL_CASES )) \
   || fail "expected $EXPECTED_FULL_CASES cases; found ${#CASES[@]}"
 

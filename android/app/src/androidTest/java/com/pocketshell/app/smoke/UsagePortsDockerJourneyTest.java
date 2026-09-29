@@ -46,6 +46,7 @@ public final class UsagePortsDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
+    private File artifactDirectory;
     private int httpRemotePort;
     private boolean fixtureHttpServerMayBeRunning;
 
@@ -88,24 +89,43 @@ public final class UsagePortsDockerJourneyTest {
 
     @Test
     public void usageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
+        try {
+            runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin();
+        } catch (Throwable failure) {
+            try {
+                captureFailureDiagnostics(failure);
+            } catch (Throwable diagnosticFailure) {
+                failure.addSuppressed(diagnosticFailure);
+                Log.e("UsagePortsDockerJourney", "RUN " + activeRunId
+                        + " failure diagnostics could not be fully captured", diagnosticFailure);
+            }
+            if (failure instanceof Exception) throw (Exception) failure;
+            if (failure instanceof Error) throw (Error) failure;
+            throw new AssertionError(failure);
+        }
+    }
+
+    private void runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
         String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String runId = arguments.getString("sshSessionName", "js2859-" + System.currentTimeMillis());
+        activeRunId = runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}") ? runId : "usage-ports-failure";
+        httpRemotePort = 8_000 + Math.floorMod(activeRunId.hashCode(), 2_001);
+        artifactDirectory = new File(
+                InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null),
+                "pocketshell-usage-ports/" + activeRunId);
+        assertTrue("run artifact directory must be new", artifactDirectory.mkdirs());
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
-        String runId = arguments.getString("sshSessionName", "js2859-" + System.currentTimeMillis());
         assertTrue("run ID must be a safe, unique fixture tag prefix",
                 runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
-        httpRemotePort = 8_000 + Math.floorMod(runId.hashCode(), 2_001);
-        File artifactDirectory = new File(
-                InstrumentationRegistry.getInstrumentation().getTargetContext().getExternalFilesDir(null),
-                "pocketshell-usage-ports/" + runId);
-        assertTrue("run artifact directory must be new", artifactDirectory.mkdirs());
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        installJsFailureProbe();
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
@@ -167,6 +187,14 @@ public final class UsagePortsDockerJourneyTest {
         click("[aria-label='Back']");
         click("[data-testid=open-ports]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'ports'");
+        awaitJsTrue("!!document.querySelector('[data-testid=ports-screen]')");
+        awaitJsTrue("Number(document.querySelector('[data-testid=ports-screen]')?.dataset.scanCount) > 0"
+                + " && !document.querySelector('[data-testid=ports-loading]')"
+                + " && !document.querySelector('[data-testid=port-scan]')?.disabled");
+        String scanReadiness = evalString("(() => {const rows=document.querySelector('[data-testid=port-row-list]');"
+                + "return rows?.dataset.scanOk === 'true' && !document.querySelector('[data-testid=port-scan-error]');})()");
+        assertEquals("the initial Ports scan must complete successfully before checking discovered rows",
+                "true", scanReadiness);
         String httpPortSelector = jsSelector(portRowSelector(httpRemotePort) + "[data-forwarded=true]");
         String sshPortSelector = jsSelector(portRowSelector(22));
         awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=port-row]'))"
@@ -559,6 +587,90 @@ public final class UsagePortsDockerJourneyTest {
             output.write(bytes);
         }
         emitArtifact(file.getName(), bytes);
+    }
+
+    private void installJsFailureProbe() throws Exception {
+        evalString("(() => {if(window.__usagePortsJourneyErrorsInstalled) return 'installed';"
+                + "window.__usagePortsJourneyErrorsInstalled=true; window.__usagePortsJourneyErrors=[];"
+                + "const record=(type,value)=>{const errors=window.__usagePortsJourneyErrors;"
+                + "errors.push({type,message:String(value??type).slice(0,1000)});"
+                + "if(errors.length>50) errors.shift();};"
+                + "window.addEventListener('error',(event)=>record('error',event.message||event.error));"
+                + "window.addEventListener('unhandledrejection',(event)=>record('unhandledrejection',"
+                + "event.reason?.stack||event.reason?.message||event.reason)); return 'installed';})()");
+    }
+
+    private void captureFailureDiagnostics(Throwable failure) throws Exception {
+        if (scenario == null || activeRunId == null || artifactDirectory == null) return;
+
+        JSONObject diagnostics = new JSONObject()
+                .put("schema", 1)
+                .put("runId", activeRunId)
+                .put("failure", failure.getClass().getName())
+                .put("message", String.valueOf(failure.getMessage()));
+        try {
+            String page = evalString("JSON.stringify((() => {"
+                    + "const shell=document.querySelector('.app-shell');"
+                    + "const screen=document.querySelector('[data-testid=ports-screen]');"
+                    + "const scan=document.querySelector('[data-testid=port-scan]');"
+                    + "const resources=document.querySelector('[data-testid=ssh-resources]');"
+                    + "return {capturedAt:new Date().toISOString(),route:shell?.dataset.route??null,"
+                    + "ssh:{phase:shell?.dataset.sshPhase??null,connectionId:shell?.dataset.sshConnectionId??null,"
+                    + "generationId:shell?.dataset.sshGenerationId??null,selectedSession:shell?.dataset.sshSelectedSession??null,"
+                    + "selectedSessionId:shell?.dataset.sshSelectedSessionId??null,selectedTag:shell?.dataset.sshSelectedTag??null,"
+                    + "terminalInputPending:shell?.dataset.sshTerminalInputPending??null,"
+                    + "resources:resources?.outerHTML??null,host:document.querySelector('[data-testid=ssh-host]')?.value??null,"
+                    + "port:document.querySelector('[data-testid=ssh-port]')?.value??null},"
+                    + "ports:{mounted:!!screen,scanCount:screen?.dataset.scanCount??null,"
+                    + "loading:!!document.querySelector('[data-testid=ports-loading]'),"
+                    + "scanButton:scan?{disabled:scan.disabled,text:scan.innerText}:null,"
+                    + "scanError:document.querySelector('[data-testid=port-scan-error]')?.innerText??null,"
+                    + "screenText:screen?.innerText?.slice(0,6000)??null,screenHtml:screen?.outerHTML?.slice(0,12000)??null,"
+                    + "rows:Array.from(document.querySelectorAll('[data-testid=port-row]')).map((row)=>({"
+                    + "remotePort:row.dataset.remotePort,forwarded:row.dataset.forwarded,state:row.dataset.state,"
+                    + "text:row.innerText,html:row.outerHTML.slice(0,1500)}))},"
+                    + "jsErrors:window.__usagePortsJourneyErrors??[],bodyText:document.body?.innerText?.slice(0,8000)??null};})())");
+            diagnostics.put("page", new JSONObject(page));
+        } catch (Exception | AssertionError pageFailure) {
+            diagnostics.put("pageCaptureError", pageFailure.getClass().getSimpleName() + ": " + pageFailure.getMessage());
+        }
+
+        try {
+            captureFailureScreenshot(artifactDirectory);
+            diagnostics.put("screenshot", "failure-screen.png");
+        } catch (Exception | AssertionError screenshotFailure) {
+            diagnostics.put("screenshotCaptureError",
+                    screenshotFailure.getClass().getSimpleName() + ": " + screenshotFailure.getMessage());
+        }
+
+        writeText(new File(artifactDirectory, "failure-diagnostics.json"), diagnostics.toString(2));
+        JSONObject failureSummary = new JSONObject()
+                .put("schema", 1)
+                .put("runId", activeRunId)
+                .put("outcome", "failed")
+                .put("failure", failure.getClass().getName())
+                .put("message", String.valueOf(failure.getMessage()))
+                .put("screenshots", new org.json.JSONArray().put("failure-screen.png"));
+        writeText(new File(artifactDirectory, "journey-summary.json"), failureSummary.toString(2));
+        Log.e("UsagePortsDockerJourney", "RUN " + activeRunId + " failed; captured route, SSH, Ports, JS errors and screen");
+    }
+
+    private void captureFailureScreenshot(File directory) throws Exception {
+        Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull("Android must provide a screenshot for failure diagnostics", bitmap);
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        boolean encoded;
+        try {
+            encoded = bitmap.compress(Bitmap.CompressFormat.PNG, 100, output);
+        } finally {
+            bitmap.recycle();
+        }
+        assertTrue("failure screenshot must encode as PNG", encoded);
+        byte[] bytes = output.toByteArray();
+        try (FileOutputStream file = new FileOutputStream(new File(directory, "failure-screen.png"))) {
+            file.write(bytes);
+        }
+        emitArtifact("failure-screen.png", bytes);
     }
 
     private void emitArtifact(String name, byte[] bytes) throws Exception {

@@ -97,6 +97,7 @@ export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_SDK}"
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/connected-js-usage-ports-artifacts.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-usage-ports.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-usage-ports.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -149,18 +150,11 @@ pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
+REPORTS_DIR="$ROOT_DIR/android/app/build/reports/androidTests/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-usage-ports/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
-python3 - "$RESULTS_DIR" <<'PY'
-from pathlib import Path
-import shutil
-import sys
-
-results = Path(sys.argv[1])
-if results.exists():
-    shutil.rmtree(results)
-PY
+pocketshell_reset_connected_js_usage_ports_outputs "$RESULTS_DIR" "$REPORTS_DIR"
 
 HOST_SERVER_PID_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.pid"
 HOST_SERVER_STOP_CHECK_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.stop-check"
@@ -224,13 +218,15 @@ printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run 
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/usage-ports-assets-live-logcat.txt"
 : > "$LIVE_ASSET_LOGCAT"
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
   > "$LIVE_ASSET_LOGCAT" 2>&1 &
 LIVE_ASSET_LOGCAT_PID=$!
 sleep 0.2
 kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the same-run artifact logcat collector'
 
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+if pocketshell_run_connected_js_usage_ports_gradle \
+    "$RESULTS_DIR" "$REPORTS_DIR" "$ARTIFACTS_DIR" \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
@@ -242,8 +238,13 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
 else
   test_exit_code=$?
   mkdir -p "$ARTIFACTS_DIR/failure-diagnostics"
-  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
     > "$ARTIFACTS_DIR/failure-diagnostics/usage-ports-logcat.txt" 2>&1 || true
+  "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
+    --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" --output-dir "$ARTIFACTS_DIR/$RUN_ID" \
+    > "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" 2>&1 \
+    || printf 'WARNING: could not extract all same-run failure artifacts; see %s\n' \
+      "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" >&2
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
   docker logs --timestamps "$CONTAINER" \
@@ -256,7 +257,7 @@ fi
 
 cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
 "$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR"
-"$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset \
+"$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
   > "$ARTIFACTS_DIR/usage-ports-logcat.txt"
 "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
   --run-id "$RUN_ID" --logcat "$LIVE_ASSET_LOGCAT" --output-dir "$ARTIFACTS_DIR/$RUN_ID"

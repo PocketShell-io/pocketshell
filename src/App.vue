@@ -25,6 +25,7 @@ import {
   readImportedLegacyHosts,
   installedDataMigrationState,
   SETTINGS_RELOAD_SESSION_KEY,
+  createImportPersistence,
   retryInstalledDataMigration,
   runInstalledDataMigration,
   shouldReloadForImportedSettings,
@@ -41,6 +42,7 @@ import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface,
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import { syncSelectedHosts } from './sync/settingsSync';
+import { createKeyboardInsetsStateSync } from './native/keyboardInsetsState';
 import TerminalViewport from './components/TerminalViewport.vue';
 import MobileHotkeys from './components/MobileHotkeys.vue';
 import TerminalDictationBar from './components/TerminalDictationBar.vue';
@@ -56,6 +58,9 @@ import { PortForwardController, type PortForwardControllerSnapshot } from './pol
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
 import FileWorkspaceScreen from './components/FileWorkspaceScreen.vue';
+import { hostSnippets } from './stores/hostSnippets';
+import SessionAgentMetadata from './components/SessionAgentMetadata.vue';
+import { projectSessionAgentPresentation, resolveSelectedSessionRow } from './session/agentMetadata';
 
 interface TerminalViewportHandle {
   write(bytes: Uint8Array): void;
@@ -106,6 +111,12 @@ type SettingsSyncProbeWindow = Window & {
   __ps2852RunSettingsSync?: typeof syncSelectedHosts;
 };
 const SETTINGS_SYNC_PROBE_STORAGE_KEY = 'pocketshell.settings-sync-test-probe';
+
+type SnippetEvidenceWindow = Window & {
+  __ps2885CaptureSnippetEvidence?: boolean;
+  __ps2885ComposerWriteCount?: number;
+  __ps2885ComposerLastWriteHex?: string;
+};
 
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
@@ -206,7 +217,7 @@ let removeKeyboardInsetsListener: (() => Promise<void>) | undefined;
 let removeControllerSnapshot: (() => void) | undefined;
 let removeTerminalOutput: (() => void) | undefined;
 let removeKeyboardViewportListeners: (() => void) | undefined;
-let keyboardInsetsEvents = 0;
+let disposeKeyboardInsetsStateSync: (() => void) | undefined;
 let nativeKeyboardInsetsSupported = false;
 const currentPhase = computed(() => connectionSnapshot.value?.phase ?? 'idle');
 const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(currentPhase.value));
@@ -294,6 +305,11 @@ const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
 });
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
+const selectedSessionRow = computed(() => resolveSelectedSessionRow(
+  connectionSnapshot.value?.selectedSession,
+  sessions.value,
+));
+const selectedSessionAgentPresentation = computed(() => projectSessionAgentPresentation(selectedSessionRow.value));
 const fileConnection = computed(() => {
   const snapshot = connectionSnapshot.value;
   return snapshot?.connectionId && snapshot.generationId
@@ -308,6 +324,18 @@ const fileRootDirectory = computed(() => {
 const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
   (host) => String(host.id) === selectedLegacyHostId.value,
 ) ?? null);
+const snippetHostId = computed(() => {
+  if (connectionSnapshot.value?.hostId) return connectionSnapshot.value.hostId;
+  if (selectedLegacyHost.value) return String(selectedLegacyHost.value.id);
+  const hostname = hostDraft.value.hostname.trim();
+  const username = hostDraft.value.username.trim();
+  const port = Number(hostDraft.value.port);
+  return hostname && username && Number.isInteger(port) && port >= 1 && port <= 65_535
+    ? `${username}@${hostname}:${port}`
+    : '';
+});
+const snippetHostLabel = computed(() => connectionSnapshot.value?.hostLabel
+  || (snippetHostId.value ? `${hostDraft.value.username.trim()}@${hostDraft.value.hostname.trim()}:${Number(hostDraft.value.port)}` : 'No host selected'));
 
 function navigateHomeSurface(action: HomeSurfaceAction) {
   mobilePromptComposerOpen.value = false;
@@ -315,6 +343,12 @@ function navigateHomeSurface(action: HomeSurfaceAction) {
     document.activeElement.blur();
   }
   homeSurface.value = transitionHomeSurface(homeSurface.value, action);
+}
+
+function isSelectedSession(session: SessionRow): boolean {
+  const selected = selectedSessionRow.value;
+  if (!selected?.id || session.id !== selected.id) return false;
+  return sessions.value.filter((candidate) => candidate.id === selected.id).length === 1;
 }
 
 function openSettings(): void {
@@ -335,6 +369,11 @@ function openSettings(): void {
   }
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   navigation.openSettings();
+}
+
+function openSnippetSettings(): void {
+  openSettings();
+  navigation.open('settings-snippets');
 }
 
 interface StoredPortPreferences {
@@ -524,6 +563,9 @@ watch(() => navigation.route, (route) => {
 });
 
 function openPromptComposer() {
+  // Inline terminal recognition owns the dock until it reaches idle. Leaving
+  // Prompt closed keeps its Stop/Cancel action physically reachable.
+  if (inlineDictationState.value.phase !== 'idle') return;
   mobileHotkeys.value?.closePalette();
   mobilePromptComposerOpen.value = true;
 }
@@ -541,6 +583,14 @@ async function openTerminalKeysFromComposer() {
 }
 
 function setMobilePromptComposerOpen(open: boolean) {
+  if (!open && Capacitor.getPlatform() === 'android') {
+    // Blurring a WebView editor does not reliably dismiss Android's IME on
+    // API 35. Request the native inset transition while the Prompt sheet is
+    // closing so the dock and terminal regain their full viewport.
+    void keyboardInsets.hideIme().catch((error: unknown) => {
+      console.error('Could not dismiss the Android IME after closing Prompt.', error);
+    });
+  }
   mobilePromptComposerOpen.value = open;
   if (!open) {
     void nextTick(() => {
@@ -910,6 +960,11 @@ function keepMobileHotkeysImeOpen() {
 }
 
 async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
+  const snippetEvidence = window as SnippetEvidenceWindow;
+  if (snippetEvidence.__ps2885CaptureSnippetEvidence) {
+    snippetEvidence.__ps2885ComposerWriteCount = (snippetEvidence.__ps2885ComposerWriteCount ?? 0) + 1;
+    snippetEvidence.__ps2885ComposerLastWriteHex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  }
   const active = controller;
   if (!active) return { ok: false, message: 'No active PTY.' };
   const result = await active.writeTerminalBytes(bytes);
@@ -1074,6 +1129,20 @@ async function loadImportedLegacyHosts(): Promise<void> {
   }
 }
 
+async function importLegacySnippets(): Promise<void> {
+  if (Capacitor.getPlatform() !== 'android') return;
+  if (installedDataMigrationState.status !== 'complete' && installedDataMigrationState.status !== 'partial') return;
+  try {
+    const record = await createImportPersistence().readRecord();
+    if (!record || !['complete', 'partial', 'empty'].includes(record.status)) return;
+    hostSnippets.importLegacySnapshot(record.snapshot);
+  } catch (error) {
+    hostSnippets.error = error instanceof Error
+      ? `Legacy command chips could not be loaded: ${error.message}`
+      : 'Legacy command chips could not be loaded from the installed-data migration record.';
+  }
+}
+
 function reloadAfterSettingsImport(settingsWritten: boolean) {
   if (!settingsWritten) {
     try {
@@ -1103,8 +1172,13 @@ onMounted(() => {
   }
 
   diagnostics.record('app-started', 'startup', 'OK');
+  let keyboardInsetsStateSync: ReturnType<typeof createKeyboardInsetsStateSync> | undefined;
   const updateKeyboardViewport = () => {
-    if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
+    if (Capacitor.getPlatform() !== 'android') return;
+    if (nativeKeyboardInsetsSupported) {
+      keyboardInsetsStateSync?.refresh();
+      return;
+    }
     const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
     const screenHeight = window.screen.height;
     keyboardVisible.value = screenHeight - viewportHeight > 150;
@@ -1122,6 +1196,12 @@ onMounted(() => {
       `${state.imeVisible ? 0 : state.safeBottomDp}px`,
     );
   };
+  keyboardInsetsStateSync = createKeyboardInsetsStateSync(
+    () => keyboardInsets.getState(),
+    applyKeyboardInsets,
+    (error) => console.error('Could not refresh the Android IME insets.', error),
+  );
+  disposeKeyboardInsetsStateSync = keyboardInsetsStateSync.dispose;
   updateKeyboardViewport();
   window.visualViewport?.addEventListener('resize', updateKeyboardViewport);
   window.addEventListener('resize', updateKeyboardViewport);
@@ -1131,14 +1211,13 @@ onMounted(() => {
   };
 
   if (Capacitor.getPlatform() === 'android') {
-    void keyboardInsets.addListener('imeInsetsChanged', (state) => {
-      keyboardInsetsEvents += 1;
-      applyKeyboardInsets(state);
+    void keyboardInsets.addListener('imeInsetsChanged', () => {
+      // The event is an invalidation signal. A queued event payload may be
+      // older than the native IME state by the time JS handles it.
+      keyboardInsetsStateSync?.refresh();
     }).then(async (listener) => {
       removeKeyboardInsetsListener = () => listener.remove();
-      const eventsBeforeRead = keyboardInsetsEvents;
-      const initialState = await keyboardInsets.getState();
-      if (eventsBeforeRead === keyboardInsetsEvents) applyKeyboardInsets(initialState);
+      keyboardInsetsStateSync?.refresh();
     }).catch((error: unknown) => {
       console.error('Could not register the Android IME inset listener.', error);
     });
@@ -1147,6 +1226,7 @@ onMounted(() => {
   void runInstalledDataMigration().then((settingsWritten) => {
     reloadAfterSettingsImport(settingsWritten);
     void loadImportedLegacyHosts();
+    void importLegacySnippets();
   });
   if (Capacitor.isNativePlatform()) {
     const handleAppState = createAppLifecycleHandler({
@@ -1246,6 +1326,7 @@ watch(() => navigation.route, (route) => {
 
 onBeforeUnmount(() => {
   removeKeyboardViewportListeners?.();
+  disposeKeyboardInsetsStateSync?.();
   void removeKeyboardInsetsListener?.();
   void removeBackButton?.();
   void removeAppState?.();
@@ -1275,6 +1356,10 @@ onBeforeUnmount(() => {
     :data-ssh-selected-session-id="connectionSnapshot?.selectedSession?.id ?? ''"
     :data-ssh-selected-workspace="connectionSnapshot?.selectedSession?.workspace ?? ''"
     :data-ssh-selected-tag="connectionSnapshot?.selectedSession?.tag ?? ''"
+    :data-ssh-selected-agent-kind="selectedSessionRow?.agent ?? ''"
+    :data-ssh-selected-agent="selectedSessionAgentPresentation.identity?.label ?? ''"
+    :data-ssh-selected-agent-state="selectedSessionAgentPresentation.state ?? ''"
+    :data-ssh-selected-agent-state-source="selectedSessionRow?.agentStateSource ?? ''"
     :data-ssh-retry-attempt="connectionSnapshot?.retryAttempt ?? 0"
     :data-ssh-terminal-input-pending="terminalInputPending"
     :data-ssh-terminal-input-acks="terminalInputAckCount"
@@ -1300,6 +1385,11 @@ onBeforeUnmount(() => {
           <div class="session-context__copy">
             <span class="session-context__title">{{ connectionSnapshot.selectedSession?.name || 'PocketShell' }}</span>
             <span class="session-context__host">{{ hostDraft.username }}@{{ hostDraft.hostname }}</span>
+            <SessionAgentMetadata
+              v-if="selectedSessionRow"
+              class="session-context__agent"
+              :session="selectedSessionRow"
+            />
           </div>
         </div>
         <nav class="workspace-navigation" aria-label="Session destinations">
@@ -1556,12 +1646,18 @@ onBeforeUnmount(() => {
                 :data-session-id="session.id ?? ''"
                 :data-session-workspace="session.workspace ?? ''"
                 :data-session-tag="session.tag ?? ''"
-                :aria-current="connectionSnapshot?.selectedSession?.name === session.name ? 'true' : undefined"
+                :data-session-agent="session.agent ?? ''"
+                :data-session-agent-state="session.agentState ?? ''"
+                :data-session-agent-state-source="session.agentStateSource ?? ''"
+                :aria-current="isSelectedSession(session) ? 'true' : undefined"
                 @click="attachSession(session)"
               >
-                <span class="session-name">{{ session.name }}</span>
+                <span class="session-row__title">
+                  <span class="session-name">{{ session.name }}</span>
+                  <SessionAgentMetadata :session="session" />
+                </span>
                 <span class="session-meta">{{ session.workspace || session.engine || 'remote session' }}</span>
-                <span class="session-attach">{{ connectionSnapshot?.selectedSession?.name === session.name && isLive ? 'Attached' : 'Attach' }}</span>
+                <span class="session-attach">{{ isSelectedSession(session) && isLive ? 'Attached' : 'Attach' }}</span>
               </button>
             </li>
           </ul>
@@ -1622,6 +1718,7 @@ onBeforeUnmount(() => {
             :dictation-available="Capacitor.getPlatform() === 'android'"
             :show-inline-dictation-status="inlineDictationStatusVisible"
             :prompt-composer-available="Capacitor.getPlatform() === 'android'"
+            :prompt-composer-enabled="inlineDictationState.phase === 'idle'"
             :dictation-state="inlineDictationState"
             :dictation-target-key="inlineDictationTargetKey"
             @send="sendMobileHotkey"
@@ -1648,12 +1745,16 @@ onBeforeUnmount(() => {
         <PromptComposer
           v-if="connectionSnapshot?.selectedSession"
           :target-key="composerTargetKey"
+          :target-label="connectionSnapshot.selectedSession.name"
+          :host-id="snippetHostId"
+          :keyboard-visible="keyboardVisible"
           :transport-state="composerTransportState"
           :write-pty="writeComposerPty"
           :mobile-sheet="Capacitor.getPlatform() === 'android'"
           :open="mobilePromptComposerOpen"
           @open-change="setMobilePromptComposerOpen"
           @open-keys="openTerminalKeysFromComposer"
+          @manage="openSnippetSettings"
         />
       </section>
     </main>
@@ -1680,7 +1781,11 @@ onBeforeUnmount(() => {
       @set-auto="setAutomaticPortForwarding"
       @set-port="setManualPortForwarding"
     />
-    <SettingsScreen v-if="navigation.route.startsWith('settings')" />
+    <SettingsScreen
+      v-if="navigation.route.startsWith('settings')"
+      :snippet-host-id="snippetHostId"
+      :snippet-host-label="snippetHostLabel"
+    />
     <DiagnosticsScreen v-if="navigation.route.startsWith('diagnostics')" />
     <FileWorkspaceScreen
       v-if="navigation.route === 'files'"

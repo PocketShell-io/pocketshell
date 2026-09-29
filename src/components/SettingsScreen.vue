@@ -9,6 +9,12 @@ import {
 import { useNavigationStore } from '../stores/navigation';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@pocketshell/ui';
 import { AppIcon } from '@pocketshell/ui';
+import HostSnippetsScreen from './HostSnippetsScreen.vue';
+
+defineProps<{
+  snippetHostId: string;
+  snippetHostLabel: string;
+}>();
 
 const settings = useAppSettings();
 const navigation = useNavigationStore();
@@ -74,6 +80,11 @@ function setVoiceSilence(event: Event) {
         <span><strong>Voice</strong><small>Dictation settings</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
+      <button class="settings-link" type="button" data-testid="open-snippet-settings" @click="navigation.open('settings-snippets')">
+        <span class="settings-link__icon"><AppIcon name="terminal" /></span>
+        <span><strong>Command chips</strong><small>Save reusable text for each SSH host</small></span>
+        <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
+      </button>
       <button class="settings-link" type="button" data-testid="open-advanced-settings" @click="navigation.open('settings-advanced')">
         <span class="settings-link__icon"><AppIcon name="settings" /></span>
         <span><strong>Advanced</strong><small>Compatibility and account sync status</small></span>
@@ -91,6 +102,12 @@ function setVoiceSilence(event: Event) {
       </button>
     </section>
   </main>
+
+  <HostSnippetsScreen
+    v-else-if="navigation.route === 'settings-snippets'"
+    :host-id="snippetHostId"
+    :host-label="snippetHostLabel"
+  />
 
   <main v-else-if="navigation.route === 'settings-terminal'" class="screen-content settings-screen" data-testid="terminal-settings-screen">
     <section class="panel settings-panel" aria-labelledby="terminal-settings-title">

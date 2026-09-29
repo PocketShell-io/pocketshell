@@ -59,6 +59,8 @@ fi
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{2,38}$ ]] || fail 'run ID must be 3-39 path-safe characters'
 (( PREPARE_ONLY + TEST_ONLY <= 1 )) || fail '--prepare-only and --test-only cannot be combined'
 [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'generated Android Gradle wrapper is missing'
+[[ -x "$ROOT_DIR/scripts/check-js-files-results.py" ]] || fail 'exact Files JUnit checker is missing'
+"$ROOT_DIR/scripts/check-js-files-results.py" --self-test
 if [[ "$PREPARE_ONLY" != 1 ]]; then
   [[ -x "$ADB" ]] || fail "adb is missing or not executable: $ADB"
   [[ -f "$ROOT_DIR/tests/docker/test_key" ]] || fail 'committed Docker test key is missing'
@@ -153,31 +155,9 @@ else
   exit "$test_exit_code"
 fi
 
-python3 - "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results" <<'PY'
-from pathlib import Path
-import shutil
-import sys
-import xml.etree.ElementTree as ET
-results = Path(sys.argv[1])
-evidence = Path(sys.argv[2])
-reports = list(results.rglob('TEST-*.xml')) if results.is_dir() else []
-cases = []
-for report in reports:
-    root = ET.parse(report).getroot()
-    suites = [root] if root.tag == 'testsuite' else list(root.findall('testsuite'))
-    for suite in suites:
-        cases.extend(suite.findall('testcase'))
-matched = [case for case in cases if case.attrib.get('classname', '').rsplit('.', 1)[-1] == 'J10FilesBrowseEditJourneyTest']
-if len(matched) != 1:
-    raise SystemExit(f'expected exactly one J10 packaged test result; found {len(matched)}')
-case = matched[0]
-if list(case.iter('failure')) or list(case.iter('error')) or list(case.iter('skipped')):
-    raise SystemExit('J10 packaged test has a failed, errored, or skipped result')
-evidence.mkdir(parents=True, exist_ok=True)
-for report in reports:
-    shutil.copy2(report, evidence / report.name)
-print(f'PASS: packaged J10 executed {case.attrib.get("classname")}#{case.attrib.get("name")}')
-PY
+"$ROOT_DIR/scripts/check-js-files-results.py" \
+  --results-dir "$RESULTS_DIR" \
+  --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
 
 {
   printf 'run_id=%s\nremote_root=%s\n' "$RUN_ID" "$REMOTE_ROOT"

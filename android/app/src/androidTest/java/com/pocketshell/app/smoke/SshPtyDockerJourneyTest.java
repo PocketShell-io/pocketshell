@@ -14,8 +14,10 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
 
 import androidx.lifecycle.Lifecycle;
@@ -144,6 +146,60 @@ public final class SshPtyDockerJourneyTest {
         assertFalse("B and C must be distinct host sessions", rowB.getString("id").equals(rowC.getString("id")));
         assertFalse("A and C must be distinct host sessions", rowA.getString("id").equals(rowC.getString("id")));
 
+        org.json.JSONArray agentMetadata = new org.json.JSONArray();
+        org.json.JSONArray agentMetadataScreenshots = new org.json.JSONArray();
+        JSONObject initialA = readAgentUiEvidence("initial-a-unknown", sessionA);
+        assertNoRenderedAgentMetadata(initialA, "new plain-shell session A before metadata arrives");
+        agentMetadata.put(initialA);
+        JSONObject initialB = readAgentUiEvidence("initial-b-unknown", sessionB);
+        assertNoRenderedAgentMetadata(initialB, "new plain-shell session B before metadata arrives");
+        agentMetadata.put(initialB);
+        JSONObject initialUnknownC = readAgentUiEvidence("initial-c-unknown", sessionC);
+        assertNoRenderedAgentMetadata(initialUnknownC, "new plain-shell session C");
+        agentMetadata.put(initialUnknownC);
+
+        JSONObject agentA = attachSession(rowA, "agent-seed-a");
+        // Keep the host's reported value fresh through the A→B→A check, but
+        // cap fixture processes so a failed test cannot leave an endless loop.
+        submitTerminalCommand("timeout 300 sh -c 'while :; do a state-report waiting >/dev/null 2>&1; sleep 1; done' "
+                + ">/dev/null 2>&1 & bash -c 'exec -a claude sleep 300' >/dev/null 2>&1 &", "agent-seed-a");
+        refreshSessionListAndWaitForMetadata(sessionA, "claude", "waiting");
+        JSONObject lateA = readAgentUiEvidence("late-a-reported", sessionA);
+        assertAgentMetadata(lateA, "claude", "waiting", "Claude Code", "Waiting", "late A host metadata");
+        assertEquals("late metadata must remain bound to the selected A session", sessionA,
+                lateA.getString("selectedTag"));
+        agentMetadata.put(lateA);
+
+        JSONObject agentB = attachSession(rowB, "agent-seed-b");
+        submitTerminalCommand("timeout 300 sh -c 'while :; do a state-report idle >/dev/null 2>&1; sleep 1; done' "
+                + ">/dev/null 2>&1 & bash -c 'exec -a codex sleep 300' >/dev/null 2>&1 &", "agent-seed-b");
+        refreshSessionListAndWaitForMetadata(sessionB, "codex", "idle");
+        JSONObject listWithMetadata = readAgentUiEvidence("list-a-and-b-reported", sessionB, sessionA);
+        assertAgentMetadata(listWithMetadata, "codex", "idle", "Codex", "Idle", "selected B session list");
+        assertEquals("the session list must retain A's own identity after B reports metadata", "claude",
+                listWithMetadata.getJSONObject("otherSession").getString("agent"));
+        agentMetadata.put(listWithMetadata);
+        agentMetadataScreenshots.put(captureFullDeviceScreenshot(
+                "agent-list-a-b-reported.png", artifactDirectory, sessionB, "sessions-list"));
+
+        JSONObject selectedB = attachSession(agentB, "agent-selected-b");
+        JSONObject bChrome = readAgentUiEvidence("selected-b-codex-idle", sessionB);
+        assertSelectedSessionChromeAgent(bChrome, "codex", "idle", "Codex", "Idle", "selected B session chrome");
+        agentMetadata.put(bChrome);
+        agentMetadataScreenshots.put(captureFullDeviceScreenshot(
+                "agent-selected-codex-idle.png", artifactDirectory, sessionB, "selected-terminal"));
+
+        JSONObject returnedA = attachSession(agentA, "agent-selected-a-return");
+        JSONObject aChrome = readAgentUiEvidence("selected-a-claude-waiting", sessionA);
+        assertSelectedSessionChromeAgent(aChrome, "claude", "waiting", "Claude Code", "Waiting", "selected A return chrome");
+        agentMetadata.put(aChrome);
+        agentMetadataScreenshots.put(captureFullDeviceScreenshot(
+                "agent-selected-claude-waiting.png", artifactDirectory, sessionA, "selected-terminal"));
+
+        click("[data-testid=open-sessions]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
+        awaitJsTrue("['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+
         JSONObject uncertainMutation = createAmbiguousSessionAndReconcile(runId, artifactDirectory);
 
         JSONObject switchA = attachAndCapture(rowA, "switch-a", markerASwitch, artifactDirectory);
@@ -153,6 +209,13 @@ public final class SshPtyDockerJourneyTest {
         JSONObject switchB = attachAndCapture(rowB, "switch-b", markerBSwitch, artifactDirectory);
         checkpoints.put(switchB);
         JSONObject switchC = attachAndCapture(rowC, "switch-c", markerCSwitch, artifactDirectory);
+        JSONObject unknownCChrome = readAgentUiEvidence("selected-c-unknown", sessionC);
+        assertNoRenderedAgentMetadata(unknownCChrome, "selected plain-shell session C");
+        assertEquals("unknown C metadata must remain bound to C", sessionC,
+                unknownCChrome.getString("selectedTag"));
+        agentMetadata.put(unknownCChrome);
+        agentMetadataScreenshots.put(captureFullDeviceScreenshot(
+                "agent-selected-unknown-shell.png", artifactDirectory, sessionC, "selected-terminal"));
         checkpoints.put(switchC);
         JSONObject switchAReturn = attachAndCapture(rowA, "switch-a-return", markerAReturn, artifactDirectory);
         checkpoints.put(switchAReturn);
@@ -267,6 +330,8 @@ public final class SshPtyDockerJourneyTest {
                 .put("terminalInputAcks", terminalInputStats().getInt("ackCount"))
                 .put("terminalInputFailures", terminalInputStats().getInt("failureCount"))
                 .put("sessions", new org.json.JSONArray().put(rowA).put(rowB).put(rowC))
+                .put("agentMetadata", agentMetadata)
+                .put("agentMetadataScreenshots", agentMetadataScreenshots)
                 .put("checkpoints", checkpoints)
                 .put("phaseEvents", phaseEvents)
                 .put("bridgeEvents", bridgeEvents)
@@ -319,11 +384,183 @@ public final class SshPtyDockerJourneyTest {
         return row;
     }
 
+    private JSONObject attachSession(JSONObject row, String checkpoint) throws Exception {
+        String tag = row.getString("tag");
+        if (!"sessions".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+            click("[data-testid=open-sessions]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
+        }
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-session-tag]')).some((node) => node.dataset.sessionTag === "
+                + JSONObject.quote(tag) + ")");
+        click("[data-session-tag=\"" + tag + "\"]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === " + JSONObject.quote(tag));
+        assertEquals("selected session identity must come from the live host row at " + checkpoint,
+                row.getString("name"), selectedSessionName());
+        assertEquals("selected session ID must come from the live host row at " + checkpoint,
+                row.getString("id"), selectedSessionId());
+        awaitTerminalReady(checkpoint);
+        return row;
+    }
+
+    private void submitTerminalCommand(String command, String checkpoint) throws Exception {
+        JSONObject before = terminalInputStats();
+        assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
+        pasteTerminalText(command, checkpoint);
+        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint + " command paste");
+        JSONObject beforeEnter = terminalInputStats();
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        waitForTerminalInputDrain(beforeEnter.getInt("ackCount"), beforeEnter.getInt("failureCount"), checkpoint + " command Enter");
+        SystemClock.sleep(1_500);
+    }
+
+    private void refreshSessionListAndWaitForMetadata(String tag, String agent, String state) throws Exception {
+        if (!"sessions".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+            click("[data-testid=open-sessions]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
+        }
+        click("[data-testid=refresh-sessions]");
+        String tagLiteral = JSONObject.quote(tag);
+        awaitJsTrue("(() => {const row=Array.from(document.querySelectorAll('[data-session-tag]')).find((node)=>node.dataset.sessionTag==="
+                + tagLiteral + ");return !!row&&row.dataset.sessionAgent===" + JSONObject.quote(agent)
+                + "&&row.dataset.sessionAgentState===" + JSONObject.quote(state)
+                + "&&row.dataset.sessionAgentStateSource==='reported';})()", 20_000);
+    }
+
+    private JSONObject readAgentUiEvidence(String stage, String tag) throws Exception {
+        return readAgentUiEvidence(stage, tag, null);
+    }
+
+    private JSONObject readAgentUiEvidence(String stage, String tag, String otherTag) throws Exception {
+        String value = evalString("(() => {const rows=Array.from(document.querySelectorAll('[data-session-tag]'));"
+                + "const row=rows.find((node)=>node.dataset.sessionTag===" + JSONObject.quote(tag) + ");"
+                + "const shell=document.querySelector('.app-shell');"
+                + "const text=(root,testid)=>root?.querySelector('[data-testid='+JSON.stringify(testid)+']')?.textContent.trim()??'';"
+                + "const aria=(root,testid)=>root?.querySelector('[data-testid='+JSON.stringify(testid)+']')?.getAttribute('aria-label')??'';"
+                + "const context=document.querySelector('.session-context');"
+                + "const other=rows.find((node)=>node.dataset.sessionTag==="
+                + JSONObject.quote(otherTag == null ? "" : otherTag) + ");"
+                + "return JSON.stringify({stage:" + JSONObject.quote(stage) + ",tag:" + JSONObject.quote(tag)
+                + ",rowPresent:!!row,rowId:row?.dataset.sessionId??'',agent:row?.dataset.sessionAgent??'',"
+                + "state:row?.dataset.sessionAgentState??'',source:row?.dataset.sessionAgentStateSource??'',"
+                + "rowIdentity:text(row,'session-agent-identity'),rowState:text(row,'session-agent-state'),"
+                + "rowIdentityAria:aria(row,'session-agent-identity'),rowStateAria:aria(row,'session-agent-state'),"
+                + "selectedTag:shell?.dataset.sshSelectedTag??'',selectedAgent:shell?.dataset.sshSelectedAgent??'',"
+                + "selectedKind:shell?.dataset.sshSelectedAgentKind??'',"
+                + "selectedState:shell?.dataset.sshSelectedAgentState??'',selectedSource:shell?.dataset.sshSelectedAgentStateSource??'',"
+                + "contextIdentity:text(context,'session-agent-identity'),contextState:text(context,'session-agent-state'),"
+                + "contextIdentityAria:aria(context,'session-agent-identity'),contextStateAria:aria(context,'session-agent-state'),"
+                + "otherSession:other?{tag:other.dataset.sessionTag??'',agent:other.dataset.sessionAgent??'',"
+                + "state:other.dataset.sessionAgentState??'',source:other.dataset.sessionAgentStateSource??'',"
+                + "identity:text(other,'session-agent-identity'),stateLabel:text(other,'session-agent-state'),"
+                + "identityAria:aria(other,'session-agent-identity'),stateAria:aria(other,'session-agent-state')}:null});})()");
+        JSONObject evidence = new JSONObject(value);
+        if (!evidence.getBoolean("rowPresent") && tag.equals(evidence.getString("selectedTag"))) {
+            evidence.put("agent", evidence.getString("selectedKind"));
+            evidence.put("state", evidence.getString("selectedState"));
+            evidence.put("source", evidence.getString("selectedSource"));
+        }
+        evidence.put("atEpochMs", System.currentTimeMillis());
+        return evidence;
+    }
+
+    private void assertAgentMetadata(JSONObject evidence, String agent, String state, String agentLabel,
+            String stateLabel, String context) throws Exception {
+        assertTrue(context + " session-list row must be present", evidence.getBoolean("rowPresent"));
+        assertEquals(context + " host identity", agent, evidence.getString("agent"));
+        assertEquals(context + " host state", state, evidence.getString("state"));
+        assertEquals(context + " state must be host-reported", "reported", evidence.getString("source"));
+        assertEquals(context + " session-list identity", agentLabel, evidence.getString("rowIdentity"));
+        assertEquals(context + " session-list state", stateLabel, evidence.getString("rowState"));
+        assertEquals(context + " identity accessibility label", agentLabel + " agent", evidence.getString("rowIdentityAria"));
+        assertEquals(context + " state accessibility label", "Agent state: " + stateLabel, evidence.getString("rowStateAria"));
+        assertEquals(context + " selected identity", agentLabel, evidence.getString("selectedAgent"));
+        assertEquals(context + " selected state", state, evidence.getString("selectedState"));
+        assertEquals(context + " selected context identity", agentLabel, evidence.getString("contextIdentity"));
+        assertEquals(context + " selected context state", stateLabel, evidence.getString("contextState"));
+        assertEquals(context + " selected identity accessibility label", agentLabel + " agent",
+                evidence.getString("contextIdentityAria"));
+        assertEquals(context + " selected state accessibility label", "Agent state: " + stateLabel,
+                evidence.getString("contextStateAria"));
+    }
+
+    private void assertNoRenderedAgentMetadata(JSONObject evidence, String context) throws Exception {
+        assertEquals(context + " host agent must remain absent", "", evidence.getString("agent"));
+        assertFalse(context + " cannot claim a host-reported state without a known agent report",
+                "reported".equals(evidence.getString("source")));
+        assertEquals(context + " session-list identity affordance must be absent", "", evidence.getString("rowIdentity"));
+        assertEquals(context + " session-list state affordance must be absent", "", evidence.getString("rowState"));
+        assertEquals(context + " session-list identity accessibility label must be absent", "", evidence.getString("rowIdentityAria"));
+        assertEquals(context + " session-list state accessibility label must be absent", "", evidence.getString("rowStateAria"));
+        assertEquals(context + " selected identity affordance must be absent", "", evidence.getString("selectedAgent"));
+        assertEquals(context + " selected state affordance must be absent", "", evidence.getString("selectedState"));
+        assertEquals(context + " selected chrome identity affordance must be absent", "", evidence.getString("contextIdentity"));
+        assertEquals(context + " selected chrome state affordance must be absent", "", evidence.getString("contextState"));
+        assertEquals(context + " selected chrome identity accessibility label must be absent", "",
+                evidence.getString("contextIdentityAria"));
+        assertEquals(context + " selected chrome state accessibility label must be absent", "",
+                evidence.getString("contextStateAria"));
+    }
+
+    private void assertSelectedSessionChromeAgent(JSONObject evidence, String agent, String state, String agentLabel,
+            String stateLabel, String context) throws Exception {
+        assertEquals(context + " selected tag", evidence.getString("tag"), evidence.getString("selectedTag"));
+        assertEquals(context + " selected host identity", agent, evidence.getString("agent"));
+        assertEquals(context + " selected host state", state, evidence.getString("state"));
+        assertEquals(context + " selected host state source", "reported", evidence.getString("source"));
+        assertEquals(context + " selected chrome identity", agentLabel, evidence.getString("selectedAgent"));
+        assertEquals(context + " selected chrome state", state, evidence.getString("selectedState"));
+        assertEquals(context + " selected app-bar identity", agentLabel, evidence.getString("contextIdentity"));
+        assertEquals(context + " selected app-bar state", stateLabel, evidence.getString("contextState"));
+        assertEquals(context + " selected app-bar identity accessibility label", agentLabel + " agent",
+                evidence.getString("contextIdentityAria"));
+        assertEquals(context + " selected app-bar state accessibility label", "Agent state: " + stateLabel,
+                evidence.getString("contextStateAria"));
+    }
+
+    private JSONObject captureFullDeviceScreenshot(String name, File artifactDirectory, String tag, String surface)
+            throws Exception {
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        waitForNextWebViewFrame();
+        SystemClock.sleep(150);
+        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        assertNotNull("Android must provide a same-run full-device screenshot for " + name, screenshot);
+        int width = screenshot.getWidth();
+        int height = screenshot.getHeight();
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        try {
+            assertTrue("full-device bitmap must encode as PNG for " + name,
+                    screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded));
+        } finally {
+            screenshot.recycle();
+        }
+        byte[] bytes = encoded.toByteArray();
+        File file = new File(artifactDirectory, name);
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(bytes);
+        }
+        assertTrue("full-device PNG must be non-empty for " + name, file.isFile() && file.length() > 1_000);
+        emitArtifact(name, bytes);
+        JSONObject result = new JSONObject()
+                .put("file", name)
+                .put("tag", tag)
+                .put("surface", surface)
+                .put("width", width)
+                .put("height", height)
+                .put("bytes", bytes.length)
+                .put("sha256", hex(MessageDigest.getInstance("SHA-256").digest(bytes)))
+                .put("capturedAtEpochMs", System.currentTimeMillis());
+        Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " AGENT_SCREENSHOT " + result);
+        return result;
+    }
+
     private JSONObject createAmbiguousSessionAndReconcile(String runId, File artifactDirectory) throws Exception {
         String target = runId + "-uncertain-create";
         String oldConnectionId = currentConnectionId();
+        String phaseBeforeCreate = currentPhase();
         assertTrue("uncertain create must start on a connected host transport after session refresh",
-                "connected".equals(currentPhase()) || "listing".equals(currentPhase()));
+                "connected".equals(phaseBeforeCreate) || "listing".equals(phaseBeforeCreate)
+                        || "live".equals(phaseBeforeCreate));
         assertTrue("uncertain create must start with a physical SSH connection", !oldConnectionId.isEmpty());
 
         String prefix = "/tmp/pocketshell-uncertain-mutation-" + target;
@@ -337,9 +574,18 @@ public final class SshPtyDockerJourneyTest {
                 + new JSONObject().put("target", target).put("connectionId", oldConnectionId));
 
         setValue("[data-testid=new-session-name]", target);
+        String createUiBeforeSubmit = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                + "inputValue:document.querySelector('[data-testid=new-session-name]')?.value??null,"
+                + "createDisabled:document.querySelector('[data-testid=create-session]')?.disabled??null,"
+                + "warning:document.querySelector('[data-testid=uncertain-mutation]')?.textContent.trim()??'',"
+                + "message:document.querySelector('.connection-message')?.textContent.trim()??''})");
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_UI_BEFORE_SUBMIT " + createUiBeforeSubmit);
+        assertFalse("uncertain create button must be enabled after setting its name: " + createUiBeforeSubmit,
+                new JSONObject(createUiBeforeSubmit).getBoolean("createDisabled"));
         long mutationRequestedAtEpochMs = System.currentTimeMillis();
         click("[data-testid=create-session]");
-        awaitJsTrue("(() => {"
+        String uncertainWarningCondition = "(() => {"
                 + "const root=document.querySelector('.app-shell');"
                 + "const warning=document.querySelector('[data-testid=uncertain-mutation]');"
                 + "const target=" + JSONObject.quote(target) + ";"
@@ -350,7 +596,23 @@ public final class SshPtyDockerJourneyTest {
                 + " && !!root.dataset.sshConnectionId"
                 + " && root.dataset.sshConnectionId !== " + JSONObject.quote(oldConnectionId)
                 + " && !Array.from(document.querySelectorAll('[data-session-tag]'))"
-                + ".some((node)=>node.dataset.sessionTag===target);})()", 20_000);
+                + ".some((node)=>node.dataset.sessionTag===target);})()";
+        try {
+            awaitJsTrue(uncertainWarningCondition, 20_000);
+        } catch (AssertionError failure) {
+            String createUiAfterTimeout = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                    + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                    + "connectionId:document.querySelector('.app-shell')?.dataset.sshConnectionId??'',"
+                    + "inputValue:document.querySelector('[data-testid=new-session-name]')?.value??null,"
+                    + "createDisabled:document.querySelector('[data-testid=create-session]')?.disabled??null,"
+                    + "warning:document.querySelector('[data-testid=uncertain-mutation]')?.textContent.trim()??'',"
+                    + "warningState:document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state??'',"
+                    + "message:document.querySelector('.connection-message')?.textContent.trim()??'',"
+                    + "sessions:Array.from(document.querySelectorAll('[data-session-tag]')).map((node)=>node.dataset.sessionTag)})");
+            Log.e("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_UI_AFTER_TIMEOUT " + createUiAfterTimeout,
+                    failure);
+            throw failure;
+        }
         String connectionDuringFreshList = currentConnectionId();
         assertTrue("the fresh list must use a different SSH transport", !connectionDuringFreshList.isEmpty()
                 && !oldConnectionId.equals(connectionDuringFreshList));
@@ -385,13 +647,25 @@ public final class SshPtyDockerJourneyTest {
                 .put("observedAtEpochMs", uncertaintyObservedAtEpochMs)
                 .put("warning", uncertaintyWarning));
 
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'connected'"
-                + " && document.querySelector('.app-shell')?.dataset.sshConnectionId === "
-                + JSONObject.quote(connectionDuringFreshList)
+        String mutationReconciledCondition = "(() => {const root=document.querySelector('.app-shell');"
+                + "return ['connected','live'].includes(root?.dataset.sshPhase)"
+                + " && root?.dataset.sshConnectionId === " + JSONObject.quote(connectionDuringFreshList)
                 + " && document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state === 'observed-applied'"
                 + " && Array.from(document.querySelectorAll('[data-session-tag]'))"
-                + ".filter((node)=>node.dataset.sessionTag === " + JSONObject.quote(target) + ").length === 1",
-                25_000);
+                + ".filter((node)=>node.dataset.sessionTag === " + JSONObject.quote(target) + ").length === 1;})()";
+        try {
+            awaitJsTrue(mutationReconciledCondition, 25_000);
+        } catch (AssertionError failure) {
+            String reconciliationUi = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                    + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                    + "connectionId:document.querySelector('.app-shell')?.dataset.sshConnectionId??'',"
+                    + "selectedTag:document.querySelector('.app-shell')?.dataset.sshSelectedTag??'',"
+                    + "warningState:document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state??'',"
+                    + "sessions:Array.from(document.querySelectorAll('[data-session-tag]')).map((node)=>node.dataset.sessionTag)})");
+            Log.e("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_RECONCILIATION_UI " + reconciliationUi,
+                    failure);
+            throw failure;
+        }
         long reconciledAtEpochMs = System.currentTimeMillis();
         JSONObject createdRow = findSessionRow(target);
 
@@ -434,6 +708,7 @@ public final class SshPtyDockerJourneyTest {
             if ("listing".equals(phase.optString("phase"))
                     && connectionDuringFreshList.equals(phase.optString("connectionId"))) listingPhases += 1;
         }
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES " + phases);
         assertEquals("one JS reconnect must follow the lost create response", 1, reconnectingPhases);
         assertEquals("one fresh session-list phase must reconcile the uncertain create", 1, listingPhases);
         assertEquals("the fixture's host CLI create identity must match the session shown in the refreshed UI",
@@ -623,16 +898,38 @@ public final class SshPtyDockerJourneyTest {
 
     private JSONObject captureCurrent(String checkpoint, String marker, File artifactDirectory) throws Exception {
         String selectedName = selectedSessionName();
+        hideImeForTerminalCapture(checkpoint);
         evalString("(() => {const main=document.querySelector('.screen-content.home-screen');"
                 + "const viewport=document.querySelector('#terminal-viewport'); if(!main||!viewport) throw new Error('live terminal page missing');"
                 + "main.scrollTop += viewport.getBoundingClientRect().top-main.getBoundingClientRect().top-8;"
                 + "const scroller=viewport.querySelector('.xterm-viewport'); if(scroller) scroller.scrollTop=scroller.scrollHeight;"
                 + "return 'scrolled-to-terminal';})()");
-        awaitJsTrue("(() => {const main=document.querySelector('.screen-content.home-screen');"
+        String viewportFitCondition = "(() => {const main=document.querySelector('.screen-content.home-screen');"
                 + "const viewport=document.querySelector('#terminal-viewport'); const title=document.querySelector('#terminal-title');"
                 + "const r=viewport?.getBoundingClientRect(),m=main?.getBoundingClientRect();"
                 + "return !!r&&!!m&&viewport.dataset.enabled==='true'&&title?.textContent.trim()===" + JSONObject.quote(selectedName)
-                + "&&r.top>=m.top-1&&r.bottom<=m.bottom+1&&r.left>=m.left&&r.right<=m.right;})()");
+                // Android WebView reports a sub-2 CSS-pixel top overlap after
+                // relayout; allow that rounding/paint-boundary slop while
+                // still rejecting a visibly clipped terminal viewport.
+                + "&&r.top>=m.top-4&&r.bottom<=m.bottom+1&&r.left>=m.left&&r.right<=m.right;})()";
+        try {
+            awaitJsTrue(viewportFitCondition);
+        } catch (AssertionError failure) {
+            String geometry = evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
+                    + "const main=document.querySelector('.screen-content.home-screen');"
+                    + "const viewport=document.querySelector('#terminal-viewport');"
+                    + "const box=(node)=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                    + "const active=document.activeElement;return {surface:root?.dataset.homeSurface??'',phase:root?.dataset.sshPhase??'',"
+                    + "selectedTag:root?.dataset.sshSelectedTag??'',selectedName:root?.dataset.sshSelectedSession??'',"
+                    + "viewportEnabled:viewport?.dataset.enabled??'',title:document.querySelector('#terminal-title')?.textContent.trim()??'',"
+                    + "inner:{width:innerWidth,height:innerHeight},visual:{offsetTop:visualViewport?.offsetTop??null,height:visualViewport?.height??null},"
+                    + "main:box(main),viewport:box(viewport),mainScrollTop:main?.scrollTop??null,"
+                    + "mainClientHeight:main?.clientHeight??null,mainScrollHeight:main?.scrollHeight??null,"
+                    + "activeElement:active?{tag:active.tagName,id:active.id,type:active.type??''}:null};})())");
+            Log.e("SshPtyDockerJourney", "RUN " + activeRunId + " VIEWPORT_FIT_FAILURE " + checkpoint + " " + geometry,
+                    failure);
+            throw failure;
+        }
         assertTrue("terminal output marker must be an exact xterm output row for " + checkpoint + ": " + terminalViewportText(),
                 exactTerminalRow(marker));
         String text = terminalViewportText();
@@ -701,6 +998,57 @@ public final class SshPtyDockerJourneyTest {
                 .put("markerRect", markerRect)
                 .put("terminalLayoutFile", checkpoint + "-terminal-layout.json")
                 .put("screenshotPixels", screenshot);
+    }
+
+    private void hideImeForTerminalCapture(String checkpoint) throws Exception {
+        boolean imeWasVisible = isImeVisible();
+        JSONObject resizeBefore = terminalResizeStats();
+        evalString("(() => {const active=document.activeElement;"
+                + "if(active instanceof HTMLElement) active.blur(); return 'terminal focus cleared for viewport capture';})()");
+        requestImeHide();
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        int stableHiddenSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (!isImeVisible()) {
+                stableHiddenSamples += 1;
+                if (stableHiddenSamples >= 3) {
+                    int previousAckCount = resizeBefore.getInt("ackCount") - (imeWasVisible ? 0 : 1);
+                    JSONObject resizeAfter = awaitStableNativeResizeState(
+                            previousAckCount, checkpoint + " after hiding IME");
+                    Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " TERMINAL_CAPTURE_IME_HIDDEN "
+                            + new JSONObject().put("checkpoint", checkpoint).put("imeWasVisible", imeWasVisible)
+                            .put("resize", resizeAfter));
+                    return;
+                }
+            } else {
+                stableHiddenSamples = 0;
+                requestImeHide();
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError(checkpoint + " Android IME did not stay hidden for terminal viewport capture");
+    }
+
+    private boolean isImeVisible() {
+        AtomicReference<Boolean> visible = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            visible.set(insets != null && android.os.Build.VERSION.SDK_INT >= 30
+                    && insets.isVisible(WindowInsets.Type.ime()));
+        });
+        return visible.get();
+    }
+
+    private void requestImeHide() {
+        scenario.onActivity(activity -> {
+            android.view.View decor = activity.getWindow().getDecorView();
+            android.view.WindowInsetsController controller = decor.getWindowInsetsController();
+            if (controller != null) controller.hide(WindowInsets.Type.ime());
+            InputMethodManager inputMethodManager = activity.getSystemService(InputMethodManager.class);
+            if (inputMethodManager != null) {
+                inputMethodManager.hideSoftInputFromWindow(decor.getWindowToken(), 0);
+            }
+        });
     }
 
     private JSONObject terminalLayoutDiagnostics() throws Exception {

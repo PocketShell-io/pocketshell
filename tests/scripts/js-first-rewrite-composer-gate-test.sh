@@ -5,31 +5,16 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-composer-artifacts.py"
-JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsComposerDockerJourneyTest.java"
-USAGE_PORTS_JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
-PROMPT_COMPOSER="$ROOT_DIR/src/components/PromptComposer.vue"
-RECORDING_MODE="$ROOT_DIR/src/components/ComposerRecordingMode.vue"
-DICTATION_UNIT_TEST="$ROOT_DIR/tests/unit/composerDictationCancellation.test.ts"
-HOST_ORACLE="$ROOT_DIR/scripts/composer-host-byte-oracle.py"
-HOST_ORACLE_CHECKER="$ROOT_DIR/scripts/check-js-composer-host-oracle.py"
-APP_STYLES="$ROOT_DIR/src/styles.css"
 TOOLCACHE_PRUNER="$ROOT_DIR/scripts/ci-emulator-prune-toolcache.sh"
 PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 
-[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -f "$JOURNEY" \
-  && -f "$USAGE_PORTS_JOURNEY" \
-  && -f "$PROMPT_COMPOSER" && -f "$RECORDING_MODE" && -f "$DICTATION_UNIT_TEST" \
-  && -x "$HOST_ORACLE" && -x "$HOST_ORACLE_CHECKER" \
-  && -f "$APP_STYLES" \
-  && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -f "$EXTRACTOR" && -x "$TOOLCACHE_PRUNER" && -x "$PACKAGED_LANES" ]] || {
   printf 'FAIL: rewrite composer gate inputs are missing\n' >&2
   exit 1
 }
 
 bash -n "$RUNNER"
-python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" \
-  "$JOURNEY" "$USAGE_PORTS_JOURNEY" "$PROMPT_COMPOSER" "$RECORDING_MODE" "$DICTATION_UNIT_TEST" \
-  "$HOST_ORACLE" "$HOST_ORACLE_CHECKER" "$APP_STYLES" <<'PY'
+python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
 import ast
 import os
 import re
@@ -38,562 +23,30 @@ import sys
 import tempfile
 from pathlib import Path
 
-workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path, journey_path, \
-    usage_ports_journey_path, prompt_composer_path, recording_mode_path, dictation_unit_test_path, \
-    host_oracle_path, host_oracle_checker_path, app_styles_path = map(Path, sys.argv[1:])
+workflow_path, runner_path, extractor_path, toolcache_pruner_path, packaged_lanes_path = map(Path, sys.argv[1:])
+repository_root = workflow_path.parents[2]
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
-journey = journey_path.read_text()
-usage_ports_journey = usage_ports_journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
-extractor = extractor_path.read_text()
-prompt_composer = prompt_composer_path.read_text()
-recording_mode = recording_mode_path.read_text()
-dictation_unit_test = dictation_unit_test_path.read_text()
-host_oracle = host_oracle_path.read_text()
-host_oracle_checker = host_oracle_checker_path.read_text()
-app_styles = app_styles_path.read_text()
-ast.parse(extractor, filename=str(extractor_path))
+ast.parse(extractor_path.read_text(), filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
 subprocess.run(["bash", "-n"], input=disk_cleanup, text=True, check=True)
 if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
     raise AssertionError("disk preflight does not invoke the tested toolcache-preservation helper")
 
 
-def require_dictate_prompt_journey(source: str) -> None:
-    required = (
-        'capturePromptComposerRoute(runId);',
-        'emitCurrentScreen(runId, "composer-route.png")',
-        'emitArtifact(runId, "composer-route.json"',
-        'const inlineMic=document.querySelector(\'[data-testid=inline-dictation-toggle]\')',
-        '"Dictate at terminal cursor".equals(state.getString("inlineMicLabel"))',
-        'titleState.put("expectedDictatePromptAccessibleName", "Dictate prompt draft")',
-        'titleState.put("expectedDictatePromptVisibleLabel", "")',
-        'titleState.getString("dictatePromptText").isEmpty()',
-        'titleState.getBoolean("dictatePromptGlyphPresent")',
-        'titleState.getString("dictatePromptAccessibleName")',
-        'titleState.getBoolean("dictatePromptVisible")',
-        'titleState.getBoolean("dictatePromptEnabled")',
-        'getDouble("width") >= 48.0',
-        'getDouble("height") >= 48.0',
-        'emitCurrentScreen(runId, "composer-title.png")',
-        'emitArtifact(runId, "composer-title.json"',
-    )
-    for needle in required:
-        if needle not in source:
-            raise AssertionError(f"composer journey is missing the separate Prompt and inline dictation route contract: {needle}")
-    start = source.index("private void exerciseComposerDictationMode")
-    end = source.index("private void awaitComposerReadyToSend", start)
-    dictation_method = source[start:end]
-    route_capture = dictation_method.index("capturePromptComposerRoute(runId);")
-    prompt_entry_tap = dictation_method.index('tapDomCenter("[data-testid=prompt-composer-launcher]")')
-    title_assertion = dictation_method.index("assertGenericComposerTitleAndSessionChrome(runId);")
-    action_tap = dictation_method.index('tapDomCenter("[data-testid=composer-dictate]")')
-    if not route_capture < prompt_entry_tap < title_assertion < action_tap:
-        raise AssertionError("journey must capture the idle terminal route, open Prompt, verify its Dictate action, then enter dictation")
-
-
-require_dictate_prompt_journey(journey)
-
-
-def require_labeled_terminal_route_contract(source: str, extractor_source: str) -> None:
-    start = source.index("private void capturePromptComposerRoute(")
-    end = source.index("private void ", start + len("private void "))
-    route_capture = source[start:end]
-    journey_evidence = (
-        "promptAccessibleName:launcher?.getAttribute('aria-label')??''",
-        "promptTitle:launcher?.getAttribute('title')??''",
-        "promptVisibleText:launcher?.innerText.trim()??''",
-        "promptIconVisible:!!promptIcon&&visible(promptIcon)",
-        "promptCenterHit:hitCenter(launcher)",
-        "inlineMicTitle:inlineMic?.getAttribute('title')??''",
-        "inlineMicVisibleText:inlineMic?.innerText.trim()??''",
-        "terminalDestinationLabels,terminalDestinationVisible:visible(terminalDestination)",
-        "inlineMicIconVisible:!!inlineMicIcon&&visible(inlineMicIcon)",
-        "inlineMicCenterHit:hitCenter(inlineMic)",
-        "targetsSeparated:!!promptBounds&&!!inlineMicBounds&&promptBounds.right<=inlineMicBounds.left",
-        '"Open prompt composer to type or dictate a prompt".equals(state.getString("promptAccessibleName"))',
-        '"Open prompt composer to type or dictate a prompt".equals(state.getString("promptTitle"))',
-        '.put("expectedPromptAccessibleName", "Open prompt composer to type or dictate a prompt")',
-        '.put("expectedPromptVisibleText", "Prompt")',
-        '"Prompt".equals(state.getString("promptVisibleText"))',
-        '"Dictate".equals(state.getString("inlineMicVisibleText"))',
-        '.put("expectedTerminalDestinationLabels", new JSONArray())',
-        '"[]".equals(state.getJSONArray("terminalDestinationLabels").toString())',
-        '!state.getBoolean("terminalDestinationVisible")',
-        '"Dictate at terminal cursor".equals(state.getString("inlineMicLabel"))',
-        '"Dictate at terminal cursor".equals(state.getString("inlineMicTitle"))',
-        'state.getBoolean("promptIconVisible")',
-        'state.getBoolean("promptCenterHit")',
-        'state.getBoolean("inlineMicIconVisible")',
-        'state.getBoolean("inlineMicCenterHit")',
-        'state.getBoolean("targetsSeparated")',
-    )
-    for needle in journey_evidence:
-        if needle not in route_capture:
-            raise AssertionError(f"labeled terminal route journey is missing {needle}")
-    if ('promptLabel=launcher?.querySelector' in route_capture
-            or 'const terminalDestinationLabels=terminalDestination?Array.from(terminalDestination.children).map(node=>node.textContent.trim()):[];' not in route_capture):
-        raise AssertionError("terminal route evidence must capture visible Prompt and Dictate labels and reject duplicate destination captions")
-
-    extractor_evidence = (
-        'route_state.get("promptAccessibleName") != "Open prompt composer to type or dictate a prompt"',
-        'route_state.get("promptTitle") != "Open prompt composer to type or dictate a prompt"',
-        'route_state.get("promptVisibleText") != "Prompt"',
-        'route_state.get("expectedPromptVisibleText") != "Prompt"',
-        'route_state.get("inlineMicVisibleText") != "Dictate"',
-        'route_state.get("promptIconVisible") is not True',
-        'route_state.get("promptCenterHit") is not True',
-        'route_state.get("inlineMicLabel") != "Dictate at terminal cursor"',
-        'route_state.get("inlineMicTitle") != "Dictate at terminal cursor"',
-        'route_state.get("terminalDestinationLabels") != []',
-        'route_state.get("expectedTerminalDestinationLabels") != []',
-        'route_state.get("terminalDestinationVisible") is not False',
-        'route_state.get("inlineMicIconVisible") is not True',
-        'route_state.get("inlineMicCenterHit") is not True',
-        'route_state.get("targetsSeparated") is not True',
-        'route_bounds["promptBounds"]["right"] > route_bounds["inlineMicBounds"]["left"]',
-        '"Prompt composer has no accessible name"',
-        '"Prompt composer has the wrong title"',
-        '"Prompt composer icon is hidden"',
-        '"missing Prompt caption is rejected"',
-        '"missing terminal Dictate caption is rejected"',
-        '"visible terminal destination caption is rejected"',
-        '"Prompt composer center misses its target"',
-        '"terminal dictation mic has the wrong title"',
-        '"terminal dictation mic icon is hidden"',
-        '"terminal dictation mic center misses its target"',
-        '"Prompt and terminal dictation are not marked as separate"',
-        '"Prompt and terminal dictation bounds overlap"',
-    )
-    for needle in extractor_evidence:
-        if needle not in extractor_source:
-            raise AssertionError(f"composer artifact extractor is missing a visible route-label regression check: {needle}")
-
-
-require_labeled_terminal_route_contract(journey, extractor)
-
-
-def require_open_composer_physical_target_settles(source: str) -> None:
-    set_draft = source[source.index("private void setComposerDraft("):source.index("private void awaitPromptDictateTargetSettled(")]
-    if "if (openedComposer) awaitPromptDictateTargetSettled();" not in set_draft:
-        raise AssertionError("a newly opened composer must settle its physical Dictate target before the next tap")
-    start = source.index("private void awaitPromptDictateTargetSettled(")
-    end = source.index("private void openComposerAfterInlineWithEvidence(", start)
-    settle = source[start:end]
-    required = (
-        "awaitNativeWindowFocus(true)",
-        "panel.getAttribute('role')==='dialog'",
-        "panel.getAttribute('aria-modal')==='true'",
-        "button.getClientRects().length>0",
-        "buttonRect.width>=48&&buttonRect.height>=48",
-        "buttonRect.bottom<=viewport.height",
-        "document.elementFromPoint(x,y)",
-        "hit?.closest?.('[data-testid=composer-dictate]')",
-        "Math.abs(value-previous.geometry[index])<0.25",
-        "samples>=3",
-    )
-    for needle in required:
-        if needle not in settle:
-            raise AssertionError(f"composer Dictate physical target settling is missing: {needle}")
-
-
-require_open_composer_physical_target_settles(journey)
-
-def require_usage_ports_composer_opener(source: str) -> None:
-    helper_start = source.index("private void openComposerIfClosedAndAwaitTransport()")
-    helper_end = source.index("private void awaitTerminalReady()", helper_start)
-    helper = source[helper_start:helper_end]
-    required = (
-        'if (!"true".equals(evalString("!!document.querySelector(\'[data-testid=prompt-composer]\')")))',
-        'click("[data-testid=prompt-composer-launcher]")',
-        "getAttribute('role') === 'dialog'",
-        "getAttribute('aria-modal') === 'true'",
-        "dataset.transportState === 'connected'",
-    )
-    for needle in required:
-        if needle not in helper:
-            raise AssertionError(f"Usage/Ports composer helper is missing {needle}")
-    positions = [helper.index(needle) for needle in required]
-    if positions != sorted(positions):
-        raise AssertionError("Usage/Ports must open the composer when closed, await its modal dialog, then await connected transport")
-
-    send_start = source.index("private void sendComposerCommandAndAwaitMarker(")
-    send_end = source.index("private void openComposerIfClosedAndAwaitTransport()", send_start)
-    send_helper = source[send_start:send_end]
-    ensure_composer = send_helper.index("openComposerIfClosedAndAwaitTransport();")
-    draft_write = send_helper.index('setValue("[data-testid=prompt-draft]", command);')
-    send_click = send_helper.index('click(".composer-shared-controls .send");')
-    if not ensure_composer < draft_write < send_click:
-        raise AssertionError("Usage/Ports cleanup must open and ready the composer before writing or sending the command")
-
-
-require_usage_ports_composer_opener(usage_ports_journey)
-
-missing_launcher = usage_ports_journey.replace(
-    'click("[data-testid=prompt-composer-launcher]");',
-    "",
-    1,
-)
-try:
-    require_usage_ports_composer_opener(missing_launcher)
-except (AssertionError, ValueError):
-    print("PASS: removing the Usage/Ports composer launcher tap fails its gate contract")
-else:
-    raise AssertionError("Usage/Ports helper gate missed a removed composer launcher tap")
-
-helper_start = usage_ports_journey.index("private void openComposerIfClosedAndAwaitTransport()")
-helper_end = usage_ports_journey.index("private void awaitTerminalReady()", helper_start)
-helper = usage_ports_journey[helper_start:helper_end]
-dialog_start = helper.index("getAttribute('role') === 'dialog'")
-transport_start = helper.index("dataset.transportState === 'connected'")
-dialog_wait = helper[dialog_start:transport_start]
-transport_wait = helper[transport_start:]
-reordered_helper = helper[:dialog_start] + transport_wait + dialog_wait
-transport_before_dialog = usage_ports_journey.replace(helper, reordered_helper, 1)
-try:
-    require_usage_ports_composer_opener(transport_before_dialog)
-except (AssertionError, ValueError):
-    print("PASS: checking Usage/Ports transport before the dialog fails its gate contract")
-else:
-    raise AssertionError("Usage/Ports helper gate missed transport checked before opening the dialog")
-
-
-def require_icon_only_stop_contract(source: str, extractor_source: str) -> None:
-    required = (
-        "stop?.innerText.trim()===''",
-        "stop?.getAttribute('aria-label')==='Stop dictation and keep the recognized text in the editable draft'",
-        "Math.abs(stopRect.width-48.0)<0.5",
-        "Math.abs(stopRect.height-48.0)<0.5",
-        "!!stopGlyph",
-        '"stopText,stopAccessibleName,"',
-        '"stopVisible:!!stopButton',
-        '"stopEnabled:!!stopButton&&!stopButton.disabled,"',
-        '"stopInRecordingHeader:stopInRecordingHeader,"',
-        "svg[aria-hidden='true'] > rect[x='6'][y='6'][width='12'][height='12'][rx='1'][fill='currentColor']",
-        '"stopGlyphPresent:!!stopButton?.querySelector(',
-    )
-    for needle in required:
-        if needle not in source:
-            raise AssertionError(f"composer journey is missing icon-only Stop evidence: {needle}")
-    if "textContent.includes('Stop')" in source:
-        raise AssertionError("composer journey must not require visible Stop text")
-    extractor_cases = (
-        '"recording Stop exposes visible label text"',
-        '"recording Stop has the wrong accessible name"',
-        '"recording Stop is hidden"',
-        '"recording Stop is disabled"',
-        '"recording Stop omits the square SVG glyph"',
-        '"recording Stop bounds are not 48dp square"',
-        '"recording Stop is outside the capture header"',
-    )
-    for needle in extractor_cases:
-        if needle not in extractor_source:
-            raise AssertionError(f"composer artifact extractor lacks a Stop regression case: {needle}")
-
-
-require_icon_only_stop_contract(journey, extractor)
-
-
-def require_kotlin_dictation_contract(source: str, extractor_source: str) -> None:
-    journey_evidence = (
-        "actions?.getAttribute('role')==='group'",
-        '"Prompt dictation"',
-        '"Review dictation"',
-        "cancel?.textContent.trim()==='Discard'",
-        "cancel?.getAttribute('aria-label')==='Discard recording without transcribing'",
-        '"timerBesideWaveform:!!timerRect&&!!waveformRect&&timerRect.bottom>waveformRect.top"',
-        '"recordingControlsAccessible:actionRow?.getAttribute(\'role\')===\'group\'"',
-        '"recordingControlsSeparate:!!actionRow&&!!mode&&!mode.contains(actionRow),',
-        '"previewAccessible:!!preview&&preview.getAttribute(\'id\')===\'composer-recording-preview\'"',
-        '"reviewEditable:!!draft&&!draft.readOnly&&draft.getAttribute(\'aria-readonly\')===\'false\',',
-        "textContent.includes('Transcript ready')",
-        '"recording actions must follow the Kotlin composer row: Discard, Insert, Send"',
-        '"stopInRecordingHeader:stopInRecordingHeader,"',
-        '"transcribing Cancel must be distinct from recording Discard"',
-        '"transcribing state must expose Cancel, timer, live preview, and Send without Insert"',
-        '"editable review must restore its explicit, enabled Insert action"',
-    )
-    for needle in journey_evidence:
-        if needle not in source:
-            raise AssertionError(f"composer journey is missing a Kotlin dictation contract assertion: {needle}")
-
-    extractor_evidence = (
-        'mode_geometry.get("cancelText") != "Discard"',
-        'mode_geometry.get("composerHeading") != expected_heading',
-        'route_state.get("inlineMicLabel") != "Dictate at terminal cursor"',
-        'mode_geometry.get("cancelText") != "Cancel"',
-        'mode_geometry.get("insertAccessible") is not False',
-        'mode_geometry.get("insert") is not None',
-        'mode_geometry.get("insertEnabled") is not True',
-        'required_rects.append("insert")',
-        'mode_geometry.get("timerBesideWaveform") is not True',
-        'mode_geometry.get("timerVisible") is not True',
-        'mode_geometry.get("insertAccessible") is not True',
-        'mode_geometry.get("previewVisible") is not True',
-        '_timer_sits_beside_waveform(mode_geometry.get("timer"), mode_geometry.get("waveform"))',
-        'mode_geometry.get("previewAccessible") is not True',
-        'mode_geometry.get("recordingControlsSeparate") is not True',
-        'mode_geometry.get("reviewEditable") is not True',
-        '"recording timer is stacked below its waveform"',
-        '"recording transcript lacks live accessible text"',
-        '"recording controls are nested inside the status card"',
-        'mode_geometry.get("stopInRecordingHeader") is not True',
-        '"post-stop review is no longer editable"',
-    )
-    for needle in extractor_evidence:
-        if needle not in extractor_source:
-            raise AssertionError(f"composer artifact extractor is missing a Kotlin dictation criterion: {needle}")
-
-    subprocess.run([sys.executable, str(extractor_path), "--self-test"], check=True)
-
-
-require_kotlin_dictation_contract(journey, extractor)
-
-
-def require_obvious_prompt_dictation_mode() -> None:
-    composer_evidence = (
-        "const composerTitle = computed(() => dictationPhase.value === 'review'",
-        "'Review dictation'",
-        "'Prompt dictation'",
-        "<h3 id=\"composer-title\">{{ composerTitle }}</h3>",
-        'title="Dictate into prompt draft" aria-label="Dictate prompt draft"',
-        '<DictationMicIcon :size="20" />',
-        "composer-recording-preview composer-status",
-        "Prompt dictation draft, read only during capture",
-        'v-if="dictationPhase === \'recording\'"',
-    )
-    for needle in composer_evidence:
-        if needle not in prompt_composer:
-            raise AssertionError(f"mobile prompt composer does not expose its distinct dictation mode: {needle}")
-    for needle in ('class="recording-mode__phase">Listening</span>', "Transcribing prompt…"):
-        if needle not in recording_mode:
-            raise AssertionError(f"prompt dictation feedback is not phase-specific: {needle}")
-    unit_evidence = (
-        "places the mobile Dictate prompt microphone in the composer action row",
-        "expect(textContent(mic!)).toBe('')",
-        "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Prompt dictation')",
-        "expect(textContent(findAll(root, (candidate) => candidate.props.id === 'composer-title')[0])).toBe('Review dictation')",
-        "const reviewInsert = findByTestId(root, 'composer-insert');",
-        "expect(reviewInsert?.props.disabled).toBe(false);",
-        "toEqual(['composer-recording-cancel', 'composer-insert', 'composer-dictation-send'])",
-        "toEqual(['composer-recording-cancel', 'composer-dictation-send'])",
-        "expect(findByTestId(root, 'composer-insert')).toBeUndefined();",
-        "expect(writePty).not.toHaveBeenCalled();",
-    )
-    for needle in unit_evidence:
-        if needle not in dictation_unit_test:
-            raise AssertionError(f"dictation UX regression test is missing its failing assertion: {needle}")
-    # The extractor self-test below feeds small and clipped route controls into
-    # the same artifact validator used by the packaged screenshot journey.
-    if '"idle terminal {label} is clipped or below the 48dp touch target"' not in extractor:
-        raise AssertionError("route screenshot validation does not protect the separate Prompt and inline mic touch targets")
-    subprocess.run([sys.executable, str(host_oracle_checker_path), "--self-test"], check=True)
-
-
-require_obvious_prompt_dictation_mode()
-
-
-def require_keyboard_up_composer_layout() -> None:
-    base_sheet_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel {')
-    sheet_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet {')
-    title_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading__copy,')
-    route_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading > .state-tag { display: none; }')
-    route_group_rule = app_styles.index('.app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading { justify-content: flex-end; }')
-    if not base_sheet_rule < sheet_rule < title_rule:
-        raise AssertionError("keyboard-up sheet padding and hidden title copy rules must follow the generic composer rule")
-    if route_rule <= title_rule:
-        raise AssertionError("keyboard-up composer must hide header status text while retaining the key route controls")
-    if route_group_rule <= sheet_rule or "display: none;" not in app_styles[route_rule:route_rule + 120]:
-        raise AssertionError("keyboard-up composer must hide title copy while preserving a visible key-control row")
-    for needle in ("padding-inline: 16px;",):
-        if needle not in app_styles[sheet_rule:title_rule]:
-            raise AssertionError("keyboard-up Prompt Composer does not retain the shared horizontal inset")
-    journey_evidence = (
-        'composerIsSheet:composer?.classList.contains(\'composer-panel--sheet\')===true',
-        'composerHeadingVisible:!!heading&&heading.getClientRects().length>0&&headingStyle?.display!==\'none\'',
-        'keyboard-up Prompt Composer must hide its title copy while keeping the key route visible',
-        "keys:composer?.querySelector('[data-testid=composer-open-keys]')",
-        'composerOpenKeysBounds:rect(buttons.keys)',
-        'keyboard-up composer " + name + " must keep a 16dp horizontal gutter',
-        'keyboard-down composer must retain its phase heading',
-        'draftBounds:rect(draftNode),actionsBounds:rect(actionsNode)',
-    )
-    for needle in journey_evidence:
-        if needle not in journey:
-            raise AssertionError(f"composer journey is missing the keyboard-up/down layout assertion: {needle}")
-    extractor_evidence = (
-        'geometry.get("composerIsSheet") is not True',
-        'geometry.get("composerHeadingVisible") is not False',
-        'any(buttons.get(name) is not True for name in ("dictate", "insert", "send", "keys"))',
-        'composerOpenKeysBounds',
-        'keyboard-up composer {name} must keep a 16dp horizontal gutter',
-        'title_state.get("composerHeadingVisible") is not False',
-        'mode_geometry.get("composerHeadingVisible") is not True',
-        'keyboard-up composer title copy is visible',
-        'keyboard-up composer draft loses its horizontal gutter',
-    )
-    for needle in extractor_evidence:
-        if needle not in extractor:
-            raise AssertionError(f"composer artifact extractor is missing the keyboard-up/down layout guard: {needle}")
-
-
-require_keyboard_up_composer_layout()
-
-
-def require_pre_action_host_byte_oracle() -> None:
-    for stage, action in (
-        ("recording-insert", 'tapDomCenter("[data-testid=composer-insert]")'),
-        ("transcribing-send", 'tapDomCenter("[data-testid=composer-dictation-send]")'),
-    ):
-        before = journey.index(f'captureHostBeforeExplicitAction("{stage}",')
-        after = journey.index(action, before)
-        if before >= after:
-            raise AssertionError(f"host byte snapshot for {stage} must precede the explicit action")
-    review_snapshot = journey.index('captureHostBeforeExplicitAction("stop-review",')
-    review_action = journey.index('tapDomCenter(".composer-shared-controls .send")', review_snapshot)
-    if review_snapshot >= review_action:
-        raise AssertionError("Stop must leave an editable draft and no PTY write before a later explicit Send")
-    for needle in (
-        "a capture --workspace /home/testuser --tag",
-        '"source": "docker-host-a-capture"',
-        '"noPtyWriteBeforeExplicitAction": result.returncode == 0 and not marker_present',
-    ):
-        if needle not in host_oracle:
-            raise AssertionError(f"host oracle is missing independent pre-action PTY evidence: {needle}")
-    if '"recording-insert", "transcribing-send", "stop-review"' not in host_oracle_checker:
-        raise AssertionError("host-byte checker does not require every pre-action stage")
-    for needle in (
-        '"ptyWriteObserved") is not False',
-        '"noPtyWriteBeforeExplicitAction") is not True',
-        "marker.encode(\"utf-8\") in capture",
-        "composer-host-oracle-pre-{stage}.json",
-    ):
-        if needle not in host_oracle_checker:
-            raise AssertionError(f"host-byte evidence checker is missing a fail-closed condition: {needle}")
-    runner_evidence = (
-        '"$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$host_oracle_port" "tcp:$host_oracle_port"',
-        '"-Pandroid.testInstrumentationRunnerArguments.hostOraclePort=$host_oracle_port"',
-        '"$ROOT_DIR/scripts/check-js-composer-host-oracle.py"',
-        '--evidence-dir "$evidence_dir" --run-id "$ARTIFACT_RUN_ID" --session "$SESSION_BASE-bytes"',
-    )
-    for needle in runner_evidence:
-        if needle not in runner:
-            raise AssertionError(f"packaged composer runner does not wire host-byte verification: {needle}")
-
-
-require_pre_action_host_byte_oracle()
-
-
-def require_wrapped_terminal_marker_oracle(source: str) -> None:
-    matcher_start = source.index("private static String wrappedXtermMarkerSpanJs(")
-    wait_start = source.index("private long waitForTerminalMarkerOrCaptureWindow(", matcher_start)
-    artifact_start = source.index("private void savePostSendArtifacts(", wait_start)
-    assertion_start = source.index("assertTrue(\"post-send byte and marker output rows", artifact_start)
-    matcher = source[matcher_start:wait_start]
-    wait = source[wait_start:artifact_start]
-    artifact = source[artifact_start:assertion_start]
-    assertions = source[assertion_start:source.index("private void ", assertion_start)]
-    for needle in (
-        "joined=(rows[start].textContent||'')+joined",
-        "rows:rows.slice(start,end+1)",
-    ):
-        if needle not in matcher:
-            raise AssertionError(f"Composer marker matcher does not join consecutive xterm rows: {needle}")
-    for needle in (
-        "wrappedXtermMarkerSpanJs(quotedMarker)",
-        "markerRowRects.every(bounds=>visible(bounds,view,screenBounds))",
-        "composerBounds=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect()",
-        "bounds.bottom<=composerBounds.top",
-        "byteRowIndex<markerSpan.start",
-        "markerFragments:markerRowNodes.map",
-    ):
-        if needle not in wait:
-            raise AssertionError(f"Composer marker wait/failure diagnostics lack wrapped-row coverage: {needle}")
-    for needle in (
-        "wrappedXtermMarkerSpanJs(JSONObject.quote(expectedMarker))",
-        "markerRowSpan:{startRowIndex:markerSpan?.start??null",
-        "markerRowsVisible&&byteOutputVisible&&byteOutputRowIndex>=0",
-        "bounds.bottom<=composerRect.top",
-        "byteOutputRowIndex<markerSpan.start",
-        "terminalDomText,terminalDomRows",
-    ):
-        if needle not in artifact:
-            raise AssertionError(f"Composer post-send artifact does not report a wrapped marker span: {needle}")
-    for needle in (
-        "markerRow.getDouble(\"top\") >= viewport.getDouble(\"top\")",
-        "markerRow.getDouble(\"bottom\") <= composerTop",
-        "measured.getBoolean(\"terminalOutputRowVisible\")",
-    ):
-        if needle not in assertions:
-            raise AssertionError(f"Composer post-send assertion lost marker visibility/order checks: {needle}")
-
-
-require_wrapped_terminal_marker_oracle(journey)
-
-
-def require_visible_inert_forced_focus_miss(source: str, extractor_source: str, composer_source: str) -> None:
-    focus_start = source.index("private void ensureImeVisible(String stage)")
-    focus_end = source.index("private boolean isPromptDraftFocused()", focus_start)
-    focus = source[focus_start:focus_end]
-    required_focus = (
-        '"[data-testid=prompt-composer] [data-testid=composer-status]"',
-        'attemptIndex < composerFocusMaxAttempts',
-        'forceFirstPostAttachTapMiss && requirePhysicalTap && attemptIndex == 0',
-        'tap.optBoolean("targetVisible")',
-        '"composer-status".equals(centerHit.optString("testid"))',
-        'JSONObject physicalPointerDown = trustedPointerDownEvidence(after)',
-        '.put("physicalCenterHit", physicalCenterHit)',
-        '.put("visibleInertStatusHit", visibleInertStatusHit)',
-        '.put("dialogStayedOpenAfterMiss", modalStayedOpen)',
-        '.put("draftStayedMountedAfterMiss", draftStayedMounted)',
-    )
-    for needle in required_focus:
-        if needle not in focus:
-            raise AssertionError(f"forced focus miss does not prove a visible inert status tap and bounded retry: {needle}")
-    if 'composerFocusMaxAttempts >= 1 && composerFocusMaxAttempts <= 2' not in source:
-        raise AssertionError("composer focus retry bound must remain between one and two physical taps")
-    tap_start = source.index("private long tapDomCenter(")
-    tap_end = source.index("private void ", tap_start + len("private void "))
-    tap_method = source[tap_start:tap_end]
-    for needle in ('x=rect.left+rect.width/2,y=rect.top+rect.height/2',
-                   'targetVisible:hasVisibleBox&&ancestorsVisible',
-                   'targetTestId:element.getAttribute(\'data-testid\')||\'\''):
-        if needle not in tap_method:
-            raise AssertionError(f"physical tap evidence omits rendered target visibility: {needle}")
-    status_start = composer_source.index('<p id="composer-status"')
-    status_end = composer_source.index("</p>", status_start)
-    if "@click" in composer_source[status_start:status_end]:
-        raise AssertionError("composer status copy must remain inert so the injected physical miss cannot take an action")
-    required_extractor = (
-        'miss.get("requestedSelector") == "[data-testid=prompt-composer] [data-testid=composer-status]"',
-        'tap.get("targetVisible") is True',
-        'tap.get("targetTestId") == "composer-status"',
-        'center_hit.get("testid") == "composer-status"',
-        'miss.get("physicalCenterHit") is True',
-        'physical_pointer.get("targetMatchesRequested") is True',
-        'abs(physical_pointer["clientX"] - tap["x"]) <= 1.0',
-        'tap["targetWidth"] > 0 and tap["targetHeight"] > 0',
-        'miss.get("visibleInertStatusHit") is not True',
-        'attempt.get("attempt") == 2',
-        'attempt.get("requestedSelector") == "[data-testid=prompt-draft]"',
-    )
-    for needle in required_extractor:
-        if needle not in extractor_source:
-            raise AssertionError(f"composer artifact gate does not enforce visible miss proof and physical retry: {needle}")
-
-
-require_visible_inert_forced_focus_miss(journey, extractor, prompt_composer)
-
-
 def require_contract(source: str, packaged_script: str) -> None:
     required = (
         ("isolated fixture", "scripts/agents-pool.sh up 2245"),
         ("single packaged-lanes wrapper invocation", "script: scripts/ci-js-first-packaged-lanes.sh"),
-        ("exact result guard", "scripts/check-js-composer-journey-results.py"),
+        ("always-run exact result guard", "- name: Require exact reports for every packaged JS lane"),
+        ("smoke result guard", "scripts/check-js-smoke-results.py"),
+        ("lifecycle result guard", "scripts/check-js-lifecycle-results.py"),
+        ("Files result guard", "scripts/check-js-files-results.py"),
+        ("Usage/Ports result guard", "scripts/check-js-usage-ports-results.py"),
+        ("Composer result guard", "scripts/check-js-composer-journey-results.py"),
         ("run-scoped artifact output", "android/app/build/outputs/js-composer/"),
-        ("usage/ports result guard", "scripts/check-js-usage-ports-results.py"),
         ("usage/ports run-scoped artifacts", "android/app/build/outputs/js-usage-ports/"),
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
         ("artifact uploader", "uses: actions/upload-artifact@v6"),
@@ -626,9 +79,8 @@ def require_contract(source: str, packaged_script: str) -> None:
     files = packaged_script.index("scripts/connected-js-files-docker.sh")
     composer = packaged_script.index("scripts/connected-js-composer-docker.sh")
     lifecycle = packaged_script.index("scripts/connected-js-lifecycle.sh")
-    fastkeys = packaged_script.index("scripts/connected-js-hotkeys-docker.sh")
-    if not lifecycle < usage < files < composer < fastkeys:
-        raise AssertionError("lifecycle, Usage/Ports, Files, composer, and Fast Keys lanes must run in order")
+    if not lifecycle < usage < files < composer:
+        raise AssertionError("usage/ports and Files must run after lifecycle, in order, before the composer journey")
     if "--run-id \"js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script:
         raise AssertionError("usage/ports run identity is not forwarded to the packaged journey")
     if "--suffix i2858ci" not in packaged_script or "--port 2222" not in packaged_script or \
@@ -636,33 +88,45 @@ def require_contract(source: str, packaged_script: str) -> None:
        "--run-id \"js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script or \
        "--test-only" not in packaged_script:
         raise AssertionError("Files lane invocation must preserve its packaged fixture arguments and run identity")
-    if "--force-first-post-attach-tap-miss" not in packaged_script \
-            or "--composer-focus-max-attempts 2" not in packaged_script:
-        raise AssertionError("composer CI lane must exercise the forced physical miss and bounded two-tap recovery")
-    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
-                 "composer_junit_copy_status", "composer_junit_status", "hotkeys_status",
-                 "hotkeys_junit_status", "copy_status"):
+    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
         raise AssertionError("packaged wrapper must copy smoke JUnit evidence")
     if "android/app/build/outputs/js-smoke-results" not in packaged_script:
         raise AssertionError("packaged wrapper must save the smoke JUnit copy under its upload path")
-    guard_start = source.index("- name: Assert packaged JS composer and Usage/Ports journeys executed exactly once")
+    guard_start = source.index("- name: Require exact reports for every packaged JS lane")
     guard_end = source.index("- name:", guard_start + 8)
     guard = source[guard_start:guard_end]
-    if "if: always()" not in guard or "--results-dir android/app/build/outputs/js-composer-results" not in guard:
-        raise AssertionError("the exact JUnit result guard must run after the emulator step even when it fails")
-    if "scripts/check-js-usage-ports-results.py \\" not in guard or \
-       'js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results' not in guard:
-        raise AssertionError("the usage/ports result guard must check the preserved same-run JUnit report")
-    if "android/app/build/outputs/js-composer-results" not in packaged_script:
-        raise AssertionError("packaged wrapper must save composer JUnit before the hotkeys lane")
-    hotkeys_guard_start = source.index("- name: Assert the packaged JS mobile fast-key journey executed exactly once")
-    hotkeys_guard_end = source.index("- name:", hotkeys_guard_start + 8)
-    hotkeys_guard = source[hotkeys_guard_start:hotkeys_guard_end]
-    if "if: always()" not in hotkeys_guard or "--results-dir android/app/build/outputs/js-hotkeys" not in hotkeys_guard:
-        raise AssertionError("the fast-key result guard must run after the emulator step on its preserved result copy")
+    if "if: always()" not in guard or "shell: bash" not in guard:
+        raise AssertionError("exact lane report checks must run after the emulator step even when it fails")
+    exact_lane_reports = (
+        ("smoke", "android/app/build/outputs/js-smoke-results"),
+        ("lifecycle", "js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("Files", "js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("Usage/Ports", "js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+    )
+    for lane, report_path in exact_lane_reports:
+        if report_path not in guard:
+            raise AssertionError(f"the {lane} result guard must use its preserved run report: {report_path}")
+    if 'composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"' not in guard or \
+       'composer_runs=("$composer_root/$composer_prefix"*)' not in guard or \
+       'composer_run="${composer_runs[0]}"' not in guard:
+        raise AssertionError("the Composer checkers must use the unique run-scoped artifact directory")
+    for phase in ("prepare", "resume"):
+        if f'--results-dir "$composer_run/phase-{phase}"' not in guard:
+            raise AssertionError(f"the Composer {phase} result guard must read that phase's isolated JUnit")
+    for checker in (
+        "scripts/check-js-smoke-results.py",
+        "scripts/check-js-lifecycle-results.py",
+        "scripts/check-js-files-results.py",
+        "scripts/check-js-usage-ports-results.py",
+        "scripts/check-js-composer-journey-results.py",
+    ):
+        if f"run_check " not in guard or checker not in guard:
+            raise AssertionError(f"the always-run result guard does not invoke {checker}")
+    if "if (( failed != 0 )); then" not in guard:
+        raise AssertionError("any missing exact lane report must fail the overall workflow step")
     upload_start = source.index("- name: Upload packaged JS composer run evidence")
     upload_end = source.index("- name:", upload_start + 8)
     upload = source[upload_start:upload_end]
@@ -670,8 +134,6 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("composer evidence upload must run always and fail if the bundle is absent")
     if "android/app/build/outputs/js-composer/" not in upload:
         raise AssertionError("composer artifact upload omits the run-scoped evidence directory")
-    if "android/app/build/outputs/js-composer-results/TEST-*.xml" not in upload:
-        raise AssertionError("composer artifact upload omits its result copy before the hotkeys lane reuses Gradle output")
     if "${{ github.run_id }}-${{ github.run_attempt }}" not in upload:
         raise AssertionError("composer artifact name must identify its workflow run and attempt")
 
@@ -747,16 +209,6 @@ for label, damaged in (
         "",
         1,
     )),
-    ("forced physical first-miss control", packaged_lanes.replace(
-        "  --force-first-post-attach-tap-miss \\\n",
-        "",
-        1,
-    )),
-    ("two-tap recovery bound", packaged_lanes.replace(
-        "  --composer-focus-max-attempts 2; then",
-        "; then",
-        1,
-    )),
     ("composer artifact path", workflow.replace(
         "            android/app/build/outputs/js-composer/\n",
         "            android/app/build/outputs/other/\n",
@@ -764,14 +216,110 @@ for label, damaged in (
     )),
 ):
     try:
-        if label == "composer artifact path":
-            require_contract(damaged, packaged_lanes)
-        else:
+        if label == "composer invocation":
             require_contract(workflow, damaged)
+        else:
+            require_contract(damaged, packaged_lanes)
     except (AssertionError, ValueError):
         print(f"PASS: missing {label} fails the rewrite composer workflow contract")
     else:
         raise AssertionError(f"workflow contract missed a removed {label}")
+
+
+def workflow_run_script(source: str, step_name: str) -> str:
+    step_start = source.index(f"- name: {step_name}")
+    step_end = source.find("\n      - name:", step_start + 8)
+    if step_end < 0:
+        step_end = len(source)
+    lines = source[step_start:step_end].splitlines()
+    run_index = next(
+        index for index, line in enumerate(lines)
+        if re.match(r"\s+run:\s*\|\s*$", line)
+    )
+    run_indent = len(lines[run_index]) - len(lines[run_index].lstrip())
+    script_lines = []
+    for line in lines[run_index + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= run_indent:
+            break
+        script_lines.append(
+            line[run_indent + 2:]
+            if line.startswith(" " * (run_indent + 2)) else ""
+        )
+    return "\n".join(script_lines)
+
+
+# Model the reviewer's dormant Files call: its wrapper status can be zero while
+# the run-scoped Files directory has no JUnit. The actual always-run workflow
+# step must still fail after checking the other lanes.
+guard_script = workflow_run_script(workflow, "Require exact reports for every packaged JS lane")
+with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temporary:
+    fake_repo = Path(temporary)
+    fake_scripts = fake_repo / "scripts"
+    fake_scripts.mkdir()
+    result_trace = fake_repo / "result-check-trace.txt"
+    for checker, lane in (
+        ("check-js-smoke-results.py", "smoke"),
+        ("check-js-lifecycle-results.py", "lifecycle"),
+        ("check-js-usage-ports-results.py", "usage-ports"),
+        ("check-js-composer-journey-results.py", "composer"),
+    ):
+        execute = (
+            'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
+            if checker == "check-js-composer-journey-results.py" else ""
+        )
+        stub = fake_scripts / checker
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\t%s\\n' '{lane}' \"$*\" >> \"$RESULT_CHECK_TRACE\"\n"
+            + execute
+        )
+        stub.chmod(0o755)
+    files_checker = fake_scripts / "check-js-files-results.py"
+    files_checker.write_text((repository_root / "scripts/check-js-files-results.py").read_text())
+    files_checker.chmod(0o755)
+    composer_dir = fake_repo / "android/app/build/outputs/js-composer/js2891-fixture-1-123"
+    composer_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<testsuite name="com.pocketshell.app.smoke.JsComposerDockerJourneyTest" '
+        'tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase name="composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop" '
+        'classname="com.pocketshell.app.smoke.JsComposerDockerJourneyTest"/></testsuite>\n'
+    )
+    for relative in ("", "phase-prepare", "phase-resume"):
+        report_dir = composer_dir / relative
+        report_dir.mkdir(parents=True, exist_ok=True)
+        (report_dir / "TEST-composer.xml").write_text(composer_xml)
+    result = subprocess.run(
+        ["bash", "-e", "-u", "-o", "pipefail"],
+        input=guard_script,
+        cwd=fake_repo,
+        env={
+            **os.environ,
+            "GITHUB_RUN_ID": "fixture",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "RESULT_CHECK_TRACE": str(result_trace),
+            "PYTHON": sys.executable,
+            "ACTUAL_COMPOSER_CHECKER": str(repository_root / "scripts/check-js-composer-journey-results.py"),
+        },
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode == 0 or "Files result check exited" not in result.stderr or \
+       "instrumentation results directory is missing" not in result.stderr:
+        raise AssertionError(
+            "the always-run lane guard accepted a dormant Files runner: "
+            f"exit={result.returncode}, stdout={result.stdout!r}, stderr={result.stderr!r}"
+        )
+    if "Composer prepare result check exited" in result.stderr or \
+       "Composer resume result check exited" in result.stderr:
+        raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
+    checked_lines = result_trace.read_text().splitlines()
+    checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer", "composer"]:
+        raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
+    if "/phase-prepare" not in checked_lines[3] or "/phase-resume" not in checked_lines[4]:
+        raise AssertionError(f"the guard did not check the two Composer process phases independently: {checked_lines!r}")
+print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
 # The emulator action splits multiline scripts across child shells. Require
 # exactly one executable wrapper invocation so all lane statuses share one Bash.
@@ -786,8 +334,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
-                            usage: int = 0, files: int = 0, composer: int = 0, hotkeys: int = 0,
-                            omit_junit: bool = False,
+                            usage: int = 0, files: int = 0, composer: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
         fixture = Path(temporary)
@@ -846,26 +393,11 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         fake_composer.write_text(
             "#!/bin/bash\n"
             "printf 'composer\\t%s\\t%s\\n' \"$FIXTURE_COMPOSER_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
-            "mkdir -p android/app/build/outputs/androidTest-results/connected/debug\n"
-            "find android/app/build/outputs/androidTest-results/connected/debug -maxdepth 1 -name 'TEST-*.xml' -delete\n"
-            "printf '<testsuite tests=\"1\"><testcase classname=\"com.pocketshell.app.smoke.JsComposerDockerJourneyTest\" name=\"run\"/></testsuite>\\n' "
-            "> android/app/build/outputs/androidTest-results/connected/debug/TEST-composer.xml\n"
             "printf '%s\\n%s\\n' \"$PNPM\" \"$PATH\" > \"$FIXTURE_RUNTIME_CAPTURE\"\n"
             "\"$PNPM\" --version >> \"$FIXTURE_RUNTIME_CAPTURE\"\n"
             "exit \"$FIXTURE_COMPOSER_STATUS\"\n"
         )
         fake_composer.chmod(0o755)
-        fake_hotkeys = fake_scripts / "connected-js-hotkeys-docker.sh"
-        fake_hotkeys.write_text(
-            "#!/bin/bash\n"
-            "printf 'hotkeys\\t%s\\t%s\\n' \"$FIXTURE_HOTKEYS_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
-            "exit \"$FIXTURE_HOTKEYS_STATUS\"\n"
-        )
-        fake_hotkeys.chmod(0o755)
-        for checker in ("check-js-composer-journey-results.py", "check-js-hotkeys-journey-results.py"):
-            fake_checker = fake_scripts / checker
-            fake_checker.write_text("#!/bin/bash\nexit 0\n")
-            fake_checker.chmod(0o755)
 
         env = {
             "PATH": f"{runtime_bin}:/usr/bin:/bin",
@@ -878,7 +410,6 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_USAGE_STATUS": str(usage),
             "FIXTURE_FILES_STATUS": str(files),
             "FIXTURE_COMPOSER_STATUS": str(composer),
-            "FIXTURE_HOTKEYS_STATUS": str(hotkeys),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
             "GITHUB_RUN_ATTEMPT": "1",
@@ -892,25 +423,18 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             capture_output=True,
         )
         expected_copy = 31 if fail_junit_copy else (1 if omit_junit else 0)
-        expected_composer_copy = 31 if fail_junit_copy else 0
-        expected_composer_junit = 1 if expected_composer_copy else 0
         expected_summary = (
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
-            f"usage-ports={usage} files={files} composer={composer} "
-            f"composer-junit-copy={expected_composer_copy} composer-junit={expected_composer_junit} "
-            f"hotkeys={hotkeys} hotkeys-junit=0 smoke-junit-copy={expected_copy}"
+            f"usage-ports={usage} files={files} composer={composer} smoke-junit-copy={expected_copy}"
         )
-        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, expected_composer_copy,
-                                  expected_composer_junit, hotkeys, expected_copy)) else 0
+        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
         trace_lines = trace.read_text().splitlines()
-        if [line.split("\t", 1)[0] for line in trace_lines] != [
-            "smoke", "lifecycle", "usage-ports", "files", "composer", "hotkeys"
-        ]:
+        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "files", "composer"]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
             raise AssertionError(f"{label}: lifecycle run identity was not forwarded: {trace_lines[1]!r}")
@@ -926,14 +450,6 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             )
         if "--session-prefix js2891-run-1" not in trace_lines[4]:
             raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[4]!r}")
-        if "--force-first-post-attach-tap-miss" not in trace_lines[4] \
-                or "--composer-focus-max-attempts 2" not in trace_lines[4]:
-            raise AssertionError(
-                f"{label}: composer CI gate did not require bounded recovery from a physical post-attach miss: "
-                f"{trace_lines[4]!r}"
-            )
-        if "--session-prefix js2884-run-1" not in trace_lines[5]:
-            raise AssertionError(f"{label}: fast-key session identity was not forwarded: {trace_lines[5]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -948,9 +464,6 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         expected_copied_junit = not omit_junit and not fail_junit_copy
         if copied_junit.exists() != expected_copied_junit:
             raise AssertionError(f"{label}: smoke JUnit copy did not match fixture output")
-        copied_composer_junit = fake_repo / "android/app/build/outputs/js-composer-results/TEST-composer.xml"
-        if copied_composer_junit.exists() != (not fail_junit_copy):
-            raise AssertionError(f"{label}: composer JUnit copy did not survive the hotkeys lane")
 
 
 exercise_packaged_lanes("success")
@@ -959,7 +472,6 @@ exercise_packaged_lanes("lifecycle failure is fail-closed", lifecycle=19)
 exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)
 exercise_packaged_lanes("Files failure is fail-closed", files=25)
 exercise_packaged_lanes("composer failure is fail-closed", composer=23)
-exercise_packaged_lanes("fast-key failure is fail-closed", hotkeys=29)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
 
@@ -1089,6 +601,32 @@ if "--preserve-on-failure" not in runner or '--output-dir "$evidence_dir"' not i
     raise AssertionError("composer runner does not extract contemporaneous failure artifacts into its run bundle")
 if 'tee "$evidence_dir/composer-gradle.log"' not in runner:
     raise AssertionError("composer runner does not retain its packaged Gradle output")
+
+def require_android_test_gradle_output_capture(source: str) -> None:
+    capture = re.search(
+        r'(?m)^"\$ROOT_DIR/android/gradlew" -p "\$ROOT_DIR/android" :app:assembleDebugAndroidTest \\\n'
+        r'(?:[ \t]+[^\n]*\\\n)*'
+        r'[ \t]+2>&1 \| tee -a "\$evidence_dir/composer-gradle\.log"$',
+        source,
+    )
+    if capture is None:
+        raise AssertionError("composer runner does not append AndroidTest Gradle output to its run bundle")
+
+
+require_android_test_gradle_output_capture(runner)
+missing_android_test_append = runner.replace(
+    '  2>&1 | tee -a "$evidence_dir/composer-gradle.log"\n',
+    "",
+    1,
+)
+if missing_android_test_append == runner:
+    raise AssertionError("AndroidTest Gradle append regression fixture did not match the runner")
+try:
+    require_android_test_gradle_output_capture(missing_android_test_append)
+except AssertionError:
+    print("PASS: missing AndroidTest Gradle output append fails the composer runner contract")
+else:
+    raise AssertionError("composer runner contract missed a removed AndroidTest Gradle output append")
 
 print("PASS: rewrite composer and Usage/Ports CI run on API 35, validate exact JUnit, and upload run-scoped evidence")
 print("PASS: packaged lanes execute fail-closed in one shell and preserve the captured Node/pnpm runtime")

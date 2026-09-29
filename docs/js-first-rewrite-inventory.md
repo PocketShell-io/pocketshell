@@ -12,7 +12,7 @@ The executable old-to-new route map, including the current available, partial, i
 |---|---|---|
 | `Hosts`, `HostForm`, `SshKeys` | Saved hosts, add/edit, key import/generation and credentials | #2851 HostCliCore contracts; #2856 SSH/session/reconnect; #2860 installed-data migration. Docker-backed `J01ConnectAndTrustJourney.kt` and `J21HostAddConnectJourney.kt`. |
 | `Workspaces`, `Workspace`, `WorkspaceStart`, `WorkspaceRootAction`, `Tree`, `ReorderWorkspaces`, `WorkspaceRoots`, `AddWorkspaceRoot` | Host workspace/root and session lists, grouping/order, root shortcuts, session creation entry | #2851 HostCliCore; #2856 SSH/session/reconnect. Docker-backed `J02SessionTreeListJourney.kt` and `J04CreateSessionJourney.kt`. |
-| `Session` | Live terminal, attach/switch/stop, reconnect, keyboard, composer entry points | #2856 SSH/session/reconnect. `J03AttachAndTypeJourney.kt`, `J05ReconnectAfterDropJourney.kt`, `J06BackgroundGraceReturnJourney.kt`, `J14StopSessionJourney.kt`, and `J15TerminalScrollJourney.kt`. |
+| `Session` | Live terminal, attach/switch/stop, reconnect, keyboard, composer entry points; host-reported agent identity/status in selected-session chrome | #2856 SSH/session/reconnect; #2907 session identity/status using the [agent-awareness contract](agent-awareness.md#js-session-identity-and-status). `J03AttachAndTypeJourney.kt`, `J05ReconnectAfterDropJourney.kt`, `J06BackgroundGraceReturnJourney.kt`, `J14StopSessionJourney.kt`, and `J15TerminalScrollJourney.kt`. |
 | `Files`, `FileViewer` | Remote SFTP browser, text/image viewer and editor | #2858 files/SFTP. Docker-backed `J10FilesBrowseEditJourney.kt`. |
 | `Ports`, `TunnelDetail`, `AddTunnel` | Port discovery, auto/manual forwarding and service status | #2859 usage/ports. Docker-backed `J13PortForwardOpenJourney.kt`, `J18AutoForwardResumeJourney.kt`, and `J22ForwardServiceFgsJourney.kt`. |
 | `Usage`, `HostUsage` | Provider quota panel, global and host-scoped | #2859 usage/ports. Docker-backed `J12UsagePanelJourney.kt`. |
@@ -28,8 +28,8 @@ All 24 `*Journey.kt` classes under `app2/src/androidTest/` are mapped below. Rep
 | Existing journey | Behavior that must remain covered | Replacement issue / journey test |
 |---|---|---|
 | `connect/J01ConnectAndTrustJourney.kt` | Connect to a real host; unknown and rejected host-key trust | #2851 + #2856 — `J01ConnectAndTrustJourney.kt` |
-| `tree/J02SessionTreeListJourney.kt` | List and group host workspaces/sessions | #2851 + #2856 — `J02SessionTreeListJourney.kt` |
-| `terminal/J03AttachAndTypeJourney.kt` | Attach to a live aplexer session and exchange PTY bytes | #2856 — `J03AttachAndTypeJourney.kt` |
+| `tree/J02SessionTreeListJourney.kt` | List and group host workspaces/sessions; show only host-reported agent identity and fresh reported state | #2851 + #2856 + #2907 — `J02SessionTreeListJourney.kt`; packaged A→B→A metadata proof against the independent Docker host oracle |
+| `terminal/J03AttachAndTypeJourney.kt` | Attach to a live aplexer session and exchange PTY bytes; bind agent identity/status to the selected host session | #2856 + #2907 — `J03AttachAndTypeJourney.kt` |
 | `tree/J04CreateSessionJourney.kt` | Create a session and observe the real host-side row | #2856 — `J04CreateSessionJourney.kt` |
 | `terminal/J05ReconnectAfterDropJourney.kt` | Recover after a dropped transport without attaching the wrong session | #2856 — `J05ReconnectAfterDropJourney.kt` |
 | `terminal/J06BackgroundGraceReturnJourney.kt` | Return inside/outside background grace and verify attach/reconnect behavior | #2856 + #2861 — `J06BackgroundGraceReturnJourney.kt` |
