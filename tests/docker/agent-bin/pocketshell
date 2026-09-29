@@ -596,6 +596,128 @@ PYEOF
         set -- create "$@"
       fi
     fi
+
+    # Packaged #2856 uncertainty journey: arm a run-specific create whose real
+    # host-side effect completes, then sever the authenticated SSH connection
+    # before the command's JSON response can reach the Android client. The
+    # unique suffix keeps this hook inert for every other fixture session.
+    if [ "${1:-}" = "create" ]; then
+      after_separator=0
+      uncertain_target=""
+      for session_arg in "$@"; do
+        if [ "$after_separator" -eq 1 ]; then
+          uncertain_target="$session_arg"
+          break
+        fi
+        [ "$session_arg" = "--" ] && after_separator=1
+      done
+      case "$uncertain_target" in
+        *-uncertain-create)
+          uncertain_prefix="/tmp/pocketshell-uncertain-mutation-${uncertain_target}"
+          uncertain_events="${uncertain_prefix}.events"
+          if [ -e "${uncertain_prefix}.armed" ] || [ -e "$uncertain_events" ]; then
+            uncertain_attempt="$(awk -F'|' '$1 == "CREATE_ATTEMPT" { count += 1 } END { print count + 1 }' "$uncertain_events" 2>/dev/null || printf '1')"
+            uncertain_attempt="$(printf '%s' "$uncertain_attempt" | tr -cd '0-9')"
+            [ -n "$uncertain_attempt" ] || uncertain_attempt=1
+            uncertain_now="$(date +%s%3N)"
+            printf 'CREATE_ATTEMPT|%s|%s|%s\n' "$uncertain_now" "$uncertain_attempt" "$uncertain_target" >> "$uncertain_events"
+          fi
+
+          if [ -e "${uncertain_prefix}.armed" ]; then
+            mv "${uncertain_prefix}.armed" "${uncertain_prefix}.consumed"
+            server_pid=""
+            server_args=""
+            ancestor_pid="$PPID"
+            while [ -n "$ancestor_pid" ] && [ "$ancestor_pid" -gt 1 ] 2>/dev/null; do
+              ancestor_args="$(ps -p "$ancestor_pid" -o args= 2>/dev/null || true)"
+              case "$ancestor_args" in
+                *sshd-session:*testuser@*)
+                  server_pid="$ancestor_pid"
+                  server_args="$ancestor_args"
+                  break
+                  ;;
+              esac
+              next_pid="$(ps -p "$ancestor_pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
+              [ -n "$next_pid" ] || break
+              [ "$next_pid" != "$ancestor_pid" ] || break
+              ancestor_pid="$next_pid"
+            done
+            if [ -z "$server_pid" ]; then
+              printf 'uncertain mutation hook could not find its testuser sshd-session ancestor\n' >&2
+              exit 97
+            fi
+            server_uid="$(ps -p "$server_pid" -o uid= | tr -d '[:space:]')"
+            response_file="${uncertain_prefix}.response"
+            error_file="${uncertain_prefix}.stderr"
+            if /usr/local/bin/pocketshell-real sessions "$@" >"$response_file" 2>"$error_file"; then
+              host_cli_exit=0
+            else
+              host_cli_exit=$?
+            fi
+            if [ "$host_cli_exit" -ne 0 ]; then
+              cat "$response_file"
+              cat "$error_file" >&2
+              exit "$host_cli_exit"
+            fi
+            host_cli_created="$(python3 - "$response_file" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(str(value.get("created", False)).lower())
+PYEOF
+)"
+            host_cli_name="$(python3 - "$response_file" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(value.get("name", ""))
+PYEOF
+)"
+            host_cli_session_id="$(python3 - "$response_file" <<'PYEOF'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(value.get("id", "") or "")
+PYEOF
+)"
+            case "$host_cli_name" in
+              *:"$uncertain_target") host_cli_name_matches=true ;;
+              *) host_cli_name_matches=false ;;
+            esac
+            [ "$host_cli_created" = true ] && [ "$host_cli_name_matches" = true ] || {
+              printf 'uncertain mutation hook did not observe the real CLI create result\n' >&2
+              cat "$response_file" >&2
+              exit 97
+            }
+            mutation_epoch="$(date +%s%3N)"
+            run_id="${uncertain_target%-uncertain-create}"
+            {
+              printf 'schema=1\n'
+              printf 'run_id=%s\n' "$run_id"
+              printf 'kind=create-session\n'
+              printf 'target=%s\n' "$uncertain_target"
+              printf 'host_cli_exit_code=%s\n' "$host_cli_exit"
+              printf 'host_cli_created=%s\n' "$host_cli_created"
+              printf 'host_cli_name=%s\n' "$host_cli_name"
+              printf 'host_cli_session_id=%s\n' "$host_cli_session_id"
+              printf 'host_side_effect_epoch_ms=%s\n' "$mutation_epoch"
+              printf 'response_forwarded=false\n'
+              printf 'response_sha256=%s\n' "$(sha256sum "$response_file" | awk '{print $1}')"
+              printf 'server_pid=%s\n' "$server_pid"
+              printf 'server_uid=%s\n' "$server_uid"
+              printf 'server_args=%s\n' "$server_args"
+              printf 'signal=SIGKILL\n'
+              printf 'list_delay_seconds=10\n'
+            } > "${uncertain_prefix}.proof"
+            printf 'HOST_CREATE_COMPLETED|%s|%s|%s|%s|%s\n' \
+              "$mutation_epoch" "$uncertain_target" "$host_cli_created" "$host_cli_session_id" "$server_pid" >> "$uncertain_events"
+            printf 'CREATE_RESPONSE_DROPPED|%s|%s|SIGKILL\n' \
+              "$(date +%s%3N)" "$uncertain_target" >> "$uncertain_events"
+            printf '10\n' > "${uncertain_prefix}.delay-list"
+            kill -KILL "$server_pid"
+            exit 0
+          fi
+          ;;
+      esac
+    fi
+
     # Session lifecycle is the product contract. Run the real package against
     # the real bundled aplexer; this fixture must not maintain a second session
     # protocol or silently turn an unavailable aplexer into canned rows.
@@ -632,6 +754,41 @@ PYEOF
       cat "$list_error" >&2
       rm -f "$list_output" "$list_error"
       exit "$status"
+    fi
+
+    # Hold the first reconnect list after the uncertain create. This gives the
+    # packaged journey a bounded window to capture the JS controller's
+    # uncertainty while the fresh host listing is still in flight. Reuse of
+    # this Docker fixture can leave an earlier failed run's delay marker behind,
+    # so bind this list to the newest pending mutation instead of the first
+    # lexical match.
+    if [ "${1:-}" = "list" ]; then
+      delay_file="$(ls -1t /tmp/pocketshell-uncertain-mutation-*.delay-list 2>/dev/null | head -n1 || true)"
+      if [ -n "$delay_file" ] && [ -f "$delay_file" ]; then
+        uncertain_prefix="${delay_file%.delay-list}"
+        uncertain_target="${uncertain_prefix##*/pocketshell-uncertain-mutation-}"
+        uncertain_events="${uncertain_prefix}.events"
+        delay_seconds="$(cat "$delay_file" 2>/dev/null || printf '0')"
+        case "$delay_seconds" in
+          ''|*[!0-9]*) printf 'invalid uncertain-mutation list delay\n' >&2; exit 97 ;;
+        esac
+        printf 'FRESH_LIST_STARTED|%s|%s\n' "$(date +%s%3N)" "$uncertain_target" >> "$uncertain_events"
+        mv "$delay_file" "${uncertain_prefix}.delay-consumed"
+        sleep "$delay_seconds"
+        list_response="${uncertain_prefix}.list-response"
+        list_error="${uncertain_prefix}.list-stderr"
+        if /usr/local/bin/pocketshell-real sessions "$@" >"$list_response" 2>"$list_error"; then
+          printf 'FRESH_LIST_COMPLETED|%s|%s\n' "$(date +%s%3N)" "$uncertain_target" >> "$uncertain_events"
+          cat "$list_response"
+          cat "$list_error" >&2
+          exit 0
+        else
+          list_status=$?
+          cat "$list_response"
+          cat "$list_error" >&2
+          exit "$list_status"
+        fi
+      fi
     fi
     exec /usr/local/bin/pocketshell-real sessions "$@"
 

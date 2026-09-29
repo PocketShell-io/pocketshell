@@ -1217,7 +1217,8 @@ onBeforeUnmount(() => {
           </ul>
           <p v-else class="empty-sessions" data-testid="empty-sessions">No sessions on this host yet.</p>
         </template>
-        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation">
+        <p v-if="connectionSnapshot?.uncertainMutation" class="connection-message" data-testid="uncertain-mutation"
+          :data-state="connectionSnapshot.uncertainMutation.state">
           {{ connectionSnapshot.uncertainMutation.kind }} “{{ connectionSnapshot.uncertainMutation.target }}” may have completed. Refresh sessions before retrying.
         </p>
       </section>

@@ -83,19 +83,19 @@ def _canonical_ocr_token(text: str) -> str:
     token = unicodedata.normalize("NFKC", text).upper()
     if not re.fullmatch(r"[A-Z0-9_]+", token):
         return ""
-    # Tesseract commonly reads the zero in this uppercase monospace output as O.
+    # Tesseract can read the fixed REMOTE_OUTPUT prefix's O as zero.
     return token.replace("O", "0")
 
 
-def _screenshot_marker_accent_rgb(marker: str) -> str:
-    digest = hashlib.sha256(marker.encode("utf-8")).digest()
+def _screenshot_marker_accent_rgb(run_id: str, marker: str) -> str:
+    digest = hashlib.sha256(f"{run_id}\0{marker}".encode("utf-8")).digest()
     rgb = [24 + (component & 0x3F) for component in digest[2:5]]
     rgb[digest[0] % 3] = 240 + (digest[1] & 0x0F)
     return ",".join(str(component) for component in rgb)
 
 
-def _pixel_matches_marker_accent(pixel: tuple[int, int, int], marker: str) -> bool:
-    expected = tuple(int(component) for component in _screenshot_marker_accent_rgb(marker).split(","))
+def _pixel_matches_marker_accent(pixel: tuple[int, int, int], run_id: str, marker: str) -> bool:
+    expected = tuple(int(component) for component in _screenshot_marker_accent_rgb(run_id, marker).split(","))
     return all(
         abs(actual - target) <= SCREENSHOT_MARKER_ACCENT_TOLERANCE
         for actual, target in zip(pixel, expected)
@@ -151,9 +151,9 @@ def has_confident_screenshot_marker(
 
 def validate_screenshot_marker_evidence(
     words: list[dict[str, Any]], marker: str, marker_bounds: tuple[int, int, int, int],
-    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any, run_id: str,
 ) -> dict[str, Any]:
-    expected_accent = _screenshot_marker_accent_rgb(marker)
+    expected_accent = _screenshot_marker_accent_rgb(run_id, marker)
     if accent_color != expected_accent:
         raise EvidenceFailure("screenshot lacks the expected terminal-output accent color")
     if accent_tolerance != SCREENSHOT_MARKER_ACCENT_TOLERANCE:
@@ -230,7 +230,7 @@ def _marker_text_pixel_bounds(
 
 def _screenshot_marker_ocr(
     path: Path, marker: str, marker_bounds: tuple[int, int, int, int],
-    accent_color: Any, accent_pixels: Any, accent_tolerance: Any,
+    accent_color: Any, accent_pixels: Any, accent_tolerance: Any, run_id: str,
 ) -> dict[str, Any]:
     if shutil.which("tesseract") is None:
         raise EvidenceFailure("Tesseract is required to verify that each packaged screenshot visibly contains its exact terminal marker")
@@ -288,7 +288,7 @@ def _screenshot_marker_ocr(
         raise EvidenceFailure(f"Tesseract returned malformed TSV for {path}: {error}") from error
     try:
         return validate_screenshot_marker_evidence(
-            words, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance
+            words, marker, marker_bounds, accent_color, accent_pixels, accent_tolerance, run_id
         )
     except EvidenceFailure as error:
         recognized = [
@@ -462,13 +462,18 @@ def _self_test() -> int:
             return 1
         print(f"ok [{index}/{len(probes)}] {label}")
 
-    screenshot_marker = "REMOTE_OUTPUT_0CA60FF4FA_AS"
+    test_run_id = "lifecycle-marker-self-test"
+    screenshot_marker = "REMOTE_OUTPUT_TREASURE_AS"
     marker_bounds = (10, 20, 703, 80)
     screenshot_probes = [
         ("exact standalone screenshot marker accepted", [
-            {"text": "REMOTE_OUTPUT_OCA60FF4FA_AS", "confidence": 91.0,
+            {"text": screenshot_marker, "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], True),
+        ("lookalike digit inside readable run token rejected", [
+            {"text": "REMOTE_OUTPUT_TREA5URE_AS", "confidence": 91.0,
+             "left": 26, "top": 31, "width": 675, "height": 37},
+        ], False),
         ("stale session-list screenshot rejected", [
             {"text": "testuser:js2861-review-0923-a", "confidence": 91.0,
              "left": 31, "top": 31, "width": 600, "height": 37},
@@ -478,7 +483,7 @@ def _self_test() -> int:
              "left": 26, "top": 120, "width": 675, "height": 37},
         ], False),
         ("command echo in marker row rejected when not standalone", [
-            {"text": "PRINTF_REMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+            {"text": "PRINTF_REMOTE_OUTPUT_TREASURE_AS", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
         ("OCR-split printf echo rejected on marker row", [
@@ -488,29 +493,29 @@ def _self_test() -> int:
              "left": 116, "top": 31, "width": 675, "height": 37},
         ], False),
         ("marker substring rejected", [
-            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_EXTRA", "confidence": 91.0,
+            {"text": "REMOTE_OUTPUT_TREASURE_AS_EXTRA", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
         ("arbitrary trailing underscore rejected", [
-            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS_", "confidence": 91.0,
+            {"text": "REMOTE_OUTPUT_TREASURE_AS_", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
         ("punctuation attached to marker rejected", [
-            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS.", "confidence": 91.0,
+            {"text": "REMOTE_OUTPUT_TREASURE_AS.", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
         ("wrong lifecycle phase rejected", [
-            {"text": "REMOTE_OUTPUT_0CA60FF4FA_BS", "confidence": 91.0,
+            {"text": "REMOTE_OUTPUT_TREASURE_BS", "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
         ], False),
         ("trailing cursor recognized as extra token rejected", [
-            {"text": "REMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+            {"text": screenshot_marker, "confidence": 91.0,
              "left": 26, "top": 31, "width": 675, "height": 37},
             {"text": "I", "confidence": 84.0,
              "left": 704, "top": 31, "width": 7, "height": 37},
         ], False),
         ("edge artifact on marker rejected", [
-            {"text": "BREMOTE_OUTPUT_0CA60FF4FA_AS", "confidence": 91.0,
+            {"text": "BREMOTE_OUTPUT_TREASURE_AS", "confidence": 91.0,
              "left": 26, "top": 31, "width": 681, "height": 37},
         ], False),
         ("recognized glyph outside measured crop rejected", [
@@ -539,7 +544,7 @@ def _self_test() -> int:
         measured_crop = _marker_text_pixel_bounds(
             {"left": 30.0, "top": 150.0, "right": 381.0, "bottom": 483.0, "devicePixelRatio": 2.625},
             {"left": 39.5, "top": 233.5, "right": 375.5, "bottom": 257.1, "width": 336.0},
-            "REMOTE_OUTPUT_3286295467_AS",
+            "REMOTE_OUTPUT_TREASUREXX_AS",
             35,
         )
     except EvidenceFailure as error:
@@ -551,17 +556,22 @@ def _self_test() -> int:
         return 1
     print("ok [marker crop] text-only bounds derive from captured xterm row, columns, and marker length")
 
-    expected_accent = _screenshot_marker_accent_rgb(screenshot_marker)
+    expected_accent = _screenshot_marker_accent_rgb(test_run_id, screenshot_marker)
     expected_accent_rgb = tuple(int(channel) for channel in expected_accent.split(","))
+    stale_run_accent = _screenshot_marker_accent_rgb(test_run_id + "-stale", screenshot_marker)
+    if stale_run_accent == expected_accent:
+        print("FAIL: marker accent must differ across run IDs", file=sys.stderr)
+        return 1
+    print("ok [accent identity] screenshot marker accent is keyed to this run and phase")
     valid_marker_crop = [expected_accent_rgb] * MIN_SCREENSHOT_MARKER_ACCENT_PIXELS
     stale_light_text_crop = [(224, 224, 232)] * (MIN_SCREENSHOT_MARKER_ACCENT_PIXELS * 4)
     if not (max(expected_accent_rgb) >= 240 and min(expected_accent_rgb) <= 87):
         print("FAIL: screenshot marker accent palette is not high-chroma", file=sys.stderr)
         return 1
-    if sum(_pixel_matches_marker_accent(pixel, screenshot_marker) for pixel in valid_marker_crop) < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+    if sum(_pixel_matches_marker_accent(pixel, test_run_id, screenshot_marker) for pixel in valid_marker_crop) < MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
         print("FAIL: valid marker crop did not meet the screenshot accent pixel minimum", file=sys.stderr)
         return 1
-    if sum(_pixel_matches_marker_accent(pixel, screenshot_marker) for pixel in stale_light_text_crop) >= MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
+    if sum(_pixel_matches_marker_accent(pixel, test_run_id, screenshot_marker) for pixel in stale_light_text_crop) >= MIN_SCREENSHOT_MARKER_ACCENT_PIXELS:
         print("FAIL: stale light session-card text met the screenshot accent pixel minimum", file=sys.stderr)
         return 1
     print("ok [accent pixels] valid marker crop passes; stale light session-list crop remains below threshold")
@@ -570,6 +580,7 @@ def _self_test() -> int:
         ("accent plus exact standalone marker accepted", screenshot_probes[0][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, True),
         ("blank accent rectangle rejected without OCR text", [], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
         ("stale session-list OCR rejected despite accent pixels", screenshot_probes[1][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
+        ("stale-run screenshot accent rejected", screenshot_probes[0][1], stale_run_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
         ("exact marker OCR rejected without enough accent pixels", screenshot_probes[0][1], expected_accent, 12, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
         ("split printf echo rejected despite accent pixels", screenshot_probes[4][1], expected_accent, 5_000, SCREENSHOT_MARKER_ACCENT_TOLERANCE, False),
         ("wide legacy accent tolerance rejected", screenshot_probes[0][1], expected_accent, 5_000, 24, False),
@@ -577,7 +588,7 @@ def _self_test() -> int:
     for index, (label, words, accent_color, accent_pixels, accent_tolerance, expected) in enumerate(combined_screenshot_probes, 1):
         try:
             validate_screenshot_marker_evidence(
-                words, screenshot_marker, marker_bounds, accent_color, accent_pixels, accent_tolerance
+                words, screenshot_marker, marker_bounds, accent_color, accent_pixels, accent_tolerance, test_run_id
             )
             actual = True
         except EvidenceFailure:
@@ -628,6 +639,7 @@ def _self_test() -> int:
         "beyondGraceForegroundRequestedEpochMs": 62_000,
         "beyondGraceLiveEpochMs": 62_500,
     }
+    initial_live_checkpoint_epoch_ms = 8_000
     def sample(at: int, count: int, remote: str = "01001EAC:AAC6") -> dict[str, Any]:
         return {
             "sampledEpochMs": at,
@@ -640,14 +652,71 @@ def _self_test() -> int:
         }
 
     good_samples = [
-        sample(500, 0), sample(900, 0), sample(2_100, 1), sample(5_000, 1), sample(9_900, 1),
-        sample(10_500, 1), sample(11_000, 1), sample(21_000, 1), sample(49_000, 1),
-        sample(50_500, 1), sample(51_000, 1), sample(54_000, 1), sample(54_500, 1),
+        sample(500, 0), sample(900, 0),
+        sample(1_300, 1, "01001EAC:CE34"), sample(1_800, 1, "01001EAC:CE34"),
+        sample(2_100, 1, "01001EAC:CE42"), sample(5_000, 0),
+        sample(6_000, 1, "01001EAC:D55C"), sample(7_500, 1, "01001EAC:D55C"),
+        sample(8_500, 1, "01001EAC:D55C"), sample(9_200, 1, "01001EAC:D55C"),
+        sample(9_900, 1, "01001EAC:D55C"), sample(10_500, 1, "01001EAC:D55C"),
+        sample(11_000, 1, "01001EAC:D55C"), sample(21_000, 1, "01001EAC:D55C"),
+        sample(49_000, 1, "01001EAC:D55C"),
+        sample(50_500, 1, "01001EAC:D55C"), sample(51_000, 1, "01001EAC:D55C"),
+        sample(54_000, 1, "01001EAC:D55C"), sample(54_500, 1, "01001EAC:D55C"),
         sample(55_000, 0), sample(55_500, 0), sample(56_000, 0), sample(60_000, 0), sample(61_000, 0),
         sample(62_800, 1, "01001EAC:ADF0"), sample(63_200, 1, "01001EAC:ADF0"),
     ]
-    validate_host_transport_timeline(timing, good_samples, epoch_offset, 0, 64_000)
-    print("ok [7/15] independent socket timeline measures native close, host disconnect, and post-foreground reconnect")
+    validate_host_transport_timeline(
+        timing, good_samples, epoch_offset, 0, initial_live_checkpoint_epoch_ms, 64_000
+    )
+    print("ok [7/15] serialized pin probe and uncertain-mutation reconnect precede stable socket timeline")
+
+    boundary_summary = {
+        "uncertainMutation": {
+            "kind": "create-session",
+            "oldConnectionId": "old-connection",
+            "newConnectionId": "new-connection",
+            "initialControllerState": "unknown",
+            "reconciledControllerState": "observed-applied",
+            "reconnectingPhaseCount": 1,
+            "freshListPhaseCount": 1,
+            "freshListObservedAtEpochMs": 10,
+        },
+    }
+    boundary_checkpoint = {"connectionId": "new-connection", "capturedAtEpochMs": 20}
+    if _validate_uncertain_mutation_live_checkpoint(boundary_summary, "new-connection", boundary_checkpoint) != 20:
+        print("FAIL: uncertain-mutation checkpoint validator returned the wrong stable-identity start", file=sys.stderr)
+        return 1
+    print("ok [uncertain boundary 1/5] first checkpoint binds to the reconciled mutation connection")
+    boundary_mutations = [
+        (
+            "mutation reconnect connection matches the controller snapshot",
+            {**boundary_summary, "uncertainMutation": {**boundary_summary["uncertainMutation"], "newConnectionId": "other-connection"}},
+            boundary_checkpoint,
+        ),
+        (
+            "checkpoint connection matches the reconciled connection",
+            boundary_summary,
+            {**boundary_checkpoint, "connectionId": "old-connection"},
+        ),
+        (
+            "only one reconnect and fresh list are allowed",
+            {**boundary_summary, "uncertainMutation": {**boundary_summary["uncertainMutation"], "reconnectingPhaseCount": 2}},
+            boundary_checkpoint,
+        ),
+        (
+            "checkpoint follows completed fresh list",
+            boundary_summary,
+            {**boundary_checkpoint, "capturedAtEpochMs": 10},
+        ),
+    ]
+    for index, (label, changed_summary, changed_checkpoint) in enumerate(boundary_mutations, 2):
+        try:
+            _validate_uncertain_mutation_live_checkpoint(changed_summary, "new-connection", changed_checkpoint)
+        except EvidenceFailure:
+            print(f"ok [uncertain boundary {index}/5] {label}")
+        else:
+            print(f"FAIL: uncertain-mutation boundary probe {index}: {label}", file=sys.stderr)
+            return 1
 
     nonzero_device_to_host_offset_ms = 2_762
     shifted_host_samples = [
@@ -655,7 +724,12 @@ def _self_test() -> int:
         for row in good_samples
     ]
     adjusted_timeline = validate_host_transport_timeline(
-        timing, shifted_host_samples, nonzero_device_to_host_offset_ms, 0, 64_000
+        timing,
+        shifted_host_samples,
+        nonzero_device_to_host_offset_ms,
+        0,
+        initial_live_checkpoint_epoch_ms,
+        64_000,
     )
     if (
         adjusted_timeline["nativeGraceDeadlineHostEpochMs"] != 52_762
@@ -692,8 +766,9 @@ def _self_test() -> int:
             for row in good_samples
         ]
 
-    original_socket = {"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:AAC6"}
+    original_socket = {"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:D55C"}
     reopened_socket = {"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:ADF0"}
+    duplicate_socket = {"family": "tcp", "local": "02001EAC:0016", "remote": "01001EAC:9ABC"}
     no_close_samples = [
         {**row, "count": 1, "establishedSshConnections": [original_socket]}
         if 50_500 <= row["sampledEpochMs"] <= 61_000 else row
@@ -710,34 +785,45 @@ def _self_test() -> int:
         for row in late_close_samples
     ]
     reopened_after_close = replace_sample(56_000, [reopened_socket])
+    steady_identity_switch = replace_sample(10_500, [reopened_socket])
+    overlapping_setup_sockets = replace_sample(6_000, [original_socket, duplicate_socket])
     reconnect_before_foreground = replace_sample(54_500, [original_socket, reopened_socket])
     mutations = [
-        ("within-grace socket drop rejected", mutate_count(10_500, 0)),
-        ("socket still open until foreground rejected", no_close_samples),
-        ("server-side close beyond eight-second bound rejected", late_close_samples),
-        ("new socket before foreground rejected", reconnect_before_foreground),
-        ("socket reopening in background after close rejected", reopened_after_close),
-        ("missing post-expiry reconnect rejected", mutate_count((62_800, 63_200), 0)),
-        ("loopback-only stream rejected", [
+        ("within-grace socket drop or stable identity switch rejected", [
+            mutate_count(10_500, 0), steady_identity_switch,
+        ]),
+        ("socket still open until foreground rejected", [no_close_samples]),
+        ("server-side close beyond eight-second bound rejected", [late_close_samples]),
+        ("simultaneous sockets rejected during setup and before foreground", [
+            overlapping_setup_sockets, reconnect_before_foreground,
+        ]),
+        ("socket reopening in background after close rejected", [reopened_after_close]),
+        ("missing post-expiry reconnect rejected", [mutate_count((62_800, 63_200), 0)]),
+        ("loopback-only stream rejected", [[
             dict(row, establishedSshConnections=[
                 {"family": "tcp", "local": "02001EAC:0016", "remote": "0100007F:0016"}
                 for _ in row["establishedSshConnections"]
             ]) if row["count"] else row
             for row in good_samples
-        ]),
+        ]]),
         ("early selected deadline rejected", [dict(timing, nativeGraceDeadlineEpochMs=47_000)]),
     ]
-    for index, (label, altered) in enumerate(mutations, 8):
-        try:
-            if label == "early selected deadline rejected":
-                validate_host_transport_timeline(altered[0], good_samples, epoch_offset, 0, 64_000)
-            else:
-                validate_host_transport_timeline(timing, altered, epoch_offset, 0, 64_000)
-        except EvidenceFailure:
-            print(f"ok [{index}/15] {label}")
-        else:
+    for index, (label, scenarios) in enumerate(mutations, 8):
+        for altered in scenarios:
+            try:
+                if label == "early selected deadline rejected":
+                    validate_host_transport_timeline(
+                        altered, good_samples, epoch_offset, 0, initial_live_checkpoint_epoch_ms, 64_000
+                    )
+                else:
+                    validate_host_transport_timeline(
+                        timing, altered, epoch_offset, 0, initial_live_checkpoint_epoch_ms, 64_000
+                    )
+            except EvidenceFailure:
+                continue
             print(f"FAIL: host socket timeline mutation probe {index}: {label}", file=sys.stderr)
             return 1
+        print(f"ok [{index}/15] {label}")
     resize_checkpoint = {
         "terminalResizePending": 0,
         "terminalResizeAckCount": 5,
@@ -896,11 +982,51 @@ def _socket_identity(socket: dict[str, Any]) -> tuple[str, str, str]:
     return family, local, remote
 
 
+def _validate_uncertain_mutation_live_checkpoint(
+    summary: dict[str, Any], initial_connection: str, checkpoint: dict[str, Any]
+) -> int:
+    mutation = summary.get("uncertainMutation")
+    if not isinstance(mutation, dict):
+        raise EvidenceFailure("uncertain-mutation reconciliation is missing from the lifecycle summary")
+    old_connection = mutation.get("oldConnectionId")
+    new_connection = mutation.get("newConnectionId")
+    if (
+        not isinstance(old_connection, str)
+        or not old_connection
+        or not isinstance(new_connection, str)
+        or not new_connection
+        or old_connection == new_connection
+        or new_connection != initial_connection
+        or checkpoint.get("connectionId") != initial_connection
+    ):
+        raise EvidenceFailure("first live-session connection is not the uncertain-mutation reconnect")
+    if (
+        mutation.get("kind") != "create-session"
+        or mutation.get("initialControllerState") != "unknown"
+        or mutation.get("reconciledControllerState") != "observed-applied"
+        or mutation.get("reconnectingPhaseCount") != 1
+        or mutation.get("freshListPhaseCount") != 1
+    ):
+        raise EvidenceFailure("uncertain mutation did not reconcile through exactly one reconnect and fresh list")
+    checkpoint_epoch = checkpoint.get("capturedAtEpochMs")
+    fresh_list_observed_epoch = mutation.get("freshListObservedAtEpochMs")
+    if (
+        not isinstance(checkpoint_epoch, int)
+        or isinstance(checkpoint_epoch, bool)
+        or not isinstance(fresh_list_observed_epoch, int)
+        or isinstance(fresh_list_observed_epoch, bool)
+        or checkpoint_epoch <= fresh_list_observed_epoch
+    ):
+        raise EvidenceFailure("initial live-session checkpoint does not follow uncertain-mutation reconciliation")
+    return checkpoint_epoch
+
+
 def validate_host_transport_timeline(
     timing: dict[str, Any],
     samples: list[dict[str, Any]],
     device_to_host_offset_ms: int,
     selected_grace_ms: int,
+    initial_live_checkpoint_epoch_ms: int,
     reconnected_checkpoint_epoch_ms: int,
 ) -> dict[str, Any]:
     def number(key: str) -> int:
@@ -914,6 +1040,7 @@ def validate_host_transport_timeline(
         raise EvidenceFailure("host timeline must prove the persisted selected 30-second grace setting")
     connect_requested = number("sshConnectRequestedEpochMs") + device_to_host_offset_ms
     connected = number("sshConnectedEpochMs") + device_to_host_offset_ms
+    initial_live_checkpoint = initial_live_checkpoint_epoch_ms + device_to_host_offset_ms
     within_background = number("withinGraceBackgroundEpochMs") + device_to_host_offset_ms
     within_foreground = number("withinGraceForegroundRequestedEpochMs") + device_to_host_offset_ms
     beyond_background = number("beyondGraceBackgroundEpochMs") + device_to_host_offset_ms
@@ -924,6 +1051,8 @@ def validate_host_transport_timeline(
 
     if not 0 < connected - connect_requested < 120_000:
         raise EvidenceFailure("the initial SSH socket must be opened after the packaged connect request")
+    if not connected <= initial_live_checkpoint < within_background - 250:
+        raise EvidenceFailure("the first post-mutation live-session checkpoint must precede backgrounding")
     if not 0 < within_foreground - within_background < grace:
         raise EvidenceFailure("the within-grace return must happen before the selected grace deadline")
     if not grace - 1_000 <= beyond_deadline - beyond_background <= grace + 1_000:
@@ -979,6 +1108,29 @@ def validate_host_transport_timeline(
     def interval(start: int, end: int) -> list[dict[str, Any]]:
         return [row for row in ordered if start <= row["sampledEpochMs"] <= end]
 
+    setup_samples = interval(connect_requested, initial_live_checkpoint)
+    if len(setup_samples) < 2:
+        raise EvidenceFailure("host socket watcher has too few samples during connect and mutation reconciliation")
+    overlapping_setup = [row for row in setup_samples if row["lifecycleCount"] > baseline + 1]
+    if overlapping_setup:
+        raise EvidenceFailure(
+            "connect and mutation reconciliation opened multiple simultaneous non-loopback SSH sockets: "
+            f"{[(row['sampledEpochMs'], row['lifecycleCount']) for row in overlapping_setup[:3]]}"
+        )
+    if not any(row["lifecycleCount"] == baseline + 1 for row in setup_samples):
+        raise EvidenceFailure("no packaged SSH socket was observed before the first live-session checkpoint")
+
+    setup_socket_handoffs: list[dict[str, Any]] = []
+    previous_setup_identities: set[tuple[str, str, str]] | None = None
+    for row in setup_samples:
+        identities = row["lifecycleSocketIds"] - baseline_set
+        if identities != previous_setup_identities:
+            setup_socket_handoffs.append({
+                "sampledHostEpochMs": row["sampledEpochMs"],
+                "socketIdentities": [list(identity) for identity in sorted(identities)],
+            })
+            previous_setup_identities = identities
+
     def require_count(label: str, start: int, end: int, expected: int, minimum: int) -> list[dict[str, Any]]:
         observed = interval(start, end)
         if len(observed) < minimum:
@@ -1008,7 +1160,12 @@ def validate_host_transport_timeline(
         assert identity is not None
         return identity
 
-    original_socket = require_original_socket("initial live SSH session", connected, within_background - 250, 2)
+    original_socket = require_original_socket(
+        "steady live session after uncertain-mutation reconciliation",
+        initial_live_checkpoint,
+        within_background - 250,
+        2,
+    )
     require_original_socket("within-grace background", within_background - 250, within_foreground + 250, 2, original_socket)
     require_original_socket("beyond-grace session before deadline", beyond_background + 1_000, beyond_deadline - 500, 2, original_socket)
     expiry_observation_start = beyond_deadline + 500
@@ -1077,6 +1234,9 @@ def validate_host_transport_timeline(
     return {
         "source": "Docker container /proc/net/tcp and /proc/net/tcp6, ESTABLISHED local port 22",
         "deviceToHostEpochOffsetMs": device_to_host_offset_ms,
+        "initialLiveSessionCheckpointHostEpochMs": initial_live_checkpoint,
+        "setupSocketHandoffs": setup_socket_handoffs,
+        "maximumSetupEstablishedConnections": max(row["lifecycleCount"] for row in setup_samples),
         "baselineEstablishedConnections": baseline,
         "liveEstablishedConnections": baseline + 1,
         "ignoredLoopbackHealthChecks": sum(row["ignoredLoopbackCount"] for row in ordered),
@@ -1221,8 +1381,7 @@ def validate(
     expected_order = ["switch-a", "switch-b", "switch-c", "switch-a-return", "background-within-grace", "reconnected-after-expiry"]
     if checkpoint_order != expected_order:
         raise EvidenceFailure(f"packaged checkpoints were not captured in the required A→B→C→A→grace order: {checkpoint_order}")
-    run_token = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:10].upper()
-    expected_marker_prefix = f"REMOTE_OUTPUT_{run_token}_"
+    expected_marker_prefix = "REMOTE_OUTPUT_TREASURE_"
     markers = [by_checkpoint[name].get("marker") for name in expected_order]
     if any(not isinstance(marker, str) for marker in markers) or len(set(markers)) != len(expected_order):
         raise EvidenceFailure("each lifecycle checkpoint must have its own unique remote output marker")
@@ -1251,16 +1410,19 @@ def validate(
     initial_connection = summary.get("initialConnectionId")
     if not isinstance(initial_connection, str) or not initial_connection:
         raise EvidenceFailure("initial live SSH connection ID is missing")
+    initial_live_checkpoint_epoch_ms = _validate_uncertain_mutation_live_checkpoint(
+        summary, initial_connection, by_checkpoint["switch-a"]
+    )
     screenshot_marker_evidence: dict[str, dict[str, Any]] = {}
     for checkpoint_name, session_letter in CHECKPOINTS.items():
         checkpoint = by_checkpoint[checkpoint_name]
         session = rows[f"{run_id}-{session_letter}"]
         screenshot_marker_evidence[checkpoint_name] = _validate_checkpoint(
-            artifact_directory, checkpoint, session, initial_connection
+            artifact_directory, checkpoint, session, initial_connection, run_id
         )
     within = by_checkpoint["background-within-grace"]
     screenshot_marker_evidence["background-within-grace"] = _validate_checkpoint(
-        artifact_directory, within, rows[f"{run_id}-a"], initial_connection
+        artifact_directory, within, rows[f"{run_id}-a"], initial_connection, run_id
     )
     if summary.get("connectionAfterWithinGrace") != initial_connection:
         raise EvidenceFailure("within-grace foreground return changed the SSH connection ID")
@@ -1316,6 +1478,7 @@ def validate(
         _read_socket_samples(host_connections_path),
         _device_to_host_epoch_offset(timebase_path),
         summary.get("graceMs", 0),
+        initial_live_checkpoint_epoch_ms,
         by_checkpoint["reconnected-after-expiry"].get("capturedAtEpochMs", 0),
     )
     socket_samples = socket_timeline.pop("samples")
@@ -1335,7 +1498,7 @@ def validate(
 
     after = by_checkpoint["reconnected-after-expiry"]
     screenshot_marker_evidence["reconnected-after-expiry"] = _validate_checkpoint(
-        artifact_directory, after, rows[f"{run_id}-a"], None
+        artifact_directory, after, rows[f"{run_id}-a"], None, run_id
     )
     _validate_reconnected_resize_ack(after, timing["beyondGraceResizeAckBefore"])
     expired_connection = summary.get("connectionAfterExpiry")
@@ -1456,7 +1619,7 @@ def validate(
 
 
 def _validate_checkpoint(
-    directory: Path, checkpoint: dict[str, Any], session: dict[str, Any], connection_id: str | None
+    directory: Path, checkpoint: dict[str, Any], session: dict[str, Any], connection_id: str | None, run_id: str
 ) -> dict[str, Any]:
     if checkpoint.get("phase") != "live":
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: app phase is not live")
@@ -1513,7 +1676,7 @@ def _validate_checkpoint(
         ocr_evidence = _screenshot_marker_ocr(
             png_path, marker, marker_bounds,
             pixels.get("markerAccentColor"), pixels.get("markerAccentPixels"),
-            pixels.get("markerAccentTolerance"),
+            pixels.get("markerAccentTolerance"), run_id,
         )
     except EvidenceFailure as error:
         raise EvidenceFailure(f"{checkpoint.get('checkpoint')}: {error}") from error
