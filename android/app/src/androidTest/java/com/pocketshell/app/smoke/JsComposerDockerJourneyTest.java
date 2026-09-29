@@ -59,6 +59,7 @@ public final class JsComposerDockerJourneyTest {
     private boolean forceFirstPostAttachTapMiss;
     private int composerFocusMaxAttempts = 2;
     private final JSONArray focusTapAttempts = new JSONArray();
+    private final JSONArray composerActionTapEvidence = new JSONArray();
     private JSONObject lastPhysicalTapEvidence;
     private boolean focusTraceEmitted;
     private boolean focusFailureCaptured;
@@ -906,7 +907,135 @@ public final class JsComposerDockerJourneyTest {
     private long tapComposerAction(String selector, String focusStage) throws Exception {
         ensureImeVisible(focusStage);
         assertTrue("Android IME must be visible immediately before tapping " + selector, isImeVisible());
-        return tapDomCenter(selector);
+        awaitStableComposerActionTarget(selector);
+        beginComposerActionTapObservation(selector);
+        long touchUpUptimeMs = tapDomCenter(selector);
+        JSONObject physicalTap = awaitComposerActionPhysicalClick(selector, touchUpUptimeMs, 1_200);
+        composerActionTapEvidence.put(physicalTap);
+        Log.i("PS2920Tap", "ACTION|" + artifactRunId + "|" + physicalTap);
+        assertTrue("Android touchscreen tap must deliver trusted down, up, and click events to " + selector
+                        + ": " + physicalTap,
+                physicalTap.optBoolean("trustedPointerDownOnTarget")
+                        && physicalTap.optBoolean("trustedPointerUpOnTarget")
+                        && physicalTap.optBoolean("trustedClickOnTarget"));
+        return touchUpUptimeMs;
+    }
+
+    private void awaitStableComposerActionTarget(String selector) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject previous = null;
+        JSONObject last = null;
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = readComposerActionTapLayout(selector);
+            boolean valid = !last.optBoolean("missing")
+                    && !last.optBoolean("disabled")
+                    && last.optBoolean("centerHitMatchesTarget")
+                    && last.optDouble("top", -1) >= 0
+                    && last.optDouble("bottom", Double.MAX_VALUE) <= last.optDouble("innerHeight") + 0.5
+                    && last.optDouble("left", -1) >= 0
+                    && last.optDouble("right", Double.MAX_VALUE) <= last.optDouble("innerWidth") + 0.5;
+            if (valid && previous != null && sameComposerActionTapLayout(previous, last)) {
+                stableSamples += 1;
+            } else {
+                stableSamples = valid ? 1 : 0;
+            }
+            if (stableSamples >= 3) {
+                Log.i("PS2920Tap", "LAYOUT_STABLE|" + artifactRunId + "|" + selector + "|" + last);
+                return;
+            }
+            previous = valid ? last : null;
+            Thread.sleep(75);
+        }
+        throw new AssertionError("Composer action target did not reach three stable visible layout samples before its physical tap: "
+                + selector + " (last=" + last + ")");
+    }
+
+    private JSONObject readComposerActionTapLayout(String selector) throws Exception {
+        JSONObject layout = evalJson("(() => {const element=document.querySelector(" + JSONObject.quote(selector)
+                + ");if(!element)return JSON.stringify({missing:true});const rect=element.getBoundingClientRect();"
+                + "const height=window.visualViewport?.height??innerHeight;"
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "return JSON.stringify({selector:" + JSONObject.quote(selector)
+                + ",innerWidth,innerHeight,visualViewportHeight:height,"
+                + "visualViewportOffsetTop:window.visualViewport?.offsetTop??0,top:rect.top,bottom:rect.bottom,"
+                + "left:rect.left,right:rect.right,width:rect.width,height:rect.height,"
+                + "centerHitMatchesTarget:!!hit?.closest?.(" + JSONObject.quote(selector) + "),disabled:!!element.disabled});})()");
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime())));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        });
+        layout.put("nativeMapping", nativeMapping.get());
+        return layout;
+    }
+
+    private boolean sameComposerActionTapLayout(JSONObject left, JSONObject right) throws JSONException {
+        for (String key : new String[]{"innerWidth", "innerHeight", "visualViewportHeight", "visualViewportOffsetTop",
+                "top", "bottom", "left", "right", "width", "height"}) {
+            if (Math.abs(left.getDouble(key) - right.getDouble(key)) > 0.5) return false;
+        }
+        JSONObject leftNative = left.getJSONObject("nativeMapping");
+        JSONObject rightNative = right.getJSONObject("nativeMapping");
+        for (String key : new String[]{"webViewScreenX", "webViewScreenY", "webViewWidthPx", "webViewHeightPx"}) {
+            if (leftNative.getInt(key) != rightNative.getInt(key)) return false;
+        }
+        return left.getBoolean("centerHitMatchesTarget") == right.getBoolean("centerHitMatchesTarget")
+                && left.getBoolean("disabled") == right.getBoolean("disabled")
+                && leftNative.getBoolean("imeVisible") == rightNative.getBoolean("imeVisible");
+    }
+
+    private void beginComposerActionTapObservation(String selector) throws Exception {
+        evalString("(() => {let state=window.__ps2920ComposerActionTap;"
+                + "if(!state){state={selector:'',events:[]};window.__ps2920ComposerActionTap=state;"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||'',"
+                + "className:typeof node.className==='string'?node.className:''}:null;"
+                + "for(const type of ['pointerdown','pointerup','click'])document.addEventListener(type,event=>{"
+                + "const current=window.__ps2920ComposerActionTap;if(!current?.selector)return;const target=event.target;"
+                + "const matches=!!target?.closest?.(current.selector);current.events.push({type,isTrusted:event.isTrusted,"
+                + "targetMatchesRequested:matches,target:label(target),clientX:event.clientX??null,clientY:event.clientY??null,"
+                + "timeStamp:event.timeStamp});},true);}state.selector=" + JSONObject.quote(selector)
+                + ";state.events=[];state.startedAt=performance.now();return 'armed';})()");
+    }
+
+    private JSONObject awaitComposerActionPhysicalClick(String selector, long touchUpUptimeMs, long timeoutMillis)
+            throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        JSONObject observation = readComposerActionTapObservation(selector, touchUpUptimeMs);
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (observation.optBoolean("trustedPointerDownOnTarget")
+                    && observation.optBoolean("trustedPointerUpOnTarget")
+                    && observation.optBoolean("trustedClickOnTarget")) return observation;
+            Thread.sleep(30);
+            observation = readComposerActionTapObservation(selector, touchUpUptimeMs);
+        }
+        return observation;
+    }
+
+    private JSONObject readComposerActionTapObservation(String selector, long touchUpUptimeMs) throws Exception {
+        JSONObject observation = evalJson("(() => {const state=window.__ps2920ComposerActionTap;"
+                + "const events=state?.events||[];const event=(type)=>events.some(item=>item.type===type"
+                + "&&item.isTrusted===true&&item.targetMatchesRequested===true);"
+                + "return JSON.stringify({selector:state?.selector||'',events,"
+                + "trustedPointerDownOnTarget:event('pointerdown'),trustedPointerUpOnTarget:event('pointerup'),"
+                + "trustedClickOnTarget:event('click')});})()");
+        observation.put("touchUpUptimeMs", touchUpUptimeMs)
+                .put("physicalTap", lastPhysicalTapEvidence == null
+                        ? JSONObject.NULL : new JSONObject(lastPhysicalTapEvidence.toString()));
+        return observation;
     }
 
     private void installFocusTapEventRecorder() throws Exception {
@@ -985,13 +1114,15 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void emitFocusTraceIfNeeded() throws Exception {
-        if (focusTraceEmitted || focusTapAttempts.length() == 0 || artifactRunId == null) return;
+        if (focusTraceEmitted || (focusTapAttempts.length() == 0 && composerActionTapEvidence.length() == 0)
+                || artifactRunId == null) return;
         JSONObject trace = new JSONObject()
                 .put("runId", artifactRunId)
                 .put("androidApi", Build.VERSION.SDK_INT)
                 .put("maxAttempts", composerFocusMaxAttempts)
                 .put("forcedFirstPostAttachMiss", forceFirstPostAttachTapMiss)
-                .put("attempts", focusTapAttempts);
+                .put("attempts", focusTapAttempts)
+                .put("composerActionTaps", composerActionTapEvidence);
         byte[] bytes = trace.toString(2).getBytes(StandardCharsets.UTF_8);
         scenario.onActivity(activity -> {
             try (FileOutputStream output = new FileOutputStream(
@@ -1026,6 +1157,7 @@ public final class JsComposerDockerJourneyTest {
                     .put("imeAndWindowState", readNativeFocusState())
                     .put("webViewState", readFocusDomState())
                     .put("lastPhysicalTap", lastPhysicalTapEvidence)
+                    .put("composerActionTaps", composerActionTapEvidence)
                     .put("attempts", focusTapAttempts);
             byte[] reportBytes = report.toString(2).getBytes(StandardCharsets.UTF_8);
             scenario.onActivity(activity -> {
