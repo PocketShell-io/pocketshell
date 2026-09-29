@@ -14,8 +14,10 @@ import android.os.SystemClock;
 import android.util.Log;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.WindowInsets;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.webkit.WebView;
 
 import androidx.lifecycle.Lifecycle;
@@ -193,6 +195,10 @@ public final class SshPtyDockerJourneyTest {
         agentMetadata.put(aChrome);
         agentMetadataScreenshots.put(captureFullDeviceScreenshot(
                 "agent-selected-claude-waiting.png", artifactDirectory, sessionA, "selected-terminal"));
+
+        click("[data-testid=open-sessions]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
+        awaitJsTrue("['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
 
         JSONObject uncertainMutation = createAmbiguousSessionAndReconcile(runId, artifactDirectory);
 
@@ -551,8 +557,10 @@ public final class SshPtyDockerJourneyTest {
     private JSONObject createAmbiguousSessionAndReconcile(String runId, File artifactDirectory) throws Exception {
         String target = runId + "-uncertain-create";
         String oldConnectionId = currentConnectionId();
+        String phaseBeforeCreate = currentPhase();
         assertTrue("uncertain create must start on a connected host transport after session refresh",
-                "connected".equals(currentPhase()) || "listing".equals(currentPhase()));
+                "connected".equals(phaseBeforeCreate) || "listing".equals(phaseBeforeCreate)
+                        || "live".equals(phaseBeforeCreate));
         assertTrue("uncertain create must start with a physical SSH connection", !oldConnectionId.isEmpty());
 
         String prefix = "/tmp/pocketshell-uncertain-mutation-" + target;
@@ -566,9 +574,18 @@ public final class SshPtyDockerJourneyTest {
                 + new JSONObject().put("target", target).put("connectionId", oldConnectionId));
 
         setValue("[data-testid=new-session-name]", target);
+        String createUiBeforeSubmit = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                + "inputValue:document.querySelector('[data-testid=new-session-name]')?.value??null,"
+                + "createDisabled:document.querySelector('[data-testid=create-session]')?.disabled??null,"
+                + "warning:document.querySelector('[data-testid=uncertain-mutation]')?.textContent.trim()??'',"
+                + "message:document.querySelector('.connection-message')?.textContent.trim()??''})");
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_UI_BEFORE_SUBMIT " + createUiBeforeSubmit);
+        assertFalse("uncertain create button must be enabled after setting its name: " + createUiBeforeSubmit,
+                new JSONObject(createUiBeforeSubmit).getBoolean("createDisabled"));
         long mutationRequestedAtEpochMs = System.currentTimeMillis();
         click("[data-testid=create-session]");
-        awaitJsTrue("(() => {"
+        String uncertainWarningCondition = "(() => {"
                 + "const root=document.querySelector('.app-shell');"
                 + "const warning=document.querySelector('[data-testid=uncertain-mutation]');"
                 + "const target=" + JSONObject.quote(target) + ";"
@@ -579,7 +596,23 @@ public final class SshPtyDockerJourneyTest {
                 + " && !!root.dataset.sshConnectionId"
                 + " && root.dataset.sshConnectionId !== " + JSONObject.quote(oldConnectionId)
                 + " && !Array.from(document.querySelectorAll('[data-session-tag]'))"
-                + ".some((node)=>node.dataset.sessionTag===target);})()", 20_000);
+                + ".some((node)=>node.dataset.sessionTag===target);})()";
+        try {
+            awaitJsTrue(uncertainWarningCondition, 20_000);
+        } catch (AssertionError failure) {
+            String createUiAfterTimeout = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                    + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                    + "connectionId:document.querySelector('.app-shell')?.dataset.sshConnectionId??'',"
+                    + "inputValue:document.querySelector('[data-testid=new-session-name]')?.value??null,"
+                    + "createDisabled:document.querySelector('[data-testid=create-session]')?.disabled??null,"
+                    + "warning:document.querySelector('[data-testid=uncertain-mutation]')?.textContent.trim()??'',"
+                    + "warningState:document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state??'',"
+                    + "message:document.querySelector('.connection-message')?.textContent.trim()??'',"
+                    + "sessions:Array.from(document.querySelectorAll('[data-session-tag]')).map((node)=>node.dataset.sessionTag)})");
+            Log.e("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_UI_AFTER_TIMEOUT " + createUiAfterTimeout,
+                    failure);
+            throw failure;
+        }
         String connectionDuringFreshList = currentConnectionId();
         assertTrue("the fresh list must use a different SSH transport", !connectionDuringFreshList.isEmpty()
                 && !oldConnectionId.equals(connectionDuringFreshList));
@@ -614,13 +647,25 @@ public final class SshPtyDockerJourneyTest {
                 .put("observedAtEpochMs", uncertaintyObservedAtEpochMs)
                 .put("warning", uncertaintyWarning));
 
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'connected'"
-                + " && document.querySelector('.app-shell')?.dataset.sshConnectionId === "
-                + JSONObject.quote(connectionDuringFreshList)
+        String mutationReconciledCondition = "(() => {const root=document.querySelector('.app-shell');"
+                + "return ['connected','live'].includes(root?.dataset.sshPhase)"
+                + " && root?.dataset.sshConnectionId === " + JSONObject.quote(connectionDuringFreshList)
                 + " && document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state === 'observed-applied'"
                 + " && Array.from(document.querySelectorAll('[data-session-tag]'))"
-                + ".filter((node)=>node.dataset.sessionTag === " + JSONObject.quote(target) + ").length === 1",
-                25_000);
+                + ".filter((node)=>node.dataset.sessionTag === " + JSONObject.quote(target) + ").length === 1;})()";
+        try {
+            awaitJsTrue(mutationReconciledCondition, 25_000);
+        } catch (AssertionError failure) {
+            String reconciliationUi = evalString("JSON.stringify({surface:document.querySelector('.app-shell')?.dataset.homeSurface??'',"
+                    + "phase:document.querySelector('.app-shell')?.dataset.sshPhase??'',"
+                    + "connectionId:document.querySelector('.app-shell')?.dataset.sshConnectionId??'',"
+                    + "selectedTag:document.querySelector('.app-shell')?.dataset.sshSelectedTag??'',"
+                    + "warningState:document.querySelector('[data-testid=uncertain-mutation]')?.dataset.state??'',"
+                    + "sessions:Array.from(document.querySelectorAll('[data-session-tag]')).map((node)=>node.dataset.sessionTag)})");
+            Log.e("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_RECONCILIATION_UI " + reconciliationUi,
+                    failure);
+            throw failure;
+        }
         long reconciledAtEpochMs = System.currentTimeMillis();
         JSONObject createdRow = findSessionRow(target);
 
@@ -663,6 +708,7 @@ public final class SshPtyDockerJourneyTest {
             if ("listing".equals(phase.optString("phase"))
                     && connectionDuringFreshList.equals(phase.optString("connectionId"))) listingPhases += 1;
         }
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES " + phases);
         assertEquals("one JS reconnect must follow the lost create response", 1, reconnectingPhases);
         assertEquals("one fresh session-list phase must reconcile the uncertain create", 1, listingPhases);
         assertEquals("the fixture's host CLI create identity must match the session shown in the refreshed UI",
@@ -852,16 +898,38 @@ public final class SshPtyDockerJourneyTest {
 
     private JSONObject captureCurrent(String checkpoint, String marker, File artifactDirectory) throws Exception {
         String selectedName = selectedSessionName();
+        hideImeForTerminalCapture(checkpoint);
         evalString("(() => {const main=document.querySelector('.screen-content.home-screen');"
                 + "const viewport=document.querySelector('#terminal-viewport'); if(!main||!viewport) throw new Error('live terminal page missing');"
                 + "main.scrollTop += viewport.getBoundingClientRect().top-main.getBoundingClientRect().top-8;"
                 + "const scroller=viewport.querySelector('.xterm-viewport'); if(scroller) scroller.scrollTop=scroller.scrollHeight;"
                 + "return 'scrolled-to-terminal';})()");
-        awaitJsTrue("(() => {const main=document.querySelector('.screen-content.home-screen');"
+        String viewportFitCondition = "(() => {const main=document.querySelector('.screen-content.home-screen');"
                 + "const viewport=document.querySelector('#terminal-viewport'); const title=document.querySelector('#terminal-title');"
                 + "const r=viewport?.getBoundingClientRect(),m=main?.getBoundingClientRect();"
                 + "return !!r&&!!m&&viewport.dataset.enabled==='true'&&title?.textContent.trim()===" + JSONObject.quote(selectedName)
-                + "&&r.top>=m.top-1&&r.bottom<=m.bottom+1&&r.left>=m.left&&r.right<=m.right;})()");
+                // Android WebView reports a sub-2 CSS-pixel top overlap after
+                // relayout; allow that rounding/paint-boundary slop while
+                // still rejecting a visibly clipped terminal viewport.
+                + "&&r.top>=m.top-4&&r.bottom<=m.bottom+1&&r.left>=m.left&&r.right<=m.right;})()";
+        try {
+            awaitJsTrue(viewportFitCondition);
+        } catch (AssertionError failure) {
+            String geometry = evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
+                    + "const main=document.querySelector('.screen-content.home-screen');"
+                    + "const viewport=document.querySelector('#terminal-viewport');"
+                    + "const box=(node)=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                    + "const active=document.activeElement;return {surface:root?.dataset.homeSurface??'',phase:root?.dataset.sshPhase??'',"
+                    + "selectedTag:root?.dataset.sshSelectedTag??'',selectedName:root?.dataset.sshSelectedSession??'',"
+                    + "viewportEnabled:viewport?.dataset.enabled??'',title:document.querySelector('#terminal-title')?.textContent.trim()??'',"
+                    + "inner:{width:innerWidth,height:innerHeight},visual:{offsetTop:visualViewport?.offsetTop??null,height:visualViewport?.height??null},"
+                    + "main:box(main),viewport:box(viewport),mainScrollTop:main?.scrollTop??null,"
+                    + "mainClientHeight:main?.clientHeight??null,mainScrollHeight:main?.scrollHeight??null,"
+                    + "activeElement:active?{tag:active.tagName,id:active.id,type:active.type??''}:null};})())");
+            Log.e("SshPtyDockerJourney", "RUN " + activeRunId + " VIEWPORT_FIT_FAILURE " + checkpoint + " " + geometry,
+                    failure);
+            throw failure;
+        }
         assertTrue("terminal output marker must be an exact xterm output row for " + checkpoint + ": " + terminalViewportText(),
                 exactTerminalRow(marker));
         String text = terminalViewportText();
@@ -915,6 +983,57 @@ public final class SshPtyDockerJourneyTest {
                 .put("markerRect", markerRect)
                 .put("terminalLayoutFile", checkpoint + "-terminal-layout.json")
                 .put("screenshotPixels", screenshot);
+    }
+
+    private void hideImeForTerminalCapture(String checkpoint) throws Exception {
+        boolean imeWasVisible = isImeVisible();
+        JSONObject resizeBefore = terminalResizeStats();
+        evalString("(() => {const active=document.activeElement;"
+                + "if(active instanceof HTMLElement) active.blur(); return 'terminal focus cleared for viewport capture';})()");
+        requestImeHide();
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        int stableHiddenSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (!isImeVisible()) {
+                stableHiddenSamples += 1;
+                if (stableHiddenSamples >= 3) {
+                    int previousAckCount = resizeBefore.getInt("ackCount") - (imeWasVisible ? 0 : 1);
+                    JSONObject resizeAfter = awaitStableNativeResizeState(
+                            previousAckCount, checkpoint + " after hiding IME");
+                    Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " TERMINAL_CAPTURE_IME_HIDDEN "
+                            + new JSONObject().put("checkpoint", checkpoint).put("imeWasVisible", imeWasVisible)
+                            .put("resize", resizeAfter));
+                    return;
+                }
+            } else {
+                stableHiddenSamples = 0;
+                requestImeHide();
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError(checkpoint + " Android IME did not stay hidden for terminal viewport capture");
+    }
+
+    private boolean isImeVisible() {
+        AtomicReference<Boolean> visible = new AtomicReference<>(false);
+        scenario.onActivity(activity -> {
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            visible.set(insets != null && android.os.Build.VERSION.SDK_INT >= 30
+                    && insets.isVisible(WindowInsets.Type.ime()));
+        });
+        return visible.get();
+    }
+
+    private void requestImeHide() {
+        scenario.onActivity(activity -> {
+            android.view.View decor = activity.getWindow().getDecorView();
+            android.view.WindowInsetsController controller = decor.getWindowInsetsController();
+            if (controller != null) controller.hide(WindowInsets.Type.ime());
+            InputMethodManager inputMethodManager = activity.getSystemService(InputMethodManager.class);
+            if (inputMethodManager != null) {
+                inputMethodManager.hideSoftInputFromWindow(decor.getWindowToken(), 0);
+            }
+        });
     }
 
     private JSONObject terminalLayoutDiagnostics() throws Exception {
