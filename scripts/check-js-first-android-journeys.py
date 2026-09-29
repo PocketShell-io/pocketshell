@@ -127,8 +127,8 @@ def _class_selector_matches(source: str, contract: LaneContract) -> bool:
     active = _strip_shell_comments(source)
     active = re.sub(r"\\\s*\n", " ", active)
     selector = "-Pandroid.testInstrumentationRunnerArguments.class="
-    # The composer wrapper assigns its FQCN once and passes the variable in the
-    # actual connected Gradle invocation; the other lanes pass the FQCN there.
+    # Most lanes select their class through Gradle. The composer lane directly
+    # invokes Android instrumentation and forwards its selector via an array.
     direct = re.search(
         r"['\"]?" + re.escape(selector) + re.escape(contract.class_name)
         + r"(?:#(?P<method>[A-Za-z_$][\w$]*))?['\"]?(?:\s|$)",
@@ -139,11 +139,30 @@ def _class_selector_matches(source: str, contract: LaneContract) -> bool:
         if selected_method is not None and contract.methods != {selected_method}:
             return False
         return True
-    variable_match = re.search(
+    gradle_variable_match = re.search(
         rf"(?m)^\s*test_class=['\"]{re.escape(contract.class_name)}['\"]\s*$",
         active,
     ) and re.search(r"['\"]?" + re.escape(selector) + r"\$test_class['\"]?(?:\s|$)", active)
-    return bool(variable_match)
+    if gradle_variable_match:
+        return True
+
+    # Prove the exact class value is bound to the instrumentation class
+    # argument and that the argument array is consumed by am instrument.
+    if re.search(
+        rf"(?m)^\s*test_class=['\"]{re.escape(contract.class_name)}['\"]\s*$",
+        active,
+    ) is None:
+        return False
+    phase_args = re.search(r"(?s)\bphase_args\s*=\s*\((.*?)\)", active)
+    if phase_args is None or re.search(
+        r"(?:^|\s)-e\s+class\s+[\"']?\$test_class[\"']?(?=\s|$)",
+        phase_args.group(1),
+    ) is None:
+        return False
+    return any(
+        re.search(r"\$\{phase_args\[@\]\}", invocation.group(1))
+        for invocation in re.finditer(r"\bshell\s+am\s+instrument\b([^\n;]*)", active)
+    )
 
 
 def _checker_contract(source: str, contract: LaneContract) -> tuple[str | None, set[str] | None]:
@@ -491,7 +510,14 @@ def run_check(repo_root: Path, mode: str = "auto", machine: bool = False) -> int
     return 1 if any(item.kind in {"ERROR", "NEW"} for item in findings) else 0
 
 
-def _write_fixture(root: Path, lane: LaneContract, *, omit_selector: bool = False, omit_checker_method: bool = False) -> None:
+def _write_fixture(
+    root: Path,
+    lane: LaneContract,
+    *,
+    omit_selector: bool = False,
+    wrong_selector: bool = False,
+    omit_checker_method: bool = False,
+) -> None:
     android_root = root / "android/app/src/androidTest/java"
     source_path = android_root / Path(*lane.class_name.split(".")).with_suffix(".java")
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -508,10 +534,15 @@ def _write_fixture(root: Path, lane: LaneContract, *, omit_selector: bool = Fals
     child = root / lane.child_runner
     child.parent.mkdir(parents=True, exist_ok=True)
     if lane.name == "composer-docker":
-        selector = f"test_class='{lane.class_name}'\n"
-        selector += "./gradlew -Pandroid.testInstrumentationRunnerArguments.class=$test_class\n"
+        selected_class = "wrong.Class" if wrong_selector else lane.class_name
+        selector = f"test_class='{selected_class}'\n"
+        phase_selector = "" if omit_selector else '-e class "$test_class" '
+        selector += "run_instrumentation_phase() {\n"
+        selector += f"  local phase_args=({phase_selector}-e composerPhase prepare)\n"
+        selector += '  "$ADB" shell am instrument -w -r "${phase_args[@]}" "$INSTRUMENTATION_COMPONENT"\n'
+        selector += "}\n"
     else:
-        target = "wrong.Class" if omit_selector else lane.class_name
+        target = "wrong.Class" if (omit_selector or wrong_selector) else lane.class_name
         selector = f"./gradlew -Pandroid.testInstrumentationRunnerArguments.class={target}\n"
     selector += f'"$ROOT_DIR/{lane.result_checker}" --results-dir "$RESULTS_DIR"\n'
     child.write_text(selector, encoding="utf-8")
@@ -612,6 +643,12 @@ def self_test() -> int:
         _write_fixture(root, smoke, omit_selector=True)
         probe("missing packaged class selector fails", check(root, "js") != 0, True)
         _write_fixture(root, smoke)
+        composer = next(lane for lane in LANES if lane.name == "composer-docker")
+        _write_fixture(root, composer, wrong_selector=True)
+        probe("wrong Android instrumentation class selector fails", check(root, "js") != 0, True)
+        _write_fixture(root, composer, omit_selector=True)
+        probe("missing Android instrumentation class selector fails", check(root, "js") != 0, True)
+        _write_fixture(root, composer)
         _write_fixture(root, smoke, omit_checker_method=True)
         probe("missing method in the exact result guard fails", check(root, "js") != 0, True)
         _write_fixture(root, smoke)
