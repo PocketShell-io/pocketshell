@@ -116,7 +116,8 @@
       "suite": "pre-rewrite destination inventory",
       "tests": [
         "maps each shipped destination to a replacement route, owning issue, and implementation status",
-        "states which prior settings/support surfaces have working routes in this slice"
+        "states which prior settings/support surfaces have working routes in this slice",
+        "maps the implemented file workspace as partial while Android DocumentsUI chooser interaction remains unverified"
       ]
     },
     "tests/unit/dictationStartCancellation.test.ts": {

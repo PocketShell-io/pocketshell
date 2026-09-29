@@ -27,4 +27,13 @@ describe('pre-rewrite destination inventory', () => {
     expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === 'VoiceSettings')?.status).toBe('information-only');
     expect(REQUIRED_OLD_DESTINATIONS.length).toBe(DESTINATION_INVENTORY.length);
   });
+
+  it('maps the implemented file workspace as partial while Android DocumentsUI chooser interaction remains unverified', () => {
+    for (const destination of ['Files', 'FileViewer']) {
+      const mapping = DESTINATION_INVENTORY.find((entry) => entry.oldDestination === destination);
+      expect(mapping?.newRoute).toBe('files');
+      expect(mapping?.status).toBe('partial');
+      expect(mapping?.note).toContain('real Android DocumentsUI chooser interaction remains unverified');
+    }
+  });
 });
