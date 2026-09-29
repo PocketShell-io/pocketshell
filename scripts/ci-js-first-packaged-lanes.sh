@@ -73,25 +73,35 @@ else
   composer_status=$?
 fi
 
-composer_results_dir="android/app/build/outputs/js-composer-results"
+composer_root="android/app/build/outputs/js-composer"
+composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
 composer_junit_copy_status=0
-mkdir -p "$composer_results_dir" || composer_junit_copy_status=$?
-if (( composer_junit_copy_status == 0 )); then
-  shopt -s nullglob
-  composer_junit_files=("$connected_results_dir"/TEST-*.xml)
-  if (( ${#composer_junit_files[@]} == 0 )); then
-    printf 'FAIL: packaged composer run produced no JUnit files in %s\n' \
-      "$connected_results_dir" >&2
-    composer_junit_copy_status=1
-  else
-    cp -a -- "${composer_junit_files[@]}" "$composer_results_dir/" || composer_junit_copy_status=$?
-  fi
+shopt -s nullglob
+composer_runs=("$composer_root/$composer_prefix"*)
+if (( ${#composer_runs[@]} != 1 )); then
+  printf 'FAIL: expected exactly one run-scoped composer evidence directory for %s; found %s\n' \
+    "$composer_prefix" "${#composer_runs[@]}" >&2
+  composer_junit_copy_status=1
+else
+  composer_run="${composer_runs[0]}"
+  for phase in prepare resume; do
+    if [[ ! -s "$composer_run/phase-$phase/TEST-composer.xml" ]]; then
+      printf 'FAIL: packaged composer %s phase has no same-run JUnit report\n' "$phase" >&2
+      composer_junit_copy_status=1
+    fi
+  done
 fi
+shopt -u nullglob
 
 composer_junit_status=0
-if (( composer_junit_copy_status != 0 )) \
-  || ! scripts/check-js-composer-journey-results.py --results-dir "$composer_results_dir"; then
+if (( composer_junit_copy_status != 0 )); then
   composer_junit_status=1
+else
+  for phase in prepare resume; do
+    if ! scripts/check-js-composer-journey-results.py --results-dir "$composer_run/phase-$phase"; then
+      composer_junit_status=1
+    fi
+  done
 fi
 
 if scripts/connected-js-hotkeys-docker.sh \
@@ -103,10 +113,19 @@ else
   hotkeys_status=$?
 fi
 
+hotkeys_root="android/app/build/outputs/js-hotkeys"
+hotkeys_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
 hotkeys_junit_status=0
-if ! scripts/check-js-hotkeys-journey-results.py --results-dir "$connected_results_dir"; then
+shopt -s nullglob
+hotkeys_runs=("$hotkeys_root/$hotkeys_prefix"*)
+if (( ${#hotkeys_runs[@]} != 1 )); then
+  printf 'FAIL: expected exactly one run-scoped fast-key evidence directory for %s; found %s\n' \
+    "$hotkeys_prefix" "${#hotkeys_runs[@]}" >&2
+  hotkeys_junit_status=1
+elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"; then
   hotkeys_junit_status=1
 fi
+shopt -u nullglob
 
 printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \

@@ -43,6 +43,8 @@ SCREENSHOTS = {
     "fastkeys-dictation-reattached-ime-open.png",
     "fastkeys-dictation-background-cancel-resumed.png",
     "fastkeys-dictation-post-resume-ime-open.png",
+    "fastkeys-dictation-starting-prompt-unavailable.png",
+    "fastkeys-dictation-listening-prompt-unavailable.png",
     "fastkeys-prompt-dictation-recording.png",
     "fastkeys-prompt-dictation-transcribing.png",
     "fastkeys-prompt-dictation-review.png",
@@ -59,6 +61,9 @@ VIEWPORT_SCREENSHOTS = {
     "fastkeys-dictation-background-cancel-resumed-viewport.png",
     "fastkeys-dictation-post-resume-ime-open-viewport.png",
     "fastkeys-reconnected-ime-open-viewport.png",
+}
+FAILURE_ONLY_SCREENSHOTS = {
+    "fastkeys-prompt-reopen-failure.png",
 }
 REQUIRED_ASSETS = SCREENSHOTS | VIEWPORT_SCREENSHOTS | {"fastkeys-journey.json"}
 FAILURE_ASSETS = {
@@ -631,7 +636,7 @@ def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = Fals
         if len(parts) < 3 or parts[1] != run_id:
             continue
         kind, _, name = parts[:3]
-        if not SAFE_NAME.fullmatch(name) or name not in REQUIRED_ASSETS | FAILURE_ASSETS:
+        if not SAFE_NAME.fullmatch(name) or name not in REQUIRED_ASSETS | FAILURE_ASSETS | FAILURE_ONLY_SCREENSHOTS:
             raise ExtractionFailure(f"unsafe or unexpected asset {name!r}")
         if kind == "BEGIN":
             if len(parts) != 5 or name in records:
@@ -663,6 +668,8 @@ def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = Fals
             raise ExtractionFailure(f"unknown asset record {kind!r}")
 
     if preserve_on_failure:
+        if FAILURE_ONLY_SCREENSHOTS & set(records):
+            raise ExtractionFailure("packaged-test failure screenshots cannot be mixed with marker-only failure extraction")
         if not FAILURE_ASSETS.issubset(records):
             raise ExtractionFailure(f"failure-mode capture is missing marker diagnostics: {sorted(FAILURE_ASSETS - set(records))}")
     elif preserve_test_failure:
@@ -679,8 +686,8 @@ def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = Fals
             )
         if bool(FAILURE_ASSETS & set(records)) and not FAILURE_ASSETS.issubset(records):
             raise ExtractionFailure("post-Stop marker diagnostics must include their same-run screenshot and state JSON")
-    elif FAILURE_ASSETS & set(records):
-        raise ExtractionFailure("failure-mode marker diagnostics cannot be accepted as a green journey")
+    elif FAILURE_ASSETS & set(records) or FAILURE_ONLY_SCREENSHOTS & set(records):
+        raise ExtractionFailure("failure-only artifacts cannot be accepted as a green journey")
     elif set(records) != REQUIRED_ASSETS:
         raise ExtractionFailure(f"expected {sorted(REQUIRED_ASSETS)}, found {sorted(records)}")
     decoded: dict[str, bytes] = {}
@@ -699,7 +706,8 @@ def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = Fals
             raise ExtractionFailure(f"asset {name} hash does not match its manifest")
         decoded[name] = payload
 
-    for name in (SCREENSHOTS | VIEWPORT_SCREENSHOTS | {"fastkeys-dictation-post-stop-marker-failure.png"}) & set(decoded):
+    for name in (SCREENSHOTS | VIEWPORT_SCREENSHOTS | FAILURE_ONLY_SCREENSHOTS
+                 | {"fastkeys-dictation-post-stop-marker-failure.png"}) & set(decoded):
         payload = decoded[name]
         if len(payload) < 1024 or not payload.startswith(b"\x89PNG\r\n\x1a\n"):
             raise ExtractionFailure(f"{name} is not a full non-empty PNG")
@@ -1973,6 +1981,21 @@ def self_test() -> int:
         failures += 1
     else:
         print("PASS: pre-assert keyboard screenshots are preserved as failure-only evidence")
+    prompt_reopen_failure_assets = {
+        **keyboard_failure_assets,
+        "fastkeys-prompt-reopen-failure.png": diagnostic_png,
+    }
+    try:
+        preserved = parse_assets(make_failure_log(prompt_reopen_failure_assets), failure_run_id,
+                                 preserve_test_failure=True)
+        prompt_reopen_preservation_ok = preserved == prompt_reopen_failure_assets
+    except ExtractionFailure:
+        prompt_reopen_preservation_ok = False
+    if not prompt_reopen_preservation_ok:
+        print("FAIL: Prompt reopen failure screenshot is not preserved as failure-only evidence", file=sys.stderr)
+        failures += 1
+    else:
+        print("PASS: Prompt reopen failure screenshot is preserved as failure-only evidence")
     incomplete_keyboard_assets = dict(keyboard_failure_assets)
     incomplete_keyboard_assets.pop("fastkeys-row-closed-ime-open-viewport.png")
     try:

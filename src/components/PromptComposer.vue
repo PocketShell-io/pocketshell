@@ -14,15 +14,18 @@ import DictationMicIcon from './DictationMicIcon.vue';
 
 const props = withDefaults(defineProps<{
   targetKey: string;
-  targetLabel: string;
-  hostId: string;
-  keyboardVisible: boolean;
+  targetLabel?: string;
+  hostId?: string;
+  keyboardVisible?: boolean;
   transportState: 'connected' | 'lost' | 'closed';
   writePty: PtyWriteEffect;
   /** Android opens the shared composer in a modal sheet from the terminal dock. */
   mobileSheet?: boolean;
   open?: boolean;
 }>(), {
+  targetLabel: '',
+  hostId: '',
+  keyboardVisible: false,
   mobileSheet: false,
   open: false,
 });

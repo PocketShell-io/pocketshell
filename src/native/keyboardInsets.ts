@@ -8,6 +8,7 @@ export type KeyboardInsetsState = {
 
 type NativeKeyboardInsetsPlugin = Plugin & {
   getState(): Promise<KeyboardInsetsState>;
+  hideIme(): Promise<void>;
   addListener(
     eventName: 'imeInsetsChanged',
     listener: (state: KeyboardInsetsState) => void,

@@ -219,12 +219,25 @@ jobs:
             failed=1
           fi
 
-          run_check fast-key scripts/check-js-hotkeys-journey-results.py \
-            --results-dir android/app/build/outputs/js-hotkeys
-
           if (( failed != 0 )); then
             exit 1
           fi
+
+      - name: Assert the packaged JS mobile fast-key journey executed exactly once
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="android/app/build/outputs/js-hotkeys"
+          evidence_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          evidence_runs=("$evidence_root/$evidence_prefix"*)
+          if (( ${#evidence_runs[@]} != 1 )); then
+            printf 'FAIL: expected exactly one same-run fast-key evidence directory for %s; found %s\n' \
+              "$evidence_prefix" "${#evidence_runs[@]}" >&2
+            exit 1
+          fi
+          scripts/check-js-hotkeys-journey-results.py --results-dir "${evidence_runs[0]}"
 
       - name: Collect isolated composer fixture diagnostics
         if: always()

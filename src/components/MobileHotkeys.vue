@@ -25,6 +25,8 @@ const props = withDefaults(defineProps<{
   showInlineDictationStatus?: boolean;
   /** Adds the Kotlin-style Compose entry point for the shared prompt composer. */
   promptComposerAvailable?: boolean;
+  /** Prompt stays visibly disabled while inline terminal recognition owns the dock. */
+  promptComposerEnabled?: boolean;
   dictationState?: InlineDictationState;
   dictationTargetKey?: string;
   /** Override only for deterministic tests; production uses Android's 500 ms long-press feel. */
@@ -34,6 +36,7 @@ const props = withDefaults(defineProps<{
   dictationAvailable: false,
   showInlineDictationStatus: undefined,
   promptComposerAvailable: false,
+  promptComposerEnabled: true,
   dictationState: () => ({
     phase: 'idle' as const,
     preview: '',
@@ -358,9 +361,9 @@ defineExpose({
             class="mobile-hotkeys__key mobile-hotkeys__composer-launcher"
             type="button"
             data-testid="prompt-composer-launcher"
-            aria-label="Open prompt composer to type or dictate a prompt"
-            title="Open prompt composer to type or dictate a prompt"
-            :disabled="!enabled"
+            :aria-label="promptComposerEnabled ? 'Open prompt composer to type or dictate a prompt' : 'Prompt unavailable while terminal dictation is active'"
+            :title="promptComposerEnabled ? 'Open prompt composer to type or dictate a prompt' : 'Prompt unavailable while terminal dictation is active'"
+            :disabled="!enabled || !promptComposerEnabled"
             @click="emit('openComposer')"
           >
             <AppIcon name="edit-2" aria-hidden="true" />

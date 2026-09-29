@@ -571,6 +571,11 @@ public final class JsFastKeysDockerJourneyTest {
         }
         tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
+                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150", 10_000);
+        awaitTerminalResizeIdle();
+        awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.enabled === 'true'");
         long reconnectTapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
         tapDomCenter("[data-key-id='arrow-up']");
@@ -871,7 +876,11 @@ public final class JsFastKeysDockerJourneyTest {
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
+        // Let the keyboard-driven viewport update reach ResizeObserver before checking
+        // the PTY resize queue, then wait for that request and its rendered acknowledgement.
+        awaitRenderedFrame();
         awaitTerminalResizeIdle();
+        awaitRenderedFrame();
         JSONObject postResumeKeyboardGeometry = captureGeometry("dictation-post-resume-ime-open");
         assertAcceptedKeyboardUpViewport("IME reopening after the hidden resume", postResumeKeyboardGeometry);
         assertDictationMicReachable(postResumeKeyboardGeometry);
@@ -1040,7 +1049,71 @@ public final class JsFastKeysDockerJourneyTest {
         attachSession(firstSession);
     }
 
+    private void exerciseInlineDictationPromptGuard() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === false");
+        if (!isImeVisible()) tapDomCenter(".terminal-viewport");
+        awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
+                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150", 10_000);
+        awaitTerminalResizeIdle();
+        awaitRenderedFrame();
+        int writesBefore = terminalInputAcknowledgements();
+        int cancelsBefore = controlledSpeechCallCount("cancelCount");
+        evalString("window.__ps2857ControlledSpeech.deferNextStart=true; 'next start held'");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'starting'");
+        JSONObject starting = captureGeometry("inline-dictation-starting-prompt-disabled");
+        assertDictationMicReachable(starting);
+        assertEquals("starting keeps its reachable Cancel action", "Cancel",
+                starting.getJSONObject("inlineDictationMic").getString("visibleText"));
+        assertEquals("Prompt is disabled during recognizer startup", true,
+                starting.getJSONObject("promptComposerLauncher").getBoolean("disabled"));
+        tapDisabledDomCenter("[data-testid=prompt-composer-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'starting'"
+                + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === true"
+                + " && !document.querySelector('[data-testid=prompt-composer]')");
+        captureScreenshot("fastkeys-dictation-starting-prompt-unavailable.png");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        assertEquals("the reachable inline Cancel reaches the native recognition adapter once",
+                cancelsBefore + 1, controlledSpeechCallCount("cancelCount"));
+        evalString("window.__ps2857ControlledSpeech.resolvePendingStart?.(); 'pending start released after Cancel'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        evalString("window.__ps2857ControlledSpeech.emit('partial', 'prompt guard partial'); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'prompt guard partial'");
+        JSONObject listening = captureGeometry("inline-dictation-listening-prompt-disabled");
+        assertDictationMicReachable(listening);
+        assertEquals("active recognition keeps its reachable Stop action", "Stop",
+                listening.getJSONObject("inlineDictationMic").getString("visibleText"));
+        assertEquals("Prompt remains disabled during active recognition", true,
+                listening.getJSONObject("promptComposerLauncher").getBoolean("disabled"));
+        tapDisabledDomCenter("[data-testid=prompt-composer-launcher]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'"
+                + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === true"
+                + " && !document.querySelector('[data-testid=prompt-composer]')");
+        captureScreenshot("fastkeys-dictation-listening-prompt-unavailable.png");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'stopping'");
+        evalString("window.__ps2857ControlledSpeech.emit('result', ''); 'empty result delivered after Stop'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === false");
+        assertEquals("guarded Prompt taps and empty recognition must not write to the PTY", writesBefore,
+                terminalInputAcknowledgements());
+        JSONObject evidence = new JSONObject().put("starting", starting).put("listening", listening)
+                .put("startingPromptTapAttempted", true).put("listeningPromptTapAttempted", true)
+                .put("startingCancelledThroughDock", true).put("listeningStoppedWithoutInsert", true)
+                .put("nativeCancelCalls", controlledSpeechCallCount("cancelCount") - cancelsBefore)
+                .put("terminalWrites", terminalInputAcknowledgements() - writesBefore);
+        journey.put("inlineDictationPromptGuard", evidence);
+    }
+
     private void exercisePromptDictationFromComposer() throws Exception {
+        exerciseInlineDictationPromptGuard();
         Log.i("PS2897Prompt", "checkpoint Prompt composer dictation waiting for live terminal");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
                 + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === false"
@@ -1414,15 +1487,18 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const cap=window.Capacitor;"
                 + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
                 + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
-                + "const state={startOptions:null,stopOptions:null,cancelOptions:null,requestId:null,listener:null,pendingListeners:[],listeners:{},startCount:1,stopCount:1,cancelCount:0,"
+                + "const state={startOptions:null,stopOptions:null,cancelOptions:null,requestId:null,listener:null,pendingListeners:[],listeners:{},startCount:1,stopCount:1,cancelCount:0,deferNextStart:false,pendingStartResolver:null,"
                 + "emit(type,text,requestId){const id=requestId||this.requestId;const listener=this.listeners[id]||this.listener;"
-                + "if(!listener)throw new Error('speech listener is not registered');listener({requestId:id,type,...(text===undefined?{}:{text})});}};"
+                + "if(!listener)throw new Error('speech listener is not registered');listener({requestId:id,type,...(text===undefined?{}:{text})});},"
+                + "resolvePendingStart(){this.pendingStartResolver?.();}};"
                 + "window.__ps2857ControlledSpeech=state;"
                 + "cap.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
                 + "if(method==='startDictation'){state.startCount+=1;state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.cancelOptions=null;state.requestId=options.requestId;"
                 + "state.listeners[state.requestId]=state.pendingListeners.shift()||state.listener;"
-                + "return Promise.resolve({requestId:state.requestId,started:true});}"
+                + "const started={requestId:state.requestId,started:true};"
+                + "if(state.deferNextStart){state.deferNextStart=false;return new Promise(resolve=>{state.pendingStartResolver=()=>{state.pendingStartResolver=null;resolve(started);};});}"
+                + "return Promise.resolve(started);}"
                 + "if(method==='stopDictation'){state.stopCount+=1;state.stopOptions=JSON.parse(JSON.stringify(options));"
                 + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
                 + "if(method==='cancelDictation'){state.cancelCount+=1;state.cancelOptions=JSON.parse(JSON.stringify(options));"
@@ -1511,10 +1587,31 @@ public final class JsFastKeysDockerJourneyTest {
 
     private void openPromptComposerSheet() throws Exception {
         if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            evalString("window.__ps2884PromptTapTrace=[];for(const type of ['pointerdown','pointerup','click'])document.addEventListener(type,event=>{"
+                    + "const button=event.target instanceof Element?event.target.closest('[data-testid=prompt-composer-launcher]'):null;"
+                    + "if(button)window.__ps2884PromptTapTrace.push({type,isTrusted:event.isTrusted,detail:event.detail,x:event.clientX,y:event.clientY,"
+                    + "disabled:button.disabled,phase:document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase??null});},true);'trace installed'");
             tapDomCenter("[data-testid=prompt-composer-launcher]");
         }
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
-                + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+        try {
+            awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                    + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
+        } catch (AssertionError error) {
+            JSONObject state = evalJson("(() => {const button=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                    + "const rect=button?.getBoundingClientRect();const hit=rect?document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2):null;"
+                    + "const shell=document.querySelector('.app-shell');const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                    + "const tray=document.querySelector('[data-testid=mobile-hotkeys]');const active=document.activeElement;"
+                    + "return JSON.stringify({button:button?.outerHTML??null,buttonDisabled:button?.disabled??null,"
+                    + "buttonRect:rect?{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null,"
+                    + "hit:hit instanceof Element?{tag:hit.tagName,testId:hit.getAttribute('data-testid'),className:String(hit.className||'')}:null,"
+                    + "phase:bar?.dataset.phase??null,dictationTone:bar?.dataset.dictationTone??null,"
+                    + "keyboardVisible:shell?.dataset.keyboardVisible??null,composerOpen:shell?.dataset.promptComposerOpen??null,"
+                    + "trayEnabled:tray?.dataset.enabled??null,trayKeyboardVisible:tray?.dataset.keyboardVisible??null,"
+                    + "active:active instanceof Element?{tag:active.tagName,testId:active.getAttribute('data-testid'),outerHTML:active.outerHTML.slice(0,240)}:null,"
+                    + "tapTrace:window.__ps2884PromptTapTrace??[]});})()");
+            captureScreenshot("fastkeys-prompt-reopen-failure.png");
+            throw new AssertionError("Prompt did not open after its physical tap; state=" + state, error);
+        }
     }
 
     private void closePromptComposerSheet() throws Exception {
@@ -1523,6 +1620,7 @@ public final class JsFastKeysDockerJourneyTest {
         }
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
         awaitImeVisible(false);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
     }
 
     private void markResizeFitPhase(String phase) throws Exception {
@@ -2042,6 +2140,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "activeElementIsPromptDraft:activeElement===promptDraft,composerDraftValue:promptDraft?.value??'',"
                 + "activeElementTag:activeElement?.tagName?.toLowerCase()??'',"
                 + "fastKeysPage:tray?.dataset.palettePage||'closed',"
+                + "inlineDictationPhase:inlineDictationBarNode?.dataset.phase??'idle',"
                 + "href:location.href,route:shell?.dataset.route||'',sshPhase:shell?.dataset.sshPhase||'',homeSurface:shell?.dataset.homeSurface||'',"
                 + "sshAttachEpoch:Number(shell?.dataset.sshAttachEpoch??-1),"
                 + "terminalPanel:terminalPanelRect,terminalSlot:terminalSlotRect,terminalSlotInsideTerminalPanel,terminalViewport:terminalRect,terminalGridViewport:terminalGridRect,terminalXtermSurface,"
@@ -2186,18 +2285,22 @@ public final class JsFastKeysDockerJourneyTest {
         }
         JSONObject composeLauncher = geometry.optJSONObject("promptComposerLauncher");
         assertNotNull("the Android toolbar must keep the Prompt composer one tap away", composeLauncher);
+        boolean dictationOwnsDock = !"idle".equals(geometry.optString("inlineDictationPhase", "idle"));
+        String expectedPromptLabel = dictationOwnsDock
+                ? "Prompt unavailable while terminal dictation is active"
+                : "Open prompt composer to type or dictate a prompt";
         assertTrue("prompt composer launcher must remain a measured 48dp hit target above the IME: " + composeLauncher,
                 composeLauncher.getDouble("width") >= 47.9 && composeLauncher.getDouble("height") >= 47.9
                         && composeLauncher.getDouble("visibleWidthInKeybar") >= 47.9
                         && composeLauncher.getDouble("visibleHeightInKeybar") >= 47.9
                         && composeLauncher.getBoolean("insideViewport") && composeLauncher.getBoolean("hitTarget")
-                        && !composeLauncher.getBoolean("disabled")
-                        && "Open prompt composer to type or dictate a prompt".equals(composeLauncher.getString("label")));
+                        && composeLauncher.getBoolean("disabled") == dictationOwnsDock
+                        && expectedPromptLabel.equals(composeLauncher.getString("label")));
         JSONObject promptIconBounds = composeLauncher.optJSONObject("iconBounds");
         assertNotNull("Prompt icon must expose its computed SVG bounds", promptIconBounds);
-        assertEquals("Compose launcher exposes a clear accessible name", "Open prompt composer to type or dictate a prompt",
+        assertEquals("Compose launcher exposes a clear accessible name for its availability state", expectedPromptLabel,
                 composeLauncher.getString("label"));
-        assertEquals("Compose launcher title matches its accessible name", "Open prompt composer to type or dictate a prompt",
+        assertEquals("Compose launcher title matches its accessible name", expectedPromptLabel,
                 composeLauncher.getString("title"));
         assertEquals("Compose launcher visibly identifies its destination", "Prompt",
                 composeLauncher.getString("visibleText"));
@@ -3411,6 +3514,21 @@ public final class JsFastKeysDockerJourneyTest {
     private void tapDomCenter(String selector) throws Exception {
         JSONObject point = domPoint(selector);
         assertTrue("fast-key target must be visible inside the Android viewport: " + point, point.getBoolean("visible"));
+        float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
+        long downTime = SystemClock.uptimeMillis();
+        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime);
+        SystemClock.sleep(60);
+        injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
+        SystemClock.sleep(100);
+    }
+
+    private void tapDisabledDomCenter(String selector) throws Exception {
+        JSONObject point = evalJson("(() => {const n=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if(!n)return JSON.stringify({missing:true});const r=n.getBoundingClientRect(),v=window.visualViewport;"
+                + "return JSON.stringify({missing:false,disabled:!!n.disabled,x:r.left+r.width/2,y:r.top+r.height/2,"
+                + "visible:r.top>=0&&r.left>=0&&r.bottom<=(v?.height??innerHeight)+0.5&&r.right<=innerWidth+0.5});})()");
+        assertTrue("disabled Prompt launcher must remain visible for the physical-tap check: " + point,
+                !point.optBoolean("missing") && point.optBoolean("disabled") && point.optBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
         long downTime = SystemClock.uptimeMillis();
         injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime);

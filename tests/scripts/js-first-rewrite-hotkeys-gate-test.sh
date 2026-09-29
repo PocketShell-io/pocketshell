@@ -47,10 +47,11 @@ asset_sets = {}
 for node in extractor_module.body:
     if (isinstance(node, ast.Assign) and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in {"SCREENSHOTS", "VIEWPORT_SCREENSHOTS"}):
+            and node.targets[0].id in {"SCREENSHOTS", "VIEWPORT_SCREENSHOTS", "FAILURE_ONLY_SCREENSHOTS"}):
         asset_sets[node.targets[0].id] = set(ast.literal_eval(node.value))
 captured_assets = set(re.findall(r'capture(?:TerminalViewport)?Screenshot\("([^"]+)"', journey))
-extracted_assets = asset_sets.get("SCREENSHOTS", set()) | asset_sets.get("VIEWPORT_SCREENSHOTS", set())
+extracted_assets = (asset_sets.get("SCREENSHOTS", set()) | asset_sets.get("VIEWPORT_SCREENSHOTS", set())
+                   | asset_sets.get("FAILURE_ONLY_SCREENSHOTS", set()))
 if captured_assets != extracted_assets:
     missing = sorted(extracted_assets - captured_assets)
     unextracted = sorted(captured_assets - extracted_assets)
@@ -81,19 +82,19 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("always-run exact fast-key JUnit guard", "name: Assert the packaged JS mobile fast-key journey executed exactly once"),
         ("exact JUnit self-test", "scripts/check-js-hotkeys-journey-results.py --self-test"),
         ("artifact timing validator self-test", 'extract-js-hotkeys-artifacts.py" --self-test'),
-        ("same-run fast-key JUnit result", "--results-dir android/app/build/outputs/js-hotkeys"),
+        ("same-run fast-key JUnit result", '--results-dir "${evidence_runs[0]}"'),
         ("run-scoped fast-key artifact upload", "name: Upload packaged JS fast-key run evidence"),
         ("fast-key output bundle", "android/app/build/outputs/js-hotkeys/"),
         ("pre-assert keyboard failure screenshots are preserved", "--preserve-test-failure"),
         ("same-run resize and geometry trace collector", "-s PS2884Asset:I PS2884Geometry:I"),
         ("isolated fixture diagnostics", "docker logs pocketshell-test-agents-2243"),
-        ("composer result copy upload", "android/app/build/outputs/js-composer-results/TEST-*.xml"),
-        ("composer lane JUnit copy before fastkeys", "composer_results_dir=\"android/app/build/outputs/js-composer-results\""),
+        ("run-scoped composer evidence upload", "android/app/build/outputs/js-composer/"),
+        ("composer phase JUnit check before fastkeys", 'composer_root="android/app/build/outputs/js-composer"'),
         ("fast-key invocation", "scripts/connected-js-hotkeys-docker.sh \\\n  --suffix i2884ci \\\n  --port 2243"),
         ("one-turn rerun controls reach instrumentation", "fastKeysPromptFocusMaxAttempts"),
         ("fast-key aggregate status", "hotkeys_status=$?"),
         ("exact fast-key JUnit status", "hotkeys_junit_status=0"),
-        ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "$connected_results_dir"'),
+        ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"'),
         ("fail-closed fast-key aggregate", "hotkeys_status != 0 || hotkeys_junit_status != 0"),
         ("isolated fixture teardown", "scripts/agents-pool.sh down 2243 2245"),
         ("fast-key runner exact JUnit guard", 'check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"'),
@@ -126,6 +127,8 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("dictation error screenshot is uploaded", "fastkeys-dictation-error-ime-open.png"),
         ("prompt composer Dictate action is measured", '"Dictate prompt draft"'),
         ("dictation reattach screenshot is uploaded", "fastkeys-dictation-reattached-ime-open.png"),
+        ("starting dictation Prompt guard screenshot is uploaded", "fastkeys-dictation-starting-prompt-unavailable.png"),
+        ("listening dictation Prompt guard screenshot is uploaded", "fastkeys-dictation-listening-prompt-unavailable.png"),
         ("closed fast-key row screenshot is uploaded", "fastkeys-row-closed-ime-open.png"),
         ("catalog sheet front and tail screenshots are hashed for review", "fastkeys-sheet-ctrl-tail-ime-open.png"),
         ("closed row has same-run terminal viewport evidence", "fastkeys-row-closed-ime-open-viewport.png"),
@@ -138,6 +141,8 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("composer transcribing screenshot is retained", "fastkeys-prompt-dictation-transcribing.png"),
         ("composer review screenshot is retained", "fastkeys-prompt-dictation-review.png"),
         ("composer recording artifact self-test remains active", "complete prompt dictation recording/transcribing/review artifacts are accepted"),
+        ("Prompt reopen failure screenshot is failure-only evidence", "fastkeys-prompt-reopen-failure.png"),
+        ("Prompt reopen failure screenshot extraction self-test remains active", "Prompt reopen failure screenshot is preserved as failure-only evidence"),
     )
     for label, needle in required:
         combined = source + packaged_lanes + packaged_runner + artifact_extractor + app
@@ -150,15 +155,18 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         raise AssertionError("the fast-key fixture must start before the packaged lanes and stop after them")
     if packaged_lanes.index("scripts/connected-js-composer-docker.sh") > run:
         raise AssertionError("the fast-key lane must run after composer")
-    composer_copy = packaged_lanes.index("composer_results_dir=\"android/app/build/outputs/js-composer-results\"")
-    if not packaged_lanes.index("scripts/connected-js-composer-docker.sh") < composer_copy < run:
-        raise AssertionError("composer JUnit must be copied before Gradle output is reused by fastkeys")
+    composer_phase_checks = packaged_lanes.index(
+        'for phase in prepare resume; do',
+        packaged_lanes.index('composer_root="android/app/build/outputs/js-composer"'),
+    )
+    if not packaged_lanes.index("scripts/connected-js-composer-docker.sh") < composer_phase_checks < run:
+        raise AssertionError("both same-run composer phase JUnit reports must be checked before fastkeys")
 
     guard_start = source.index("- name: Assert the packaged JS mobile fast-key journey executed exactly once")
     guard_end = source.index("- name:", guard_start + 8)
     guard = source[guard_start:guard_end]
-    if "if: always()" not in guard or "--results-dir android/app/build/outputs/js-hotkeys" not in guard:
-        raise AssertionError("the always-run checker must validate the run-scoped fast-key JUnit copy")
+    if "if: always()" not in guard or '--results-dir "${evidence_runs[0]}"' not in guard:
+        raise AssertionError("the always-run checker must validate the unique run-scoped fast-key JUnit copy")
     upload_start = source.index("- name: Upload packaged JS fast-key run evidence")
     upload_end = source.index("- name:", upload_start + 8)
     upload = source[upload_start:upload_end]
@@ -221,7 +229,7 @@ if '.mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-dock {\n  bo
 if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
         or ".mobile-hotkeys__enter-divider { width: 1px; height: 24px;" not in mobile_hotkeys):
     raise AssertionError("persistent arrows and Enter must keep the Kotlin divider without consuming a hit target")
-if ('aria-label="Open prompt composer to type or dictate a prompt"' not in mobile_hotkeys
+if (':aria-label="promptComposerEnabled ? \'Open prompt composer to type or dictate a prompt\' : \'Prompt unavailable while terminal dictation is active\'"' not in mobile_hotkeys
         or 'data-testid="prompt-composer-launcher-label"' not in mobile_hotkeys
         or '>Prompt</span>' not in mobile_hotkeys
         or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
@@ -400,13 +408,13 @@ for label, damaged in (
         1,
     )),
     ("exact JUnit check", lanes.replace(
-        'if ! scripts/check-js-hotkeys-journey-results.py --results-dir "$connected_results_dir"; then\n',
+        'elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"; then\n',
         "if true; then\n",
         1,
     )),
     ("evidence upload", workflow.replace(
-        "            android/app/build/outputs/js-hotkeys/\n",
-        "            android/app/build/outputs/missing/\n",
+        "          path: android/app/build/outputs/js-hotkeys/\n",
+        "          path: android/app/build/outputs/missing/\n",
         1,
     )),
 ):

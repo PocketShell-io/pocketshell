@@ -5,13 +5,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   appStateListener: undefined as ((state: { isActive: boolean }) => void) | undefined,
   addListener: vi.fn(),
-  startDictation: vi.fn(),
+  startRecognition: vi.fn(),
+  cancelRecognition: vi.fn(async (_requestId: string) => {}),
 }));
 
 vi.mock('@capacitor/app', () => ({ App: { addListener: mocks.addListener } }));
-vi.mock('@pocketshell/ui', () => ({ ComposerControls: { render: () => null } }));
+vi.mock('@pocketshell/ui', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@pocketshell/ui')>(),
+  ComposerControls: { render: () => null },
+}));
 vi.mock('../../src/session/platformInput', () => ({
-  platformInput: { startDictation: mocks.startDictation },
+  platformInput: {
+    startRecognition: mocks.startRecognition,
+    stopRecognition: vi.fn(async (_requestId: string) => {}),
+    cancelRecognition: mocks.cancelRecognition,
+  },
 }));
 
 import PromptComposer from '../../src/components/PromptComposer.vue';
@@ -100,25 +108,22 @@ describe('pending dictation start cancellation', () => {
     mocks.appStateListener = undefined;
   });
 
-  it('stops a pending start once when the mounted composer backgrounds', async () => {
+  it('cancels a pending recognition start once when the mounted composer backgrounds', async () => {
     mocks.addListener.mockImplementation(async (_event: string, listener: (state: { isActive: boolean }) => void) => {
       mocks.appStateListener = listener;
       return { remove: vi.fn(async () => {}) };
     });
 
-    let resolveStart!: (session: { requestId: string; stop: () => Promise<void> }) => void;
-    const pendingStart = new Promise<{ requestId: string; stop: () => Promise<void> }>((resolve) => {
+    let resolveStart!: () => void;
+    const pendingStart = new Promise<void>((resolve) => {
       resolveStart = resolve;
     });
-    let dictationEvent: ((event: { requestId: string; type: 'stopped' }) => void) | undefined;
-    mocks.startDictation.mockImplementation((onEvent: typeof dictationEvent) => {
-      dictationEvent = onEvent;
+    let recognitionEvent: ((event: { requestId: string; type: 'result'; text: string }) => void) | undefined;
+    mocks.startRecognition.mockImplementation((_requestId: string, onEvent: typeof recognitionEvent) => {
+      recognitionEvent = onEvent;
       return pendingStart;
     });
 
-    const stop = vi.fn(async () => {
-      dictationEvent?.({ requestId: 'dictation-1', type: 'stopped' });
-    });
     const root = node('root');
     const app = renderer.createApp(mountedPromptComposer, {
       targetKey: 'host/session',
@@ -138,17 +143,22 @@ describe('pending dictation start cancellation', () => {
     expect(dictate).toBeDefined();
     const onClick = dictate?.props.onClick;
     expect(onClick).toBeTypeOf('function');
-    const starting = (onClick as () => Promise<void>)();
-    expect(mocks.startDictation).toHaveBeenCalledTimes(1);
+    (onClick as () => void)();
+    expect(mocks.startRecognition).toHaveBeenCalledTimes(1);
 
     mocks.appStateListener?.({ isActive: false });
-    expect(stop).not.toHaveBeenCalled();
+    expect(mocks.cancelRecognition).toHaveBeenCalledTimes(1);
 
-    resolveStart({ requestId: 'dictation-1', stop });
-    await starting;
+    resolveStart();
+    await flushPromises();
+    recognitionEvent?.({
+      requestId: mocks.startRecognition.mock.calls[0][0],
+      type: 'result',
+      text: 'late result must not be accepted',
+    });
 
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelRecognition).toHaveBeenCalledTimes(1);
     app.unmount();
-    expect(stop).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelRecognition).toHaveBeenCalledTimes(1);
   });
 });

@@ -77,13 +77,14 @@ interface HostNode {
   focus?: () => void;
   focusCalls: number;
   blur?: () => void;
+  style: { display: string };
   value?: string;
   setSelectionRange?: (start: number, end: number) => void;
 }
 
 function node(type: string, text = ''): HostNode {
   const host: HostNode = {
-    type, props: {}, children: [], text, focusCalls: 0, value: '',
+    type, props: {}, children: [], text, focusCalls: 0, style: { display: '' }, value: '',
     focus: () => { host.focusCalls += 1; },
     blur: () => {},
     setSelectionRange: () => {},

@@ -303,7 +303,7 @@
     "tests/unit/dictationStartCancellation.test.ts": {
       "suite": "pending dictation start cancellation",
       "tests": [
-        "stops a pending start once when the mounted composer backgrounds"
+        "cancels a pending recognition start once when the mounted composer backgrounds"
       ]
     },
     "tests/unit/keyboardInsetsState.test.ts": {
