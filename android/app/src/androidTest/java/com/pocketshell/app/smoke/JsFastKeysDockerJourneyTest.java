@@ -56,6 +56,7 @@ public final class JsFastKeysDockerJourneyTest {
     private static final long UI_CALLBACK_TIMEOUT_MILLIS = 8_000;
     private static final int ASSET_CHUNK_SIZE = 2_800;
     private static final int MAX_CATALOG_SWIPE_ATTEMPTS = 8;
+    private static final int MAX_PROMPT_FOCUS_TAP_ATTEMPTS = 2;
     private static final int ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP = 144;
     // WebView can round adjacent CSS rectangles apart by a tiny fraction at shared edges.
     private static final double TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01;
@@ -66,6 +67,9 @@ public final class JsFastKeysDockerJourneyTest {
     private String artifactRunId;
     private String firstSession;
     private JSONObject acceptedKeyboardGrid;
+    private boolean forceFirstPostAttachPromptTapMiss;
+    private int promptFocusMaxAttempts = MAX_PROMPT_FOCUS_TAP_ATTEMPTS;
+    private final JSONArray reattachPromptTapAttempts = new JSONArray();
     private JSONObject journey = new JSONObject();
     private JSONArray geometryTrace = new JSONArray();
 
@@ -93,6 +97,16 @@ public final class JsFastKeysDockerJourneyTest {
         String encodedKey = arguments.getString("sshPrivateKeyBase64");
         String nameBase = arguments.getString("sshSessionName");
         artifactRunId = arguments.getString("artifactRunId", nameBase);
+        forceFirstPostAttachPromptTapMiss = Boolean.parseBoolean(
+                arguments.getString("fastKeysForceFirstPostAttachTapMiss", "false"));
+        try {
+            promptFocusMaxAttempts = Integer.parseInt(arguments.getString(
+                    "fastKeysPromptFocusMaxAttempts", Integer.toString(MAX_PROMPT_FOCUS_TAP_ATTEMPTS)));
+        } catch (NumberFormatException error) {
+            throw new AssertionError("reattach prompt focus attempt limit must be an integer from one to two", error);
+        }
+        assertTrue("reattach prompt focus attempt limit must stay bounded to one or two taps",
+                promptFocusMaxAttempts >= 1 && promptFocusMaxAttempts <= MAX_PROMPT_FOCUS_TAP_ATTEMPTS);
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the fixture key with sshPrivateKeyBase64", encodedKey);
         assertNotNull("pass a unique fast-key session prefix with sshSessionName", nameBase);
@@ -455,56 +469,65 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("disconnect must unmount the hotkey controls",
                 !"true".equals(evalRaw("!!document.querySelector('[data-testid=mobile-hotkeys]')")));
 
-        installAttachAutofocusGate();
-        connect(host, port, privateKey);
-        attachSession(firstSession);
-        awaitJsTrue("(window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'terminal-enabled-watcher')"
-                + " && (window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'attach-resize')"
-                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
-                + " && document.querySelector('.app-shell')?.dataset.sshAttachFocusPending === 'true'"
-                + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
-        openPromptComposerSheet();
-        tapDomCenter("[data-testid=prompt-draft]");
-        awaitImeVisible(true);
-        awaitPromptFocusedForReattach();
-        JSONObject earlyPromptTapWhileAttachHeld = evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
-                + "return JSON.stringify({activeElement:document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName||null,"
-                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
-                + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
-                + "gate:{entered:gate?.entered??[],pending:gate?.pending??0,released:gate?.released??false},"
-                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-12)});})()");
-        earlyPromptTapWhileAttachHeld.put("androidImeVisible", isImeVisible());
-        assertTrue("early prompt tap evidence must be captured while final attach resize/autofocus is still held",
-                earlyPromptTapWhileAttachHeld.getBoolean("attachFocusPending")
-                        && !earlyPromptTapWhileAttachHeld.getJSONObject("gate").getBoolean("released")
-                        && earlyPromptTapWhileAttachHeld.getJSONObject("gate").getInt("pending") > 0
-                        && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "terminal-enabled-watcher")
-                        && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "attach-resize")
-                        && earlyPromptTapWhileAttachHeld.getInt("attachResizeAckEpoch") != earlyPromptTapWhileAttachHeld.getInt("attachEpoch")
-                        && earlyPromptTapWhileAttachHeld.getBoolean("androidImeVisible"));
-        releaseAttachAutofocusGate();
-        awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
-                + "return shell?.dataset.sshAttachFocusPending === 'false'"
-                + " && Number(shell.dataset.sshAttachResizeAckEpoch) === Number(shell.dataset.sshAttachEpoch)"
-                + " && Number(shell.dataset.sshTerminalResizePending) === 0"
-                + " && Number(shell.dataset.sshTerminalResizeFailures) === 0"
-                + " && gate.entered.some(event => event.source === 'terminal-enabled-watcher')"
-                + " && gate.entered.some(event => event.source === 'attach-resize')"
-                + " && gate.entered.some(event => event.source === 'attach-final-focus')"
-                + " && gate?.released === true && gate.pending === 0;})()");
-        awaitRenderedFrame();
-        awaitPromptFocusedForReattach();
-        awaitImeVisible(true);
-        JSONObject earlyPromptTapAfterAttachFinished = evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
-                + "return JSON.stringify({activeElement:document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName||null,"
-                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
-                + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
-                + "gate:{entered:gate?.entered??[],pending:gate?.pending??0,released:gate?.released??false},"
-                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-12)});})()");
-        earlyPromptTapAfterAttachFinished.put("androidImeVisible", isImeVisible());
-        journey.put("reattachEarlyPromptTapWhileHeld", earlyPromptTapWhileAttachHeld);
-        journey.put("reattachEarlyPromptTapAfterAttach", earlyPromptTapAfterAttachFinished);
+        try {
+            installAttachAutofocusGate();
+            connect(host, port, privateKey);
+            evalString("window.__ps2884ResizeAckEvents=[]; 'reattach resize acknowledgement recorder reset'");
+            markResizeFitPhase("reattach-prompt-focus");
+            attachSession(firstSession);
+            awaitJsTrue("(window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'terminal-enabled-watcher')"
+                    + " && (window.__ps2884AttachAutofocusGate?.entered ?? []).some(event => event.source === 'attach-resize')"
+                    + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshAttachFocusPending === 'true'"
+                    + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
+            openPromptComposerSheet();
+            JSONObject successfulPromptTap = tapPromptDraftWithBoundedRecovery(
+                    "reattach-while-attach-resize-held");
+            JSONObject earlyPromptTapWhileAttachHeld = evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
+                    + "return JSON.stringify({activeElement:document.activeElement?.getAttribute('data-testid')||document.activeElement?.tagName||null,"
+                    + "keyboardVisible:shell?.dataset.keyboardVisible==='true',attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
+                    + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
+                    + "gate:{entered:gate?.entered??[],pending:gate?.pending??0,released:gate?.released??false},"
+                    + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-24)});})()");
+            earlyPromptTapWhileAttachHeld.put("androidImeVisible", isImeVisible());
+            earlyPromptTapWhileAttachHeld.put("promptTapAttempt", successfulPromptTap);
+            assertTrue("early prompt tap evidence must be captured while final attach resize/autofocus is still held",
+                    earlyPromptTapWhileAttachHeld.getBoolean("attachFocusPending")
+                            && !earlyPromptTapWhileAttachHeld.getJSONObject("gate").getBoolean("released")
+                            && earlyPromptTapWhileAttachHeld.getJSONObject("gate").getInt("pending") > 0
+                            && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "terminal-enabled-watcher")
+                            && hasAutofocusSource(earlyPromptTapWhileAttachHeld.getJSONObject("gate"), "attach-resize")
+                            && earlyPromptTapWhileAttachHeld.getInt("attachResizeAckEpoch") != earlyPromptTapWhileAttachHeld.getInt("attachEpoch")
+                            && earlyPromptTapWhileAttachHeld.getBoolean("androidImeVisible"));
+
+            releaseAttachAutofocusGate();
+            JSONArray attachResizeFocusSamples = new JSONArray();
+            attachResizeFocusSamples.put(new JSONObject()
+                    .put("stage", "after-trusted-prompt-tap-before-resize-ack")
+                    .put("native", successfulPromptTap.getJSONObject("nativeAfter"))
+                    .put("dom", successfulPromptTap.getJSONObject("domAfter")));
+            JSONObject attachResizeAckSample = awaitAttachResizeSettledWithFocusSamples(attachResizeFocusSamples);
+            awaitRenderedFrame();
+            awaitPromptFocusedForReattach();
+            awaitImeVisible(true);
+            JSONObject earlyPromptTapAfterAttachFinished = reattachPromptFocusState();
+            earlyPromptTapAfterAttachFinished.put("androidImeVisible", isImeVisible());
+            earlyPromptTapAfterAttachFinished.put("nativeFocusState", readNativePromptFocusState());
+            earlyPromptTapAfterAttachFinished.put("resizeAcknowledgement", attachResizeAckSample.getJSONObject("dom")
+                    .getJSONObject("resizeAcknowledgement"));
+            earlyPromptTapAfterAttachFinished.put("nativeFocusImeSamples", attachResizeFocusSamples);
+            earlyPromptTapAfterAttachFinished.put("attachResizeAckSample", attachResizeAckSample);
+            assertPromptFocusPersistsAcrossResizeAck(successfulPromptTap, earlyPromptTapAfterAttachFinished,
+                    attachResizeFocusSamples);
+            journey.put("reattachPromptTapAttempts", reattachPromptTapAttempts);
+            journey.put("reattachPromptFocusMaxAttempts", promptFocusMaxAttempts);
+            journey.put("reattachForceFirstPromptTapMiss", forceFirstPostAttachPromptTapMiss);
+            journey.put("reattachEarlyPromptTapWhileHeld", earlyPromptTapWhileAttachHeld);
+            journey.put("reattachEarlyPromptTapAfterAttach", earlyPromptTapAfterAttachFinished);
+        } finally {
+            releaseAttachAutofocusGate();
+        }
         closePromptComposerSheet();
         tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
@@ -726,25 +749,34 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("explicit Stop must call the Android speech plugin once", 1, nativeSpeechCallCount("stopCount"));
         assertEquals("explicit Stop alone must not insert before a final result", writesBeforeListening,
                 terminalInputAcknowledgements());
-        JSONObject finalInjection = new JSONObject(injectNativeDictationTestEvent("result", dictatedText));
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
-                + JSONObject.quote(dictatedText));
-        int writesAfterFinalBeforeStopped = terminalInputAcknowledgements();
-        assertEquals("final recognition remains staged until native stopped", writesBeforeListening,
-                writesAfterFinalBeforeStopped);
-        JSONObject finalAwaitingStopped = captureGeometry("dictation-final-awaiting-stopped");
-        assertTerminalViewportCap("staging final dictation text", idle, finalAwaitingStopped);
-        assertTrayBelowTerminalViewport(finalAwaitingStopped);
-        assertDictationMicReachable(finalAwaitingStopped);
-        assertDictationStableStage("staging final dictation text", idle, finalAwaitingStopped, stableGrid,
-                stableResizeAcks);
         captureScreenshot("fastkeys-dictation-transcribing-ime-open.png");
-        JSONObject finishInjection = new JSONObject(injectNativeDictationTestEvent("finish", null));
+        JSONObject stopWaitingFinalGeometry = captureGeometry("dictation-stop-awaiting-final");
+        assertTerminalViewportCap("waiting for the final result after explicit Stop", idle, stopWaitingFinalGeometry);
+        assertTrayBelowTerminalViewport(stopWaitingFinalGeometry);
+        assertDictationMicReachable(stopWaitingFinalGeometry);
+        assertHotkeyBarReachable(stopWaitingFinalGeometry);
+        assertDictationStableStage("waiting for the final result after explicit Stop", idle,
+                stopWaitingFinalGeometry, stableGrid, stableResizeAcks);
+        assertEquals("the dock must stay in its transcribing phase until the final result arrives", "stopping",
+                stopWaitingFinalGeometry.getString("inlineDictationPhase"));
+        assertEquals("the transcribing dock must retain its preview until the final result arrives", dictatedText,
+                stopWaitingFinalGeometry.getString("inlineDictationPreview"));
+        assertTrue("the mic must be disabled while the explicit-stop request awaits its final result",
+                stopWaitingFinalGeometry.getJSONObject("inlineDictationMic").getBoolean("disabled"));
+        assertEquals("the mic must expose its transcribing state while awaiting the final result", "transcribing",
+                stopWaitingFinalGeometry.getJSONObject("inlineDictationMic").getString("micState"));
+        assertTrue("the transcribing status row must remain visible until the final result",
+                stopWaitingFinalGeometry.getBoolean("inlineDictationStatusVisible"));
+        assertEquals("explicit Stop must not write before the final result", writesBeforeListening,
+                terminalInputAcknowledgements());
+        JSONObject finalInjection = new JSONObject(injectNativeDictationTestEvent("result", dictatedText));
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + (writesBeforeListening + 1), 15_000);
-        int writesAfterStopped = terminalInputAcknowledgements();
+        int writesAfterFinal = terminalInputAcknowledgements();
+        assertEquals("one final result completes the explicitly stopped turn with one PTY write",
+                writesBeforeListening + 1, writesAfterFinal);
         awaitDockGeometrySettled("inserting final dictation text");
         JSONObject finalInsertedGeometry = captureGeometry("dictation-final-inserted");
         assertTerminalViewportCap("inserting final dictation text", idle, finalInsertedGeometry);
@@ -769,6 +801,7 @@ public final class JsFastKeysDockerJourneyTest {
         captureScreenshot("fastkeys-dictation-stopped-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-dictation-stopped-ime-open-viewport.png", finalInsertedGeometry);
         int insertedNativeStartCalls = nativeSpeechCallCount("startCount");
+        assertEquals("an explicit Stop must not rearm another native recognizer turn", 1, insertedNativeStartCalls);
         int insertedNativeStopCalls = nativeSpeechCallCount("stopCount");
         String insertedStopRequestId = evalString("window.__ps2857NativeSpeechEvidence?.stopOptions?.requestId ?? ''");
         journey.put("terminalNativeDictation", new JSONObject()
@@ -780,15 +813,14 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("stopResult", new JSONObject(evalString("JSON.stringify(window.__ps2857NativeSpeechEvidence?.stopResult ?? {})")))
                 .put("partialInjection", partialInjection)
                 .put("finalInjection", finalInjection)
-                .put("finishInjection", finishInjection)
+                .put("resultCompletesTurn", true)
                 .put("explicitStopRequestId", insertedStopRequestId)
-                .put("finalAndStoppedInjectedThroughNativePlugin", true)
+                .put("finalInjectedThroughNativePlugin", true)
                 .put("startCalls", insertedNativeStartCalls)
                 .put("stopCalls", insertedNativeStopCalls)
                 .put("writesBeforePartial", writesBeforeListening)
                 .put("writesAfterPartial", writesAfterPartial)
-                .put("writesAfterFinalBeforeStopped", writesAfterFinalBeforeStopped)
-                .put("writesAfterStopped", writesAfterStopped));
+                .put("writesAfterFinal", writesAfterFinal));
         evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
         installControlledSpeechAdapter();
 
@@ -813,19 +845,19 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks ?? 0) > "
                 + resizeAcksBeforeBackgroundResume
                 + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim().endsWith('accepted by SSH') === true");
-        evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result'); 'late result emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result', "
+                + JSONObject.quote(backgroundRequest) + "); 'late result emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
         assertEquals("background results must not write after resume", writesBeforeBackgroundCancel,
                 terminalInputAcknowledgements());
-        assertEquals("backgrounding must stop the pending recognizer", backgroundRequest,
-                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        assertEquals("backgrounding must cancel the pending recognizer", backgroundRequest,
+                evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"));
         int resizeAcksAfterBackgroundResume = terminalResizeAcks();
         journey.put("dictationBackgroundCancel", new JSONObject().put("requestId", backgroundRequest)
-                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
-                .put("lateResultEmitted", true).put("stoppedEmitted", true)
+                .put("cancelRequestId", evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"))
+                .put("lateResultEmitted", true)
                 .put("nativeStartCalls", 2)
-                .put("nativeStopCalls", 2)
+                .put("nativeCancelCalls", controlledSpeechCallCount("cancelCount"))
                 .put("resizeAcksBeforeResume", resizeAcksBeforeBackgroundResume)
                 .put("resizeAcksAfterResume", resizeAcksAfterBackgroundResume)
                 .put("writesBefore", writesBeforeBackgroundCancel).put("writesAfter", terminalInputAcknowledgements()));
@@ -866,7 +898,7 @@ public final class JsFastKeysDockerJourneyTest {
         }
         awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
                 + "const chunks=(window.__ps2857AppTerminalInputChunks ?? []).slice(" + postStopInputChunkStart + ");"
-                + "return Number(shell?.dataset.sshTerminalInputAcks) === " + (writesAfterStopped + 1)
+                + "return Number(shell?.dataset.sshTerminalInputAcks) === " + (writesAfterFinal + 1)
                 + " && Number(shell?.dataset.sshTerminalInputPending) === 0"
                 + " && chunks.map(chunk=>chunk.text).join('') === " + JSONObject.quote(postStopKeyboardText)
                 + " && chunks.every(chunk=>chunk.attachEpoch === " + finalInsertedGeometry.getInt("sshAttachEpoch")
@@ -909,12 +941,11 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("writesBeforePartial", writesBeforeListening)
                 .put("writesAfterPartial", writesAfterPartial)
                 .put("writesAfterStopBeforeFinal", writesBeforeListening)
-                .put("writesAfterFinalBeforeStopped", writesAfterFinalBeforeStopped)
-                .put("writesAfterStopped", writesAfterStopped)
+                .put("writesAfterFinal", writesAfterFinal)
                 .put("writesAfterPostStopKeyboard", writesAfterPostStopKeyboard)
                 .put("explicitStop", true)
                 .put("finalReceived", true)
-                .put("stoppedReceived", true)
+                .put("resultCompletesTurn", true)
                 .put("nativeStartCalls", insertedNativeStartCalls)
                 .put("nativeStopCalls", insertedNativeStopCalls)
                 .put("stopRequestId", insertedStopRequestId)
@@ -939,9 +970,8 @@ public final class JsFastKeysDockerJourneyTest {
         evalString("window.__ps2857ControlledSpeech.emit('partial', 'discard this partial'); 'partial emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'discard this partial'");
         evalString("window.__ps2857ControlledSpeech.emit('error', 'NETWORK'); 'error emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'stopping'"
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
         awaitDockGeometrySettled("showing recognizer error status");
@@ -971,15 +1001,15 @@ public final class JsFastKeysDockerJourneyTest {
         attachSession(changedSession);
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey !== "
                 + JSONObject.quote(staleTarget)
-                + " && window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(attachRequest));
+                + " && window.__ps2857ControlledSpeech?.cancelOptions?.requestId === " + JSONObject.quote(attachRequest));
         String changedTarget = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
         int newAttachEpoch = Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')"));
         assertTrue("the dictation target identity must change with the attach epoch", newAttachEpoch > oldAttachEpoch
                 && changedTarget.endsWith("/attach-" + newAttachEpoch) && !changedTarget.equals(staleTarget));
-        assertEquals("session attach must stop the pending recognizer", attachRequest,
-                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
-        evalString("window.__ps2857ControlledSpeech.emit('result', 'late attach result'); 'late result emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
+        assertEquals("session attach must cancel the pending recognizer", attachRequest,
+                evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"));
+        evalString("window.__ps2857ControlledSpeech.emit('result', 'late attach result', "
+                + JSONObject.quote(attachRequest) + "); 'late result emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
         JSONObject attachCancelledGeometry = captureGeometry("dictation-attach-cancel-complete");
         assertDictationMicReachable(attachCancelledGeometry);
@@ -987,12 +1017,12 @@ public final class JsFastKeysDockerJourneyTest {
         assertEquals("late attach results must not write to the new session", writesBeforeAttachCancel,
                 terminalInputAcknowledgements());
         journey.put("dictationAttachCancel", new JSONObject().put("requestId", attachRequest)
-                .put("stopRequestId", evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"))
+                .put("cancelRequestId", evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"))
                 .put("oldTargetKey", staleTarget).put("newTargetKey", changedTarget)
                 .put("oldAttachEpoch", oldAttachEpoch).put("newAttachEpoch", newAttachEpoch)
-                .put("lateResultEmitted", true).put("stoppedEmitted", true)
+                .put("lateResultEmitted", true)
                 .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
-                .put("nativeStopCalls", controlledSpeechCallCount("stopCount"))
+                .put("nativeCancelCalls", controlledSpeechCallCount("cancelCount"))
                 .put("writesBefore", writesBeforeAttachCancel).put("writesAfter", terminalInputAcknowledgements()));
 
         tapDomCenter(".terminal-viewport");
@@ -1090,9 +1120,7 @@ public final class JsFastKeysDockerJourneyTest {
         captureScreenshot("fastkeys-prompt-dictation-transcribing.png");
         Log.i("PS2897Prompt", "checkpoint Transcribing screenshot returned; emitting final result");
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(transcript) + "); 'result emitted'");
-        Log.i("PS2897Prompt", "checkpoint final result emitted; emitting stopped callback");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
-        Log.i("PS2897Prompt", "checkpoint stopped callback emitted; waiting for editable review");
+        Log.i("PS2897Prompt", "checkpoint final result emitted; waiting for editable review");
         awaitJsTrue("(() => {const panel=document.querySelector('[data-testid=prompt-composer]');"
                 + "return panel?.dataset.dictationState==='review'"
                 + "&& document.querySelector('[data-testid=prompt-draft]')?.value===" + JSONObject.quote(transcript)
@@ -1341,16 +1369,19 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const cap=window.Capacitor;"
                 + "if(!cap||typeof cap.nativePromise!=='function')return 'missing-capacitor-bridge';"
                 + "const nativePromise=cap.nativePromise.bind(cap);"
-                + "const state={startOptions:null,stopOptions:null,startResult:null,stopResult:null,startCount:0,stopCount:0};"
+                + "const state={startOptions:null,stopOptions:null,cancelOptions:null,startResult:null,stopResult:null,cancelResult:null,"
+                + "startCount:0,stopCount:0,cancelCount:0};"
                 + "window.__ps2857NativeSpeechEvidence=state;window.__ps2857DictationTestMode=true;"
                 + "cap.nativePromise=(plugin,method,options)=>{"
-                + "if(plugin!=='SpeechRecognition'||!['startDictation','stopDictation'].includes(method))return nativePromise(plugin,method,options);"
+                + "if(plugin!=='SpeechRecognition'||!['startDictation','stopDictation','cancelDictation'].includes(method))return nativePromise(plugin,method,options);"
                 + "const copied=JSON.parse(JSON.stringify(options));"
-                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=copied;state.stopOptions=null;state.startResult=null;}"
-                + "else{state.stopCount+=1;state.stopOptions=copied;state.stopResult=null;}"
+                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=copied;state.stopOptions=null;state.cancelOptions=null;state.startResult=null;}"
+                + "else if(method==='stopDictation'){state.stopCount+=1;state.stopOptions=copied;state.stopResult=null;}"
+                + "else{state.cancelCount+=1;state.cancelOptions=copied;state.cancelResult=null;}"
                 + "return nativePromise(plugin,method,options).then(result=>{"
                 + "if(method==='startDictation')state.startResult=JSON.parse(JSON.stringify(result));"
-                + "else state.stopResult=JSON.parse(JSON.stringify(result));return result;});};"
+                + "else if(method==='stopDictation')state.stopResult=JSON.parse(JSON.stringify(result));"
+                + "else state.cancelResult=JSON.parse(JSON.stringify(result));return result;});};"
                 + "return 'observing-native-speech-bridge';})()");
         assertEquals("test must observe and delegate the real Android speech bridge", "observing-native-speech-bridge", installed);
     }
@@ -1383,21 +1414,24 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const cap=window.Capacitor;"
                 + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
                 + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
-                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,startCount:1,stopCount:1,"
-                + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
-                + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
+                + "const state={startOptions:null,stopOptions:null,cancelOptions:null,requestId:null,listener:null,pendingListeners:[],listeners:{},startCount:1,stopCount:1,cancelCount:0,"
+                + "emit(type,text,requestId){const id=requestId||this.requestId;const listener=this.listeners[id]||this.listener;"
+                + "if(!listener)throw new Error('speech listener is not registered');listener({requestId:id,type,...(text===undefined?{}:{text})});}};"
                 + "window.__ps2857ControlledSpeech=state;"
                 + "cap.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
-                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.requestId=options.requestId;"
+                + "if(method==='startDictation'){state.startCount+=1;state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.cancelOptions=null;state.requestId=options.requestId;"
+                + "state.listeners[state.requestId]=state.pendingListeners.shift()||state.listener;"
                 + "return Promise.resolve({requestId:state.requestId,started:true});}"
                 + "if(method==='stopDictation'){state.stopCount+=1;state.stopOptions=JSON.parse(JSON.stringify(options));"
                 + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
+                + "if(method==='cancelDictation'){state.cancelCount+=1;state.cancelOptions=JSON.parse(JSON.stringify(options));"
+                + "return Promise.resolve({requestId:options.requestId,cancelled:true});}"
                 + "if(method==='getCapabilities')return Promise.resolve({speechRecognitionAvailable:true,microphonePermissionGranted:true});"
                 + "return Promise.reject(new Error('unexpected controlled speech method '+method));};"
                 + "cap.nativeCallback=(plugin,method,options,callback)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativeCallback(plugin,method,options,callback);"
-                + "if(method==='addListener'){state.listener=callback;return Promise.resolve({callbackId:'controlled-dictation'});}"
+                + "if(method==='addListener'){state.listener=callback;state.pendingListeners.push(callback);return Promise.resolve({callbackId:'controlled-dictation'});}"
                 + "if(method==='removeListener')return Promise.resolve({removed:true});"
                 + "return Promise.reject(new Error('unexpected controlled speech callback '+method));};"
                 + "return 'installed';})()");
@@ -3015,7 +3049,21 @@ public final class JsFastKeysDockerJourneyTest {
         evalString("(() => {const gate=window.__ps2884AttachAutofocusGate={entered:[],pending:0,released:false,waiters:[]};"
                 + "window.__ps2884BeforeAttachAutofocus=source=>{gate.entered.push({source,atMs:Math.round(performance.now())});"
                 + "gate.pending+=1;return new Promise(resolve=>{const finish=()=>{gate.pending-=1;resolve();};"
-                + "if(gate.released){queueMicrotask(finish);return;}gate.waiters.push(finish);});};return 'gate installed';})()");
+                + "if(gate.released){queueMicrotask(finish);return;}gate.waiters.push(finish);});};"
+                + "window.__ps2884AttachResizeAckChanges=[];const shell=document.querySelector('.app-shell');"
+                + "if(!shell)throw new Error('missing app shell for attach resize ACK observer');"
+                + "const observer=new MutationObserver(records=>{const transitions=records.filter(record=>record.attributeName==='data-ssh-attach-resize-ack-epoch');"
+                + "const transition=transitions[transitions.length-1];"
+                + "if(!transition)return;const previousAckEpoch=Number(transition.oldValue);"
+                + "const current=document.querySelector('.app-shell'),attachEpoch=Number(current?.dataset.sshAttachEpoch),"
+                + "ackEpoch=Number(current?.dataset.sshAttachResizeAckEpoch);"
+                + "if(attachEpoch!==ackEpoch||previousAckEpoch===attachEpoch)return;"
+                + "const acknowledgements=window.__ps2884ResizeAckEvents??[];const resizeAcknowledgement=acknowledgements.slice().reverse().find(event=>"
+                + "event.attachEpoch===attachEpoch&&event.marker==='reattach-prompt-focus'&&event.result==='accepted')??null;"
+                + "if(!resizeAcknowledgement)return;window.__ps2884AttachResizeAckChanges.push({atMs:Math.round(performance.now()*10)/10,"
+                + "previousAckEpoch,attachEpoch,ackEpoch,resizeAcknowledgement});});"
+                + "observer.observe(shell,{attributes:true,attributeOldValue:true,attributeFilter:['data-ssh-attach-resize-ack-epoch']});"
+                + "window.__ps2884AttachResizeAckObserver=observer;return 'gate and attach ACK observer installed';})()");
     }
 
     private boolean hasAutofocusSource(JSONObject gate, String source) throws Exception {
@@ -3029,8 +3077,317 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void releaseAttachAutofocusGate() throws Exception {
-        evalString("(() => {const gate=window.__ps2884AttachAutofocusGate;if(!gate)throw new Error('missing attach gate');"
+        evalString("(() => {const gate=window.__ps2884AttachAutofocusGate;if(!gate||gate.released)return 'gate already released';"
                 + "gate.released=true;for(const finish of gate.waiters.splice(0))finish();return 'gate released';})()");
+    }
+
+    private JSONObject tapPromptDraftWithBoundedRecovery(String stage) throws Exception {
+        installReattachPromptTapRecorder();
+        JSONObject successfulAttempt = null;
+        for (int attemptIndex = 0; attemptIndex < promptFocusMaxAttempts; attemptIndex += 1) {
+            awaitRenderedFrame();
+            SystemClock.sleep(250);
+            boolean forcedMiss = forceFirstPostAttachPromptTapMiss && attemptIndex == 0;
+            String requestedSelector = forcedMiss
+                    ? "[data-testid=prompt-composer] [data-testid=composer-status]"
+                    : "[data-testid=prompt-draft]";
+            JSONObject target = promptFocusTapTarget(requestedSelector);
+            assertTrue("physical prompt-focus tap target must be visible and its center must hit itself: " + target,
+                    target.getBoolean("visible") && target.getBoolean("centerHitMatchesTarget"));
+            JSONObject nativeBefore = readNativePromptFocusState();
+            JSONObject domBefore = reattachPromptFocusState();
+            long attemptStarted = SystemClock.uptimeMillis();
+            evalString("window.__ps2884ExpectedPromptFocusTapTarget=" + JSONObject.quote(requestedSelector)
+                    + ";window.__ps2884PromptFocusTapEvents=[];'prompt tap recorder armed'");
+            tapDomCenter(requestedSelector);
+            JSONObject pointerDown = awaitPromptFocusPointerDown(900);
+            boolean trustedPointerDown = pointerDown.optBoolean("isTrusted")
+                    && pointerDown.optBoolean("targetMatchesRequested");
+            boolean physicalCenterHit = trustedPointerDown
+                    && Math.abs(pointerDown.optDouble("clientX", Double.MAX_VALUE) - target.optDouble("x", 0)) <= 1.0
+                    && Math.abs(pointerDown.optDouble("clientY", Double.MAX_VALUE) - target.optDouble("y", 0)) <= 1.0;
+            boolean draftFocused = false;
+            boolean keyboardReadyWaitSucceeded = false;
+            if (!forcedMiss && trustedPointerDown) {
+                draftFocused = awaitPromptDraftFocused(2_500);
+                keyboardReadyWaitSucceeded = draftFocused && awaitPromptKeyboardReady(4_000);
+            }
+            JSONObject domAfter = reattachPromptFocusState();
+            JSONObject nativeAfter = readNativePromptFocusState();
+            boolean keyboardReadyAfter = domAfter.optBoolean("draftFocused")
+                    && domAfter.optBoolean("keyboardVisible") && domAfter.optBoolean("keyboardComposerMode")
+                    && nativeAfter.optBoolean("imeVisible");
+            boolean forcedMissPreservedFocusState = !forcedMiss
+                    || (domBefore.optBoolean("composerPresent") && domAfter.optBoolean("composerPresent")
+                            && domAfter.optBoolean("draftConnected")
+                            && !"composer-status".equals(domAfter.optString("activeElement")));
+            JSONObject attempt = new JSONObject()
+                    .put("stage", stage)
+                    .put("attempt", attemptIndex + 1)
+                    .put("forcedMiss", forcedMiss)
+                    .put("requestedSelector", requestedSelector)
+                    .put("target", target)
+                    .put("nativeBefore", nativeBefore)
+                    .put("domBefore", domBefore)
+                    .put("tapPointerDown", pointerDown)
+                    .put("trustedPointerDownOnRequestedTarget", trustedPointerDown)
+                    .put("physicalCenterHit", physicalCenterHit)
+                    .put("promptFocusWaitSucceeded", draftFocused)
+                    .put("draftFocusedAfter", domAfter.optBoolean("draftFocused"))
+                    .put("keyboardReadyAfter", keyboardReadyAfter)
+                    .put("keyboardReadyWaitSucceeded", keyboardReadyWaitSucceeded)
+                    .put("forcedMissPreservedFocusState", forcedMissPreservedFocusState)
+                    .put("nativeAfter", nativeAfter)
+                    .put("domAfter", domAfter)
+                    .put("elapsedMs", SystemClock.uptimeMillis() - attemptStarted);
+            reattachPromptTapAttempts.put(attempt);
+            if (forcedMiss) {
+                assertTrue("forced first miss must be a trusted tap on inert composer status: " + attempt,
+                        physicalCenterHit
+                                && "composer-status".equals(target.optString("targetTestId"))
+                                && !target.optBoolean("interactive")
+                                && "composer-status".equals(pointerDown.optJSONObject("target") == null
+                                        ? "" : pointerDown.optJSONObject("target").optString("testId"))
+                                && forcedMissPreservedFocusState);
+            }
+            if (!forcedMiss && physicalCenterHit && keyboardReadyWaitSucceeded && keyboardReadyAfter
+                    && domAfter.optBoolean("draftFocused") && nativeAfter.optBoolean("imeVisible")) {
+                attempt.put("successfulPromptDraftTap", true);
+                successfulAttempt = attempt;
+                break;
+            }
+            attempt.put("successfulPromptDraftTap", false);
+        }
+        if (successfulAttempt == null) {
+            throw new AssertionError("reattach did not reach prompt focus and native IME after "
+                    + promptFocusMaxAttempts + " bounded physical tap attempt(s); attempts=" + reattachPromptTapAttempts);
+        }
+        return successfulAttempt;
+    }
+
+    private void installReattachPromptTapRecorder() throws Exception {
+        evalString("(() => {if(window.__ps2884PromptFocusTapRecorderInstalled)return 'recorder installed';"
+                + "const label=node=>node instanceof Element?{tag:node.tagName.toLowerCase(),id:node.id||null,"
+                + "testId:node.getAttribute('data-testid'),className:String(node.className||'').slice(0,80)}:null;"
+                + "document.addEventListener('pointerdown',event=>{const selector=window.__ps2884ExpectedPromptFocusTapTarget;"
+                + "if(!selector)return;const requested=document.querySelector(selector),target=event.target;"
+                + "const matches=!!requested&&(target===requested||requested.contains(target));"
+                + "(window.__ps2884PromptFocusTapEvents??=[]).push({type:event.type,isTrusted:event.isTrusted,"
+                + "targetMatchesRequested:matches,requestedSelector:selector,target:label(target),pointerType:event.pointerType??'',"
+                + "clientX:event.clientX??null,clientY:event.clientY??null,atMs:Math.round(performance.now()*10)/10});},true);"
+                + "window.__ps2884PromptFocusTapRecorderInstalled=true;return 'recorder installed';})()");
+    }
+
+    private JSONObject promptFocusTapTarget(String selector) throws Exception {
+        JSONObject target = evalJson("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if(!node)return JSON.stringify({missing:true});const r=node.getBoundingClientRect(),v=window.visualViewport;"
+                + "const x=r.left+r.width/2,y=r.top+r.height/2,hit=document.elementFromPoint(x,y);"
+                + "const label=element=>element instanceof Element?{tag:element.tagName.toLowerCase(),id:element.id||null,"
+                + "testId:element.getAttribute('data-testid'),className:String(element.className||'').slice(0,80)}:null;"
+                + "const height=v?.height??innerHeight;return JSON.stringify({selector:" + JSONObject.quote(selector)
+                + ",x,y,top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height,"
+                + "viewportHeight:height,targetTestId:node.getAttribute('data-testid'),centerHit:label(hit),"
+                + "interactive:!!node.closest('button,a,input,textarea,select,[contenteditable=true]'),"
+                + "centerHitMatchesTarget:hit===node||node.contains(hit),visible:r.width>0&&r.height>0&&r.top>=0&&r.left>=0"
+                + "&&r.bottom<=height+0.5&&r.right<=innerWidth+0.5});})()");
+        assertTrue("expected live prompt focus target to exist: " + selector, !target.optBoolean("missing"));
+        return target;
+    }
+
+    private JSONObject awaitPromptFocusPointerDown(long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        while (SystemClock.uptimeMillis() < deadline) {
+            JSONObject event = evalJson("(() => {const events=window.__ps2884PromptFocusTapEvents??[];"
+                    + "return JSON.stringify(events.slice().reverse().find(item=>item.type==='pointerdown') ?? {});})()");
+            if (event.has("type")) return event;
+            SystemClock.sleep(30);
+        }
+        return evalJson("JSON.stringify((window.__ps2884PromptFocusTapEvents??[]).slice().reverse()"
+                + ".find(item=>item.type==='pointerdown') ?? {})");
+    }
+
+    private boolean awaitPromptDraftFocused(long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (reattachPromptFocusState().optBoolean("draftFocused")) return true;
+            SystemClock.sleep(50);
+        }
+        return reattachPromptFocusState().optBoolean("draftFocused");
+    }
+
+    private boolean awaitPromptKeyboardReady(long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        while (SystemClock.uptimeMillis() < deadline) {
+            JSONObject dom = reattachPromptFocusState();
+            JSONObject nativeFocus = readNativePromptFocusState();
+            if (dom.optBoolean("draftFocused") && dom.optBoolean("keyboardVisible")
+                    && dom.optBoolean("keyboardComposerMode") && nativeFocus.optBoolean("imeVisible")) {
+                SystemClock.sleep(120);
+                dom = reattachPromptFocusState();
+                nativeFocus = readNativePromptFocusState();
+                if (dom.optBoolean("draftFocused") && dom.optBoolean("keyboardVisible")
+                        && dom.optBoolean("keyboardComposerMode") && nativeFocus.optBoolean("imeVisible")) return true;
+            }
+            SystemClock.sleep(60);
+        }
+        return false;
+    }
+
+    private JSONObject reattachPromptFocusState() throws Exception {
+        return evalJson("(() => {const shell=document.querySelector('.app-shell');const gate=window.__ps2884AttachAutofocusGate;"
+                + "const active=document.activeElement;const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const ackMutation=(window.__ps2884AttachResizeAckChanges??[]).slice().reverse().find(change=>"
+                + "change.attachEpoch===Number(shell?.dataset.sshAttachEpoch)"
+                + "&&change.ackEpoch===Number(shell?.dataset.sshAttachResizeAckEpoch)"
+                + "&&change.previousAckEpoch!==change.attachEpoch"
+                + "&&change.resizeAcknowledgement?.result==='accepted')??null;"
+                + "return JSON.stringify({capturedAtJsMs:Math.round(performance.now()*10)/10,"
+                + "activeElement:active?.getAttribute('data-testid')||active?.tagName||null,draftFocused:active===draft,"
+                + "composerPresent:!!document.querySelector('[data-testid=prompt-composer]'),draftConnected:!!draft?.isConnected,"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',"
+                + "keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "attachFocusPending:shell?.dataset.sshAttachFocusPending==='true',"
+                + "attachEpoch:Number(shell?.dataset.sshAttachEpoch),"
+                + "attachResizeAckEpoch:Number(shell?.dataset.sshAttachResizeAckEpoch),"
+                + "terminalResizePending:Number(shell?.dataset.sshTerminalResizePending),"
+                + "terminalResizeFailures:Number(shell?.dataset.sshTerminalResizeFailures),"
+                + "resizeAckMutation:ackMutation,resizeAcknowledgement:ackMutation?.resizeAcknowledgement??null,"
+                + "gate:gate?{entered:gate.entered??[],pending:gate.pending??0,released:gate.released??false}:null,"
+                + "focusEvents:(window.__ps2884FocusEvents??[]).slice(-24)});})()");
+    }
+
+    private JSONObject readNativePromptFocusState() throws Exception {
+        return runOnUiThread("read native IME and window focus state", () -> {
+            View decor = packagedActivity.getWindow().getDecorView();
+            View focusedView = decor.findFocus();
+            WebView webView = findWebView(decor);
+            WindowInsets insets = decor.getRootWindowInsets();
+            return new JSONObject()
+                    .put("capturedAtAndroidUptimeMs", SystemClock.uptimeMillis())
+                    .put("windowHasFocus", decor.hasWindowFocus())
+                    .put("decorHasFocus", decor.hasFocus())
+                    .put("decorShown", decor.isShown())
+                    .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
+                    .put("imeBottomPx", insets == null ? 0 : insets.getInsets(WindowInsets.Type.ime()).bottom)
+                    .put("focusedViewClass", focusedView == null ? "" : focusedView.getClass().getName())
+                    .put("focusedViewId", focusedView == null ? View.NO_ID : focusedView.getId())
+                    .put("focusedViewHasFocus", focusedView != null && focusedView.hasFocus())
+                    .put("webViewPresent", webView != null)
+                    .put("webViewHasFocus", webView != null && webView.hasFocus())
+                    .put("webViewWindowTokenPresent", webView != null && webView.getWindowToken() != null);
+        });
+    }
+
+    private JSONObject readReattachPromptFocusSample() throws Exception {
+        return new JSONObject().put("native", readNativePromptFocusState())
+                .put("dom", reattachPromptFocusState());
+    }
+
+    private JSONObject awaitAttachResizeSettledWithFocusSamples(JSONArray samples) throws Exception {
+        final long timeoutMillis = 15_000;
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        JSONObject latest = null;
+        while (SystemClock.uptimeMillis() < deadline) {
+            latest = readReattachPromptFocusSample();
+            samples.put(latest);
+            JSONObject dom = latest.getJSONObject("dom");
+            JSONObject ack = dom.optJSONObject("resizeAcknowledgement");
+            JSONObject ackMutation = dom.optJSONObject("resizeAckMutation");
+            JSONObject gate = dom.optJSONObject("gate");
+            boolean finalFocusEntered = hasAutofocusSource(gate == null ? new JSONObject() : gate, "attach-final-focus");
+            if (!dom.optBoolean("attachFocusPending")
+                    && dom.optInt("attachEpoch", -1) == dom.optInt("attachResizeAckEpoch", -2)
+                    && dom.optInt("terminalResizePending", -1) == 0
+                    && dom.optInt("terminalResizeFailures", -1) == 0
+                    && gate != null && gate.optBoolean("released") && gate.optInt("pending", -1) == 0
+                    && hasAutofocusSource(gate, "terminal-enabled-watcher")
+                    && hasAutofocusSource(gate, "attach-resize") && finalFocusEntered
+                    && ack != null && "accepted".equals(ack.optString("result"))
+                    && ackMutation != null
+                    && ackMutation.optInt("previousAckEpoch", -1) != ackMutation.optInt("attachEpoch", -2)
+                    && ackMutation.optInt("attachEpoch", -1) == dom.optInt("attachEpoch", -2)
+                    && ackMutation.optInt("ackEpoch", -1) == dom.optInt("attachResizeAckEpoch", -2)
+                    && ackMutation.optJSONObject("resizeAcknowledgement") != null
+                    && ackMutation.optJSONObject("resizeAcknowledgement").optInt("attachEpoch", -1)
+                            == ackMutation.optInt("attachEpoch", -2)) return latest;
+            SystemClock.sleep(80);
+        }
+        throw new AssertionError("attach resize did not settle while prompt focus/IME samples were captured; latest="
+                + latest + "; samples=" + samples);
+    }
+
+    private void assertPromptFocusPersistsAcrossResizeAck(JSONObject successfulAttempt, JSONObject afterAttach,
+            JSONArray samples) throws Exception {
+        JSONObject pointerDown = successfulAttempt.getJSONObject("tapPointerDown");
+        double tapAtMs = pointerDown.getDouble("atMs");
+        JSONObject acknowledgement = afterAttach.getJSONObject("resizeAcknowledgement");
+        JSONObject ackMutation = afterAttach.getJSONObject("resizeAckMutation");
+        double ackAtMs = acknowledgement.getDouble("atMs");
+        double ackTransitionAtMs = ackMutation.getDouble("atMs");
+        JSONObject transitionAcknowledgement = ackMutation.getJSONObject("resizeAcknowledgement");
+        assertTrue("prompt physical tap must precede the accepted attach resize acknowledgement: attempt="
+                        + successfulAttempt + "; ack transition=" + ackMutation,
+                pointerDown.optBoolean("isTrusted") && pointerDown.optBoolean("targetMatchesRequested")
+                        && tapAtMs <= ackAtMs && ackAtMs <= ackTransitionAtMs
+                        && "accepted".equals(acknowledgement.optString("result"))
+                        && "accepted".equals(transitionAcknowledgement.optString("result")));
+        assertTrue("attach resize ACK must be the epoch transition from the previous acknowledged epoch: "
+                        + ackMutation,
+                ackMutation.optInt("previousAckEpoch", -1) != ackMutation.optInt("attachEpoch", -2)
+                        && ackMutation.optInt("attachEpoch", -1) == ackMutation.optInt("ackEpoch", -2)
+                        && transitionAcknowledgement.optInt("attachEpoch", -1)
+                                == ackMutation.optInt("attachEpoch", -2)
+                        && transitionAcknowledgement.optInt("requestId", -1)
+                                == acknowledgement.optInt("requestId", -2));
+        assertEquals("the accepted resize acknowledgement must belong to this attach epoch",
+                afterAttach.getInt("attachEpoch"), acknowledgement.getInt("attachEpoch"));
+        assertTrue("prompt draft and app keyboard state must remain active after attach acknowledgement: " + afterAttach,
+                "prompt-draft".equals(afterAttach.optString("activeElement"))
+                        && afterAttach.optBoolean("draftFocused") && afterAttach.optBoolean("keyboardVisible")
+                        && afterAttach.optBoolean("keyboardComposerMode")
+                        && afterAttach.optBoolean("androidImeVisible"));
+        JSONObject finalNative = afterAttach.getJSONObject("nativeFocusState");
+        assertTrue("Android window, WebView, and IME must remain focused/open after attach acknowledgement: " + finalNative,
+                finalNative.optBoolean("windowHasFocus") && finalNative.optBoolean("decorHasFocus")
+                        && finalNative.optBoolean("webViewHasFocus") && finalNative.optBoolean("imeVisible"));
+
+        JSONObject domBefore = successfulAttempt.getJSONObject("domBefore");
+        JSONArray focusEvents = afterAttach.getJSONArray("focusEvents");
+        boolean startedFocused = domBefore.optBoolean("draftFocused");
+        boolean promptFocusInAfterTap = false;
+        boolean promptFocusLostBeforeFinalState = false;
+        double lastFocusEventAtMs = tapAtMs;
+        for (int index = 0; index < focusEvents.length(); index += 1) {
+            JSONObject event = focusEvents.optJSONObject(index);
+            if (event == null) continue;
+            double atMs = event.optDouble("atMs", -1);
+            if (atMs < tapAtMs) continue;
+            lastFocusEventAtMs = Math.max(lastFocusEventAtMs, atMs);
+            JSONObject target = event.optJSONObject("target");
+            if ("focusin".equals(event.optString("type")) && target != null
+                    && "prompt-draft".equals(target.optString("testId"))) promptFocusInAfterTap = true;
+            if ("focusout".equals(event.optString("type")) && target != null
+                    && "prompt-draft".equals(target.optString("testId"))) promptFocusLostBeforeFinalState = true;
+        }
+        assertTrue("prompt focus must be present at the trusted tap and remain uninterrupted through resize ACK; events="
+                        + focusEvents + "; successfulAttempt=" + successfulAttempt + "; ackAtMs=" + ackAtMs,
+                (startedFocused || promptFocusInAfterTap) && !promptFocusLostBeforeFinalState
+                        && afterAttach.optDouble("capturedAtJsMs", -1) >= ackAtMs
+                        && lastFocusEventAtMs <= afterAttach.optDouble("capturedAtJsMs", -1));
+
+        assertTrue("native IME and window focus must stay available from the prompt tap through resize ACK: " + samples,
+                samples.length() >= 2);
+        for (int index = 0; index < samples.length(); index += 1) {
+            JSONObject sample = samples.getJSONObject(index);
+            JSONObject nativeState = sample.getJSONObject("native");
+            JSONObject domState = sample.getJSONObject("dom");
+            assertTrue("focus sample " + index + " lost native window, WebView, or IME focus: " + sample,
+                    nativeState.optBoolean("windowHasFocus") && nativeState.optBoolean("decorHasFocus")
+                            && nativeState.optBoolean("webViewHasFocus") && nativeState.optBoolean("imeVisible"));
+            assertTrue("focus sample " + index + " lost prompt focus or app keyboard state: " + sample,
+                    domState.optBoolean("draftFocused") && domState.optBoolean("keyboardVisible")
+                            && domState.optBoolean("keyboardComposerMode"));
+        }
     }
 
     private void awaitPromptFocusedForReattach() throws Exception {

@@ -103,6 +103,12 @@ class ExtractionFailure(ValueError):
 
 
 STOP_ACCESSIBLE_NAME = "Stop dictation and keep the recognized text in the editable draft"
+NO_TRANSCRIPT_PREVIEWS = {"Listening for speech…", "Waiting for transcript…"}
+
+
+def _has_actionable_transcript_preview(value: object) -> bool:
+    preview = str(value or "").strip()
+    return bool(preview) and preview not in NO_TRANSCRIPT_PREVIEWS
 
 
 def _has_48dp_square_bounds(bounds: object) -> bool:
@@ -897,7 +903,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         or mode_geometry.get("insertEnabled") is not False
                         or mode_geometry.get("insert") is not None
                         or mode_geometry.get("dictationSendAccessible") is not True
-                        or mode_geometry.get("dictationSendEnabled") is not True
+                        or mode_geometry.get("dictationSendEnabled") is not _has_actionable_transcript_preview(
+                            mode_geometry.get("previewText"))
                         or mode_geometry.get("timerAccessible") is not True
                         or mode_geometry.get("timerVisible") is not True
                         or not re.fullmatch(r"\d{2}:\d{2}", str(mode_geometry.get("timerText", "")))
@@ -905,7 +912,12 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                         or mode_geometry.get("previewLive") is not True
                         or mode_geometry.get("previewAccessible") is not True
                         or not str(mode_geometry.get("previewText", "")).strip()):
-                    raise ExtractionFailure("transcribing screenshot must show Cancel, timer, live preview, and Send while hiding Insert")
+                    raise ExtractionFailure("transcribing screenshot must show Cancel, timer, live preview, and accessible Send while hiding Insert")
+                if not _has_actionable_transcript_preview(mode_geometry.get("previewText")) and (
+                        mode_geometry.get("previewText") != "Waiting for transcript…"
+                        or mode_geometry.get("modeStatusText") != "TRANSCRIBING"
+                        or mode_geometry.get("modeStatusLabel") != "Prompt dictation is transcribing"):
+                    raise ExtractionFailure("transcribing without a final transcript must show the accessible waiting status")
             elif state == "review" and (
                     mode_geometry.get("reviewVisible") is not True
                     or mode_geometry.get("reviewEditable") is not True
@@ -942,8 +954,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             if expected_locked:
                 if mode_geometry.get("cancelAccessible") is not True:
                     raise ExtractionFailure(f"{state} screenshot does not prove the accessible discard/cancel action")
-                if mode_geometry.get("dictationSendAccessible") is not True or mode_geometry.get("dictationSendEnabled") is not True:
-                    raise ExtractionFailure(f"{state} screenshot does not prove visible, enabled Send during dictation")
+                if mode_geometry.get("dictationSendAccessible") is not True:
+                    raise ExtractionFailure(f"{state} screenshot does not prove accessibly named Send during dictation")
+                if mode_geometry.get("dictationSendEnabled") is not _has_actionable_transcript_preview(
+                        mode_geometry.get("previewText")):
+                    raise ExtractionFailure(f"{state} Send enablement does not match its current transcript preview")
                 required_rects.extend(("cancel", "dictationSend", "recordingActions"))
                 if state.startswith("recording"):
                     if mode_geometry.get("insertAccessible") is not True or mode_geometry.get("insertEnabled") is not True:
@@ -1353,7 +1368,12 @@ def self_test() -> None:
             "previewVisible": anchored,
             "previewLive": anchored,
             "previewAccessible": anchored,
-            "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert" else "transcript in progress" if transcribing else "discard this dictated phrase" if recording else "",
+            "previewText": "PS2857_DICTATION_INSERT_js2857-self-test" if state == "recording-insert"
+            else "Waiting for transcript…" if state == "transcribing"
+            else "transcript in progress" if transcribing else "discard this dictated phrase" if recording else "",
+            "modeStatusText": "LISTENING" if recording else "TRANSCRIBING" if transcribing else "",
+            "modeStatusLabel": "Prompt dictation is listening" if recording
+            else "Prompt dictation is transcribing" if transcribing else "",
             "timerAccessible": anchored,
             "timerVisible": anchored,
             "timerText": "00:12" if anchored else "",
@@ -1373,7 +1393,7 @@ def self_test() -> None:
             "insertAccessible": recording or state == "review",
             "insertEnabled": recording or state == "review",
             "dictationSendAccessible": anchored,
-            "dictationSendEnabled": anchored,
+            "dictationSendEnabled": recording or state == "transcribing-send",
             "transcribingStatusAccessible": transcribing,
             "composerStatusAccessible": True,
             "reviewVisible": state == "review",
@@ -1540,6 +1560,12 @@ def self_test() -> None:
     premature_transcribing_insert["insert"] = {"top": 10.0, "bottom": 58.0, "left": 347.0, "right": 395.0}
     premature_transcribing_insert["actionOrder"] = "composer-recording-cancel,composer-insert,composer-dictation-send"
     premature_transcribing_insert_geometry = json.dumps(premature_transcribing_insert).encode()
+    enabled_while_waiting = json.loads(mode_geometry_payload("transcribing"))
+    enabled_while_waiting["dictationSendEnabled"] = True
+    enabled_while_waiting_geometry = json.dumps(enabled_while_waiting).encode()
+    disabled_with_partial = json.loads(mode_geometry_payload("transcribing-send"))
+    disabled_with_partial["dictationSendEnabled"] = False
+    disabled_with_partial_geometry = json.dumps(disabled_with_partial).encode()
     timer_below_waveform = json.loads(mode_geometry_payload("recording"))
     timer_below_waveform["timerBesideWaveform"] = True
     timer_below_waveform["timer"]["left"] = 80.0
@@ -1732,8 +1758,19 @@ def self_test() -> None:
         return lines
 
     lines = make_lines()
-    assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker,
-                        expected_dictation_marker=dictation_marker)["inline-dictation-preview.png"] == png
+    accepted_mode_assets = parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker,
+                                        expected_dictation_marker=dictation_marker)
+    assert accepted_mode_assets["inline-dictation-preview.png"] == png
+    waiting_state = json.loads(accepted_mode_assets["composer-transcribing-geometry.json"])
+    assert (waiting_state["previewText"] == "Waiting for transcript…"
+            and waiting_state["modeStatusText"] == "TRANSCRIBING"
+            and waiting_state["dictationSendAccessible"] is True
+            and waiting_state["dictationSendEnabled"] is False)
+    queued_send_state = json.loads(accepted_mode_assets["composer-transcribing-send-geometry.json"])
+    assert (queued_send_state["previewText"] == "transcript in progress"
+            and queued_send_state["dictationSendAccessible"] is True
+            and queued_send_state["dictationSendEnabled"] is True)
+    print("PASS: waiting transcription keeps accessible Send disabled, while a populated preview enables queued Send")
     print("PASS: keyboard, inline dictation, composer-state, and post-send artifacts extract with complete chunks and matching SHA-256")
 
     keyboard_up_reopen_assets = parse_assets(
@@ -1852,6 +1889,10 @@ def self_test() -> None:
          make_lines(transcribing_send_geometry_bytes=discard_labeled_transcribing_cancel_geometry)),
         ("transcribing offers Insert before editable review",
          make_lines(transcribing_geometry_bytes=premature_transcribing_insert_geometry)),
+        ("waiting transcribing state enables Send without a transcript",
+         make_lines(transcribing_geometry_bytes=enabled_while_waiting_geometry)),
+        ("populated transcribing preview disables queued Send",
+         make_lines(transcribing_send_geometry_bytes=disabled_with_partial_geometry)),
         ("recording timer is stacked below its waveform",
          make_lines(recording_geometry_bytes=timer_below_waveform_geometry)),
         ("recording transcript lacks live accessible text",

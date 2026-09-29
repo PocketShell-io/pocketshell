@@ -6,38 +6,42 @@ WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
 RUNNER="$ROOT_DIR/scripts/connected-js-hotkeys-docker.sh"
 LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
 EXTRACTOR="$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py"
+PTY_GEOMETRY="$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py"
 RESULT_CHECKER="$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py"
 JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsFastKeysDockerJourneyTest.java"
 MOBILE_HOTKEYS="$ROOT_DIR/src/components/MobileHotkeys.vue"
 APP="$ROOT_DIR/src/App.vue"
 
-[[ -f "$WORKFLOW" && -x "$RUNNER" && -x "$LANES" && -f "$EXTRACTOR" && -f "$RESULT_CHECKER" && -f "$JOURNEY" && -f "$MOBILE_HOTKEYS" && -f "$APP" ]] || {
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -x "$LANES" && -f "$EXTRACTOR" && -f "$PTY_GEOMETRY" && -f "$RESULT_CHECKER" && -f "$JOURNEY" && -f "$MOBILE_HOTKEYS" && -f "$APP" ]] || {
   printf 'FAIL: rewrite fast-key gate inputs are missing\n' >&2
   exit 1
 }
 
 bash -n "$RUNNER"
 bash -n "$LANES"
-python3 - "$WORKFLOW" "$RUNNER" "$LANES" "$EXTRACTOR" "$RESULT_CHECKER" "$JOURNEY" "$MOBILE_HOTKEYS" "$APP" <<'PY'
+python3 - "$WORKFLOW" "$RUNNER" "$LANES" "$EXTRACTOR" "$PTY_GEOMETRY" "$RESULT_CHECKER" "$JOURNEY" "$MOBILE_HOTKEYS" "$APP" <<'PY'
 import ast
 import re
 import sys
 from pathlib import Path
 
-workflow_path, runner_path, lanes_path, extractor_path, checker_path, journey_path, mobile_hotkeys_path, app_path = map(Path, sys.argv[1:])
+workflow_path, runner_path, lanes_path, extractor_path, pty_geometry_path, checker_path, journey_path, mobile_hotkeys_path, app_path = map(Path, sys.argv[1:])
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 lanes = lanes_path.read_text()
 extractor = extractor_path.read_text()
+pty_geometry = pty_geometry_path.read_text()
 checker = checker_path.read_text()
 journey = journey_path.read_text()
 mobile_hotkeys = mobile_hotkeys_path.read_text()
 terminal_dictation = mobile_hotkeys_path.with_name("TerminalDictationBar.vue").read_text()
 prompt_composer = mobile_hotkeys_path.with_name("PromptComposer.vue").read_text()
 app = app_path.read_text()
+inline_dictation = app_path.parent.joinpath("session/inlineDictation.ts").read_text()
 unit_test_manifest = (app_path.parent.parent / "scripts/js-unit-test-manifest.json").read_text()
 unit_test = (app_path.parent.parent / "tests/unit/mobileHotkeys.test.ts").read_text()
 extractor_module = ast.parse(extractor, filename=str(extractor_path))
+ast.parse(pty_geometry, filename=str(pty_geometry_path))
 ast.parse(checker, filename=str(checker_path))
 asset_sets = {}
 for node in extractor_module.body:
@@ -86,6 +90,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("composer result copy upload", "android/app/build/outputs/js-composer-results/TEST-*.xml"),
         ("composer lane JUnit copy before fastkeys", "composer_results_dir=\"android/app/build/outputs/js-composer-results\""),
         ("fast-key invocation", "scripts/connected-js-hotkeys-docker.sh \\\n  --suffix i2884ci \\\n  --port 2243"),
+        ("one-turn rerun controls reach instrumentation", "fastKeysPromptFocusMaxAttempts"),
         ("fast-key aggregate status", "hotkeys_status=$?"),
         ("exact fast-key JUnit status", "hotkeys_junit_status=0"),
         ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "$connected_results_dir"'),
@@ -297,8 +302,13 @@ if ("composerKeysTransition" not in journey
         or "!!document.querySelector('[data-testid=mobile-hotkeys-sheet]')" not in journey
         or "terminalNativeDictation" not in journey
         or "installNativeSpeechBridgeObserver()" not in journey
-        or "finalAndStoppedInjectedThroughNativePlugin" not in journey):
-    raise AssertionError("packaged journey must capture the composer/keys return cycle and native terminal dictation path")
+        or 'new JSONObject(injectNativeDictationTestEvent("result", dictatedText))' not in journey
+        or '.put("finalInjection", finalInjection)' not in journey
+        or '.put("finalInjectedThroughNativePlugin", true)' not in journey
+        or '.put("explicitStopRequestId", insertedStopRequestId)' not in journey
+        or '.put("resultCompletesTurn", true)' not in journey
+        or 'assertEquals("an explicit Stop must not rearm another native recognizer turn", 1, insertedNativeStartCalls)' not in journey):
+    raise AssertionError("packaged journey must capture the composer/keys return cycle and final result completing an explicitly stopped native turn")
 if ("validate_composer_alternate_surface(" not in extractor
         or 'stage_name in {"composer-keys-before-ime-open", "keys-to-composer-return"}' not in extractor
         or '"imeVisibleAfterReturn"' not in extractor
@@ -314,6 +324,21 @@ if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mo
     raise AssertionError("Android catalog during listening must reserve its 185px status band and compact key catalog")
 if "const inlineDictationListeningStatusRowHeightPx = 40;" not in app:
     raise AssertionError("App dock sizing must reserve the matching 40px terminal listening band")
+if ("finishInsertUnconfirmed(gen, text)" not in inline_dictation
+        or "preview: text" not in inline_dictation
+        or "Terminal insertion was not confirmed" not in inline_dictation
+        or 'data-testid="inline-dictation-copy-transcript"' not in mobile_hotkeys
+        or "Copy recognized transcript" not in mobile_hotkeys
+        or "const inlineDictationRecoveryStatusRowHeightPx = 64;" not in app
+        or ".mobile-hotkeys--dictation-recovery .mobile-hotkeys__dictation-status-row {\n  height: 64px;" not in mobile_hotkeys):
+    raise AssertionError("failed PTY insertion must retain the transcript and reserve the visible copy-recovery row")
+for recovery_test in (
+    "keeps the final transcript available when PTY insertion returns false",
+    "keeps the final transcript available when PTY insertion rejects",
+    "offers an explicit copy action for an unconfirmed terminal transcript",
+):
+    if recovery_test not in unit_test_manifest:
+        raise AssertionError(f"full JS unit gate manifest omits inline transcript recovery coverage: {recovery_test}")
 if "const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;" not in app:
     raise AssertionError("terminal viewport reservation must track the rendered 96px catalog height")
 if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys
@@ -526,7 +551,8 @@ for dictation_contract in (
     "visibleText",
     "inlineDictationTargetKey",
     "sshAttachEpoch",
-    "dictation-final-awaiting-stopped",
+    "dictation-stop-awaiting-final",
+    "dictation-final-inserted",
     "dictation-attach-cancel-complete",
     "dictation-background-cancel-resumed",
 ):
@@ -534,6 +560,26 @@ for dictation_contract in (
         raise AssertionError(f"combined fast-key journey omits the integrated dictation contract: {dictation_contract}")
 if "validate_dictation_behavior(journey)" not in extractor or "expectedHostHex" not in extractor:
     raise AssertionError("artifact validator must fail closed on partial/final/Stop/error/reattach dictation behavior")
+if ("dictation-final-awaiting-stopped" in extractor
+        or "legacy finish and stopped-event dictation contract rejected" not in extractor
+        or "--force-first-post-attach-tap-miss" not in runner
+        or "--prompt-focus-max-attempts" not in runner
+        or "fastKeysForceFirstPostAttachTapMiss=$FORCE_FIRST_POST_ATTACH_TAP_MISS" not in runner
+        or "fastKeysPromptFocusMaxAttempts=$PROMPT_FOCUS_MAX_ATTEMPTS" not in runner
+        or '[[ "$PROMPT_FOCUS_MAX_ATTEMPTS" =~ ^[12]$ ]]' not in runner):
+    raise AssertionError("the one-turn extractor, legacy-contract regression, and bounded packaged rerun controls must stay in sync")
+if ("dictation-final-awaiting-stopped" in pty_geometry
+        or '"dictation-stop-awaiting-final"' not in pty_geometry
+        or "validate_stop_waiting_final" not in pty_geometry
+        or "journey missing the pre-final Stop checkpoint is rejected" not in pty_geometry
+        or "Stop checkpoint without a transcribing dock is rejected" not in pty_geometry
+        or 'captureGeometry("dictation-stop-awaiting-final")' not in journey):
+    raise AssertionError("the PTY geometry oracle must cover the explicit-Stop transcribing stage before final insertion")
+stop_ack = journey.index('assertEquals("explicit Stop must call the Android speech plugin once"')
+stop_checkpoint = journey.index('assertEquals("explicit Stop alone must not insert before a final result"')
+final_injection = journey.index('injectNativeDictationTestEvent("result", dictatedText)')
+if not stop_ack < stop_checkpoint < final_injection:
+    raise AssertionError("the packaged journey must prove explicit Stop and no write before injecting its final result")
 for journey_contract in (
     "title:n.title",
     "iconVisible",

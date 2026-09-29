@@ -98,10 +98,17 @@ public final class JsComposerDockerJourneyTest {
             emitFocusTraceIfNeeded();
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
-        }
-        if (scenario != null) {
-            stopWebAnimationsBeforeScenarioClose();
-            scenario.close();
+        } finally {
+            try {
+                releaseAttachAutofocusGateIfPresent();
+            } catch (Exception error) {
+                Log.e("PS2891Focus", "could not release an attach focus gate before ActivityScenario teardown", error);
+            } finally {
+                if (scenario != null) {
+                    stopWebAnimationsBeforeScenarioClose();
+                    scenario.close();
+                }
+            }
         }
     }
 
@@ -771,21 +778,25 @@ public final class JsComposerDockerJourneyTest {
                 + "const cap=window.Capacitor;"
                 + "if(!cap||typeof cap.nativePromise!=='function'||typeof cap.nativeCallback!=='function')return 'missing-capacitor-bridge';"
                 + "const nativePromise=cap.nativePromise.bind(cap);const nativeCallback=cap.nativeCallback.bind(cap);"
-                + "const state={startOptions:null,stopOptions:null,requestId:null,listener:null,"
-                + "emit(type,text){if(!this.listener)throw new Error('speech listener is not registered');"
-                + "this.listener({requestId:this.requestId,type,...(text===undefined?{}:{text})});}};"
+                + "const state={startOptions:null,stopOptions:null,cancelOptions:null,requestId:null,listener:null,pendingListeners:[],listeners:{},"
+                + "emit(type,text,requestId){const id=requestId||this.requestId;const listener=this.listeners[id]||this.listener;"
+                + "if(!listener)throw new Error('speech listener is not registered');"
+                + "listener({requestId:id,type,...(text===undefined?{}:{text})});}};"
                 + "window.__ps2857ControlledSpeech=state;"
                 + "cap.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativePromise(plugin,method,options);"
-                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.requestId=options.requestId;"
+                + "if(method==='startDictation'){state.startOptions=JSON.parse(JSON.stringify(options));state.stopOptions=null;state.cancelOptions=null;state.requestId=options.requestId;"
+                + "state.listeners[state.requestId]=state.pendingListeners.shift()||state.listener;"
                 + "return Promise.resolve({requestId:state.requestId,started:true});}"
                 + "if(method==='stopDictation'){state.stopOptions=JSON.parse(JSON.stringify(options));"
                 + "return Promise.resolve({requestId:options.requestId,stopped:true});}"
+                + "if(method==='cancelDictation'){state.cancelOptions=JSON.parse(JSON.stringify(options));"
+                + "return Promise.resolve({requestId:options.requestId,cancelled:true});}"
                 + "if(method==='getCapabilities')return Promise.resolve({speechRecognitionAvailable:true,microphonePermissionGranted:true});"
                 + "return Promise.reject(new Error('unexpected controlled speech method '+method));};"
                 + "cap.nativeCallback=(plugin,method,options,callback)=>{"
                 + "if(plugin!=='SpeechRecognition')return nativeCallback(plugin,method,options,callback);"
-                + "if(method==='addListener'){state.listener=callback;return Promise.resolve({callbackId:'controlled-dictation'});}"
+                + "if(method==='addListener'){state.listener=callback;state.pendingListeners.push(callback);return Promise.resolve({callbackId:'controlled-dictation'});}"
                 + "if(method==='removeListener')return Promise.resolve({removed:true});"
                 + "return Promise.reject(new Error('unexpected controlled speech callback '+method));};"
                 + "return 'installed';})()");
@@ -826,9 +837,6 @@ public final class JsComposerDockerJourneyTest {
         assertEquals("Stop request alone must not write an unfinalized transcript", acknowledgementsBefore,
                 terminalInputAcknowledgements());
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(inlineCommand) + "); 'final emitted'");
-        assertEquals("final text remains staged until the recognizer stops", acknowledgementsBefore,
-                terminalInputAcknowledgements());
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
@@ -869,16 +877,16 @@ public final class JsComposerDockerJourneyTest {
 
         JSONObject backgroundTrace = backgroundAndResumeApp("inline-terminal-dictation");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 15_000);
-        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === "
+        awaitJsTrue("window.__ps2857ControlledSpeech?.cancelOptions?.requestId === "
                 + JSONObject.quote(requestId), 15_000);
         checkpoint("inline-dictation-background-cancellation-observed");
-        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + ", "
+                + JSONObject.quote(requestId) + "); 'late final emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + acknowledgementsBefore, 15_000);
-        assertEquals("the mounted inline bar must request speech stop on native background", requestId,
-                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        assertEquals("the mounted inline bar must cancel the native turn on background", requestId,
+                evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"));
         backgroundTrace.put("dictationCancelledAfterResume", "idle".equals(
                 evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? ''")));
         backgroundTrace.put("lateResultIgnored", terminalInputAcknowledgements() == acknowledgementsBefore);
@@ -889,10 +897,11 @@ public final class JsComposerDockerJourneyTest {
         String recoveryMarker = "PS2857_BG_RECOVERY_" + nameBase;
         String recoveryCommand = "printf '%s' '" + recoveryMarker + "' > /tmp/" + sessionName
                 + "-inline-background-recovery.marker";
-        startFreshInlineDictation(recoveryCommand, acknowledgementsBefore);
+        int writesBeforeRecovery = terminalInputAcknowledgements();
+        startFreshInlineDictation(recoveryCommand, writesBeforeRecovery);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
         awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
-                + (acknowledgementsBefore + 2), 10_000);
+                + (writesBeforeRecovery + 2), 10_000);
         Log.i("PS2857Inline", "BACKGROUND_RECOVERY|" + artifactRunId + "|marker=" + recoveryMarker);
     }
 
@@ -916,16 +925,16 @@ public final class JsComposerDockerJourneyTest {
         // Switching the selected live session changes targetKey on the mounted
         // bar while its recognition callback remains capable of late delivery.
         attachSession(targetChangeSession);
-        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === "
+        awaitJsTrue("window.__ps2857ControlledSpeech?.cancelOptions?.requestId === "
                 + JSONObject.quote(requestId), 15_000);
         checkpoint("inline-dictation-target-change-cancellation-observed");
-        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + "); 'late final emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'late stopped emitted'");
+        evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(lateCommand) + ", "
+                + JSONObject.quote(requestId) + "); 'late final emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
                 + acknowledgementsBefore, 15_000);
-        assertEquals("the mounted inline bar must request speech stop when targetKey changes", requestId,
-                evalString("window.__ps2857ControlledSpeech?.stopOptions?.requestId ?? ''"));
+        assertEquals("the mounted inline bar must cancel speech when targetKey changes", requestId,
+                evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"));
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'quiet'");
         Log.i("PS2857Inline", "TARGET_CANCELLED|" + artifactRunId + "|request=" + requestId
                 + "|partial=" + partialMarker + "|late=" + lateMarker + "|acks=" + acknowledgementsBefore);
@@ -941,8 +950,10 @@ public final class JsComposerDockerJourneyTest {
         evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(command) + "); 'partial emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
                 + JSONObject.quote(command));
+        String requestId = evalJson("JSON.stringify(window.__ps2857ControlledSpeech?.startOptions ?? null)").getString("requestId");
+        click("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("window.__ps2857ControlledSpeech?.stopOptions?.requestId === " + JSONObject.quote(requestId));
         evalString("window.__ps2857ControlledSpeech.emit('result', " + JSONObject.quote(command) + "); 'final emitted'");
-        evalString("window.__ps2857ControlledSpeech.emit('stopped'); 'stopped emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && !document.querySelector('[data-testid=inline-dictation-status]')"
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalInputAcks) === "
@@ -1053,6 +1064,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void exerciseComposerDictationMode(String runId, String nameBase) throws Exception {
         grantMicrophonePermissionForJourney();
+        installNativeSpeechBridgeObserver();
         evalString("window.__ps2857DictationTestMode = true; 'debug dictation test mode enabled'");
         String original = "keep this typed draft " + nameBase;
         checkpoint("dictation-open-sheet");
@@ -1061,6 +1073,7 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
                 + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
         setComposerDraft(original);
+        ensureImeVisible("composer-open");
         assertGenericComposerTitleAndSessionChrome(runId);
         checkpoint("dictation-title-verified");
         checkpoint("dictation-before-editor-tap");
@@ -1100,7 +1113,8 @@ public final class JsComposerDockerJourneyTest {
             assertEquals("the native adapter must receive the persisted language hint on this start",
                     expectedLanguage, nativeOptions.getString("languageTag"));
         }
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('discard this dictated phrase')");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original)
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes('discard this dictated phrase')");
         String recordingPredicate = "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const style=draft&&getComputedStyle(draft);const mode=document.querySelector('[data-testid=composer-recording-mode]');"
                 + "const actions=document.querySelector('[data-testid=composer-recording-actions]');"
@@ -1133,13 +1147,13 @@ public final class JsComposerDockerJourneyTest {
             awaitJsTrue(recordingPredicate, 10_000);
         } catch (AssertionError predicateFailure) {
             try {
-                recordComposerModeState(runId, "recording", original + " discard this dictated phrase");
+                recordComposerModeState(runId, "recording", original);
             } catch (Exception | AssertionError evidenceFailure) {
                 predicateFailure.addSuppressed(evidenceFailure);
             }
             throw predicateFailure;
         }
-        recordComposerModeState(runId, "recording", original + " discard this dictated phrase");
+        recordComposerModeState(runId, "recording", original);
         assertTrue("recording surface must pair the elapsed timer and capture-state waveform like the Kotlin composer",
                 "true".equals(evalRaw("(() => {const mode=document.querySelector('[data-testid=composer-recording-mode]');"
                         + "const row=mode?.querySelector('.recording-mode__live-row');"
@@ -1168,7 +1182,8 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
         injectDictationTestEvent("partial", "background must discard this partial");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes('background must discard this partial')");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original)
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes('background must discard this partial')");
         JSONObject backgroundTrace = backgroundAndResumeApp("prompt-dictation");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'idle'"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(original));
@@ -1200,12 +1215,14 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
         injectDictationTestEvent("partial", insertPreview);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(insertPreview));
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent === " + JSONObject.quote(insertPreview));
         assertEquals("recording-time Insert must not write to the PTY before the explicit action", insertWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
-        recordComposerModeState(runId, "recording-insert", insertPreview, Integer.parseInt(insertWriteBaseline));
+        recordComposerModeState(runId, "recording-insert", "", Integer.parseInt(insertWriteBaseline));
         injectDictationTestEvent("partial", insertCommand);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(insertCommand));
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent === " + JSONObject.quote(insertCommand));
         assertEquals("recording-time Insert must not write while its visible transcript is updated", insertWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
         checkpoint("dictation-insert-before-tap");
@@ -1216,7 +1233,7 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Insert')");
         checkpoint("dictation-insert-transcribing");
-        injectDictationTestEvent("finish", null);
+        injectDictationTestEvent("result", insertCommand);
         awaitInsertedAndCleared();
         tapDomCenter("[data-testid=composer-close]");
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
@@ -1235,7 +1252,8 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
         injectDictationTestEvent("partial", transcribingSendPreview);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent === "
                 + JSONObject.quote(transcribingSendPreview));
         assertEquals("transcribing-time Send must not write while recording", transcribingSendWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
@@ -1243,10 +1261,11 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
         assertEquals("transcribing-time Send must not write before the explicit action", transcribingSendWriteBaseline,
                 evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
-        recordComposerModeState(runId, "transcribing-send", transcribingSendPreview,
+        recordComposerModeState(runId, "transcribing-send", "",
                 Integer.parseInt(transcribingSendWriteBaseline));
         injectDictationTestEvent("partial", transcribingSendCommand);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent === "
                 + JSONObject.quote(transcribingSendCommand));
         assertEquals("transcribing-time Send must not write when recognition updates its visible transcript",
                 transcribingSendWriteBaseline,
@@ -1259,7 +1278,7 @@ public final class JsComposerDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '0'"
                 + " && document.querySelector('[data-testid=composer-status]')?.textContent.includes('Stopping dictation before Send')");
         checkpoint("dictation-transcribing-send-stopping");
-        injectDictationTestEvent("finish", null);
+        injectDictationTestEvent("result", transcribingSendCommand);
         awaitDeliveredAndCleared();
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === '2'");
 
@@ -1280,9 +1299,13 @@ public final class JsComposerDockerJourneyTest {
         awaitImeVisible(false);
         String dictationCommand = "Please summarize the latest terminal output in three bullet points.";
         injectDictationTestEvent("partial", dictationCommand);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value.includes(" + JSONObject.quote(dictationCommand) + ")");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote("")
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(dictationCommand) + ")");
         String timerBeforeNaturalPause = evalString("document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim() ?? ''");
-        injectDictationTestEvent("processing", null);
+        int startsBeforeRecoverable = nativeSpeechCallCount("startCount");
+        injectDictationTestEvent("recoverable", null);
+        awaitJsTrue("window.__ps2857NativeSpeechEvidence?.startCount === " + (startsBeforeRecoverable + 1), 10_000);
         String recordingAfterEndpoint = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
                 + "return composer?.dataset.dictationState==='recording' && !!stop && !stop.disabled"
@@ -1291,17 +1314,14 @@ public final class JsComposerDockerJourneyTest {
             awaitJsTrue(recordingAfterEndpoint, 5_000);
         } catch (AssertionError pauseFailure) {
             try {
-                recordComposerModeState(runId, "recording", dictationCommand);
+                recordComposerModeState(runId, "recording", "");
             } catch (Exception | AssertionError evidenceFailure) {
                 pauseFailure.addSuppressed(evidenceFailure);
             }
             throw pauseFailure;
         }
-        // A normal end-of-speech produces results and then a fresh ready/listening
-        // pair. Keep the recording controls and timer through that restart.
-        injectDictationTestEvent("result", null);
-        injectDictationTestEvent("ready", null);
-        injectDictationTestEvent("listening", null);
+        // The recoverable end started a new one-turn recognizer. It stays in
+        // the same shared recording operation and keeps its timer running.
         SystemClock.sleep(1_200);
         String resumedRecording = "(() => {const composer=document.querySelector('[data-testid=prompt-composer]');"
                 + "const stop=document.querySelector('[data-testid=composer-recording-stop]');"
@@ -1313,22 +1333,22 @@ public final class JsComposerDockerJourneyTest {
             awaitJsTrue(resumedRecording, 5_000);
         } catch (AssertionError restartFailure) {
             try {
-                recordComposerModeState(runId, "recording", dictationCommand);
+                recordComposerModeState(runId, "recording", "");
             } catch (Exception | AssertionError evidenceFailure) {
                 restartFailure.addSuppressed(evidenceFailure);
             }
             throw restartFailure;
         }
-        recordComposerModeState(runId, "recording-after-restart", dictationCommand);
+        recordComposerModeState(runId, "recording-after-restart", "");
         tapDomCenter("[data-testid=composer-recording-stop]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'", 10_000);
         awaitImeVisible(false);
-        recordComposerModeState(runId, "transcribing", dictationCommand);
+        recordComposerModeState(runId, "transcribing", "");
         assertTrue("Stop must enter transcribing without sending the draft", "true".equals(evalRaw(
                 "document.querySelector('[data-testid=composer-status]')?.textContent.includes('not be sent automatically')"
                         + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites === "
                         + JSONObject.quote(dictationWriteBaseline))));
-        injectDictationTestEvent("finish", null);
+        injectDictationTestEvent("result", dictationCommand);
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
                 + " && document.querySelector('[data-testid=composer-dictation-review]')"
                 + " && document.querySelector('[data-testid=prompt-draft]')?.readOnly === false"
@@ -1373,16 +1393,17 @@ public final class JsComposerDockerJourneyTest {
     private void exerciseComposerDictationFailureModes(String runId) throws Exception {
         String errorBase = "keep typed text after recognition error";
         String errorPartial = "partial speech before the error";
-        String errorDraft = errorBase + " " + errorPartial;
+        String errorDraft = errorBase;
         setComposerDraft(errorBase);
         String errorWriteBaseline = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''");
         tapDomCenter("[data-testid=composer-dictate]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'recording'", 15_000);
         awaitImeVisible(false);
         injectDictationTestEvent("partial", errorPartial);
-        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(errorDraft));
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(errorDraft)
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(errorPartial) + ")");
         injectDictationTestEvent("error", "recognizer-no-match");
-        injectDictationTestEvent("finish", null);
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
                 + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('Recognition stopped.')"
                 + " && document.querySelector('[data-testid=composer-mode-status]')?.getAttribute('aria-label')"
@@ -1402,7 +1423,7 @@ public final class JsComposerDockerJourneyTest {
         tapDomCenter("[data-testid=composer-recording-stop]");
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'transcribing'");
         awaitImeVisible(false);
-        injectDictationTestEvent("finish", null);
+        injectDictationTestEvent("recoverable", null);
         awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState === 'review'"
                 + " && document.querySelector('[data-testid=composer-dictation-review]')?.textContent.includes('No speech recognized.')"
                 + " && document.querySelector('[data-testid=composer-mode-status]')?.getAttribute('aria-label')"
@@ -1906,11 +1927,25 @@ public final class JsComposerDockerJourneyTest {
                 assertEquals("recording must use the Kotlin discard label", "Discard", measured.getString("cancelText"));
                 assertEquals("discard must explain that this throws away the recording",
                         "Discard recording without transcribing", measured.getString("cancelAriaLabel"));
-                assertTrue("recording must keep explicit Insert and Send visible, enabled, and at least 48dp tall",
-                        measured.getBoolean("insertAccessible") && measured.getBoolean("insertEnabled")
+                boolean hasCurrentPartial = !measured.getString("previewText").isEmpty()
+                        && !"Listening for speech…".equals(measured.getString("previewText"));
+                assertTrue("recording must keep explicit Insert and Send visible, accessible, and at least 48dp tall",
+                        measured.getBoolean("insertAccessible")
                                 && measured.getJSONObject("insert").getDouble("height") >= 47.9
-                                && measured.getBoolean("dictationSendAccessible") && measured.getBoolean("dictationSendEnabled")
+                                && measured.getBoolean("dictationSendAccessible")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
+                assertEquals("Insert must only be enabled while a current partial transcript is available",
+                        hasCurrentPartial, measured.getBoolean("insertEnabled"));
+                assertEquals("Send must only be enabled while a current partial transcript is available",
+                        hasCurrentPartial, measured.getBoolean("dictationSendEnabled"));
+                if (!hasCurrentPartial) {
+                    assertEquals("recording without a current partial must show the listening placeholder",
+                            "Listening for speech…", measured.getString("previewText"));
+                    assertEquals("empty recording preview must expose the listening status", "LISTENING",
+                            measured.getString("modeStatusText"));
+                    assertEquals("empty recording preview must describe its listening status accessibly",
+                            "Prompt dictation is listening", measured.getString("modeStatusLabel"));
+                }
                 assertTrue("recording preview and header Stop control must be visible, enabled, accessible, and 48dp square",
                         measured.getBoolean("previewVisible") && measured.getBoolean("previewLive")
                                 && measured.getString("stopText").isEmpty()
@@ -1923,6 +1958,8 @@ public final class JsComposerDockerJourneyTest {
                                 && Math.abs(measured.getJSONObject("stop").getDouble("height") - 48.0) < 0.5
                                 && measured.getString("draftDescribedBy").contains("composer-recording-preview"));
             } else {
+                boolean hasCurrentTranscript = !measured.getString("previewText").isEmpty()
+                        && !"Waiting for transcript…".equals(measured.getString("previewText"));
                 assertEquals("transcribing actions must match Kotlin: Cancel and Send",
                         "composer-recording-cancel,composer-dictation-send",
                         measured.getString("actionOrder"));
@@ -1939,8 +1976,17 @@ public final class JsComposerDockerJourneyTest {
                                 && !measured.getBoolean("insertAccessible") && !measured.getBoolean("insertEnabled")
                                 && measured.isNull("insert")
                                 && measured.getBoolean("dictationSendAccessible")
-                                && measured.getBoolean("dictationSendEnabled")
                                 && measured.getJSONObject("dictationSend").getDouble("height") >= 47.9);
+                assertEquals("transcribing Send must only be enabled after a current transcript is available",
+                        hasCurrentTranscript, measured.getBoolean("dictationSendEnabled"));
+                if (!hasCurrentTranscript) {
+                    assertEquals("transcribing without a final transcript must show the waiting placeholder",
+                            "Waiting for transcript…", measured.getString("previewText"));
+                    assertEquals("transcribing without a final transcript must retain the transcribing status",
+                            "TRANSCRIBING", measured.getString("modeStatusText"));
+                    assertEquals("waiting transcript status must have an accessible name",
+                            "Prompt dictation is transcribing", measured.getString("modeStatusLabel"));
+                }
             }
         } else {
             assertTrue("idle and review must retain the ordinary composer textarea",
@@ -1967,6 +2013,26 @@ public final class JsComposerDockerJourneyTest {
         ParcelFileDescriptor command = InstrumentationRegistry.getInstrumentation().getUiAutomation()
                 .executeShellCommand("pm grant " + packageName + " android.permission.RECORD_AUDIO");
         if (command != null) command.close();
+    }
+
+    private void installNativeSpeechBridgeObserver() throws Exception {
+        String installed = evalString("(() => {"
+                + "const cap=window.Capacitor;"
+                + "if(!cap||typeof cap.nativePromise!=='function')return 'missing-capacitor-bridge';"
+                + "const nativePromise=cap.nativePromise.bind(cap);"
+                + "const state={startCount:0,stopCount:0,cancelCount:0};"
+                + "window.__ps2857NativeSpeechEvidence=state;window.__ps2857DictationTestMode=true;"
+                + "cap.nativePromise=(plugin,method,options)=>{"
+                + "if(plugin==='SpeechRecognition'&&['startDictation','stopDictation','cancelDictation'].includes(method)){"
+                + "const key=method==='startDictation'?'startCount':method==='stopDictation'?'stopCount':'cancelCount';state[key]+=1;"
+                + "}return nativePromise(plugin,method,options);};"
+                + "return 'observing-native-speech-bridge';})()");
+        assertEquals("test must observe and delegate the real Android speech bridge", "observing-native-speech-bridge", installed);
+    }
+
+    private int nativeSpeechCallCount(String name) throws Exception {
+        return Integer.parseInt(evalString("String(window.__ps2857NativeSpeechEvidence?.["
+                + JSONObject.quote(name) + "] ?? 0)"));
     }
 
     private String injectDictationTestEvent(String type, String text) throws Exception {
@@ -2129,8 +2195,9 @@ public final class JsComposerDockerJourneyTest {
         boolean composerFocused = isPromptDraftFocused();
         boolean composerMode = isKeyboardComposerMode();
         boolean imeVisible = isImeVisible();
+        boolean initialComposerOpen = "composer-open".equals(stage);
         boolean requirePhysicalTap = "post-inline-dictation-attach".equals(stage)
-                || "uncertain-session-after-attach".equals(stage);
+                || "uncertain-session-after-attach".equals(stage) || initialComposerOpen;
         if (!imeVisible || !composerFocused || !composerMode || requirePhysicalTap) {
             installFocusTapEventRecorder();
             for (int attemptIndex = 0; attemptIndex < composerFocusMaxAttempts; attemptIndex += 1) {
@@ -2142,7 +2209,8 @@ public final class JsComposerDockerJourneyTest {
                         : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
-                boolean imeBefore = isImeVisible();
+                JSONObject nativeBefore = readNativeFocusState();
+                boolean imeBefore = nativeBefore.optBoolean("imeVisible");
                 long attemptStarted = SystemClock.uptimeMillis();
                 tapDomCenter(targetSelector);
                 JSONObject tap = lastPhysicalTapEvidence == null
@@ -2151,16 +2219,19 @@ public final class JsComposerDockerJourneyTest {
                 boolean focused = physicalTargetObserved && !injectMiss && awaitPromptDraftFocus(2_500);
                 boolean imeSettled = focused && awaitKeyboardReadyAfterTap(4_000);
                 JSONObject after = readFocusDomState();
+                JSONObject nativeAfter = readNativeFocusState();
                 JSONObject record = new JSONObject()
                         .put("stage", stage)
                         .put("attempt", attemptIndex + 1)
                         .put("requestedSelector", targetSelector)
                         .put("before", before)
+                        .put("nativeBefore", nativeBefore)
                         .put("nativeImeVisibleBefore", imeBefore)
                         .put("tap", tap)
                         .put("trustedPointerDownOnRequestedTarget", physicalTargetObserved)
                         .put("draftFocusedAfter", focused)
-                        .put("nativeImeVisibleAfter", isImeVisible())
+                        .put("nativeAfter", nativeAfter)
+                        .put("nativeImeVisibleAfter", nativeAfter.optBoolean("imeVisible"))
                         .put("keyboardReadyAfter", imeSettled)
                         .put("after", after)
                         .put("elapsedMs", SystemClock.uptimeMillis() - attemptStarted);
@@ -2374,6 +2445,11 @@ public final class JsComposerDockerJourneyTest {
         }
         emitArtifact(artifactRunId, "composer-focus-trace.json", bytes);
         focusTraceEmitted = true;
+    }
+
+    private void releaseAttachAutofocusGateIfPresent() throws Exception {
+        evalString("(() => {const gate=window.__ps2884AttachAutofocusGate;if(!gate||gate.released)return 'no pending attach gate';"
+                + "gate.released=true;for(const finish of gate.waiters.splice(0))finish();return 'attach gate released';})()");
     }
 
     private void captureFocusFailure(String stage, String reason) {

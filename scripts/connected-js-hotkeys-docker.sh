@@ -10,6 +10,8 @@ ADB="$(printenv ADB || printf '%s/platform-tools/adb' "$ANDROID_SDK")"
 SUFFIX="i2884"
 PORT=""
 SESSION_BASE="js2884-$(date +%s)"
+FORCE_FIRST_POST_ATTACH_TAP_MISS="false"
+PROMPT_FOCUS_MAX_ATTEMPTS="2"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -18,7 +20,7 @@ fail() {
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/connected-js-hotkeys-docker.sh --port 2243|2244|2245 [--session-prefix NAME] [--suffix TOKEN]
+Usage: scripts/connected-js-hotkeys-docker.sh --port 2243|2244|2245 [--session-prefix NAME] [--suffix TOKEN] [--force-first-post-attach-tap-miss] [--prompt-focus-max-attempts 1|2]
 
 Builds and runs the packaged Android fast-key journey against a healthy agents
 fixture lane, then compares the captured PTY files with an independent SSH
@@ -47,6 +49,15 @@ while [[ $# -gt 0 ]]; do
       SUFFIX="$2"
       shift 2
       ;;
+    --force-first-post-attach-tap-miss)
+      FORCE_FIRST_POST_ATTACH_TAP_MISS="true"
+      shift
+      ;;
+    --prompt-focus-max-attempts)
+      [[ $# -ge 2 ]] || fail '--prompt-focus-max-attempts needs a value of 1 or 2'
+      PROMPT_FOCUS_MAX_ATTEMPTS="$2"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -58,6 +69,7 @@ done
 [[ "$PORT" =~ ^(2243|2244|2245)$ ]] || fail '--port must be one of the isolated pool ports 2243, 2244, or 2245'
 [[ "$SESSION_BASE" =~ ^[A-Za-z0-9-]{8,32}$ ]] || fail '--session-prefix must be 8-32 letters, digits, or dashes'
 [[ "$SUFFIX" =~ ^[A-Za-z0-9._]+$ ]] || fail '--suffix must match [A-Za-z0-9._]+'
+[[ "$PROMPT_FOCUS_MAX_ATTEMPTS" =~ ^[12]$ ]] || fail '--prompt-focus-max-attempts must be 1 or 2'
 ARTIFACT_RUN_ID="${SESSION_BASE}-$(date +%s%N)"
 evidence_dir="$ROOT_DIR/android/app/build/outputs/js-hotkeys/$ARTIFACT_RUN_ID"
 mkdir -p "$evidence_dir"
@@ -66,6 +78,8 @@ run_id=$ARTIFACT_RUN_ID
 session_prefix=$SESSION_BASE
 docker_port=$PORT
 app_suffix=$SUFFIX
+force_first_post_attach_tap_miss=$FORCE_FIRST_POST_ATTACH_TAP_MISS
+prompt_focus_max_attempts=$PROMPT_FOCUS_MAX_ATTEMPTS
 started_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 [[ -x "$ADB" ]] || fail "adb is missing or not executable: $ADB"
@@ -210,6 +224,8 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$SESSION_BASE" \
     "-Pandroid.testInstrumentationRunnerArguments.artifactRunId=$ARTIFACT_RUN_ID" \
+    "-Pandroid.testInstrumentationRunnerArguments.fastKeysForceFirstPostAttachTapMiss=$FORCE_FIRST_POST_ATTACH_TAP_MISS" \
+    "-Pandroid.testInstrumentationRunnerArguments.fastKeysPromptFocusMaxAttempts=$PROMPT_FOCUS_MAX_ATTEMPTS" \
     --stacktrace --console=plain 2>&1 | tee "$evidence_dir/hotkeys-gradle.log"; then
   :
 else

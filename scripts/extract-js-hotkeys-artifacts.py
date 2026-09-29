@@ -492,20 +492,21 @@ def validate_dictation_behavior(journey: dict[str, object]) -> None:
         raise ExtractionFailure("dictation final result was not gated by explicit Stop on its recognizer request")
     if dictation.get("nativeStartCalls") != 1 or dictation.get("nativeStopCalls") != 1:
         raise ExtractionFailure("one docked dictation request started or stopped more than one native recognizer")
-    if dictation.get("finalReceived") is not True or dictation.get("stoppedReceived") is not True:
-        raise ExtractionFailure("dictation journey lacks its final and stopped recognizer events")
+    if (dictation.get("finalReceived") is not True
+            or dictation.get("resultCompletesTurn") is not True
+            or any(field in dictation for field in ("stoppedReceived", "writesAfterFinalBeforeStopped", "writesAfterStopped"))):
+        raise ExtractionFailure("dictation final result must complete the explicitly stopped recognizer turn without a stopped event")
     before = dictation.get("writesBeforePartial")
     partial = dictation.get("writesAfterPartial")
     after_stop = dictation.get("writesAfterStopBeforeFinal")
-    after_final = dictation.get("writesAfterFinalBeforeStopped")
-    after_stopped = dictation.get("writesAfterStopped")
+    after_final = dictation.get("writesAfterFinal")
     after_keyboard = dictation.get("writesAfterPostStopKeyboard")
-    counts = (before, partial, after_stop, after_final, after_stopped, after_keyboard)
+    counts = (before, partial, after_stop, after_final, after_keyboard)
     if any(isinstance(value, bool) or not isinstance(value, int) for value in counts):
         raise ExtractionFailure("dictation journey is missing integer PTY acknowledgement checkpoints")
-    if (partial != before or after_stop != before or after_final != before
-            or after_stopped != before + 1 or after_keyboard != after_stopped + 1):
-        raise ExtractionFailure("partials or final results wrote before explicit Stop, or terminal input acknowledgements did not advance once for Stop and once for keyboard input")
+    if (partial != before or after_stop != before or after_final != before + 1
+            or after_keyboard != after_final + 1):
+        raise ExtractionFailure("PTY writes occurred before the explicit-Stop final result, or final and keyboard input did not each add one write")
     partial_text = dictation.get("partialText")
     final_text = dictation.get("finalText")
     expected_hex = dictation.get("expectedHostHex")
@@ -561,32 +562,60 @@ def validate_dictation_behavior(journey: dict[str, object]) -> None:
     new_epoch = attach.get("newAttachEpoch")
     old_target = attach.get("oldTargetKey")
     new_target = attach.get("newTargetKey")
-    if (attach.get("stopRequestId") != attach.get("requestId")
-            or attach.get("lateResultEmitted") is not True or attach.get("stoppedEmitted") is not True
-            or attach.get("writesBefore") != attach.get("writesAfter")
-            or attach.get("nativeStartCalls") != 4 or attach.get("nativeStopCalls") != 3
-            or isinstance(old_epoch, bool) or not isinstance(old_epoch, int)
-            or isinstance(new_epoch, bool) or not isinstance(new_epoch, int) or new_epoch <= old_epoch
-            or not isinstance(old_target, str) or not old_target.endswith(f"/attach-{old_epoch}")
+    validate_cancel_evidence(
+        attach, "session-attach", expected_starts=4, expected_cancels=2,
+    )
+    if (not isinstance(old_epoch, int) or isinstance(old_epoch, bool)
+            or not isinstance(new_epoch, int) or isinstance(new_epoch, bool)
+            or old_epoch != attach_epoch or new_epoch <= old_epoch
+            or old_target != target_key
             or not isinstance(new_target, str) or not new_target.endswith(f"/attach-{new_epoch}")
-            or old_target == new_target):
+            or old_target == new_target
+            or not old_target.endswith(f"/attach-{old_epoch}")):
         raise ExtractionFailure("late dictation result was not rejected across the new session attach epoch")
 
     background = journey.get("dictationBackgroundCancel")
-    if (not isinstance(background, dict) or background.get("stopRequestId") != background.get("requestId")
-            or background.get("lateResultEmitted") is not True or background.get("stoppedEmitted") is not True
-            or background.get("writesBefore") != background.get("writesAfter")
-            or background.get("nativeStartCalls") != 2 or background.get("nativeStopCalls") != 2
-            or not isinstance(background.get("resizeAcksBeforeResume"), int)
-            or isinstance(background.get("resizeAcksBeforeResume"), bool)
-            or not isinstance(background.get("resizeAcksAfterResume"), int)
-            or isinstance(background.get("resizeAcksAfterResume"), bool)
-            or background["resizeAcksAfterResume"] <= background["resizeAcksBeforeResume"]):
+    if not isinstance(background, dict):
+        raise ExtractionFailure("journey evidence is missing dictation cancellation on app backgrounding")
+    validate_cancel_evidence(
+        background, "app-background", expected_starts=2, expected_cancels=1,
+    )
+    resize_before = background.get("resizeAcksBeforeResume")
+    resize_after = background.get("resizeAcksAfterResume")
+    if (not isinstance(resize_before, int) or isinstance(resize_before, bool)
+            or not isinstance(resize_after, int) or isinstance(resize_after, bool)
+            or resize_after <= resize_before):
         raise ExtractionFailure("late dictation result was not rejected after app backgrounding")
 
     request_ids = [request_id, error.get("requestId"), attach.get("requestId"), background.get("requestId")]
     if any(not isinstance(value, str) or not value for value in request_ids) or len(set(request_ids)) != len(request_ids):
         raise ExtractionFailure("dictation reused a recognizer request ID across distinct sessions")
+
+
+def validate_cancel_evidence(
+    evidence: dict[str, object], label: str, *, expected_starts: int, expected_cancels: int,
+) -> str:
+    request_id = evidence.get("requestId")
+    writes_before = evidence.get("writesBefore")
+    writes_after = evidence.get("writesAfter")
+    starts = evidence.get("nativeStartCalls")
+    cancels = evidence.get("nativeCancelCalls")
+    if (not isinstance(request_id, str) or not request_id
+            or evidence.get("cancelRequestId") != request_id
+            or evidence.get("lateResultEmitted") is not True
+            or not isinstance(writes_before, int) or isinstance(writes_before, bool)
+            or not isinstance(writes_after, int) or isinstance(writes_after, bool)
+            or writes_after != writes_before
+            or not isinstance(starts, int) or isinstance(starts, bool) or starts != expected_starts
+            or not isinstance(cancels, int) or isinstance(cancels, bool) or cancels != expected_cancels
+            or any(field in evidence for field in (
+                "stopRequestId", "stoppedEmitted", "stoppedReceived", "nativeStopCalls",
+            ))):
+        raise ExtractionFailure(
+            f"{label} cancellation must match its request ID, reject late results without PTY writes, "
+            "and record the expected start/cancel calls without stop events"
+        )
+    return request_id
 
 
 def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = False,
@@ -781,10 +810,10 @@ def validate_journey(journey: object) -> None:
     native_start = native_dictation.get("startOptions")
     native_start_result = native_dictation.get("startResult")
     native_stop_result = native_dictation.get("stopResult")
-    native_events = [native_dictation.get(name) for name in ("partialInjection", "finalInjection", "finishInjection")]
+    native_events = [native_dictation.get(name) for name in ("partialInjection", "finalInjection")]
     request_id = native_dictation.get("requestId")
     write_counts = [native_dictation.get(name) for name in (
-        "writesBeforePartial", "writesAfterPartial", "writesAfterFinalBeforeStopped", "writesAfterStopped")]
+        "writesBeforePartial", "writesAfterPartial", "writesAfterFinal")]
     if (native_dictation.get("bridge") != "Capacitor SpeechRecognition plugin"
             or native_dictation.get("debugTestMode") is not True
             or not isinstance(request_id, str) or not request_id
@@ -795,13 +824,16 @@ def validate_journey(journey: object) -> None:
             or not isinstance(native_stop_result, dict)
             or native_stop_result.get("requestId") != request_id or native_stop_result.get("stopped") is not True
             or native_dictation.get("explicitStopRequestId") != request_id
+            or native_dictation.get("resultCompletesTurn") is not True
+            or "finishInjection" in native_dictation
+            or "stoppedReceived" in native_dictation
             or native_dictation.get("startCalls") != 1 or native_dictation.get("stopCalls") != 1
             or any(not isinstance(event, dict) or event.get("emitted") is not True or event.get("requestId") != request_id
                    for event in native_events)
             or any(isinstance(value, bool) or not isinstance(value, int) for value in write_counts)
-            or write_counts[0] != write_counts[1] or write_counts[0] != write_counts[2]
-            or write_counts[3] != write_counts[0] + 1):
-        raise ExtractionFailure("terminal dictation did not traverse the native Android speech plugin with partial/final gating through explicit Stop")
+            or write_counts[0] != write_counts[1]
+            or write_counts[2] != write_counts[0] + 1):
+        raise ExtractionFailure("terminal dictation did not complete one explicitly stopped native recognizer turn with one post-final PTY write")
     narrow_row = journey.get("narrowToolbarReachability")
     narrow_targets = narrow_row.get("targets") if isinstance(narrow_row, dict) else None
     narrow_mic = narrow_row.get("finalMic") if isinstance(narrow_row, dict) else None
@@ -969,7 +1001,7 @@ def validate_journey(journey: object) -> None:
         "dictation-ready-ime-open",
         "dictation-listening-ime-open",
         "dictation-listening-ctrl-open-ime-open",
-        "dictation-final-awaiting-stopped",
+        "dictation-stop-awaiting-final",
         "dictation-final-inserted",
         "dictation-post-stop-keyboard-input",
         "dictation-error-ime-open",
@@ -1037,7 +1069,7 @@ def validate_journey(journey: object) -> None:
         validate_docked_dictation_geometry(
             item,
             stage_name,
-            allow_disabled_mic=stage_name == "dictation-final-awaiting-stopped",
+            allow_disabled_mic=stage_name == "dictation-stop-awaiting-final",
         )
         tray_geometry = item.get("fastKeysTray")
         if (not isinstance(tray_geometry, dict)
@@ -1059,14 +1091,14 @@ def validate_journey(journey: object) -> None:
             or listening.get("inlineDictationStatusVisible") is not True
             or listening.get("androidIme", {}).get("visible") is not True):
         raise ExtractionFailure("listening journey does not show the partial preview and reachable Stop beside the open IME")
-    final_pending = by_name["dictation-final-awaiting-stopped"]
-    if (final_pending.get("inlineDictationPhase") != "stopping"
-            or final_pending.get("inlineDictationPreview") != dictation.get("finalText")
-            or final_pending.get("inlineDictationMic", {}).get("disabled") is not True
-            or final_pending.get("inlineDictationMic", {}).get("micState") != "transcribing"
-            or final_pending.get("inlineDictationStatusVisible") is not True
-            or dictation.get("writesAfterFinalBeforeStopped") != dictation.get("writesBeforePartial")):
-        raise ExtractionFailure("final result was not held preview-only while explicit Stop was finishing")
+    stop_waiting_final = by_name["dictation-stop-awaiting-final"]
+    if (stop_waiting_final.get("inlineDictationPhase") != "stopping"
+            or stop_waiting_final.get("inlineDictationPreview") != dictation.get("partialText")
+            or stop_waiting_final.get("inlineDictationMic", {}).get("disabled") is not True
+            or stop_waiting_final.get("inlineDictationMic", {}).get("micState") != "transcribing"
+            or stop_waiting_final.get("inlineDictationStatusVisible") is not True
+            or dictation.get("writesAfterStopBeforeFinal") != dictation.get("writesBeforePartial")):
+        raise ExtractionFailure("explicit Stop did not hold the partial preview without a PTY write while waiting for the final result")
     final_inserted = by_name["dictation-final-inserted"]
     if (final_inserted.get("inlineDictationPhase") != "idle"
             or final_inserted.get("inlineDictationTone") != "success"
@@ -1152,7 +1184,7 @@ def validate_journey(journey: object) -> None:
         seen_ack_requests.add(request_id)
     for stage_name in ("dictation-ready-ime-open", "dictation-listening-ime-open",
                        "dictation-listening-ctrl-open-ime-open",
-                       "dictation-final-awaiting-stopped", "dictation-final-inserted"):
+                       "dictation-stop-awaiting-final", "dictation-final-inserted"):
         grid = by_name[stage_name].get("runtimeGeometry")
         active_status = by_name[stage_name].get("inlineDictationStatusVisible") is True
         if (not isinstance(grid, dict)
@@ -1618,6 +1650,10 @@ def extract(log_path: Path, output_dir: Path, run_id: str, *, preserve_on_failur
 def self_test() -> int:
     samples = [
         ("complete key action stream accepted", {**sample_journey(), "androidApi": 35}, True),
+        ("shared-core one-turn dictation result completes its explicitly stopped turn", sample_journey(), True),
+        ("attach and background cancellation use cancel requests without stopped events", sample_journey(), True),
+        ("legacy finish and stopped-event dictation contract rejected",
+         with_legacy_stopped_event_dictation(sample_journey()), False),
         ("API 35 keyboard-up baseline locks 144px and the 38x6 PTY grid", sample_journey(), True),
         ("six narrow dock controls fit 330px without horizontal scrolling", sample_journey(), True),
         ("API 35 144px viewport with a 38x7 PTY grid rejected",
@@ -1772,6 +1808,34 @@ def self_test() -> int:
          with_duplicate_dictation_recognizer(sample_journey()), False),
         ("dictation target without attach epoch rejected",
          with_missing_dictation_attach_epoch(sample_journey()), False),
+        ("attach cancellation request ID must match the cancelled recognizer", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "cancelRequestId", "wrong-request"), False),
+        ("attach cancellation must reject the emitted late result", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "lateResultEmitted", False), False),
+        ("attach cancellation must not emit a stopped event", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "stoppedEmitted", True), False),
+        ("attach cancellation must record its exact native cancel count", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "nativeCancelCalls", 1), False),
+        ("attach cancellation must preserve its exact native start count", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "nativeStartCalls", 3), False),
+        ("attach cancellation must retain the previous target identity", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "oldTargetKey", "stale-target/attach-1"), False),
+        ("attach cancellation must switch to the new target identity", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "newTargetKey", "testuser@fixture:22/first/attach-2"), False),
+        ("attach cancellation must advance the target attach epoch", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "newAttachEpoch", 2), False),
+        ("background cancellation request ID must match the cancelled recognizer", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "cancelRequestId", "wrong-request"), False),
+        ("background cancellation must reject the emitted late result", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "lateResultEmitted", False), False),
+        ("background cancellation must not write the late result", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "writesAfter", 5), False),
+        ("background cancellation must record its exact native cancel count", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "nativeCancelCalls", 0), False),
+        ("background cancellation must preserve its exact native start count", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "nativeStartCalls", 3), False),
+        ("background resume must acknowledge a fresh PTY size", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "resizeAcksAfterResume", 4), False),
         ("post-Stop keyboard text entering the prompt draft rejected",
          with_post_stop_draft_input(sample_journey()), False),
         ("post-Stop keyboard text missing from the xterm input path rejected",
@@ -2201,7 +2265,7 @@ def sample_journey() -> dict[str, object]:
             "pressed": True, "visibleText": "Stop",
             "top": 243, "bottom": 291},
     }
-    final_pending = {
+    stop_waiting_final = {
         **dictation_idle,
         "inlineDictationPhase": "stopping",
         "inlineDictationPreview": dictate_text,
@@ -2263,7 +2327,7 @@ def sample_journey() -> dict[str, object]:
             "title": "Retry terminal cursor dictation", "visibleText": "Retry", "micState": "error",
             "top": 235, "bottom": 283},
     }
-    for status_stage in (listening, final_pending, final_inserted, post_stop, error):
+    for status_stage in (listening, stop_waiting_final, final_inserted, post_stop, error):
         recording = status_stage.get("inlineDictationPhase") == "listening"
         status_stage["inlineDictationStatusMetrics"] = {
             "height": 38 if recording else 30, "fontSize": 11, "lineHeight": 16,
@@ -2335,12 +2399,11 @@ def sample_journey() -> dict[str, object]:
         "writesBeforePartial": 3,
         "writesAfterPartial": 3,
         "writesAfterStopBeforeFinal": 3,
-        "writesAfterFinalBeforeStopped": 3,
-        "writesAfterStopped": 4,
+        "writesAfterFinal": 4,
         "writesAfterPostStopKeyboard": 5,
         "explicitStop": True,
         "finalReceived": True,
-        "stoppedReceived": True,
+        "resultCompletesTurn": True,
         "nativeStartCalls": 1,
         "nativeStopCalls": 1,
         "rawFile": "/tmp/js2884-fixture-keys-dictation.raw",
@@ -2362,27 +2425,25 @@ def sample_journey() -> dict[str, object]:
     }
     attach_cancel = {
         "requestId": "req-attach",
-        "stopRequestId": "req-attach",
+        "cancelRequestId": "req-attach",
         "oldTargetKey": base["inlineDictationTargetKey"],
         "newTargetKey": changed_target,
         "oldAttachEpoch": 2,
         "newAttachEpoch": 3,
         "lateResultEmitted": True,
-        "stoppedEmitted": True,
         "writesBefore": 4,
         "writesAfter": 4,
         "nativeStartCalls": 4,
-        "nativeStopCalls": 3,
+        "nativeCancelCalls": 2,
     }
     background_cancel = {
         "requestId": "req-background",
-        "stopRequestId": "req-background",
+        "cancelRequestId": "req-background",
         "lateResultEmitted": True,
-        "stoppedEmitted": True,
         "writesBefore": 4,
         "writesAfter": 4,
         "nativeStartCalls": 2,
-        "nativeStopCalls": 2,
+        "nativeCancelCalls": 1,
         "resizeAcksBeforeResume": 4,
         "resizeAcksAfterResume": 5,
     }
@@ -2466,14 +2527,14 @@ def sample_journey() -> dict[str, object]:
             "stopResult": {"requestId": "native-terminal-request", "stopped": True},
             "partialInjection": {"requestId": "native-terminal-request", "emitted": True},
             "finalInjection": {"requestId": "native-terminal-request", "emitted": True},
-            "finishInjection": {"requestId": "native-terminal-request", "emitted": True},
+            "resultCompletesTurn": True,
             "explicitStopRequestId": "native-terminal-request",
+            "finalInjectedThroughNativePlugin": True,
             "startCalls": 1,
             "stopCalls": 1,
             "writesBeforePartial": 4,
             "writesAfterPartial": 4,
-            "writesAfterFinalBeforeStopped": 4,
-            "writesAfterStopped": 5,
+            "writesAfterFinal": 5,
         },
         "narrowToolbarReachability": {
             "clientWidth": 330,
@@ -2586,7 +2647,7 @@ def sample_journey() -> dict[str, object]:
             {"stage": "dictation-idle-ime-open", **dictation_idle},
             {"stage": "dictation-ready-ime-open", **dictation_idle},
             {"stage": "dictation-listening-ime-open", **listening},
-            {"stage": "dictation-final-awaiting-stopped", **final_pending},
+            {"stage": "dictation-stop-awaiting-final", **stop_waiting_final},
             {"stage": "dictation-final-inserted", **final_inserted},
             {"stage": "dictation-post-stop-keyboard-input", **post_stop},
             {"stage": "dictation-error-ime-open", **error},
@@ -2927,7 +2988,7 @@ def with_receiver_setup_resize_events(journey: dict[str, object]) -> dict[str, o
     for item in copied["geometryTrace"]:
         if item["stage"] in {
             "dictation-ready-ime-open", "dictation-listening-ime-open", "dictation-listening-ctrl-open-ime-open",
-            "dictation-final-awaiting-stopped", "dictation-final-inserted", "dictation-post-stop-keyboard-input",
+            "dictation-stop-awaiting-final", "dictation-final-inserted", "dictation-post-stop-keyboard-input",
             "dictation-error-ime-open",
         }:
             item["resizeAcks"] = 7
@@ -3529,6 +3590,21 @@ def with_partial_dictation_write(journey: dict[str, object]) -> dict[str, object
     return copied
 
 
+def with_legacy_stopped_event_dictation(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    dictation = copied["dictation"]
+    dictation.pop("resultCompletesTurn", None)
+    dictation["stoppedReceived"] = True
+    dictation["writesAfterFinalBeforeStopped"] = dictation.pop("writesAfterFinal") - 1
+    dictation["writesAfterStopped"] = dictation["writesAfterFinalBeforeStopped"] + 1
+    native = copied["terminalNativeDictation"]
+    native.pop("resultCompletesTurn", None)
+    native["finishInjection"] = {"requestId": native["requestId"], "emitted": True}
+    native["writesAfterFinalBeforeStopped"] = native.pop("writesAfterFinal") - 1
+    native["writesAfterStopped"] = native["writesAfterFinalBeforeStopped"] + 1
+    return copied
+
+
 def with_duplicate_dictation_recognizer(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     copied["dictation"]["nativeStartCalls"] += 1
@@ -3544,6 +3620,14 @@ def with_missing_dictation_attach_epoch(journey: dict[str, object]) -> dict[str,
 def with_late_attach_dictation_write(journey: dict[str, object]) -> dict[str, object]:
     copied = json.loads(json.dumps(journey))
     copied["dictationAttachCancel"]["writesAfter"] += 1
+    return copied
+
+
+def with_cancel_evidence_field(
+    journey: dict[str, object], evidence_name: str, field: str, value: object,
+) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    copied[evidence_name][field] = value
     return copied
 
 

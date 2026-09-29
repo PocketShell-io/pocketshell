@@ -19,7 +19,7 @@ STEADY_STAGES = (
     "dictation-ready-ime-open",
     "dictation-listening-ime-open",
     "dictation-listening-ctrl-open-ime-open",
-    "dictation-final-awaiting-stopped",
+    "dictation-stop-awaiting-final",
     "dictation-final-inserted",
     "dictation-post-stop-keyboard-input",
     "dictation-error-ime-open",
@@ -40,6 +40,7 @@ def validate(journey: object, samples_text: str) -> dict[tuple[int, int], int]:
     if missing:
         raise OracleFailure(f"journey is missing local steady-state checkpoints: {', '.join(missing)}")
 
+    validate_stop_waiting_final(by_stage["dictation-stop-awaiting-final"])
     validate_error_status_dock(by_stage["dictation-error-ime-open"])
 
     host_counts: dict[tuple[int, int], int] = {}
@@ -92,6 +93,22 @@ def validate(journey: object, samples_text: str) -> dict[tuple[int, int], int]:
     if keyboard_size == resumed_size:
         raise OracleFailure("IME-hidden resume did not record the independently measured keyboard visibility geometry change")
     return host_counts
+
+
+def validate_stop_waiting_final(stage: object) -> None:
+    """Require the explicit-Stop checkpoint to show transcription before final insertion."""
+    if not isinstance(stage, dict):
+        raise OracleFailure("dictation-stop-awaiting-final geometry is not an object")
+    mic = stage.get("inlineDictationMic")
+    if (stage.get("stage") != "dictation-stop-awaiting-final"
+            or stage.get("inlineDictationPhase") != "stopping"
+            or not isinstance(stage.get("inlineDictationPreview"), str)
+            or not stage.get("inlineDictationPreview", "").strip()
+            or not isinstance(mic, dict)
+            or mic.get("disabled") is not True
+            or mic.get("micState") != "transcribing"
+            or stage.get("inlineDictationStatusVisible") is not True):
+        raise OracleFailure("explicit Stop checkpoint does not show the retained preview and transcribing dock")
 
 
 def _number(value: object, label: str) -> float:
@@ -175,7 +192,7 @@ def self_test() -> int:
             ("dictation-ready-ime-open", 38, 6),
             ("dictation-listening-ime-open", 38, 6),
             ("dictation-listening-ctrl-open-ime-open", 38, 6),
-            ("dictation-final-awaiting-stopped", 38, 6),
+            ("dictation-stop-awaiting-final", 38, 6),
             ("dictation-final-inserted", 38, 6),
             ("dictation-post-stop-keyboard-input", 38, 6),
             ("dictation-error-ime-open", 38, 6),
@@ -184,11 +201,20 @@ def self_test() -> int:
             ("dictation-post-resume-ime-open", 38, 6),
         )
     ]
+    stop_waiting_stage = next(stage for stage in stages if stage["stage"] == "dictation-stop-awaiting-final")
+    stop_waiting_stage.update({
+        "inlineDictationPhase": "stopping",
+        "inlineDictationPreview": "retained partial transcript",
+        "inlineDictationMic": {"disabled": True, "micState": "transcribing"},
+        "inlineDictationStatusVisible": True,
+    })
     journey = {"geometryTrace": stages}
     cases = [
         ("keyboard and IME-hidden local grids match independent host samples", "6 38\n24 37\n" * 10, True),
         ("host PTY mismatch at IME-hidden resume is rejected", "6 38\n" * 10, False),
         ("unacknowledged local resume geometry is rejected", "6 38\n24 37\n" * 10, False),
+        ("journey missing the pre-final Stop checkpoint is rejected", "6 38\n24 37\n" * 10, False),
+        ("Stop checkpoint without a transcribing dock is rejected", "6 38\n24 37\n" * 10, False),
     ]
     failed = False
 
@@ -257,6 +283,12 @@ def self_test() -> int:
         if index == 2:
             next(stage for stage in case["geometryTrace"]
                  if stage["stage"] == "dictation-background-cancel-resumed")["resizePending"] = 1
+        elif index == 3:
+            case["geometryTrace"] = [stage for stage in case["geometryTrace"]
+                                     if stage["stage"] != "dictation-stop-awaiting-final"]
+        elif index == 4:
+            next(stage for stage in case["geometryTrace"]
+                 if stage["stage"] == "dictation-stop-awaiting-final")["inlineDictationMic"]["micState"] = "listening"
         try:
             validate(case, samples)
         except OracleFailure:
