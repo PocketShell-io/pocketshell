@@ -88,7 +88,23 @@ def require_contract(source: str, packaged_script: str) -> None:
        "--run-id \"js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script or \
        "--test-only" not in packaged_script:
         raise AssertionError("Files lane invocation must preserve its packaged fixture arguments and run identity")
-    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status", "copy_status"):
+    hotkeys_runner = packaged_script.index("if scripts/connected-js-hotkeys-docker.sh")
+    composer_check = packaged_script.index("if ! scripts/check-js-composer-journey-results.py")
+    if not composer_check < hotkeys_runner:
+        raise AssertionError("the Fast Keys lane must run after both Composer phases are checked")
+    for needle in (
+        "--suffix i2884ci",
+        "--port 2243",
+        '--session-prefix "js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+        'hotkeys_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"',
+        'scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"',
+    ):
+        if needle not in packaged_script:
+            raise AssertionError(f"packaged Fast Keys lane is missing its run-scoped contract: {needle}")
+    if not hotkeys_runner < packaged_script.index("printf 'Packaged API 35 lane statuses:"):
+        raise AssertionError("the Fast Keys lane must be included in the packaged status summary")
+    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
+                 "hotkeys_status", "hotkeys_junit_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -335,7 +351,8 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, omit_junit: bool = False,
-                            fail_junit_copy: bool = False) -> None:
+                            fail_junit_copy: bool = False, hotkeys: int = 0,
+                            hotkeys_checker: int = 0, omit_hotkeys_junit: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
         fixture = Path(temporary)
         fake_repo = fixture / "fake repo"
@@ -395,9 +412,46 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "printf 'composer\\t%s\\t%s\\n' \"$FIXTURE_COMPOSER_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
             "printf '%s\\n%s\\n' \"$PNPM\" \"$PATH\" > \"$FIXTURE_RUNTIME_CAPTURE\"\n"
             "\"$PNPM\" --version >> \"$FIXTURE_RUNTIME_CAPTURE\"\n"
+            "run_dir=android/app/build/outputs/js-composer/js2891-run-1-composer-fixture\n"
+            "for phase in prepare resume; do\n"
+            "  mkdir -p \"$run_dir/phase-$phase\"\n"
+            "  printf '%s\\n' '<?xml version=\"1.0\"?><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0.01\"><testcase classname=\"com.pocketshell.app.smoke.JsComposerDockerJourneyTest\" name=\"composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop\" time=\"0.01\"/></testsuite>' > \"$run_dir/phase-$phase/TEST-composer.xml\"\n"
+            "done\n"
             "exit \"$FIXTURE_COMPOSER_STATUS\"\n"
         )
         fake_composer.chmod(0o755)
+        fake_composer_checker = fake_scripts / "check-js-composer-journey-results.py"
+        fake_composer_checker.write_text(
+            "#!/bin/bash\n"
+            "if [ \"$#\" != 2 ] || [ \"$1\" != --results-dir ] || [ ! -s \"$2/TEST-composer.xml\" ]; then exit 51; fi\n"
+            "exit 0\n"
+        )
+        fake_composer_checker.chmod(0o755)
+
+        fake_hotkeys = fake_scripts / "connected-js-hotkeys-docker.sh"
+        fake_hotkeys.write_text(
+            "#!/bin/bash\n"
+            "printf 'hotkeys\\t%s\\t%s\\n' \"$FIXTURE_HOTKEYS_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
+            "run_id=\"$FIXTURE_HOTKEYS_RUN_ID\"\n"
+            "evidence_dir=\"android/app/build/outputs/js-hotkeys/$run_id\"\n"
+            "mkdir -p \"$evidence_dir\"\n"
+            "if [ \"$FIXTURE_OMIT_HOTKEYS_JUNIT\" != 1 ]; then\n"
+            "  printf '%s\\n' '<?xml version=\"1.0\"?><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\" time=\"0.01\"><testcase classname=\"com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest\" name=\"fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect\" time=\"0.01\"/></testsuite>' > \"$evidence_dir/TEST-fastkeys.xml\"\n"
+            "fi\n"
+            "printf 'run_id=%s\\nexit_code=%s\\n' \"$run_id\" \"$FIXTURE_HOTKEYS_STATUS\" > \"$evidence_dir/hotkeys-run-metadata.txt\"\n"
+            "exit \"$FIXTURE_HOTKEYS_STATUS\"\n"
+        )
+        fake_hotkeys.chmod(0o755)
+        fake_hotkeys_checker = fake_scripts / "check-js-hotkeys-journey-results.py"
+        fake_hotkeys_checker.write_text(
+            "#!/bin/bash\n"
+            "printf 'hotkeys-check\\t%s\\n' \"$*\" >> \"$FIXTURE_TRACE\"\n"
+            "if [ \"$#\" != 2 ] || [ \"$1\" != --results-dir ]; then exit 41; fi\n"
+            "if [ ! -s \"$2/TEST-fastkeys.xml\" ] || [ ! -s \"$2/hotkeys-run-metadata.txt\" ]; then exit 42; fi\n"
+            "if ! grep -qx 'exit_code=0' \"$2/hotkeys-run-metadata.txt\"; then exit 43; fi\n"
+            "exit \"$FIXTURE_HOTKEYS_CHECKER_STATUS\"\n"
+        )
+        fake_hotkeys_checker.chmod(0o755)
 
         env = {
             "PATH": f"{runtime_bin}:/usr/bin:/bin",
@@ -410,6 +464,10 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_USAGE_STATUS": str(usage),
             "FIXTURE_FILES_STATUS": str(files),
             "FIXTURE_COMPOSER_STATUS": str(composer),
+            "FIXTURE_HOTKEYS_STATUS": str(hotkeys),
+            "FIXTURE_HOTKEYS_CHECKER_STATUS": str(hotkeys_checker),
+            "FIXTURE_HOTKEYS_RUN_ID": "js2884-run-1-hotkeys-fixture",
+            "FIXTURE_OMIT_HOTKEYS_JUNIT": "1" if omit_hotkeys_junit else "0",
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
             "GITHUB_RUN_ATTEMPT": "1",
@@ -423,18 +481,27 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             capture_output=True,
         )
         expected_copy = 31 if fail_junit_copy else (1 if omit_junit else 0)
+        expected_hotkeys_checker = (
+            42 if omit_hotkeys_junit else 43 if hotkeys != 0 else hotkeys_checker
+        )
+        expected_hotkeys_junit = 0 if expected_hotkeys_checker == 0 else 1
         expected_summary = (
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
-            f"usage-ports={usage} files={files} composer={composer} smoke-junit-copy={expected_copy}"
+            f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
+            f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
+            f"smoke-junit-copy={expected_copy}"
         )
-        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, expected_copy)) else 0
+        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
+                                  expected_hotkeys_junit, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
         trace_lines = trace.read_text().splitlines()
-        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "files", "composer"]:
+        if [line.split("\t", 1)[0] for line in trace_lines] != [
+            "smoke", "lifecycle", "usage-ports", "files", "composer", "hotkeys", "hotkeys-check",
+        ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
             raise AssertionError(f"{label}: lifecycle run identity was not forwarded: {trace_lines[1]!r}")
@@ -450,6 +517,25 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             )
         if "--session-prefix js2891-run-1" not in trace_lines[4]:
             raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[4]!r}")
+        expected_hotkeys_args = "--suffix i2884ci --port 2243 --session-prefix js2884-run-1"
+        if trace_lines[5] != f"hotkeys\t{hotkeys}\t{expected_hotkeys_args}":
+            raise AssertionError(
+                f"{label}: Fast Keys lane arguments/status were not preserved: {trace_lines[5]!r}"
+            )
+        expected_hotkeys_results = (
+            "--results-dir android/app/build/outputs/js-hotkeys/js2884-run-1-hotkeys-fixture"
+        )
+        if trace_lines[6] != f"hotkeys-check\t{expected_hotkeys_results}":
+            raise AssertionError(
+                f"{label}: Fast Keys result checker was not given the unique same-run report: {trace_lines[6]!r}"
+            )
+        hotkeys_evidence = (
+            fake_repo / "android/app/build/outputs/js-hotkeys/js2884-run-1-hotkeys-fixture"
+        )
+        if not (hotkeys_evidence / "hotkeys-run-metadata.txt").is_file():
+            raise AssertionError(f"{label}: Fast Keys runner did not create run metadata")
+        if (hotkeys_evidence / "TEST-fastkeys.xml").is_file() == omit_hotkeys_junit:
+            raise AssertionError(f"{label}: Fast Keys JUnit fixture did not match the requested report state")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -472,6 +558,9 @@ exercise_packaged_lanes("lifecycle failure is fail-closed", lifecycle=19)
 exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)
 exercise_packaged_lanes("Files failure is fail-closed", files=25)
 exercise_packaged_lanes("composer failure is fail-closed", composer=23)
+exercise_packaged_lanes("Fast Keys failure is fail-closed", hotkeys=29)
+exercise_packaged_lanes("Fast Keys result check failure is fail-closed", hotkeys_checker=31)
+exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_junit=True)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
 
