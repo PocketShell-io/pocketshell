@@ -70,6 +70,8 @@ For short shell commands when the prompt composer is overkill. The persistent 48
 
 Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s under Settings → Advanced). A pause can end an Android recognition segment; PocketShell keeps dictation open until you tap Stop.
 
+Both speech surfaces use the shared `@pocketshell/core` `DictationController` for turn lifecycle, recoverable endpoint restart, request-ID isolation, and explicit Stop behavior. Android starts one `SpeechRecognizer` turn per native call and reports partial, final, recoverable, or error events with that turn's request ID. Partials remain preview-only; the composer draft and terminal input receive finalized segments only, and terminal input is inserted only after explicit Stop. Cancellation on backgrounding or target changes invalidates late callbacks.
+
 The Android dock order is **Prompt**, ↑, ↓, **Enter**, the keyboard icon
 (accessible name **More terminal keys**), then the labeled **Dictate** control.
 Prompt opens the shared composer; its in-composer mic starts prompt dictation

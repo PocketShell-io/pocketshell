@@ -3,9 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { AppIcon, ComposerControls } from '@pocketshell/ui';
-import type { ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
+import type { ComposerDeliveryIntent, ComposerDeliveryResult, DictationController, DictationSnapshot } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
-import { platformInput, type DictationEvent, type DictationSession } from '../session/platformInput';
+import { createSharedDictationController } from '../session/dictationController';
 import { useAppSettings, VOICE_LANGUAGE_AUTO } from '../stores/appSettings';
 import { useComposerDrafts } from '../stores/composerDrafts';
 import ComposerRecordingMode from './ComposerRecordingMode.vue';
@@ -32,16 +32,15 @@ type DictationPhase = 'idle' | 'starting' | 'recording' | 'transcribing' | 'revi
 interface ActiveDictation {
   targetKey: string;
   baseDraft: string;
-  requestId: string | null;
-  session: DictationSession | null;
+  controller: DictationController;
+  unsubscribe: (() => void) | null;
   finished: Promise<'stopped' | 'cancelled'>;
   resolveFinished: (result: 'stopped' | 'cancelled') => void;
   cancelled: boolean;
-  sawStarted: boolean;
+  showCancelStatus: boolean;
+  sawListening: boolean;
   stopRequested: boolean;
   deliveryChosen: boolean;
-  completedTranscript: string;
-  partialTranscript: string;
   failureCode: string | null;
 }
 
@@ -131,7 +130,7 @@ const elapsedLabel = computed(() => {
 });
 const canDeliver = computed(() => props.targetKey.length > 0
   && props.transportState === 'connected'
-  && draft.value.length > 0
+  && (draft.value.length > 0 || (activeDictation.value !== null && dictationPreview.value.trim().length > 0))
   && dictationPhase.value !== 'starting'
   && activeDictation.value?.failureCode == null
   && !(dictationPhase.value === 'review' && dictationReviewResult.value !== 'ready' && !failureReviewEdited.value)
@@ -150,7 +149,7 @@ watch(() => props.writePty, () => {
 });
 watch(() => props.targetKey, () => {
   const operation = activeDictation.value;
-  if (operation && operation.targetKey !== props.targetKey) cancelDictation(operation, false);
+  if (operation && operation.targetKey !== props.targetKey) operation.controller.setTarget(props.targetKey);
   // Invalidate an in-flight paste before installing a controller for another
   // PTY. Otherwise its next bracketed-paste chunk could land in the new shell.
   delivery.value.setTransportState('closed');
@@ -192,13 +191,13 @@ onBeforeUnmount(() => {
   composerUnmounting = true;
   void appStateListener?.remove();
   const operation = activeDictation.value;
-  if (operation) cancelDictation(operation, false);
+  if (operation) cancelDictation(operation, false, 'background');
   stopRecordingTimer();
 });
 
 onMounted(() => {
   void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-    if (!isActive && activeDictation.value) cancelDictation(activeDictation.value, false);
+    activeDictation.value?.controller.setForeground(isActive);
   }).then((listener) => {
     if (composerUnmounting) void listener.remove();
     else appStateListener = listener;
@@ -256,11 +255,13 @@ function appendTranscript(previous: string, next: string): string {
   return left ? `${left} ${right}` : right;
 }
 
-function renderDictationDraft(operation: ActiveDictation) {
-  const transcript = appendTranscript(operation.completedTranscript, operation.partialTranscript);
+function renderDictationDraft(operation: ActiveDictation, completedTranscript: string, partialTranscript: string) {
+  const transcript = appendTranscript(completedTranscript, partialTranscript);
   dictationPreview.value = transcript;
-  const separator = operation.baseDraft && transcript && !/\s$/u.test(operation.baseDraft) ? ' ' : '';
-  drafts.setDraft(operation.targetKey, `${operation.baseDraft}${separator}${transcript}`);
+  const finalText = completedTranscript.trim();
+  if (!finalText) return;
+  const separator = operation.baseDraft && !/\s$/u.test(operation.baseDraft) ? ' ' : '';
+  drafts.setDraft(operation.targetKey, `${operation.baseDraft}${separator}${finalText}`);
 }
 
 function startRecordingTimer(resetElapsed = true) {
@@ -277,64 +278,103 @@ function stopRecordingTimer() {
   recordingTimer = null;
 }
 
-function handleDictationEvent(operation: ActiveDictation, event: DictationEvent) {
-  if (operation.cancelled || activeDictation.value !== operation || event.requestId !== operation.requestId) return;
-  if (operation.failureCode && event.type !== 'stopped') return;
-  if (event.type === 'started' || event.type === 'listening' || event.type === 'ready') {
-    if (!operation.sawStarted) {
-      operation.sawStarted = true;
-      if (dictationPhase.value === 'starting') {
-        dictationPhase.value = 'recording';
-        startRecordingTimer();
-      }
-    } else if (!operation.stopRequested) {
-      // SpeechRecognizer reports ready/listening again after a natural endpoint.
-      // Keep the recording surface and timer active across that pause/restart.
-      dictationPhase.value = 'recording';
-      if (recordingTimer === null) startRecordingTimer(false);
-    }
-  } else if (event.type === 'processing') {
-    // `processing` also marks a normal speech endpoint before Android restarts
-    // recognition. Only an explicit user Stop enters the transcribing surface.
-    if (operation.stopRequested) {
-      dictationPhase.value = 'transcribing';
-      stopRecordingTimer();
-    }
-  } else if (event.type === 'partial') {
-    if (operation.deliveryChosen || operation.failureCode) return;
-    operation.partialTranscript = event.text ?? '';
-    renderDictationDraft(operation);
-  } else if (event.type === 'result') {
-    if (operation.deliveryChosen || operation.failureCode) return;
-    operation.completedTranscript = appendTranscript(operation.completedTranscript, event.text ?? operation.partialTranscript);
-    operation.partialTranscript = '';
-    renderDictationDraft(operation);
-  } else if (event.type === 'error') {
-    operation.failureCode = event.code ?? 'speech recognition failed';
-    statusTone.value = 'error';
-    statusText.value = `Dictation stopped: ${event.code ?? 'speech recognition failed'}. Review the draft before sending.`;
-    dictationPhase.value = 'transcribing';
-    stopRecordingTimer();
-  } else if (event.type === 'stopped') {
-    if (!operation.deliveryChosen) renderDictationDraft(operation);
-    const transcript = appendTranscript(operation.completedTranscript, operation.partialTranscript);
-    dictationReviewResult.value = operation.failureCode ? 'error' : transcript.trim() ? 'ready' : 'empty';
-    failureReviewEdited.value = false;
-    stopRecordingTimer();
-    dictationPreview.value = '';
-    activeDictation.value = null;
-    dictationPhase.value = 'review';
-    operation.resolveFinished('stopped');
-    if (!operation.deliveryChosen && statusTone.value !== 'error') {
-      statusTone.value = 'quiet';
-      statusText.value = '';
-    }
+function detachDictation(operation: ActiveDictation) {
+  operation.unsubscribe?.();
+  operation.unsubscribe = null;
+}
+
+function finishDictationCancellation(operation: ActiveDictation) {
+  if (operation.cancelled) return;
+  operation.cancelled = true;
+  detachDictation(operation);
+  operation.resolveFinished('cancelled');
+  if (activeDictation.value !== operation) return;
+  activeDictation.value = null;
+  dictationPhase.value = 'idle';
+  stopRecordingTimer();
+  dictationPreview.value = '';
+  drafts.setDraft(operation.targetKey, operation.baseDraft);
+  if (operation.showCancelStatus) {
+    statusTone.value = 'quiet';
+    statusText.value = 'Dictation cancelled. Your original draft was restored.';
+  }
+  dictationReviewResult.value = 'ready';
+  failureReviewEdited.value = false;
+}
+
+function finishDictationReview(operation: ActiveDictation, snapshot: DictationSnapshot, hasError: boolean) {
+  renderDictationDraft(operation, snapshot.transcript, '');
+  dictationReviewResult.value = hasError ? 'error' : snapshot.transcript.trim() ? 'ready' : 'empty';
+  failureReviewEdited.value = false;
+  stopRecordingTimer();
+  dictationPreview.value = '';
+  detachDictation(operation);
+  if (activeDictation.value === operation) activeDictation.value = null;
+  dictationPhase.value = 'review';
+  operation.resolveFinished(hasError ? 'cancelled' : 'stopped');
+  if (!operation.deliveryChosen && !hasError) {
+    statusTone.value = 'quiet';
+    statusText.value = '';
   }
 }
 
-async function toggleDictation() {
+function handleDictationSnapshot(operation: ActiveDictation, snapshot: DictationSnapshot) {
+  if (operation.cancelled || activeDictation.value !== operation) return;
+  if (snapshot.phase === 'starting') {
+    dictationPhase.value = 'starting';
+    renderDictationDraft(operation, snapshot.transcript, snapshot.partial);
+    return;
+  }
+  if (snapshot.phase === 'listening') {
+    dictationPhase.value = 'recording';
+    if (!operation.sawListening) {
+      operation.sawListening = true;
+      startRecordingTimer();
+    }
+    renderDictationDraft(operation, snapshot.transcript, snapshot.partial);
+    return;
+  }
+  if (snapshot.phase === 'stopping') {
+    dictationPhase.value = 'transcribing';
+    stopRecordingTimer();
+    renderDictationDraft(operation, snapshot.transcript, snapshot.partial);
+    return;
+  }
+  if (snapshot.phase === 'cancelled') {
+    finishDictationCancellation(operation);
+    return;
+  }
+  if (snapshot.phase === 'completed') {
+    finishDictationReview(operation, snapshot, false);
+    return;
+  }
+  if (snapshot.phase === 'error') {
+    operation.failureCode = snapshot.error?.code ?? 'speech recognition failed';
+    if (!operation.sawListening && !operation.stopRequested) {
+      const message = snapshot.error?.message ?? 'Speech recognition could not start.';
+      operation.cancelled = true;
+      detachDictation(operation);
+      operation.resolveFinished('cancelled');
+      if (activeDictation.value === operation) {
+        activeDictation.value = null;
+        dictationPhase.value = 'idle';
+        stopRecordingTimer();
+        drafts.setDraft(operation.targetKey, operation.baseDraft);
+        dictationPreview.value = '';
+        statusTone.value = 'warning';
+        statusText.value = `Dictation could not start: ${message}`;
+      }
+      return;
+    }
+    statusTone.value = 'error';
+    statusText.value = `Dictation stopped: ${snapshot.error?.message ?? 'speech recognition failed'}. Review the draft before sending.`;
+    finishDictationReview(operation, snapshot, true);
+  }
+}
+
+function toggleDictation() {
   if (activeDictation.value) {
-    await stopDictation(activeDictation.value);
+    void stopDictation(activeDictation.value);
     return;
   }
   if (dictationPhase.value === 'starting' || !props.targetKey) return;
@@ -346,16 +386,18 @@ async function toggleDictation() {
   const operation: ActiveDictation = {
     targetKey: props.targetKey,
     baseDraft: drafts.draftFor(props.targetKey),
-    requestId: null,
-    session: null,
+    controller: createSharedDictationController({
+      ...(appSettings.voiceLanguage === VOICE_LANGUAGE_AUTO ? {} : { languageTag: appSettings.voiceLanguage }),
+      silenceWindowMs: appSettings.voiceSilenceSeconds * 1_000,
+    }),
+    unsubscribe: null,
     finished,
     resolveFinished,
     cancelled: false,
-    sawStarted: false,
+    showCancelStatus: false,
+    sawListening: false,
     stopRequested: false,
     deliveryChosen: false,
-    completedTranscript: '',
-    partialTranscript: '',
     failureCode: null,
   };
   dictationPreview.value = '';
@@ -368,39 +410,13 @@ async function toggleDictation() {
   statusText.value = 'Your draft stays in the composer until you tap Insert or Send.';
   discardArmed.value = false;
 
-  try {
-    const session = await platformInput.startDictation(
-      (event) => handleDictationEvent(operation, event),
-      {
-        ...(appSettings.voiceLanguage === VOICE_LANGUAGE_AUTO ? {} : { languageTag: appSettings.voiceLanguage }),
-        silenceWindowMs: appSettings.voiceSilenceSeconds * 1_000,
-      },
-      (requestId) => { operation.requestId = requestId; },
-    );
-    operation.session = session;
-    if (operation.cancelled || activeDictation.value !== operation) {
-      await session.cancel();
-      return;
-    }
-    if (!operation.sawStarted) {
-      operation.sawStarted = true;
-      dictationPhase.value = 'recording';
-      startRecordingTimer();
-    }
-  } catch (error) {
-    if (operation.cancelled || activeDictation.value !== operation) return;
-    stopRecordingTimer();
-    drafts.setDraft(operation.targetKey, operation.baseDraft);
-    dictationPreview.value = '';
-    activeDictation.value = null;
-    dictationPhase.value = 'idle';
-    statusTone.value = 'warning';
-    statusText.value = `Dictation could not start: ${errorMessage(error)}`;
-  }
+  operation.controller.setTarget(operation.targetKey);
+  operation.unsubscribe = operation.controller.subscribe((snapshot) => handleDictationSnapshot(operation, snapshot));
+  operation.controller.start();
 }
 
-async function stopDictation(operation: ActiveDictation, updateStatus = true): Promise<boolean> {
-  if (operation.cancelled || activeDictation.value !== operation || !operation.session) return false;
+function stopDictation(operation: ActiveDictation, updateStatus = true): boolean {
+  if (operation.cancelled || activeDictation.value !== operation) return false;
   if (operation.stopRequested) return true;
   operation.stopRequested = true;
   dictationPhase.value = 'transcribing';
@@ -409,41 +425,20 @@ async function stopDictation(operation: ActiveDictation, updateStatus = true): P
     statusTone.value = 'quiet';
     statusText.value = 'Your text is being prepared for review. It will not be sent automatically.';
   }
-  try {
-    await operation.session.stop();
-    return true;
-  } catch (error) {
-    if (operation.cancelled || activeDictation.value !== operation) return false;
-    operation.failureCode = errorMessage(error);
-    statusTone.value = 'error';
-    statusText.value = `Dictation could not stop: ${errorMessage(error)}. Cancel to restore the original draft.`;
-    return false;
-  }
+  operation.controller.stop();
+  return true;
 }
 
-function cancelDictation(operation: ActiveDictation, showStatus = true) {
+function cancelDictation(
+  operation: ActiveDictation,
+  showStatus = true,
+  reason: 'user' | 'background' | 'target-change' = 'user',
+) {
   if (operation.cancelled) return;
-  operation.cancelled = true;
-  operation.resolveFinished('cancelled');
-  if (activeDictation.value === operation) {
-    activeDictation.value = null;
-    dictationPhase.value = 'idle';
-    stopRecordingTimer();
-    dictationPreview.value = '';
-    drafts.setDraft(operation.targetKey, operation.baseDraft);
-    statusTone.value = showStatus ? 'quiet' : statusTone.value;
-    if (showStatus) statusText.value = 'Dictation cancelled. Your original draft was restored.';
-    dictationReviewResult.value = 'ready';
-    failureReviewEdited.value = false;
-  }
-  if (operation.requestId) {
-    void platformInput.cancelDictation(operation.requestId).catch((error: unknown) => {
-      if (!showStatus || operation.targetKey !== props.targetKey) return;
-      statusTone.value = 'warning';
-      statusText.value = `Dictation cancellation could not reach Android: ${errorMessage(error)}. The original draft was restored.`;
-    });
-  } else if (operation.session) {
-    void operation.session.cancel().catch(() => {});
+  operation.showCancelStatus = showStatus;
+  operation.controller.cancel(reason);
+  if (!operation.cancelled && operation.controller.getSnapshot().phase === 'cancelled') {
+    finishDictationCancellation(operation);
   }
 }
 
@@ -464,11 +459,11 @@ function showResult(result: ComposerDeliveryResult, intent: ComposerDeliveryInte
 
 async function deliver(intent: ComposerDeliveryIntent) {
   const targetKey = props.targetKey;
-  const payload = drafts.draftFor(targetKey);
-  if (!targetKey || payload.length === 0 || !canDeliver.value) return;
-  const activeDelivery = delivery.value;
   const operation = activeDictation.value;
-  if (operation && !operation.session) return;
+  if (!targetKey
+    || (drafts.draftFor(targetKey).length === 0 && !(operation && dictationPreview.value.trim()))
+    || !canDeliver.value) return;
+  const activeDelivery = delivery.value;
   sendingIntent.value = intent;
   acknowledgedWrites.value = 0;
   statusTone.value = 'quiet';
@@ -479,7 +474,7 @@ async function deliver(intent: ComposerDeliveryIntent) {
     operation.deliveryChosen = true;
     stopRecordingTimer();
     dictationPhase.value = 'transcribing';
-    const stopAccepted = await stopDictation(operation, false);
+    const stopAccepted = stopDictation(operation, false);
     if (!stopAccepted) {
       operation.deliveryChosen = false;
       if (sendingIntent.value === intent) sendingIntent.value = null;
@@ -494,6 +489,15 @@ async function deliver(intent: ComposerDeliveryIntent) {
       if (sendingIntent.value === intent) sendingIntent.value = null;
       return;
     }
+  }
+  const payload = drafts.draftFor(targetKey);
+  if (payload.length === 0) {
+    if (sendingIntent.value === intent) {
+      sendingIntent.value = null;
+      statusTone.value = 'warning';
+      statusText.value = 'No final transcript was received. Nothing was sent.';
+    }
+    return;
   }
   const result = await activeDelivery.deliver({
     operationId: nextOperationId(),

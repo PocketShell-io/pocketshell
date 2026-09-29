@@ -49,7 +49,7 @@
         "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",
-        "keeps recording through a natural endpoint and recognizer restart, then transcribes only on explicit Stop",
+        "keeps recording through a recoverable turn restart, then finalizes only on explicit Stop",
         "blocks an unedited error dictation review from sending until deliberate text edits",
         "blocks an unedited empty dictation review from sending until deliberate text edits",
         "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
@@ -125,12 +125,14 @@
     "tests/unit/inlineDictation.test.ts": {
       "suite": "inline terminal dictation",
       "tests": [
-        "previews partials, buffers final phrases until explicit Stop, then inserts settings-backed safe text once",
-        "inserts multiple final segments but replaces terminal controls so speech cannot press Enter",
-        "ignores final events that arrive after controller cancellation",
-        "stops a start that resolves after cancellation without forwarding its final text",
-        "reports denied microphone access and does not write any text",
-        "does not turn a partial into a terminal write when Stop receives no final result"
+        "cancels the active request and ignores a late final callback",
+        "does not insert when explicit Stop receives no final result",
+        "keeps the final transcript available when PTY insertion returns false",
+        "keeps the final transcript available when PTY insertion rejects",
+        "previews partials and inserts only sanitized final segments after explicit Stop",
+        "reports native errors and does not write speech",
+        "restarts after recoverable turns, isolates request IDs, and does not rearm after Stop",
+        "sanitizes terminal controls out of final text"
       ]
     },
     "tests/unit/installedDataMigration.test.ts": {
@@ -162,6 +164,7 @@
         "matches the mobile input row with a visible Dictate action and a separate Prompt entry",
         "closes an open catalog when recording starts and shows a live elapsed clock",
         "shows an idle status strip for errors and warnings, not successful insertion feedback",
+        "offers an explicit copy action for an unconfirmed terminal transcript",
         "lets App force the same status-row visibility that it uses for terminal dock sizing",
         "keeps active dictation status above the persistent controls on both catalog pages",
         "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
@@ -189,9 +192,9 @@
         "preserves valid files when one selection is over the shared native transfer limit",
         "rejects mismatched chunk identity and still releases the native document reference",
         "materializes incoming shared text and files before delivering the share callback",
-        "registers before starting speech, filters foreign events, and stops the matching request",
+        "registers before starting one turn, filters foreign events, and stops the matching request",
         "cancels a request and drops even a late queued partial or final event",
-        "cancels a pending native start without allowing its eventual session or events through"
+        "cancels a pending native start without allowing its eventual turn or events through"
       ]
     },
     "tests/unit/portPolicyAdapter.test.ts": {

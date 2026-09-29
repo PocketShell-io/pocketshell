@@ -88,6 +88,11 @@ const dictationStatusVisible = computed(() => props.showInlineDictationStatus ??
     || props.dictationState.tone === 'warning'
   )
 ));
+const dictationTranscriptRecoverable = computed(() => props.dictationAvailable
+  && props.dictationState.phase === 'idle'
+  && props.dictationState.tone === 'warning'
+  && props.dictationState.preview.length > 0);
+const dictationCopyFeedback = ref('');
 const dictationElapsedMs = ref(0);
 const dictationElapsedLabel = computed(() => {
   const totalSeconds = Math.floor(dictationElapsedMs.value / 1_000);
@@ -109,6 +114,43 @@ function stopDictationClock(): void {
 function closePalette(): void { actions.closePalette(); }
 function showCtrlPage(): void { actions.showCtrlPage(); }
 function showMainPage(): void { actions.showMainPage(); }
+
+function copyWithLegacyClipboard(text: string): boolean {
+  if (typeof document === 'undefined' || !document.body || typeof document.execCommand !== 'function') return false;
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-10000px';
+  textarea.style.top = '0';
+  try {
+    document.body.append(textarea);
+    textarea.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
+async function copyRecoverableTranscript(): Promise<void> {
+  const transcript = props.dictationState.preview;
+  if (!dictationTranscriptRecoverable.value || !transcript) return;
+  let copied = false;
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(transcript);
+      copied = true;
+    }
+  } catch {
+    // Fall back to the WebView clipboard path when the async API is unavailable.
+  }
+  if (!copied) copied = copyWithLegacyClipboard(transcript);
+  dictationCopyFeedback.value = copied
+    ? 'Transcript copied. Check the terminal before pasting it.'
+    : 'Could not copy. The transcript remains available above; check the terminal before reusing it.';
+}
 
 function onPaletteKeyClick(event: MouseEvent, key: TerminalKeyId): void {
   actions.clickKey(key, event.detail);
@@ -183,6 +225,9 @@ function accessibleKeyName(key: TerminalHotkey): string {
 }
 
 watch(() => props.enabled, actions.setEnabled);
+watch(() => [dictationTranscriptRecoverable.value, props.dictationState.preview] as const, () => {
+  dictationCopyFeedback.value = '';
+});
 watch(() => props.dictationState.phase, (phase) => {
   stopDictationClock();
   if (phase === 'starting') {
@@ -223,6 +268,7 @@ defineExpose({
       'mobile-hotkeys--ctrl-open': paletteOpen && page === 'ctrl',
       'mobile-hotkeys--dictation-status-open': dictationStatusVisible,
       'mobile-hotkeys--dictation-listening': dictationStatusVisible && dictationState.phase === 'listening',
+      'mobile-hotkeys--dictation-recovery': dictationTranscriptRecoverable,
       'mobile-hotkeys--dictation-available': dictationAvailable,
     }"
     data-testid="mobile-hotkeys"
@@ -262,8 +308,30 @@ defineExpose({
             data-testid="inline-dictation-preview" aria-live="off">{{ dictationState.preview }}</span>
           <span v-else class="mobile-hotkeys__recording-preview" data-testid="inline-dictation-message" aria-live="off">{{ 'Speak now' }}</span>
         </div>
-        <p class="mobile-hotkeys__dictation-status" :data-dictation-tone="dictationState.tone"
-          v-else :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
+        <div v-else-if="dictationTranscriptRecoverable" class="mobile-hotkeys__dictation-recovery"
+          data-testid="inline-dictation-recovery">
+          <div class="mobile-hotkeys__dictation-recovery-header">
+            <p class="mobile-hotkeys__dictation-recovery-message" :data-dictation-tone="dictationState.tone"
+              data-testid="inline-dictation-status" role="status" aria-live="polite">
+              <span class="mobile-hotkeys__dictation-destination">Terminal · </span>
+              <span class="mobile-hotkeys__dictation-phase">Warning · </span>
+              <span data-testid="inline-dictation-message">{{ dictationCopyFeedback || dictationState.message }}</span>
+            </p>
+            <button class="mobile-hotkeys__dictation-copy" type="button"
+              data-testid="inline-dictation-copy-transcript"
+              aria-label="Copy recognized transcript. Check the terminal for partial text before pasting."
+              title="Copy recognized transcript. Check the terminal for partial text before pasting."
+              @click="copyRecoverableTranscript">
+              Copy
+            </button>
+          </div>
+          <span class="mobile-hotkeys__dictation-recovery-preview terminal-dictation-preview"
+            data-testid="inline-dictation-preview" :title="dictationState.preview" aria-live="off">
+            {{ dictationState.preview }}
+          </span>
+        </div>
+        <p v-else class="mobile-hotkeys__dictation-status" :data-dictation-tone="dictationState.tone"
+          :data-dictation-phase="dictationState.phase" data-testid="inline-dictation-status" role="status" aria-live="polite">
           <span class="mobile-hotkeys__dictation-destination">Terminal · </span>
           <span v-if="dictationState.tone === 'error'" class="mobile-hotkeys__dictation-phase">Error · </span>
           <span v-else-if="dictationState.tone === 'warning'" class="mobile-hotkeys__dictation-phase">Warning · </span>
@@ -486,6 +554,9 @@ defineExpose({
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--ctrl-open { height: 177px; }
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--main-open,
 .mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--ctrl-open { height: 185px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-recovery { height: 113px; }
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--dictation-recovery.mobile-hotkeys--main-open,
+.mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-status-open.mobile-hotkeys--dictation-recovery.mobile-hotkeys--ctrl-open { height: 209px; }
 .mobile-hotkeys__dictation-dock {
   display: flex;
   min-width: 0;
@@ -511,6 +582,69 @@ defineExpose({
   height: 40px;
   flex-basis: 40px;
   padding: 0 4px;
+}
+.mobile-hotkeys--dictation-recovery .mobile-hotkeys__dictation-status-row {
+  height: 64px;
+  flex-basis: 64px;
+  align-items: stretch;
+  padding: 0 4px;
+}
+.mobile-hotkeys__dictation-recovery {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: 60px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.mobile-hotkeys__dictation-recovery-header {
+  display: flex;
+  min-width: 0;
+  height: 28px;
+  flex: 0 0 28px;
+  align-items: center;
+  gap: 6px;
+}
+.mobile-hotkeys__dictation-recovery-message {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  margin: 0;
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile-hotkeys__dictation-recovery-message .mobile-hotkeys__dictation-phase { color: var(--warning); }
+.mobile-hotkeys__dictation-copy {
+  min-width: 56px;
+  height: 28px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  padding: 0 8px;
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 600;
+}
+.mobile-hotkeys__dictation-recovery-preview {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  color: var(--fg);
+  font: 11px/28px var(--font-mono);
+  text-overflow: clip;
+  white-space: nowrap;
+  user-select: text;
+  -webkit-user-select: text;
+  touch-action: pan-x;
 }
 .mobile-hotkeys__recording-status {
   display: flex;

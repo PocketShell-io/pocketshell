@@ -1,20 +1,26 @@
 import { compile, createRenderer, getCurrentInstance, ssrContextKey, type App, type VNode } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { DictationEvent, DictationSession } from '../../src/session/platformInput';
+import type { DictationEvent } from '../../src/session/platformInput';
 import DictationMicIcon from '../../src/components/DictationMicIcon.vue';
 import dictationMicIconSource from '../../src/components/DictationMicIcon.vue?raw';
 import terminalDictationBarSource from '../../src/components/TerminalDictationBar.vue?raw';
 
 const mocks = vi.hoisted(() => ({
   addListener: vi.fn(),
-  startDictation: vi.fn(),
+  startRecognition: vi.fn(),
+  stopRecognition: vi.fn(),
+  cancelRecognition: vi.fn(),
 }));
 
 vi.mock('@capacitor/app', () => ({
   App: { addListener: mocks.addListener },
 }));
 vi.mock('../../src/session/platformInput', () => ({
-  platformInput: { startDictation: mocks.startDictation },
+  platformInput: {
+    startRecognition: mocks.startRecognition,
+    stopRecognition: mocks.stopRecognition,
+    cancelRecognition: mocks.cancelRecognition,
+  },
 }));
 
 import TerminalDictationBar from '../../src/components/TerminalDictationBar.vue';
@@ -147,16 +153,11 @@ describe('terminal dictation bar lifecycle', () => {
 
   it('keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint', async () => {
     let recognitionEvent: ((event: DictationEvent) => void) | undefined;
-    const session: DictationSession = {
-      requestId: 'inline-glyph-1',
-      stop: vi.fn(async () => {}),
-      cancel: vi.fn(async () => {}),
-    };
+    let requestId = '';
     mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
-    mocks.startDictation.mockImplementation(async (onEvent: (event: DictationEvent) => void) => {
+    mocks.startRecognition.mockImplementation(async (id: string, onEvent: (event: DictationEvent) => void) => {
+      requestId = id;
       recognitionEvent = onEvent;
-      onEvent({ requestId: 'inline-glyph-1', type: 'started' });
-      return session;
     });
 
     const root = node('root');
@@ -205,25 +206,17 @@ describe('terminal dictation bar lifecycle', () => {
     expect(terminalDictationBarSource).toContain(':stopped="state.phase === \'listening\'"');
 
     app.unmount();
-    recognitionEvent?.({ requestId: 'inline-glyph-1', type: 'stopped' });
+    recognitionEvent?.({ requestId, type: 'result', text: 'late result' });
     await flushPromises();
   });
 
   it('cancels on unmount, clears parent state, and ignores late transcript events', async () => {
     let recognitionEvent: ((event: DictationEvent) => void) | undefined;
-    const stop = vi.fn(async () => {
-      recognitionEvent?.({ requestId: 'inline-unmount-1', type: 'stopped' });
-    });
-    const session: DictationSession = {
-      requestId: 'inline-unmount-1',
-      stop,
-      cancel: vi.fn(async () => {}),
-    };
+    let requestId = '';
     mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
-    mocks.startDictation.mockImplementation(async (onEvent: (event: DictationEvent) => void) => {
+    mocks.startRecognition.mockImplementation(async (id: string, onEvent: (event: DictationEvent) => void) => {
+      requestId = id;
       recognitionEvent = onEvent;
-      onEvent({ requestId: 'inline-unmount-1', type: 'started' });
-      return session;
     });
 
     const root = node('root');
@@ -246,16 +239,14 @@ describe('terminal dictation bar lifecycle', () => {
     (toggle?.props.onClick as (() => void) | undefined)?.();
     await flushPromises();
     expect(states.at(-1)?.phase).toBe('listening');
-    recognitionEvent?.({ requestId: 'inline-unmount-1', type: 'partial', text: 'discard this phrase' });
-    recognitionEvent?.({ requestId: 'inline-unmount-1', type: 'result', text: 'discard this phrase' });
+    recognitionEvent?.({ requestId, type: 'partial', text: 'discard this phrase' });
     expect(insertText).not.toHaveBeenCalled();
 
     app.unmount();
-    recognitionEvent?.({ requestId: 'inline-unmount-1', type: 'result', text: 'late phrase must not insert' });
-    recognitionEvent?.({ requestId: 'inline-unmount-1', type: 'stopped' });
+    recognitionEvent?.({ requestId, type: 'result', text: 'late phrase must not insert' });
     await flushPromises();
 
-    expect(stop).toHaveBeenCalledOnce();
+    expect(mocks.cancelRecognition).toHaveBeenCalledWith(requestId);
     expect(states.at(-1)).toEqual({
       phase: 'idle',
       preview: '',

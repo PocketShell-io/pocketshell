@@ -21,6 +21,7 @@ function makeHarness(enabled = true, holdThresholdMs = 500) {
 describe('mobile fast-key behavior', () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('keeps icon actions in exact 48px slots and uses Kotlin-aligned mic state tints', () => {
@@ -43,6 +44,8 @@ describe('mobile fast-key behavior', () => {
   it('uses one App-owned dictation status value for dock sizing and status-row visibility', () => {
     expect(appSource).toContain("? inlineDictationState.value.phase === 'listening'");
     expect(appSource).toContain('inlineDictationListeningStatusRowHeightPx');
+    expect(appSource).toContain('inlineDictationRecoveryStatusRowHeightPx');
+    expect(appSource).toContain('inlineDictationRecoveryVisible.value');
     expect(appSource).toContain(':show-inline-dictation-status="inlineDictationStatusVisible"');
   });
 
@@ -267,6 +270,32 @@ describe('mobile fast-key behavior', () => {
       } finally {
         mounted.app.unmount();
       }
+    }
+  });
+
+  it('offers an explicit copy action for an unconfirmed terminal transcript', async () => {
+    const transcript = 'printf "%s\\n" "possibly inserted"';
+    const writeText = vi.fn(async (_text: string) => {});
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const mounted = mountMobileHotkeys(false, true, {
+      phase: 'idle',
+      preview: transcript,
+      message: 'Terminal insertion was not confirmed. Check for partial text before copying or trying again.',
+      tone: 'warning',
+    });
+    try {
+      expect(findByTestId(mounted.root, 'inline-dictation-recovery')).toBeDefined();
+      expect(findByTestId(mounted.root, 'inline-dictation-preview')?.text).toBe(transcript);
+      const copy = findButton(mounted.root, { 'data-testid': 'inline-dictation-copy-transcript' });
+      expect(copy.props['aria-label']).toContain('Check the terminal for partial text');
+
+      click(copy);
+      await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(transcript));
+      await vi.waitFor(() => expect(findByTestId(mounted.root, 'inline-dictation-message')?.text)
+        .toContain('Transcript copied. Check the terminal'));
+      expect(mounted.sent).toEqual([]);
+    } finally {
+      mounted.app.unmount();
     }
   });
 

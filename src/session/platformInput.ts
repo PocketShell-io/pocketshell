@@ -51,23 +51,15 @@ export interface DictationStartOptions {
 }
 
 export interface PlatformInputServiceOptions {
-  nextRequestId?: () => string;
   chunkBytes?: number;
   maxFileBytes?: number;
   maxBatchBytes?: number;
   dictationTestMode?: () => boolean;
 }
 
-export interface DictationSession {
-  requestId: string;
-  stop: () => Promise<void>;
-  cancel: () => Promise<void>;
-}
-
 interface DictationRequestState {
   cancelled: boolean;
   nativeStartRequested: boolean;
-  stopRequested: boolean;
   listener?: Awaited<ReturnType<SpeechRecognitionPlugin['addListener']>>;
 }
 
@@ -88,19 +80,10 @@ export function createPlatformInputService(
   speech: SpeechRecognitionPlugin,
   serviceOptions: PlatformInputServiceOptions = {},
 ) {
-  let requestSequence = 0;
   const dictationRequests = new Map<string, DictationRequestState>();
   const chunkBytes = boundedInteger(serviceOptions.chunkBytes ?? CHUNK_BYTES, 1, 64 * 1024, 'chunkBytes');
   const maxFileBytes = boundedInteger(serviceOptions.maxFileBytes ?? MAX_SFTP_FILE_BYTES, 1, Number.MAX_SAFE_INTEGER, 'maxFileBytes');
   const maxBatchBytes = boundedInteger(serviceOptions.maxBatchBytes ?? MAX_PICKED_BATCH_BYTES, maxFileBytes, Number.MAX_SAFE_INTEGER, 'maxBatchBytes');
-
-  function nextRequestId(): string {
-    const requestId = serviceOptions.nextRequestId?.() ?? defaultRequestId(++requestSequence);
-    if (typeof requestId !== 'string' || requestId.trim() === '') {
-      throw new PlatformInputError('invalid-request-id', 'A non-empty platform request ID is required.');
-    }
-    return requestId;
-  }
 
   async function pickAttachments(): Promise<PickedAttachmentBatch> {
     const picked = await documents.pickFiles({ mimeType: '*/*', multiple: true });
@@ -182,30 +165,28 @@ export function createPlatformInputService(
     };
   }
 
-  async function startDictation(
+  async function startRecognition(
+    requestId: string,
     onEvent: (event: DictationEvent) => void,
-    requestedOptions: DictationStartOptions | string = {},
-    onRequestId?: (requestId: string) => void,
-  ): Promise<DictationSession> {
-    const options = typeof requestedOptions === 'string'
-      ? { languageTag: requestedOptions }
-      : requestedOptions;
-    const requestId = nextRequestId();
-    const request: DictationRequestState = { cancelled: false, nativeStartRequested: false, stopRequested: false };
+    options: DictationStartOptions = {},
+  ): Promise<void> {
+    if (typeof requestId !== 'string' || requestId.trim() === '') {
+      throw new PlatformInputError('invalid-request-id', 'A non-empty recognition request ID is required.');
+    }
+    if (dictationRequests.has(requestId)) {
+      throw new PlatformInputError('duplicate-request-id', 'This recognition request is already active.');
+    }
+    const request: DictationRequestState = { cancelled: false, nativeStartRequested: false };
     dictationRequests.set(requestId, request);
-    onRequestId?.(requestId);
     try {
       request.listener = await speech.addListener('dictationEvent', (event: NativeDictationEvent) => {
         if (!isDictationEvent(event) || event.requestId !== requestId) return;
-        if (request.cancelled) {
-          if (event.type === 'stopped') void removeDictationRequest(requestId, request);
-          return;
-        }
+        if (request.cancelled) return;
         onEvent({ ...event });
-        if (event.type === 'stopped') void removeDictationRequest(requestId, request);
+        if (isTerminalDictationEvent(event.type)) void removeDictationRequest(requestId, request);
       });
       if (request.cancelled) {
-        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+        throw new PlatformInputError('dictation-cancelled', 'Recognition was cancelled before it started.');
       }
       request.nativeStartRequested = true;
       const started = await speech.startDictation({
@@ -215,34 +196,30 @@ export function createPlatformInputService(
         ...(serviceOptions.dictationTestMode?.() === true ? { testMode: true } : {}),
       });
       if (request.cancelled) {
-        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+        throw new PlatformInputError('dictation-cancelled', 'Recognition was cancelled before it started.');
       }
       if (started.requestId !== requestId || started.started !== true) {
-        throw new PlatformInputError('invalid-dictation-response', 'Android did not start the requested dictation session.');
+        throw new PlatformInputError('invalid-dictation-response', 'Android did not start the requested recognition turn.');
       }
     } catch (error) {
       await removeDictationRequest(requestId, request);
       if (request.cancelled) {
-        throw new PlatformInputError('dictation-cancelled', 'Dictation was cancelled before it started.');
+        throw new PlatformInputError('dictation-cancelled', 'Recognition was cancelled before it started.');
       }
       throw error;
     }
-
-    return {
-      requestId,
-      stop: async () => {
-        if (request.cancelled || request.stopRequested) return;
-        request.stopRequested = true;
-        const stopped = await speech.stopDictation({ requestId });
-        if (stopped.requestId !== requestId || stopped.stopped !== true) {
-          throw new PlatformInputError('invalid-dictation-response', 'Android stopped a different dictation session.');
-        }
-      },
-      cancel: () => cancelDictation(requestId),
-    };
   }
 
-  async function cancelDictation(requestId: string): Promise<void> {
+  async function stopRecognition(requestId: string): Promise<void> {
+    const request = dictationRequests.get(requestId);
+    if (!request || request.cancelled) return;
+    const stopped = await speech.stopDictation({ requestId });
+    if (stopped.requestId !== requestId || stopped.stopped !== true) {
+      throw new PlatformInputError('invalid-dictation-response', 'Android stopped a different recognition turn.');
+    }
+  }
+
+  async function cancelRecognition(requestId: string): Promise<void> {
     const request = dictationRequests.get(requestId);
     if (!request || request.cancelled) return;
     request.cancelled = true;
@@ -250,7 +227,7 @@ export function createPlatformInputService(
       if (request.nativeStartRequested) {
         const cancelled = await speech.cancelDictation({ requestId });
         if (cancelled.requestId !== requestId || typeof cancelled.cancelled !== 'boolean') {
-          throw new PlatformInputError('invalid-dictation-response', 'Android cancelled a different dictation session.');
+          throw new PlatformInputError('invalid-dictation-response', 'Android cancelled a different recognition turn.');
         }
       }
     } finally {
@@ -310,8 +287,9 @@ export function createPlatformInputService(
   return {
     pickAttachments,
     listenForShares,
-    startDictation,
-    cancelDictation,
+    startRecognition,
+    stopRecognition,
+    cancelRecognition,
   };
 }
 
@@ -365,9 +343,13 @@ function isDictationEvent(value: unknown): value is NativeDictationEvent {
   if (typeof value !== 'object' || value === null) return false;
   const event = value as Record<string, unknown>;
   return typeof event.requestId === 'string'
-    && ['started', 'ready', 'listening', 'processing', 'partial', 'result', 'error', 'stopped'].includes(String(event.type))
+    && ['partial', 'result', 'recoverable', 'error'].includes(String(event.type))
     && (event.text === undefined || typeof event.text === 'string')
     && (event.code === undefined || typeof event.code === 'string');
+}
+
+function isTerminalDictationEvent(type: DictationEventType): boolean {
+  return type !== 'partial';
 }
 
 function validName(value: unknown): value is string {
@@ -379,11 +361,6 @@ function boundedInteger(value: number, minimum: number, maximum: number, name: s
     throw new RangeError(`${name} is outside its supported range.`);
   }
   return value;
-}
-
-function defaultRequestId(sequence: number): string {
-  const random = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2, 12);
-  return `device-input-${Date.now().toString(36)}-${sequence.toString(36)}-${random}`;
 }
 
 function errorMessage(error: unknown): string {

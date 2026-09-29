@@ -2,7 +2,7 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
-import { platformInput } from '../session/platformInput';
+import { createSharedDictationController } from '../session/dictationController';
 import DictationMicIcon from './DictationMicIcon.vue';
 import {
   createInlineDictationController,
@@ -28,7 +28,7 @@ const initialState: InlineDictationState = {
 };
 const state = ref<InlineDictationState>({ ...initialState });
 const controller = createInlineDictationController({
-  startDictation: (onEvent, settings) => platformInput.startDictation(onEvent, settings),
+  createController: (settings) => createSharedDictationController(settings),
   insertText: (targetKey, text) => props.insertText(targetKey, text),
 });
 const stopWatching = controller.subscribe((next) => {
@@ -44,13 +44,13 @@ watch(() => props.enabled, (enabled) => {
 }, { flush: 'sync' });
 
 watch(() => props.targetKey, (targetKey) => {
-  if (targetKey !== previousTargetKey) void controller.cancel();
+  if (targetKey !== previousTargetKey) controller.setTarget(targetKey);
   previousTargetKey = targetKey;
 }, { flush: 'sync' });
 
 onMounted(() => {
   void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-    if (!isActive) void controller.cancel();
+    controller.setForeground(isActive);
   }).then((listener) => {
     if (disposed) void listener.remove();
     else appStateListener = listener;
@@ -73,15 +73,15 @@ onBeforeUnmount(() => {
 function toggleDictation() {
   if (!props.enabled || !props.targetKey) return;
   if (state.value.phase === 'idle') {
-    void controller.start({
+    controller.start({
       targetKey: props.targetKey,
       languageTag: props.languageTag,
       silenceWindowMs: props.silenceWindowMs,
     });
   } else if (state.value.phase === 'starting') {
-    void controller.cancel();
+    controller.cancel('user');
   } else if (state.value.phase === 'listening') {
-    void controller.stop();
+    controller.stop();
   }
 }
 

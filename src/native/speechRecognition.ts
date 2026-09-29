@@ -1,14 +1,10 @@
 import { registerPlugin, type Plugin, type PluginListenerHandle } from '@capacitor/core';
 
 export type DictationEventType =
-  | 'started'
-  | 'ready'
-  | 'listening'
-  | 'processing'
   | 'partial'
   | 'result'
+  | 'recoverable'
   | 'error'
-  | 'stopped';
 
 export interface NativeDictationEvent {
   requestId: string;
@@ -41,8 +37,9 @@ export type SpeechRecognitionPlugin = Plugin & {
   cancelDictation(options: { requestId: string }): Promise<{ requestId: string; cancelled: boolean }>;
   injectTestDictationEvent(options: {
     requestId?: string;
-    type: 'partial' | 'processing' | 'result' | 'ready' | 'listening' | 'error' | 'finish';
+    type: 'partial' | 'result' | 'recoverable' | 'error';
     text?: string;
+    code?: string;
   }): Promise<{
     requestId: string;
     emitted: boolean;
