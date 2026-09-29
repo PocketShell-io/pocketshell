@@ -42,6 +42,30 @@
         "propagates a native bridge rejection"
       ]
     },
+    "tests/unit/settingsSync.test.ts": {
+      "suite": "Android settings sync uses the pinned core contract",
+      "tests": [
+        "keeps the existing versionless payload shape",
+        "android-local-over-desktop-account-preserves-desktop-fields",
+        "desktop-local-over-android-account-preserves-android-extensions",
+        "unticked-alias-is-deleted-by-omission",
+        "selected-remote-alias-falls-back-and-keeps-alias-order",
+        "fresh-device-auto-checks-account-aliases",
+        "local-unticked-alias-is-not-auto-checked",
+        "versionless-v1-payload-keeps-unknown-host-fields",
+        "explicit-empty-v1-payload-is-valid",
+        "malformed-json-is-refused-before-upload",
+        "wrong-shape-is-refused-before-upload",
+        "explicit-schema-version-is-refused-until-migration-support-exists",
+        "malformed-entry-refuses-the-whole-payload",
+        "accepts an explicit empty payload but never uploads an empty selection",
+        "re-pulls and merges fields written by another client before retrying a conflict",
+        "returns visible pull and push failures",
+        "rejects invalid platform versions before upload",
+        "fails closed when the platform boundary returns an unknown result shape",
+        "stops after the bounded conflict retry policy"
+      ]
+    },
     "tests/unit/usagePolicyAdapter.test.ts": {
       "suite": "host usage adapter",
       "tests": [

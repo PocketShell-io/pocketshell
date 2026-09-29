@@ -268,8 +268,129 @@ public final class JsShellPackagedSmokeTest {
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitRoute("settings");
 
+        runSettingsSyncPackagedSmokeChecks();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitHomeAfterBack();
+    }
+
+    private void runSettingsSyncPackagedSmokeChecks() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+        evalRaw("window.__ps2852NetworkRequestCount = 0;"
+                + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
+                + "return Promise.reject(new Error('unexpected sync network request'));};"
+                + "const originalXhrOpen = XMLHttpRequest.prototype.open;"
+                + "XMLHttpRequest.prototype.open = function(...args) {"
+                + "window.__ps2852NetworkRequestCount += 1; return originalXhrOpen.apply(this, args);};"
+                + "'network-guard-armed'");
+        assertEquals("production exposes no test sync entry point", "undefined",
+                evalString("typeof window.__ps2852RunSettingsSync"));
+
+        tapDomCenter("[data-testid=open-advanced-settings]");
+        awaitJsTrue("document.querySelector('[data-testid=open-account-sync]') !== null");
+        tapDomCenter("[data-testid=open-account-sync]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-account'");
+        awaitJsTrue("document.querySelector('[data-testid=account-settings-screen]')?.innerText.includes('Account sync is unavailable in this build.') === true");
+        assertEquals("unavailable account sync makes no network request", 0,
+                Integer.parseInt(evalString("window.__ps2852NetworkRequestCount")));
+
+        String probeStorageKey = "pocketshell.settings-sync-test-probe";
+        try {
+            evalRaw("localStorage.setItem(" + JSONObject.quote(probeStorageKey) + ", 'enabled');"
+                    + "window.location.reload(); 'reload-requested'");
+            awaitJsTrue("typeof window.__ps2852RunSettingsSync === 'function'");
+            awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+            evalRaw("window.__ps2852NetworkRequestCount = 0;"
+                    + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
+                    + "return Promise.reject(new Error('unexpected sync network request'));};"
+                    + "const originalXhrOpen = XMLHttpRequest.prototype.open;"
+                    + "XMLHttpRequest.prototype.open = function(...args) {"
+                    + "window.__ps2852NetworkRequestCount += 1; return originalXhrOpen.apply(this, args);};"
+                    + "'network-guard-rearmed'");
+
+            JSONObject localHost = new JSONObject()
+                    .put("name", "prod")
+                    .put("hostname", "prod-phone.example.net")
+                    .put("port", 2222)
+                    .put("user", "alexey");
+            JSONObject remoteHost = new JSONObject()
+                    .put("name", "prod")
+                    .put("hostname", "prod-desktop.example.net")
+                    .put("port", 22)
+                    .put("user", "old-user")
+                    .put("proxyJump", "bastion")
+                    .put("futureDirective", new JSONObject()
+                            .put("mode", "opaque")
+                            .put("tags", new JSONArray().put("desk").put("keep")));
+            String remotePlaintext = new JSONObject()
+                    .put("hosts", new JSONArray().put(remoteHost))
+                    .toString();
+            JSONArray localHosts = new JSONArray().put(localHost);
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "pull: async () => ({kind: 'ok', version: 7, plaintext: " + JSONObject.quote(remotePlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 8};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject preserved = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject preservedResult = preserved.getJSONObject("result");
+            assertEquals("synced", preservedResult.getString("kind"));
+            JSONObject mergedHost = preservedResult.getJSONArray("hosts").getJSONObject(0);
+            assertEquals("the local phone address wins", "prod-phone.example.net", mergedHost.getString("hostname"));
+            assertEquals("the desktop jump host survives", "bastion", mergedHost.getString("proxyJump"));
+            assertEquals("unknown desktop extensions survive", "opaque",
+                    mergedHost.getJSONObject("futureDirective").getString("mode"));
+            JSONObject upload = preserved.getJSONArray("uploads").getJSONObject(0);
+            assertEquals(7, upload.getInt("baseVersion"));
+            JSONObject uploadedPayload = new JSONObject(upload.getString("plaintext"));
+            assertEquals("the existing payload stays versionless", 1, uploadedPayload.length());
+            assertEquals("keep", uploadedPayload.getJSONArray("hosts").getJSONObject(0)
+                    .getJSONObject("futureDirective").getJSONArray("tags").getString(1));
+
+            String invalidPlaintext = "{\"schemaVersion\":2,\"hosts\":[]}";
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "pull: async () => ({kind: 'ok', version: 9, plaintext: " + JSONObject.quote(invalidPlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 10};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject refused = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject refusedResult = refused.getJSONObject("result");
+            assertEquals("invalid-payload", refusedResult.getString("kind"));
+            assertEquals("unsupported-version", refusedResult.getString("reason"));
+            assertTrue("a rejected payload has no replacement body",
+                    !refusedResult.has("hosts") && !refusedResult.has("plaintext"));
+            assertEquals("malformed remote data must not reach upload", 0,
+                    refused.getJSONArray("uploads").length());
+
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "pull: async () => ({kind: 'ok', version: 11, plaintext: '{\"hosts\":[]}'}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 12};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject empty = evalJson("window.__ps2852SyncProbeResult");
+            assertEquals("empty-selection", empty.getJSONObject("result").getString("kind"));
+            assertEquals("an empty selection never uploads", 0, empty.getJSONArray("uploads").length());
+
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "pull: async () => ({kind: 'absent'}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'error', message: 'service unavailable'};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject pushError = evalJson("window.__ps2852SyncProbeResult");
+            assertEquals("error", pushError.getJSONObject("result").getString("kind"));
+            assertEquals("push", pushError.getJSONObject("result").getString("stage"));
+            assertEquals("service unavailable", pushError.getJSONObject("result").getString("message"));
+            assertEquals("injected platform effects do not fall through to networking", 0,
+                    Integer.parseInt(evalString("window.__ps2852NetworkRequestCount")));
+        } finally {
+            evalRaw("localStorage.removeItem(" + JSONObject.quote(probeStorageKey) + ")");
+        }
     }
 
     private void awaitRoute(String route) throws Exception {

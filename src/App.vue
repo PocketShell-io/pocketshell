@@ -37,6 +37,7 @@ import { ConnectionController } from './session/connectionController';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
+import { syncSelectedHosts } from './sync/settingsSync';
 import TerminalViewport from './components/TerminalViewport.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
@@ -64,6 +65,11 @@ type ComposerSmokeEvidenceWindow = Window & {
   __ps2857AppTerminalLastChunk?: string;
   __ps2857AppTerminalMissingRefCount?: number;
 };
+
+type SettingsSyncProbeWindow = Window & {
+  __ps2852RunSettingsSync?: typeof syncSelectedHosts;
+};
+const SETTINGS_SYNC_PROBE_STORAGE_KEY = 'pocketshell.settings-sync-test-probe';
 
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
@@ -787,6 +793,19 @@ function reloadAfterSettingsImport(settingsWritten: boolean) {
 }
 
 onMounted(() => {
+  // Packaged instrumentation opts in through isolated app storage before
+  // launch. This exposes the real core-backed policy with fake platform
+  // effects; the production settings screen has no sync action or network
+  // adapter until native OAuth, encryption, and secure storage are ready.
+  try {
+    if (Capacitor.isNativePlatform()
+      && window.localStorage.getItem(SETTINGS_SYNC_PROBE_STORAGE_KEY) === 'enabled') {
+      (window as SettingsSyncProbeWindow).__ps2852RunSettingsSync = syncSelectedHosts;
+    }
+  } catch {
+    // A denied browser-storage read simply leaves the instrumentation probe off.
+  }
+
   diagnostics.record('app-started', 'startup', 'OK');
   const updateKeyboardViewport = () => {
     if (nativeKeyboardInsetsSupported || Capacitor.getPlatform() !== 'android') return;
