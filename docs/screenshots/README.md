@@ -17,8 +17,8 @@ README docs never depended on provider credentials or private agent logs.
 classes were deleted with the `app` module in the rewrite's hard cut, and the
 conversation view is a cut feature entirely
 (`docs/rewrite-implementation-plan.md`, "Scope amendment").
-`scripts/capture-walkthrough-screenshots.sh` still exists but now runs app2's
-instrumented journeys and collects THEIR screenshots, under
+On `release/0.5.x` (0.5.x history), `scripts/capture-walkthrough-screenshots.sh`
+runs the Kotlin instrumented journeys and collects THEIR screenshots, under
 `build/walkthrough-visual-pass/<run-id>/screenshots/files/<journey>/`:
 
 ```bash
@@ -27,5 +27,5 @@ ANDROID_SERIAL=<booted-emulator> AVD_NAME=<avd> RUN_ID=readme-<date> \
 ```
 
 These committed PNGs are kept as-is until someone refreshes the README against
-an app2 build; they document the product the README describes, not the current
-applicationId.
+a 0.6.0 build from `main`, using the packaged-lane screenshots; they document
+the product the README describes, not the current applicationId.

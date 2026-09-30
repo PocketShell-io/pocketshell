@@ -66,11 +66,13 @@ Capacitor template drift.
 tokens, Inter loading, monospace policy, `AppIcon`, and `ComposerControls`. The
 Android shell imports those sources directly. Its local `src/styles.css` owns
 the phone card flow, safe-area padding, touch-sized controls, responsive
-viewport sizing, and Android Back handling. The local-only composer preview
-uses the shared disabled controls without desktop keyboard shortcut hints.
-`TerminalPreview.vue` uses the shared terminal palette with fixed sample output
-and cannot connect to a host. The visible source and asset diagnostics are
-temporary rewrite verification UI, not a planned product surface.
+viewport sizing, and Android Back handling.
+`src/components/PromptComposer.vue` uses the shared `ComposerControls` row, and
+`src/components/TerminalViewport.vue` renders the live session in xterm.js with
+the shared terminal theme and reports its geometry to the native PTY.
+[design-system.md](design-system.md) maps the shared tokens and components. The
+visible source and asset diagnostics are temporary rewrite verification UI, not
+a planned product surface.
 
 The shell is not a visual acceptance claim. Follow
 [review-standards.md](review-standards.md) for emulator review; later UI work
@@ -87,15 +89,19 @@ installs the locked JS dependencies, requires the
 exact registered JS unit suite, packages the debug APK, verifies its package,
 signature, and `derive-version.sh` version, runs a packaged API 35 Android
 smoke suite, and runs the pinned Docker agents fixture. The smoke suite
-executes exactly three tests: the installed shell must show the verified core
-revision and asset hash, a Settings tap and Android Back must return to Hosts,
-and the focused composer must remain above the real IME while Capacitor
+executes exactly six tests, the set `scripts/check-js-smoke-results.py`
+requires: the installed shell must show the verified core revision and asset
+hash; an open-document data URI must be included once; the packaged share
+adapters must deliver shared text and exact file bytes, including a multi-item
+share without `ClipData`; a Settings tap and Android Back must return to
+Hosts; and the focused composer must remain above the real IME while Capacitor
 safe-area insets are applied.
 This is shell coverage, not feature parity. It does not cover the SSH/session
 journeys, create a signed release artifact, or establish a nightly release
 verdict.
 
-The 24 feature journey classes mapped from app2 are registered in
+The 24 feature journey classes mapped from app2 (the Kotlin line, now on
+`release/0.5.x`) are registered in
 [`scripts/js-journey-class-manifest.json`](../scripts/js-journey-class-manifest.json).
 Run `scripts/check-js-journey-results.py --json --results-dir <connected-XML-dir>`
 to get a machine-readable qualification result. It blocks missing classes,

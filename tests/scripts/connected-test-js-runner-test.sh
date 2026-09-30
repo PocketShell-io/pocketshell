@@ -33,6 +33,8 @@ make_serial_fixture() {
   cp "$WRAPPER" "$repo/scripts/connected-test.sh"
   cp "$ROOT_DIR/scripts/connected-js-smoke.sh" "$repo/scripts/connected-js-smoke.sh"
   cp "$ROOT_DIR/scripts/check-js-smoke-results.py" "$repo/scripts/check-js-smoke-results.py"
+  cp "$ROOT_DIR/scripts/check-android-input-diagnostics.py" "$repo/scripts/check-android-input-diagnostics.py"
+  cp "$ROOT_DIR/scripts/lib/android-input-preflight.sh" "$repo/scripts/lib/android-input-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/avd-lock.sh" "$repo/scripts/lib/avd-lock.sh"
   cp "$ROOT_DIR/scripts/lib/disk-preflight.sh" "$repo/scripts/lib/disk-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/gradle-output-lock.sh" "$repo/scripts/lib/gradle-output-lock.sh"
@@ -51,9 +53,16 @@ case "${1:-}" in
     printf 'device\n'
     ;;
   shell)
-    [[ "${2:-}" == 'getprop' && "${3:-}" == 'ro.build.version.sdk' ]] \
-      || { printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90; }
-    printf '35\n'
+    case "${*:2}" in
+      'getprop ro.build.version.sdk') printf '35\n' ;;
+      # Android input preflight (#2946): disable system error dialogs, then
+      # read the live window list (no error dialog) and the focus owner.
+      'settings put global hide_error_dialogs 1') ;;
+      'settings get global hide_error_dialogs') printf '1\n' ;;
+      'dumpsys window windows') printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n' ;;
+      'dumpsys window displays') printf '  mCurrentFocus=Window{1 u0 fixture}\n' ;;
+      *) printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90 ;;
+    esac
     ;;
   *)
     printf 'unexpected adb command: %s\n' "$*" >&2
@@ -87,12 +96,13 @@ results="$repo/android/app/build/outputs/androidTest-results/connected/debug"
 mkdir -p "$results"
 cat > "$results/TEST-smoke.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="6" failures="0" errors="0" skipped="0">
+<testsuite name="smoke" tests="7" failures="0" errors="0" skipped="0">
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedMultipleShareReadsStandardStreamListWithoutClipData" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea" />
 </testsuite>
 XML
@@ -365,8 +375,8 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'composer runner does not validate its exact same-run JUnit report'
   grep -Fq 'PASS: host PTY output contained' "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
     || fail 'composer runner lost its independent remote PTY output oracle'
-  grep -Fq 'Exact packaged-shell smoke suite (6 JUnit methods)' "$WRAPPER" \
-    || fail 'connected-test help does not describe the six-method packaged smoke contract'
+  grep -Fq 'Exact packaged-shell smoke suite (7 JUnit methods)' "$WRAPPER" \
+    || fail 'connected-test help does not describe the seven-method packaged smoke contract'
   grep -Fq 'scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");' "$smoke_test_source" \
     || fail 'About navigation does not scroll its target into the WebView viewport first'
   grep -Fq 'WebView tap target must be fully inside its viewport before coordinate tap:' "$smoke_test_source" \
@@ -420,10 +430,10 @@ same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
     || fail 'first worktree did not pass its unique package suffix to Gradle'
   grep -Fq -- '-PpocketshellAppIdSuffix=i2863b' "$SANDBOX/device-state/args-i2863b" \
     || fail 'second worktree did not pass its unique package suffix to Gradle'
-  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 7 executed tests, 7 passed' \
     "$SANDBOX/i2863a.out" \
     || fail 'first run did not validate its own exact JUnit report'
-  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 7 executed tests, 7 passed' \
     "$SANDBOX/i2863b.out" \
     || fail 'second run did not validate its own exact JUnit report'
   [[ ! -e "$SANDBOX/device-state/overlap" ]] \

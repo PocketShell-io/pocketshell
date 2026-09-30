@@ -83,6 +83,8 @@ make_fixture() {
     "$SANDBOX/repo/scripts/connected-js-smoke.sh"
   cp "$ROOT_DIR/scripts/check-js-smoke-results.py" \
     "$SANDBOX/repo/scripts/check-js-smoke-results.py"
+  cp "$ROOT_DIR/scripts/check-android-input-diagnostics.py" \
+    "$SANDBOX/repo/scripts/check-android-input-diagnostics.py"
   cp "$ROOT_DIR"/scripts/lib/*.sh "$SANDBOX/repo/scripts/lib/"
   mkdir -p "$SANDBOX/repo/android"
   cat > "$SANDBOX/repo/android/gradlew" <<'GRADLEW'
@@ -92,6 +94,7 @@ GRADLEW
   chmod +x "$SANDBOX/repo/scripts/connected-test.sh"
   chmod +x "$SANDBOX/repo/scripts/connected-js-smoke.sh" \
     "$SANDBOX/repo/scripts/check-js-smoke-results.py" \
+    "$SANDBOX/repo/scripts/check-android-input-diagnostics.py" \
     "$SANDBOX/repo/android/gradlew"
   git -C "$SANDBOX/repo" init -q
   git -C "$SANDBOX/repo" add scripts android
