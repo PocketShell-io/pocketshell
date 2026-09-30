@@ -375,6 +375,14 @@
         "stays red for a line that is not there: wrong token, prefix only, or only the echoed command",
         "does not glue a full-width row to the prompt after it"
       ]
+    },
+    "tests/unit/sharedAppShell.test.ts": {
+      "suite": "Android shared app shell",
+      "tests": [
+        "routes by the shared map plus exactly the Android host form",
+        "writes the system-bar and landscape side insets into the shared inset contract",
+        "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
     }
   }
 }
