@@ -8,10 +8,11 @@ import { provideApi } from '@ui/app/ipc';
 import { provideExtensions } from '@ui/app/extensions';
 import { recordDiagError } from '@ui/app/diag';
 import { runInstalledDataMigration } from '@/migration/installedDataMigration';
-import SharedAppRoot from './SharedAppRoot.vue';
+import AppRoot from '@ui/app/AppRoot.vue';
 import { createSharedAppRouter } from './router';
 import { androidPlatform } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
+import { ANDROID_MONO_FALLBACK, applyAndroidInsets } from './androidShell';
 
 /**
  * Mount the shared PocketShell app (core packages/ui) on Android. This is
@@ -26,7 +27,10 @@ export function mountSharedApp(target: string | Element): void {
   // The 0.5.x import runs before the picker reads hosts; it is idempotent.
   void runInstalledDataMigration();
 
-  const app = createApp(SharedAppRoot);
+  applyAndroidInsets();
+  // The shared app root (theme and typography watchers, diag strip, outlet),
+  // the same component desktop and web mount.
+  const app = createApp(AppRoot, { monoFallback: ANDROID_MONO_FALLBACK });
   app.config.errorHandler = (err): void => {
     recordDiagError('render', err);
   };

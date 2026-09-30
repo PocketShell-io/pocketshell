@@ -364,6 +364,14 @@
         "turns a predicted space the keyboard removes before punctuation into one DEL",
         "sends one DEL per code point when a multi-code-point emoji is deleted"
       ]
+    },
+    "tests/unit/sharedAppShell.test.ts": {
+      "suite": "Android shared app shell",
+      "tests": [
+        "routes by the shared map plus exactly the Android host form",
+        "writes the system-bar and landscape side insets into the shared inset contract",
+        "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
     }
   }
 }
