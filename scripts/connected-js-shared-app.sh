@@ -78,6 +78,8 @@ done
 [[ "$PREPARE_ONLY" == 1 || "$PORT" =~ ^[0-9]+$ ]] || fail '--port PORT is required to run the journey'
 (( PREPARE_ONLY + TEST_ONLY <= 1 )) || fail '--prepare-only and --test-only cannot be combined'
 [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'generated android/gradlew is missing; initialize the JS-first Android project first'
+[[ -x "$ROOT_DIR/scripts/check-js-shared-app-results.py" ]] || fail 'shared-app result verifier is missing'
+"$ROOT_DIR/scripts/check-js-shared-app-results.py" --self-test
 
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
@@ -148,14 +150,6 @@ else
     > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
   exit "$test_exit_code"
 fi
-python3 - "$RESULTS_DIR" <<'PY'
-# A green Gradle run is not enough (G3): the one load-bearing test must have run and passed.
-import sys, xml.etree.ElementTree as ET
-from pathlib import Path
-cases = [c for f in Path(sys.argv[1]).rglob('*.xml') for c in ET.parse(f).getroot().iter('testcase')]
-name = 'sharedAppListsAttachesAndTypesIntoFixtureSession'
-ran = [c for c in cases if c.get('name') == name]
-if len(ran) != 1 or any(list(c) for c in ran):
-    sys.exit(f'FAIL: expected exactly one passing {name}; found {len(ran)} of {len(cases)} cases')
-print(f'PASS: {name} executed and passed ({len(cases)} case(s) in results)')
-PY
+SHARED_APP_RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/js-shared-app-results"
+"$ROOT_DIR/scripts/check-js-shared-app-results.py" --results-dir "$RESULTS_DIR" \
+  --evidence-dir "$SHARED_APP_RESULTS_DIR"

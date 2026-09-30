@@ -199,7 +199,7 @@ afterEach(async () => {
   await Promise.all(open.splice(0).map(({ hub, id }) => hub.close(id)));
 });
 
-describe('AndroidConnectionHub', () => {
+describe('Android PocketShellApi platform', () => {
   it('dials through the controller, pins a first-contact key, and never accepts a changed one', async () => {
     const first = harness();
     const connected = await first.hub.connect(target);
@@ -307,9 +307,7 @@ describe('AndroidConnectionHub', () => {
     expect(connectionStateFor({ ...base, phase: 'error', connectionId: null })).toBe('lost');
     expect(connectionStateFor({ ...base, phase: 'lost', connectionId: null })).toBe('lost');
   });
-});
 
-describe('createAndroidPlatform', () => {
   function platform() {
     const { native, storage, controllers } = harness();
     const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
@@ -382,9 +380,7 @@ describe('createAndroidPlatform', () => {
     await settle(() => controllers.at(-1)!.getSnapshot().phase === 'connected');
     expect(resumed).toBe(0);
   });
-});
 
-describe('selectShell', () => {
   it('mounts the shared app unless the launch asked for the legacy screens', () => {
     expect(selectShell('')).toBe('shared');
     expect(selectShell('?shell=shared')).toBe('shared');

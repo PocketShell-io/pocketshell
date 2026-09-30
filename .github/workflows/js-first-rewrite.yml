@@ -198,6 +198,8 @@ jobs:
             --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Shared app" scripts/check-js-shared-app-results.py \
+            --results-dir android/app/build/outputs/js-shared-app-results
 
           composer_root="android/app/build/outputs/js-composer"
           composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"

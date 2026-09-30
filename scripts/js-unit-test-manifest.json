@@ -226,6 +226,21 @@
         "writes exact binary bytes to the selected document and completes the byte count",
         "aborts a partial save when the document provider rejects a chunk"
       ]
+    },
+    "tests/unit/androidPlatform.test.ts": {
+      "suite": "Android PocketShellApi platform",
+      "tests": [
+        "dials through the controller, pins a first-contact key, and never accepts a changed one",
+        "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
+        "retires the superseded shell id when another session is attached",
+        "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
+        "maps controller phases onto the shared connection states",
+        "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
+        "refuses unimplemented work by name instead of pretending",
+        "reports a saved host whose key did not survive the app session as a dial failure",
+        "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
+        "mounts the shared app unless the launch asked for the legacy screens"
+      ]
     }
   }
 }
