@@ -1,10 +1,10 @@
 # JS-first Android rewrite plan (0.6.0)
 
-Issue: [#2854](https://github.com/PocketShell-io/pocketshell/issues/2854). Branch: `rewrite/js-first-0.6.0`. This document is the architecture gate before deleting the current Android product implementation. `0.6.0` is a future candidate, not a release action. The `0.5.6` correction stays on `main`.
+Issue: [#2854](https://github.com/PocketShell-io/pocketshell/issues/2854). Branch: developed on `rewrite/js-first-0.6.0`, promoted to `main` as 0.6.0 development by [#2934](https://github.com/PocketShell-io/pocketshell/issues/2934); the 0.5.x line moved to `release/0.5.x`. This document is the architecture gate before deleting the current Android product implementation. `0.6.0` is a future candidate, not a release action. The `0.5.6` correction and later 0.5.x hotfixes live on `release/0.5.x`.
 
 ## Decision and constraints
 
-The maintainer chose a fresh JS-first Android implementation and authorized replacing the current `app2`/`shared` product code on this branch. Keep `tests/docker/` and its pinned SSH/aplexer fixtures. Preserve installed user data, the Android package/signing identity, the host `pocketshell` CLI contract, and the release safety gates. The old app continues on `main` while this branch is built and reviewed.
+The maintainer chose a fresh JS-first Android implementation and authorized replacing the current `app2`/`shared` product code on this branch. Keep `tests/docker/` and its pinned SSH/aplexer fixtures. Preserve installed user data, the Android package/signing identity, the host `pocketshell` CLI contract, and the release safety gates. The old app continues on `release/0.5.x` while 0.6.0 is built and reviewed on `main`.
 
 This is the cardinal connection-core rewrite described by D28. The replacement will have one connection/session policy owner in TypeScript. Native Android code may perform physical SSH and device operations but must not contain a second reconnect/session decision path. D22 means deleting superseded product code and avoiding a hidden Kotlin fallback. The exact pre-rewrite baseline is `00bb3eff7ca23a6bce442ec9314af0100747ece5`; rebase the branch after the separate 0.5.6 correction without losing this reference.
 
@@ -80,7 +80,7 @@ Keep `tests/docker/`, `tests/docker/fixture-pins.txt`, image self-checks and ind
 3. **Core host/session path.** Implement `HostCliCore` in the core repo, native SSH plugin and one TS connection/session controller. Replace hosts/workspaces/tree/terminal screens with shared design. Delete corresponding Kotlin product modules on the rewrite branch only as replacement behavior becomes testable.
 4. **Input and persisted data.** Define composer transaction, attachments/drafts, explicit-stop dictation, share adapters, per-host snippets and command chips, sync unknown-field semantics and installed-data migration. Keep portable input and draft policy in JS/core, with Android limited to speech, content URIs and secure storage. Use shared contract vectors and Android journeys.
 5. **Daily-use parity.** Restore the phone's one-tap Up/Down/Enter controls and floating hotkeys palette, then files/editor, usage, ports/auto-forward, settings, diagnostics and remaining feature inventory. The hotkeys launcher stays reachable with the real IME open; the palette floats inside the terminal without resizing its cells. Review desktop/phone design side by side and prove exact key bytes with the Docker PTY oracle.
-6. **Qualification.** Full Docker and device journeys, upgrade test, connection fault/soak tests, visual sign-off, versionCode check and exact-SHA release gates. Merge to `main` only after reviewer approval and green gates; tag 0.6.0 only later from that validated main commit.
+6. **Qualification.** Full Docker and device journeys, upgrade test, connection fault/soak tests, visual sign-off, versionCode check and exact-SHA release gates. The maintainer moved development to `main` before this milestone (#2934), so the gate now applies to the tag: tag 0.6.0 only after reviewer approval and green release gates on a validated `main` commit.
 
 Milestones 2–5 require issue-sized implementer/reviewer loops, not one large unreviewed branch change. A 6–9 week candidate is a planning estimate, not a delivery promise. The foundation spike is the decision point before removing most of the old app.
 

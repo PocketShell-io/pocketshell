@@ -39,9 +39,9 @@ scripts/agents-pool.sh down 2243 2244
 Do not assign port 2222 to a pool lane. It is the legacy single-lane identity
 used by the default connected-test path.
 
-## JS-first rewrite branch
+## JS-first lanes on `main`
 
-On `rewrite/js-first-0.6.0`, use the explicit packaged lane through
+On `main` (the JS-first 0.6.0 line since #2934), use the explicit packaged lane through
 `scripts/connected-test.sh`. Every run needs a worktree-specific package suffix;
 Docker lanes also take the exact fixture port, and lifecycle takes the
 container name:

@@ -1,12 +1,13 @@
 # Testing and QA
 
-On `rewrite/js-first-0.6.0`, the product is the Vue/Capacitor shell. Run its
-checks with `pnpm test:unit`, `scripts/assemble-debug.sh`, the JS-first
-connected lanes below, and `scripts/test-agents-fixture-aplexer.sh --docker`.
-The later app2 journey inventory describes the `main`/`stable` contract while
-the rewrite's full feature suite and D36/D37 verdicts remain incomplete. This
-branch is not a complete 0.6.0 release gate. The temporary branch CI boundary
-and #2863 replacement work are documented in
+Since #2934, `main` is the JS-first 0.6.0 development line: the product is
+the Vue/Capacitor app. Run its checks with `scripts/run-js-unit-gate.sh`,
+`pnpm typecheck`, `scripts/assemble-debug.sh`, the JS-first connected lanes
+below, and `scripts/test-agents-fixture-aplexer.sh --docker`. The later app2
+journey inventory ("Legacy app2 ..." sections) describes the Kotlin contract
+that now lives only on `release/0.5.x`. `main` is not a complete 0.6.0
+release gate: its full feature suite and D36/D37 verdicts are #2863's work,
+and it currently has no scheduled run. The CI boundary is documented in
 [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md).
 
 PocketShell has two end-to-end surfaces:
@@ -21,20 +22,24 @@ that attach, input, or stop works for a user.
 
 ## Fast local checks
 
-Run these from the repository root on `rewrite/js-first-0.6.0`:
+Run these from the repository root on `main`, after
+`git submodule update --init --recursive` and `pnpm install --frozen-lockfile`:
 
 ```bash
-pnpm test:unit
+scripts/run-js-unit-gate.sh
+pnpm typecheck
 scripts/assemble-debug.sh
 git diff --check
 ```
 
-`pnpm test:unit` runs the JS unit tests. `assemble-debug.sh` builds the JS app,
+`scripts/run-js-unit-gate.sh` runs the complete Vitest suite and fails unless
+every registered test file and title ran (`pnpm test:unit` is the unchecked
+quick loop). `assemble-debug.sh` builds the JS app,
 syncs Capacitor, and assembles a debug APK; it does not build connected tests.
 
 The remaining legacy app2 Gradle commands and journey inventory describe
-`main`/`stable` while their existing D36/D37 gates remain active. They are not
-available on this branch after the Kotlin product modules were removed.
+`release/0.5.x`. They are not available on `main`, where the Kotlin product
+modules and root Gradle graph were removed.
 
 ## JS-first packaged Android lanes
 
@@ -118,7 +123,7 @@ from a product or test failure (issue #1989).
 | 10–20 GiB | run with a `WARN: disk preflight` line naming the cleanup command |
 | above 20 GiB | run silently |
 
-The legacy `main`/`stable` app2 runner's
+The legacy `release/0.5.x` app2 runner's
 `connected-test.sh --cleanup-suffixes` mode is exempt because it builds nothing.
 That option is not part of the JS-first runner. Use `scripts/disk-cleanup.sh`
 for serialized safe-list cleanup; it defaults to a dry run and `--apply`
@@ -131,11 +136,10 @@ Release validation has a larger fixed admission budget:
 | below 24 GiB | refuse the release validation, exit **76**, and print the safe cleanup command |
 | 24 GiB or more | reclaim stale copied worktrees, then start normally |
 
-## Legacy app2 Android emulator on main/stable
+## Legacy app2 Android emulator on release/0.5.x
 
-These commands apply only on `main`/`stable`, where the legacy app2 runner is
-still present while #2863's full replacement gates are being built. On
-`rewrite/js-first-0.6.0`, use the explicit JS-first lanes above.
+These commands apply only on `release/0.5.x`, where the legacy app2 runner is
+still present. On `main`, use the explicit JS-first lanes above.
 
 The maintained local AVD is `test`. The SDK paths on the maintainer box are:
 
@@ -310,9 +314,16 @@ in `AGENTS.md`, `process.md`, `scripts/lib/scope-run.sh`,
 
 ## CI and release evidence
 
-The required unit lanes run the JVM and Python suites plus static guards. The
-app2 workflow runs the unfiltered emulator journey lane and the real SSH
-integration lanes. The pre-release confidence gate repeats the APK identity,
+On `main`, `.github/workflows/js-first-rewrite.yml` runs on every push and
+pull request. Its job `JS checks and Android debug APK` is the required PR
+check (JS unit gate, typecheck, result-guard self-tests, APK identity and
+signing, packaged API 35 lanes against Docker), and `Docker agents fixture
+contract` exercises the pinned fixture. There is no scheduled workflow on
+`main` until #2863 replaces the D36/D37 verdicts. On `release/0.5.x`, the
+required unit lanes run the JVM suites plus static guards, and the app2
+workflow runs the unfiltered emulator journey lane and the real SSH
+integration lanes, but those workflows trigger only for `main`/`stable`
+pushes and PRs (see [release.md](release.md#release-05x-hotfixes)). The pre-release confidence gate repeats the APK identity,
 Docker fixture, emulator, and release-test ledger checks before a tag.
 
 Release work follows [release.md](release.md). A release note or status report

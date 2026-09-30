@@ -2,9 +2,9 @@ name: JS-first rewrite
 
 on:
   push:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
   pull_request:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
 
 concurrency:
   group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}

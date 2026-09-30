@@ -77,10 +77,13 @@ The shell is not a visual acceptance claim. Follow
 should use the extracted shared desktop components tracked by
 [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3).
 
-## Temporary branch CI boundary
+## CI boundary on `main`
 
+Since #2934 the rewrite lives on `main` (0.6.0 development, not released) and
+the pre-rewrite line lives on `release/0.5.x`.
 `.github/workflows/js-first-rewrite.yml` runs on pushes and pull requests to
-`rewrite/js-first-0.6.0`. It installs the locked JS dependencies, requires the
+`main`; its job `JS checks and Android debug APK` is the required PR check. It
+installs the locked JS dependencies, requires the
 exact registered JS unit suite, packages the debug APK, verifies its package,
 signature, and `derive-version.sh` version, runs a packaged API 35 Android
 smoke suite, and runs the pinned Docker agents fixture. The smoke suite
@@ -103,18 +106,18 @@ At the current foundation state the checker reports all 24 journeys missing.
 Its class-level contract must be tightened to exact method names as the real
 journeys land.
 
-The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached to
-`main` and `stable`; they are not valid for this JS tree because their Kotlin
-modules are gone. This branch has no JS replacement for the scheduled D36
-full-suite verdict or the exact-commit D37 fault verdict. Pull requests into
-those branches must wait for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863),
-which owns those blocking gates. A green foundation workflow is not release
-evidence: 0.6.0 is blocked until the feature journeys and both release verdicts
-are migrated and reviewer-validated. Do not manually dispatch a legacy Gradle
-workflow against this branch.
+The Kotlin-only `tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
+`full-suite-notify.yml` workflows were hard-cut from `main` by #2934; they
+remain on `release/0.5.x`. `main` has no JS replacement yet for the scheduled
+D36 full-suite verdict or the exact-commit D37 fault verdict, and no
+`schedule:` workflow at all:
+[#2863](https://github.com/PocketShell-io/pocketshell/issues/2863) owns those
+blocking gates. A green `JS-first rewrite` run is not release evidence: 0.6.0
+is blocked until the feature journeys and both release verdicts are migrated
+and reviewer-validated.
 
 The legacy `scripts/check-unit-gate-wiring.sh` is not part of the rewrite CI.
-On this branch it exits 123 with no output: its C9 scan treats the retained
+On `main` it exits 123 with no output: its C9 scan treats the retained
 Capacitor `android/app/build.gradle` as the old Kotlin test graph, then `xargs`
 returns 123 when `grep` finds no Kotlin test harness path in that file. Keep
 that guard unchanged until #2863 replaces its Gradle-specific scan with a
