@@ -6,6 +6,11 @@ comment or review verdict. The unifying rule: "I could not check" must
 never read the same as "I checked and it is fine." An absent, truncated,
 cached, or killed result must never render as a passing one.
 
+Most entries are incident history from the 0.5.x Kotlin line. The `app2`,
+`:shared:*`, root Gradle, Roborazzi and `scripts/render.sh` files and tasks
+they name no longer exist on the 0.6.0 branch. The failure shapes still apply
+to the JS unit gate and the packaged-APK lanes.
+
 ## Never run a repository program through an inferred interpreter
 
 Run `.sh` files with `bash`/`sh` and `.py` files directly — never guess the

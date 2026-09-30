@@ -1,16 +1,44 @@
-# Previous Android architecture (main/stable)
+# Android architecture
 
-This document describes the app2 Kotlin architecture that remains on `main` and
-`stable` during the JS-first rewrite. The rewrite branch's current foundation is
-documented in [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md);
-feature destinations and data migration contracts are in
-[js-first-rewrite-inventory.md](js-first-rewrite-inventory.md).
+## 0.6.0 on `main`
 
-This is the current post-rewrite architecture. `app2` is the only Android
-application module, and the host session runtime is aplexer. The product has one
-session contract; there is no client-side session manager selection.
+`main` is the JS-first 0.6.0 app. Per D42 there is one shared core across
+platforms. Each client (Android, desktop, web) owns only its platform code.
 
-## Module layout
+```text
+vendor/pocketshell-core/    pinned submodule: shared TypeScript contract layer
+                            (HostCliCore, ConnectionController, SshCapability,
+                            composer, sync, usage/ports policy) and packages/ui
+                            (shared tokens, themes, AppIcon, ComposerControls)
+src/                        Vue app: App.vue, screens in components/, session/,
+                            policy/, stores/, sync/, migration/, and native/
+                            (TypeScript wrappers for the Capacitor plugins)
+android/                    Capacitor host: MainActivity and the native plugins
+                            (SshCapabilityPlugin, KeyboardInsetsPlugin,
+                            SpeechRecognitionPlugin, DocumentContentPlugin,
+                            InstalledDataMigrationPlugin)
+tests/unit/                 Vitest suite (scripts/run-js-unit-gate.sh)
+tests/docker/               disposable SSH and aplexer fixtures
+```
+
+The native SSH plugin implements core's `SshCapability`. Core's
+`ConnectionController` owns host-key verdicts, host CLI calls, session
+switching, reconnect and grace. The plugin moves bytes and reports transport
+state. See [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md),
+[js-first-rewrite-inventory.md](js-first-rewrite-inventory.md) and
+[design-system.md](design-system.md).
+
+## 0.5.x history (`release/0.5.x`)
+
+**Everything below is 0.5.x history.** It describes the Kotlin `app2`
+architecture, which now lives only on `release/0.5.x` and takes hotfixes only.
+None of its modules exist on `main`.
+
+On `release/0.5.x`, `app2` is the only Android application module, and the
+host session runtime is aplexer. The product has one session contract; there
+is no client-side session manager selection.
+
+### Module layout
 
 ```text
 app2/                      Compose application and composition root
@@ -38,7 +66,7 @@ those modules through `ConnectionsRegistry`. `core-portfwd` auto-forwards
 in-window ports once a supervisor is mounted; auto-forward resume is
 `ProcessLifecycleOwner` `ON_START`, not a screen.
 
-## Session contract
+### Session contract
 
 The app calls these host commands over SSH:
 
@@ -67,7 +95,7 @@ vendored terminal emulator, and `TerminalHostView` renders that emulator. The
 client does not parse a multiplexer control protocol, enumerate sockets, or
 maintain a second session state machine.
 
-## Connection and reconnect
+### Connection and reconnect
 
 `RealHostConnectionFactory` is the single SSH dial site. A
 `HostConnection` owns bounded exec, PTY, SFTP, and forwarding channels. A lost
@@ -81,7 +109,7 @@ The terminal surface is not cleared during reconnect. The emulator keeps its
 last rendered frame until the new PTY supplies bytes. No client-side pane
 snapshot, socket sweep, or hidden legacy attach path exists.
 
-## Agent state
+### Agent state
 
 The host derives an optional agent kind from the live aplexer workload's
 descendant process tree and recent hook/log evidence. `core-hostapi` parses the
@@ -89,7 +117,7 @@ normalized fields; the Android session tree treats them as metadata and does
 not invent a second source of session identity. Conversation history remains a
 host-file concern and is not required to attach a terminal.
 
-## Storage and the migration boundary
+### Storage and the migration boundary
 
 `core-storage` uses Room database schema 21. `HostEntity` stores SSH and
 PocketShell capability state but no session-runtime installation flag.
@@ -105,7 +133,7 @@ The storage tests create old table shapes and verify that the 20→21 rebuild
 removes it. Product grep checks therefore exclude only the historical migration
 SQL and its exported schemas, with this section as the reason.
 
-## Host helper packaging
+### Host helper packaging
 
 The PyPI package pins aplexer and resolves the bundled `a` next to the Python
 interpreter. A separately installed binary on `PATH` cannot become the product's
@@ -114,7 +142,7 @@ release from `tests/docker/fixture-pins.txt`, installs both `a` and its
 `aplexer` worker, and runs a create → list → kill → gone self-check while the
 image is built.
 
-## Testing and operational boundary
+### Testing and operational boundary
 
 J02, J03, J04, and J14 create or inspect real aplexer sessions in the Docker
 fixture. The full Android journey lane runs against that image, while the JVM

@@ -67,6 +67,7 @@ public final class SshPtyDockerJourneyTest {
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
     private int nativePluginCallSequence;
+    private boolean injectedInputVerified;
 
     @Before
     public void launchPackagedShell() {
@@ -576,6 +577,7 @@ public final class SshPtyDockerJourneyTest {
     private void submitTerminalCommand(String command, String checkpoint) throws Exception {
         JSONObject before = terminalInputStats();
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
+        ensureInjectedInputDelivered(checkpoint);
         pasteTerminalText(command, checkpoint);
         waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint + " command paste");
         JSONObject beforeEnter = terminalInputStats();
@@ -965,6 +967,7 @@ public final class SshPtyDockerJourneyTest {
                 "\\033[1;38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m%s",
                 Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent), markerTrailingRows);
         String markerCommand = "printf '" + markerFormat + "' '" + marker + "'";
+        ensureInjectedInputDelivered(checkpoint);
         // Inject the shell command through xterm's paste handler to avoid emulator per-character IME
         // duplication. The packaged composer journey separately exercises the real Android IME path.
         pasteTerminalText(markerCommand, checkpoint);
@@ -982,6 +985,25 @@ public final class SshPtyDockerJourneyTest {
         Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " ACK_DRAIN " + checkpoint
                 + " " + terminalInputStats());
         return checkpointData;
+    }
+
+    /**
+     * Issue #2946: the first Android-injected key of this journey is the
+     * terminal Enter. Before relying on it, prove an injected no-op key
+     * reaches the focused xterm helper textarea, so a system window holding
+     * input focus fails as ANDROID_INPUT_INJECTION_NOT_DELIVERED instead of
+     * as a 20 s product Enter-ack timeout.
+     */
+    private void ensureInjectedInputDelivered(String checkpoint) throws Exception {
+        if (injectedInputVerified) return;
+        JSONObject before = terminalInputStats();
+        AndroidInputDeliveryProbe.assertInjectedKeyReachesPage("lifecycle " + checkpoint + " before the first injected Enter",
+                this::evalRaw, action -> scenario.onActivity(action::accept));
+        JSONObject stats = terminalInputStats();
+        assertEquals("the no-op probe key must not leave terminal input pending at " + checkpoint, 0, stats.getInt("pending"));
+        assertEquals("the no-op probe key must not write terminal input at " + checkpoint,
+                before.getInt("ackCount"), stats.getInt("ackCount"));
+        injectedInputVerified = true;
     }
 
     private void pasteTerminalText(String text, String checkpoint) throws Exception {

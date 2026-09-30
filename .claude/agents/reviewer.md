@@ -108,35 +108,47 @@ infra is fixed). Never downgrade a BLOCKED to APPROVED on a JVM proxy.
    - `git status --short` — what files changed
    - `git diff <file>` for each modified file
    - Read each new source file in full
-4. Run the build and tests yourself — never approve without running them:
-   - `scripts/assemble-debug.sh` for the debug APK / compile check (see `process.md` § Local debug APK). Do not use a bare `./gradlew assembleDebug` or the release-gate `--no-daemon --no-build-cache` profile here.
-   - `./gradlew :module:test` for unit tests
-   - `./gradlew :module:check` for integration tests
+4. Run the build and tests yourself — never approve without running them. On `main` (JS-first 0.6.0 since #2934), after `git submodule update --init --recursive` and `pnpm install --frozen-lockfile`:
+   - `scripts/run-js-unit-gate.sh` for the exact registered Vitest suite (count must be > 0 and match `scripts/js-unit-test-manifest.json`)
+   - `pnpm typecheck`
+   - `scripts/assemble-debug.sh` for the debug APK / compile check (see `process.md` § Local debug APK); there is no root `./gradlew` on `main`
+   - the result-guard self-tests the diff touches (`scripts/check-js-*-results.py --self-test`, `scripts/check-test-validity.sh --j1-only`)
+   - `scripts/test-agents-fixture-aplexer.sh --docker` when host/fixture behaviour is involved
    - Capture exit codes and the last 15–20 lines of output
+   - On `release/0.5.x` only: `./gradlew :module:test` / `:module:check`, with that branch's `scripts/assemble-debug.sh`.
+   - Check architecture against D42 (`docs/decisions.md`): shared functionality belongs in the pinned `pocketshell-core` (logic, controllers, the single session/reconnect owner, shared app UI), and this repo holds only Android/mobile-only code plugged into the shared app's extension points plus the Android `PocketShellApi`. An Android re-implementation of shared functionality, or platform code in core, is a `CHANGES REQUESTED`.
 5. For mobile, UI, terminal/input, SSH, tmux, agent, setup, and release-gate
    issues, run the relevant Android emulator validation too. Code inspection
    and JVM tests are not enough for approval. Use the explicit SDK paths from
    `AGENTS.md` before claiming `adb` or `emulator` is unavailable.
    - **Run connected/emulator tests via
-     `scripts/connected-test.sh --suffix i<issue> <gradle args>`** (#672): it
-     holds the shared AVD `flock` and installs under a per-worktree
-     `applicationId` (`com.pocketshell.app.i<issue>`) so you coexist with
-     sibling agents instead of `adb install` SIGKILL-ing each other. Do NOT
-     fire a bare `./gradlew connectedDebugAndroidTest` while other agents run.
+     `scripts/connected-test.sh <lane> --suffix i<issue>`** (lanes `smoke`,
+     `lifecycle`, `composer-docker`) or the lane's `scripts/connected-js-*.sh`
+     runner (#672): it holds the per-serial AVD lock and installs under a
+     per-worktree `applicationId` suffix so you coexist with sibling agents
+     instead of `adb install` SIGKILL-ing each other. With several emulators
+     online, set `ANDROID_SERIAL`. Never run a raw Gradle connected task while
+     other agents run. (`release/0.5.x`: `scripts/connected-test.sh --suffix
+     i<issue>`.)
      A `Process crashed`/signal-9 with fewer tests than expected is a
      sibling-install collision (re-run), NOT an assertion failure — never
      hold the implementer responsible for it.
 
-   **For UI/design issues**: ALSO run `scripts/render.sh` as a fast first
-   visual check and compare the render PNG to any issue-linked design reference —
-   but this does NOT replace the emulator validation above. The JVM render is
-   seconds; the emulator is the acceptance check. Do both. (#555)
+   **For UI/design issues**: ALSO check the view in the Vite dev server
+   (`pnpm dev`, phone-width browser) as a fast first visual check and compare
+   it to any issue-linked design reference — but this does NOT replace the
+   emulator validation above. The browser render is seconds; the packaged
+   emulator is the acceptance check. Do both. (`scripts/render.sh` is the
+   Compose harness on `release/0.5.x` only.)
 
    **CI-environment compatibility (locked rule 2026-05-27)** — when a
    connected test depends on a Docker service, a port, or a fixture
    beyond the default `agents` (port 2222), you MUST verify the CI
-   workflow brings it up. Open `.github/workflows/tests.yml` and confirm
-   the service is started by the emulator job before approving. If the
+   workflow brings it up. On `main`, open `.github/workflows/js-first-rewrite.yml`
+   and confirm the `JS checks and Android debug APK` job starts the service
+   (its "Start ... Docker agents" steps / `scripts/agents-pool.sh up`) and that
+   `scripts/ci-js-first-packaged-lanes.sh` runs the test; on `release/0.5.x`
+   that branch's `tests.yml`/`app2.yml`. Check before approving. If the
    test references port 2226 (`flaky-agent`), 2227 (the `tmux` chain),
    or any other fixture the workflow doesn't currently start, that's a
    blocker — file a follow-up to patch the workflow or mark the test
@@ -239,9 +251,12 @@ is NOT done. Before you even consider `APPROVED`, run this gate:
    - **Reproduces the maintainer's EXACT reported scenario** (the real screen /
      session state / connection state), per the F2/F3 rules in `process.md` —
      not a convenient proxy.
-   - **Runs in a gate that will actually execute** — per-push CI
-     (`.github/workflows/app2.yml`'s `app2-journey` job) or the
-     pre-tag release gate. Confirm it is wired in. A regression test that no gate
+   - **Runs in a gate that will actually execute** — on `main`, the
+     `JS checks and Android debug APK` job in `.github/workflows/js-first-rewrite.yml`
+     (Vitest via the manifest-checked unit gate; packaged journeys via
+     `scripts/ci-js-first-packaged-lanes.sh` plus an exact-result checker);
+     on `release/0.5.x`, `app2.yml`'s `app2-journey` job. Note `main` has no
+     scheduled or pre-tag release gate until #2863. Confirm it is wired in. A regression test that no gate
      runs is the same as no test.
 
 3. **No durable test ⇒ reject.** If a recurring issue's fix has no

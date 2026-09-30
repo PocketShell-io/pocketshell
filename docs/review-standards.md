@@ -26,8 +26,9 @@ emulator + Docker, the reviewer must:
 Code-read + one happy-path screenshot is grounds for `CHANGES REQUESTED`.
 
 D34 exception for connection-core mechanism fixes (transport/storm/reconnect/
-lease): accept an observed headless real-transport red→green (JVM + Docker
-`:shared:core-ssh:integrationTest`/toxiproxy) as first-class proof — don't
+lease): accept an observed headless real-transport red→green (on `main`,
+pocketshell-core's Docker `npm run test:integration` tier; on `release/0.5.x`,
+the Kotlin Docker/toxiproxy integration suite) as first-class proof — don't
 return `BLOCKED` for a missing emulator when a qualifying headless
 observation exists. Still reject proof that only exercises a seam/lambda
 having fired rather than the symptom-defining signal on the real transport.
@@ -71,7 +72,7 @@ reported as "hidden / clipped / cut off / squished / can't reach":
   fixed.
 - Reproduce the exact reported scenario, including transient state —
   keyboard up if that's the report, the right pane type (shell vs agent).
-- Isolated component tests and Roborazzi renders are the fast first check
+- Isolated component tests and browser (`pnpm dev`) renders are the fast first check
   only, never sufficient alone to close an occlusion/layout bug. The
   acceptance is a full-device emulator screenshot of the exact reported
   state, showing every previously-hidden control fully visible and
@@ -102,23 +103,16 @@ harness matches production:
   Compose actually consumed to `assertNodeFullyWithinSystemBarsContentArea`
   — don't assert against zero.
 
-## Fast design renders (Roborazzi) — fast first check, never the acceptance
+## Fast browser design checks — fast first check, never the acceptance
 
-`scripts/render.sh` (optionally `scripts/render.sh <caseName>`) renders real
-composables under the actual `PocketShellTheme` to PNGs in seconds, no
-emulator — add/adjust a `@Test` case in
-`shared/ui-kit/src/test/java/com/pocketshell/uikit/render/DesignRenders.kt`.
-Both the implementer (before the emulator run) and the reviewer (as a fast
-first visual check, in addition to — never instead of — full emulator
-validation) should render the changed component and compare it to any
-linked mockup.
-
-Render PNGs are a side effect of test execution, not a declared Gradle task
-output — an exit-zero `FROM-CACHE`/`UP-TO-DATE` task is not render
-evidence. `scripts/render.sh` forces the render task fresh and validates the
-mapped PNG was recreated non-empty after a freshness boundary; never replace
-that with a blanket `--rerun-tasks`, and never accept a PNG merely listed
-from an earlier filter run.
+`pnpm dev` serves the real Vue screens with the shared `packages/ui` tokens
+in a browser, with no emulator. Screenshot them at a phone-sized viewport (see
+[design-system.md](design-system.md) "Visual checks"). Both the implementer
+(before the emulator run) and the reviewer (as a fast first visual check, in
+addition to — never instead of — full emulator validation) should look at the
+changed screen and compare it to any linked mockup. The browser has no native
+SSH, safe-area insets or IME, so layout that depends on them is proven only on
+the emulator.
 
 ## Regression-proof validity checklist (per PR, for layout/lifecycle/occlusion/keyboard fixes)
 
@@ -150,12 +144,11 @@ contradicts the screenshots; timing files are missing for a responsiveness
 claim; logs are from another run or contradict the claimed result; or a
 full-device screenshot is the only proof of terminal content.
 
-Local workbench: `scripts/connected-test.sh --suffix i<N>` runs app2's whole
-instrumented set unfiltered against a booted emulator (the CI shape, issue
-#2474); add `-Pandroid.testInstrumentationRunnerArguments.class=<FQCN>` to
-reproduce one journey. For screenshots,
-`RUN_ID=issue-<N>-review scripts/capture-walkthrough-screenshots.sh` gives a
-citable rerun that hard-fails unless every app2 journey rendered a frame.
+Local workbench on `main`: `scripts/connected-test.sh <lane> --suffix i<N>`
+runs one packaged JS lane (`smoke`, `lifecycle` or `composer-docker`) against a
+booted emulator, and each lane asserts its exact JUnit result set. The legacy
+unfiltered instrumented suite and `scripts/capture-walkthrough-screenshots.sh`
+screenshot reruns are 0.5.x history and apply only on `release/0.5.x`.
 Issue #2481 deleted `scripts/terminal-workbench.sh` and its
 `REAL_AGENTS=1` real-agent mode with the `app` module classes they drove;
 real-agent CLI rendering has no successor because agent awareness is a cut
