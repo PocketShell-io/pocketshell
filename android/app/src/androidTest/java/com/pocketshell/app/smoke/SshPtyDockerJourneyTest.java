@@ -701,16 +701,44 @@ public final class SshPtyDockerJourneyTest {
 
         org.json.JSONArray phases = new org.json.JSONArray(
                 evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
+        // Count transitions into a phase, not recorder samples of it (#2943): a
+        // reconnect that stays in `reconnecting` while another field changes is
+        // still one reconnect, while reconnecting -> error -> reconnecting is two.
         int reconnectingPhases = 0;
         int listingPhases = 0;
+        String previousPhase = "";
+        String previousConnectionId = "";
         for (int index = 0; index < phases.length(); index += 1) {
             JSONObject phase = phases.getJSONObject(index);
-            if (phase.optLong("at") < mutationRequestedAtEpochMs) continue;
-            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
-            if ("listing".equals(phase.optString("phase"))
-                    && connectionDuringFreshList.equals(phase.optString("connectionId"))) listingPhases += 1;
+            String name = phase.optString("phase");
+            String connectionId = phase.optString("connectionId");
+            boolean entered = !name.equals(previousPhase) || !connectionId.equals(previousConnectionId);
+            previousPhase = name;
+            previousConnectionId = connectionId;
+            if (phase.optLong("at") < mutationRequestedAtEpochMs || !entered) continue;
+            if ("reconnecting".equals(name)) reconnectingPhases += 1;
+            if ("listing".equals(name) && connectionDuringFreshList.equals(connectionId)) listingPhases += 1;
         }
-        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES " + phases);
+        // Issue #2943: the full phase list outgrows logcat's ~4 KB line limit,
+        // so keep it as a same-run file artifact the lane pulls even on failure.
+        writeText(new File(artifactDirectory, "uncertain-mutation-phases.json"), new JSONObject()
+                .put("schema", 1)
+                .put("runId", runId)
+                .put("target", target)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", connectionDuringFreshList)
+                .put("mutationRequestedAtEpochMs", mutationRequestedAtEpochMs)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases)
+                .put("phases", phases)
+                .put("bridgeEvents", new org.json.JSONArray(
+                        evalString("JSON.stringify(window.__pocketshellJourney?.bridgeEvents ?? [])")))
+                .toString(2));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES "
+                + new JSONObject().put("file", "uncertain-mutation-phases.json")
+                .put("phaseCount", phases.length())
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases));
         assertEquals("one JS reconnect must follow the lost create response", 1, reconnectingPhases);
         assertEquals("one fresh session-list phase must reconcile the uncertain create", 1, listingPhases);
         assertEquals("the fixture's host CLI create identity must match the session shown in the refreshed UI",
@@ -753,7 +781,8 @@ public final class SshPtyDockerJourneyTest {
                 .put("freshListPhaseCount", listingPhases)
                 .put("sessionRow", createdRow)
                 .put("serverProofFile", "uncertain-mutation-server-proof.txt")
-                .put("fixtureEventsFile", "uncertain-mutation-fixture-events.txt");
+                .put("fixtureEventsFile", "uncertain-mutation-fixture-events.txt")
+                .put("phasesFile", "uncertain-mutation-phases.json");
     }
 
     private JSONObject attachAndCapture(JSONObject row, String checkpoint, String marker, File artifactDirectory) throws Exception {
@@ -1170,7 +1199,9 @@ public final class SshPtyDockerJourneyTest {
                 + "connectionId:d.sshConnectionId,generationId:d.sshGenerationId,selectedName:d.sshSelectedSession,"
                 + "selectedId:d.sshSelectedSessionId,workspace:d.sshSelectedWorkspace,tag:d.sshSelectedTag,"
                 + "retryAttempt:Number(d.sshRetryAttempt||0)}; const last=window.__pocketshellJourney.phases.at(-1);"
-                + "if(!last||Object.keys(next).some((key)=>last[key]!==next[key])) window.__pocketshellJourney.phases.push(next);};"
+                // #2943: compare every field except the sample time; otherwise any
+                // unrelated root attribute change re-records the unchanged phase.
+                + "if(!last||Object.keys(next).some((key)=>key!=='at'&&last[key]!==next[key])) window.__pocketshellJourney.phases.push(next);};"
                 + "sample(); window.__pocketshellJourney.observer=new MutationObserver(sample);"
                 + "window.__pocketshellJourney.observer.observe(root,{attributes:true});"
                 + "const plugin=window.Capacitor?.Plugins?.SshCapability; if(!plugin?.addListener) throw new Error('SSH native event bridge missing');"
@@ -1806,10 +1837,14 @@ public final class SshPtyDockerJourneyTest {
         int reconnectingPhases = 0;
         int recoveredLivePhaseObservations = 0;
         java.util.Set<String> recoveredLiveAttachIdentities = new java.util.HashSet<>();
+        String previousDropPhase = "";
         for (int index = 0; index < phasesAfterDrop.length(); index += 1) {
             JSONObject phase = phasesAfterDrop.getJSONObject(index);
+            boolean enteredPhase = !phase.optString("phase").equals(previousDropPhase);
+            previousDropPhase = phase.optString("phase");
             if (phase.optLong("at") < dropRequestedAtEpochMs) continue;
-            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
+            // Transitions into reconnecting, not repeated samples of it (#2943).
+            if (enteredPhase && "reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
             if ("live".equals(phase.optString("phase"))
                     && newConnectionId.equals(phase.optString("connectionId"))
                     && expectedSessionId.equals(phase.optString("selectedId"))
@@ -1820,6 +1855,20 @@ public final class SshPtyDockerJourneyTest {
             }
         }
         int recoveredLivePhases = recoveredLiveAttachIdentities.size();
+        // Issue #2943: keep the full phase list as a same-run file artifact;
+        // logcat truncates it at ~4 KB.
+        writeText(new File(artifactDirectory, "abrupt-drop-phases.json"), new JSONObject()
+                .put("schema", 1)
+                .put("runId", runId)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", newConnectionId)
+                .put("dropRequestedAtEpochMs", dropRequestedAtEpochMs)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("recoveredLivePhaseCount", recoveredLivePhases)
+                .put("phases", phasesAfterDrop)
+                .put("bridgeEvents", new org.json.JSONArray(
+                        evalString("JSON.stringify(window.__pocketshellJourney?.bridgeEvents ?? [])")))
+                .toString(2));
         assertEquals("one JS reconnect state must follow the single server-side SSH loss", 1, reconnectingPhases);
         assertTrue("fresh JS session attach must become live for the selected host session",
                 recoveredLivePhaseObservations > 0);
@@ -1875,6 +1924,7 @@ public final class SshPtyDockerJourneyTest {
                 .put("triggerRequestId", triggerRequestId)
                 .put("triggerSignal", "SIGKILL")
                 .put("triggerProofFile", "abrupt-drop-server-proof.txt")
+                .put("phasesFile", "abrupt-drop-phases.json")
                 .put("oldConnectionId", oldConnectionId)
                 .put("oldGenerationId", oldGenerationId)
                 .put("newConnectionId", newConnectionId)
