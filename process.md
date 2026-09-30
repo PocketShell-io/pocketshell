@@ -9,7 +9,7 @@ This document is the state-machine + roles + policy contract — the "how we wor
 - [docs/review-standards.md](docs/review-standards.md) — reviewer acceptance bars for terminal/session/visual work
 - [docs/lessons-learned.md](docs/lessons-learned.md) — durable operational lessons
 - [docs/release.md](docs/release.md) — release cut/stabilize/tag/merge-back procedure
-- [docs/decisions.md](docs/decisions.md) — full rationale behind every locked decision (D1–D36) referenced here
+- [docs/decisions.md](docs/decisions.md) — full rationale behind every locked decision (D1–D42) referenced here
 
 ## Sole-orchestrator operating mode
 
