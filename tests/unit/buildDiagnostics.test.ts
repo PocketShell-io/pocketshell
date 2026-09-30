@@ -1,12 +1,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { fontCssVariables } from '../../vendor/pocketshell-desktop/packages/ui/src/fonts';
-import { resolveTheme, THEME_CHOICE_DEFAULT } from '../../vendor/pocketshell-desktop/packages/ui/src/themes';
+import { fontCssVariables } from '@ui/fonts';
+import { resolveTheme, THEME_CHOICE_DEFAULT } from '@ui/themes';
 import { verifyBuildManifest } from '../../src/buildDiagnostics';
 import { formatBytes } from '../../vendor/pocketshell-core/src/byteSize';
 
 const coreRevision = '7d8899f96888c31b41242332f3b2810ea9133a44';
-const uiRevision = 'd10f866f06d2ceccfd8c2a99d30353436dda10b6';
 const code = new TextEncoder().encode('export const shell = true;');
 
 function manifestFor(bytes: Uint8Array = code) {
@@ -14,9 +13,8 @@ function manifestFor(bytes: Uint8Array = code) {
   const file = 'assets/index-test.js';
   const bundleAssetHash = createHash('sha256').update(`${file}\0${sha256}\n`).digest('hex');
   return {
-    schema: 1,
+    schema: 2,
     coreSourceRevision: coreRevision,
-    uiSourceRevision: uiRevision,
     bundleAssetHash,
     assets: [{ file, sha256 }],
   };
@@ -27,7 +25,7 @@ describe('packaged build diagnostics', () => {
     expect(formatBytes(1536)).toBe('1.5 KB');
   });
 
-  it('imports theme and font policy from the pinned shared UI source', () => {
+  it('imports theme and font policy from the shared UI package inside the core pin', () => {
     const theme = resolveTheme(THEME_CHOICE_DEFAULT);
     const fontVariables = fontCssVariables(
       { monospaceFontFamily: null, terminalFontSize: 13, editorFontSize: 13 },
@@ -39,18 +37,16 @@ describe('packaged build diagnostics', () => {
     expect(fontVariables['--term-font-size']).toBe('13px');
   });
 
-  it('accepts a manifest only when both pinned source revisions and exact bundle bytes match', async () => {
+  it('accepts a manifest only when the pinned core revision and exact bundle bytes match', async () => {
     const result = await verifyBuildManifest(
       manifestFor(),
       coreRevision,
-      uiRevision,
       async () => code,
     );
 
     expect(result).toEqual({
       ok: true,
       coreRevision,
-      uiRevision,
       bundleAssetHash: manifestFor().bundleAssetHash,
     });
   });
@@ -59,7 +55,6 @@ describe('packaged build diagnostics', () => {
     const result = await verifyBuildManifest(
       manifestFor(),
       '0000000000000000000000000000000000000000',
-      uiRevision,
       async () => code,
     );
 
@@ -67,23 +62,17 @@ describe('packaged build diagnostics', () => {
     if (!result.ok) expect(result.reason).toContain('Core source revision mismatch');
   });
 
-  it('fails closed when the recorded shared UI source revision differs', async () => {
-    const result = await verifyBuildManifest(
-      manifestFor(),
-      coreRevision,
-      '0000000000000000000000000000000000000000',
-      async () => code,
-    );
+  it('rejects a schema-1 manifest that still records a separate shared UI source', async () => {
+    const legacy = { ...manifestFor(), schema: 1, uiSourceRevision: 'd10f866f06d2ceccfd8c2a99d30353436dda10b6' };
+    const result = await verifyBuildManifest(legacy, coreRevision, async () => code);
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.reason).toContain('Shared UI source revision mismatch');
+    expect(result).toEqual({ ok: false, reason: 'Build manifest is missing or has an unsupported schema.' });
   });
 
   it('fails closed when the packaged asset bytes differ from the manifest', async () => {
     const result = await verifyBuildManifest(
       manifestFor(),
       coreRevision,
-      uiRevision,
       async () => new TextEncoder().encode('modified asset'),
     );
 
@@ -94,7 +83,6 @@ describe('packaged build diagnostics', () => {
     const result = await verifyBuildManifest(
       manifestFor(),
       coreRevision,
-      uiRevision,
       async () => null,
     );
 

@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import type { BuildVerification } from '../buildDiagnostics';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { useNavigationStore } from '../stores/navigation';
 
 defineProps<{
   buildVerification: BuildVerification | { checking: true };
   coreRevision: string;
-  uiRevision: string;
   bundleHash: string;
   buildStatus: string;
 }>();
@@ -23,8 +22,7 @@ const navigation = useNavigationStore();
       <dl class="diagnostic-list about-identity">
         <div><dt>App version</dt><dd>0.6.0 rewrite preview</dd></div>
         <div><dt>Build status</dt><dd data-testid="about-build-status">{{ buildStatus }}</dd></div>
-        <div><dt>pocketshell-core revision</dt><dd data-testid="about-core-revision">{{ coreRevision }}</dd></div>
-        <div><dt>Shared desktop UI revision</dt><dd data-testid="about-ui-revision">{{ uiRevision }}</dd></div>
+        <div><dt>pocketshell-core revision (core + shared UI)</dt><dd data-testid="about-core-revision">{{ coreRevision }}</dd></div>
         <div><dt>Bundled asset SHA-256</dt><dd data-testid="about-bundle-hash">{{ bundleHash }}</dd></div>
       </dl>
       <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">{{ buildVerification.reason }}</p>
