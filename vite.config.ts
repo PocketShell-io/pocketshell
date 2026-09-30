@@ -65,9 +65,23 @@ function bundledAssetManifest(coreRevision: string, uiRevision: string): Plugin 
   };
 }
 
+/** Libraries the shared app imports from inside the core submodule. */
+export const SHARED_APP_DEDUPE = [
+  'vue', 'pinia', 'vue-router',
+  '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links', '@xterm/addon-unicode11',
+  '@codemirror/commands', '@codemirror/language', '@codemirror/state', '@codemirror/view',
+  '@codemirror/legacy-modes', '@codemirror/lang-cpp', '@codemirror/lang-css', '@codemirror/lang-go',
+  '@codemirror/lang-html', '@codemirror/lang-java', '@codemirror/lang-javascript', '@codemirror/lang-json',
+  '@codemirror/lang-markdown', '@codemirror/lang-php', '@codemirror/lang-python', '@codemirror/lang-rust',
+  '@codemirror/lang-sql', '@codemirror/lang-vue', '@codemirror/lang-xml', '@codemirror/lang-yaml',
+  '@lezer/highlight', '@lezer/common', '@lezer/lr', 'marked',
+];
+
 export default defineConfig(() => {
   const core = readPinnedCore(repoRoot);
   const desktop = readPinnedDesktop(repoRoot);
+  const coreSource = path.dirname(core.sourceEntry);
+  const coreUiSource = path.join(coreSource, '..', 'packages', 'ui', 'src');
 
   return {
     base: './',
@@ -83,12 +97,20 @@ export default defineConfig(() => {
       __POCKETSHELL_UI_REVISION__: JSON.stringify(desktop.revision),
     },
     resolve: {
-      alias: {
-        '@pocketshell/core': core.sourceEntry,
-        '@pocketshell/ui/styles.css': desktop.stylesEntry,
-        '@pocketshell/ui': desktop.sourceEntry,
-        '@': path.join(repoRoot, 'src'),
-      },
+      // The shared app (core packages/ui) and its @pocketshell/core subpaths,
+      // spelled exactly as desktop and web alias them (#2936), so the same
+      // app tree resolves identically on all three platforms.
+      alias: [
+        { find: /^@ui\//, replacement: `${coreUiSource}/` },
+        { find: /^@pocketshell\/ui\/styles\.css$/, replacement: path.join(coreUiSource, 'styles.css') },
+        { find: /^@pocketshell\/ui$/, replacement: path.join(coreUiSource, 'index.ts') },
+        { find: /^@pocketshell\/core\/(shared|attachments|preview)\//, replacement: `${coreSource}/$1/` },
+        { find: /^@pocketshell\/core$/, replacement: core.sourceEntry },
+        { find: /^@\//, replacement: `${path.join(repoRoot, 'src')}/` },
+      ],
+      // The app tree lives inside the core submodule; without dedupe its
+      // bare imports could resolve a second vue/pinia/xterm instance.
+      dedupe: SHARED_APP_DEDUPE,
     },
   };
 });

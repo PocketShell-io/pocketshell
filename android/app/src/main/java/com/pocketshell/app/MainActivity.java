@@ -15,6 +15,13 @@ public class MainActivity extends BridgeActivity {
     private static final int MAX_RESUME_LAYOUT_ATTEMPTS = 30;
     private static final int WINDOW_HEIGHT_TOLERANCE_PX = 120;
     private static final long RESUME_LAYOUT_RETRY_DELAY_MS = 50L;
+    /**
+     * Launch extra selecting the pre-#2936 phone screens ("legacy") instead of
+     * the shared app. Temporary: it keeps the existing packaged journeys on
+     * their oracle until each screen's shared replacement passes them, and is
+     * deleted with the last legacy screen (#2941).
+     */
+    public static final String EXTRA_SHELL = "pocketshell.shell";
 
     private Runnable resumeWebViewLayoutRefresh;
     private int resumeWebViewLayoutAttempts;
@@ -27,6 +34,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(DocumentContentPlugin.class);
         registerPlugin(SpeechRecognitionPlugin.class);
         super.onCreate(savedInstanceState);
+        if ("legacy".equals(getIntent().getStringExtra(EXTRA_SHELL)) && getBridge() != null) {
+            getBridge().getWebView().loadUrl(getBridge().getAppUrl() + "?shell=legacy");
+        }
     }
 
     @Override

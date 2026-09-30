@@ -15,6 +15,7 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONObject;
@@ -90,7 +91,7 @@ public final class InstalledDataMigrationJourneyTest {
     @Test
     public void startupStagesLegacyDataAndLeavesOriginalFilesUntouched() throws Exception {
         org.junit.Assume.assumeFalse(malformedEncryptedFixtureRequested());
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'complete'");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
 
@@ -173,7 +174,7 @@ public final class InstalledDataMigrationJourneyTest {
     @Test
     public void malformedEncryptedPreferencesAppearInPackagedWebView() throws Exception {
         org.junit.Assume.assumeTrue(malformedEncryptedFixtureRequested());
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
