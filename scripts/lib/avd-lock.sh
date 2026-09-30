@@ -287,6 +287,22 @@ pocketshell_run_without_avd_lock_fd() {
   fi
 }
 
+# Run a foreground pipeline without letting its shell, command, or tee inherit
+# the wrapper-owned continuous AVD flock descriptor. The caller retains the
+# lock while it waits and still gets pipefail semantics from the command.
+pocketshell_run_without_avd_lock_fd_to_log() {
+  local log_file="$1"
+  shift
+  if [[ "${POCKETSHELL_AVD_LOCK_CONTINUOUS_ACQUIRED:-}" == "1" \
+        && "${POCKETSHELL_AVD_LOCK_FD:-}" =~ ^[0-9]+$ ]]; then
+    pocketshell_run_without_avd_lock_fd bash -o pipefail -c \
+      'log_file=$1; shift; "$@" 2>&1 | tee "$log_file"' \
+      pocketshell-connected-command "$log_file" "$@"
+  else
+    "$@" 2>&1 | tee "$log_file"
+  fi
+}
+
 # Start an asynchronous child with the continuous flock FD closed by the
 # background-command redirection itself. Do NOT background
 # pocketshell_run_without_avd_lock_fd: Bash would first fork an intermediate

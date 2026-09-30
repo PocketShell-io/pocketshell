@@ -211,8 +211,9 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2857Asset:I > "$asset_logcat" 2>&1 &
-asset_logcat_pid=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s PS2857Asset:I > "$asset_logcat" 2>&1
+asset_logcat_pid="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live composer artifact logcat collector'
 printf 'Running packaged composer Docker journey on %s (API %s), Docker port %s, sessions %s-*\n' \
@@ -262,9 +263,9 @@ if results.exists():
     shutil.rmtree(results)
 PY
   local instrumentation_status=0
-  "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
-    "$INSTRUMENTATION_COMPONENT" 2>&1 | tee "$phase_dir/composer-instrumentation.log" \
-    || instrumentation_status=$?
+  pocketshell_run_without_avd_lock_fd_to_log "$phase_dir/composer-instrumentation.log" \
+    "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
+    "$INSTRUMENTATION_COMPONENT" || instrumentation_status=$?
   if (( instrumentation_status != 0 )) || ! grep -q '^INSTRUMENTATION_CODE: -1$' "$phase_dir/composer-instrumentation.log"; then
     capture_phase_failure "$phase"
     fail "instrumentation phase $phase did not finish cleanly (adb status $instrumentation_status)"

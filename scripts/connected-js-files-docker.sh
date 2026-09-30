@@ -136,7 +136,9 @@ printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
 
 encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest'
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+if pocketshell_run_without_avd_lock_fd_to_log \
+    "$ARTIFACTS_DIR/gradle-connected.log" \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
@@ -144,7 +146,7 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
     "-Pandroid.testInstrumentationRunnerArguments.fileFixtureRoot=$REMOTE_ROOT" \
     "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?

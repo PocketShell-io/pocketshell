@@ -87,6 +87,8 @@ jobs:
         run: |
           tests/scripts/connected-test-js-runner-test.sh
           tests/scripts/connected-test-root-guard-test.sh
+          tests/scripts/connected-test-serial-ownership-test.sh
+          scripts/test-gradle-output-lock.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
 
       - name: Build Android debug APK
