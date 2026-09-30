@@ -110,7 +110,7 @@ When the maintainer says "I already asked for this," search closed issues first 
 
 For any maintainer-mockup visual issue, screenshot the actual in-session screen (real chrome, keyboard up where reported) side by side with the mockup; a green isolated-component render is the fast first check only, never the acceptance.
 
-Build screens from the shared ui-kit primitives (`docs/design-system.md`), not per-screen reinterpretation - the mockups are direction, not pixel specs.
+Build screens from the shared `packages/ui` tokens and components in pocketshell-core (`docs/design-system.md`), not per-screen reinterpretation - the mockups are direction, not pixel specs.
 
 Large UX/IA/chrome/composer changes need the maintainer's visual sign-off on the real app before shipping; passing tests prove correctness, not that the experience improved.
 
