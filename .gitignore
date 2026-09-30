@@ -63,7 +63,7 @@ keystore.properties
 # they never accidentally get committed.
 .pickup/
 
-# Scratch dir for fast-render PNGs (scripts/render.sh output, viewed via PocketShell)
+# Local scratch dir for screenshots viewed via PocketShell
 .tmp/
 
 # Firebase config (per-machine, not committed — #690)

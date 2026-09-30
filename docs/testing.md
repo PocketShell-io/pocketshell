@@ -45,7 +45,7 @@ modules and root Gradle graph were removed.
 
 The JS-first `connected-test.sh` requires a lane name and an explicit package
 suffix. It dispatches only to the existing `android/` packaged runners; it does
-not accept raw Gradle tasks or old app2 module selectors.
+not accept raw Gradle tasks or the app2 module selectors of `release/0.5.x`.
 
 ```bash
 scripts/connected-test.sh smoke --suffix i2863
@@ -89,7 +89,7 @@ prepare. The guard checks that justification and rejects any other undispatched
 Run its synthetic contract checks with
 `scripts/check-test-validity.sh --j1-only --self-test`. This verifies the JS
 selectors and exact result-checker method sets, rejects missing/extra dispatch
-and unjustified journey classes, and retains a synthetic app2 whole-suite
+and unjustified journey classes, and retains a synthetic `release/0.5.x` app2 whole-suite
 regression case. The Files result contract is also self-tested by
 `scripts/check-js-files-results.py --self-test`. In hosted CI, an
 `if: always()` report step independently runs each lane's exact JUnit checker
@@ -226,7 +226,7 @@ Port 2222 belongs to the default `agents` fixture. It is reserved for the
 Docker `agents` target and must not be taken over by an unrelated container.
 Use `scripts/agents-pool.sh` for isolated ports when parallel lanes are needed.
 
-## Session journeys
+## Session journeys (legacy app2, `release/0.5.x`)
 
 The load-bearing app2 journeys use real aplexer records:
 
@@ -296,7 +296,8 @@ scripts/check-product-tmux-absent.sh --self-test
 scripts/check-product-tmux-absent.sh
 ```
 
-To inspect the same product surface manually after a session-runtime change:
+On `release/0.5.x` (legacy Kotlin tree), inspect the same product surface
+manually after a session-runtime change:
 
 ```bash
 rg -n -i 'tmux' \
