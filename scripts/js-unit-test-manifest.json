@@ -227,11 +227,10 @@
         "aborts a partial save when the document provider rejects a chunk"
       ]
     },
-<<<<<<< Updated upstream
     "tests/unit/designTokens.test.ts": {
       "suite": "phone design tokens",
       "tests": [
-        "reads the shared token source the @pocketshell/ui alias points at",
+        "reads the shared token source the @ui alias points at",
         "takes every colour from a token rather than a literal",
         "uses no CSS named colour in a colour declaration",
         "reads only tokens that the shared set, the phone stylesheet or the runtime defines"
@@ -243,7 +242,8 @@
         "scans the tracked live docs, prompts and app source",
         "flags an unmarked reference and accepts a marked one",
         "finds no unmarked app2, :shared:, Compose render or Kotlin design-kit reference"
-=======
+      ]
+    },
     "tests/unit/jsSourceIntegrity.test.ts": {
       "suite": "pinned shared source integrity",
       "tests": [
@@ -252,7 +252,6 @@
         "resolves the shared UI package from inside the clean core pin",
         "fails closed unless the core pin equals the upstream main head",
         "keeps no tracked app, test, config or script reference to the desktop checkout"
->>>>>>> Stashed changes
       ]
     }
   }
