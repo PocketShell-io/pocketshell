@@ -81,8 +81,11 @@ def validate(source: str) -> None:
     helper = method_body(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     focused_draft = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
     required = (
-        "boolean promptSheetOpen = \"true\".equals(evalRaw(promptSheetOpenExpression()));",
-        "if (!promptSheetOpen) {",
+        "boolean promptSheetOpenOnEntry = \"true\".equals(evalRaw(promptSheetOpenExpression()));",
+        "if (bestEffortAfterFailure && promptSheetOpenOnEntry) {",
+        "} else {",
+        "assertFalse(\"the Prompt sheet must be closed when \" + eventPrefix",
+        "promptSheetOpenOnEntry);",
         "openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);",
         "String composerDraftTapReady = visibleComposerExpression()",
         "awaitJsTrue(composerDraftTapReady, 15_000);",
@@ -204,7 +207,7 @@ def validate(source: str) -> None:
 
     sender = method_body(source, "sendComposerCommandAndAwaitMarker")
     sender_order = (
-        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);",
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);",
         "awaitJsTrue(visibleComposerExpression(), 15_000);",
         "setValue(\"[data-testid=prompt-draft]\", command);",
         "click(\".composer-shared-controls .send\");",
@@ -214,15 +217,166 @@ def validate(source: str) -> None:
         raise GateFailure("cleanup command must wait for the opened Composer before setting and sending its draft")
 
 
+# Anything that names the Prompt launcher (its test id, selector constant, class,
+# aria text, group or emitted event) or a JS variable/method derived from it.
+LAUNCHER_ROOTS = (
+    "launcher",
+    "open prompt composer",
+    "mobile-hotkeys__key",
+    "mobile-hotkeys-prompt-group",
+    "prompt input",
+    "dock-label",
+    "opencomposer",
+)
+# Any way to activate a DOM element or flip the sheet without trusted input.
+SCRIPTED_ACTIVATION = re.compile(
+    r"click\s*\("                       # Java click(...) helper, JS el.click(), el?.click(), jsClick(...)
+    r"|\[\s*['\"]click['\"]\s*\]\s*\("     # el['click']()
+    r"|dispatchevent"
+    r"|new\s+\w*event\s*\("               # new MouseEvent/PointerEvent/TouchEvent/Event(...)
+    r"|initmouseevent|initevent"
+    r"|\bonclick\b"
+    r"|requestsubmit|\.submit\s*\("
+    r"|promptcomposeropen\s*=(?!=)"      # dataset write that fakes the open state
+    r"|mobilepromptcomposeropen"
+    r"|__vue",
+    re.IGNORECASE,
+)
+# App-state writes the journey may never make, whatever element they name.
+FORBIDDEN_ANYWHERE = re.compile(r"promptcomposeropen\s*=(?!=)|mobilepromptcomposeropen|__vue", re.IGNORECASE)
+
+
+def _code_units(source: str) -> list[tuple[str, str]]:
+    """Split Java into statements outside strings/comments.
+
+    Returns (code_without_strings, code_with_joined_strings) per statement, so a
+    selector split across `"..." + "..."` still reads as one token.
+    """
+    units: list[tuple[str, str]] = []
+    bare: list[str] = []
+    full: list[str] = []
+    quote = ""
+    escaped = False
+    index = 0
+    while index < len(source):
+        char = source[index]
+        following = source[index + 1] if index + 1 < len(source) else ""
+        if quote:
+            full.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+                bare.append(char)
+        elif char == "/" and following == "/":
+            end = source.find("\n", index)
+            index = len(source) if end < 0 else end
+            continue
+        elif char == "/" and following == "*":
+            end = source.find("*/", index + 2)
+            index = len(source) if end < 0 else end + 2
+            continue
+        elif char in ('"', "'"):
+            quote = char
+            bare.append(char)
+            full.append(char)
+        elif char in ";{}":
+            units.append(("".join(bare), "".join(full)))
+            bare, full = [], []
+        else:
+            bare.append(char)
+            full.append(char)
+        index += 1
+    units.append(("".join(bare), "".join(full)))
+    return [(b, re.sub(r'"\s*\+\s*"', "", f)) for b, f in units if f.strip()]
+
+
+def _methods(source: str) -> dict[str, tuple[str, str]]:
+    methods: dict[str, tuple[str, str]] = {}
+    for match in re.finditer(r"\b(?:public|private|protected)\s+(?:static\s+)?([\w<>\[\]]+)\s+(\w+)\s*\(", source):
+        try:
+            methods[match.group(2)] = (match.group(1), method_body(source, match.group(2)))
+        except GateFailure:
+            continue
+    return methods
+
+
+def reject_scripted_launcher_activation(source: str) -> None:
+    """Structural D22 rule: no statement may both reach the launcher and script an activation.
+
+    A statement "reaches" the launcher when it names it directly or through any
+    local/field or String-returning method whose value was derived from it. A
+    statement "scripts an activation" when it contains a click/dispatch/state
+    write token, or calls any method that (transitively) does.
+    """
+    forbidden = FORBIDDEN_ANYWHERE.search(re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.DOTALL))
+    if forbidden:
+        raise GateFailure(f"the journey must never write Prompt open state from script: {forbidden.group(0)}")
+    units = _code_units(source)
+    methods = _methods(source)
+
+    tainted: set[str] = set()
+
+    def reaches_launcher(text: str) -> bool:
+        lowered = text.lower()
+        if any(root in lowered for root in LAUNCHER_ROOTS):
+            return True
+        return any(re.search(rf"\b{re.escape(name)}\b", text) for name in tainted)
+
+    changed = True
+    while changed:
+        changed = False
+        for bare, full in units:
+            if not reaches_launcher(full):
+                continue
+            assigned = re.search(r"(\w+)\s*(?:\+)?=(?!=)", bare)
+            if assigned and assigned.group(1) not in tainted:
+                tainted.add(assigned.group(1))
+                changed = True
+        for name, (return_type, body) in methods.items():
+            if name not in tainted and return_type == "String" and reaches_launcher(body):
+                tainted.add(name)
+                changed = True
+
+    code = {name: _code_units(body) for name, (_, body) in methods.items()}
+    activators: set[str] = {name for name, units_of in code.items()
+                            if any(SCRIPTED_ACTIVATION.search(full) for _, full in units_of)}
+    changed = True
+    while changed:
+        changed = False
+        for name, units_of in code.items():
+            if name in activators:
+                continue
+            bare_body = "\n".join(bare for bare, _ in units_of)
+            if any(re.search(rf"(?<![\w.]){re.escape(activator)}\s*\(", bare_body) for activator in activators):
+                activators.add(name)
+                changed = True
+
+    for bare, full in units:
+        activation = SCRIPTED_ACTIVATION.search(full)
+        called = next((name for name in activators
+                       if re.search(rf"(?<![\w.]){re.escape(name)}\s*\(", bare)), None)
+        if not activation and called is None:
+            continue
+        if reaches_launcher(full) or "elementfrompoint" in full.lower():
+            token = activation.group(0) if activation else f"{called}(...)"
+            raise GateFailure("Prompt must not be opened by a scripted DOM activation of its launcher "
+                              f"({token}): {full.strip()[:160]}")
+
+
 def validate_launcher(source: str) -> None:
     """The Android Prompt sheet closes off Home; reopen it only by a physical launcher tap (D22: no DOM fallback)."""
-    for forbidden in (
-        "openComposerIfClosedAndAwaitTransport",
-        'click("[data-testid=prompt-composer-launcher]")',
-        "click(PROMPT_LAUNCHER_SELECTOR)",
-    ):
-        if forbidden in source:
-            raise GateFailure(f"Prompt must not be opened by a synthetic DOM launcher click: {forbidden}")
+    reject_scripted_launcher_activation(source)
+    if "openComposerIfClosedAndAwaitTransport" in source:
+        raise GateFailure("the #2897 DOM-click opener must stay deleted (D22)")
+    primary_flags = re.findall(r"/\* bestEffortAfterFailure= \*/ (true|false)\)", source)
+    after_body = method_body(source, "closeShell")
+    if primary_flags.count("true") != 1 or primary_flags.count("false") != 2 \
+       or "/* bestEffortAfterFailure= */ true)" not in after_body:
+        raise GateFailure("only the @After fallback may accept an already-open Prompt sheet; "
+                          "both journey phases must require it closed and physically opened")
     sheet_open = method_body(source, "promptSheetOpenExpression")
     for proof in ("promptComposerOpen==='true'", "getAttribute('role')==='dialog'", "getAttribute('aria-modal')==='true'"):
         if proof not in sheet_open:
@@ -237,9 +391,16 @@ def validate_launcher(source: str) -> None:
         'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
         'promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));',
         "if (promptSheetOpen) break;",
+        "if (trustedLauncherTapComplete) {",
+        'throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "',
         'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");',
         'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
         'assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before',
+        "&&event.isTrusted!==true).length)",
+        'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before',
+        '+ " sheetOpenOnEntry=" + sheetOpenOnEntry',
+        '+ " attempts=" + attempts',
+        '+ " untrustedLauncherEvents=" + untrustedLauncherEvents',
     )
     positions = [launcher.find(token) for token in ordered]
     for token, position in zip(ordered, positions):
@@ -247,6 +408,14 @@ def validate_launcher(source: str) -> None:
             raise GateFailure(f"physical launcher open is missing required step: {token}")
     if positions != sorted(positions):
         raise GateFailure("physical launcher open must settle, tap, then prove a trusted click opened the sheet")
+    loop_start = launcher.find("for (int attempt = 1; attempt <= 3; attempt++)")
+    loop_end = launcher.find('String tapEvents = evalString(')
+    loop = launcher[loop_start:loop_end]
+    fail_fast = loop[loop.find("if (trustedLauncherTapComplete) {"):]
+    if "continue" in loop or '+ "; events=" + ignoredClickEvents' not in fail_fast \
+       or 'String ignoredClickEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");' not in fail_fast:
+        raise GateFailure("a completed trusted launcher click that leaves the sheet closed must fail at once "
+                          "with its event trace; only a missed tap may be retried")
     if '"; events=" + tapEvents' not in launcher:
         raise GateFailure("launcher tap evidence must retain the complete pointer event trace")
     if "tapElementCenter(PROMPT_LAUNCHER_SELECTOR, \"Prompt launcher\", true)" not in method_body(source, "tapPromptLauncherCenter"):
@@ -356,8 +525,8 @@ def self_test() -> int:
         ),
         (
             "launcher retries made unbounded beyond three attempts",
-            "for (int attempt = 1; attempt <= 3; attempt++) {\n            // Measure only once",
-            "for (int attempt = 1; attempt <= 4; attempt++) {\n            // Measure only once",
+            "for (int attempt = 1; attempt <= 3; attempt++) {\n            attempts = attempt;",
+            "for (int attempt = 1; attempt <= 4; attempt++) {\n            attempts = attempt;",
         ),
         (
             "physical launcher open removed",
@@ -410,6 +579,85 @@ def self_test() -> int:
             'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");\n\n'
             '        assertTrue("opening Prompt must record',
             'String tapEvents = "[]";\n\n        assertTrue("opening Prompt must record',
+        ),
+    )
+    entry = (
+        '        boolean promptSheetOpenOnEntry = "true".equals(evalRaw(promptSheetOpenExpression()));\n'
+    )
+
+    def before_entry(injected: str) -> tuple[str, str, str]:
+        return entry, injected + entry
+
+    mutants += (
+        # Reviewer m7/m8 (#2908): any scripted activation of the launcher is red,
+        # whatever form it takes, not just a list of literal strings.
+        ("JS .click() on the launcher before the sheet check (m7)",) + before_entry(
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')?.click()\");\n"),
+        ("JS dispatchEvent(new MouseEvent) on the launcher (m8)",) + before_entry(
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')"
+            "?.dispatchEvent(new MouseEvent('click',{bubbles:true}))\");\n"),
+        ("JS dispatchEvent(new PointerEvent) through the selector constant",) + before_entry(
+            "        evalString(\"document.querySelector(\" + JSONObject.quote(PROMPT_LAUNCHER_SELECTOR)"
+            " + \").dispatchEvent(new PointerEvent('pointerup',{bubbles:true}))\");\n"),
+        ("JS ['click']() on the launcher with a split selector literal",) + before_entry(
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-\" + \"launch\" + \"er]')['click']()\");\n"),
+        ("Java click() helper reached through a derived local",) + before_entry(
+            "        String dock = PROMPT_LAUNCHER_SELECTOR;\n        String target = dock;\n        click(target);\n"),
+        ("click() on the launcher's aria label",) + before_entry(
+            "        click(\"[aria-label='Open prompt composer to type or dictate a prompt']\");\n"),
+        ("scripted click on whatever sits at a point",) + before_entry(
+            "        evalString(\"document.elementFromPoint(40,800)?.click()\");\n"),
+        ("Prompt open state written directly",) + before_entry(
+            "        evalString(\"document.querySelector('.app-shell').dataset.promptComposerOpen='true'\");\n"),
+        (
+            "new helper that clicks, called with the launcher selector",
+            "    private void click(String selector) throws Exception {\n",
+            "    private void pressQuietly(String selector) throws Exception { press(selector); }\n\n"
+            "    private void press(String selector) throws Exception {\n"
+            "        evalString(\"document.querySelector(\" + JSONObject.quote(selector) + \").click()\");\n    }\n\n"
+            "    private void openDock() throws Exception { pressQuietly(PROMPT_LAUNCHER_SELECTOR); }\n\n"
+            "    private void click(String selector) throws Exception {\n",
+        ),
+        (
+            "retry after a completed trusted launcher click that left the sheet closed",
+            "            if (trustedLauncherTapComplete) {\n"
+            "                String ignoredClickEvents",
+            "            if (false) {\n"
+            "                String ignoredClickEvents",
+        ),
+        (
+            "ignored trusted launcher click retried via continue",
+            "            if (trustedLauncherTapComplete) {\n",
+            "            if (trustedLauncherTapComplete && attempt < 3) continue;\n"
+            "            if (trustedLauncherTapComplete) {\n",
+        ),
+        (
+            "ignored-click failure drops its event trace",
+            '                        + "; events=" + ignoredClickEvents + "; after=" + after);',
+            '                        + "; after=" + after);',
+        ),
+        (
+            "sheet no longer required closed when a phase starts",
+            "            assertFalse(\"the Prompt sheet must be closed when \" + eventPrefix\n"
+            "                    + \" starts; only a physical launcher tap may open it\", promptSheetOpenOnEntry);\n",
+            "",
+        ),
+        (
+            "cleanup phase accepts an already-open sheet",
+            '                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP",\n'
+            "                /* bestEffortAfterFailure= */ false);",
+            '                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP",\n'
+            "                /* bestEffortAfterFailure= */ true);",
+        ),
+        (
+            "untrusted launcher event assertion removed",
+            'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before',
+            'assertTrue("the Prompt launcher events were recorded; before=" + before',
+        ),
+        (
+            "launcher evidence line drops its entry state",
+            '+ " sheetOpenOnEntry=" + sheetOpenOnEntry',
+            '+ ""',
         ),
     )
     total = len(mutants) + 1

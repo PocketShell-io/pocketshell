@@ -80,7 +80,8 @@ public final class UsagePortsDockerJourneyTest {
                                 + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
                                 + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
                                 + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
-                        cleanupMarker, "cleanup test HTTP service", activeSessionTag, "HTTP_CLEANUP");
+                        cleanupMarker, "cleanup test HTTP service", activeSessionTag, "HTTP_CLEANUP",
+                        /* bestEffortAfterFailure= */ true);
             } catch (Exception | AssertionError cleanupFailure) {
                 Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " HTTP fixture cleanup failed: "
                         + cleanupFailure.getClass().getSimpleName());
@@ -168,7 +169,8 @@ public final class UsagePortsDockerJourneyTest {
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
                         + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
                         + serverStartedMarker + "'",
-                serverStartedMarker, "start test HTTP service", sessionTag, "HTTP_START");
+                serverStartedMarker, "start test HTTP service", sessionTag, "HTTP_START",
+                /* bestEffortAfterFailure= */ false);
 
         click("[aria-label='Settings']");
         click("[data-testid=open-usage]");
@@ -396,7 +398,8 @@ public final class UsagePortsDockerJourneyTest {
                 + "echo exitDecision=process-exited >>\"$c\"; printf '%s\\n' '" + stoppedMarker + "'";
         // Send the long fixture-control command through the packaged composer; keyboard injection can reorder PTY bytes.
         sendComposerCommandAndAwaitMarker(
-                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP");
+                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP",
+                /* bestEffortAfterFailure= */ false);
     }
 
     private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
@@ -414,10 +417,11 @@ public final class UsagePortsDockerJourneyTest {
     }
 
     private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint,
-                                                   String sessionTag, String eventPrefix) throws Exception {
+                                                   String sessionTag, String eventPrefix,
+                                                   boolean bestEffortAfterFailure) throws Exception {
         String draftBeforeOpen = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
         JSONObject inputBeforeOpen = terminalInputStats();
-        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);
+        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);
         awaitJsTrue(visibleComposerExpression(), 15_000);
         assertEquals("opening Home Composer must preserve the existing draft", draftBeforeOpen,
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
@@ -451,7 +455,8 @@ public final class UsagePortsDockerJourneyTest {
                 before.getInt("failureCount"), after.getInt("failureCount"));
     }
 
-    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag, String eventPrefix) throws Exception {
+    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag, String eventPrefix,
+                                                                boolean bestEffortAfterFailure) throws Exception {
         if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
             click("[aria-label='PocketShell home']");
         }
@@ -499,10 +504,17 @@ public final class UsagePortsDockerJourneyTest {
                 + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
 
         // Leaving Home closes the Android Prompt sheet, so the returned Home
-        // surface shows only the dock launcher. Open the sheet through the
-        // same Android touch path a user takes before looking for its draft.
-        boolean promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
-        if (!promptSheetOpen) {
+        // surface shows only the dock launcher. Both journey phases must find
+        // it closed and open it through the same Android touch path a user
+        // takes; nothing may open it first. Only the @After fallback, which
+        // runs after an arbitrary failure, may find the sheet already open.
+        boolean promptSheetOpenOnEntry = "true".equals(evalRaw(promptSheetOpenExpression()));
+        if (bestEffortAfterFailure && promptSheetOpenOnEntry) {
+            Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " " + eventPrefix
+                    + "_PROMPT_ALREADY_OPEN_AFTER_FAILURE sessionTag=" + sessionTag);
+        } else {
+            assertFalse("the Prompt sheet must be closed when " + eventPrefix
+                    + " starts; only a physical launcher tap may open it", promptSheetOpenOnEntry);
             openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);
         }
 
@@ -544,8 +556,10 @@ public final class UsagePortsDockerJourneyTest {
         JSONArray taps = new JSONArray();
         boolean trustedLauncherTapComplete = false;
         boolean promptSheetOpen = false;
+        int attempts = 0;
         JSONObject after = before;
         for (int attempt = 1; attempt <= 3; attempt++) {
+            attempts = attempt;
             // Measure only once the dock has held still: an IME that is still
             // animating moves the launcher between mapping and injection.
             JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);
@@ -561,15 +575,31 @@ public final class UsagePortsDockerJourneyTest {
             taps.put(tap.put("stableLayout", stableLayout));
 
             long openDeadline = SystemClock.uptimeMillis() + 1_500;
+            boolean clickSeenDeadlineExtended = false;
             while (SystemClock.uptimeMillis() < openDeadline) {
                 trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));
                 promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
                 if (trustedLauncherTapComplete && promptSheetOpen) break;
+                if (trustedLauncherTapComplete && !clickSeenDeadlineExtended) {
+                    // The click landed; give the app a bounded window to react.
+                    openDeadline = Math.max(openDeadline, SystemClock.uptimeMillis() + 3_000);
+                    clickSeenDeadlineExtended = true;
+                }
                 Thread.sleep(30);
             }
             after = readComposerOpenState("after-physical-launcher-tap-attempt-" + attempt);
             // An open sheet covers the dock; tapping again would hit its scrim.
             if (promptSheetOpen) break;
+            // A completed trusted click reached the launcher and the sheet still
+            // did not open: that is an app defect, not a missed tap. Retrying
+            // would hide it, so fail now with the full trace. Only a tap that
+            // never produced a trusted launcher click is retried.
+            if (trustedLauncherTapComplete) {
+                String ignoredClickEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+                throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "
+                        + "not retried; attempt=" + attempt + "; before=" + before + "; taps=" + taps
+                        + "; events=" + ignoredClickEvents + "; after=" + after);
+            }
         }
         String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
 
@@ -578,9 +608,20 @@ public final class UsagePortsDockerJourneyTest {
                 trustedLauncherTapComplete);
         assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before
                 + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, promptSheetOpen);
+        // A scripted .click()/dispatchEvent on the launcher records an untrusted
+        // event; the sheet must have been opened by trusted input alone.
+        int untrustedLauncherEvents = Integer.parseInt(evalString(
+                "String((window.__ps2908ComposerOpenPointerEvents||[]).filter(event=>event.targetIsLauncher===true"
+                        + "&&event.isTrusted!==true).length)"));
+        assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before
+                + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, 0, untrustedLauncherEvents);
+        boolean sheetOpenOnEntry = "true".equals(before.optString("promptComposerOpen"));
         Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
                 + " " + eventPrefix + "_PROMPT_LAUNCHER_TAP sessionTag=" + sessionTag
+                + " sheetOpenOnEntry=" + sheetOpenOnEntry
+                + " attempts=" + attempts
                 + " trustedLauncherTapComplete=" + trustedLauncherTapComplete
+                + " untrustedLauncherEvents=" + untrustedLauncherEvents
                 + " promptSheetOpen=" + promptSheetOpen
                 + " before=" + before + " taps=" + taps + " events=" + tapEvents + " after=" + after);
     }

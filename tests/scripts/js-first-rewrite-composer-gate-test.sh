@@ -797,7 +797,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
 
     for label, needle, haystack in (
         ("strict stop routes through the Composer sender", "sendComposerCommandAndAwaitMarker(", strict_stop),
-        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);", send),
+        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);", send),
         ("Composer sender waits for visible state", "awaitJsTrue(visibleComposerExpression(), 15_000);", send),
         ("Composer sender waits for connected transport", "dataset.transportState === 'connected'", send),
         ("Composer sender drafts through the packaged Composer", 'setValue("[data-testid=prompt-draft]", command)', send),
@@ -806,7 +806,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if needle not in haystack:
             raise AssertionError(f"Usage/Ports cleanup is missing {label}")
     sender_order = (
-        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);"),
+        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);"),
         send.index("awaitJsTrue(visibleComposerExpression(), 15_000);"),
         send.index("dataset.transportState === 'connected'"),
         send.index('setValue("[data-testid=prompt-draft]", command)'),
@@ -821,7 +821,8 @@ def require_usage_ports_composer_contract(source: str) -> None:
         ("session list for reattach", '[data-testid=open-sessions]'),
         ("selected session lookup", "matchingSession"),
         ("selected session reattach", "[data-session-tag=\\\""),
-        ("closed Prompt sheet check", "boolean promptSheetOpen = \"true\".equals(evalRaw(promptSheetOpenExpression()));"),
+        ("Prompt sheet state on entry", "boolean promptSheetOpenOnEntry = \"true\".equals(evalRaw(promptSheetOpenExpression()));"),
+        ("Prompt sheet required closed when a phase starts", 'assertFalse("the Prompt sheet must be closed when " + eventPrefix'),
         ("physical launcher tap when the Prompt sheet is closed", "openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);"),
         ("physical draft target readiness", "awaitJsTrue(composerDraftTapReady, 15_000);"),
         ("Composer visibility and focus check", "boolean composerDraftFocused = "),
@@ -861,7 +862,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
     if "document.activeElement === document.querySelector('[data-testid=prompt-draft]')" not in composer_ready:
         raise AssertionError("mobile Composer readiness must require focus on the Prompt draft")
     if not send.index("String draftBeforeOpen = evalString(") < send.index(
-        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);") < send.index(
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);") < send.index(
             "opening Home Composer must preserve the existing draft") < send.index(
                 "opening Home Composer must not write terminal input") < send.index(
                     'setValue("[data-testid=prompt-draft]", command)'):
@@ -917,16 +918,21 @@ def require_usage_ports_composer_contract(source: str) -> None:
        or 'return completedTrustedTapExpression("targetIsLauncher");' not in completed_launcher_tap \
        or "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]')" not in tap_recorder:
         raise AssertionError("mobile Composer completed-tap proofs must bind to the draft and the launcher respectively")
-    for forbidden in ('click("[data-testid=prompt-composer-launcher]")', "click(PROMPT_LAUNCHER_SELECTOR)",
-                      "openComposerIfClosedAndAwaitTransport"):
-        if forbidden in source:
-            raise AssertionError("Usage/Ports must open Prompt by a physical launcher tap, never a DOM click fallback")
+    # The structural no-scripted-activation rule lives in the ordering gate;
+    # reuse it so this contract cannot drift back to a list of literals.
+    try:
+        composer_order_gate.validate_launcher(source)
+    except composer_order_gate.GateFailure as error:
+        raise AssertionError(f"Usage/Ports must open Prompt by a physical launcher tap only: {error}") from error
     for needle in (
         "JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);",
         "tap = tapPromptLauncherCenter();",
         'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
         'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
         'assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before',
+        "if (trustedLauncherTapComplete) {",
+        'throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "',
+        'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before',
     ):
         if needle not in physical_launcher_open:
             raise AssertionError(f"physical Prompt launcher open is missing {needle}")
@@ -960,13 +966,26 @@ def require_usage_ports_composer_contract(source: str) -> None:
 
     if "sendComposerCommandAndAwaitMarker(" not in after or "sendCommandAndAwaitMarker(" in after:
         raise AssertionError("@After HTTP cleanup must use the Composer-backed sender and opener")
-    if 'activeSessionTag, "HTTP_CLEANUP")' not in after:
+    if 'activeSessionTag, "HTTP_CLEANUP",\n                        /* bestEffortAfterFailure= */ true)' not in after:
         raise AssertionError("@After cleanup must retain its HTTP_CLEANUP evidence phase")
     if "sendComposerCommandAndAwaitMarker(" not in strict_stop or "sendCommandAndAwaitMarker(" in strict_stop:
         raise AssertionError("strict HTTP process stop must use the Composer-backed sender and opener")
-    if 'sessionTag, "HTTP_CLEANUP")' not in strict_stop:
+    if 'sessionTag, "HTTP_CLEANUP",\n                /* bestEffortAfterFailure= */ false)' not in strict_stop:
         raise AssertionError("strict process stop must retain its HTTP_CLEANUP evidence phase")
 
+
+import importlib.util
+
+_order_gate_spec = importlib.util.spec_from_file_location(
+    "composer_order_gate", repository_root / "scripts/check-js-usage-ports-composer-order.py")
+composer_order_gate = importlib.util.module_from_spec(_order_gate_spec)
+_order_gate_spec.loader.exec_module(composer_order_gate)
+
+usage_ports_runner = (repository_root / "scripts/connected-js-usage-ports.sh").read_text()
+if '"$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR" \\\n' \
+   '  --launcher-logcat "$LIVE_ASSET_LOGCAT" --run-id "$RUN_ID"' not in usage_ports_runner:
+    raise AssertionError("the Usage/Ports runner must require same-run physical Prompt launcher evidence")
+print("PASS: Usage/Ports runner requires same-run physical Prompt launcher evidence")
 
 require_usage_ports_composer_contract(usage_ports_journey)
 
@@ -989,7 +1008,7 @@ expect_usage_ports_contract_rejection(
     "removing the Home/live Composer opener",
     usage_ports_journey.replace(
         sender_source,
-        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);", "", 1),
+        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);", "", 1),
         1,
     ),
 )
@@ -1023,6 +1042,42 @@ expect_usage_ports_contract_rejection(
         opener_source,
         opener_source.replace("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);",
                               "click(PROMPT_LAUNCHER_SELECTOR);", 1),
+        1,
+    ),
+)
+launcher_open_source = journey_method(usage_ports_journey, "openComposerWithPhysicalLauncherTap")
+expect_usage_ports_contract_rejection(
+    "a scripted .click() on the Prompt launcher before the sheet check",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        boolean promptSheetOpenOnEntry",
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')?.click()\");\n"
+            "        boolean promptSheetOpenOnEntry",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "a scripted dispatchEvent on the Prompt launcher",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        boolean promptSheetOpenOnEntry",
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')"
+            "?.dispatchEvent(new MouseEvent('click',{bubbles:true}))\");\n"
+            "        boolean promptSheetOpenOnEntry",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "retrying after a completed trusted launcher click left the sheet closed",
+    usage_ports_journey.replace(
+        launcher_open_source,
+        launcher_open_source.replace("            if (trustedLauncherTapComplete) {\n", "            if (false) {\n", 1),
         1,
     ),
 )

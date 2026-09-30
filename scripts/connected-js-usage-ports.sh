@@ -256,7 +256,8 @@ else
 fi
 
 cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
-"$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR"
+"$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR" \
+  --launcher-logcat "$LIVE_ASSET_LOGCAT" --run-id "$RUN_ID"
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
   > "$ARTIFACTS_DIR/usage-ports-logcat.txt"
 "$ROOT_DIR/scripts/extract-js-lifecycle-artifacts.py" \
