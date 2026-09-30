@@ -90,6 +90,7 @@ EOF
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-composer-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-composer-docker.sh suffix=$SUFFIX port=$PORT"
@@ -132,6 +133,8 @@ export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
 pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$evidence_dir/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $evidence_dir/input-preflight.txt"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
