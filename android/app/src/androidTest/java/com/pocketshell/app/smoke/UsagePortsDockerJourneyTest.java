@@ -402,20 +402,6 @@ public final class UsagePortsDockerJourneyTest {
                 /* bestEffortAfterFailure= */ false);
     }
 
-    private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
-        JSONObject before = terminalInputStats();
-        assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
-        awaitTerminalReady();
-        InstrumentationRegistry.getInstrumentation().sendStringSync(command + "\n");
-        try {
-            awaitExactMarkerRow(marker, checkpoint);
-        } catch (AssertionError missingMarker) {
-            throw new AssertionError(missingMarker.getMessage()
-                    + "; terminalInputStats=" + terminalInputStats(), missingMarker);
-        }
-        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
-    }
-
     private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint,
                                                    String sessionTag, String eventPrefix,
                                                    boolean bestEffortAfterFailure) throws Exception {
@@ -554,7 +540,7 @@ public final class UsagePortsDockerJourneyTest {
         evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
 
         JSONArray taps = new JSONArray();
-        boolean trustedLauncherTapComplete = false;
+        boolean trustedLauncherClickSeen = false;
         boolean promptSheetOpen = false;
         int attempts = 0;
         JSONObject after = before;
@@ -577,10 +563,12 @@ public final class UsagePortsDockerJourneyTest {
             long openDeadline = SystemClock.uptimeMillis() + 1_500;
             boolean clickSeenDeadlineExtended = false;
             while (SystemClock.uptimeMillis() < openDeadline) {
-                trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));
+                trustedLauncherClickSeen = "true".equals(evalRaw(
+                        "(window.__ps2908ComposerOpenPointerEvents||[]).some(event=>event.type==='click'"
+                                + "&&event.isTrusted===true&&event.targetIsLauncher===true)"));
                 promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
-                if (trustedLauncherTapComplete && promptSheetOpen) break;
-                if (trustedLauncherTapComplete && !clickSeenDeadlineExtended) {
+                if (trustedLauncherClickSeen && promptSheetOpen) break;
+                if (trustedLauncherClickSeen && !clickSeenDeadlineExtended) {
                     // The click landed; give the app a bounded window to react.
                     openDeadline = Math.max(openDeadline, SystemClock.uptimeMillis() + 3_000);
                     clickSeenDeadlineExtended = true;
@@ -590,11 +578,11 @@ public final class UsagePortsDockerJourneyTest {
             after = readComposerOpenState("after-physical-launcher-tap-attempt-" + attempt);
             // An open sheet covers the dock; tapping again would hit its scrim.
             if (promptSheetOpen) break;
-            // A completed trusted click reached the launcher and the sheet still
-            // did not open: that is an app defect, not a missed tap. Retrying
-            // would hide it, so fail now with the full trace. Only a tap that
-            // never produced a trusted launcher click is retried.
-            if (trustedLauncherTapComplete) {
+            // A trusted click reached the launcher and the sheet still did not
+            // open: that is an app defect, not a missed tap. Retrying would
+            // hide it, so fail now with the full trace. Only a tap that never
+            // produced a trusted launcher click is retried.
+            if (trustedLauncherClickSeen) {
                 String ignoredClickEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
                 throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "
                         + "not retried; attempt=" + attempt + "; before=" + before + "; taps=" + taps
@@ -602,25 +590,41 @@ public final class UsagePortsDockerJourneyTest {
             }
         }
         String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+        String evidence = "before=" + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after;
 
+        // Input modality: the sheet must have been opened by exactly one
+        // pointer-generated click (detail >= 1) that directly follows its own
+        // trusted touch pointerdown/pointerup, with no keyboard activation
+        // (a focused launcher + Enter/Space clicks with detail 0) and no
+        // scripted (untrusted) launcher event anywhere in the trace.
+        boolean trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));
+        JSONObject input = new JSONObject(evalString(launcherInputCountsExpression()));
+        int launcherClicks = input.getInt("launcherClicks");
+        int zeroDetailLauncherClicks = input.getInt("zeroDetailLauncherClicks");
+        int keyboardLauncherEvents = input.getInt("keyboardLauncherEvents");
+        int keyEvents = input.getInt("keyEvents");
+        int untrustedLauncherEvents = input.getInt("untrustedLauncherEvents");
         assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "
-                        + "before=" + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after,
-                trustedLauncherTapComplete);
-        assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before
-                + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, promptSheetOpen);
-        // A scripted .click()/dispatchEvent on the launcher records an untrusted
-        // event; the sheet must have been opened by trusted input alone.
-        int untrustedLauncherEvents = Integer.parseInt(evalString(
-                "String((window.__ps2908ComposerOpenPointerEvents||[]).filter(event=>event.targetIsLauncher===true"
-                        + "&&event.isTrusted!==true).length)"));
-        assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before
-                + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, 0, untrustedLauncherEvents);
+                + evidence, trustedLauncherTapComplete);
+        assertTrue("the completed physical launcher tap must open the Prompt sheet; " + evidence, promptSheetOpen);
+        assertEquals("exactly one trusted click may reach the Prompt launcher; " + evidence, 1, launcherClicks);
+        assertEquals("the Prompt launcher click must be pointer-generated (detail >= 1), never a keyboard "
+                + "or synthetic activation; " + evidence, 0, zeroDetailLauncherClicks);
+        assertEquals("no keyboard event may target the Prompt launcher; " + evidence, 0, keyboardLauncherEvents);
+        assertEquals("no keyboard input may occur while the Prompt launcher is being opened; " + evidence,
+                0, keyEvents);
+        assertEquals("the Prompt launcher must receive no scripted (untrusted) events; " + evidence,
+                0, untrustedLauncherEvents);
         boolean sheetOpenOnEntry = "true".equals(before.optString("promptComposerOpen"));
         Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
                 + " " + eventPrefix + "_PROMPT_LAUNCHER_TAP sessionTag=" + sessionTag
                 + " sheetOpenOnEntry=" + sheetOpenOnEntry
                 + " attempts=" + attempts
                 + " trustedLauncherTapComplete=" + trustedLauncherTapComplete
+                + " launcherClicks=" + launcherClicks
+                + " zeroDetailLauncherClicks=" + zeroDetailLauncherClicks
+                + " keyboardLauncherEvents=" + keyboardLauncherEvents
+                + " keyEvents=" + keyEvents
                 + " untrustedLauncherEvents=" + untrustedLauncherEvents
                 + " promptSheetOpen=" + promptSheetOpen
                 + " before=" + before + " taps=" + taps + " events=" + tapEvents + " after=" + after);
@@ -725,8 +729,10 @@ public final class UsagePortsDockerJourneyTest {
                 + "window.__ps2908ComposerOpenPointerEvents.push({type,isTrusted:event.isTrusted===true,"
                 + "targetIsDraft:event.target===draft,"
                 + "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]'),pointerType:event.pointerType||'',pointerId:event.pointerId??-1,"
+                + "detail:typeof event.detail==='number'?event.detail:-1,key:event.key||'',"
                 + "clientX:event.clientX,clientY:event.clientY});};"
-                + "for(const type of ['pointerdown','pointerup','click'])document.addEventListener(type,event=>record(type,event),true);"
+                + "for(const type of ['pointerdown','pointerup','click','keydown','keypress','keyup'])"
+                + "document.addEventListener(type,event=>record(type,event),true);"
                 + "window.__ps2908ComposerOpenRecorderInstalled=true;return 'installed';})()");
     }
 
@@ -735,7 +741,30 @@ public final class UsagePortsDockerJourneyTest {
     }
 
     private String completedTrustedLauncherTapExpression() {
-        return completedTrustedTapExpression("targetIsLauncher");
+        // Exactly one trusted launcher click, generated by a pointer (detail >= 1),
+        // immediately preceded by its own trusted touch pointerup and pointerdown
+        // on the launcher. No walking back across other events: a later keyboard
+        // click cannot borrow an earlier, ignored tap's pointer pair.
+        return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
+                + "const clicks=events.map((event,index)=>({event,index})).filter(({event})=>event.type==='click'"
+                + "&&event.isTrusted===true&&event.targetIsLauncher===true);"
+                + "if(clicks.length!==1)return false;const clickIndex=clicks[0].index;const click=events[clickIndex];"
+                + "if(clickIndex<2||!(click.detail>=1)||click.pointerType!=='touch')return false;"
+                + "const up=events[clickIndex-1],down=events[clickIndex-2];"
+                + "return up.type==='pointerup'&&down.type==='pointerdown'"
+                + "&&[up,down].every(event=>event.isTrusted===true&&event.targetIsLauncher===true"
+                + "&&event.pointerType==='touch')&&down.pointerId===up.pointerId;})()";
+    }
+
+    private String launcherInputCountsExpression() {
+        return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
+                + "const launcher=event=>event.targetIsLauncher===true;const key=event=>event.type.startsWith('key');"
+                + "return JSON.stringify({"
+                + "launcherClicks:events.filter(event=>event.type==='click'&&event.isTrusted===true&&launcher(event)).length,"
+                + "zeroDetailLauncherClicks:events.filter(event=>event.type==='click'&&launcher(event)&&!(event.detail>=1)).length,"
+                + "keyboardLauncherEvents:events.filter(event=>key(event)&&launcher(event)).length,"
+                + "keyEvents:events.filter(key).length,"
+                + "untrustedLauncherEvents:events.filter(event=>launcher(event)&&event.isTrusted!==true).length});})()";
     }
 
     private String completedTrustedTapExpression(String targetFlag) {
@@ -788,6 +817,20 @@ public final class UsagePortsDockerJourneyTest {
         // The launcher button paints an icon and label inside itself, so its
         // center may hit one of those children; the pointer still belongs to it.
         return tapElementCenter(PROMPT_LAUNCHER_SELECTOR, "Prompt launcher", true);
+    }
+
+    // A finger on the touchscreen, so WebView reports pointerType 'touch'.
+    private MotionEvent obtainFingerTouch(long downTime, long eventTime, int action, float[] screen) {
+        MotionEvent.PointerProperties[] properties = {new MotionEvent.PointerProperties()};
+        properties[0].id = 0;
+        properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
+        MotionEvent.PointerCoords[] coordinates = {new MotionEvent.PointerCoords()};
+        coordinates[0].x = screen[0];
+        coordinates[0].y = screen[1];
+        coordinates[0].pressure = 1f;
+        coordinates[0].size = 1f;
+        return MotionEvent.obtain(downTime, eventTime, action, 1, properties, coordinates, 0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0);
     }
 
     private JSONObject tapElementCenter(String selector, String label, boolean allowDescendantHit) throws Exception {
@@ -855,15 +898,13 @@ public final class UsagePortsDockerJourneyTest {
         assertNotNull("native screen point for " + label + " was not mapped", screen);
         long downTime = SystemClock.uptimeMillis();
         var instrumentation = InstrumentationRegistry.getInstrumentation();
-        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
-        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent down = obtainFingerTouch(downTime, downTime, MotionEvent.ACTION_DOWN, screen);
         boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
         down.recycle();
         assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected);
         SystemClock.sleep(16);
         long upTime = SystemClock.uptimeMillis();
-        MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, screen[0], screen[1], 0);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent up = obtainFingerTouch(downTime, upTime, MotionEvent.ACTION_UP, screen);
         boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
         up.recycle();
         assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected);
@@ -969,17 +1010,6 @@ public final class UsagePortsDockerJourneyTest {
                 "true".equals(evalString("Array.from(document.querySelectorAll('#terminal-viewport .xterm-rows > div'))"
                         + ".some((row)=>row.textContent.replaceAll(String.fromCharCode(160),' ').trim()==="
                         + JSONObject.quote(marker) + ")")));
-    }
-
-    private void waitForTerminalInputDrain(int ackBefore, int failureBefore, String checkpoint) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 20_000;
-        while (SystemClock.uptimeMillis() < deadline) {
-            JSONObject stats = terminalInputStats();
-            assertEquals("terminal input failed while sending " + checkpoint, failureBefore, stats.getInt("failureCount"));
-            if (stats.getInt("pending") == 0 && stats.getInt("ackCount") > ackBefore) return;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("terminal input did not drain for " + checkpoint + ": " + terminalInputStats());
     }
 
     private JSONObject terminalInputStats() throws Exception {

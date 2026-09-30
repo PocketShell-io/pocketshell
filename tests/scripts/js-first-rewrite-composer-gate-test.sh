@@ -897,7 +897,7 @@ def require_usage_ports_composer_contract(source: str) -> None:
         or '"; events=" + tapEvents' not in physical_open
     ):
         raise AssertionError("mobile Composer tap failure and success evidence must retain its complete pointer event trace")
-    if "for(const type of ['pointerdown','pointerup','click'])" not in tap_recorder:
+    if "for(const type of ['pointerdown','pointerup','click','keydown','keypress','keyup'])" not in tap_recorder:
         raise AssertionError("mobile Composer tap recorder must observe pointerdown, pointerup, and click")
     for event in ("pointerdown", "pointerup", "click"):
         if f"type!=='{event}'" not in completed_tap:
@@ -915,7 +915,8 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if proof not in tap_recorder + completed_tap:
             raise AssertionError(f"mobile Composer completed-tap proof is missing {proof}")
     if 'return completedTrustedTapExpression("targetIsDraft");' not in completed_draft_tap \
-       or 'return completedTrustedTapExpression("targetIsLauncher");' not in completed_launcher_tap \
+       or "if(clicks.length!==1)return false;" not in completed_launcher_tap \
+       or "!(click.detail>=1)" not in completed_launcher_tap \
        or "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]')" not in tap_recorder:
         raise AssertionError("mobile Composer completed-tap proofs must bind to the draft and the launcher respectively")
     # The structural no-scripted-activation rule lives in the ordering gate;
@@ -929,10 +930,12 @@ def require_usage_ports_composer_contract(source: str) -> None:
         "tap = tapPromptLauncherCenter();",
         'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
         'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
-        'assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before',
-        "if (trustedLauncherTapComplete) {",
+        'assertTrue("the completed physical launcher tap must open the Prompt sheet; " + evidence, promptSheetOpen);',
+        "if (trustedLauncherClickSeen) {",
         'throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "',
-        'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; before=" + before',
+        'assertEquals("exactly one trusted click may reach the Prompt launcher; " + evidence, 1, launcherClicks);',
+        'assertEquals("no keyboard event may target the Prompt launcher; " + evidence, 0, keyboardLauncherEvents);',
+        'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; " + evidence,',
     ):
         if needle not in physical_launcher_open:
             raise AssertionError(f"physical Prompt launcher open is missing {needle}")
@@ -944,7 +947,9 @@ def require_usage_ports_composer_contract(source: str) -> None:
        or "composerDraftTapTargetExpression()" not in tap_layout_wait:
         raise AssertionError("mobile Composer retry must wait for stable IME-visible draft bounds")
     if "MotionEvent.ACTION_DOWN" not in physical_tap or "MotionEvent.ACTION_UP" not in physical_tap \
-       or "InputDevice.SOURCE_TOUCHSCREEN" not in physical_tap or "injectInputEvent" not in physical_tap:
+       or "InputDevice.SOURCE_TOUCHSCREEN" not in journey_method(source, "obtainFingerTouch") \
+       or "MotionEvent.TOOL_TYPE_FINGER" not in journey_method(source, "obtainFingerTouch") \
+       or "injectInputEvent" not in physical_tap:
         raise AssertionError("mobile Composer open action must inject Android touchscreen down and up events")
     if 'assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected)' not in physical_tap \
        or 'assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected)' not in physical_tap:
@@ -1074,10 +1079,39 @@ expect_usage_ports_contract_rejection(
     ),
 )
 expect_usage_ports_contract_rejection(
+    "reviewer mutant B: launcher .focus() plus an injected KeyEvent ENTER after the tap",
+    usage_ports_journey.replace(
+        '            taps.put(tap.put("stableLayout", stableLayout));\n',
+        '            taps.put(tap.put("stableLayout", stableLayout));\n            settleLauncherFocus();\n',
+        1,
+    ).replace(
+        "    private JSONObject awaitPromptLauncherTapLayout(",
+        "    private void settleLauncherFocus() throws Exception {\n"
+        "        evalString(\"document.querySelector(\" + JSONObject.quote(PROMPT_LAUNCHER_SELECTOR) + \")?.focus()\");\n"
+        "        var automation = InstrumentationRegistry.getInstrumentation().getUiAutomation();\n"
+        "        long now = SystemClock.uptimeMillis();\n"
+        "        automation.injectInputEvent(new android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN,\n"
+        "                android.view.KeyEvent.KEYCODE_ENTER, 0), true);\n"
+        "    }\n\n"
+        "    private JSONObject awaitPromptLauncherTapLayout(",
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "an injected KeyEvent ENTER without focusing the launcher",
+    usage_ports_journey.replace(
+        '            taps.put(tap.put("stableLayout", stableLayout));\n',
+        '            taps.put(tap.put("stableLayout", stableLayout));\n'
+        "            InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent("
+        "new android.view.KeyEvent(0, 66), true);\n",
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
     "retrying after a completed trusted launcher click left the sheet closed",
     usage_ports_journey.replace(
         launcher_open_source,
-        launcher_open_source.replace("            if (trustedLauncherTapComplete) {\n", "            if (false) {\n", 1),
+        launcher_open_source.replace("            if (trustedLauncherClickSeen) {\n", "            if (false) {\n", 1),
         1,
     ),
 )

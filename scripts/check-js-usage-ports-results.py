@@ -131,6 +131,10 @@ def validate_launcher_evidence(logcat: Path, run_id: str) -> None:
         expected = {
             "sheetOpenOnEntry": "false",
             "trustedLauncherTapComplete": "true",
+            "launcherClicks": "1",
+            "zeroDetailLauncherClicks": "0",
+            "keyboardLauncherEvents": "0",
+            "keyEvents": "0",
             "untrustedLauncherEvents": "0",
             "promptSheetOpen": "true",
         }
@@ -204,7 +208,8 @@ def launcher_self_test() -> int:
 
     def tap(phase: str, **overrides: str) -> str:
         fields = {"sheetOpenOnEntry": "false", "attempts": "1", "trustedLauncherTapComplete": "true",
-                  "untrustedLauncherEvents": "0", "promptSheetOpen": "true"}
+                  "launcherClicks": "1", "zeroDetailLauncherClicks": "0", "keyboardLauncherEvents": "0",
+                  "keyEvents": "0", "untrustedLauncherEvents": "0", "promptSheetOpen": "true"}
         fields.update(overrides)
         return line(f"{phase}_PROMPT_LAUNCHER_TAP", "sessionTag=t " + " ".join(f"{k}={v}" for k, v in fields.items())
                     + ' before={"promptComposerOpen":"false"} taps=[] events=[]')
@@ -224,6 +229,13 @@ def launcher_self_test() -> int:
         ("untrusted launcher event recorded", good[:3] + [tap("HTTP_CLEANUP", untrustedLauncherEvents="1")] + good[4:], False),
         ("trusted launcher click not completed", good[:3] + [tap("HTTP_CLEANUP", trustedLauncherTapComplete="false")] + good[4:], False),
         ("sheet not open after the tap", [tap("HTTP_START", promptSheetOpen="false")] + good[1:], False),
+        ("two clicks reached the launcher (ignored tap + keyboard click)",
+         good[:3] + [tap("HTTP_CLEANUP", launcherClicks="2")] + good[4:], False),
+        ("keyboard-generated (detail 0) launcher click", [tap("HTTP_START", zeroDetailLauncherClicks="1")] + good[1:], False),
+        ("keyboard event on the launcher", good[:3] + [tap("HTTP_CLEANUP", keyboardLauncherEvents="2")] + good[4:], False),
+        ("keyboard input during the launcher open", [tap("HTTP_START", keyEvents="1")] + good[1:], False),
+        ("launcher modality fields missing (pre-hardening line)",
+         good[:3] + [tap("HTTP_CLEANUP").replace(" launcherClicks=1", "")] + good[4:], False),
         ("more than three attempts", good[:3] + [tap("HTTP_CLEANUP", attempts="4")] + good[4:], False),
         ("cleanup tap before cleanup start", [good[0], good[1], good[3], good[2], good[4]], False),
         ("duplicate cleanup tap", good + [good[3]], False),
