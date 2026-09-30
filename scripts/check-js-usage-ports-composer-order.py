@@ -81,6 +81,9 @@ def validate(source: str) -> None:
     helper = method_body(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     focused_draft = "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
     required = (
+        "boolean promptSheetOpen = \"true\".equals(evalRaw(promptSheetOpenExpression()));",
+        "if (!promptSheetOpen) {",
+        "openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);",
         "String composerDraftTapReady = visibleComposerExpression()",
         "awaitJsTrue(composerDraftTapReady, 15_000);",
         "boolean composerVisible = \"true\".equals(evalRaw(visibleComposerExpression()))",
@@ -129,7 +132,10 @@ def validate(source: str) -> None:
     tap_helper = method_body(source, "openComposerWithPhysicalDraftTap")
     if "tapComposerDraftCenter()" not in tap_helper:
         raise GateFailure("closed Composer must open through the native draft-center touch path")
-    tap_method = method_body(source, "tapComposerDraftCenter")
+    draft_tap = method_body(source, "tapComposerDraftCenter")
+    if 'tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false)' not in draft_tap:
+        raise GateFailure("draft-center tap must hit the draft itself through the shared native tap path")
+    tap_method = method_body(source, "tapElementCenter")
     if "injectInputEvent" not in tap_method:
         raise GateFailure("draft-center tap must be delivered through Android touchscreen input")
     if "event.isTrusted===true&&event.targetIsDraft===true" not in tap_helper:
@@ -154,7 +160,11 @@ def validate(source: str) -> None:
        or '"; events=" + tapEvents' not in tap_helper:
         raise GateFailure("Composer tap failures and success evidence must retain the complete pointer event trace")
     recorder = method_body(source, "installComposerOpenTapRecorder")
-    completed_tap = method_body(source, "completedTrustedDraftTapExpression")
+    if 'return completedTrustedTapExpression("targetIsDraft");' not in method_body(source, "completedTrustedDraftTapExpression"):
+        raise GateFailure("completed draft tap proof must pair trusted events on the draft")
+    if 'return completedTrustedTapExpression("targetIsLauncher");' not in method_body(source, "completedTrustedLauncherTapExpression"):
+        raise GateFailure("completed launcher tap proof must pair trusted events on the launcher")
+    completed_tap = method_body(source, "completedTrustedTapExpression")
     for event_type in ("pointerdown", "pointerup", "click"):
         if f"'{event_type}'" not in recorder or f"type!=='{event_type}'" not in completed_tap:
             raise GateFailure(f"completed trusted tap proof must record and require {event_type}")
@@ -165,7 +175,10 @@ def validate(source: str) -> None:
         "let downIndex=upIndex-1",
         "down.pointerId===up.pointerId",
         "click.isTrusted!==true",
-        "click.targetIsDraft!==true",
+        '"||click." + targetFlag + "!==true)',
+        '"const down=events[downIndex];return up.isTrusted===true&&up." + targetFlag + "===true"',
+        '"&&down.isTrusted===true&&down." + targetFlag + "===true"',
+        "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]')",
     ):
         if proof not in recorder + completed_tap:
             raise GateFailure(f"completed trusted tap proof is missing {proof}")
@@ -187,6 +200,8 @@ def validate(source: str) -> None:
         if diagnostic not in source:
             raise GateFailure(f"physical-open diagnostics are missing {diagnostic}")
 
+    validate_launcher(source)
+
     sender = method_body(source, "sendComposerCommandAndAwaitMarker")
     sender_order = (
         "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix);",
@@ -199,10 +214,57 @@ def validate(source: str) -> None:
         raise GateFailure("cleanup command must wait for the opened Composer before setting and sending its draft")
 
 
+def validate_launcher(source: str) -> None:
+    """The Android Prompt sheet closes off Home; reopen it only by a physical launcher tap (D22: no DOM fallback)."""
+    for forbidden in (
+        "openComposerIfClosedAndAwaitTransport",
+        'click("[data-testid=prompt-composer-launcher]")',
+        "click(PROMPT_LAUNCHER_SELECTOR)",
+    ):
+        if forbidden in source:
+            raise GateFailure(f"Prompt must not be opened by a synthetic DOM launcher click: {forbidden}")
+    sheet_open = method_body(source, "promptSheetOpenExpression")
+    for proof in ("promptComposerOpen==='true'", "getAttribute('role')==='dialog'", "getAttribute('aria-modal')==='true'"):
+        if proof not in sheet_open:
+            raise GateFailure(f"Prompt sheet open state must require {proof}")
+    launcher = method_body(source, "openComposerWithPhysicalLauncherTap")
+    ordered = (
+        "awaitJsTrue(launcherIdle, 15_000);",
+        "installComposerOpenTapRecorder();",
+        "for (int attempt = 1; attempt <= 3; attempt++)",
+        "JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);",
+        "tap = tapPromptLauncherCenter();",
+        'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
+        'promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));',
+        "if (promptSheetOpen) break;",
+        'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");',
+        'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
+        'assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before',
+    )
+    positions = [launcher.find(token) for token in ordered]
+    for token, position in zip(ordered, positions):
+        if position < 0:
+            raise GateFailure(f"physical launcher open is missing required step: {token}")
+    if positions != sorted(positions):
+        raise GateFailure("physical launcher open must settle, tap, then prove a trusted click opened the sheet")
+    if '"; events=" + tapEvents' not in launcher:
+        raise GateFailure("launcher tap evidence must retain the complete pointer event trace")
+    if "tapElementCenter(PROMPT_LAUNCHER_SELECTOR, \"Prompt launcher\", true)" not in method_body(source, "tapPromptLauncherCenter"):
+        raise GateFailure("launcher tap must use the shared native touch path")
+    layout_wait = method_body(source, "awaitPromptLauncherTapLayout")
+    for proof in (
+        'latest.optBoolean("launcherCenterHitIsLauncher")',
+        'nativeState.optInt("webViewHeightPx")',
+        'nativeState.optBoolean("imeVisible")',
+        "stableSamples >= 5 && now - stableSince >= 400",
+    ):
+        if proof not in layout_wait:
+            raise GateFailure(f"launcher tap must wait for a stable, hittable dock layout: {proof}")
+
+
 def self_test() -> int:
     source = DEFAULT_SOURCE.read_text(encoding="utf-8")
     validate(source)
-    print("ok [1/18] startup and cleanup commands use the visible packaged Composer")
 
     mutants = (
         (
@@ -284,20 +346,74 @@ def self_test() -> int:
         ),
         (
             "third fresh-coordinate retry removed",
-            "for (int attempt = 1; attempt <= 3; attempt++)",
-            "for (int attempt = 1; attempt <= 2; attempt++)",
+            "for (int attempt = 1; attempt <= 3; attempt++) {\n            JSONObject tap;",
+            "for (int attempt = 1; attempt <= 2; attempt++) {\n            JSONObject tap;",
         ),
         (
             "retry cap made unbounded beyond three attempts",
-            "for (int attempt = 1; attempt <= 3; attempt++)",
-            "for (int attempt = 1; attempt <= 4; attempt++)",
+            "for (int attempt = 1; attempt <= 3; attempt++) {\n            JSONObject tap;",
+            "for (int attempt = 1; attempt <= 4; attempt++) {\n            JSONObject tap;",
+        ),
+        (
+            "launcher retries made unbounded beyond three attempts",
+            "for (int attempt = 1; attempt <= 3; attempt++) {\n            // Measure only once",
+            "for (int attempt = 1; attempt <= 4; attempt++) {\n            // Measure only once",
+        ),
+        (
+            "physical launcher open removed",
+            "            openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);\n",
+            "            // Prompt sheet assumed open\n",
+        ),
+        (
+            "synthetic DOM launcher click fallback added",
+            "            openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);\n",
+            "            click(PROMPT_LAUNCHER_SELECTOR);\n",
+        ),
+        (
+            "launcher stable-layout wait removed",
+            "            JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);\n",
+            "            JSONObject stableLayout = readComposerOpenState(\"unsettled\");\n",
+        ),
+        (
+            "launcher stable interval shortened",
+            "stableSamples >= 5 && now - stableSince >= 400",
+            "stableSamples >= 1 && now - stableSince >= 0",
+        ),
+        (
+            "trusted launcher click proof removed",
+            'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
+            'trustedLauncherTapComplete = true;',
+        ),
+        (
+            "launcher proof pairs events on the draft instead",
+            'return completedTrustedTapExpression("targetIsLauncher");',
+            'return completedTrustedTapExpression("targetIsDraft");',
+        ),
+        (
+            "Prompt sheet open state no longer requires the dialog",
+            "&&composer?.getAttribute('aria-modal')==='true';",
+            ";",
+        ),
+        (
+            "launcher retried after the sheet opened",
+            "            if (promptSheetOpen) break;\n",
+            "",
         ),
         (
             "completed pointer event trace omitted from evidence",
-            'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");',
-            "String tapEvents = \"[]\";",
+            'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");\n\n'
+            '        assertTrue("opening the Composer must follow',
+            'String tapEvents = "[]";\n\n        assertTrue("opening the Composer must follow',
+        ),
+        (
+            "launcher pointer event trace omitted from evidence",
+            'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");\n\n'
+            '        assertTrue("opening Prompt must record',
+            'String tapEvents = "[]";\n\n        assertTrue("opening Prompt must record',
         ),
     )
+    total = len(mutants) + 1
+    print(f"ok [1/{total}] startup and cleanup commands use the visible packaged Composer")
     for index, (label, old, new) in enumerate(mutants, start=2):
         if source.count(old) != 1:
             raise GateFailure(f"self-test setup drifted for mutant: {label}")
@@ -305,10 +421,10 @@ def self_test() -> int:
         try:
             validate(mutant)
         except GateFailure:
-            print(f"ok [{index}/18] {label} is rejected")
+            print(f"ok [{index}/{total}] {label} is rejected")
         else:
             raise GateFailure(f"source gate accepted invalid mutant: {label}")
-    print("PASS: Usage/Ports Composer ordering gate checks (18/18)")
+    print(f"PASS: Usage/Ports Composer ordering gate checks ({total}/{total})")
     return 0
 
 
@@ -328,7 +444,7 @@ def main() -> int:
     except (GateFailure, OSError) as error:
         print(f"FAIL: Usage/Ports Composer ordering gate: {error}", file=sys.stderr)
         return 1
-    print("PASS: Usage/Ports opens and focuses Composer before connected transport readiness")
+    print("PASS: Usage/Ports physically opens and focuses Prompt before connected transport readiness")
     return 0
 
 

@@ -751,15 +751,20 @@ def require_usage_ports_composer_contract(source: str) -> None:
     send = journey_method(source, "sendComposerCommandAndAwaitMarker")
     opener = journey_method(source, "openHomeLiveComposerAndAwaitConnectedTransport")
     physical_open = journey_method(source, "openComposerWithPhysicalDraftTap")
-    physical_tap = journey_method(source, "tapComposerDraftCenter")
+    draft_tap = journey_method(source, "tapComposerDraftCenter")
+    physical_tap = journey_method(source, "tapElementCenter")
+    physical_launcher_open = journey_method(source, "openComposerWithPhysicalLauncherTap")
     tap_recorder = journey_method(source, "installComposerOpenTapRecorder")
-    completed_tap = journey_method(source, "completedTrustedDraftTapExpression")
+    completed_tap = journey_method(source, "completedTrustedTapExpression")
+    completed_draft_tap = journey_method(source, "completedTrustedDraftTapExpression")
+    completed_launcher_tap = journey_method(source, "completedTrustedLauncherTapExpression")
     tap_layout_wait = journey_method(source, "awaitComposerDraftTapLayout")
     draft_tap_target = journey_method(source, "composerDraftTapTargetExpression")
     open_diagnostics = journey_method(source, "readComposerOpenState")
     visible = journey_method(source, "visibleComposerExpression")
 
-    for label, open_method in (("Home route opener", opener), ("physical-tap opener", physical_open)):
+    for label, open_method in (("Home route opener", opener), ("physical-tap opener", physical_open),
+                               ("physical launcher opener", physical_launcher_open)):
         if re.search(r"(?i)\b(?:send[A-Za-z0-9_]*|write[A-Za-z0-9_]*|setValue|clear[A-Za-z0-9_]*)\s*\(", open_method) \
            or re.search(r"(?i)\bclick\s*\([^;\n]*(?:send|submit)", open_method) \
            or re.search(r"(?i)\.value\s*=", open_method):
@@ -816,6 +821,8 @@ def require_usage_ports_composer_contract(source: str) -> None:
         ("session list for reattach", '[data-testid=open-sessions]'),
         ("selected session lookup", "matchingSession"),
         ("selected session reattach", "[data-session-tag=\\\""),
+        ("closed Prompt sheet check", "boolean promptSheetOpen = \"true\".equals(evalRaw(promptSheetOpenExpression()));"),
+        ("physical launcher tap when the Prompt sheet is closed", "openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);"),
         ("physical draft target readiness", "awaitJsTrue(composerDraftTapReady, 15_000);"),
         ("Composer visibility and focus check", "boolean composerDraftFocused = "),
         ("physical open only when closed or unfocused", "if (!composerVisible || !composerDraftFocused) {"),
@@ -837,13 +844,15 @@ def require_usage_ports_composer_contract(source: str) -> None:
         if needle not in send:
             raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
     opener_live_ready_at = opener.find("dataset.enabled === 'true'")
+    opener_launcher_at = opener.find("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);")
     opener_tap_ready_at = opener.find("awaitJsTrue(composerDraftTapReady, 15_000);")
     opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);")
     opener_visible_at = opener.find("awaitJsTrue(composerReady, 15_000);")
     opener_focus_at = opener.find("String composerReady = visibleComposerExpression()", opener_action_at)
     opener_connected_at = opener.find("dataset.transportState === 'connected'")
-    if min(opener_live_ready_at, opener_tap_ready_at, opener_action_at, opener_visible_at, opener_focus_at, opener_connected_at) < 0 \
-       or not opener_live_ready_at < opener_tap_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
+    if min(opener_live_ready_at, opener_launcher_at, opener_tap_ready_at, opener_action_at, opener_visible_at,
+           opener_focus_at, opener_connected_at) < 0 \
+       or not opener_live_ready_at < opener_launcher_at < opener_tap_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
         raise AssertionError("Home Composer must become physically tappable, open, and focus before connected transport")
     if "composerDraftTapTargetExpression()" not in opener or "elementFromPoint" not in draft_tap_target \
        or "===draft" not in draft_tap_target:
@@ -899,10 +908,28 @@ def require_usage_ports_composer_contract(source: str) -> None:
         "let downIndex=upIndex-1",
         "down.pointerId===up.pointerId",
         "click.isTrusted!==true",
-        "click.targetIsDraft!==true",
+        '"||click." + targetFlag + "!==true)',
+        '"&&down.isTrusted===true&&down." + targetFlag + "===true"',
     ):
         if proof not in tap_recorder + completed_tap:
             raise AssertionError(f"mobile Composer completed-tap proof is missing {proof}")
+    if 'return completedTrustedTapExpression("targetIsDraft");' not in completed_draft_tap \
+       or 'return completedTrustedTapExpression("targetIsLauncher");' not in completed_launcher_tap \
+       or "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]')" not in tap_recorder:
+        raise AssertionError("mobile Composer completed-tap proofs must bind to the draft and the launcher respectively")
+    for forbidden in ('click("[data-testid=prompt-composer-launcher]")', "click(PROMPT_LAUNCHER_SELECTOR)",
+                      "openComposerIfClosedAndAwaitTransport"):
+        if forbidden in source:
+            raise AssertionError("Usage/Ports must open Prompt by a physical launcher tap, never a DOM click fallback")
+    for needle in (
+        "JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);",
+        "tap = tapPromptLauncherCenter();",
+        'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
+        'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
+        'assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before',
+    ):
+        if needle not in physical_launcher_open:
+            raise AssertionError(f"physical Prompt launcher open is missing {needle}")
     if "SystemClock.sleep(16);" not in physical_tap or "SystemClock.sleep(60);" in physical_tap:
         raise AssertionError("mobile Composer tap must not keep the stale 60 ms coordinate interval")
     if "nativeState.optBoolean(\"imeVisible\")" not in tap_layout_wait \
@@ -913,12 +940,13 @@ def require_usage_ports_composer_contract(source: str) -> None:
     if "MotionEvent.ACTION_DOWN" not in physical_tap or "MotionEvent.ACTION_UP" not in physical_tap \
        or "InputDevice.SOURCE_TOUCHSCREEN" not in physical_tap or "injectInputEvent" not in physical_tap:
         raise AssertionError("mobile Composer open action must inject Android touchscreen down and up events")
-    if 'assertTrue("Android touchscreen ACTION_DOWN for the Composer draft must be injected", downInjected)' not in physical_tap \
-       or 'assertTrue("Android touchscreen ACTION_UP for the Composer draft must be injected", upInjected)' not in physical_tap:
+    if 'assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected)' not in physical_tap \
+       or 'assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected)' not in physical_tap:
         raise AssertionError("mobile Composer open action must require both touchscreen events to be injected")
-    if "centerHitIsDraft" not in physical_tap or "draftCenterHitIsDraft" not in open_diagnostics:
+    if 'tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false)' not in draft_tap \
+       or "centerHitIsTarget:hit===target" not in physical_tap or "draftCenterHitIsDraft" not in open_diagnostics:
         raise AssertionError("mobile Composer tap target must resolve to the Prompt draft")
-    if 'assertTrue("Composer draft center is intercepted by another DOM element: " + point' not in physical_tap:
+    if 'assertTrue(label + " center is intercepted by another DOM element: " + point' not in physical_tap:
         raise AssertionError("mobile Composer touch point must not be intercepted by another DOM element")
     for label, needle in (
         ("Home live surface", "shell.dataset.homeSurface==='live'"),
@@ -978,6 +1006,23 @@ expect_usage_ports_contract_rejection(
     usage_ports_journey.replace(
         opener_source,
         opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the physical Prompt launcher tap",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "replacing the physical Prompt launcher tap with a DOM click",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);",
+                              "click(PROMPT_LAUNCHER_SELECTOR);", 1),
         1,
     ),
 )

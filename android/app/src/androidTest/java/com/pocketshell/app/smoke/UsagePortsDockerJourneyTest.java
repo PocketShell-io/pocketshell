@@ -49,6 +49,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(AndroidJUnit4.class)
 public final class UsagePortsDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    private static final String PROMPT_LAUNCHER_SELECTOR = "[data-testid=prompt-composer-launcher]";
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
     private File artifactDirectory;
@@ -497,6 +498,14 @@ public final class UsagePortsDockerJourneyTest {
                 + JSONObject.quote(sessionTag)
                 + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
 
+        // Leaving Home closes the Android Prompt sheet, so the returned Home
+        // surface shows only the dock launcher. Open the sheet through the
+        // same Android touch path a user takes before looking for its draft.
+        boolean promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
+        if (!promptSheetOpen) {
+            openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);
+        }
+
         // Returning from Usage/Ports updates the route before the retained Home
         // surface becomes visible again. Wait for the draft to be a real touch
         // target before mapping its CSS coordinates into Android screen space.
@@ -519,6 +528,95 @@ public final class UsagePortsDockerJourneyTest {
                 + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
                 + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
                 15_000);
+    }
+
+    private void openComposerWithPhysicalLauncherTap(String sessionTag, String eventPrefix) throws Exception {
+        String launcherIdle = "(() => {const shell=document.querySelector('.app-shell');"
+                + "const launcher=document.querySelector(" + JSONObject.quote(PROMPT_LAUNCHER_SELECTOR) + ");"
+                + "return shell?.dataset.route==='home'&&shell?.dataset.homeSurface==='live'"
+                + "&&shell?.dataset.sshPhase==='live'&&!!launcher&&launcher.disabled===false"
+                + "&&!document.querySelector('[data-testid=prompt-composer]');})()";
+        awaitJsTrue(launcherIdle, 15_000);
+        JSONObject before = readComposerOpenState("before-physical-launcher-tap");
+        installComposerOpenTapRecorder();
+        evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
+
+        JSONArray taps = new JSONArray();
+        boolean trustedLauncherTapComplete = false;
+        boolean promptSheetOpen = false;
+        JSONObject after = before;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            // Measure only once the dock has held still: an IME that is still
+            // animating moves the launcher between mapping and injection.
+            JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);
+            JSONObject tap;
+            try {
+                tap = tapPromptLauncherCenter();
+            } catch (AssertionError error) {
+                JSONObject rejected = readComposerOpenState("launcher-tap-target-rejected-attempt-" + attempt);
+                throw new AssertionError("Prompt could not be opened by a physical launcher tap; sessionTag="
+                        + sessionTag + "; attempt=" + attempt + "; before=" + before
+                        + "; targetFailure=" + error.getMessage() + "; after=" + rejected, error);
+            }
+            taps.put(tap.put("stableLayout", stableLayout));
+
+            long openDeadline = SystemClock.uptimeMillis() + 1_500;
+            while (SystemClock.uptimeMillis() < openDeadline) {
+                trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));
+                promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
+                if (trustedLauncherTapComplete && promptSheetOpen) break;
+                Thread.sleep(30);
+            }
+            after = readComposerOpenState("after-physical-launcher-tap-attempt-" + attempt);
+            // An open sheet covers the dock; tapping again would hit its scrim.
+            if (promptSheetOpen) break;
+        }
+        String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+
+        assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "
+                        + "before=" + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after,
+                trustedLauncherTapComplete);
+        assertTrue("the completed physical launcher tap must open the Prompt sheet; before=" + before
+                + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, promptSheetOpen);
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " " + eventPrefix + "_PROMPT_LAUNCHER_TAP sessionTag=" + sessionTag
+                + " trustedLauncherTapComplete=" + trustedLauncherTapComplete
+                + " promptSheetOpen=" + promptSheetOpen
+                + " before=" + before + " taps=" + taps + " events=" + tapEvents + " after=" + after);
+    }
+
+    private JSONObject awaitPromptLauncherTapLayout(JSONArray previousTaps) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        String previousLayout = "";
+        long stableSince = 0;
+        int stableSamples = 0;
+        JSONObject latest = new JSONObject();
+        while (SystemClock.uptimeMillis() < deadline) {
+            latest = readComposerOpenState("prompt-launcher-tap-layout-settling");
+            JSONObject nativeState = latest.optJSONObject("native");
+            JSONObject viewport = latest.optJSONObject("visualViewport");
+            JSONObject launcherRect = latest.optJSONObject("launcherRect");
+            boolean launcherTargetReady = latest.optBoolean("launcherCenterHitIsLauncher")
+                    && !latest.optBoolean("launcherDisabled", true);
+            String layout = (nativeState == null ? "" : nativeState.optInt("webViewHeightPx")) + ":"
+                    + (nativeState == null ? "" : nativeState.optBoolean("imeVisible")) + ":"
+                    + (viewport == null ? "" : viewport.optDouble("height")) + ":"
+                    + (launcherRect == null ? "" : launcherRect.toString());
+            long now = SystemClock.uptimeMillis();
+            if (launcherTargetReady && layout.equals(previousLayout)) {
+                stableSamples += 1;
+            } else {
+                stableSamples = 0;
+                stableSince = now;
+            }
+            if (stableSamples >= 5 && now - stableSince >= 400) {
+                return latest;
+            }
+            previousLayout = launcherTargetReady ? layout : "";
+            Thread.sleep(60);
+        }
+        throw new AssertionError("Prompt launcher layout did not hold still for a fresh physical tap; previousTaps="
+                + previousTaps + "; latest=" + latest);
     }
 
     private void openComposerWithPhysicalDraftTap(String sessionTag, String eventPrefix) throws Exception {
@@ -584,21 +682,30 @@ public final class UsagePortsDockerJourneyTest {
                 + "window.__ps2908ComposerOpenPointerEvents=[];"
                 + "const record=(type,event)=>{const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "window.__ps2908ComposerOpenPointerEvents.push({type,isTrusted:event.isTrusted===true,"
-                + "targetIsDraft:event.target===draft,pointerType:event.pointerType||'',pointerId:event.pointerId??-1,"
+                + "targetIsDraft:event.target===draft,"
+                + "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]'),pointerType:event.pointerType||'',pointerId:event.pointerId??-1,"
                 + "clientX:event.clientX,clientY:event.clientY});};"
                 + "for(const type of ['pointerdown','pointerup','click'])document.addEventListener(type,event=>record(type,event),true);"
                 + "window.__ps2908ComposerOpenRecorderInstalled=true;return 'installed';})()");
     }
 
     private String completedTrustedDraftTapExpression() {
+        return completedTrustedTapExpression("targetIsDraft");
+    }
+
+    private String completedTrustedLauncherTapExpression() {
+        return completedTrustedTapExpression("targetIsLauncher");
+    }
+
+    private String completedTrustedTapExpression(String targetFlag) {
         return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
                 + "return events.some((click,clickIndex)=>{if(click.type!=='click'||click.isTrusted!==true"
-                + "||click.targetIsDraft!==true)return false;let upIndex=clickIndex-1;"
+                + "||click." + targetFlag + "!==true)return false;let upIndex=clickIndex-1;"
                 + "while(upIndex>=0&&events[upIndex].type!=='pointerup')upIndex--;if(upIndex<0)return false;"
                 + "const up=events[upIndex];let downIndex=upIndex-1;"
                 + "while(downIndex>=0&&events[downIndex].type!=='pointerdown')downIndex--;if(downIndex<0)return false;"
-                + "const down=events[downIndex];return up.isTrusted===true&&up.targetIsDraft===true"
-                + "&&down.isTrusted===true&&down.targetIsDraft===true"
+                + "const down=events[downIndex];return up.isTrusted===true&&up." + targetFlag + "===true"
+                + "&&down.isTrusted===true&&down." + targetFlag + "===true"
                 + "&&down.pointerId===up.pointerId;});})()";
     }
 
@@ -633,23 +740,36 @@ public final class UsagePortsDockerJourneyTest {
     }
 
     private JSONObject tapComposerDraftCenter() throws Exception {
-        JSONObject point = new JSONObject(evalString("(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
-                + "if(!draft)return JSON.stringify({missing:true});const rect=draft.getBoundingClientRect();"
+        return tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false);
+    }
+
+    private JSONObject tapPromptLauncherCenter() throws Exception {
+        // The launcher button paints an icon and label inside itself, so its
+        // center may hit one of those children; the pointer still belongs to it.
+        return tapElementCenter(PROMPT_LAUNCHER_SELECTOR, "Prompt launcher", true);
+    }
+
+    private JSONObject tapElementCenter(String selector, String label, boolean allowDescendantHit) throws Exception {
+        JSONObject point = new JSONObject(evalString("(() => {const target=document.querySelector("
+                + JSONObject.quote(selector) + ");"
+                + "if(!target)return JSON.stringify({missing:true});const rect=target.getBoundingClientRect();"
                 + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
-                + "return JSON.stringify({missing:false,disabled:!!draft.disabled,connected:draft.isConnected,"
+                + "return JSON.stringify({missing:false,disabled:!!target.disabled,connected:target.isConnected,"
                 + "x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,"
-                + "centerHitIsDraft:hit===draft,centerHitTag:hit?.tagName||'',"
+                + "centerHitIsTarget:hit===target||(" + allowDescendantHit + "&&!!hit&&target.contains(hit)),"
+                + "centerHitTag:hit?.tagName||'',"
                 + "activeElementTag:document.activeElement?.tagName||'',activeElementTestId:document.activeElement?.getAttribute?.('data-testid')||''});})()"));
-        assertTrue("Composer draft is missing at the Home touch target: " + point, !point.optBoolean("missing"));
-        assertTrue("Composer draft is detached from the rendered route: " + point, point.optBoolean("connected"));
-        assertTrue("Composer draft is disabled at the Home touch target: " + point, !point.optBoolean("disabled"));
-        assertTrue("Composer draft has no visible physical tap target: " + point,
+        point.put("selector", selector);
+        assertTrue(label + " is missing at the Home touch target: " + point, !point.optBoolean("missing"));
+        assertTrue(label + " is detached from the rendered route: " + point, point.optBoolean("connected"));
+        assertTrue(label + " is disabled at the Home touch target: " + point, !point.optBoolean("disabled"));
+        assertTrue(label + " has no visible physical tap target: " + point,
                 point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("cssHeight") + 0.5
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5
                         && point.optDouble("right") > point.optDouble("left")
                         && point.optDouble("bottom") > point.optDouble("top"));
-        assertTrue("Composer draft center is intercepted by another DOM element: " + point,
-                point.optBoolean("centerHitIsDraft"));
+        assertTrue(label + " center is intercepted by another DOM element: " + point,
+                point.optBoolean("centerHitIsTarget"));
 
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
@@ -691,21 +811,21 @@ public final class UsagePortsDockerJourneyTest {
         });
 
         float[] screen = screenPoint.get();
-        assertNotNull("native screen point for Composer draft was not mapped", screen);
+        assertNotNull("native screen point for " + label + " was not mapped", screen);
         long downTime = SystemClock.uptimeMillis();
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
         down.recycle();
-        assertTrue("Android touchscreen ACTION_DOWN for the Composer draft must be injected", downInjected);
+        assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected);
         SystemClock.sleep(16);
         long upTime = SystemClock.uptimeMillis();
         MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, screen[0], screen[1], 0);
         up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
         boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
         up.recycle();
-        assertTrue("Android touchscreen ACTION_UP for the Composer draft must be injected", upInjected);
+        assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected);
         return new JSONObject(point.toString())
                 .put("nativeMapping", nativeMapping.get())
                 .put("screenX", screen[0])
@@ -724,7 +844,12 @@ public final class UsagePortsDockerJourneyTest {
                 + "const style=composer?getComputedStyle(composer):null;const draftRect=rect(draft);"
                 + "const hit=draftRect?document.elementFromPoint(draftRect.left+draftRect.width/2,draftRect.top+draftRect.height/2):null;"
                 + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||''}:null;"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');const launcherRect=rect(launcher);"
+                + "const launcherHit=launcherRect?document.elementFromPoint(launcherRect.left+launcherRect.width/2,launcherRect.top+launcherRect.height/2):null;"
                 + "return JSON.stringify({route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "promptComposerOpen:shell?.dataset.promptComposerOpen||'',"
+                + "launcherPresent:!!launcher,launcherDisabled:!!launcher?.disabled,launcherRect,"
+                + "launcherCenterHit:label(launcherHit),launcherCenterHitIsLauncher:!!launcher&&!!launcherHit&&launcher.contains(launcherHit),"
                 + "sshPhase:shell?.dataset.sshPhase||'',selectedTag:shell?.dataset.sshSelectedTag||'',"
                 + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
                 + "composerPresent:!!composer,composerConnected:!!composer?.isConnected,composerRect:rect(composer),"
@@ -761,6 +886,13 @@ public final class UsagePortsDockerJourneyTest {
         return dom.put("stage", stage)
                 .put("capturedAtUptimeMs", SystemClock.uptimeMillis())
                 .put("native", nativeState.get() == null ? new JSONObject() : nativeState.get());
+    }
+
+    private String promptSheetOpenExpression() {
+        return "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "return shell?.dataset.promptComposerOpen==='true'&&composer?.getAttribute('role')==='dialog'"
+                + "&&composer?.getAttribute('aria-modal')==='true';})()";
     }
 
     private String visibleComposerExpression() {
