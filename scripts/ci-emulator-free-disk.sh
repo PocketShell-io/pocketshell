@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # ci-emulator-free-disk.sh — reclaim runner disk before the AVD is created.
 #
-# Extracted VERBATIM out of the `Free disk space for the AVD` step of
-# .github/workflows/tests.yml's `emulator-journey` job (issue #2134). The step
-# body and the rationale below are byte-identical to what ran inline; only their
-# home moved, so `tests.yml` stops being ~270 bytes from the 128 KiB
-# oversized-file guard. The workflow now calls this file directly.
+# Originally extracted from the `Free disk space for the AVD` step of
+# .github/workflows/tests.yml's `emulator-journey` job (issue #2134), this
+# script now also protects the active Node/pnpm toolcache used by JS CI.
+# The workflow calls this file directly.
 #
 # The inline step ran under Actions' DEFAULT shell, `bash -e {0}` — errexit was
 # already on before the body's own `set -uo pipefail`. `set -e` here reproduces
@@ -34,8 +33,8 @@ set -e
 # so the runner's sdkmanager (and the #771 freshly-reinstalled copy)
 # crashed instantly and the emulator never booted. The cmdline-tools were
 # never the real problem — the missing JDK was. Fix: prune the OTHER
-# tool-caches under $AGENT_TOOLSDIRECTORY but PRESERVE the directory the
-# live JAVA_HOME resolves into, so the active JDK survives.
+# tool-caches under $AGENT_TOOLSDIRECTORY but preserve the roots containing
+# the live JAVA_HOME, node, and pnpm executables, so Java and JS survive.
 set -uo pipefail
 echo "::group::Disk before cleanup"
 df -h /
@@ -45,29 +44,9 @@ sudo rm -rf /usr/local/lib/android/sdk/ndk || true
 sudo rm -rf /opt/ghc /usr/local/.ghcup || true
 sudo rm -rf /usr/local/share/boost || true
 sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-# Prune unused tool-caches under $AGENT_TOOLSDIRECTORY but KEEP the
-# active JDK that JAVA_HOME depends on (issue #771). Resolve the
-# top-level tool-cache subdir the live JAVA_HOME lives in (e.g.
-# `Java_Temurin-Hotspot_jdk`) and exclude exactly that one, so the
-# exact JDK setup-java installed survives even across version bumps.
-if [[ -n "${AGENT_TOOLSDIRECTORY:-}" && -d "${AGENT_TOOLSDIRECTORY:-}" ]]; then
-  keep_dir=""
-  if [[ -n "${JAVA_HOME:-}" && "$JAVA_HOME" == "$AGENT_TOOLSDIRECTORY"/* ]]; then
-    # First path segment of JAVA_HOME relative to the tool-cache root.
-    rel="${JAVA_HOME#"$AGENT_TOOLSDIRECTORY"/}"
-    keep_dir="${rel%%/*}"
-  fi
-  echo "Pruning $AGENT_TOOLSDIRECTORY, keeping active JDK dir: '${keep_dir:-<none>}'"
-  if [[ -n "$keep_dir" ]]; then
-    sudo find "$AGENT_TOOLSDIRECTORY" -mindepth 1 -maxdepth 1 \
-      ! -name "$keep_dir" -exec rm -rf {} + || true
-  else
-    # No JAVA_HOME under the tool-cache (unexpected): leave the dir
-    # intact rather than risk deleting the JDK. The deletions above
-    # plus docker prune already free far more than the 9000 MB guard.
-    echo "JAVA_HOME not under \$AGENT_TOOLSDIRECTORY; leaving it intact to protect the JDK."
-  fi
-fi
+# Preserve the active JDK, Node, and pnpm toolcache roots while pruning unused
+# caches. The helper verifies the exact pre-cleanup Node/pnpm paths still run.
+scripts/ci-emulator-prune-toolcache.sh
 sudo docker image prune -af || true
 echo "::group::Disk after cleanup"
 df -h /

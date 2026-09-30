@@ -1,5 +1,15 @@
 # Testing and QA
 
+Since #2934, `main` is the JS-first 0.6.0 development line: the product is
+the Vue/Capacitor app. Run its checks with `scripts/run-js-unit-gate.sh`,
+`pnpm typecheck`, `scripts/assemble-debug.sh`, the JS-first connected lanes
+below, and `scripts/test-agents-fixture-aplexer.sh --docker`. The later app2
+journey inventory ("Legacy app2 ..." sections) describes the Kotlin contract
+that now lives only on `release/0.5.x`. `main` is not a complete 0.6.0
+release gate: its full feature suite and D36/D37 verdicts are #2863's work,
+and it currently has no scheduled run. The CI boundary is documented in
+[js-first-rewrite-foundation.md](js-first-rewrite-foundation.md).
+
 PocketShell has two end-to-end surfaces:
 
 1. the Android emulator, which runs the app and validates visible UI behavior;
@@ -12,18 +22,83 @@ that attach, input, or stop works for a user.
 
 ## Fast local checks
 
-Run these from the repository root:
+Run these from the repository root on `main`, after
+`git submodule update --init --recursive` and `pnpm install --frozen-lockfile`:
 
 ```bash
-scripts/full-jvm-gate.py
+scripts/run-js-unit-gate.sh
+pnpm typecheck
 scripts/assemble-debug.sh
 git diff --check
 ```
 
-The JVM gate runs every unit test with one Gradle worker and no build cache. The
-Python command covers the published host helper. `assemble-debug.sh` is the
-local APK path; it does not run the release-gate profile or build connected
-tests.
+`scripts/run-js-unit-gate.sh` runs the complete Vitest suite and fails unless
+every registered test file and title ran (`pnpm test:unit` is the unchecked
+quick loop). `assemble-debug.sh` builds the JS app,
+syncs Capacitor, and assembles a debug APK; it does not build connected tests.
+
+The remaining legacy app2 Gradle commands and journey inventory describe
+`release/0.5.x`. They are not available on `main`, where the Kotlin product
+modules and root Gradle graph were removed.
+
+## JS-first packaged Android lanes
+
+The JS-first `connected-test.sh` requires a lane name and an explicit package
+suffix. It dispatches only to the existing `android/` packaged runners; it does
+not accept raw Gradle tasks or old app2 module selectors.
+
+```bash
+scripts/connected-test.sh smoke --suffix i2863
+docker compose -f tests/docker/docker-compose.yml up -d --build agents
+scripts/connected-test.sh lifecycle --suffix i2863 --port 2222 \
+  --container pocketshell-test-agents --run-id js2863-local
+scripts/agents-pool.sh up 2245
+scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
+  --session-prefix js2863-local
+```
+
+The smoke lane requires exactly the six registered packaged-shell JUnit
+methods. The lifecycle lane requires its one registered JUnit method, then
+checks run-scoped screenshots, session rows, PTY state, and grace/reconnect
+evidence against the Docker host. The composer lane requires its one registered
+method and checks UTF-8 command bytes, bracketed multiline bytes, Insert without
+execution, and no execution after an uncertain write against the Docker host.
+It also captures the keyboard-up screenshot and computed viewport bounds from
+live logcat, verifies their SHA-256 values, and saves them under `/tmp` so
+Gradle's suffixed-app cleanup does not remove them.
+Each connected phase owns the Android output tree and selected emulator,
+removes stale JUnit XML before instrumentation, and checks the report from that
+run. Provide a new suffix for each worktree so parallel APK installs have
+distinct package IDs.
+
+The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
+rewrite tree it verifies the five packaged contracts: smoke selects the exact
+six methods in `JsShellPackagedSmokeTest`; lifecycle selects
+`SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
+Usage and Ports selects
+`UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;
+Files selects
+`J10FilesBrowseEditJourneyTest#browseEditConflictAndTransferFilesWithinTheConfiguredRoot`;
+and composer selects
+`JsComposerDockerJourneyTest#composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop`.
+The opt-in `InstalledDataMigrationJourneyTest` remains attached to #2860 because
+it requires a signed prior install that the regular package lanes do not
+prepare. The guard checks that justification and rejects any other undispatched
+`*SmokeTest`, `*JourneyTest`, `*DockerTest`, or `*E2eTest` source.
+
+Run its synthetic contract checks with
+`scripts/check-test-validity.sh --j1-only --self-test`. This verifies the JS
+selectors and exact result-checker method sets, rejects missing/extra dispatch
+and unjustified journey classes, and retains a synthetic app2 whole-suite
+regression case. The Files result contract is also self-tested by
+`scripts/check-js-files-results.py --self-test`. In hosted CI, an
+`if: always()` report step independently runs each lane's exact JUnit checker
+against that run's preserved smoke, lifecycle, Files, Usage/Ports, or Composer
+results. This catches an omitted or dormant runner even if the packaged-lanes
+wrapper reports a zero status for it; in particular, Files must leave its
+exact report under `js-files/<run-id>/instrumentation-results`. J1 only proves
+dispatch of the existing packaged tests; it does not qualify the separate
+24-class feature inventory or complete the 0.6.0 release gates.
 
 For a session-runtime change, also run the focused fixture contract checks:
 
@@ -48,10 +123,11 @@ from a product or test failure (issue #1989).
 | 10–20 GiB | run with a `WARN: disk preflight` line naming the cleanup command |
 | above 20 GiB | run silently |
 
-`connected-test.sh --cleanup-suffixes` is exempt because it builds nothing and
-is the recovery path for a full box. Use `scripts/disk-cleanup.sh` for the
-serialized safe-list cleanup; it defaults to a dry run and `--apply` performs
-the bounded cleanup.
+The legacy `release/0.5.x` app2 runner's
+`connected-test.sh --cleanup-suffixes` mode is exempt because it builds nothing.
+That option is not part of the JS-first runner. Use `scripts/disk-cleanup.sh`
+for serialized safe-list cleanup; it defaults to a dry run and `--apply`
+performs the bounded cleanup.
 
 Release validation has a larger fixed admission budget:
 
@@ -60,7 +136,10 @@ Release validation has a larger fixed admission budget:
 | below 24 GiB | refuse the release validation, exit **76**, and print the safe cleanup command |
 | 24 GiB or more | reclaim stale copied worktrees, then start normally |
 
-## Android emulator
+## Legacy app2 Android emulator on release/0.5.x
+
+These commands apply only on `release/0.5.x`, where the legacy app2 runner is
+still present. On `main`, use the explicit JS-first lanes above.
 
 The maintained local AVD is `test`. The SDK paths on the maintainer box are:
 
@@ -88,19 +167,19 @@ different checkout — a wrong-tree run would silently report green for changes
 it does not contain — and prints `testing checkout ...` on every run so the
 tree under test is visible in the log (issue #2500).
 
-The connected lane is unfiltered. It runs every app2 journey in one process so
-session creation, attach, background grace, and cleanup are tested in the same
-state model. A lane that uses a non-default fixture port passes
-`-Pandroid.testInstrumentationRunnerArguments.agentsPort=<port>` through the
-wrapper or uses the agents-pool workflow described in
+The legacy app2 connected lane is unfiltered. It runs every app2 journey in
+one process so session creation, attach, background grace, and cleanup are
+tested in the same state model. A lane that uses a non-default fixture port
+passes `-Pandroid.testInstrumentationRunnerArguments.agentsPort=<port>` through
+the legacy wrapper or uses the agents-pool workflow described in
 [docker-emulator-runbook.md](docker-emulator-runbook.md).
 
-Network-fault journeys under `connected-test.sh --pool` are isolated per lane
-(issue #2128): the claimed agents port derives that lane's Toxiproxy SSH/API
-ports and compose project. The default `--no-pool` path keeps the single
-fixture ports for local and nightly runs. If a pool lane's proxy is recreated
-mid-run, the wrapper fails with a fixture error rather than reporting an empty
-session list as an app result.
+Network-fault journeys under the legacy `connected-test.sh --pool` are
+isolated per lane (issue #2128): the claimed agents port derives that lane's
+Toxiproxy SSH/API ports and compose project. The default `--no-pool` path keeps
+the single fixture ports for local and nightly runs. If a pool lane's proxy is
+recreated mid-run, the wrapper fails with a fixture error rather than
+reporting an empty session list as an app result.
 
 User-facing changes require reviewer evidence from the real app: capture the
 screen with `adb exec-out screencap -p > /tmp/pocketshell-screen.png`, include
@@ -235,9 +314,16 @@ in `AGENTS.md`, `process.md`, `scripts/lib/scope-run.sh`,
 
 ## CI and release evidence
 
-The required unit lanes run the JVM and Python suites plus static guards. The
-app2 workflow runs the unfiltered emulator journey lane and the real SSH
-integration lanes. The pre-release confidence gate repeats the APK identity,
+On `main`, `.github/workflows/js-first-rewrite.yml` runs on every push and
+pull request. Its job `JS checks and Android debug APK` is the required PR
+check (JS unit gate, typecheck, result-guard self-tests, APK identity and
+signing, packaged API 35 lanes against Docker), and `Docker agents fixture
+contract` exercises the pinned fixture. There is no scheduled workflow on
+`main` until #2863 replaces the D36/D37 verdicts. On `release/0.5.x`, the
+required unit lanes run the JVM suites plus static guards, and the app2
+workflow runs the unfiltered emulator journey lane and the real SSH
+integration lanes, but those workflows trigger only for `main`/`stable`
+pushes and PRs (see [release.md](release.md#release-05x-hotfixes)). The pre-release confidence gate repeats the APK identity,
 Docker fixture, emulator, and release-test ledger checks before a tag.
 
 Release work follows [release.md](release.md). A release note or status report

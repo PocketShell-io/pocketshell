@@ -67,9 +67,9 @@ Behaviours:
 
 ### Inline dictation (escape hatch)
 
-For short shell commands when the prompt composer is overkill. The mic sits at the trailing end of `SessionTerminalBar`, the docked bar under the terminal (the composer sheet has its own mic). Tap → words stream directly into the terminal at cursor; partials render only in the bar's status chip. Tap again → stop. No review step.
+For short shell commands when the prompt composer is overkill. The mic sits in the terminal controls (the composer has its own mic). Tap to start; partials appear only in the status preview and never reach the PTY. Tap Stop to insert validated final text once at the terminal cursor. Enter remains a separate action, and no final transcript means no insertion. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
 
-Inline dictation uses the same configured silence window as the prompt composer (30s default, adjustable from 2s to 60s).
+Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s).
 
 Used for: `git status`, file names mid-command, dictating an `ssh` target.
 

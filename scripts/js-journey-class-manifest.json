@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "requiredJourneyClasses": [
+    "J01ConnectAndTrustJourney",
+    "J02SessionTreeListJourney",
+    "J03AttachAndTypeJourney",
+    "J04CreateSessionJourney",
+    "J05ReconnectAfterDropJourney",
+    "J06BackgroundGraceReturnJourney",
+    "J07ComposerSendJourney",
+    "J08VoiceDictationJourney",
+    "J08VoiceProductionProviderJourney",
+    "J10FilesBrowseEditJourney",
+    "J11ShareUploadJourney",
+    "J12UsagePanelJourney",
+    "J13PortForwardOpenJourney",
+    "J14StopSessionJourney",
+    "J15TerminalScrollJourney",
+    "J16SettingsSupportJourney",
+    "J17HostToolsJourney",
+    "J18AutoForwardResumeJourney",
+    "J19HostFormImeJourney",
+    "J20ComposerUploadProgressJourney",
+    "J21HostAddConnectJourney",
+    "J22ForwardServiceFgsJourney",
+    "J23InlineDictationJourney",
+    "J24SettingsReachJourney"
+  ]
+}

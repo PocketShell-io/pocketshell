@@ -10,6 +10,7 @@ DOCKERFILE="$ROOT_DIR/tests/docker/Dockerfile.agents"
 SELFCHECK="$ROOT_DIR/tests/docker/agents-aplexer-selfcheck.py"
 SHIM="$ROOT_DIR/tests/docker/agent-bin/pocketshell"
 PINS="$ROOT_DIR/tests/docker/fixture-pins.txt"
+INVENTORY="$ROOT_DIR/docs/js-first-rewrite-inventory.md"
 
 pass_count=0
 
@@ -73,25 +74,16 @@ if grep -Eq "[\"']--version[\"']" "$SELFCHECK"; then
 fi
 ok "build-time self-check proves the schema-3 create/list/kill lifecycle"
 
+[[ -f "$INVENTORY" ]] || fail "missing pre-deletion journey inventory $INVENTORY"
 for journey in \
-  "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/tree/J02SessionTreeListJourney.kt" \
-  "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/terminal/J03AttachAndTypeJourney.kt" \
-  "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/tree/J04CreateSessionJourney.kt" \
-  "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/tree/J14StopSessionJourney.kt"; do
-  [[ -f "$journey" ]] || fail "missing journey $journey"
-  if grep -Eiq 'tmux|tmuxctl|--backend' "$journey"; then
-    fail "journey still names the retired backend: $journey"
-  fi
-  grep -Fq 'sessions create' "$journey" || fail "journey does not create an aplexer session: $journey"
-  grep -Fq 'sessions list' "$journey" || fail "journey does not list an aplexer session: $journey"
+  J02SessionTreeListJourney.kt \
+  J03AttachAndTypeJourney.kt \
+  J04CreateSessionJourney.kt \
+  J14StopSessionJourney.kt; do
+  grep -Fq "$journey" "$INVENTORY" \
+    || fail "pre-deletion inventory no longer maps Docker-backed lifecycle journey $journey"
 done
-grep -Fq 'a capture' "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/terminal/J03AttachAndTypeJourney.kt" \
-  || fail "J03 has no independent aplexer screen oracle"
-grep -Fq 'sessions attach' "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/terminal/J03AttachAndTypeJourney.kt" \
-  || fail "J03 no longer exercises the attach command"
-grep -Fq 'sessions kill' "$ROOT_DIR/app2/src/androidTest/java/com/pocketshell/next/tree/J14StopSessionJourney.kt" \
-  || fail "J14 no longer exercises the kill command"
-ok "J02/J03/J04/J14 drive real aplexer create/list/attach/kill paths"
+ok "Docker lifecycle journeys remain mapped in the pre-deletion inventory; the container test below exercises the live contract"
 
 if [[ -e "$ROOT_DIR/tests/docker/agent-bin/tmux" || \
       -e "$ROOT_DIR/tests/docker/agent-bin/tmuxctl" || \

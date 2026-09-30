@@ -298,20 +298,20 @@ def validate_workflow_wiring(workflow: str, legacy_build: str) -> None:
     if "actions/upload-artifact@v7" not in build or "pocketshell-release-apks" not in build:
         raise GateFailure("build job must upload the validated APKs for publication")
     required_apk_checks = (
-        "scripts/check-apk-metadata.py --self-test",
-        "scripts/check-apk-metadata.py \\",
+        "scripts/check-js-apk-metadata.py --self-test",
+        "scripts/check-js-apk-metadata.py \\",
         "--variant debug",
         "--variant release",
-        "scripts/check-apk-signing.sh --variant debug",
+        "scripts/check-apk-signing.sh --variant debug --js-first",
         "scripts/check-apk-signing.sh --variant release",
     )
     if any(check not in build for check in required_apk_checks):
         raise GateFailure("build job must test APK metadata and verify package/version/signature for both variants")
     if (
-        "app2/build/outputs/apk/debug/app2-debug.apk" not in build
-        or "app2/build/outputs/apk/release/app2-release.apk" not in build
+        "android/app/build/outputs/apk/debug/app-debug.apk" not in build
+        or "android/app/build/outputs/apk/release/app-release.apk" not in build
     ):
-        raise GateFailure("build job must package the Kotlin app2 debug and release APKs")
+        raise GateFailure("build job must package the JS-first Capacitor debug and release APKs")
 
     if (
         "Create GitHub Release" in legacy_build
@@ -793,7 +793,7 @@ def self_test() -> int:
         ),
         (
             "APK identity checks removed from build job block",
-            lambda: validate_workflow_wiring(workflow.replace("scripts/check-apk-metadata.py", ""), legacy_build),
+            lambda: validate_workflow_wiring(workflow.replace("scripts/check-js-apk-metadata.py", ""), legacy_build),
             False,
         ),
         (

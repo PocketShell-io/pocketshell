@@ -23,6 +23,24 @@ session tree or terminal chrome when the app surface supports it, but it is not
 required for attach and it cannot change the session identity. A shell session
 with no detected agent is a valid session.
 
+### JS session identity and status
+
+The JS session list and selected app bar use only the current host
+`HostCliCore` row: `agent` for identity and `agentState` for recent state. The
+identity is shown only for a kind the pinned desktop badge mapping recognizes;
+the client does not fall back to `engine`, the session name, workspace, or
+terminal output. State is shown only when `agentStateSource` is `reported` and
+the state is `working`, `waiting`, or `idle`. Missing and unrecognized fields,
+and activity-based heuristic states, have no state affordance. The host applies
+its freshness filter before returning the row, so a stale report falls back to
+a heuristic source and remains absent in the UI.
+
+Selected chrome resolves its selected session id against the newest host
+listing. A refresh can add metadata to the active row, and switching A→B→A
+cannot carry A's metadata onto B. The app bar is the single selected-session
+surface for identity and status, keeping the terminal viewport's compact layout
+and avoiding duplicate badges.
+
 Conversation history is a separate host-file concern. The existing parsers and
 `agent-log-explorer` support history/search workflows, while the session list
 uses only the small live-state contract needed to render the current host.

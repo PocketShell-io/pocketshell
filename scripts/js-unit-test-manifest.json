@@ -1,0 +1,231 @@
+{
+  "schema": 1,
+  "testFiles": {
+    "tests/unit/appSettings.test.ts": {
+      "suite": "mobile app settings",
+      "tests": [
+        "reads and persists only shared theme/font policy and supported background grace values",
+        "degrades malformed or unsupported saved values to safe defaults",
+        "clamps terminal size using the pinned desktop font-size policy"
+      ]
+    },
+    "tests/unit/homeSurface.test.ts": {
+      "suite": "phone workspace destinations",
+      "tests": [
+        "starts at connection setup and opens sessions after a connection is ready",
+        "returns to the live terminal after a session is attached",
+        "keeps host setup and session selection reachable from the live terminal",
+        "backs from the terminal to sessions, then to connection details",
+        "returns to connection setup when disconnected",
+        "closes nested routes before stepping back through a connected workspace"
+      ]
+    },
+    "tests/unit/buildDiagnostics.test.ts": {
+      "suite": "packaged build diagnostics",
+      "tests": [
+        "imports and executes the real formatter from the pinned core source",
+        "imports theme and font policy from the pinned shared UI source",
+        "accepts a manifest only when both pinned source revisions and exact bundle bytes match",
+        "fails closed when the recorded core source revision differs",
+        "fails closed when the recorded shared UI source revision differs",
+        "fails closed when the packaged asset bytes differ from the manifest",
+        "fails closed when a bundle asset is missing"
+      ]
+    },
+    "tests/unit/sshCapabilityBridge.test.ts": {
+      "suite": "Capacitor SSH resource snapshot bridge",
+      "tests": [
+        "wraps the core request ID in Capacitor method options",
+        "rejects a mismatched request ID instead of accepting an unverified snapshot",
+        "rejects a missing counter instead of accepting an unverified snapshot",
+        "rejects a negative counter instead of accepting an unverified snapshot",
+        "propagates a native bridge rejection"
+      ]
+    },
+    "tests/unit/settingsSync.test.ts": {
+      "suite": "Android settings sync uses the pinned core contract",
+      "tests": [
+        "keeps the existing versionless payload shape",
+        "android-local-over-desktop-account-preserves-desktop-fields",
+        "desktop-local-over-android-account-preserves-android-extensions",
+        "unticked-alias-is-deleted-by-omission",
+        "selected-remote-alias-falls-back-and-keeps-alias-order",
+        "fresh-device-auto-checks-account-aliases",
+        "local-unticked-alias-is-not-auto-checked",
+        "versionless-v1-payload-keeps-unknown-host-fields",
+        "explicit-empty-v1-payload-is-valid",
+        "malformed-json-is-refused-before-upload",
+        "wrong-shape-is-refused-before-upload",
+        "explicit-schema-version-is-refused-until-migration-support-exists",
+        "malformed-entry-refuses-the-whole-payload",
+        "accepts an explicit empty payload but never uploads an empty selection",
+        "re-pulls and merges fields written by another client before retrying a conflict",
+        "returns visible pull and push failures",
+        "rejects invalid platform versions before upload",
+        "fails closed when the platform boundary returns an unknown result shape",
+        "stops after the bounded conflict retry policy"
+      ]
+    },
+    "tests/unit/usagePolicyAdapter.test.ts": {
+      "suite": "host usage adapter",
+      "tests": [
+        "runs the canonical host command on the active generation and parses canonical UsageRows",
+        "reports command, timeout, and cross-generation failures rather than returning empty usage",
+        "keeps host-reported provider errors and named custom windows in canonical rows",
+        "parses the packaged Docker fixture states that the Usage screen displays"
+      ]
+    },
+    "tests/unit/portPolicyAdapter.test.ts": {
+      "suite": "native-backed port discovery and tunnel adapter",
+      "tests": [
+        "runs the listener and cwd probes through the current SSH generation",
+        "uses JS desired-port policy and native socket effects, then restores manual intent after reconnect",
+        "closes auto tunnels only after bounded successful misses and closes all owned handles",
+        "automatically forwards 9638 while retaining discovered rows 22 and 33307"
+      ]
+    },
+    "tests/unit/composerDelivery.test.ts": {
+      "suite": "composer delivery adapter and per-target drafts",
+      "tests": [
+        "retains an ambiguous draft and does not replay it after reconnect",
+        "treats an acknowledgement that arrives after transport loss as uncertain and stops the paste",
+        "keeps one session draft separate from another and clears only after acknowledged delivery"
+      ]
+    },
+    "tests/unit/hostSnippets.test.ts": {
+      "suite": "per-host command chips",
+      "tests": [
+        "imports exact legacy snippets and templates for their host and restores them after restart",
+        "creates, edits, deletes, and reorders only the selected host items",
+        "appends new chips after imported items even when earlier rows were deleted",
+        "inserts selected chip text at the draft selection without adding bytes or submitting",
+        "retains a selected chip draft after not-sent or uncertain PTY writes"
+      ]
+    },
+    "tests/unit/platformInput.test.ts": {
+      "suite": "Android platform input adapter",
+      "tests": [
+        "reads selected documents in ordered bounded chunks and returns exact attachment bytes",
+        "preserves valid files when one selection is over the shared native transfer limit",
+        "rejects mismatched chunk identity and still releases the native document reference",
+        "materializes incoming shared text and files before delivering the share callback",
+        "registers before starting speech, filters foreign events, and stops the matching request"
+      ]
+    },
+    "tests/unit/destinationInventory.test.ts": {
+      "suite": "pre-rewrite destination inventory",
+      "tests": [
+        "maps each shipped destination to a replacement route, owning issue, and implementation status",
+        "states which prior settings/support surfaces have working routes in this slice",
+        "maps the implemented file workspace as partial while Android DocumentsUI chooser interaction remains unverified"
+      ]
+    },
+    "tests/unit/dictationStartCancellation.test.ts": {
+      "suite": "pending dictation start cancellation",
+      "tests": [
+        "stops a pending start once when the mounted composer backgrounds"
+      ]
+    },
+    "tests/unit/keyboardInsetsState.test.ts": {
+      "suite": "native keyboard insets state synchronization",
+      "tests": [
+        "coalesces plugin notifications and applies a fresh native state read",
+        "ignores an in-flight response after a newer invalidation and serializes the next read",
+        "does not apply a pending native response after disposal"
+      ]
+    },
+    "tests/unit/diagnostics.test.ts": {
+      "suite": "local diagnostics",
+      "tests": [
+        "stores a bounded event log and normalizes untrusted event metadata",
+        "exports only reviewed, normalized diagnostic fields"
+      ]
+    },
+    "tests/unit/installedDataMigration.test.ts": {
+      "suite": "installed Android data migration",
+      "tests": [
+        "maps legacy settings only when the JS settings are absent and preserves existing fields",
+        "stages complete history, trust and asset bytes before marking the import complete",
+        "repairs missing JS settings and trust pins from a completed import without rereading native data",
+        "preserves newer JS settings and skips the startup reload when no setting was written",
+        "requests only one reload in the current startup session after writing imported settings",
+        "refuses malformed sync state without staging or marking partial data complete",
+        "imports unrelated data as partial and visibly retains an unavailable encrypted store",
+        "shows an unmappable legacy terminal size on first import and completed-record startup",
+        "marks decrypted native-only credentials partial and offers only opaque legacy host key references",
+        "connects a saved host through an opaque native key reference and keeps passphrases transient",
+        "does not mark complete or write settings when an imported asset hash differs",
+        "refuses conflicting JS trust pins without replacing either fingerprint"
+      ]
+    },
+    "tests/unit/navigation.test.ts": {
+      "suite": "mobile route stack",
+      "tests": [
+        "keeps nested settings and support routes reachable through Back",
+        "retains a selected report ID and resets the stack when returning home",
+        "clears the selected event when opening the whole-log export preview",
+        "opens the SSH file workspace as a back-navigable full-screen destination",
+        "does not push the current destination a second time",
+        "keeps usage and port tools as Settings child routes without changing the live home destination"
+      ]
+    },
+    "tests/unit/sessionAgentMetadata.test.ts": {
+      "suite": "session agent metadata projection",
+      "tests": [
+        "uses the pinned HostCliCore row for known host-reported identities",
+        "shows only the three fresh host-reported states",
+        "does not infer identity and suppresses non-reported or unknown state",
+        "keeps A→B→A chrome bound to the selected host id when metadata arrives late"
+      ]
+    },
+    "tests/unit/filesWorkspace.test.ts": {
+      "suite": "SFTP file workspace policy and byte-I/O adapter",
+      "tests": [
+        "resolves paths under the configured remote root and rejects traversal and NUL",
+        "lists valid children with shared directory-first ordering and name classification",
+        "rejects unsafe names returned by native SFTP listing",
+        "rejects duplicate child names instead of selecting an ambiguous remote path",
+        "reads bounded bytes and combines filename and magic classification",
+        "rejects oversized files before reading and detects a size change during bounded reads",
+        "refuses to save when metadata changes immediately before the native conditional write",
+        "saves UTF-8 edits only through the native conditional write when metadata still matches",
+        "fails closed on a symlink entry before reading or writing",
+        "fails closed when the native listing omits a regular-file type",
+        "does not offer binary magic content to the text editor",
+        "uploads bytes through a resolved path and prevents implicit overwrite",
+        "stages sanitized attachment names, preserves partial success, and returns retention candidates",
+        "does not return completed uploads as attachments after cancellation",
+        "leaves the remote tree untouched for an empty attachment batch",
+        "rejects files above the native transfer limit before issuing a write",
+        "rejects stale generations before requests and after in-flight responses",
+        "rejects native responses with an unrelated request ID"
+      ]
+    },
+    "tests/unit/terminal-geometry.test.ts": {
+      "suite": "terminal geometry resize reporting",
+      "tests": [
+        "coalesces repeated unchanged fits while retaining the first usable grid",
+        "reports changed geometry, including when returning to a previous size",
+        "releases a rejected unchanged live grid so a later fit can retry it",
+        "does not let an old failure reopen a newer geometry request",
+        "does not report unmeasurable geometry"
+      ]
+    },
+    "tests/unit/terminal-viewport-resize.test.ts": {
+      "suite": "TerminalViewport resize failure across a route remount",
+      "tests": [
+        "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
+      ]
+    },
+    "tests/unit/documentTransfers.test.ts": {
+      "suite": "bounded Android document transfers",
+      "tests": [
+        "reads selected content URIs in ordered byte chunks and releases the URI",
+        "treats picker and Save As cancellation as no-ops",
+        "rejects a mismatched source chunk and still releases its document ID",
+        "writes exact binary bytes to the selected document and completes the byte count",
+        "aborts a partial save when the document provider rejects a chunk"
+      ]
+    }
+  }
+}

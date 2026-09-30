@@ -79,10 +79,22 @@ make_fixture() {
     "$SANDBOX/repo/scripts/lib"
   cp "$ROOT_DIR/scripts/connected-test.sh" \
     "$SANDBOX/repo/scripts/connected-test.sh"
+  cp "$ROOT_DIR/scripts/connected-js-smoke.sh" \
+    "$SANDBOX/repo/scripts/connected-js-smoke.sh"
+  cp "$ROOT_DIR/scripts/check-js-smoke-results.py" \
+    "$SANDBOX/repo/scripts/check-js-smoke-results.py"
   cp "$ROOT_DIR"/scripts/lib/*.sh "$SANDBOX/repo/scripts/lib/"
+  mkdir -p "$SANDBOX/repo/android"
+  cat > "$SANDBOX/repo/android/gradlew" <<'GRADLEW'
+#!/usr/bin/env bash
+exit 99
+GRADLEW
   chmod +x "$SANDBOX/repo/scripts/connected-test.sh"
+  chmod +x "$SANDBOX/repo/scripts/connected-js-smoke.sh" \
+    "$SANDBOX/repo/scripts/check-js-smoke-results.py" \
+    "$SANDBOX/repo/android/gradlew"
   git -C "$SANDBOX/repo" init -q
-  git -C "$SANDBOX/repo" add scripts
+  git -C "$SANDBOX/repo" add scripts android
   git -C "$SANDBOX/repo" \
     -c user.name=root-guard-harness -c user.email=harness@example.invalid \
     commit -qm "wrapper snapshot"
@@ -127,7 +139,7 @@ assert_refused() {
     || fail "refusal does not name the checkout the script would have tested ($script_root)"
   grep -q 'POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT' "$err" \
     || fail "refusal does not document the deliberate override"
-  if grep -q 'no online emulator' "$err"; then
+  if grep -q 'expected one online emulator or ANDROID_SERIAL; found 0' "$err"; then
     fail "refusal happened after emulator machinery -- the #2500 guard must fire first; stderr: $(tail -n 15 "$err")"
   fi
 }
@@ -141,7 +153,7 @@ assert_passed_guard_and_reached_serial_machinery() {
   fi
   grep -qF "testing checkout $tested_root" "$err" \
     || fail "$context did not announce the checkout under test ($tested_root); stderr: $(tail -n 15 "$err")"
-  grep -q 'no online emulator' "$err" \
+  grep -q 'expected one online emulator or ANDROID_SERIAL; found 0' "$err" \
     || fail "$context never reached the emulator-claim machinery; stderr: $(tail -n 15 "$err")"
 }
 
@@ -150,7 +162,7 @@ assert_passed_guard_and_reached_serial_machinery() {
 # and refuse before any disk/lock/emulator machinery runs.
 foreign_worktree_invocation_refuses_before_any_machinery() {
   make_fixture
-  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" --suffix i2500
+  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" smoke --suffix i2500 --test-only
   assert_refused "$RUN_ERR" "$SANDBOX/repo-wt" "$ROOT_DIR"
 }
 
@@ -158,7 +170,7 @@ foreign_worktree_invocation_refuses_before_any_machinery() {
 # own copy invoked from that same checkout.
 same_checkout_invocation_announces_and_runs() {
   make_fixture
-  run_wrapper "$ROOT_DIR" "$WRAPPER" --suffix i2500
+  run_wrapper "$ROOT_DIR" "$WRAPPER" smoke --suffix i2500 --test-only
   assert_passed_guard_and_reached_serial_machinery "$RUN_ERR" "$ROOT_DIR" \
     "same-checkout invocation"
 }
@@ -168,7 +180,7 @@ same_checkout_invocation_announces_and_runs() {
 worktree_copy_from_its_own_root_passes_the_guard() {
   make_fixture
   run_wrapper "$SANDBOX/repo-wt" \
-    "$SANDBOX/repo-wt/scripts/connected-test.sh" --suffix i2500
+    "$SANDBOX/repo-wt/scripts/connected-test.sh" smoke --suffix i2500 --test-only
   assert_passed_guard_and_reached_serial_machinery "$RUN_ERR" "$SANDBOX/repo-wt" \
     "worktree-copy invocation"
 }
@@ -178,25 +190,23 @@ worktree_copy_from_its_own_root_passes_the_guard() {
 foreign_invocation_with_override_announces_and_proceeds() {
   make_fixture
   export POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT=1
-  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" --suffix i2500
+  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" smoke --suffix i2500 --test-only
   unset POCKETSHELL_CONNECTED_TEST_ALLOW_FOREIGN_ROOT
   assert_passed_guard_and_reached_serial_machinery "$RUN_ERR" "$ROOT_DIR" \
     "overridden cross-checkout invocation"
 }
 
-# --cleanup-suffixes mutates no checkout and is the recovery path for a
-# contended box (issue #776); gating recovery on the caller's cwd would be the
-# classic self-lockout, so it stays exempt from the guard.
-cleanup_from_foreign_cwd_stays_exempt() {
+# Top-level help does not mutate a checkout and remains available from any cwd.
+help_from_foreign_cwd_stays_exempt() {
   make_fixture
-  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" --cleanup-suffixes
-  (( RUN_RC != 0 )) \
-    || fail "cleanup without any online emulator unexpectedly succeeded"
+  run_wrapper "$SANDBOX/repo-wt" "$WRAPPER" --help
+  (( RUN_RC == 0 )) \
+    || fail "top-level help from a foreign cwd exited $RUN_RC"
   if grep -q 'refusing to run connected-test.sh from a different checkout' "$RUN_ERR"; then
-    fail "--cleanup-suffixes must stay exempt from the #2500 root guard; stderr: $(tail -n 15 "$RUN_ERR")"
+    fail "top-level help was blocked by the #2500 root guard; stderr: $(tail -n 15 "$RUN_ERR")"
   fi
-  grep -q 'no online emulator' "$RUN_ERR" \
-    || fail "exempt cleanup never reached the emulator-claim machinery; stderr: $(tail -n 15 "$RUN_ERR")"
+  grep -q 'JS-first packaged Android lanes' "$RUN_OUT" \
+    || fail 'top-level help omitted the JS-first lane list'
 }
 
 # Issue #2500 AC3: the correct invocation pattern is documented in the
@@ -221,7 +231,7 @@ CASES=(
   same_checkout_invocation_announces_and_runs
   worktree_copy_from_its_own_root_passes_the_guard
   foreign_invocation_with_override_announces_and_proceeds
-  cleanup_from_foreign_cwd_stays_exempt
+  help_from_foreign_cwd_stays_exempt
   help_and_docs_document_the_root_rule
 )
 # Issue #2113: the full-suite size is hardcoded so DELETING an entry from the
@@ -240,7 +250,7 @@ CASE_COUNT=0
 for case_name in "${CASES[@]}"; do
   SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/pocketshell-root-guard.XXXXXX")"
   "$case_name"
-  rm -rf "$SANDBOX"
+  python3 -c 'import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)' "$SANDBOX"
   SANDBOX=""
   CASE_COUNT=$((CASE_COUNT + 1))
   printf '  ok: %s\n' "$case_name"

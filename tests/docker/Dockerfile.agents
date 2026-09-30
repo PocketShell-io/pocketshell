@@ -72,7 +72,7 @@ FROM debian:trixie-slim
 # (issue #2643 — the CLI is no longer built from this repo).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openssh-server openssh-client \
-        procps bash sqlite3 git nano ca-certificates curl \
+        procps iproute2 bash sqlite3 git nano ca-certificates curl \
         python3 python3-pip python3-yaml \
     && find /var/lib/apt/lists -mindepth 1 -delete \
     && ln -sfn /usr/lib/openssh /usr/lib/ssh \
