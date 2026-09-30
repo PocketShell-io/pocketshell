@@ -49,6 +49,7 @@ LANES = (
                 "packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes",
                 "packagedMultipleShareReadsStandardStreamListWithoutClipData",
                 "settingsAndAndroidBackReturnHome",
+                "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
                 "composerInputStaysAboveImeWithinSafeArea",
             }
         ),
