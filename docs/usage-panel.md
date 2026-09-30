@@ -241,10 +241,11 @@ now 0.0.15, which IS the canonical producer, so that translation is hard-cut
 (D22) — a legacy-shaped record fails loudly instead of being re-shaped. The
 passthrough is covered by the real published six-provider capture in the CLI
 repo's `tests/data/quse-0.0.15-usage.json` (PocketShell-io/pocketshell-cli),
-whose exact producer output (`…-usage.ndjson`) is kept byte-identical in this
-repo's `shared/core-usage` test resources and is what the Android parser test
-and the
-`Usage1318StrictSchemaRenderE2eTest` connected journey consume.
+whose exact producer output (`…-usage.ndjson`) was kept byte-identical in the
+0.5.x Kotlin usage module's test resources on `release/0.5.x` (0.5.x history).
+On `main`, `tests/unit/usagePolicyAdapter.test.ts` parses the Docker fixture
+`tests/docker/agent-fixtures/pocketshell-usage.ndjson` through core's usage
+policy.
 
 The pinned wheel provides `codex`, `claude`, `copilot`, `go` (OpenCode Go),
 `grok` (Grok Build; alias `grok-build`), and `zai`. `pocketshell usage` keeps no

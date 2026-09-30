@@ -97,6 +97,7 @@ export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_SDK}"
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/connected-js-usage-ports-artifacts.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-usage-ports.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-usage-ports.sh suffix=$SUFFIX run=$RUN_ID"
@@ -154,6 +155,8 @@ REPORTS_DIR="$ROOT_DIR/android/app/build/reports/androidTests/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-usage-ports/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"
 pocketshell_reset_connected_js_usage_ports_outputs "$RESULTS_DIR" "$REPORTS_DIR"
 
 HOST_SERVER_PID_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.pid"
@@ -248,6 +251,8 @@ else
       "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" >&2
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   docker logs --timestamps "$CONTAINER" \
     > "$ARTIFACTS_DIR/failure-diagnostics/docker-agents.log" 2>&1 || true
   docker exec -u testuser "$CONTAINER" /bin/sh -c \

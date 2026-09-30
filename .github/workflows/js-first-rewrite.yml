@@ -73,6 +73,9 @@ jobs:
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
 
+      - name: Check Android input-focus failure diagnostics guard
+        run: scripts/check-android-input-diagnostics.py --self-test
+
       - name: Check fail-closed packaged usage and ports result guards
         run: |
           scripts/check-js-usage-ports-results.py --self-test
@@ -89,6 +92,7 @@ jobs:
       - name: Check JS-first connected-test dispatch and lock contracts
         run: |
           tests/scripts/connected-test-js-runner-test.sh
+          tests/scripts/android-input-preflight-test.sh
           tests/scripts/connected-test-root-guard-test.sh
           tests/scripts/connected-test-serial-ownership-test.sh
           scripts/test-gradle-output-lock.sh
@@ -253,6 +257,7 @@ jobs:
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
             android/app/build/outputs/js-smoke-results/TEST-*.xml
+            android/app/build/outputs/js-smoke-diagnostics/**
             android/app/build/outputs/js-usage-ports/**
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**

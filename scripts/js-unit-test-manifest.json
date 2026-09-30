@@ -226,6 +226,23 @@
         "writes exact binary bytes to the selected document and completes the byte count",
         "aborts a partial save when the document provider rejects a chunk"
       ]
+    },
+    "tests/unit/designTokens.test.ts": {
+      "suite": "phone design tokens",
+      "tests": [
+        "reads the shared token source the @pocketshell/ui alias points at",
+        "takes every colour from a token rather than a literal",
+        "uses no CSS named colour in a colour declaration",
+        "reads only tokens that the shared set, the phone stylesheet or the runtime defines"
+      ]
+    },
+    "tests/unit/kotlinEraReferences.test.ts": {
+      "suite": "Kotlin-era references",
+      "tests": [
+        "scans the tracked live docs, prompts and app source",
+        "flags an unmarked reference and accepts a marked one",
+        "finds no unmarked app2, :shared:, Compose render or Kotlin design-kit reference"
+      ]
     }
   }
 }

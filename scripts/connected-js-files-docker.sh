@@ -69,6 +69,7 @@ fi
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-files-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-files-docker.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -108,6 +109,8 @@ RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/d
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-files/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing run artifacts: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"
 python3 - "$RESULTS_DIR" <<'PY'
 from pathlib import Path
 import shutil
@@ -153,6 +156,8 @@ else
   mkdir -p "$RESULTS_DIR"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 6000 > "$ARTIFACTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   printf 'FAILED: remote fixture retained for inspection at %s\n' "$REMOTE_ROOT" >&2
   exit "$test_exit_code"
 fi

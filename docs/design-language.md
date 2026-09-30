@@ -1,19 +1,20 @@
 # Design Language
 
-Termius-inspired. Built once in the `ui-kit` shared module so both PocketShell and `ssh-auto-forward-android` converge.
+Termius-inspired. One language across the Android, desktop and web clients.
 
-The numbers for this language — colour, type, spacing, size, radius — live in
-[`design-kit/design-system/tokens.json`](design-kit/design-system/tokens.json),
-the single machine-readable source of truth (#2717). This document states the
-*language*; the JSON states the values. `QuietThemeTokenTest` fails the build
-when the Kotlin in `ui-kit` drifts from the file.
+This document states the *language*. The values (colour, type, spacing,
+radius, motion) live in the shared token set, pocketshell-core
+`packages/ui/src/tokens.css` and `themes.ts`. [design-system.md](design-system.md)
+maps them. The Kotlin `ui-kit` and its `QuietThemeTokenTest` were deleted with
+the Compose app. The 2026-09-06 design kit's `tokens.json` is historical and is
+not what the app applies.
 
 ## Surface
 
-- Background: deep navy/charcoal, never pure black (see `color.background`)
-- Elevated cards: one step lighter than background; hairline 1dp border instead of heavy shadows
-- Corner radius: the `radius` ladder — 4dp badge, 8dp chip, 12dp field/button/card, 24dp sheet
-- Padding: 16–20dp internal on cards, 12dp between rows
+- Background: deep charcoal, never pure black (`--bg`)
+- Elevated cards: one step lighter than background (`--surface`); hairline 1px border instead of heavy shadows
+- Corner radius: the `--r-*` ladder — `--r-sm` badge/chip, `--r-md` button/field, `--r-lg` card/panel, `--r-xl` overlay
+- Padding: the `--sp-*` 4px grid — about 16px inside cards, 12px between rows
 
 ## Colour
 
@@ -24,28 +25,22 @@ when the Kotlin in `ui-kit` drifts from the file.
 
 ## Type
 
-- UI chrome: system sans (bundling Inter/SF Pro deferred)
-- Terminal + inline code: system mono (bundling JetBrains Mono deferred)
-- Sizes: the `type` block of `tokens.json` — seven rungs. Four proportional
-  sizes carry the chrome (11sp captions, 14sp body, 16sp titles, 20sp screen
-  headings), plus a 13sp dense rung for compact rows and two mono rungs (13sp
-  body, 11sp label) for paths, commands and IDs. Still one restrained scale:
-  every rung is in the token file and pinned by `QuietThemeTokenTest` (#2810),
-  so none of them can be added or resized in Kotlin alone.
-- The desktop client's 13px body rung (`--fs-300` in `pocketshell-electron`)
-  is the same value as the phone's `type.bodyDense`, and is now backed by a
-  pinned token rather than derived by reading `Type.kt`'s source. Changing
-  13sp here is a cross-product change.
+- UI chrome: Inter Variable, bundled (`--font-ui`)
+- Terminal + inline code: one mono family for the terminal, editor and mono
+  chrome (`--font-mono`); bundling JetBrains Mono on Android is still pending
+- Sizes: the `--fs-100`…`--fs-600` ladder (11, 12, 13, 15, 18, 20px), shared
+  with the desktop and web clients. `--fs-300` (13px) is the dense workhorse
+  rung. Changing a rung is a cross-product change, made in core's
+  `tokens.css`, never in one screen.
 
-## Components (to live in `ui-kit`)
+## Components
 
-- `StatusDot` — animated for `connecting`, solid for steady states
-- `TerminalSurface` — wraps the vendored Termux `terminal-view`; handles swipe/long-press overlays
-- `SlideOverPanel` — the port panel pattern; consistent across screens
+Shared components live in pocketshell-core `packages/ui`. See
+[design-system.md](design-system.md) for what exists and what the phone may
+import. The patterns this language asks for:
 
-`HostCard`, `SessionRow`, `Breadcrumb`, and `CommandChip` were removed in the
-#2717 dead-canon sweep: they had zero consumers in the shipped app and kept
-inviting "converge onto this" rewrites nothing asked for.
+- Status dot: animated for `connecting`, solid for steady states
+- Slide-over panel: the port panel pattern, consistent across screens
 
 ## Motion
 
@@ -56,7 +51,7 @@ inviting "converge onto this" rewrites nothing asked for.
 
 ## Touch targets
 
-- Minimum 48dp tap area everywhere
+- Minimum 48px tap area everywhere
 - Long-press = always available alternate action
 - Edge swipes reserved for quick actions (don't block system back gesture)
 
