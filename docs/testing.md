@@ -118,7 +118,9 @@ Every packaged lane runner calls `pocketshell_android_input_preflight`
 `hide_error_dialogs=1` and force-stops the owner of any "isn't responding" or
 crash dialog already on screen. A system-app ANR dialog on a starved emulator
 otherwise owns input focus, and every injected key and tap goes to it. The
-lane's `input-preflight.txt` records each dismissal. Inside the tests,
+lane's `input-preflight.txt` records each dismissal. A dialog owned by a
+`com.pocketshell*` package is never dismissed: the lane fails with
+`POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash. Inside the tests,
 `AndroidInputDeliveryProbe` injects a no-op Shift key before the first injected
 tap/key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the system
 focus owner when the page does not see it. On failure, the smoke and lifecycle

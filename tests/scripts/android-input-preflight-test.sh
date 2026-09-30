@@ -41,6 +41,9 @@ case "$*" in
     if [[ -e "$state/anr-live" ]]; then
       printf '  Window #1 Window{5bd2cc6 u0 Application Not Responding: com.google.android.apps.nexuslauncher}:\n'
     fi
+    if [[ -e "$state/own-anr-live" ]]; then
+      printf '  Window #1 Window{6ce3dd7 u0 Application Not Responding: com.pocketshell.app.i2855ci}:\n'
+    fi
     printf '    mAttrs={(0,0)(fillxfill) ty=BASE_APPLICATION} Application Not Responding: in an attribute line\n'
     printf '  Window #2 Window{74237e0 u0 com.pocketshell.app.i2946/com.pocketshell.app.MainActivity}:\n'
     ;;
@@ -114,5 +117,20 @@ grep -Fq 'could not disable system error dialogs' "$SANDBOX/ignored.out" \
   || fail 'ignored setting failure lacks its precise message'
 pass 'unset hide_error_dialogs fails closed'
 
-(( CASES == 4 )) || fail "ran $CASES/4 cases"
-printf 'PASS: Android input preflight contract (%s/4 cases)\n' "$CASES"
+# 5. PocketShell's own ANR dialog is a product failure: fail loudly, never
+#    force-stop it into a green lane.
+reset_state own
+touch "$FAKE_ADB_STATE/own-anr-live"
+if pocketshell_android_input_preflight "$SANDBOX/adb" emulator-5554 "$SANDBOX/own/input-preflight.txt" \
+    > "$SANDBOX/own.out" 2>&1; then
+  fail 'preflight passed while PocketShell itself owned an ANR dialog'
+fi
+grep -Fq 'FAIL: POCKETSHELL_ERROR_DIALOG: PocketShell itself owns a system error dialog on emulator-5554: Application Not Responding: com.pocketshell.app.i2855ci' "$SANDBOX/own.out" \
+  || fail 'own-app ANR failure lacks its precise message'
+grep -Fq 'POCKETSHELL_ERROR_DIALOG' "$SANDBOX/own/input-preflight.txt" \
+  || fail 'own-app ANR failure is not recorded in the preflight evidence'
+! grep -q 'force-stop' "$FAKE_ADB_STATE/commands" || fail 'preflight force-stopped PocketShell to hide its own ANR'
+pass 'PocketShell ANR dialog fails loudly without force-stop'
+
+(( CASES == 5 )) || fail "ran $CASES/5 cases"
+printf 'PASS: Android input preflight contract (%s/5 cases)\n' "$CASES"

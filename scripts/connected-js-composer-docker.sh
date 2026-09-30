@@ -229,6 +229,8 @@ capture_phase_failure() {
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$evidence_dir/phase-$phase-android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$evidence_dir/phase-$phase-android-input" >&2 || true
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --preserve-on-failure \
     --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
     --output-dir "$evidence_dir" || true

@@ -250,6 +250,8 @@ else
       "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" >&2
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   docker logs --timestamps "$CONTAINER" \
     > "$ARTIFACTS_DIR/failure-diagnostics/docker-agents.log" 2>&1 || true
   docker exec -u testuser "$CONTAINER" /bin/sh -c \

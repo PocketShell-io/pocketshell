@@ -154,6 +154,8 @@ else
   mkdir -p "$RESULTS_DIR"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 6000 > "$ARTIFACTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   printf 'FAILED: remote fixture retained for inspection at %s\n' "$REMOTE_ROOT" >&2
   exit "$test_exit_code"
 fi

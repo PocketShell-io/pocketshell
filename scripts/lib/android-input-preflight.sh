@@ -21,6 +21,8 @@
 #      force-stopping the package it belongs to (the dialog is removed with
 #      its process record), then the window list is re-read to prove it is
 #      gone. A dialog that survives fails the lane before any test runs.
+#      A dialog owned by a com.pocketshell* package is never dismissed: it is
+#      a PocketShell ANR/crash, so the lane fails loudly instead.
 # Every action is logged to the lane's evidence file; nothing is retried
 # silently.
 
@@ -67,6 +69,12 @@ pocketshell_android_input_preflight() {
       package="${title#*: }"
       if [[ "$package" == "$title" || ! "$package" =~ ^[A-Za-z0-9._]+$ ]]; then
         printf 'FAIL: system error dialog has no dismissible package: %s\n' "$title" | tee -a "$evidence" >&2
+        return 1
+      fi
+      if [[ "$package" == com.pocketshell || "$package" == com.pocketshell.* ]]; then
+        # A PocketShell ANR/crash is a product failure, never harness noise.
+        printf 'FAIL: POCKETSHELL_ERROR_DIALOG: PocketShell itself owns a system error dialog on %s: %s. Refusing to dismiss it; investigate the app ANR/crash.\n' \
+          "$serial" "$title" | tee -a "$evidence" >&2
         return 1
       fi
       printf 'DISMISSED_SYSTEM_ERROR_DIALOG: %s (am force-stop %s)\n' "$title" "$package" | tee -a "$evidence" >&2
