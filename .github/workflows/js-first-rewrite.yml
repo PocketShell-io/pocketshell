@@ -64,6 +64,9 @@ jobs:
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
 
+      - name: Check CI watcher required-check defaults
+        run: python3 scripts/watch-ci.py --self-test
+
       - name: Check fail-closed feature journey qualification guard
         run: scripts/check-js-journey-results.py --self-test
 
