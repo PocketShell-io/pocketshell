@@ -29,7 +29,22 @@ same issue rather than creating a parallel one.
 mkdir -p .worktrees
 git fetch origin main
 git worktree add .worktrees/issue-<N> -b issue-<N> origin/main
+git -C .worktrees/issue-<N> submodule update --init --recursive
+(cd .worktrees/issue-<N> && pnpm install --frozen-lockfile)
 ```
+
+Since #2934, `main` is the JS-first 0.6.0 development line and needs its
+pinned `vendor/pocketshell-core` and `vendor/pocketshell-desktop` submodules
+before any build. A 0.5.x hotfix branches from `origin/release/0.5.x`
+instead and merges back into `release/0.5.x`, never `main`:
+
+```bash
+git fetch origin release/0.5.x
+git worktree add .worktrees/issue-<N>-0.5.x -b issue-<N>-0.5.x origin/release/0.5.x
+```
+
+See [release.md](release.md#release-05x-hotfixes) for the 0.5.x tag path
+and its current gaps.
 
 Claude Code's Agent tool does this automatically with
 `isolation: "worktree"` and returns the resulting path.
@@ -38,14 +53,15 @@ Before dispatch, make sure `main` is clean — stash or save unrelated WIP to
 `.pickup/` first. Never let an agent inherit unrelated dirty state.
 
 Run connected work from inside the worktree, using the worktree's own copy. On
-`rewrite/js-first-0.6.0`, select a packaged suite explicitly:
+`main`, select a packaged lane explicitly (`smoke`, `lifecycle`,
+`composer-docker`; see `scripts/connected-test.sh --help`):
 
 ```bash
 scripts/connected-test.sh lifecycle --suffix i<N> --port 2222 \
   --container pocketshell-test-agents --run-id js<N>-local
 ```
 
-The legacy `main`/`stable` runner on those branches still uses
+The legacy Kotlin runner on `release/0.5.x` still uses
 `scripts/connected-test.sh --suffix i<N>`. The wrapper always runs the checkout
 its script lives in; invoking another checkout's copy by absolute path could
 otherwise test a tree without your changes and report green. It refuses

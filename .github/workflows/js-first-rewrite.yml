@@ -2,9 +2,9 @@ name: JS-first rewrite
 
 on:
   push:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
   pull_request:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
 
 concurrency:
   group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
@@ -63,6 +63,9 @@ jobs:
         run: |
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
+
+      - name: Check CI watcher required-check defaults
+        run: python3 scripts/watch-ci.py --self-test
 
       - name: Check fail-closed feature journey qualification guard
         run: scripts/check-js-journey-results.py --self-test

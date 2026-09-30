@@ -1,8 +1,10 @@
 # PocketShell
 
 PocketShell is a voice-first Android SSH client with an app UI that follows the
-shared PocketShell desktop design. This `rewrite/js-first-0.6.0` branch is the
-new Vue 3, TypeScript, and Capacitor foundation. The shell currently shows
+shared PocketShell desktop design. The `main` branch is the
+0.6.0 development line: the new Vue 3, TypeScript, and Capacitor app. It is
+untagged and unreleased until its release gates pass. The released 0.5.x
+Kotlin app lives on the `release/0.5.x` branch. The shell currently shows
 offline host/workspace states and a sample terminal; it does not yet connect to
 SSH hosts or implement the old app's feature set.
 
@@ -18,10 +20,10 @@ Requirements: Node.js 22, pnpm 12.5.1, JDK 21, and Android SDK platform 36.
 Clone the repository with its pinned core and desktop UI sources:
 
 ```sh
-git clone --branch rewrite/js-first-0.6.0 --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
+git clone --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
 cd pocketshell
 pnpm install --frozen-lockfile
-pnpm test:unit
+scripts/run-js-unit-gate.sh
 scripts/assemble-debug.sh
 ```
 
