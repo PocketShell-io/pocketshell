@@ -29,9 +29,10 @@ The 24 replacement feature journey classes are registered in
 `main` has **no scheduled D36 full-suite run and no D37 nightly fault
 verdict**. `tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
 `full-suite-notify.yml` exercised only the deleted Kotlin modules and were
-hard-cut from `main` by #2934; #2863 owns their JS replacement. Do not tag
-0.6.0 until #2863's replacement gates are live and green on a validated
-`main` commit and the rest of the 0.6.0 scope is done.
+hard-cut from `main` by #2934 (they remain on `release/0.5.x`); #2863 owns
+their JS replacement. Do not tag 0.6.0 until #2863's replacement gates are
+live and green on a validated `main` commit and the rest of the 0.6.0 scope is
+done.
 
 The legacy tag-triggered `Build` workflow on `main` builds the JS APKs, is
 artifact-only, and its GitHub workflow ID `280774562` remains disabled. Keep

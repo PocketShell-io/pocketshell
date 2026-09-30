@@ -1,27 +1,28 @@
 # Roadmap
 
-The original phased plan is complete where it concerned the old terminal
-architecture. The current roadmap describes work that can be built on the
-app2 rewrite and the aplexer-only session contract.
+`main` is the JS-first 0.6.0 rewrite. The Kotlin `app2` line lives on
+`release/0.5.x` and takes hotfixes only (see [release.md](release.md)).
 
 ## Current foundation
 
-- `app2` is the only Android application module.
-- `core-transport` owns sshj connections and PTYs.
-- `core-hostapi` speaks schema-3 `pocketshell sessions` JSON.
-- The host CLI creates, lists, attaches, and kills aplexer sessions only.
-- Room schema 21 removes the obsolete host session-runtime capability column.
-- Docker and emulator journeys use real pinned aplexer binaries.
+- A Vue/TypeScript app in `src/`, running in a Capacitor WebView under
+  `android/`.
+- D42: one shared `pocketshell-core` for every client. Android takes its
+  contract layer and shared UI tokens from the pinned `vendor/pocketshell-core`.
+- The native SSH plugin implements core's `SshCapability`. Core's
+  `ConnectionController` and `HostCliCore` own session and reconnect policy.
+- Installed 0.5.x data is imported once (#2860).
+- Docker fixtures run real pinned aplexer binaries.
 
 ## Near term
 
-- Ship the lean-core release target after the current emulator journeys have
-  been reviewed on the maintainer's device.
-- Finish the remaining app2 session-menu chrome: reconnect, files, forwarding,
-  and quick session switching.
-- Improve aplexer-backed agent identity and state presentation once the host
-  contract is stable enough to expose it in the tree.
-- Keep the host CLI and APK versions in lockstep and maintain the real fixture
+- Reach 0.6.0 feature parity with the 0.5.x app. This is tracked under #2854:
+  #2856 to #2862, #2924 to #2926, #2929, #2932.
+- Replace the Android CI and the D36/D37 release gates with JS lanes (#2863).
+  0.6.0 does not ship before that.
+- Share more of `pocketshell-core`'s `packages/ui` with desktop and web instead
+  of re-authoring phone screens (the #2854 code-reuse audit).
+- Keep the host CLI and APK versions in lockstep, with the real fixture
   self-check as a release gate.
 
 ## Later
@@ -34,11 +35,12 @@ app2 rewrite and the aplexer-only session contract.
 
 ## Out of scope
 
-- Windows or desktop targets.
+- Desktop and web builds in this repository. Those clients have their own
+  repositories and share `pocketshell-core` (D42).
 - Cloud-stored terminal history.
 - Multi-user host configuration sync.
 - A second session runtime or compatibility path for retired host tooling.
 
-See [architecture.md](architecture.md) for the shipped module map and
+See [architecture.md](architecture.md) for the module map and
 [decisions.md](decisions.md) for locked choices. Historical rewrite plans are
 kept in git history; they are not implementation instructions for current work.

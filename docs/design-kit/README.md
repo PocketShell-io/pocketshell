@@ -1,29 +1,28 @@
 # PocketShell Quiet — design kit (v1.0.0, 2026-09-06)
 
-The maintainer's full redesign of the app, delivered as a handoff package. This
-directory holds the **source of truth** parts, committed so implementers and
-reviewers can work from them offline. Implementation is tracked by the umbrella
-issue for the redesign.
+> **Historical.** This kit was delivered for the Kotlin/Compose app, which the
+> 0.6.0 JS-first rewrite deleted. Its generated Kotlin (`android/`) was removed
+> in #2938. The live design system is the shared Vue/token package in
+> pocketshell-core `packages/ui`, documented in
+> [`../design-system.md`](../design-system.md). Its `tokens.json` palette is
+> **not** what the Vue app applies. Use `catalog.json`, `spec/` and the icons
+> as screen and behaviour reference only, and land any value in
+> `packages/ui` before a screen uses it. `spec/` is kept verbatim, so its
+> references to Kotlin files, Compose and `android/` describe files that no
+> longer exist.
 
-`docs/design-system.md` still describes the **current shipped** UI and stays
-authoritative until the redesign lands. When it does, that file is replaced
-rather than kept alongside (D22 — one design system, not two).
+The maintainer's full redesign of the app, delivered as a handoff package.
 
 ## What is here
 
 | Path | What it is |
 |---|---|
-| `design-system/tokens.json` | Colour, type, spacing, size, radius, motion. **The** source of truth — edit here, never in a screen. |
+| `design-system/tokens.json` | Colour, type, spacing, size, radius and motion as delivered. Superseded by pocketshell-core `packages/ui/src/tokens.css`. |
 | `design-system/tokens.css` | Generated from `tokens.json`. Do not hand-edit. |
 | `design-system/catalog.json` | All 79 frames: content, route and state descriptions. Machine-readable equivalent of the interactive prototype. |
-| `design-system/icons.json` | Icon path data, shared by the SVG and Compose registries. |
+| `design-system/icons.json` | Icon path data for the SVG icons. |
 | `design-system/prototype.{css,js}`, `template.html` | The browser renderer, for regenerating the prototype. |
 | `icons/*.svg` | 45 icons, same paths as `icons.json`. |
-| `android/PocketShellTheme.kt` | Generated `PsTokens` + `PocketShellQuietTheme`, mapped to Material color/type/shape roles. |
-| `android/PocketShellIcons.kt` | Native vector registry generated from the same paths as the SVGs — avoids raster icons and glyph substitution. |
-| `android/PocketShellComponents.kt` | Header, row, workspace row, button, field, sheet — plus a clearly marked **preview-only** fixture renderer. |
-| `android/MockupModels.kt`, `MockupCatalog.kt` | Plain-Kotlin content fixtures for every frame. Belong in a debug/test source set. |
-| `android/PocketShellPreviews.kt` | `@PreviewParameter` catalog; `PocketShellMockupDemo` is a debug fixture navigator, **not** the production NavHost. |
 | `spec/` | `AndroidHandoff.md`, `DesignSystem.md`, `ScreenSpecifications.md`, `AcceptanceTests.md`, `FeedbackTraceability.md`, `screen-inventory.csv`, and the kit's own `KitReadme.md`. |
 
 ## What is deliberately not here
@@ -42,19 +41,10 @@ agent can actually read.
 
 ## Read this before implementing anything
 
-`spec/AndroidHandoff.md` is the contract. Three points from it that are easy to
-miss and expensive to get wrong:
+`spec/AndroidHandoff.md` holds the behaviour contract. One point from it is
+easy to miss and expensive to get wrong:
 
-1. **The Kotlin is a starting point, not a finished APK.** Only the plain
-   models/catalog were compiled, with `kotlinc`. The Compose layer has never
-   been built against this app, rendered in Android Studio, run on an emulator,
-   or tested with TalkBack. Expect it not to compile as-is against our Compose
-   BOM, and keep our version catalog rather than adopting upgrades from the kit.
-2. **This is not automatic HTML-to-Compose conversion.** Only tokens, icon
-   paths and fixture content are generated across both renderers. The Compose
-   primitives are handwritten and their geometry must be synchronised by hand
-   when the browser components change.
-3. **A display name is not identity.** Resolve a host-specific canonical
+1. **A display name is not identity.** Resolve a host-specific canonical
    absolute path and keep the display path separate, or `~/git` and
    `/home/alexey/git` become duplicate roots on the same host.
 
@@ -66,13 +56,11 @@ already had.
 
 ## Changing the design
 
-1. Edit `design-system/tokens.json` (colour/type/geometry) or
-   `design-system/catalog.json` (screen content, route/state descriptions).
-2. Change `prototype.css` / `prototype.js` only for a component-level rule,
-   never to restyle one screen.
-3. The kit's own `build.py` and `tools/` regenerate the prototype, the Android
-   theme/icons/fixtures, and the QA exports. Those scripts are **not** committed
-   here; they live in the original kit archive.
+Do not edit this kit to change the app. Change the shared tokens and
+components in pocketshell-core `packages/ui` (see
+[`../design-system.md`](../design-system.md)). The kit's own `build.py` and
+`tools/`, which regenerate the prototype, were never committed here; they live
+in the original kit archive.
 
 ## Provenance
 

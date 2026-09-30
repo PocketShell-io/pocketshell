@@ -95,10 +95,11 @@ The phone shell keeps desktop colors, wording, icon family, type hierarchy, spac
 ## CI and release-gate boundary
 
 The `main` CI (`js-first-rewrite.yml`; the rewrite branch was promoted to `main` by #2934) requires the exact JS unit suite,
-packages the Android debug APK, runs the six-method packaged API 35 shell smoke
+packages the Android debug APK, runs the seven-method packaged API 35 shell smoke
 suite, and exercises the unchanged Docker fixture. The smoke test checks
-visible core/asset identity, Android Back from Settings, and composer placement
-above the real IME with safe-area insets. It does not cover feature parity,
+visible core/asset identity, open-document and share-adapter byte delivery,
+Android Back from Settings, and composer placement above the real IME with
+safe-area insets. It does not cover feature parity,
 scheduled test verdicts, or signed release packaging. The D36/D37
 Gradle workflows remain only on `release/0.5.x`; #2863 owns their JS replacement and
 validation before any 0.6.0 release. Do not dispatch a legacy Gradle
