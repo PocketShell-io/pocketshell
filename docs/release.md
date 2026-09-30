@@ -2,36 +2,106 @@
 
 This is how PocketShell ships a version.
 
-## JS-first 0.6.0 release blocker
+## Branch layout (since #2934)
 
-The JS rewrite branch has a foundation workflow for the JS unit suite, debug
-APK identity/version, three packaged shell smoke tests, and the existing
-Docker fixture. The legacy tag-triggered `Build` workflow is artifact-only
-and its GitHub workflow ID `280774562` remains disabled. Keep it disabled:
-historical tag commits carry older definitions of that workflow.
+| Branch | Carries | Released? |
+|---|---|---|
+| `main` | JS-first 0.6.0 development (Vue/TypeScript + Capacitor, pinned `vendor/` submodules) | No. Untagged and unreleased until the 0.6.0 gates below pass. |
+| `release/0.5.x` | The pre-rewrite Kotlin `app2`/`shared` line: v0.5.6 plus #2870 and #2913 (old `main` at `43af72c3f`) | Only 0.5.x hotfixes, see [Release 0.5.x hotfixes](#release-05x-hotfixes). |
 
-`.github/workflows/publish-release.yml` is the replacement publication path.
-It accepts a `vMAJOR.MINOR.PATCH` tag through `workflow_dispatch`, and every
-job requires `github.ref == refs/heads/main`. It verifies the fetched tag
-commit is both the dispatched SHA and the exact current `origin/main` head,
-then requires a trusted exact-SHA summary artifact from a successful
+Everything below the two branch sections ("Signing" onward) is the
+pre-#2934 procedure. It was written for the Kotlin line on the old `main`;
+its commands (`release-emulator-validation.sh`, `validated-rc`, `app2`
+paths) now only make sense on `release/0.5.x`, subject to the gaps listed in
+the 0.5.x section.
+
+## 0.6.0 on `main` is not releasable yet
+
+`main` runs `.github/workflows/js-first-rewrite.yml` on every push and pull
+request: the exact JS unit suite, typecheck, fail-closed result-guard
+self-tests, debug APK identity/version/signature, the packaged API 35 lanes
+(shell smoke, lifecycle, Files, Usage/Ports, Composer against Docker) and the
+pinned Docker agents fixture. That is development CI, not a release verdict.
+The 24 replacement feature journey classes are registered in
+`scripts/js-journey-class-manifest.json`;
+`scripts/check-js-journey-results.py --json` still reports them missing.
+
+`main` has **no scheduled D36 full-suite run and no D37 nightly fault
+verdict**. `tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
+`full-suite-notify.yml` exercised only the deleted Kotlin modules and were
+hard-cut from `main` by #2934; #2863 owns their JS replacement. Do not tag
+0.6.0 until #2863's replacement gates are live and green on a validated
+`main` commit and the rest of the 0.6.0 scope is done.
+
+The legacy tag-triggered `Build` workflow on `main` builds the JS APKs, is
+artifact-only, and its GitHub workflow ID `280774562` remains disabled. Keep
+it disabled: historical tag commits carry older definitions of that
+workflow.
+
+`.github/workflows/publish-release.yml` is the only publication path. It
+accepts a `vMAJOR.MINOR.PATCH` tag through `workflow_dispatch`, and every job
+requires `github.ref == refs/heads/main`. It verifies the fetched tag commit
+is both the dispatched SHA and the exact current `origin/main` head, then
+requires a trusted exact-SHA summary artifact from a successful
 `release-emulator-validation.yml` run with D37 PASS. It builds and checks the
-debug and signed release APKs; only the final publish job has `contents: write`,
-and it repeats authorization immediately before publishing. A direct tag push
-cannot create a GitHub Release.
+JS debug and signed release APKs (`scripts/check-js-apk-metadata.py`,
+`scripts/check-apk-signing.sh`, derived version name equal to the tag); only
+the final publish job has `contents: write`. That job repeats authorization,
+runs `scripts/check-release-absence.py` (an authenticated exact-tag lookup
+that blocks on an existing release and on any inconclusive API error), then
+creates the release with create-only `gh release create --verify-tag`. A
+direct tag push cannot create a GitHub Release. With no
+`release-emulator-validation.yml` runs available on `main`, the publisher
+fails closed for every tag today; #2863 must repoint
+`scripts/check-tag-release-authorization.py` at the JS release verdict.
 
-This workflow is currently on the rewrite branch. It does not become an
-available default-branch publication path until merged to `main`; a manual
-run selected on another branch is rejected by all jobs.
+## Release 0.5.x hotfixes
 
-The 0.6.0 release remains blocked. The 24 replacement feature journey classes
-are registered in `scripts/js-journey-class-manifest.json`;
-`scripts/check-js-journey-results.py --json` emits their fail-closed
-qualification result. The current packaged smoke XML has 3 tests and reports
-all 24 required journeys missing. The JS branch has no scheduled full-suite
-D36 verdict or exact-commit D37 fault verdict. Do not merge this branch to
-`main`, dispatch the publisher, or tag 0.6.0 until those journeys and both
-blocking release signals are migrated and reviewer-validated.
+A 0.5.x hotfix is developed in a worktree off `origin/release/0.5.x` and
+merged by PR into `release/0.5.x`, never into `main`:
+
+```bash
+git fetch origin
+git worktree add /data/agents/pocketshell/worktrees/issue-<N>-0.5.x \
+  -b issue-<N>-0.5.x origin/release/0.5.x
+# ... implement, test with that branch's Kotlin tooling ...
+gh pr create --base release/0.5.x
+```
+
+The 0.5.x release tooling was built for a `main`-only release line and does
+**not** work from `release/0.5.x` yet. These gaps block a sanctioned 0.5.x
+release until a follow-up changes them; do not hand-publish around them:
+
+1. `scripts/push-release-tag.sh` refuses unless the checkout is on `main` with
+   `HEAD` equal to `origin/main`.
+2. `publish-release.yml` requires `refs/heads/main` in every job and a tag at
+   the exact `origin/main` head, on both branches. Dispatching it with
+   `--ref release/0.5.x` skips every job.
+3. GitHub only dispatches a `workflow_dispatch` workflow that exists on the
+   default branch. `release-emulator-validation.yml` is gone from `main`, so
+   the 0.5.x D37 release validation cannot be dispatched against
+   `release/0.5.x` any more.
+4. `release/0.5.x`'s `tests.yml` and `app2.yml` trigger push/PR runs only for
+   `main` and `stable`, so pushes and PRs to `release/0.5.x` get no CI. GitHub
+   also never runs `schedule:` on a non-default branch, so 0.5.x has no
+   nightly.
+5. versionCode is the count of `v*` tags reachable from the build commit
+   (`scripts/derive-version.sh`). A `v0.5.7` tag on `release/0.5.x` is not
+   reachable from `main`, so a later `v0.6.0` would get the same versionCode
+   and fail to install over 0.5.7. After every 0.5.x tag, merge that tag into
+   `main` with its tree ignored so the tag becomes an ancestor:
+
+   ```bash
+   git worktree add /data/agents/pocketshell/worktrees/merge-v0.5.7 \
+     -b merge-v0.5.7-ancestry origin/main
+   git -C /data/agents/pocketshell/worktrees/merge-v0.5.7 \
+     merge -s ours --no-ff -m "Record v0.5.7 in main's tag ancestry" v0.5.7
+   gh pr create --base main --head merge-v0.5.7-ancestry
+   ```
+
+   `-s ours` records the ancestry without bringing any Kotlin file into
+   `main`. Check `scripts/derive-version.sh version-code` on `main` before
+   tagging 0.6.0: it must exceed the newest 0.5.x versionCode.
 
 `main` keeps moving; other people merge there. We don't freeze `main` and
 don't tag whatever `origin/main` happens to be after a long stabilize fight,
@@ -39,14 +109,16 @@ and the root checkout never switches off `main` to do this work (locked,
 see `process.md`).
 
 Version numbers come from the git tag (`scripts/derive-version.sh`); there
-is no version-bump PR. `scripts/push-release-tag.sh` only runs from a
+is no version-bump PR (see gap 5 above for the two-branch caveat).
+`scripts/push-release-tag.sh` only runs from a
 checkout on `main` whose `HEAD` already equals `origin/main` — it does not
 accept a release-branch worktree, so tagging always happens after that
 branch's SHA has reached `main`, never before.
 
 ## Signing (issue #2638)
 
-The manual Publish release workflow builds two APKs, each with its own
+Two APKs ship from the default-branch-only `Publish release` workflow after it
+validates the pushed tag and exact-SHA release evidence. Each APK has its own
 signing identity:
 
 | | debug APK | release APK |
@@ -58,6 +130,13 @@ signing identity:
 The separate application IDs allow both APKs to install side by side. The
 release package can only be updated by an APK signed with the dedicated
 release key.
+
+Before publishing, the workflow verifies repository access and checks the
+exact tag's GitHub Release endpoint. Only its JSON `404 Not Found` response
+means the release is absent; an existing release or any inconclusive response
+stops publication. It then uses `gh release create --verify-tag`, which creates
+a release and fails if one already exists, so a release created after the
+preflight check is not updated by this workflow.
 
 The release keystore is NOT in the repo. It lives on this box at
 `/home/alexey/.pocketshell/keys/pocketshell-release.keystore` (PKCS12, alias
@@ -386,12 +465,22 @@ re-stabilize.
 
 ### 5. Tag the release
 
-`scripts/push-release-tag.sh` creates the tag after the validated commit has
-reached `main`; it does not publish a GitHub Release. Once the new
-`Publish release` workflow is present on the default branch and its D36/D37
-requirements pass, dispatch it on `main` with that tag. The workflow checks
-the tag against the current main head again, builds and signs the APKs, then
-publishes them:
+The legacy tag-triggered `Build` workflow (GitHub workflow ID `280774562`) is
+artifact-only in current commits and **must remain disabled**. Historical tag
+commits contain the old publisher definition, and GitHub runs the workflow
+version associated with the pushed tag ref; re-enabling that workflow could
+restore the bypass. See [GitHub's workflow versioning
+rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/workflows).
+
+The separate `Publish release` workflow has only a `workflow_dispatch`
+trigger. It accepts work only when dispatched on `main`; it checks that the
+existing tag resolves to the exact current `origin/main` SHA and that the
+successful release-validation run and D37 verdict cover that SHA. It repeats
+those checks after building and immediately before creating the GitHub
+Release. A tag push by itself never publishes.
+
+From the root checkout, after the validated candidate is on `main` and
+`HEAD` equals `origin/main`:
 
 ```bash
 git fetch origin
@@ -399,6 +488,13 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
 
 scripts/push-release-tag.sh --visual-audit-inspected v0.4.45 \
   build/release-emulator-validation/<run-id>/summary.md
+```
+
+Then dispatch `Publish release` from `main` with the tag already pushed by the
+helper:
+
+```bash
+gh workflow run publish-release.yml --ref main -f release_tag=v0.4.45
 ```
 
 The summary must contain:
@@ -409,8 +505,8 @@ Automated status: PASS
 ```
 
 Watch `Publish release`. Confirm `gh release view v0.4.45` is not a draft and
-has downloadable APKs. The old `Build` workflow must remain disabled; a tag
-push alone never creates a release.
+has both downloadable APKs. Do not re-enable the legacy Build workflow, retag
+an older version, or dispatch the publisher from another ref.
 
 ### 6. Remove the worktree
 
@@ -425,8 +521,9 @@ Later `main` work was never blocked.
 
 | Place | Role |
 |---|---|
-| Root checkout, `main` | Daily development. Other engineers keep merging. Not the freeze line. Only switches for the final merge-and-tag steps of a release, never mid-stabilization. |
+| Root checkout, `main` | Daily 0.6.0 development (since #2934; unreleased until the 0.6.0 gates pass). Other engineers keep merging. Not the freeze line. Only switches for the final merge-and-tag steps of a release, never mid-stabilization. |
 | `.worktrees/release-vX.Y.Z/` on `release/vX.Y.Z` | The freeze line — a copy of a `main` SHA plus only this version's remaining fixes. Where the release-owner agent does its stabilization work. |
+| `release/0.5.x` | The 0.5.x maintenance line (since #2934). Hotfixes only; see the gaps above before tagging. |
 | Tag `vX.Y.Z` | The published APK. Must point at an `origin/main` SHA that passed Tests + emulator validation (via either the fast path or the merged-back candidate). |
 | Tag `validated-rc` | A moving marker, not a release — the newest `main` SHA with a green nightly full-suite + emulator gate. Force-updated nightly; check its timestamp before trusting it. |
 

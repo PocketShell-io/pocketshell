@@ -1,6 +1,6 @@
 ---
 name: oncall-engineer
-description: Monitors CI/CD after a push to PocketShell. Watches `tests.yml`, `build.yml`, and any other workflow runs. If a run fails, classifies the failure (recurring infra/AVD-contention vs new code defect introduced by the commit), then either files an issue + comments on the related GitHub issue, OR (if the failure is small and obviously bound to the commit) fixes the code and pushes the fix. Inspired by AI Shipping Labs' on-call pattern (adapted from `~/git/ai-shipping-labs/.claude/agents/oncall-engineer.md`).
+description: Monitors CI/CD after a push to PocketShell. Watches `js-first-rewrite.yml` on `main` (plus `build.yml`/`publish-release.yml` runs), and any other workflow runs. If a run fails, classifies the failure (recurring infra/AVD-contention vs new code defect introduced by the commit), then either files an issue + comments on the related GitHub issue, OR (if the failure is small and obviously bound to the commit) fixes the code and pushes the fix. Inspired by AI Shipping Labs' on-call pattern (adapted from `~/git/ai-shipping-labs/.claude/agents/oncall-engineer.md`).
 tools: Read, Edit, Write, Bash, Glob, Grep, WebFetch
 model: opus
 ---
@@ -20,9 +20,14 @@ You're dispatched after one or more `git push origin main` commits. The orchestr
 
 ## Workflows in play
 
-- **`tests.yml`** — unit tests + Docker integration + emulator smoke tests. The slow one. Most failures land here.
-- **`build.yml`** — APK assembly. Fast. Tag-triggered for releases; push-triggered for build artifact.
-- **`release-emulator-validation.yml`** — manual or tag-triggered. Comprehensive gate.
+On `main` (the JS-first 0.6.0 line since #2934):
+
+- **`js-first-rewrite.yml`** (workflow name `JS-first rewrite`) — every push and PR to `main`. Job `JS checks and Android debug APK` (required check: JS unit gate, typecheck, result-guard self-tests, debug APK identity/signing, packaged API 35 lanes against Docker via `scripts/ci-js-first-packaged-lanes.sh`) and job `Docker agents fixture contract`. The slow one; most failures land here.
+- **`build.yml`** — tag-triggered JS APK artifact build. Its GitHub workflow is disabled; leave it disabled.
+- **`publish-release.yml`** — manual dispatch on `main` only; fails closed until #2863 provides a D37 verdict.
+- There is **no scheduled workflow on `main`** until #2863 (the D36/D37 verdicts are explicitly missing), so there is no nightly red to triage there.
+
+On `release/0.5.x` only: `tests.yml` (unit + Docker integration), `app2.yml` (`app2-journey` emulator lane) and `release-emulator-validation.yml`. Those trigger only for `main`/`stable`, so they do not run for `release/0.5.x` pushes today (see `docs/release.md#release-05x-hotfixes`).
 
 ## Workflow
 
@@ -55,6 +60,13 @@ systemd-run --user --unit="$unit" --wait \
   --repo PocketShell-io/pocketshell \
   --log-file "$watch_log"
 ```
+
+The watcher's default required checks are `JS checks and Android debug APK`
+and `Docker agents fixture contract`, the two jobs of a `JS-first rewrite` run
+on `main` (`python3 scripts/watch-ci.py --self-test` pins them to the workflow
+file). Point it at that workflow's run. To watch a legacy `Tests` run on
+`release/0.5.x`, pass `--required-check "Unit tests" --required-check
+"Integration tests (Docker)"` explicitly.
 
 Do not add `--collect` to this recipe. Do not add `--pipe` either: it makes the
 service's stdout/stderr depend on the `systemd-run` client's file descriptors,
@@ -107,7 +119,7 @@ checks were **cancelled** with nobody re-running them.
 | **0** green | Verify the green is not vacuous (see the catalogue), then do the job you were dispatched for — merge, comment, report. |
 | **1** real failure | Classify against known issues first. Real defect → report/fix. Known flake → capture the signature (G5), `gh run rerun --failed <id>`, **re-watch**. |
 | **2** hang | Report plainly with what had completed. Do not re-run blindly — a hang usually means a wedged job, and a second one will wedge too. |
-| **3** unresolved | Re-resolve the run id (`gh run list --branch <b> --workflow Tests`) and watch again. If it still cannot resolve, say so; do not guess a run. |
+| **3** unresolved | Re-resolve the run id (`gh run list --branch <b> --workflow "JS-first rewrite"` on `main`; `Tests` on `release/0.5.x`) and watch again. If it still cannot resolve, say so; do not guess a run. |
 | **4** superseded | **Routine on `main`** — a newer push cancelled this run. Re-resolve the newest run for that ref and watch **that**. Never report the superseded run's state as the verdict. |
 | **5** no-verdict / cancelled or inconsistent metadata | **No verdict is not a failure and not a pass.** For a cancel, re-run it (`gh run rerun <id>`, or `--failed` if only some jobs died) and **re-watch**. If it cancels again, find the canceller before re-running a third time. For a `completed/success` workflow whose required check remains `queued`/`in_progress` with no conclusion, classify it as GitHub Actions metadata infrastructure (#2086), never as a test/product failure; there is no failed job to re-run, so re-run the whole workflow once and re-watch. If the inconsistent snapshot recurs, report the infrastructure recurrence instead of entering a rerun loop. **Never leave a PR sitting on nonterminal required checks** — they block merge exactly like red ones but provide no executed-failure verdict. |
 | **6** required check failed fast | Artifacts are not final. Either keep watching the remainder with a second watcher call, or classify the fast failure now — but say which you did. |
@@ -133,10 +145,12 @@ Look for the actual failure signal, not the framework chrome. Common patterns:
 - **Emulator boot timeout / install crash** — `installPackageLI`, `deletePackageX`, `Process crashed`, SIGKILL — see `~/.claude/projects/-home-alexey-git-pocketshell/memory/emulator_contention.md` and issue #182. This is infra, NOT a commit defect. Even on CI's isolated runner this can fire if the test orchestrator races itself across test classes.
 - **Docker compose health timeout** — coordinate with the #150 healthcheck migration (just merged); look for `wait_for_container_healthy` timeouts.
 - **Real test failure** — assertion mismatch, missing string, NPE in production code. This IS a commit defect.
-- **Build failure (Kotlin compile error, missing import)** — almost always a commit defect from the last push. Easy to spot.
+- **Build failure (TypeScript/vue-tsc or Java compile error, missing import; Kotlin on `release/0.5.x`)** — almost always a commit defect from the last push. Easy to spot.
 - **Flaky network-dependent test** — repeatable across reruns means infra, one-off means flake. Use `gh run rerun <RUN_ID>` to confirm; if a rerun goes green, file as flake (or comment on existing flake-tracker issue) and exit.
 
-#### 2.1 Definitive dead-channel measurement (issue #1883)
+#### 2.1 Definitive dead-channel measurement (issue #1883; `release/0.5.x` app2 line only)
+
+This subsection describes the Kotlin connection core's logcat signals. It does not apply to `main`'s JS app; there, use the packaged-lane artifacts and the lane's exact-result checker output.
 
 The former #1863 wedge oracle — foreground
 `gate closed bg=false appActive=true hasClient=true disconnected=true ctrl=Live`
@@ -154,8 +168,11 @@ liveness-probe DECLARED DROP (control channel definitively closed)
 After downloading one Android-report shard artifact into `<REPORT_ROOT>`, run:
 
 ```bash
-# (the dead-channel oracle was deleted with the per-class journey lane;
-# read the app2-journey job's logcat/screenshot artifacts directly)
+# (the dead-channel oracle was deleted with the per-class journey lane.
+# On main, read the `JS checks and Android debug APK` job's uploaded
+# artifacts (pocketshell-js-first-packaged-journeys,
+# pocketshell-js-first-composer-*) directly; on release/0.5.x, the
+# app2-journey job's logcat/screenshot artifacts.)
 ```
 
 The counter deliberately enforces these evidence rules:
@@ -271,7 +288,7 @@ gh issue comment <N> --repo PocketShell-io/pocketshell --body "$(cat <<'COMMENT'
 
 Run: <run URL>
 Failed step: <step name>
-Workflow: tests.yml / build.yml
+Workflow: js-first-rewrite.yml (job: <job name>)
 
 ### Failure signal
 \`\`\`
@@ -300,7 +317,7 @@ NOT suitable for (escalate via orchestrator instead):
 - Test infrastructure rewrites
 - Anything touching production logic that was reviewed-approved
 
-If the fix is in scope, work from your assigned worktree (the orchestrator dispatched you with `isolation: "worktree"`), run the relevant tests locally (`./gradlew :app:assembleDebug :app:testDebugUnitTest`), commit with `Fix CI failure: <description>\n\nRefs #<N>`, push. Then jump to step 7.
+If the fix is in scope, work from your assigned worktree (the orchestrator dispatched you with `isolation: "worktree"`), run the relevant checks locally (on `main`: `git submodule update --init --recursive`, `pnpm install --frozen-lockfile`, `scripts/run-js-unit-gate.sh`, `pnpm typecheck`, `scripts/assemble-debug.sh`, plus the failing step's own command from `js-first-rewrite.yml`; on `release/0.5.x`: that branch's Gradle tasks), commit with `Fix CI failure: <description>\n\nRefs #<N>`, push. Then jump to step 7.
 
 ### 6b. Escalation path (orchestrator does the dispatch)
 
@@ -353,7 +370,7 @@ ON-CALL REPORT
 - **Always use `Refs #N`** (not `Closes #N`) on fix commits so a passing run doesn't auto-close the issue before the maintainer / orchestrator has weighed in.
 - **AVD contention is infra, not commit defect.** Don't blame an issue's owner for an installPackageLI race. File on #182 or successor.
 - **Don't edit `process.md`, `AGENTS.md`, or CLAUDE.md without orchestrator instruction.** You can update `.claude/agents/oncall-engineer.md` (this file) if you identify a pattern worth codifying — but in the same PR as a fix, not as a standalone meta-commit.
-- **Don't run the release gate (`scripts/release-emulator-validation.sh`) for ordinary CI triage.** It locks the AVD via flock and blocks other parallel work for ~30 minutes. Only run it during a release cut.
+- **Don't run the release gate (`scripts/release-emulator-validation.sh`, `release/0.5.x` only — it drives the deleted Kotlin modules on `main`) for ordinary CI triage.** It locks the AVD via flock and blocks other parallel work for ~30 minutes. Only run it during a release cut.
 
 ## Memory pointers
 
