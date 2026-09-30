@@ -154,9 +154,13 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
                 + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
 
+        assertInjectedInputReachesPage("before the picker Back key");
         evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
                 + ".then((value)=>window.__ps2857PickerResult=value)");
-        Thread.sleep(700);
+        // Back must reach the system picker, not the app: wait until the
+        // picker's window owns input focus instead of sleeping a fixed time
+        // (on a loaded emulator the picker takes >2 s to display).
+        awaitSystemFocus("documentsui", true);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("window.__ps2857PickerResult?.cancelled === true && window.__ps2857PickerResult?.files?.length === 0");
         assertTrue("the packaged share fixture should be removed", sharedFile.delete());
@@ -210,6 +214,7 @@ public final class JsShellPackagedSmokeTest {
     public void settingsAndAndroidBackReturnHome() throws Exception {
         awaitJsTrue("document.querySelector('[aria-label=Settings]') !== null");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        assertInjectedInputReachesPage("before the first Settings tap");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
         awaitJsTrue("document.querySelector('[data-testid=setting-theme]') !== null");
@@ -395,6 +400,68 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    /**
+     * Issue #2946 self-test: a real system window (the expanded notification
+     * shade) takes input focus from the resumed app. The probe must fail with
+     * its distinct signature and name the focus owner, then pass again once
+     * focus returns, so it can neither miss the hosted failure shape nor
+     * block a healthy device.
+     */
+    @Test
+    public void injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+        assertInjectedInputReachesPage("self-test baseline");
+
+        AndroidInputDeliveryProbe.runShell("cmd statusbar expand-notifications");
+        try {
+            awaitSystemFocus("NotificationShade", true);
+            AssertionError failure = null;
+            try {
+                assertInjectedInputReachesPage("self-test while the notification shade owns focus");
+            } catch (AssertionError expected) {
+                failure = expected;
+            }
+            assertNotNull("the probe must fail while another window owns input focus", failure);
+            String message = String.valueOf(failure.getMessage());
+            assertTrue("the probe failure must carry the distinct signature: " + message,
+                    message.startsWith(AndroidInputDeliveryProbe.SIGNATURE + ":"));
+            assertTrue("the probe failure must name the window that owns focus: " + message,
+                    message.contains("NotificationShade"));
+            assertTrue("the probe failure must report the page and native focus state: " + message,
+                    message.contains("page={") && message.contains("native=activityHasWindowFocus="));
+        } finally {
+            AndroidInputDeliveryProbe.runShell("cmd statusbar collapse");
+        }
+        awaitSystemFocus("NotificationShade", false);
+        assertInjectedInputReachesPage("self-test after focus returns");
+    }
+
+    /**
+     * Wait until InputDispatcher (not just WindowManager) routes keys to, or
+     * away from, the named window, stable for three consecutive samples.
+     */
+    private void awaitSystemFocus(String windowName, boolean present) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String focus = "<not read>";
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            focus = AndroidInputDeliveryProbe.currentInputDispatcherFocus();
+            if (focus.contains(windowName) == present) {
+                if (++stableSamples >= 3) return;
+            } else {
+                stableSamples = 0;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("input focus did not " + (present ? "move to " : "leave ") + windowName
+                + ": " + focus);
+    }
+
+    private void assertInjectedInputReachesPage(String context) throws Exception {
+        AndroidInputDeliveryProbe.assertInjectedKeyReachesPage(context, this::evalRaw,
+                action -> runOnCurrentActivity(action::accept));
+    }
+
     private void awaitRoute(String route) throws Exception {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === " + JSONObject.quote(route));
     }
@@ -428,6 +495,7 @@ public final class JsShellPackagedSmokeTest {
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
+        assertInjectedInputReachesPage("before the SSH host input tap");
         tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);

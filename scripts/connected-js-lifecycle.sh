@@ -97,10 +97,12 @@ command -v convert >/dev/null 2>&1 || fail 'ImageMagick convert is required to c
 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" --self-test
 "$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
 "$ROOT_DIR/scripts/check-js-lifecycle-results.py" --self-test
+"$ROOT_DIR/scripts/check-android-input-diagnostics.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/js-lifecycle-cleanup.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-lifecycle.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-lifecycle.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -145,6 +147,8 @@ if [[ -e "$ARTIFACTS_DIR" ]]; then
   fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 fi
 mkdir -p "$ARTIFACTS_DIR"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"
 python3 - "$RESULTS_DIR" <<'PY'
 from pathlib import Path
 import shutil
@@ -266,6 +270,11 @@ else
   mkdir -p "$ARTIFACTS_DIR/failure-diagnostics"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
     > "$ARTIFACTS_DIR/failure-diagnostics/lifecycle-logcat.txt" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
+  if [[ -d "$RESULTS_DIR" ]]; then
+    cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results" || true
+  fi
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
   docker logs --timestamps "$CONTAINER" \

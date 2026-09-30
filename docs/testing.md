@@ -73,7 +73,7 @@ distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
 rewrite tree it verifies the five packaged contracts: smoke selects the exact
-six methods in `JsShellPackagedSmokeTest`; lifecycle selects
+seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
 `UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;
@@ -110,6 +110,23 @@ scripts/test-agents-fixture-aplexer.sh --docker
 The first command statically checks the image, shims, and journey sources. The
 Docker mode builds the image, runs the bundled-aplexer lifecycle self-check, and
 probes create → list → attach → kill against an actual container.
+
+### Android input preflight (#2946)
+
+Every packaged lane runner calls `pocketshell_android_input_preflight`
+(`scripts/lib/android-input-preflight.sh`) before the device is used. It sets
+`hide_error_dialogs=1` and force-stops the owner of any "isn't responding" or
+crash dialog already on screen. A system-app ANR dialog on a starved emulator
+otherwise owns input focus, and every injected key and tap goes to it. The
+lane's `input-preflight.txt` records each dismissal. A dialog owned by a
+`com.pocketshell*` package is never dismissed: the lane fails with
+`POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash. Inside the tests,
+`AndroidInputDeliveryProbe` injects a no-op Shift key before the first injected
+tap/key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the system
+focus owner when the page does not see it. On failure, the smoke and lifecycle
+runners write `dumpsys input`/`window`/`input_method`/`activity`, unfiltered
+`logcat -b all`, and a screenshot to their `failure-diagnostics`, checked by
+`scripts/check-android-input-diagnostics.py`.
 
 ## Disk preflight
 
