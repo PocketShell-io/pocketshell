@@ -32,7 +32,7 @@ RELEASE_JOB = "Emulator-only release validation"
 RELEASE_ARTIFACT_PREFIX = "release-emulator-validation-"
 PUBLISH_WORKFLOW = ROOT / ".github/workflows/publish-release.yml"
 LEGACY_BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
-EXPECTED_SELF_TESTS = 31
+EXPECTED_SELF_TESTS = 38
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -233,6 +233,11 @@ def validate_workflow_wiring(workflow: str, legacy_build: str) -> None:
     auth_names = [name for name, _ in authorize_steps]
     if "Self-test exact-main release authorization" not in auth_names:
         raise GateFailure("authorize job must self-test the release authorization guard")
+    absence_self_test = [
+        block for name, block in authorize_steps if name == "Self-test fail-closed release absence lookup"
+    ]
+    if len(absence_self_test) != 1 or "scripts/check-release-absence.py --self-test" not in absence_self_test[0]:
+        raise GateFailure("authorize job must self-test the fail-closed release absence lookup")
     auth_matches = [block for name, block in authorize_steps if name == "Authorize the requested tag against current main and D37"]
     if len(auth_matches) != 1:
         raise GateFailure("authorize job must contain one release authorization step")
@@ -252,28 +257,67 @@ def validate_workflow_wiring(workflow: str, legacy_build: str) -> None:
 
     publish_steps = _job_step_blocks(workflow, "publish")
     publish_names = [name for name, _ in publish_steps]
+    if (
+        publish_names.count("Check GitHub Release is absent") != 1
+        or publish_names.count("Create GitHub Release (create-only)") != 1
+    ):
+        raise GateFailure("publish job must contain exactly one absence check and one create-only release step")
+    if "softprops/action-gh-release" in workflow:
+        raise GateFailure("publisher must not use the update-capable GitHub Release action")
     reauth_index = publish_names.index("Reauthorize current main, tag, and exact-SHA D37 proof") if "Reauthorize current main, tag, and exact-SHA D37 proof" in publish_names else -1
-    release_index = publish_names.index("Create GitHub Release") if "Create GitHub Release" in publish_names else -1
-    if reauth_index < 0 or release_index < 0 or reauth_index >= release_index:
-        raise GateFailure("publish job must reauthorize immediately before creating the release")
+    absence_index = publish_names.index("Check GitHub Release is absent") if "Check GitHub Release is absent" in publish_names else -1
+    release_index = publish_names.index("Create GitHub Release (create-only)") if "Create GitHub Release (create-only)" in publish_names else -1
+    if reauth_index < 0 or absence_index < 0 or release_index < 0 or not (reauth_index < absence_index < release_index):
+        raise GateFailure("publish job must reauthorize, check exact release absence, then create the release")
     reauth_step = publish_steps[reauth_index][1]
     if expected_script not in reauth_step:
         raise GateFailure("publish job must rerun the exact main/tag/D37 authorization guard")
+    absence_step = publish_steps[absence_index][1]
+    if (
+        'scripts/check-release-absence.py --release-tag "$RELEASE_TAG"' not in absence_step
+        or "GH_TOKEN: ${{ github.token }}" not in absence_step
+        or "RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}" not in absence_step
+    ):
+        raise GateFailure("publish job must make an authenticated exact-tag release-absence lookup")
     release_step = publish_steps[release_index][1]
-    if "uses: softprops/action-gh-release@v3" not in release_step:
-        raise GateFailure("publish job must use the GitHub Release action")
-    if "token: ${{ github.token }}" not in release_step or "target_commitish: ${{ needs.authorize.outputs.release_sha }}" not in release_step:
-        raise GateFailure("release action must use the scoped token and authorized commit SHA")
-    if "tag_name: ${{ needs.authorize.outputs.release_tag }}" not in release_step:
-        raise GateFailure("release action must use the authorized dispatch tag")
+    if (
+        'gh release create "$RELEASE_TAG" release-assets/*.apk' not in release_step
+        or "--repo PocketShell-io/pocketshell" not in release_step
+        or "--verify-tag" not in release_step
+        or '--target "$RELEASE_SHA"' not in release_step
+        or '--title "$RELEASE_TAG"' not in release_step
+        or "--generate-notes" not in release_step
+        or "RELEASE_TAG: ${{ needs.authorize.outputs.release_tag }}" not in release_step
+        or "RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}" not in release_step
+    ):
+        raise GateFailure("release publication must use create-only gh release create with the authorized tag and SHA")
+    if re.search(r"\bgh\s+release\s+(?:edit|upload)\b", publish):
+        raise GateFailure("release publication must not use an update-capable release action or command")
     if "actions/download-artifact@v7" not in publish or "pocketshell-release-apks" not in publish:
         raise GateFailure("publish job must consume APKs built in this workflow run")
     if "actions/upload-artifact@v7" not in build or "pocketshell-release-apks" not in build:
         raise GateFailure("build job must upload the validated APKs for publication")
-    if "check-js-apk-metadata.py" not in build or "check-apk-signing.sh" not in build:
-        raise GateFailure("build job must validate APK identity and signature")
+    required_apk_checks = (
+        "scripts/check-js-apk-metadata.py --self-test",
+        "scripts/check-js-apk-metadata.py \\",
+        "--variant debug",
+        "--variant release",
+        "scripts/check-apk-signing.sh --variant debug --js-first",
+        "scripts/check-apk-signing.sh --variant release",
+    )
+    if any(check not in build for check in required_apk_checks):
+        raise GateFailure("build job must test APK metadata and verify package/version/signature for both variants")
+    if (
+        "android/app/build/outputs/apk/debug/app-debug.apk" not in build
+        or "android/app/build/outputs/apk/release/app-release.apk" not in build
+    ):
+        raise GateFailure("build job must package the JS-first Capacitor debug and release APKs")
 
-    if "Create GitHub Release" in legacy_build or "uses: softprops/action-gh-release@v3" in legacy_build:
+    if (
+        "Create GitHub Release" in legacy_build
+        or "uses: softprops/action-gh-release@" in legacy_build
+        or re.search(r"\bgh\s+release\s+(?:create|upload)\b", legacy_build)
+    ):
         raise GateFailure("legacy Build workflow must remain artifact-only")
     if "contents: write" in legacy_build:
         raise GateFailure("legacy Build workflow must not have publication permission")
@@ -543,6 +587,11 @@ def self_test() -> int:
             True,
         ),
         ("dispatch from any non-main ref blocks", lambda: validate_workflow_ref("refs/heads/rewrite"), False),
+        (
+            "workflow_dispatch from a tag ref blocks",
+            lambda: validate_workflow_ref("refs/tags/v0.5.6"),
+            False,
+        ),
         ("tag not at exact origin/main head blocks", lambda: validate_tag_and_main("v0.6.0", "b" * 40, sha), False),
         ("non-semver v tag blocks", lambda: validate_tag_and_main("v0.6.0-rc1", sha, sha), False),
         (
@@ -621,6 +670,14 @@ def self_test() -> int:
             True,
         ),
         (
+            "missing release-absence self-test blocks",
+            lambda: validate_workflow_wiring(
+                _drop_job_step(workflow, "authorize", "Self-test fail-closed release absence lookup"),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
             "authorize job without main guard blocks",
             lambda: validate_workflow_wiring(
                 workflow.replace("if: github.ref == 'refs/heads/main'", "if: github.ref != 'refs/heads/main'", 1),
@@ -667,7 +724,28 @@ def self_test() -> int:
                     workflow,
                     "publish",
                     "Reauthorize current main, tag, and exact-SHA D37 proof",
-                    "Create GitHub Release",
+                    "Create GitHub Release (create-only)",
+                ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "missing exact-tag release-absence check blocks",
+            lambda: validate_workflow_wiring(
+                _drop_job_step(workflow, "publish", "Check GitHub Release is absent"),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "release-absence check after creation blocks",
+            lambda: validate_workflow_wiring(
+                _move_job_step_after(
+                    workflow,
+                    "publish",
+                    "Check GitHub Release is absent",
+                    "Create GitHub Release (create-only)",
                 ),
                 legacy_build,
             ),
@@ -719,13 +797,26 @@ def self_test() -> int:
             False,
         ),
         (
-            "release action using a caller-selected ref instead of authorized tag blocks",
+            "release create using a caller-selected tag instead of authorized tag blocks",
             lambda: validate_workflow_wiring(
                 workflow.replace(
-                    "tag_name: ${{ needs.authorize.outputs.release_tag }}",
-                    "tag_name: ${{ github.ref_name }}",
+                    'gh release create "$RELEASE_TAG" release-assets/*.apk',
+                    'gh release create "$GITHUB_REF_NAME" release-assets/*.apk',
                     1,
                 ),
+                legacy_build,
+            ),
+            False,
+        ),
+        (
+            "create command without --verify-tag blocks",
+            lambda: validate_workflow_wiring(workflow.replace("            --verify-tag \\\n", "", 1), legacy_build),
+            False,
+        ),
+        (
+            "update-capable action instead of create-only command blocks",
+            lambda: validate_workflow_wiring(
+                workflow.replace('gh release create "$RELEASE_TAG" release-assets/*.apk', "uses: softprops/action-gh-release@v3", 1),
                 legacy_build,
             ),
             False,
@@ -735,6 +826,14 @@ def self_test() -> int:
             lambda: validate_workflow_wiring(
                 workflow,
                 legacy_build + "\n      - name: Create GitHub Release\n        uses: softprops/action-gh-release@v3\n",
+            ),
+            False,
+        ),
+        (
+            "legacy Build workflow with a gh release command blocks",
+            lambda: validate_workflow_wiring(
+                workflow,
+                legacy_build + "\n      - name: Create GitHub Release\n        run: gh release create v0.6.0\n",
             ),
             False,
         ),

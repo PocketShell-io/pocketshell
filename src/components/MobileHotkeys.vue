@@ -7,7 +7,7 @@ import {
   type TerminalHotkey,
   type TerminalKeyId,
 } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkeysPage } from './mobileHotkeysModel';
 import type { InlineDictationState } from '../session/inlineDictation';
 
@@ -774,7 +774,6 @@ defineExpose({
   flex: 0 0 auto;
   align-items: center;
   border-radius: var(--r-md);
-  background: var(--surface-1);
   box-shadow: inset 0 0 0 1px var(--border-soft);
 }
 .mobile-hotkeys__input-group { gap: 2px; }

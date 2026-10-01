@@ -17,11 +17,14 @@ Usage:
   scripts/connected-test.sh --help
 
 JS-first packaged Android lanes:
-  smoke             Exact packaged-shell smoke suite (6 JUnit methods)
+  smoke             Exact packaged-shell smoke suite (8 JUnit methods)
   lifecycle         SSH session switching and background-grace journey plus
                     independent Docker host/screenshot evidence
   composer-docker   Packaged composer journey plus Docker PTY byte oracles
   hotkeys-docker    Packaged mobile fast-key journey plus Docker PTY byte oracles
+  key-vault-docker  Encrypted SSH key import, auth, and secret-leak journey
+  durable-storage   User data survives a kill right after acknowledgement
+                    (seed / mutate+SIGKILL / verify; no Docker, issue #2993)
 
 Each run requires an explicit per-worktree --suffix TOKEN. Docker lanes also
 require their fixture's port; lifecycle additionally requires its container
@@ -36,6 +39,9 @@ Examples:
     --session-prefix js2863-local
   scripts/connected-test.sh hotkeys-docker --suffix i2884 --port 2245 \
     --session-prefix js2884-local
+  scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 \
+    --container pocketshell-test-agents-2244 --run-id js2926-local
+  scripts/connected-test.sh durable-storage --suffix i2993 --run-id js2993-local
 
 During its connected phase, the selected lane owns the android/ Gradle output
 tree and one emulator while it installs and collects its exact same-run JUnit
@@ -74,8 +80,14 @@ case "$LANE" in
   hotkeys-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-hotkeys-docker.sh"
     ;;
+  key-vault-docker)
+    TARGET="$ROOT_DIR/scripts/connected-js-key-vault-docker.sh"
+    ;;
+  durable-storage)
+    TARGET="$ROOT_DIR/scripts/connected-js-durable-storage.sh"
+    ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, or hotkeys-docker"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, or durable-storage"
     ;;
 esac
 

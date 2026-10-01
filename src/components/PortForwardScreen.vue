@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { isValidTcpPort, type RemotePort } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
-import type { PortForwardControllerSnapshot } from '../policy/portForwardController';
+import { isValidTcpPort, type PortForwardControllerSnapshot, type RemotePort } from '@pocketshell/core';
+import AppIcon from '@ui/components/AppIcon.vue';
 
 const props = defineProps<{
   connected: boolean;
@@ -225,7 +224,7 @@ function addManualPort(): void {
 .port-manual-form > label { color: var(--fg-secondary); font-size: var(--fs-100); }
 .port-manual-form__controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .port-manual-form__controls input { min-width: 0; min-height: 48px; border: 1px solid var(--border-strong); border-radius: var(--r-md); background: var(--bg); padding: 0 11px; color: var(--fg); font: 12px/1.3 var(--font-mono); }
-.port-manual-form__controls input::placeholder { color: var(--fg-muted); font-family: var(--font-sans); }
+.port-manual-form__controls input::placeholder { color: var(--fg-muted); font-family: var(--font-ui); }
 .port-manual-form__controls button { min-width: 76px; min-height: 48px; }
 .port-manual-form__controls button:disabled, .port-manual-form__controls input:disabled { opacity: var(--disabled-opacity); }
 .port-manual-form__error { margin-bottom: 0; }

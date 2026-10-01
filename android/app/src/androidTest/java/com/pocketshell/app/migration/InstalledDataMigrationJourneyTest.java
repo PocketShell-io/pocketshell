@@ -15,6 +15,8 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.DurableKeyValueStore;
+import com.pocketshell.app.DurableStoragePlugin;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONObject;
@@ -25,6 +27,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.LinkedHashMap;
@@ -34,8 +38,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Opt-in real-WebView import check for the signed-upgrade fixture.
- * CI_JOURNEY_SUITE_JUSTIFIED: #2860 requires a signed 0.5.x install; run in the isolated migration acceptance lane.
+ * Real-WebView import check for the signed 0.5.6-to-candidate upgrade fixture.
+ * Dispatched by scripts/connected-js-key-vault-signed-upgrade.sh from the blocking packaged
+ * lane (scripts/ci-js-first-packaged-lanes.sh). Missing fixture arguments fail instead of
+ * skipping, so a mis-wired run can never report a vacuous green.
  */
 @RunWith(AndroidJUnit4.class)
 public final class InstalledDataMigrationJourneyTest {
@@ -55,15 +61,25 @@ public final class InstalledDataMigrationJourneyTest {
     private ActivityScenario<MainActivity> scenario;
     private Map<String, String> sourceHashes;
     private File createdMalformedPreferences;
+    private File evidenceDirectory;
 
     @Before
     public void requireAndSnapshotFixture() throws Exception {
         boolean requested = "true".equals(
             InstrumentationRegistry.getArguments().getString(FIXTURE_OPT_IN));
-        org.junit.Assume.assumeTrue(
-            "run only with the preserved synthetic 0.5.6 upgrade fixture and -e " + FIXTURE_OPT_IN + " true",
+        assertTrue(
+            "run only through the signed 0.5.6 upgrade runner, which passes -e " + FIXTURE_OPT_IN + " true",
             requested);
         targetContext = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String evidenceRunId = InstrumentationRegistry.getArguments().getString("installedDataMigrationRunId");
+        if (evidenceRunId != null) {
+            assertTrue("migration evidence run ID must be path-safe",
+                evidenceRunId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
+            File externalFiles = targetContext.getExternalFilesDir(null);
+            assertNotNull("target app external files directory must be available", externalFiles);
+            evidenceDirectory = new File(externalFiles, "pocketshell-installed-data-migration/" + evidenceRunId);
+            assertTrue("run-scoped migration evidence directory must be new", evidenceDirectory.mkdirs());
+        }
         if (malformedEncryptedFixtureRequested()) {
             File source = new File(new File(targetContext.getApplicationInfo().dataDir, "shared_prefs"),
                 MALFORMED_ENCRYPTED_PREFS + ".xml");
@@ -89,7 +105,8 @@ public final class InstalledDataMigrationJourneyTest {
 
     @Test
     public void startupStagesLegacyDataAndLeavesOriginalFilesUntouched() throws Exception {
-        org.junit.Assume.assumeFalse(malformedEncryptedFixtureRequested());
+        assertTrue("the migrated-host cycle must not seed malformed encrypted preferences",
+            !malformedEncryptedFixtureRequested());
         scenario = ActivityScenario.launch(MainActivity.class);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'complete'");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
@@ -153,34 +170,76 @@ public final class InstalledDataMigrationJourneyTest {
             .getString(EXPECTED_HOST_KEY_ARGUMENT, DEFAULT_EXPECTED_HOST_KEY);
         assertEquals(expectedHostKey, pin.getString("fingerprintSha256"));
 
+        // #2993: on the real signed-upgrade path the native durable store was
+        // hydrated before the app booted, so the migration's settings and
+        // trust-pin writes were committed natively, not only to the WebView.
+        assertEquals("the upgraded app must run with native durable storage", "native-durable",
+            evalString("document.documentElement.dataset.durableStorage ?? ''"));
+        DurableKeyValueStore durable = new DurableKeyValueStore(new File(
+            InstrumentationRegistry.getInstrumentation().getTargetContext().getFilesDir(),
+            DurableStoragePlugin.DIRECTORY_NAME));
+        assertTrue("the first launch after the upgrade must initialize the durable store", durable.isInitialized());
+        Map<String, String> committed = durable.readAll();
+        assertEquals("migrated settings must be committed to the durable store",
+            evalString("localStorage.getItem('pocketshell.js.settings.v1')"), committed.get("pocketshell.js.settings.v1"));
+        assertEquals("the migrated SSH trust pin must be committed to the durable store",
+            evalString("localStorage.getItem('pocketshell.ssh.host-key.41')"), committed.get("pocketshell.ssh.host-key.41"));
+
         if ("true".equals(InstrumentationRegistry.getArguments().getString(CONNECT_OPT_IN))) {
+            String handle = evalString("document.querySelector('[data-testid=ssh-key-selection]')?.value ?? ''");
+            assertTrue("the migrated host must select an opaque native vault handle", handle.matches("[0-9a-fA-F-]{36}"));
             evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
-            awaitJsTrue("['CONNECTED', 'LIVE'].includes(document.querySelector(" +
-                "'section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim())");
+            awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'sessions'");
             awaitJsTrue("document.querySelector('[data-testid=session-list], [data-testid=empty-sessions]') !== null");
-            assertEquals("CONNECTED", evalString(
-                "document.querySelector('section[aria-labelledby=hosts-title] .state-tag')?.textContent.trim()"));
             evalRaw("document.querySelector('[data-testid=ssh-disconnect]')?.click(); 'disconnect-clicked'");
+            awaitJsTrue("!['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
             awaitJsTrue("document.querySelector('[data-testid=ssh-resources]')?.dataset.snapshotState === 'verified'");
             assertEquals("the native resolver connection must close cleanly", "0",
                 evalString("document.querySelector('[data-testid=ssh-resource-connections]')?.textContent.trim()"));
         }
 
-        assertEquals("the migration must not alter any original installed source file",
-            sourceHashes, snapshotSourceHashes());
+        Map<String, String> afterHashes = snapshotSourceHashes();
+        assertEquals("the migration must not alter any original installed source file", sourceHashes, afterHashes);
+        preserveSourceHashes("migration-source-hashes.json", afterHashes);
     }
 
     @Test
     public void malformedEncryptedPreferencesAppearInPackagedWebView() throws Exception {
-        org.junit.Assume.assumeTrue(malformedEncryptedFixtureRequested());
+        assertTrue("the runner must request the malformed encrypted-preferences fixture",
+            malformedEncryptedFixtureRequested());
         scenario = ActivityScenario.launch(MainActivity.class);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
         assertTrue("the partial import must identify the unreadable encrypted source: " + warning,
             warning.contains("Encrypted preferences") && warning.contains("pocketshell-voice-secrets"));
-        assertEquals("the packaged partial import must not change any source file",
-            sourceHashes, snapshotSourceHashes());
+        Map<String, String> afterHashes = snapshotSourceHashes();
+        assertEquals("the packaged partial import must not change any source file", sourceHashes, afterHashes);
+        preserveSourceHashes("malformed-encrypted-source-hashes.json", afterHashes);
+    }
+
+    @Test
+    public void malformedPrivateKeyAppearsInPackagedWebViewAndLeavesSourceUntouched() throws Exception {
+        assertEquals("the runner must seed the malformed private-key fixture", "true",
+            InstrumentationRegistry.getArguments().getString("installedDataMigrationMalformedKeyFixture"));
+        scenario = ActivityScenario.launch(MainActivity.class);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
+        awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('Migrated Docker key') === true");
+        String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
+        assertTrue("an unreadable key must be named and its preserved source explained: " + warning,
+            warning.contains("original") && warning.contains("remains"));
+        evalRaw("(() => {const select=document.querySelector('[data-testid=legacy-host-select]');"
+            + "select.value='41';select.dispatchEvent(new Event('change',{bubbles:true}));return 'selected';})()");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-key-selection]')?.value === ''");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-message]')?.textContent.includes('not available') === true");
+        evalRaw("document.querySelector('[data-testid=ssh-connect]')?.click(); 'connect-clicked'");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-message]')?.textContent.includes('select an SSH key') === true");
+        assertEquals("a malformed migrated key must not leave a connectable dangling handle", "idle",
+            evalString("document.querySelector('.app-shell')?.dataset.sshPhase"));
+        Map<String, String> afterHashes = snapshotSourceHashes();
+        assertEquals("the malformed key and every legacy source must remain untouched", sourceHashes, afterHashes);
+        preserveSourceHashes("malformed-key-source-hashes.json", afterHashes);
     }
 
     private boolean malformedEncryptedFixtureRequested() {
@@ -210,6 +269,31 @@ public final class InstalledDataMigrationJourneyTest {
             hashes.put(relativePath, sha256(file));
         }
         return hashes;
+    }
+
+    private void preserveSourceHashes(String filename, Map<String, String> afterHashes) throws Exception {
+        if (evidenceDirectory == null) return;
+        JSONObject before = new JSONObject();
+        JSONObject after = new JSONObject();
+        for (Map.Entry<String, String> entry : sourceHashes.entrySet()) before.put(entry.getKey(), entry.getValue());
+        for (Map.Entry<String, String> entry : afterHashes.entrySet()) after.put(entry.getKey(), entry.getValue());
+        JSONObject report = new JSONObject()
+            .put("schema", 1)
+            .put("runId", InstrumentationRegistry.getArguments().getString("installedDataMigrationRunId"))
+            .put("unchanged", sourceHashes.equals(afterHashes))
+            .put("sourceHashesBefore", before)
+            .put("sourceHashesAfter", after);
+        File output = new File(evidenceDirectory, filename);
+        try (FileOutputStream stream = new FileOutputStream(output)) {
+            stream.write(report.toString(2).getBytes(StandardCharsets.UTF_8));
+            stream.getFD().sync();
+        }
+        assertTrue("same-run source hash evidence must be durable", output.isFile() && output.length() > 0);
+
+        File captured = new File(evidenceDirectory, filename + ".captured");
+        long deadline = SystemClock.uptimeMillis() + MIGRATION_TIMEOUT_MILLIS;
+        while (SystemClock.uptimeMillis() < deadline && !captured.isFile()) Thread.sleep(100);
+        assertTrue("the runner must preserve same-run source hashes before package cleanup", captured.isFile());
     }
 
     private static String sha256(File file) throws Exception {

@@ -54,6 +54,7 @@ public final class UsagePortsDockerJourneyTest {
     private String activeRunId;
     private File artifactDirectory;
     private String activeSessionTag;
+    private File stagedKeyDocument;
     private int httpRemotePort;
     private boolean fixtureHttpServerMayBeRunning;
 
@@ -88,6 +89,7 @@ public final class UsagePortsDockerJourneyTest {
             }
         }
         if (scenario != null) scenario.close();
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -112,7 +114,7 @@ public final class UsagePortsDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         String runId = arguments.getString("sshSessionName", "js2859-" + System.currentTimeMillis());
         activeRunId = runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}") ? runId : "usage-ports-failure";
         httpRemotePort = 8_000 + Math.floorMod(activeRunId.hashCode(), 2_001);
@@ -121,8 +123,7 @@ public final class UsagePortsDockerJourneyTest {
                 "pocketshell-usage-ports/" + activeRunId);
         assertTrue("run artifact directory must be new", artifactDirectory.mkdirs());
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
+        assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         assertTrue("run ID must be a safe, unique fixture tag prefix",
                 runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
@@ -134,7 +135,17 @@ public final class UsagePortsDockerJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, activeRunId);
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(InstrumentationRegistry.getInstrumentation().getTargetContext(), stagedKeyDocument),
+                "Docker fixture key"));
+        awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid^=select-ssh-key-]')");
+        String keyHandle = evalString("window.__ps2926ImportedKey.handleId");
+        click("[data-testid=select-ssh-key-" + keyHandle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.value === '" + keyHandle + "'");
         click("[data-testid=ssh-connect]");
         awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')"
                 + " || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");

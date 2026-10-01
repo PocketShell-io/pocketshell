@@ -11,6 +11,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
@@ -39,6 +40,9 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 import net.schmizz.sshj.SSHClient;
 import net.schmizz.sshj.common.Buffer;
 import net.schmizz.sshj.connection.channel.direct.LocalPortForwarder;
@@ -91,6 +95,8 @@ public final class SshCapabilityPlugin extends Plugin {
         thread.setDaemon(true);
         return thread;
     });
+    private static final AtomicInteger ACTIVE_FORWARD_WORKERS = new AtomicInteger();
+    private static final AtomicInteger ACTIVE_EXEC_STREAM_READERS = new AtomicInteger();
     private static volatile boolean sshProviderReady;
 
     private final Map<String, SshConnection> connections = new ConcurrentHashMap<>();
@@ -99,7 +105,17 @@ public final class SshCapabilityPlugin extends Plugin {
     private final Object connectLock = new Object();
     private final Map<String, ConnectAttempt> pendingConnects = new HashMap<>();
     private final LinkedHashMap<String, Long> connectCancellationTombstones = new LinkedHashMap<>();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Handler mainHandler;
+    private final LongSupplier elapsedRealtimeClock;
+
+    public SshCapabilityPlugin() {
+        this(new Handler(Looper.getMainLooper()), SystemClock::elapsedRealtime);
+    }
+
+    SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock) {
+        this.mainHandler = mainHandler;
+        this.elapsedRealtimeClock = elapsedRealtimeClock;
+    }
 
     @Override
     protected void handleOnDestroy() {
@@ -122,17 +138,13 @@ public final class SshCapabilityPlugin extends Plugin {
             JSObject credential = options.getJSObject("credential");
             if (credential == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH credential is missing.");
             String credentialKind = requiredString(credential, "kind");
-            String pem = null;
-            if ("private-key".equals(credentialKind)) {
-                pem = requiredString(credential, "privateKeyPem");
-            } else if ("legacy-private-key".equals(credentialKind)) {
-                long keyId = requiredLong(credential, "keyId");
-                String keySha256 = requiredString(credential, "sha256");
-                try {
-                    pem = LegacyPrivateKeyResolver.readPrivateKey(getContext(), keyId, keySha256);
-                } catch (IOException error) {
-                    throw new PluginFailure("INVALID_ARGUMENT", error.getMessage(), error);
-                }
+            String keyHandleId = null;
+            String keyHandlePassphraseValue = null;
+            char[] keyHandlePassphrase = new char[0];
+            if ("key-handle".equals(credentialKind)) {
+                keyHandleId = requiredString(credential, "handleId");
+                keyHandlePassphraseValue = credential.getString("passphrase", "");
+                credential.remove("passphrase");
             } else if (!"password".equals(credentialKind)) {
                 throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
             }
@@ -144,6 +156,12 @@ public final class SshCapabilityPlugin extends Plugin {
             PresentedHostKey presented = new PresentedHostKey();
             SshConnection connection = null;
             try {
+                if ("key-handle".equals(credentialKind)) {
+                    keyHandlePassphrase = keyHandlePassphraseValue == null
+                        ? new char[0]
+                        : keyHandlePassphraseValue.toCharArray();
+                    keyHandlePassphraseValue = null;
+                }
                 registerConnectAttempt(attempt);
                 checkConnectNotCancelled(attempt);
                 client.setConnectTimeout(connectTimeout);
@@ -160,20 +178,28 @@ public final class SshCapabilityPlugin extends Plugin {
                     } finally {
                         PasswordUtils.blankOut(secret);
                     }
-                } else if ("private-key".equals(credentialKind) || "legacy-private-key".equals(credentialKind)) {
-                    String passphrase = credential.getString("passphrase", "");
-                    char[] secret = passphrase == null ? new char[0] : passphrase.toCharArray();
+                } else if ("key-handle".equals(credentialKind)) {
+                    char[] secret = keyHandlePassphrase;
+                    byte[] privateKeyBytes = null;
                     try {
-                        KeyFormat format = KeyProviderUtil.detectKeyFileFormat(pem, secret.length > 0);
+                        try {
+                            privateKeyBytes = CredentialHandleVault.forContext(getContext()).resolvePrivateKey(keyHandleId);
+                        } catch (IOException | RuntimeException vaultError) {
+                            KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
+                            android.util.Log.i(KeyHandleConnectFailures.LOG_TAG, "stored-key connect failed code=" + unavailable.code);
+                            throw new PluginFailure(unavailable.code, unavailable.message);
+                        }
+                        String privateKeyPem = new String(privateKeyBytes, StandardCharsets.UTF_8);
+                        KeyFormat format = KeyProviderUtil.detectKeyFileFormat(privateKeyPem, secret.length > 0);
                         FileKeyProvider keyProvider = Factory.Named.Util.create(
                             client.getTransport().getConfig().getFileKeyProviderFactories(),
                             format.toString()
                         );
                         if (keyProvider == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH private key format is not supported.");
-                        keyProvider.init(pem, null, PasswordUtils.createOneOff(secret));
+                        keyProvider.init(privateKeyPem, null, PasswordUtils.createOneOff(secret));
                         client.authPublickey(username, keyProvider);
                     } finally {
-                        PasswordUtils.blankOut(secret);
+                        if (privateKeyBytes != null) java.util.Arrays.fill(privateKeyBytes, (byte) 0);
                     }
                 } else {
                     throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
@@ -211,16 +237,27 @@ public final class SshCapabilityPlugin extends Plugin {
                 if (attempt.cancelled.get()) {
                     if (connection != null) closeConnection(connection, "connect-cancelled", false);
                     else attempt.closeClient();
-                    throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.", error);
+                    throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.");
                 }
                 if (connection != null) closeConnection(connection, "connect-failed", false);
                 else attempt.closeClient();
                 if (presented.keyType != null && !presented.trusted) {
                     JSObject details = presented.asJson();
-                    throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, error);
+                    throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
+                }
+                if ("key-handle".equals(credentialKind)) {
+                    // Our own PluginFailures carry curated codes and messages;
+                    // anything else is classified without copying its message.
+                    if (error instanceof PluginFailure) throw (PluginFailure) error;
+                    KeyHandleConnectFailures.Classified failure = KeyHandleConnectFailures.classify(error);
+                    // Code only: never the exception text, which can echo key material.
+                    android.util.Log.i(KeyHandleConnectFailures.LOG_TAG, "stored-key connect failed code=" + failure.code);
+                    throw new PluginFailure(failure.code, failure.message);
                 }
                 throw failureFor(error);
             } finally {
+                PasswordUtils.blankOut(keyHandlePassphrase);
+                keyHandlePassphraseValue = null;
                 unregisterConnectAttempt(attempt);
             }
         });
@@ -944,17 +981,21 @@ public final class SshCapabilityPlugin extends Plugin {
                 forwards.put(forwarding.forwardId, forwarding);
                 LocalPortForwarder activeForwarder = forwarder;
                 SshForward activeForwarding = forwarding;
-                FORWARD_EXECUTOR.execute(() -> {
-                    try {
-                        activeForwarder.listen();
-                    } catch (IOException error) {
-                        if (!activeForwarding.closed.get() && connection.state.equals("connected")) {
-                            activeForwarding.failure = error.getClass().getSimpleName();
+                try {
+                    FORWARD_EXECUTOR.execute(trackedWorker(ACTIVE_FORWARD_WORKERS, () -> {
+                        try {
+                            activeForwarder.listen();
+                        } catch (IOException error) {
+                            if (!activeForwarding.closed.get() && connection.state.equals("connected")) {
+                                activeForwarding.failure = error.getClass().getSimpleName();
+                            }
+                        } finally {
+                            closeForward(activeForwarding);
                         }
-                    } finally {
-                        closeForward(activeForwarding);
-                    }
-                });
+                    }));
+                } catch (RuntimeException rejected) {
+                    throw rejected;
+                }
                 return new JSObject()
                     .put("requestId", requestId)
                     .put("connectionId", connection.connectionId)
@@ -1002,13 +1043,27 @@ public final class SshCapabilityPlugin extends Plugin {
     public void resourceSnapshot(PluginCall call) {
         run(call, options -> {
             String requestId = requiredString(options, "requestId");
-            return new JSObject()
-                .put("requestId", requestId)
-                .put("connections", connections.size())
-                .put("ptys", ptys.size())
-                .put("sftpClients", countSftpClients())
-                .put("forwards", forwards.size());
+            return resourceSnapshotFor(requestId);
         });
+    }
+
+    private JSObject resourceSnapshotFor(String requestId) {
+        NativeResourceSnapshot snapshot = currentResourceSnapshot();
+        return new JSObject()
+            .put("requestId", requestId)
+            .put("connections", snapshot.connections)
+            .put("ptys", snapshot.ptys)
+            .put("sftpClients", snapshot.sftpClients)
+            .put("forwards", snapshot.forwards)
+            .put("activeForwardWorkers", snapshot.activeForwardWorkers)
+            .put("activeExecStreamReaders", snapshot.activeExecStreamReaders);
+    }
+
+    NativeResourceSnapshot currentResourceSnapshot() {
+        return new NativeResourceSnapshot(
+            connections.size(), ptys.size(), countSftpClients(), forwards.size(),
+            ACTIVE_FORWARD_WORKERS.get(), ACTIVE_EXEC_STREAM_READERS.get()
+        );
     }
 
     private static HostKeyPinExpectation parseExpectedHostKey(JSObject expectedHostKey) throws PluginFailure {
@@ -1186,10 +1241,11 @@ public final class SshCapabilityPlugin extends Plugin {
 
     private SFTPClient requireSftp(SshConnection connection) throws PluginFailure {
         synchronized (connection.sftpLock) {
-            if (connection.sftpClient != null) return connection.sftpClient;
+            if (connection.sftpResource != null) return connection.sftpResource.client;
             try {
-                connection.sftpClient = connection.client.newSFTPClient();
-                return connection.sftpClient;
+                SFTPClient client = connection.client.newSFTPClient();
+                connection.sftpResource = new SftpResource(client);
+                return client;
             } catch (Exception error) {
                 throw failureFor(error);
             }
@@ -1206,10 +1262,10 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private void closeConnection(SshConnection connection, String reason, boolean notify) {
+    void closeConnection(SshConnection connection, String reason, boolean notify) {
         if (!connection.intentionalClose.compareAndSet(false, true)) return;
         long closedAtEpochMs = System.currentTimeMillis();
-        long closedAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
+        long closedAtElapsedRealtimeMs = elapsedRealtimeClock.getAsLong();
         Long graceScheduledAtEpochMs = connection.graceScheduledAtEpochMs;
         Long graceScheduledAtElapsedRealtimeMs = connection.graceScheduledAtElapsedRealtimeMs;
         Long graceDeadlineEpochMs = connection.graceDeadlineEpochMs;
@@ -1227,10 +1283,11 @@ public final class SshCapabilityPlugin extends Plugin {
         }
         connection.state = "closed";
         closeChildren(connection);
-        connections.remove(connection.connectionId, connection);
-        ClientCloseResult closeResult = closeClient(connection.client);
+        ClientCloseResult closeResult = closeThenRemove(
+            connections, connection.connectionId, connection, () -> closeClient(connection.client)
+        );
         long transportCloseCompletedAtEpochMs = System.currentTimeMillis();
-        long transportCloseCompletedAtElapsedRealtimeMs = SystemClock.elapsedRealtime();
+        long transportCloseCompletedAtElapsedRealtimeMs = elapsedRealtimeClock.getAsLong();
         if (notify) {
             JSObject event = new JSObject()
                 .put("connectionId", connection.connectionId)
@@ -1276,37 +1333,53 @@ public final class SshCapabilityPlugin extends Plugin {
         for (SshForward forward : new ArrayList<>(forwards.values())) {
             if (forward.connection == connection) closeForward(forward);
         }
+        closeSftpClient(connection);
+    }
+
+    void closeSftpClient(SshConnection connection) {
         synchronized (connection.sftpLock) {
-            SFTPClient client = connection.sftpClient;
-            connection.sftpClient = null;
-            closeQuietly(client);
+            SftpResource resource = connection.sftpResource;
+            if (resource == null) return;
+            try {
+                resource.closeOperation.run();
+            } finally {
+                connection.sftpResource = null;
+            }
         }
     }
 
-    private void closePty(SshPty pty) {
+    void closePty(SshPty pty) {
         if (!pty.closed.compareAndSet(false, true)) return;
-        ptys.remove(pty.channelId, pty);
-        closeQuietly(pty.channel);
+        closeThenRemove(ptys, pty.channelId, pty, () -> {
+            pty.closeOperation.run();
+            return null;
+        });
         pty.connection.channelPermits.release();
     }
 
-    private void closeForward(SshForward forward) {
+    void closeForward(SshForward forward) {
         if (!forward.closed.compareAndSet(false, true)) return;
-        forwards.remove(forward.forwardId, forward);
-        try {
-            forward.forwarder.close();
-        } catch (Exception ignored) {}
-        closeQuietly(forward.serverSocket);
+        closeThenRemove(forwards, forward.forwardId, forward, () -> {
+            forward.closeOperation.run();
+            return null;
+        });
         forward.connection.channelPermits.release();
         FORWARD_PERMITS.release();
+    }
+
+    /** Keep production resource counts visible until native close returns, then return close evidence. */
+    static <K, V, R> R closeThenRemove(Map<K, V> resources, K key, V resource, Supplier<R> closeOperation) {
+        try {
+            return closeOperation.get();
+        } finally {
+            resources.remove(key, resource);
+        }
     }
 
     private int countSftpClients() {
         int count = 0;
         for (SshConnection connection : connections.values()) {
-            synchronized (connection.sftpLock) {
-                if (connection.sftpClient != null) count++;
-            }
+            if (connection.sftpResource != null) count++;
         }
         return count;
     }
@@ -1357,7 +1430,7 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private static Thread streamThread(InputStream input, BoundedCapture output, String label) {
-        Thread thread = new Thread(() -> {
+        Thread thread = new Thread(trackedWorker(ACTIVE_EXEC_STREAM_READERS, () -> {
             byte[] buffer = new byte[8192];
             try {
                 int read;
@@ -1365,10 +1438,21 @@ public final class SshCapabilityPlugin extends Plugin {
             } catch (IOException ignored) {
                 // Closing a timed-out command also closes its streams.
             }
-        }, "pocketshell-ssh-exec-" + label);
+        }), "pocketshell-ssh-exec-" + label);
         thread.setDaemon(true);
         thread.start();
         return thread;
+    }
+
+    static Runnable trackedWorker(AtomicInteger activeWorkers, Runnable work) {
+        return () -> {
+            activeWorkers.incrementAndGet();
+            try {
+                work.run();
+            } finally {
+                activeWorkers.decrementAndGet();
+            }
+        };
     }
 
     private static void joinReader(Thread reader) {
@@ -1623,7 +1707,7 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class SshConnection {
+    static final class SshConnection {
         final String connectionId;
         final String generationId;
         final String hostId;
@@ -1634,7 +1718,7 @@ public final class SshCapabilityPlugin extends Plugin {
         final Object sftpLock = new Object();
         final Object graceLock = new Object();
         volatile String state = "connected";
-        volatile SFTPClient sftpClient;
+        volatile SftpResource sftpResource;
         volatile Runnable graceRunnable;
         volatile Long graceDeadlineEpochMs;
         volatile Long graceScheduledAtEpochMs;
@@ -1653,7 +1737,7 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class SshPty {
+    static final class SshPty {
         final String channelId;
         final SshConnection connection;
         final SessionChannel channel;
@@ -1661,32 +1745,87 @@ public final class SshCapabilityPlugin extends Plugin {
         final Object readLock = new Object();
         final Object operationLock = new Object();
         final AtomicBoolean closed = new AtomicBoolean(false);
+        final Runnable closeOperation;
         volatile int readSequence;
         volatile int operationSequence;
 
         SshPty(String channelId, SshConnection connection, SessionChannel channel, Session.Command command) {
+            this(channelId, connection, channel, command, () -> closeQuietly(channel));
+        }
+
+        SshPty(String channelId, SshConnection connection, SessionChannel channel, Session.Command command, Runnable closeOperation) {
             this.channelId = channelId;
             this.connection = connection;
             this.channel = channel;
             this.command = command;
+            this.closeOperation = closeOperation;
         }
     }
 
-    private static final class SshForward {
+    static final class SshForward {
         final String forwardId;
         final SshConnection connection;
         final ServerSocket serverSocket;
         final LocalPortForwarder forwarder;
         final int localPort;
         final AtomicBoolean closed = new AtomicBoolean(false);
+        final Runnable closeOperation;
         volatile String failure;
 
         SshForward(String forwardId, SshConnection connection, ServerSocket serverSocket, LocalPortForwarder forwarder, int localPort) {
+            this(forwardId, connection, serverSocket, forwarder, localPort, () -> {
+                try {
+                    forwarder.close();
+                } catch (Exception ignored) {}
+                closeQuietly(serverSocket);
+            });
+        }
+
+        SshForward(
+                String forwardId, SshConnection connection, ServerSocket serverSocket,
+                LocalPortForwarder forwarder, int localPort, Runnable closeOperation
+        ) {
             this.forwardId = forwardId;
             this.connection = connection;
             this.serverSocket = serverSocket;
             this.forwarder = forwarder;
             this.localPort = localPort;
+            this.closeOperation = closeOperation;
+        }
+    }
+
+    static final class SftpResource {
+        final SFTPClient client;
+        final Runnable closeOperation;
+
+        SftpResource(SFTPClient client) {
+            this(client, () -> closeQuietly(client));
+        }
+
+        SftpResource(SFTPClient client, Runnable closeOperation) {
+            this.client = client;
+            this.closeOperation = closeOperation;
+        }
+    }
+
+    static final class NativeResourceSnapshot {
+        final int connections;
+        final int ptys;
+        final int sftpClients;
+        final int forwards;
+        final int activeForwardWorkers;
+        final int activeExecStreamReaders;
+
+        NativeResourceSnapshot(
+                int connections, int ptys, int sftpClients, int forwards,
+                int activeForwardWorkers, int activeExecStreamReaders
+        ) {
+            this.connections = connections;
+            this.ptys = ptys;
+            this.sftpClients = sftpClients;
+            this.forwards = forwards;
+            this.activeForwardWorkers = activeForwardWorkers;
+            this.activeExecStreamReaders = activeExecStreamReaders;
         }
     }
 

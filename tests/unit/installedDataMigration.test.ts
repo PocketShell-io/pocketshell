@@ -18,8 +18,10 @@ import type {
   NativeInstalledDataMigrationPlugin,
   NativeLegacySnapshot,
 } from '../../src/native/installedDataMigration';
+import type { NativeSshKeyVaultPlugin } from '../../src/native/sshKeyVault';
 
 const TRUST_FINGERPRINT = `SHA256:${'A'.repeat(43)}`;
+const KEY_HANDLE_ID = '00000000-0000-4000-8000-000000000007';
 const ABC_SHA256 = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
 
 class MemoryStorage implements StringStorage {
@@ -120,6 +122,21 @@ function memoryPersistence(initialRecord?: ImportRecord) {
       if (!currentRecord) throw new Error('nothing staged');
       currentRecord = { ...currentRecord, status: currentRecord.snapshot.database.present ? status : 'empty' };
     }),
+    updateRecord: vi.fn(async (record) => {
+      currentRecord = record;
+      stagedRecord = record;
+    }),
+    compareAndSetCredentialHandles: vi.fn(async (expected, next, tombstones) => {
+      if (!currentRecord || JSON.stringify(currentRecord.credentialHandles ?? {}) !== JSON.stringify(expected)) return false;
+      if (tombstones && JSON.stringify(currentRecord.credentialHandleTombstones ?? []) !== JSON.stringify(tombstones.expected)) return false;
+      currentRecord = {
+        ...currentRecord,
+        credentialHandles: { ...next },
+        ...(tombstones ? { credentialHandleTombstones: [...tombstones.next] } : {}),
+      };
+      stagedRecord = currentRecord;
+      return true;
+    }),
   };
   return {
     persistence,
@@ -140,6 +157,31 @@ function nativePlugin(snapshot: NativeLegacySnapshot, base64 = '') {
     })),
   };
   return native;
+}
+
+function nativeKeyVault(): NativeSshKeyVaultPlugin {
+  return {
+    listKeys: vi.fn(async () => ({ keys: [] })),
+    pickKeyDocument: vi.fn(async () => ({ cancelled: true })),
+    importPickedKey: vi.fn(async () => ({})),
+    importDocumentUri: vi.fn(async () => ({})),
+    generateKey: vi.fn(async () => ({})),
+    deleteKey: vi.fn(async () => ({ deleted: true })),
+    importLegacyKeys: vi.fn(async ({ keys }: { keys: Array<{ legacyKeyId: number; sha256: string; label: string; passphraseRequired: boolean }> }) => ({
+      keys: keys.map((key) => ({
+        legacyKeyId: key.legacyKeyId,
+        key: {
+          handleId: KEY_HANDLE_ID,
+          label: key.label,
+          algorithm: 'ssh-ed25519',
+          fingerprintSha256: TRUST_FINGERPRINT,
+          passphraseRequired: key.passphraseRequired,
+          createdAt: 1,
+        },
+      })),
+      failures: [],
+    })),
+  } as unknown as NativeSshKeyVaultPlugin;
 }
 
 describe('installed Android data migration', () => {
@@ -191,6 +233,7 @@ describe('installed Android data migration', () => {
 
     const settingsWritten = await runInstalledDataMigration({
       native,
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -239,6 +282,7 @@ describe('installed Android data migration', () => {
 
     const settingsWritten = await runInstalledDataMigration({
       native,
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -284,6 +328,7 @@ describe('installed Android data migration', () => {
 
     const settingsWritten = await runInstalledDataMigration({
       native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -314,6 +359,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -343,6 +389,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -370,6 +417,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -394,6 +442,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native,
+      keyVault: nativeKeyVault(),
       persistence: replay.persistence,
       storage,
       nativePlatform: true,
@@ -420,6 +469,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,
@@ -441,8 +491,41 @@ describe('installed Android data migration', () => {
       keyName: 'main key',
       keyHasPassphrase: false,
       keySha256: 'a'.repeat(64),
+      keyHandleId: KEY_HANDLE_ID,
     }]);
     expect(JSON.stringify(importedHosts)).not.toContain('privateKeyPath');
+  });
+
+  it('does not resurrect a legacy key after its persistent deletion tombstone is set', async () => {
+    const snapshot = legacySnapshot();
+    const initial: ImportRecord = {
+      id: IMPORT_RECORD_ID,
+      status: 'complete',
+      importedAt: 123,
+      snapshot,
+      warnings: [],
+      credentialHandles: { '7': null },
+      credentialHandleTombstones: [7],
+    };
+    const persistence = memoryPersistence(initial);
+    const keyVault = nativeKeyVault();
+
+    await runInstalledDataMigration({
+      native: nativePlugin(snapshot),
+      keyVault,
+      persistence: persistence.persistence,
+      storage: new MemoryStorage(),
+      nativePlatform: true,
+      now: () => 456,
+      pixelRatio: () => 2,
+    });
+
+    expect(keyVault.importLegacyKeys).not.toHaveBeenCalled();
+    expect(persistence.stagedRecord?.credentialHandles?.['7']).toBeNull();
+    expect(persistence.stagedRecord?.credentialHandleTombstones).toEqual([7]);
+    await expect(readImportedLegacyHosts(persistence.persistence)).resolves.toMatchObject([
+      { id: 41, keyHandleId: null },
+    ]);
   });
 
   it('connects a saved host through an opaque native key reference and keeps passphrases transient', () => {
@@ -456,6 +539,7 @@ describe('installed Android data migration', () => {
       keyName: 'main key',
       keyHasPassphrase: true,
       keySha256: 'a'.repeat(64),
+      keyHandleId: KEY_HANDLE_ID,
     };
 
     const target = makeLegacySshHostTarget(host, 'entered-for-this-connection');
@@ -466,9 +550,8 @@ describe('installed Android data migration', () => {
       port: 2222,
       username: 'alex',
       credential: {
-        kind: 'legacy-private-key',
-        keyId: 7,
-        sha256: 'a'.repeat(64),
+        kind: 'key-handle',
+        handleId: KEY_HANDLE_ID,
         passphrase: 'entered-for-this-connection',
       },
     });
@@ -494,6 +577,7 @@ describe('installed Android data migration', () => {
 
     await runInstalledDataMigration({
       native: nativePlugin(snapshot, 'YWJj'),
+      keyVault: nativeKeyVault(),
       persistence: persistence.persistence,
       storage,
       nativePlatform: true,

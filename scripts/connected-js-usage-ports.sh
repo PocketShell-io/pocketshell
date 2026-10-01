@@ -97,6 +97,7 @@ export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_SDK}"
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/connected-js-usage-ports-artifacts.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-usage-ports.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-usage-ports.sh suffix=$SUFFIX run=$RUN_ID"
@@ -154,6 +155,8 @@ REPORTS_DIR="$ROOT_DIR/android/app/build/reports/androidTests/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-usage-ports/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing same-run evidence: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"
 pocketshell_reset_connected_js_usage_ports_outputs "$RESULTS_DIR" "$REPORTS_DIR"
 
 HOST_SERVER_PID_PATH="/tmp/pocketshell-$RUN_ID-usage-ports.pid"
@@ -212,15 +215,17 @@ release_usage_ports_locks() {
 }
 trap release_usage_ports_locks EXIT
 
-ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/usage-ports-assets-live-logcat.txt"
 : > "$LIVE_ASSET_LOGCAT"
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
-  > "$LIVE_ASSET_LOGCAT" 2>&1 &
-LIVE_ASSET_LOGCAT_PID=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
+  > "$LIVE_ASSET_LOGCAT" 2>&1
+LIVE_ASSET_LOGCAT_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the same-run artifact logcat collector'
 
@@ -231,9 +236,9 @@ if pocketshell_run_connected_js_usage_ports_gradle \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?
@@ -247,6 +252,8 @@ else
       "$ARTIFACTS_DIR/failure-diagnostics/extract-packaged-artifacts.log" >&2
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$ARTIFACTS_DIR/failure-diagnostics/device-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   docker logs --timestamps "$CONTAINER" \
     > "$ARTIFACTS_DIR/failure-diagnostics/docker-agents.log" 2>&1 || true
   docker exec -u testuser "$CONTAINER" /bin/sh -c \

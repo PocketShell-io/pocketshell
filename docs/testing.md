@@ -1,12 +1,13 @@
 # Testing and QA
 
-On `rewrite/js-first-0.6.0`, the product is the Vue/Capacitor shell. Run its
-checks with `pnpm test:unit`, `scripts/assemble-debug.sh`, the JS-first
-connected lanes below, and `scripts/test-agents-fixture-aplexer.sh --docker`.
-The later app2 journey inventory describes the `main`/`stable` contract while
-the rewrite's full feature suite and D36/D37 verdicts remain incomplete. This
-branch is not a complete 0.6.0 release gate. The temporary branch CI boundary
-and #2863 replacement work are documented in
+Since #2934, `main` is the JS-first 0.6.0 development line: the product is
+the Vue/Capacitor app. Run its checks with `scripts/run-js-unit-gate.sh`,
+`pnpm typecheck`, `scripts/assemble-debug.sh`, the JS-first connected lanes
+below, and `scripts/test-agents-fixture-aplexer.sh --docker`. The later app2
+journey inventory ("Legacy app2 ..." sections) describes the Kotlin contract
+that now lives only on `release/0.5.x`. `main` is not a complete 0.6.0
+release gate: its full feature suite and D36/D37 verdicts are #2863's work,
+and it currently has no scheduled run. The CI boundary is documented in
 [js-first-rewrite-foundation.md](js-first-rewrite-foundation.md).
 
 PocketShell has two end-to-end surfaces:
@@ -21,26 +22,30 @@ that attach, input, or stop works for a user.
 
 ## Fast local checks
 
-Run these from the repository root on `rewrite/js-first-0.6.0`:
+Run these from the repository root on `main`, after
+`git submodule update --init --recursive` and `pnpm install --frozen-lockfile`:
 
 ```bash
-pnpm test:unit
+scripts/run-js-unit-gate.sh
+pnpm typecheck
 scripts/assemble-debug.sh
 git diff --check
 ```
 
-`pnpm test:unit` runs the JS unit tests. `assemble-debug.sh` builds the JS app,
+`scripts/run-js-unit-gate.sh` runs the complete Vitest suite and fails unless
+every registered test file and title ran (`pnpm test:unit` is the unchecked
+quick loop). `assemble-debug.sh` builds the JS app,
 syncs Capacitor, and assembles a debug APK; it does not build connected tests.
 
 The remaining legacy app2 Gradle commands and journey inventory describe
-`main`/`stable` while their existing D36/D37 gates remain active. They are not
-available on this branch after the Kotlin product modules were removed.
+`release/0.5.x`. They are not available on `main`, where the Kotlin product
+modules and root Gradle graph were removed.
 
 ## JS-first packaged Android lanes
 
 The JS-first `connected-test.sh` requires a lane name and an explicit package
 suffix. It dispatches only to the existing `android/` packaged runners; it does
-not accept raw Gradle tasks or old app2 module selectors.
+not accept raw Gradle tasks or the app2 module selectors of `release/0.5.x`.
 
 ```bash
 scripts/connected-test.sh smoke --suffix i2863
@@ -50,6 +55,7 @@ scripts/connected-test.sh lifecycle --suffix i2863 --port 2222 \
 scripts/agents-pool.sh up 2245
 scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
   --session-prefix js2863-local
+scripts/connected-test.sh durable-storage --suffix i2863 --run-id js2993-local
 ```
 
 The smoke lane requires exactly the six registered packaged-shell JUnit
@@ -61,14 +67,28 @@ execution, and no execution after an uncertain write against the Docker host.
 It also captures the keyboard-up screenshot and computed viewport bounds from
 live logcat, verifies their SHA-256 values, and saves them under `/tmp` so
 Gradle's suffixed-app cleanup does not remove them.
+The durable-storage lane (issue #2993) needs no Docker fixture. It runs
+`DurableStorageRestartJourneyTest` three times with a force-stop between each
+run. `seed` creates two command chips, a theme and raw localStorage keys, then
+waits for them to settle. `mutate` changes the theme, deletes a chip, updates
+and removes the raw keys, logs an acknowledgement and SIGKILLs its own process
+`--kill-delay-ms` (default 0) later. `verify` requires every mutation after
+restart. Because `mutate` ends in its own kill, it has no JUnit pass; the
+runner accepts it only when it ends with `Process crashed` after the logged
+ACK and KILL lines. `check-js-durable-storage-results.py --run-dir` then
+requires passing `seed` and `verify` reports and an ACK-to-KILL gap under one
+second. Without the native store behind localStorage, the deleted chip comes
+back after the restart. The lane builds its own suffix into the shared
+`app-debug.apk` output, so CI runs it before the composer and key-vault builds,
+never between key-vault and the signed upgrade.
 Each connected phase owns the Android output tree and selected emulator,
 removes stale JUnit XML before instrumentation, and checks the report from that
 run. Provide a new suffix for each worktree so parallel APK installs have
 distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
-rewrite tree it verifies the five packaged contracts: smoke selects the exact
-six methods in `JsShellPackagedSmokeTest`; lifecycle selects
+rewrite tree it verifies the eight packaged contracts: smoke selects the exact
+seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
 `UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;
@@ -76,15 +96,45 @@ Files selects
 `J10FilesBrowseEditJourneyTest#browseEditConflictAndTransferFilesWithinTheConfiguredRoot`;
 and composer selects
 `JsComposerDockerJourneyTest#composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop`.
-The opt-in `InstalledDataMigrationJourneyTest` remains attached to #2860 because
-it requires a signed prior install that the regular package lanes do not
-prepare. The guard checks that justification and rejects any other undispatched
+The durable-storage lane selects
+`DurableStorageRestartJourneyTest#userDataWritesSurviveForceStopShortlyAfterAcknowledgement`.
+The key vault lane selects
+`SshKeyVaultDockerJourneyTest#importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState`.
+It imports an encrypted document URI, generates a second key, and authenticates
+both against Docker. It checks accepted public-key fingerprints and sessions
+independently, exercises referenced-key deletion confirmation, and inspects
+the actual Diagnostics export. It saves timings and the actual key list,
+host form, and resource status screenshots under
+`android/app/build/outputs/js-key-vault/<run-id>/device-screenshots` for
+maintainer visual sign-off. Run it with
+`scripts/agents-pool.sh up 2244`, then run
+`scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 --container pocketshell-test-agents-2244 --run-id js2926-local`.
+The signed-upgrade lane runs `InstalledDataMigrationJourneyTest` last in the
+blocking packaged CI run (`scripts/ci-js-first-packaged-lanes.sh`), after the
+suffixed lanes, because it owns the unsuffixed `com.pocketshell.app` install.
+Its fixture is the published v0.5.6 debug APK, downloaded and pinned by
+SHA-256; it is signed with the same committed debug keystore as the candidate.
+Run it locally with
+`scripts/connected-js-key-vault-signed-upgrade.sh --port 2244 --container pocketshell-test-agents-2244 --run-id upgrade2926-local`
+on an API 35 emulator without an existing `com.pocketshell.app` install.
+`LEGACY_APK` only moves the download cache; the pinned hash still applies.
+The runner checks matching certificates, installs 0.5.6 with synthetic private
+data, then updates it in place. Three exact-method cycles verify migrated-key
+Docker authentication, malformed encrypted preferences, and a malformed
+private key. Source hashes must remain unchanged in all three cycles. Evidence
+lives under `android/app/build/outputs/js-key-vault-upgrade/<run-id>`; existing
+run directories are never overwritten. `scripts/check-js-signed-upgrade-results.py`
+checks the whole run: 3/3 exact tests with no skips, unchanged sources,
+migrated-key authentication, and APK provenance. The workflow runs that check
+again after the emulator step. Missing fixture arguments fail the test instead
+of skipping it. The J1 guard rejects removing the invocation, dropping a cycle,
+or restoring an opt-in exclusion marker. It also rejects any other undispatched
 `*SmokeTest`, `*JourneyTest`, `*DockerTest`, or `*E2eTest` source.
 
 Run its synthetic contract checks with
 `scripts/check-test-validity.sh --j1-only --self-test`. This verifies the JS
 selectors and exact result-checker method sets, rejects missing/extra dispatch
-and unjustified journey classes, and retains a synthetic app2 whole-suite
+and unjustified journey classes, and retains a synthetic `release/0.5.x` app2 whole-suite
 regression case. The Files result contract is also self-tested by
 `scripts/check-js-files-results.py --self-test`. In hosted CI, an
 `if: always()` report step independently runs each lane's exact JUnit checker
@@ -106,6 +156,23 @@ The first command statically checks the image, shims, and journey sources. The
 Docker mode builds the image, runs the bundled-aplexer lifecycle self-check, and
 probes create → list → attach → kill against an actual container.
 
+### Android input preflight (#2946)
+
+Every packaged lane runner calls `pocketshell_android_input_preflight`
+(`scripts/lib/android-input-preflight.sh`) before the device is used. It sets
+`hide_error_dialogs=1` and force-stops the owner of any "isn't responding" or
+crash dialog already on screen. A system-app ANR dialog on a starved emulator
+otherwise owns input focus, and every injected key and tap goes to it. The
+lane's `input-preflight.txt` records each dismissal. A dialog owned by a
+`com.pocketshell*` package is never dismissed: the lane fails with
+`POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash. Inside the tests,
+`AndroidInputDeliveryProbe` injects a no-op Shift key before the first injected
+tap/key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the system
+focus owner when the page does not see it. On failure, the smoke and lifecycle
+runners write `dumpsys input`/`window`/`input_method`/`activity`, unfiltered
+`logcat -b all`, and a screenshot to their `failure-diagnostics`, checked by
+`scripts/check-android-input-diagnostics.py`.
+
 ## Disk preflight
 
 The canonical local gates check free space before claiming an emulator, Docker
@@ -118,7 +185,7 @@ from a product or test failure (issue #1989).
 | 10–20 GiB | run with a `WARN: disk preflight` line naming the cleanup command |
 | above 20 GiB | run silently |
 
-The legacy `main`/`stable` app2 runner's
+The legacy `release/0.5.x` app2 runner's
 `connected-test.sh --cleanup-suffixes` mode is exempt because it builds nothing.
 That option is not part of the JS-first runner. Use `scripts/disk-cleanup.sh`
 for serialized safe-list cleanup; it defaults to a dry run and `--apply`
@@ -131,11 +198,10 @@ Release validation has a larger fixed admission budget:
 | below 24 GiB | refuse the release validation, exit **76**, and print the safe cleanup command |
 | 24 GiB or more | reclaim stale copied worktrees, then start normally |
 
-## Legacy app2 Android emulator on main/stable
+## Legacy app2 Android emulator on release/0.5.x
 
-These commands apply only on `main`/`stable`, where the legacy app2 runner is
-still present while #2863's full replacement gates are being built. On
-`rewrite/js-first-0.6.0`, use the explicit JS-first lanes above.
+These commands apply only on `release/0.5.x`, where the legacy app2 runner is
+still present. On `main`, use the explicit JS-first lanes above.
 
 The maintained local AVD is `test`. The SDK paths on the maintainer box are:
 
@@ -222,7 +288,7 @@ Port 2222 belongs to the default `agents` fixture. It is reserved for the
 Docker `agents` target and must not be taken over by an unrelated container.
 Use `scripts/agents-pool.sh` for isolated ports when parallel lanes are needed.
 
-## Session journeys
+## Session journeys (legacy app2, `release/0.5.x`)
 
 The load-bearing app2 journeys use real aplexer records:
 
@@ -292,7 +358,8 @@ scripts/check-product-tmux-absent.sh --self-test
 scripts/check-product-tmux-absent.sh
 ```
 
-To inspect the same product surface manually after a session-runtime change:
+On `release/0.5.x` (legacy Kotlin tree), inspect the same product surface
+manually after a session-runtime change:
 
 ```bash
 rg -n -i 'tmux' \
@@ -310,9 +377,16 @@ in `AGENTS.md`, `process.md`, `scripts/lib/scope-run.sh`,
 
 ## CI and release evidence
 
-The required unit lanes run the JVM and Python suites plus static guards. The
-app2 workflow runs the unfiltered emulator journey lane and the real SSH
-integration lanes. The pre-release confidence gate repeats the APK identity,
+On `main`, `.github/workflows/js-first-rewrite.yml` runs on every push and
+pull request. Its job `JS checks and Android debug APK` is the required PR
+check (JS unit gate, typecheck, result-guard self-tests, APK identity and
+signing, packaged API 35 lanes against Docker), and `Docker agents fixture
+contract` exercises the pinned fixture. There is no scheduled workflow on
+`main` until #2863 replaces the D36/D37 verdicts. On `release/0.5.x`, the
+required unit lanes run the JVM suites plus static guards, and the app2
+workflow runs the unfiltered emulator journey lane and the real SSH
+integration lanes, but those workflows trigger only for `main`/`stable`
+pushes and PRs (see [release.md](release.md#release-05x-hotfixes)). The pre-release confidence gate repeats the APK identity,
 Docker fixture, emulator, and release-test ledger checks before a tag.
 
 Release work follows [release.md](release.md). A release note or status report

@@ -33,7 +33,9 @@ REQUIRED_METHODS = frozenset(
         "packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes",
         "packagedMultipleShareReadsStandardStreamListWithoutClipData",
         "settingsAndAndroidBackReturnHome",
+        "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
         "composerInputStaysAboveImeWithinSafeArea",
+        "pageReloadsKeepFirstNativeCallAnswered",
     }
 )
 SELF_TEST_CASES = 8

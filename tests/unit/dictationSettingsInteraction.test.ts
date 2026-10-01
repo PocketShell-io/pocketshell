@@ -1,7 +1,7 @@
 import { compile, createRenderer, getCurrentInstance, nextTick, ssrContextKey, type VNode } from 'vue';
 import { createPinia } from 'pinia';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { SETTINGS_STORAGE_KEY, type SettingsStorage } from '../../src/stores/appSettings';
 import { useNavigationStore } from '../../src/stores/navigation';
 import SettingsScreen from '../../src/components/SettingsScreen.vue';

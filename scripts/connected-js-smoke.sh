@@ -71,10 +71,12 @@ done
 [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'generated android/gradlew is missing; initialize the JS-first Android project first'
 [[ -x "$ROOT_DIR/scripts/check-js-smoke-results.py" ]] || fail 'packaged smoke result verifier is missing'
 "$ROOT_DIR/scripts/check-js-smoke-results.py" --self-test
+"$ROOT_DIR/scripts/check-android-input-diagnostics.py" --self-test
 
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-smoke.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-smoke.sh suffix=$SUFFIX"
@@ -109,34 +111,37 @@ pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-python3 - "$RESULTS_DIR" <<'PY'
+# Later lanes delete RESULTS_DIR, so smoke evidence lives in its own tree.
+DIAGNOSTICS_DIR="$ROOT_DIR/android/app/build/outputs/js-smoke-diagnostics"
+python3 - "$RESULTS_DIR" "$DIAGNOSTICS_DIR" <<'PY'
 from pathlib import Path
 import shutil
 import sys
 
-results = Path(sys.argv[1])
-if results.exists():
-    shutil.rmtree(results)
+for name in sys.argv[1:]:
+    path = Path(name)
+    if path.exists():
+        shutil.rmtree(path)
 PY
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$DIAGNOSTICS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $DIAGNOSTICS_DIR/input-preflight.txt"
 
 printf 'Running packaged JS smoke suite on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+if pocketshell_run_without_avd_lock_fd \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.JsShellPackagedSmokeTest \
     --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?
-  printf 'Connected packaged JS smoke tests failed; capturing emulator diagnostics.\n' >&2
-  mkdir -p "$RESULTS_DIR"
-  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 \
-    > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method \
-    > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys window \
-    > "$RESULTS_DIR/diagnostics-window.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
-    > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  printf 'Connected packaged JS smoke tests failed; capturing emulator diagnostics in %s.\n' \
+    "$DIAGNOSTICS_DIR/failure-diagnostics" >&2
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$DIAGNOSTICS_DIR/failure-diagnostics"
+  if [[ -d "$RESULTS_DIR" ]]; then
+    cp -a "$RESULTS_DIR" "$DIAGNOSTICS_DIR/instrumentation-results" || true
+  fi
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$DIAGNOSTICS_DIR/failure-diagnostics" >&2 || true
   exit "$test_exit_code"
 fi
 "$ROOT_DIR/scripts/check-js-smoke-results.py" --results-dir "$RESULTS_DIR"

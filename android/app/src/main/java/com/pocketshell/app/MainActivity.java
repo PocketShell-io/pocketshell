@@ -21,11 +21,15 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
+        // Registered first: its JavaScript interface must exist before the page loads (#2993).
+        registerPlugin(DurableStoragePlugin.class);
         registerPlugin(SshCapabilityPlugin.class);
+        registerPlugin(SshKeyVaultPlugin.class);
         registerPlugin(KeyboardInsetsPlugin.class);
         registerPlugin(InstalledDataMigrationPlugin.class);
         registerPlugin(DocumentContentPlugin.class);
         registerPlugin(SpeechRecognitionPlugin.class);
+        registerPlugin(BridgeReadyPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

@@ -49,7 +49,7 @@ if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
 
 def require_contract(source: str, packaged_script: str) -> None:
     required = (
-        ("isolated fixture", "scripts/agents-pool.sh up 2245"),
+        ("isolated fixtures", "scripts/agents-pool.sh up 2244 2245"),
         ("single packaged-lanes wrapper invocation", "script: scripts/ci-js-first-packaged-lanes.sh"),
         ("always-run exact result guard", "- name: Require exact reports for every packaged JS lane"),
         ("smoke result guard", "scripts/check-js-smoke-results.py"),
@@ -57,6 +57,11 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("Files result guard", "scripts/check-js-files-results.py"),
         ("Usage/Ports result guard", "scripts/check-js-usage-ports-results.py"),
         ("Composer result guard", "scripts/check-js-composer-journey-results.py"),
+        ("key-vault result guard", "scripts/check-js-key-vault-results.py"),
+        ("signed-upgrade result guard", "scripts/check-js-signed-upgrade-results.py"),
+        ("signed-upgrade guard self-test", "scripts/check-js-signed-upgrade-results.py --self-test"),
+        ("signed-upgrade evidence upload", "android/app/build/outputs/js-key-vault-upgrade/**"),
+        ("native Android unit gate", "        run: scripts/run-android-unit-gate.sh\n"),
         ("run-scoped artifact output", "android/app/build/outputs/js-composer/"),
         ("usage/ports run-scoped artifacts", "android/app/build/outputs/js-usage-ports/"),
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
@@ -114,8 +119,43 @@ def require_contract(source: str, packaged_script: str) -> None:
             raise AssertionError(f"packaged Fast Keys lane is missing its run-scoped contract: {needle}")
     if not hotkeys_runner < packaged_script.index("printf 'Packaged API 35 lane statuses:"):
         raise AssertionError("the Fast Keys lane must be included in the packaged status summary")
+    if not hotkeys_runner < packaged_script.index("if scripts/connected-js-key-vault-docker.sh"):
+        raise AssertionError("the Fast Keys lane must run before the key-vault -> signed-upgrade window")
+    # The signed 0.5.6 upgrade (#2926) is part of the blocking packaged run:
+    # it must be executed (not commented/documented), last, on its isolated
+    # fixture, and its status must reach the wrapper's exit.
+    upgrade_call = re.search(
+        r"(?m)^if scripts/connected-js-key-vault-signed-upgrade\.sh \\\n"
+        r"  --port 2244 \\\n"
+        r"  --container pocketshell-test-agents-2244 \\\n"
+        r"  --run-id \"up2926-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}\"; then$",
+        packaged_script,
+    )
+    if upgrade_call is None:
+        raise AssertionError("packaged wrapper does not execute the signed-upgrade migration lane")
+    key_vault = packaged_script.index("if scripts/connected-js-key-vault-docker.sh")
+    if not composer < key_vault < upgrade_call.start():
+        raise AssertionError("signed-upgrade must run last, after the suffixed key-vault lane")
+    # Issue #2993: the durable-storage lane rebuilds the shared app-debug.apk
+    # under its own suffix, so it must stay outside the key-vault build ->
+    # signed-upgrade window (here: after Files, before composer and key-vault).
+    durable_call = re.search(
+        r"(?m)^if scripts/connected-js-durable-storage\.sh \\\n"
+        r"  --suffix i2993ci \\\n"
+        r"  --run-id \"js2993-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}\"; then$",
+        packaged_script,
+    )
+    if durable_call is None:
+        raise AssertionError("packaged wrapper does not execute the durable-storage lane with its own suffix and run identity")
+    if not files < durable_call.start() < composer:
+        raise AssertionError("the durable-storage lane must run after Files and before the composer and key-vault builds")
+    if "durable_status != 0" not in packaged_script:
+        raise AssertionError("packaged wrapper ignores the durable-storage lane status")
+    if "signed_upgrade_status != 0" not in packaged_script:
+        raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
-                 "hotkeys_status", "hotkeys_junit_status", "copy_status"):
+                 "hotkeys_status", "hotkeys_junit_status", "durable_status", "key_vault_status",
+                 "signed_upgrade_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -132,6 +172,9 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("lifecycle", "js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("Files", "js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("Usage/Ports", "js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("key-vault", "js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("signed-upgrade", "js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"),
+        ("durable-storage", '--run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'),
     )
     for lane, report_path in exact_lane_reports:
         if report_path not in guard:
@@ -149,6 +192,9 @@ def require_contract(source: str, packaged_script: str) -> None:
         "scripts/check-js-files-results.py",
         "scripts/check-js-usage-ports-results.py",
         "scripts/check-js-composer-journey-results.py",
+        "scripts/check-js-key-vault-results.py",
+        "scripts/check-js-signed-upgrade-results.py",
+        "scripts/check-js-durable-storage-results.py",
     ):
         if f"run_check " not in guard or checker not in guard:
             raise AssertionError(f"the always-run result guard does not invoke {checker}")
@@ -230,10 +276,43 @@ for label, damaged in (
     else:
         raise AssertionError(f"workflow contract missed removed {label}")
 
+def durable_inside_key_vault_window(source: str) -> str:
+    """Move the durable-storage block between the key-vault and signed-upgrade lanes."""
+    start = source.index("# Issue #2993: user-data writes")
+    end = source.index("if scripts/connected-js-composer-docker.sh")
+    block = source[start:end]
+    without = source[:start] + source[end:]
+    window = without.index("# Signed 0.5.6-to-candidate upgrade")
+    moved = without[:window] + block + without[window:]
+    if moved == source:
+        raise AssertionError("durable-storage move fixture did not change the wrapper")
+    return moved
+
+
 for label, damaged in (
     ("composer invocation", packaged_lanes.replace(
         "if scripts/connected-js-composer-docker.sh \\\n",
         "",
+        1,
+    )),
+    ("signed-upgrade invocation", packaged_lanes.replace(
+        "if scripts/connected-js-key-vault-signed-upgrade.sh \\\n",
+        "if true \\\n",
+        1,
+    )),
+    ("signed-upgrade exit aggregation", packaged_lanes.replace(
+        " || signed_upgrade_status != 0",
+        "",
+        1,
+    )),
+    ("signed-upgrade always-run report check", workflow.replace(
+        "          run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \\\n",
+        "          true \\\n",
+        1,
+    )),
+    ("native Android unit gate", workflow.replace(
+        "        run: scripts/run-android-unit-gate.sh\n",
+        "        run: true\n",
         1,
     )),
     ("composer artifact path", workflow.replace(
@@ -241,9 +320,27 @@ for label, damaged in (
         "            android/app/build/outputs/other/\n",
         1,
     )),
+    ("durable-storage invocation", packaged_lanes.replace(
+        "if scripts/connected-js-durable-storage.sh \\\n",
+        "if true \\\n",
+        1,
+    )),
+    ("durable-storage exit aggregation", packaged_lanes.replace(
+        " || durable_status != 0",
+        "",
+        1,
+    )),
+    ("durable-storage lane outside the key-vault -> signed-upgrade window", durable_inside_key_vault_window(packaged_lanes)),
+    ("durable-storage always-run report check", workflow.replace(
+        "          run_check \"Durable storage\" scripts/check-js-durable-storage-results.py \\\n",
+        "          true \\\n",
+        1,
+    )),
 ):
     try:
-        if label == "composer invocation":
+        if label in {"composer invocation", "signed-upgrade invocation", "signed-upgrade exit aggregation",
+                     "durable-storage invocation", "durable-storage exit aggregation",
+                     "durable-storage lane outside the key-vault -> signed-upgrade window"}:
             require_contract(workflow, damaged)
         else:
             require_contract(damaged, packaged_lanes)
@@ -275,6 +372,96 @@ def workflow_run_script(source: str, step_name: str) -> str:
     return "\n".join(script_lines)
 
 
+# #2863: the connected-lane lock harnesses (Gradle output-tree lock and JS
+# serial ownership) are only regression coverage if the rewrite branch's
+# blocking job actually executes them. Legacy tests.yml reachability does not
+# count, so pin each as an executable, fail-closed line of this job's step.
+LOCK_HARNESS_JOB = "web-and-android"
+LOCK_HARNESS_STEP = "Check JS-first connected-test dispatch and lock contracts"
+LOCK_HARNESSES = (
+    "scripts/test-gradle-output-lock.sh",
+    "tests/scripts/connected-test-serial-ownership-test.sh",
+    "tests/scripts/avd-lock-test.sh",
+    "tests/scripts/avd-lock-sharing-test.sh",
+)
+
+
+def blocking_job_section(source: str, job: str) -> str:
+    match = re.search(rf"(?m)^  {re.escape(job)}:\n", source)
+    if match is None:
+        raise AssertionError(f"workflow is missing the blocking job {job}")
+    following = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n", source[match.end():])
+    end = match.end() + following.start() if following else len(source)
+    return source[match.start():end]
+
+
+def require_lock_harness_invocations(source: str) -> None:
+    job = blocking_job_section(source, LOCK_HARNESS_JOB)
+    if re.search(r"(?m)^    continue-on-error:", job):
+        raise AssertionError(f"the {LOCK_HARNESS_JOB} job must stay blocking")
+    if f"- name: {LOCK_HARNESS_STEP}\n" not in job:
+        raise AssertionError(f"the {LOCK_HARNESS_JOB} job is missing the step: {LOCK_HARNESS_STEP}")
+    step_start = job.index(f"- name: {LOCK_HARNESS_STEP}\n")
+    step_end = job.find("\n      - name:", step_start + 8)
+    step = job[step_start:step_end if step_end >= 0 else len(job)]
+    for key in ("if:", "continue-on-error:", "shell:"):
+        if re.search(rf"(?m)^        {re.escape(key)}", step):
+            raise AssertionError(f"the lock-contract step must run unconditionally with the default fail-fast shell ({key})")
+    script = workflow_run_script(job, LOCK_HARNESS_STEP)
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
+    commands = [
+        line.strip() for line in script.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if any(re.match(r"set\s+[+]", command) for command in commands):
+        raise AssertionError("the lock-contract step must not disable fail-fast execution")
+    for harness in LOCK_HARNESSES:
+        if harness not in commands:
+            raise AssertionError(f"the {LOCK_HARNESS_JOB} job does not execute {harness} as its own fail-closed command")
+        path = repository_root / harness
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise AssertionError(f"lock harness is missing or not executable: {harness}")
+
+
+require_lock_harness_invocations(workflow)
+for harness in LOCK_HARNESSES:
+    invocation = f"          {harness}\n"
+    if workflow.count(invocation) != 1:
+        raise AssertionError(f"lock-harness mutation fixture did not match exactly one {harness} line")
+    for label, damaged in (
+        ("removed", workflow.replace(invocation, "", 1)),
+        ("commented out", workflow.replace(invocation, f"          # {harness}\n", 1)),
+        ("failure-masked", workflow.replace(invocation, f"          {harness} || true\n", 1)),
+        ("moved to the fixture job", workflow.replace(invocation, "", 1).rstrip("\n")
+         + f"\n\n      - name: Relocated lock harness\n        run: {harness}\n"),
+    ):
+        try:
+            require_lock_harness_invocations(damaged)
+        except AssertionError:
+            print(f"PASS: {label} {harness} fails the rewrite blocking-job lock contract")
+        else:
+            raise AssertionError(f"rewrite lock contract missed a {label} {harness}")
+step_marker = f"      - name: {LOCK_HARNESS_STEP}\n"
+for label, damaged in (
+    ("non-blocking", workflow.replace(step_marker, step_marker + "        continue-on-error: true\n", 1)),
+    ("conditional", workflow.replace(step_marker, step_marker + "        if: false\n", 1)),
+    ("fail-fast disabled", workflow.replace(
+        step_marker + "        run: |\n",
+        step_marker + "        run: |\n          set +e\n",
+        1,
+    )),
+):
+    if damaged == workflow:
+        raise AssertionError(f"lock-contract {label} mutation fixture did not match the workflow")
+    try:
+        require_lock_harness_invocations(damaged)
+    except AssertionError:
+        print(f"PASS: a {label} lock-contract step fails the rewrite blocking-job lock contract")
+    else:
+        raise AssertionError(f"rewrite lock contract missed a {label} step")
+print("PASS: the rewrite blocking job executes the Gradle output-lock, JS serial-ownership, and AVD-lock harnesses")
+
+
 # Model the reviewer's dormant Files call: its wrapper status can be zero while
 # the run-scoped Files directory has no JUnit. The actual always-run workflow
 # step must still fail after checking the other lanes.
@@ -289,6 +476,9 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-lifecycle-results.py", "lifecycle"),
         ("check-js-usage-ports-results.py", "usage-ports"),
         ("check-js-composer-journey-results.py", "composer"),
+        ("check-js-durable-storage-results.py", "durable-storage"),
+        ("check-js-key-vault-results.py", "key-vault"),
+        ("check-js-signed-upgrade-results.py", "signed-upgrade"),
     ):
         execute = (
             'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
@@ -342,9 +532,9 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
     checked_lines = result_trace.read_text().splitlines()
     checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer", "composer"]:
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "key-vault", "durable-storage", "signed-upgrade", "composer", "composer"]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
-    if "/phase-prepare" not in checked_lines[3] or "/phase-resume" not in checked_lines[4]:
+    if "/phase-prepare" not in checked_lines[6] or "/phase-resume" not in checked_lines[7]:
         raise AssertionError(f"the guard did not check the two Composer process phases independently: {checked_lines!r}")
 print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
@@ -361,7 +551,8 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
-                            usage: int = 0, files: int = 0, composer: int = 0, omit_junit: bool = False,
+                            usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, key_vault: int = 0,
+                            signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
                             hotkeys_checker: int = 0, omit_hotkeys_junit: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
@@ -463,6 +654,18 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "exit \"$FIXTURE_HOTKEYS_CHECKER_STATUS\"\n"
         )
         fake_hotkeys_checker.chmod(0o755)
+        for script_name, lane_name, status_var in (
+            ("connected-js-durable-storage.sh", "durable-storage", "FIXTURE_DURABLE_STATUS"),
+            ("connected-js-key-vault-docker.sh", "key-vault", "FIXTURE_KEY_VAULT_STATUS"),
+            ("connected-js-key-vault-signed-upgrade.sh", "signed-upgrade", "FIXTURE_SIGNED_UPGRADE_STATUS"),
+        ):
+            fake_lane = fake_scripts / script_name
+            fake_lane.write_text(
+                "#!/bin/bash\n"
+                f"printf '{lane_name}\\t%s\\t%s\\n' \"${status_var}\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
+                f"exit \"${status_var}\"\n"
+            )
+            fake_lane.chmod(0o755)
 
         env = {
             "PATH": f"{runtime_bin}:/usr/bin:/bin",
@@ -479,6 +682,9 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_HOTKEYS_CHECKER_STATUS": str(hotkeys_checker),
             "FIXTURE_HOTKEYS_RUN_ID": "js2884-run-1-hotkeys-fixture",
             "FIXTURE_OMIT_HOTKEYS_JUNIT": "1" if omit_hotkeys_junit else "0",
+            "FIXTURE_DURABLE_STATUS": str(durable),
+            "FIXTURE_KEY_VAULT_STATUS": str(key_vault),
+            "FIXTURE_SIGNED_UPGRADE_STATUS": str(signed_upgrade),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
             "GITHUB_RUN_ATTEMPT": "1",
@@ -500,10 +706,12 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
+            f"durable-storage={durable} key-vault={key_vault} signed-upgrade={signed_upgrade} "
             f"smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, expected_copy)) else 0
+                                  expected_hotkeys_junit, durable, key_vault, signed_upgrade,
+                                  expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
@@ -511,7 +719,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             )
         trace_lines = trace.read_text().splitlines()
         if [line.split("\t", 1)[0] for line in trace_lines] != [
-            "smoke", "lifecycle", "usage-ports", "files", "composer", "hotkeys", "hotkeys-check",
+            "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
+            "hotkeys-check", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -526,19 +735,21 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(
                 f"{label}: Files lane arguments/status were not preserved: {trace_lines[3]!r}"
             )
-        if "--session-prefix js2891-run-1" not in trace_lines[4]:
-            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[4]!r}")
+        if trace_lines[4] != f"durable-storage\t{durable}\t--suffix i2993ci --run-id js2993-run-1":
+            raise AssertionError(f"{label}: durable-storage lane arguments/status were not preserved: {trace_lines[4]!r}")
+        if "--session-prefix js2891-run-1" not in trace_lines[5]:
+            raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[5]!r}")
         expected_hotkeys_args = "--suffix i2884ci --port 2243 --session-prefix js2884-run-1"
-        if trace_lines[5] != f"hotkeys\t{hotkeys}\t{expected_hotkeys_args}":
+        if trace_lines[6] != f"hotkeys\t{hotkeys}\t{expected_hotkeys_args}":
             raise AssertionError(
-                f"{label}: Fast Keys lane arguments/status were not preserved: {trace_lines[5]!r}"
+                f"{label}: Fast Keys lane arguments/status were not preserved: {trace_lines[6]!r}"
             )
         expected_hotkeys_results = (
             "--results-dir android/app/build/outputs/js-hotkeys/js2884-run-1-hotkeys-fixture"
         )
-        if trace_lines[6] != f"hotkeys-check\t{expected_hotkeys_results}":
+        if trace_lines[7] != f"hotkeys-check\t{expected_hotkeys_results}":
             raise AssertionError(
-                f"{label}: Fast Keys result checker was not given the unique same-run report: {trace_lines[6]!r}"
+                f"{label}: Fast Keys result checker was not given the unique same-run report: {trace_lines[7]!r}"
             )
         hotkeys_evidence = (
             fake_repo / "android/app/build/outputs/js-hotkeys/js2884-run-1-hotkeys-fixture"
@@ -547,6 +758,9 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(f"{label}: Fast Keys runner did not create run metadata")
         if (hotkeys_evidence / "TEST-fastkeys.xml").is_file() == omit_hotkeys_junit:
             raise AssertionError(f"{label}: Fast Keys JUnit fixture did not match the requested report state")
+        expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
+        if trace_lines[9] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
+            raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[9]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -572,6 +786,9 @@ exercise_packaged_lanes("composer failure is fail-closed", composer=23)
 exercise_packaged_lanes("Fast Keys failure is fail-closed", hotkeys=29)
 exercise_packaged_lanes("Fast Keys result check failure is fail-closed", hotkeys_checker=31)
 exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_junit=True)
+exercise_packaged_lanes("durable-storage failure is fail-closed", durable=31)
+exercise_packaged_lanes("key-vault failure is fail-closed", key_vault=27)
+exercise_packaged_lanes("signed-upgrade migration failure is fail-closed", signed_upgrade=29)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
 

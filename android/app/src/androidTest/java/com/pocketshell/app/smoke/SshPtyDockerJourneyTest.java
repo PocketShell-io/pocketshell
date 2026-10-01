@@ -41,6 +41,9 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.Base64;
@@ -61,8 +64,11 @@ public final class SshPtyDockerJourneyTest {
     private static final int SCREENSHOT_MARKER_ACCENT_MIN_PIXELS = 4_096;
     private static final int SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12;
     private ActivityScenario<MainActivity> scenario;
+    private File stagedKeyDocument;
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
+    private int nativePluginCallSequence;
+    private boolean injectedInputVerified;
 
     @Before
     public void launchPackagedShell() {
@@ -72,6 +78,7 @@ public final class SshPtyDockerJourneyTest {
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -79,10 +86,9 @@ public final class SshPtyDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
+        assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         String runId = arguments.getString("sshSessionName", "js2861-" + System.currentTimeMillis());
         assertTrue("run ID must be a safe, unique fixture tag prefix", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
@@ -118,7 +124,17 @@ public final class SshPtyDockerJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, activeRunId);
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(InstrumentationRegistry.getInstrumentation().getTargetContext(), stagedKeyDocument),
+                "Docker fixture key"));
+        awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid^=select-ssh-key-]')");
+        String handle = evalString("window.__ps2926ImportedKey.handleId");
+        click("[data-testid=select-ssh-key-" + handle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.value === '" + handle + "'");
         graceTiming.put("sshConnectRequestedEpochMs", System.currentTimeMillis())
                 .put("sshConnectRequestedElapsedMs", SystemClock.elapsedRealtime());
         click("[data-testid=ssh-connect]");
@@ -311,6 +327,7 @@ public final class SshPtyDockerJourneyTest {
         String markerAfterAbruptDrop = marker("A_AFTER_ABRUPT_DROP");
         JSONObject abruptTransportDrop = abruptlyDropServerTransportAndRecover(
                 runId, rowA, markerAfterAbruptDrop, artifactDirectory);
+        JSONObject closeResourcesBeforeDisconnect = openNativeResourcesForClose(runId);
 
         org.json.JSONArray phaseEvents = new org.json.JSONArray(evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
         org.json.JSONArray diagnosticEvents = new org.json.JSONArray(evalString("JSON.stringify(JSON.parse(localStorage.getItem('pocketshell.js.diagnostics.v1') || '[]'))"));
@@ -338,9 +355,17 @@ public final class SshPtyDockerJourneyTest {
                 .put("diagnosticEvents", diagnosticEvents);
         summary.put("abruptTransportDrop", abruptTransportDrop);
         summary.put("uncertainMutation", uncertainMutation);
-        writeText(new File(artifactDirectory, "journey-summary.json"), summary.toString(2));
-        Log.i("SshPtyDockerJourney", "RUN " + runId + " " + summary);
 
+        String connectionIdBeforeClose = currentConnectionId();
+        String generationIdBeforeClose = currentGenerationId();
+        long finalDisconnectRequestedEpochMs = System.currentTimeMillis();
+        long finalDisconnectRequestedElapsedMs = SystemClock.elapsedRealtime();
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " NATIVE_CLOSE_REQUESTED "
+                + new JSONObject().put("connectionId", connectionIdBeforeClose)
+                .put("generationId", generationIdBeforeClose)
+                .put("requestedAtEpochMs", finalDisconnectRequestedEpochMs)
+                .put("requestedAtElapsedRealtimeMs", finalDisconnectRequestedElapsedMs)
+                .put("localForwardPort", closeResourcesBeforeDisconnect.getInt("localPort")));
         click("[data-testid=ssh-disconnect]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'idle'");
         awaitJsTrue(
@@ -361,7 +386,164 @@ public final class SshPtyDockerJourneyTest {
                 evalString("document.querySelector('[data-testid=ssh-resource-sftp]')?.textContent.trim() ?? ''"));
         assertEquals("native port-forward count after close must be zero", "0",
                 evalString("document.querySelector('[data-testid=ssh-resource-forwards]')?.textContent.trim() ?? ''"));
+
+        JSONObject nativeCloseSnapshot = awaitZeroNativeResourceSnapshot(
+                finalDisconnectRequestedElapsedMs + 2_000L, runId);
+        long nativeCloseSnapshotVerifiedEpochMs = System.currentTimeMillis();
+        long nativeCloseSnapshotVerifiedElapsedMs = SystemClock.elapsedRealtime();
+        assertTrue("SSH, PTY, SFTP, forward and native I/O workers must close within two seconds",
+                nativeCloseSnapshotVerifiedElapsedMs - finalDisconnectRequestedElapsedMs <= 2_000L);
+        assertLocalForwardClosed(closeResourcesBeforeDisconnect.getInt("localPort"));
+
+        // Keep the Docker socket watcher alive for at least a second after the
+        // device-side close so the host oracle can require stable zero sockets.
+        SystemClock.sleep(1_250L);
+        summary.put("nativeResourceClose", new JSONObject()
+                .put("connectionId", connectionIdBeforeClose)
+                .put("generationId", generationIdBeforeClose)
+                .put("disconnectRequestedAtEpochMs", finalDisconnectRequestedEpochMs)
+                .put("disconnectRequestedAtElapsedRealtimeMs", finalDisconnectRequestedElapsedMs)
+                .put("snapshotVerifiedAtEpochMs", nativeCloseSnapshotVerifiedEpochMs)
+                .put("snapshotVerifiedAtElapsedRealtimeMs", nativeCloseSnapshotVerifiedElapsedMs)
+                .put("nativeCloseBoundMs", 2_000)
+                .put("snapshot", nativeCloseSnapshot)
+                .put("forward", new JSONObject()
+                        .put("forwardId", closeResourcesBeforeDisconnect.getString("forwardId"))
+                        .put("localPort", closeResourcesBeforeDisconnect.getInt("localPort"))
+                        .put("sshBannerVerified", closeResourcesBeforeDisconnect.getBoolean("sshBannerVerified"))
+                        .put("connectionRefusedAfterClose", true)));
+        writeText(new File(artifactDirectory, "journey-summary.json"), summary.toString(2));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " " + summary);
         writeArtifactManifest(artifactDirectory);
+    }
+
+    private JSONObject openNativeResourcesForClose(String runId) throws Exception {
+        JSONObject connection = new JSONObject(evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
+                + "return {connectionId:root?.dataset.sshConnectionId??'',generationId:root?.dataset.sshGenerationId??''};})())"));
+        String connectionId = connection.getString("connectionId");
+        String generationId = connection.getString("generationId");
+        assertTrue("the final resource-close fixture must start with a live JS-owned connection", !connectionId.isEmpty());
+        assertTrue("the final resource-close fixture must have a live JS-owned generation", !generationId.isEmpty());
+
+        JSONObject sftp = callNativePlugin("sftpList", new JSONObject()
+                .put("requestId", "close-proof-sftp-" + runId)
+                .put("connectionId", connectionId)
+                .put("generationId", generationId)
+                .put("path", "/home/testuser"));
+        assertEquals("the close fixture must create and exercise a real SFTP client",
+                "close-proof-sftp-" + runId, sftp.getString("requestId"));
+        assertTrue("SFTP listing must return the fixture home directory", sftp.optJSONArray("entries") != null
+                && sftp.getJSONArray("entries").length() > 0);
+
+        JSONObject forward = callNativePlugin("openPortForward", new JSONObject()
+                .put("requestId", "close-proof-forward-" + runId)
+                .put("connectionId", connectionId)
+                .put("generationId", generationId)
+                .put("remoteHost", "127.0.0.1")
+                .put("remotePort", 22)
+                .put("localPort", 0));
+        assertEquals("the close fixture must create a real SSH local forward",
+                "close-proof-forward-" + runId, forward.getString("requestId"));
+        int localPort = forward.getInt("localPort");
+        assertTrue("native forward must allocate a local port", localPort > 0 && localPort <= 65535);
+
+        boolean sshBannerVerified = verifyLocalForwardReachesSshd(localPort);
+        assertTrue("the local native forward must reach the Docker fixture SSH banner", sshBannerVerified);
+
+        JSONObject liveSnapshot = awaitNativeResourceSnapshotWithForward(connectionId, generationId, runId);
+        assertTrue("the live close fixture must own a PTY", liveSnapshot.getInt("ptys") > 0);
+        assertEquals("the live close fixture must own its SFTP client", 1, liveSnapshot.getInt("sftpClients"));
+        assertEquals("the live close fixture must own its local forward", 1, liveSnapshot.getInt("forwards"));
+        assertEquals("the listener worker must still be live before disconnect", 1,
+                liveSnapshot.getInt("activeForwardWorkers"));
+        assertEquals("completed command readers must not linger before disconnect", 0,
+                liveSnapshot.getInt("activeExecStreamReaders"));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " NATIVE_CLOSE_RESOURCES_OPEN "
+                + new JSONObject().put("connectionId", connectionId)
+                .put("generationId", generationId)
+                .put("localPort", localPort)
+                .put("snapshot", liveSnapshot));
+
+        return new JSONObject()
+                .put("forwardId", forward.getString("forwardId"))
+                .put("localPort", localPort)
+                .put("sshBannerVerified", sshBannerVerified);
+    }
+
+    private JSONObject awaitNativeResourceSnapshotWithForward(
+            String connectionId, String generationId, String runId) throws Exception {
+        long deadline = SystemClock.elapsedRealtime() + 10_000L;
+        JSONObject latest = null;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            latest = callNativePlugin("resourceSnapshot", new JSONObject()
+                    .put("requestId", "close-proof-live-snapshot-" + runId + "-" + nativePluginCallSequence)
+                    .put("connectionId", connectionId)
+                    .put("generationId", generationId));
+            if (latest.getInt("forwards") == 1 && latest.getInt("activeForwardWorkers") == 1) return latest;
+            SystemClock.sleep(100L);
+        }
+        throw new AssertionError("the real forward listener did not become live in time; snapshot=" + latest);
+    }
+
+    private JSONObject awaitZeroNativeResourceSnapshot(long deadlineElapsedMs, String runId) throws Exception {
+        JSONObject latest = null;
+        while (SystemClock.elapsedRealtime() <= deadlineElapsedMs) {
+            latest = callNativePlugin("resourceSnapshot", new JSONObject()
+                    .put("requestId", "close-proof-zero-snapshot-" + runId + "-" + nativePluginCallSequence));
+            if (latest.getInt("connections") == 0 && latest.getInt("ptys") == 0
+                    && latest.getInt("sftpClients") == 0 && latest.getInt("forwards") == 0
+                    && latest.getInt("activeForwardWorkers") == 0
+                    && latest.getInt("activeExecStreamReaders") == 0) {
+                return latest;
+            }
+            SystemClock.sleep(100L);
+        }
+        throw new AssertionError("native resources did not reach zero within two seconds; snapshot=" + latest);
+    }
+
+    private JSONObject callNativePlugin(String method, JSONObject options) throws Exception {
+        int sequence = ++nativePluginCallSequence;
+        String callId = "native-close-call-" + sequence;
+        String methodsKey = "__pocketshellNativeCloseCalls";
+        String start = "(() => {const id=" + JSONObject.quote(callId) + ";"
+                + "const calls=window." + methodsKey + "||(window." + methodsKey + "={});"
+                + "const plugin=window.Capacitor?.Plugins?.SshCapability;"
+                + "if(!plugin||typeof plugin[" + JSONObject.quote(method) + "]!=='function')"
+                + "throw new Error('missing native SSH method: '+" + JSONObject.quote(method) + ");"
+                + "const args=JSON.parse(" + JSONObject.quote(options.toString()) + ");"
+                + "plugin[" + JSONObject.quote(method) + "](args).then(value=>calls[id]={settled:true,value})"
+                + ".catch(error=>calls[id]={settled:true,error:String(error?.message??error)});"
+                + "return 'started';})()";
+        assertEquals("native plugin call must start for " + method, "started", evalString(start));
+        awaitJsTrue("window." + methodsKey + "?.[" + JSONObject.quote(callId) + "]?.settled === true", 10_000);
+        JSONObject result = new JSONObject(evalString("JSON.stringify(window." + methodsKey + "["
+                + JSONObject.quote(callId) + "])"));
+        assertFalse("native " + method + " call must resolve instead of reject: " + result, result.has("error"));
+        return result.getJSONObject("value");
+    }
+
+    private static boolean verifyLocalForwardReachesSshd(int localPort) throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), localPort), 2_000);
+            socket.setSoTimeout(2_000);
+            byte[] banner = new byte[4];
+            int offset = 0;
+            while (offset < banner.length) {
+                int count = socket.getInputStream().read(banner, offset, banner.length - offset);
+                if (count < 0) return false;
+                offset += count;
+            }
+            return new String(banner, StandardCharsets.US_ASCII).startsWith("SSH-");
+        }
+    }
+
+    private static void assertLocalForwardClosed(int localPort) throws Exception {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), localPort), 500);
+            throw new AssertionError("native disconnect left the local forwarding listener reachable on " + localPort);
+        } catch (java.net.ConnectException expected) {
+            // The native listener was physically closed; no server accepts new clients.
+        }
     }
 
     private void createSession(String tag) throws Exception {
@@ -406,6 +588,7 @@ public final class SshPtyDockerJourneyTest {
     private void submitTerminalCommand(String command, String checkpoint) throws Exception {
         JSONObject before = terminalInputStats();
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
+        ensureInjectedInputDelivered(checkpoint);
         pasteTerminalText(command, checkpoint);
         waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint + " command paste");
         JSONObject beforeEnter = terminalInputStats();
@@ -699,16 +882,44 @@ public final class SshPtyDockerJourneyTest {
 
         org.json.JSONArray phases = new org.json.JSONArray(
                 evalString("JSON.stringify(window.__pocketshellJourney?.phases ?? [])"));
+        // Count transitions into a phase, not recorder samples of it (#2943): a
+        // reconnect that stays in `reconnecting` while another field changes is
+        // still one reconnect, while reconnecting -> error -> reconnecting is two.
         int reconnectingPhases = 0;
         int listingPhases = 0;
+        String previousPhase = "";
+        String previousConnectionId = "";
         for (int index = 0; index < phases.length(); index += 1) {
             JSONObject phase = phases.getJSONObject(index);
-            if (phase.optLong("at") < mutationRequestedAtEpochMs) continue;
-            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
-            if ("listing".equals(phase.optString("phase"))
-                    && connectionDuringFreshList.equals(phase.optString("connectionId"))) listingPhases += 1;
+            String name = phase.optString("phase");
+            String connectionId = phase.optString("connectionId");
+            boolean entered = !name.equals(previousPhase) || !connectionId.equals(previousConnectionId);
+            previousPhase = name;
+            previousConnectionId = connectionId;
+            if (phase.optLong("at") < mutationRequestedAtEpochMs || !entered) continue;
+            if ("reconnecting".equals(name)) reconnectingPhases += 1;
+            if ("listing".equals(name) && connectionDuringFreshList.equals(connectionId)) listingPhases += 1;
         }
-        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES " + phases);
+        // Issue #2943: the full phase list outgrows logcat's ~4 KB line limit,
+        // so keep it as a same-run file artifact the lane pulls even on failure.
+        writeText(new File(artifactDirectory, "uncertain-mutation-phases.json"), new JSONObject()
+                .put("schema", 1)
+                .put("runId", runId)
+                .put("target", target)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", connectionDuringFreshList)
+                .put("mutationRequestedAtEpochMs", mutationRequestedAtEpochMs)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases)
+                .put("phases", phases)
+                .put("bridgeEvents", new org.json.JSONArray(
+                        evalString("JSON.stringify(window.__pocketshellJourney?.bridgeEvents ?? [])")))
+                .toString(2));
+        Log.i("SshPtyDockerJourney", "RUN " + runId + " UNCERTAIN_MUTATION_PHASES "
+                + new JSONObject().put("file", "uncertain-mutation-phases.json")
+                .put("phaseCount", phases.length())
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("freshListPhaseCount", listingPhases));
         assertEquals("one JS reconnect must follow the lost create response", 1, reconnectingPhases);
         assertEquals("one fresh session-list phase must reconcile the uncertain create", 1, listingPhases);
         assertEquals("the fixture's host CLI create identity must match the session shown in the refreshed UI",
@@ -751,7 +962,8 @@ public final class SshPtyDockerJourneyTest {
                 .put("freshListPhaseCount", listingPhases)
                 .put("sessionRow", createdRow)
                 .put("serverProofFile", "uncertain-mutation-server-proof.txt")
-                .put("fixtureEventsFile", "uncertain-mutation-fixture-events.txt");
+                .put("fixtureEventsFile", "uncertain-mutation-fixture-events.txt")
+                .put("phasesFile", "uncertain-mutation-phases.json");
     }
 
     private JSONObject attachAndCapture(JSONObject row, String checkpoint, String marker, File artifactDirectory) throws Exception {
@@ -787,10 +999,15 @@ public final class SshPtyDockerJourneyTest {
         assertEquals("no terminal input may be pending before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
         int markerAccent = markerAccentColor(activeRunId, marker);
+        // Switch B's short-lived keyboard-up viewport can put the marker at
+        // the physical row boundary. Leave two blank rows after that marker
+        // only, keeping other sessions' current-screen evidence intact.
+        String markerTrailingRows = "switch-b".equals(checkpoint) ? "\\n\\n\\n" : "\\n";
         String markerFormat = String.format(Locale.ROOT,
-                "\\033[38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m\\n",
-                Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent));
+                "\\033[1;38;2;0;0;0m\\033[48;2;%d;%d;%dm%%s\\033[0m%s",
+                Color.red(markerAccent), Color.green(markerAccent), Color.blue(markerAccent), markerTrailingRows);
         String markerCommand = "printf '" + markerFormat + "' '" + marker + "'";
+        ensureInjectedInputDelivered(checkpoint);
         // Inject the shell command through xterm's paste handler to avoid emulator per-character IME
         // duplication. The packaged composer journey separately exercises the real Android IME path.
         pasteTerminalText(markerCommand, checkpoint);
@@ -808,6 +1025,25 @@ public final class SshPtyDockerJourneyTest {
         Log.i("SshPtyDockerJourney", "RUN " + activeRunId + " ACK_DRAIN " + checkpoint
                 + " " + terminalInputStats());
         return checkpointData;
+    }
+
+    /**
+     * Issue #2946: the first Android-injected key of this journey is the
+     * terminal Enter. Before relying on it, prove an injected no-op key
+     * reaches the focused xterm helper textarea, so a system window holding
+     * input focus fails as ANDROID_INPUT_INJECTION_NOT_DELIVERED instead of
+     * as a 20 s product Enter-ack timeout.
+     */
+    private void ensureInjectedInputDelivered(String checkpoint) throws Exception {
+        if (injectedInputVerified) return;
+        JSONObject before = terminalInputStats();
+        AndroidInputDeliveryProbe.assertInjectedKeyReachesPage("lifecycle " + checkpoint + " before the first injected Enter",
+                this::evalRaw, action -> scenario.onActivity(action::accept));
+        JSONObject stats = terminalInputStats();
+        assertEquals("the no-op probe key must not leave terminal input pending at " + checkpoint, 0, stats.getInt("pending"));
+        assertEquals("the no-op probe key must not write terminal input at " + checkpoint,
+                before.getInt("ackCount"), stats.getInt("ackCount"));
+        injectedInputVerified = true;
     }
 
     private void pasteTerminalText(String text, String checkpoint) throws Exception {
@@ -1164,7 +1400,9 @@ public final class SshPtyDockerJourneyTest {
                 + "connectionId:d.sshConnectionId,generationId:d.sshGenerationId,selectedName:d.sshSelectedSession,"
                 + "selectedId:d.sshSelectedSessionId,workspace:d.sshSelectedWorkspace,tag:d.sshSelectedTag,"
                 + "retryAttempt:Number(d.sshRetryAttempt||0)}; const last=window.__pocketshellJourney.phases.at(-1);"
-                + "if(!last||Object.keys(next).some((key)=>last[key]!==next[key])) window.__pocketshellJourney.phases.push(next);};"
+                // #2943: compare every field except the sample time; otherwise any
+                // unrelated root attribute change re-records the unchanged phase.
+                + "if(!last||Object.keys(next).some((key)=>key!=='at'&&last[key]!==next[key])) window.__pocketshellJourney.phases.push(next);};"
                 + "sample(); window.__pocketshellJourney.observer=new MutationObserver(sample);"
                 + "window.__pocketshellJourney.observer.observe(root,{attributes:true});"
                 + "const plugin=window.Capacitor?.Plugins?.SshCapability; if(!plugin?.addListener) throw new Error('SSH native event bridge missing');"
@@ -1600,13 +1838,13 @@ public final class SshPtyDockerJourneyTest {
     private int markerAccentColor(String runId, String marker) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256")
                 .digest((runId + "\0" + marker).getBytes(StandardCharsets.UTF_8));
+        // Keep the marker-specific color deterministic and bright enough for
+        // black terminal text to remain legible in the device screenshot OCR.
         int[] rgb = new int[] {
-                24 + (digest[2] & 0x3f),
-                24 + (digest[3] & 0x3f),
-                24 + (digest[4] & 0x3f),
+                240 + (digest[2] & 0x0f),
+                224 + (digest[3] & 0x1f),
+                digest[4] & 0x3f,
         };
-        int strongChannel = (digest[0] & 0xff) % 3;
-        rgb[strongChannel] = 240 + (digest[1] & 0x0f);
         return Color.rgb(rgb[0], rgb[1], rgb[2]);
     }
 
@@ -1800,10 +2038,14 @@ public final class SshPtyDockerJourneyTest {
         int reconnectingPhases = 0;
         int recoveredLivePhaseObservations = 0;
         java.util.Set<String> recoveredLiveAttachIdentities = new java.util.HashSet<>();
+        String previousDropPhase = "";
         for (int index = 0; index < phasesAfterDrop.length(); index += 1) {
             JSONObject phase = phasesAfterDrop.getJSONObject(index);
+            boolean enteredPhase = !phase.optString("phase").equals(previousDropPhase);
+            previousDropPhase = phase.optString("phase");
             if (phase.optLong("at") < dropRequestedAtEpochMs) continue;
-            if ("reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
+            // Transitions into reconnecting, not repeated samples of it (#2943).
+            if (enteredPhase && "reconnecting".equals(phase.optString("phase"))) reconnectingPhases += 1;
             if ("live".equals(phase.optString("phase"))
                     && newConnectionId.equals(phase.optString("connectionId"))
                     && expectedSessionId.equals(phase.optString("selectedId"))
@@ -1814,6 +2056,20 @@ public final class SshPtyDockerJourneyTest {
             }
         }
         int recoveredLivePhases = recoveredLiveAttachIdentities.size();
+        // Issue #2943: keep the full phase list as a same-run file artifact;
+        // logcat truncates it at ~4 KB.
+        writeText(new File(artifactDirectory, "abrupt-drop-phases.json"), new JSONObject()
+                .put("schema", 1)
+                .put("runId", runId)
+                .put("oldConnectionId", oldConnectionId)
+                .put("newConnectionId", newConnectionId)
+                .put("dropRequestedAtEpochMs", dropRequestedAtEpochMs)
+                .put("reconnectingPhaseCount", reconnectingPhases)
+                .put("recoveredLivePhaseCount", recoveredLivePhases)
+                .put("phases", phasesAfterDrop)
+                .put("bridgeEvents", new org.json.JSONArray(
+                        evalString("JSON.stringify(window.__pocketshellJourney?.bridgeEvents ?? [])")))
+                .toString(2));
         assertEquals("one JS reconnect state must follow the single server-side SSH loss", 1, reconnectingPhases);
         assertTrue("fresh JS session attach must become live for the selected host session",
                 recoveredLivePhaseObservations > 0);
@@ -1869,6 +2125,7 @@ public final class SshPtyDockerJourneyTest {
                 .put("triggerRequestId", triggerRequestId)
                 .put("triggerSignal", "SIGKILL")
                 .put("triggerProofFile", "abrupt-drop-server-proof.txt")
+                .put("phasesFile", "abrupt-drop-phases.json")
                 .put("oldConnectionId", oldConnectionId)
                 .put("oldGenerationId", oldGenerationId)
                 .put("newConnectionId", newConnectionId)

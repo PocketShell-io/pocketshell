@@ -33,6 +33,8 @@ make_serial_fixture() {
   cp "$WRAPPER" "$repo/scripts/connected-test.sh"
   cp "$ROOT_DIR/scripts/connected-js-smoke.sh" "$repo/scripts/connected-js-smoke.sh"
   cp "$ROOT_DIR/scripts/check-js-smoke-results.py" "$repo/scripts/check-js-smoke-results.py"
+  cp "$ROOT_DIR/scripts/check-android-input-diagnostics.py" "$repo/scripts/check-android-input-diagnostics.py"
+  cp "$ROOT_DIR/scripts/lib/android-input-preflight.sh" "$repo/scripts/lib/android-input-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/avd-lock.sh" "$repo/scripts/lib/avd-lock.sh"
   cp "$ROOT_DIR/scripts/lib/disk-preflight.sh" "$repo/scripts/lib/disk-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/gradle-output-lock.sh" "$repo/scripts/lib/gradle-output-lock.sh"
@@ -51,9 +53,16 @@ case "${1:-}" in
     printf 'device\n'
     ;;
   shell)
-    [[ "${2:-}" == 'getprop' && "${3:-}" == 'ro.build.version.sdk' ]] \
-      || { printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90; }
-    printf '35\n'
+    case "${*:2}" in
+      'getprop ro.build.version.sdk') printf '35\n' ;;
+      # Android input preflight (#2946): disable system error dialogs, then
+      # read the live window list (no error dialog) and the focus owner.
+      'settings put global hide_error_dialogs 1') ;;
+      'settings get global hide_error_dialogs') printf '1\n' ;;
+      'dumpsys window windows') printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n' ;;
+      'dumpsys window displays') printf '  mCurrentFocus=Window{1 u0 fixture}\n' ;;
+      *) printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90 ;;
+    esac
     ;;
   *)
     printf 'unexpected adb command: %s\n' "$*" >&2
@@ -87,13 +96,15 @@ results="$repo/android/app/build/outputs/androidTest-results/connected/debug"
 mkdir -p "$results"
 cat > "$results/TEST-smoke.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="6" failures="0" errors="0" skipped="0">
+<testsuite name="smoke" tests="8" failures="0" errors="0" skipped="0">
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedMultipleShareReadsStandardStreamListWithoutClipData" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="pageReloadsKeepFirstNativeCallAnswered" />
 </testsuite>
 XML
 GRADLEW
@@ -191,7 +202,7 @@ make_dispatch_fixture() {
   cp "$WRAPPER" "$path/scripts/connected-test.sh"
   init_repo "$path"
   local lane
-  for lane in smoke lifecycle composer-docker; do
+  for lane in smoke lifecycle composer-docker hotkeys-docker key-vault-docker durable-storage; do
     cat > "$path/scripts/connected-js-$lane.sh" <<'LANE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -246,6 +257,8 @@ no_lane_and_unknown_lane_fail_closed() {
   run_dispatch "$SANDBOX/script-root" '' --help
   (( RUN_RC == 0 )) || fail "top-level help exited $RUN_RC"
   grep -q 'composer-docker' "$RUN_OUT" || fail 'top-level help omitted the composer Docker lane'
+  grep -q 'key-vault-docker' "$RUN_OUT" || fail 'top-level help omitted the key-vault Docker lane'
+  grep -q 'durable-storage' "$RUN_OUT" || fail 'top-level help omitted the durable-storage lane'
   assert_no_dispatch
   run_dispatch "$SANDBOX/script-root" ''
   (( RUN_RC == 2 )) || fail "missing lane exited $RUN_RC, expected 2"
@@ -307,6 +320,46 @@ composer_dispatch_preserves_pool_port_and_session_prefix() {
     || fail 'composer lane lost its suffix, Docker pool port, or session prefix'
 }
 
+hotkeys_dispatch_preserves_pool_port_and_session_prefix() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' hotkeys-docker --suffix i2884 \
+    --port 2243 --session-prefix js2884-local
+  (( RUN_RC == 0 )) || fail "fast-key lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-hotkeys-docker.sh"
+    --suffix i2884 --port 2243 --session-prefix js2884-local
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'fast-key lane lost its suffix, Docker pool port, or session prefix'
+}
+
+key_vault_dispatch_preserves_fixture_identity() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' key-vault-docker --suffix i2926 \
+    --port 2244 --container pocketshell-test-agents-2244 --run-id js2926-local
+  (( RUN_RC == 0 )) || fail "key-vault lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-key-vault-docker.sh"
+    --suffix i2926 --port 2244 --container pocketshell-test-agents-2244
+    --run-id js2926-local
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'key-vault lane lost its suffix, Docker port/container, or run ID'
+}
+
+durable_storage_dispatch_preserves_suffix_run_id_and_kill_delay() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' durable-storage --suffix i2993 \
+    --run-id js2993-local --kill-delay-ms 0
+  (( RUN_RC == 0 )) || fail "durable-storage lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-durable-storage.sh"
+    --suffix i2993 --run-id js2993-local --kill-delay-ms 0
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'durable-storage lane lost its suffix, run ID, or kill delay'
+}
+
 foreign_checkout_is_refused_before_lane_dispatch() {
   make_dispatch_fixture
   init_repo "$SANDBOX/foreign"
@@ -341,7 +394,8 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   local host_check_line recheck_line
   [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'JS Android Gradle wrapper is missing'
   [[ -x "$source" && -x "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
-     && -x "$ROOT_DIR/scripts/connected-js-composer-docker.sh" ]] \
+     && -x "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
+     && -x "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" ]] \
     || fail 'one or more dispatched JS lane runners are missing'
 
   grep -Fq '"$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest' "$source" \
@@ -365,8 +419,17 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'composer runner does not validate its exact same-run JUnit report'
   grep -Fq 'PASS: host PTY output contained' "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
     || fail 'composer runner lost its independent remote PTY output oracle'
-  grep -Fq 'Exact packaged-shell smoke suite (6 JUnit methods)' "$WRAPPER" \
-    || fail 'connected-test help does not describe the six-method packaged smoke contract'
+  grep -Fq 'check-js-key-vault-results.py" --results-dir "$RESULTS_DIR"' \
+    "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner does not validate its exact same-run JUnit report'
+  grep -Fq 'Accepted publickey for testuser' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its Docker accepted-fingerprint oracle'
+  grep -Fq 'independent_session_list_for_both_credentials=PASS' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its independent host session-list oracle for imported and generated keys'
+  grep -Fq 'secret-nonleak-oracle.txt' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its secret non-leak evidence'
+  grep -Fq 'Exact packaged-shell smoke suite (8 JUnit methods)' "$WRAPPER" \
+    || fail 'connected-test help does not describe the seven-method packaged smoke contract'
   grep -Fq 'scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");' "$smoke_test_source" \
     || fail 'About navigation does not scroll its target into the WebView viewport first'
   grep -Fq 'WebView tap target must be fully inside its viewport before coordinate tap:' "$smoke_test_source" \
@@ -384,6 +447,17 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   "$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
   "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --self-test
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --self-test
+  "$ROOT_DIR/scripts/check-js-key-vault-results.py" --self-test
+
+  local durable_script="$ROOT_DIR/scripts/connected-js-durable-storage.sh"
+  [[ -x "$durable_script" ]] || fail 'durable-storage lane runner is missing'
+  grep -Fq 'check-js-durable-storage-results.py" --results-dir "$phase_dir"' "$durable_script" \
+    || fail 'durable-storage runner does not validate each phase report from its own run'
+  grep -Fq 'check-js-durable-storage-results.py" --run-dir "$evidence_dir"' "$durable_script" \
+    || fail 'durable-storage runner does not validate the kill gap and both passing phases'
+  grep -Fq "grep -q 'Process crashed'" "$durable_script" \
+    || fail 'durable-storage runner does not require the mutate phase to end in its own kill'
+  "$ROOT_DIR/scripts/check-js-durable-storage-results.py" --self-test
 }
 
 same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
@@ -420,10 +494,10 @@ same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
     || fail 'first worktree did not pass its unique package suffix to Gradle'
   grep -Fq -- '-PpocketshellAppIdSuffix=i2863b' "$SANDBOX/device-state/args-i2863b" \
     || fail 'second worktree did not pass its unique package suffix to Gradle'
-  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 8 executed tests, 8 passed' \
     "$SANDBOX/i2863a.out" \
     || fail 'first run did not validate its own exact JUnit report'
-  grep -Fq 'PASS: packaged JS smoke results contain 6 executed tests, 6 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 8 executed tests, 8 passed' \
     "$SANDBOX/i2863b.out" \
     || fail 'second run did not validate its own exact JUnit report'
   [[ ! -e "$SANDBOX/device-state/overlap" ]] \
@@ -440,13 +514,16 @@ CASES=(
   smoke_dispatch_keeps_explicit_package_identity
   lifecycle_dispatch_preserves_fixture_identity
   composer_dispatch_preserves_pool_port_and_session_prefix
+  hotkeys_dispatch_preserves_pool_port_and_session_prefix
+  key_vault_dispatch_preserves_fixture_identity
+  durable_storage_dispatch_preserves_suffix_run_id_and_kill_delay
   foreign_checkout_is_refused_before_lane_dispatch
   old_gradle_selectors_are_not_forwarded
   real_js_lanes_keep_exact_same_run_guards_and_host_oracles
   same_emulator_is_serialized_across_worktrees_and_reports_are_run_local
   failure_artifacts_are_preserved_after_gradle_failure
 )
-EXPECTED_FULL_CASES=10
+EXPECTED_FULL_CASES=13
 (( ${#CASES[@]} == EXPECTED_FULL_CASES )) \
   || fail "expected $EXPECTED_FULL_CASES cases; found ${#CASES[@]}"
 

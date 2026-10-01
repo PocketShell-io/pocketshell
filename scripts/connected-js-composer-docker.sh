@@ -90,6 +90,7 @@ EOF
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-composer-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-composer-docker.sh suffix=$SUFFIX port=$PORT"
@@ -132,11 +133,13 @@ export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
 pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$evidence_dir/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $evidence_dir/input-preflight.txt"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 test_class='com.pocketshell.app.smoke.JsComposerDockerJourneyTest'
 APP_PACKAGE="com.pocketshell.app.$SUFFIX"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 TEST_PACKAGE="$APP_PACKAGE.test"
 INSTRUMENTATION_COMPONENT="$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner"
 APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
@@ -211,8 +214,9 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2857Asset:I > "$asset_logcat" 2>&1 &
-asset_logcat_pid=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s PS2857Asset:I > "$asset_logcat" 2>&1
+asset_logcat_pid="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live composer artifact logcat collector'
 printf 'Running packaged composer Docker journey on %s (API %s), Docker port %s, sessions %s-*\n' \
@@ -226,6 +230,8 @@ capture_phase_failure() {
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$evidence_dir/phase-$phase-android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$evidence_dir/phase-$phase-android-input" >&2 || true
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --preserve-on-failure \
     --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
     --output-dir "$evidence_dir" || true
@@ -243,8 +249,9 @@ capture_phase_failure() {
 run_instrumentation_phase() {
   local phase="$1"
   local phase_dir="$evidence_dir/phase-$phase"
+  "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
   local phase_args=(-e class "$test_class" -e sshHost 10.0.2.2
-    -e sshPort "$PORT" -e sshPrivateKeyBase64 "$encoded_key"
+    -e sshPort "$PORT" -e sshPrivateKeyPath "$DEVICE_KEY_PATH"
     -e sshSessionName "$SESSION_BASE" -e artifactRunId "$ARTIFACT_RUN_ID"
     -e composerPhase "$phase")
   mkdir -p "$phase_dir"
@@ -262,9 +269,9 @@ if results.exists():
     shutil.rmtree(results)
 PY
   local instrumentation_status=0
-  "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
-    "$INSTRUMENTATION_COMPONENT" 2>&1 | tee "$phase_dir/composer-instrumentation.log" \
-    || instrumentation_status=$?
+  pocketshell_run_without_avd_lock_fd_to_log "$phase_dir/composer-instrumentation.log" \
+    "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
+    "$INSTRUMENTATION_COMPONENT" || instrumentation_status=$?
   if (( instrumentation_status != 0 )) || ! grep -q '^INSTRUMENTATION_CODE: -1$' "$phase_dir/composer-instrumentation.log"; then
     capture_phase_failure "$phase"
     fail "instrumentation phase $phase did not finish cleanly (adb status $instrumentation_status)"

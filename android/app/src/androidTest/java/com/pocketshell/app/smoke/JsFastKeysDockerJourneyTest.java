@@ -37,6 +37,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -62,6 +63,9 @@ public final class JsFastKeysDockerJourneyTest {
     private static final double TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01;
 
     private ActivityScenario<MainActivity> scenario;
+    private File stagedKeyDocument;
+    private String keyPath;
+    private String selectedKeyHandle;
     private MainActivity packagedActivity;
     private WebView packagedWebView;
     private String artifactRunId;
@@ -86,6 +90,7 @@ public final class JsFastKeysDockerJourneyTest {
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -94,7 +99,7 @@ public final class JsFastKeysDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        keyPath = arguments.getString("sshPrivateKeyPath");
         String nameBase = arguments.getString("sshSessionName");
         artifactRunId = arguments.getString("artifactRunId", nameBase);
         forceFirstPostAttachPromptTapMiss = Boolean.parseBoolean(
@@ -108,11 +113,10 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("reattach prompt focus attempt limit must stay bounded to one or two taps",
                 promptFocusMaxAttempts >= 1 && promptFocusMaxAttempts <= MAX_PROMPT_FOCUS_TAP_ATTEMPTS);
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the fixture key with sshPrivateKeyBase64", encodedKey);
+        assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         assertNotNull("pass a unique fast-key session prefix with sshSessionName", nameBase);
         firstSession = nameBase + "-keys";
         String dictationTargetSession = nameBase + "-dictation-target";
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         grantMicrophonePermissionForJourney();
@@ -155,7 +159,7 @@ public final class JsFastKeysDockerJourneyTest {
         // SystemClock.uptimeMillis() is Android's monotonic clock. This interval
         // ends after the attached live prompt is present and a rendered frame settles.
         long connectToPromptStartedAt = SystemClock.uptimeMillis();
-        connect(host, port, privateKey);
+        connect(host, port, nameBase);
         createSession(firstSession);
         createSession(dictationTargetSession);
         attachSession(firstSession);
@@ -471,7 +475,7 @@ public final class JsFastKeysDockerJourneyTest {
 
         try {
             installAttachAutofocusGate();
-            connect(host, port, privateKey);
+            connect(host, port, nameBase);
             evalString("window.__ps2884ResizeAckEvents=[]; 'reattach resize acknowledgement recorder reset'");
             markResizeFitPhase("reattach-prompt-focus");
             attachSession(firstSession);
@@ -1550,11 +1554,11 @@ public final class JsFastKeysDockerJourneyTest {
         return result.toString();
     }
 
-    private void connect(String host, String port, String privateKey) throws Exception {
+    private void connect(String host, String port, String nameBase) throws Exception {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        selectFixtureKey(nameBase);
         click("[data-testid=ssh-connect]");
         awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]'"
                 + ") || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
@@ -1562,6 +1566,31 @@ public final class JsFastKeysDockerJourneyTest {
             click("[data-testid=trust-host-key]");
         }
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+    }
+
+    /**
+     * Imports the runner-staged Docker key through the native key vault once
+     * (#2926; key bytes never cross into JS), then requires the same opaque
+     * handle to stay selected for every later connect in this journey.
+     */
+    private void selectFixtureKey(String nameBase) throws Exception {
+        if (selectedKeyHandle == null) {
+            var context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+            stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(context, keyPath, nameBase + "-fastkeys");
+            evalString(SshKeyVaultTestSupport.beginImport(
+                    SshKeyVaultTestSupport.asContentUri(context, stagedKeyDocument), "Docker fixture key"));
+            awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+            selectedKeyHandle = evalString("window.__ps2926ImportedKey.handleId");
+        }
+        if (!selectedKeyHandle.equals(evalString(
+                "document.querySelector('[data-testid=ssh-key-selection]')?.value ?? ''"))) {
+            click("[data-testid=open-ssh-keys]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'"
+                    + " && !!document.querySelector('[data-testid=select-ssh-key-" + selectedKeyHandle + "]')");
+            click("[data-testid=select-ssh-key-" + selectedKeyHandle + "]");
+        }
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('[data-testid=ssh-key-selection]')?.value === " + JSONObject.quote(selectedKeyHandle));
     }
 
     private void createSession(String name) throws Exception {

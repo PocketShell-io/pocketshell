@@ -76,6 +76,7 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private ActivityScenario<MainActivity> scenario;
+    private File stagedKeyDocument;
     private String bytesSession;
     private String uncertainSession;
     private String artifactRunId;
@@ -101,6 +102,7 @@ public final class JsComposerDockerJourneyTest {
             Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
         }
         if (scenario != null) scenario.close();
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -109,7 +111,7 @@ public final class JsComposerDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         String nameBase = arguments.getString("sshSessionName");
         String phase = arguments.getString("composerPhase", "resume");
         assertTrue("composerPhase must be prepare or resume", phase.equals("prepare") || phase.equals("resume"));
@@ -124,9 +126,8 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("composer focus attempt limit must stay bounded to one or two taps",
                 composerFocusMaxAttempts >= 1 && composerFocusMaxAttempts <= 2);
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
+        assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         assertNotNull("pass unique composer session names with sshSessionName", nameBase);
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         expectedSnippetHostId = "testuser@" + host.trim() + ":" + Integer.parseInt(port);
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
@@ -142,7 +143,7 @@ public final class JsComposerDockerJourneyTest {
         String uncertainChipLabel = "PS2885-R-" + testTag;
         String transientChipLabel = "PS2885-X-" + testTag;
         if (phase.equals("prepare")) {
-            prepareHostSnippets(host, port, privateKey, bytesSession, uncertainSession,
+            prepareHostSnippets(host, port, keyPath, bytesSession, uncertainSession,
                     chipLabel, chipBody, uncertainChipLabel, uncertainCommand, transientChipLabel, testTag);
             return;
         }
@@ -162,7 +163,7 @@ public final class JsComposerDockerJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        importAndSelectKey(keyPath, nameBase + "-resume");
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
@@ -321,13 +322,28 @@ public final class JsComposerDockerJourneyTest {
         emitFocusTraceIfNeeded();
     }
 
-    private void prepareHostSnippets(String host, String port, String privateKey, String bytesSession,
+    private void importAndSelectKey(String keyPath, String suffix) throws Exception {
+        stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, suffix);
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(
+                        InstrumentationRegistry.getInstrumentation().getTargetContext(), stagedKeyDocument),
+                "Docker fixture key"));
+        awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid^=select-ssh-key-]')");
+        String handle = evalString("window.__ps2926ImportedKey.handleId");
+        click("[data-testid=select-ssh-key-" + handle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.value === '" + handle + "'");
+    }
+
+    private void prepareHostSnippets(String host, String port, String keyPath, String bytesSession,
             String uncertainSession, String chipLabel, String chipBody, String uncertainChipLabel,
             String uncertainCommand, String transientChipLabel, String testTag) throws Exception {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        importAndSelectKey(keyPath, bytesSession + "-prepare");
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");

@@ -10,10 +10,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@capacitor/app', () => ({ App: { addListener: mocks.addListener } }));
-vi.mock('@pocketshell/ui', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@pocketshell/ui')>(),
-  ComposerControls: { render: () => null },
-}));
+vi.mock('@ui/components/ComposerControls.vue', () => ({ default: { render: () => null } }));
 vi.mock('../../src/session/platformInput', () => ({
   platformInput: {
     startRecognition: mocks.startRecognition,

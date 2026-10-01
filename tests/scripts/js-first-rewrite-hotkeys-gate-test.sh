@@ -96,7 +96,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("exact fast-key JUnit status", "hotkeys_junit_status=0"),
         ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"'),
         ("fail-closed fast-key aggregate", "hotkeys_status != 0 || hotkeys_junit_status != 0"),
-        ("isolated fixture teardown", "scripts/agents-pool.sh down 2243 2245"),
+        ("isolated fixture teardown", "scripts/agents-pool.sh down 2243 2244 2245"),
         ("fast-key runner exact JUnit guard", 'check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"'),
         ("run-scoped Android evidence", "android/app/build/outputs/js-hotkeys/$ARTIFACT_RUN_ID"),
         ("dictation final byte oracle is read from this run's journey", 'journey.get("dictation")'),
@@ -150,7 +150,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
             raise AssertionError(f"fast-key workflow is missing {label}: {needle}")
     start = source.index("scripts/agents-pool.sh up 2243")
     run = packaged_lanes.index("scripts/connected-js-hotkeys-docker.sh")
-    stop = source.index("scripts/agents-pool.sh down 2243 2245")
+    stop = source.index("scripts/agents-pool.sh down 2243 2244 2245")
     if not start < source.index("script: scripts/ci-js-first-packaged-lanes.sh") < stop:
         raise AssertionError("the fast-key fixture must start before the packaged lanes and stop after them")
     if packaged_lanes.index("scripts/connected-js-composer-docker.sh") > run:
@@ -433,8 +433,13 @@ if not runner.index('[[ "$health" == healthy ]]') < runner.index('ssh -q "${ssh_
 if "expected_first='1b5b411b5b421b091b5b5a110303030404040d'" not in runner \
         or "expected_resumed='1b5b41'" not in runner:
     raise AssertionError("dedicated runner lost its independent first-session or reattached PTY byte oracle")
-if "hotkeys-host-oracle.txt" not in runner or 'tee "$evidence_dir/hotkeys-gradle.log"' not in runner:
+if "hotkeys-host-oracle.txt" not in runner \
+        or 'pocketshell_run_without_avd_lock_fd_to_log "$evidence_dir/hotkeys-gradle.log"' not in runner:
     raise AssertionError("dedicated runner must preserve host byte and Gradle evidence")
+if "sshPrivateKeyPath=$DEVICE_KEY_PATH" not in runner or "sshPrivateKeyBase64" in runner:
+    raise AssertionError("dedicated runner must stage the fixture key for native key-vault import (#2926), never pass key bytes")
+if "pocketshell_android_input_preflight" not in runner:
+    raise AssertionError("dedicated runner must run the Android input preflight before the journey (#2946)")
 if '(set +m; stty raw -echo;' not in journey:
     raise AssertionError("byte receiver must suppress background sampler job notices that evict the visible marker")
 if 'includes(" + JSONObject.quote(resumedDone) + ")' not in journey:

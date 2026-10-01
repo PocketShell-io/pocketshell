@@ -36,4 +36,12 @@ describe('pre-rewrite destination inventory', () => {
       expect(mapping?.note).toContain('real Android DocumentsUI chooser interaction remains unverified');
     }
   });
+
+  it('hands the workspace, host, and session-verb rows to their open follow-ups, not the closed HostCliCore contract issue', () => {
+    expect(DESTINATION_INVENTORY.filter((entry) => entry.owner.includes('#2851'))).toEqual([]);
+    for (const destination of ['Workspaces', 'WorkspaceRootAction', 'Workspace', 'ReorderWorkspaces', 'Tree', 'WorkspaceRoots', 'AddWorkspaceRoot']) {
+      expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === destination)?.owner, destination).toContain('#2925');
+    }
+    expect(DESTINATION_INVENTORY.find((entry) => entry.oldDestination === 'WorkspaceStart')?.owner).toContain('#2939');
+  });
 });

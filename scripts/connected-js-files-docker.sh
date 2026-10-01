@@ -69,6 +69,7 @@ fi
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-files-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-files-docker.sh suffix=$SUFFIX run=$RUN_ID"
 
@@ -108,6 +109,8 @@ RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/d
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-files/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing run artifacts: $ARTIFACTS_DIR"
 mkdir -p "$ARTIFACTS_DIR"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $ARTIFACTS_DIR/input-preflight.txt"
 python3 - "$RESULTS_DIR" <<'PY'
 from pathlib import Path
 import shutil
@@ -130,27 +133,37 @@ ssh_remote "mkdir -m 700 '$REMOTE_ROOT' \
   && printf 'before-save\\n' > '$REMOTE_ROOT/save-success.txt' \
   && printf '\\000\\377BINARY' > '$REMOTE_ROOT/binary.bin' \
   && printf 'upload\\000from UI\\377' > '$REMOTE_ROOT/expected-upload.bin' \
+  && printf 'DOCS\\000FROM DOCS\\377' > '$REMOTE_ROOT/expected-documentsui-upload.bin' \
+  && printf '\\000\\377DOCUI' > '$REMOTE_ROOT/expected-documentsui-download.bin' \
+  && cp '$REMOTE_ROOT/expected-documentsui-download.bin' '$REMOTE_ROOT/documentsui-download-$RUN_ID.bin' \
   && head -c 524289 /dev/zero > '$REMOTE_ROOT/large.bin' \
   && ln -s /etc/passwd '$REMOTE_ROOT/link.txt'"
 printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
 
-encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest'
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+DOCUMENTSUI_UPLOAD_NAME="documentsui-upload-$RUN_ID.bin"
+DOCUMENTSUI_DOWNLOAD_NAME="documentsui-download-$RUN_ID.bin"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+if pocketshell_run_without_avd_lock_fd_to_log \
+    "$ARTIFACTS_DIR/gradle-connected.log" \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.fileFixtureRoot=$REMOTE_ROOT" \
     "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?
   mkdir -p "$RESULTS_DIR"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 6000 > "$ARTIFACTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/failure-diagnostics/android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$ARTIFACTS_DIR/failure-diagnostics/android-input" >&2 || true
   printf 'FAILED: remote fixture retained for inspection at %s\n' "$REMOTE_ROOT" >&2
   exit "$test_exit_code"
 fi
@@ -158,6 +171,68 @@ fi
 "$ROOT_DIR/scripts/check-js-files-results.py" \
   --results-dir "$RESULTS_DIR" \
   --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
+
+J10_LOGCAT="$(find "$ARTIFACTS_DIR/instrumentation-results" -type f \
+  -name 'logcat-com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest-*.txt' -print -quit)"
+[[ -n "$J10_LOGCAT" ]] || fail 'the packaged J10 logcat evidence artifact is missing'
+# The system DocumentsUI is com.android.documentsui on AOSP images and
+# com.google.android.documentsui on Google APIs images (the hosted CI emulator).
+# Resolve it independently of the journey, then require the journey's chooser
+# evidence to name exactly that package.
+system_packages="$("$ADB" -s "$ANDROID_SERIAL" shell pm list packages -s | tr -d '\r')" \
+  || fail 'could not list Android system packages'
+DOCUMENTSUI_PACKAGE=""
+for candidate in com.android.documentsui com.google.android.documentsui; do
+  if grep -Fxq "package:$candidate" <<<"$system_packages"; then
+    [[ -z "$DOCUMENTSUI_PACKAGE" ]] || fail "both $DOCUMENTSUI_PACKAGE and $candidate are system DocumentsUI packages"
+    DOCUMENTSUI_PACKAGE="$candidate"
+  fi
+done
+[[ -n "$DOCUMENTSUI_PACKAGE" ]] || fail 'the emulator has no system DocumentsUI package'
+grep -F "J10_DOCUMENTSUI_PACKAGE resolved=$DOCUMENTSUI_PACKAGE" "$J10_LOGCAT" >/dev/null \
+  || fail "the packaged J10 log did not resolve the device's system DocumentsUI $DOCUMENTSUI_PACKAGE"
+grep -F "J10_DOCUMENTSUI_OPEN chooser=$DOCUMENTSUI_PACKAGE action=ACTION_OPEN_DOCUMENT selected=$DOCUMENTSUI_UPLOAD_NAME returned=true uploadedBytes=15" \
+  "$J10_LOGCAT" >/dev/null \
+  || fail 'the packaged J10 log is missing evidence that DocumentsUI returned the selected upload document'
+grep -F "J10_DOCUMENTSUI_CREATE chooser=$DOCUMENTSUI_PACKAGE action=ACTION_CREATE_DOCUMENT selected=Downloads/$DOCUMENTSUI_DOWNLOAD_NAME returned=true savedStatus=true expectedBytes=7" \
+  "$J10_LOGCAT" >/dev/null \
+  || fail 'the packaged J10 log is missing evidence that DocumentsUI returned the selected save destination and the app completed its save'
+
+downloads_query="$("$ADB" -s "$ANDROID_SERIAL" shell \
+  content query --uri content://media/external/downloads --projection _id:_display_name:relative_path)" \
+  || fail 'could not query the Android Downloads row created by DocumentsUI'
+download_media_id="$(DOCUMENTSUI_DOWNLOADS_QUERY="$downloads_query" python3 - "$DOCUMENTSUI_DOWNLOAD_NAME" <<'PY'
+import os
+import re
+import sys
+
+name = sys.argv[1]
+matches = []
+for line in os.environ['DOCUMENTSUI_DOWNLOADS_QUERY'].splitlines():
+    if not line.startswith('Row: '):
+        continue
+    match = re.fullmatch(r'Row: \d+ _id=(\d+), _display_name=(.*), relative_path=(.*)', line.strip())
+    if match and match.group(2) == name:
+        matches.append((match.group(1), match.group(3)))
+if len(matches) != 1 or matches[0][1] != 'Download/':
+    raise SystemExit(f'expected one DocumentsUI-created Download row for {name}; found {matches}')
+print(matches[0][0])
+PY
+)" || fail 'DocumentsUI did not create exactly one Downloads row with the selected filename'
+mkdir -p "$ARTIFACTS_DIR/device-screenshots"
+"$ADB" -s "$ANDROID_SERIAL" exec-out content read \
+  --uri "content://media/external/downloads/$download_media_id" \
+  > "$ARTIFACTS_DIR/documentsui-download-result.bin" \
+  || fail 'could not extract the bytes returned from the real DocumentsUI save destination'
+[[ -s "$ARTIFACTS_DIR/documentsui-download-result.bin" ]] \
+  || fail 'the real DocumentsUI saved document artifact is empty'
+ssh_remote "cat '$REMOTE_ROOT/expected-documentsui-download.bin'" \
+  > "$ARTIFACTS_DIR/docker-documentsui-download-expected.bin"
+cmp -s "$ARTIFACTS_DIR/documentsui-download-result.bin" "$ARTIFACTS_DIR/docker-documentsui-download-expected.bin" \
+  || fail 'the Android DocumentsUI saved bytes differ from the same-run Docker source bytes'
+"$ADB" -s "$ANDROID_SERIAL" shell \
+  "content delete --uri content://media/external/downloads/$download_media_id" >/dev/null \
+  || fail 'could not remove the verified DocumentsUI Downloads item from the emulator'
 
 {
   printf 'run_id=%s\nremote_root=%s\n' "$RUN_ID" "$REMOTE_ROOT"
@@ -173,11 +248,25 @@ fi
     || fail 'the Android document-provider upload did not persist exact binary bytes on the Docker host'
   uploaded_bytes="$(ssh_remote "wc -c < '$REMOTE_ROOT/uploaded.bin'")"
   printf 'binary_upload compared=uploaded.bin:expected-upload.bin bytes=%s PASS\n' "$uploaded_bytes"
+  ssh_remote "cmp -s '$REMOTE_ROOT/$DOCUMENTSUI_UPLOAD_NAME' '$REMOTE_ROOT/expected-documentsui-upload.bin'" \
+    || fail 'the selected Android Downloads document did not persist exact bytes on the Docker host'
+  documentsui_uploaded_bytes="$(ssh_remote "wc -c < '$REMOTE_ROOT/$DOCUMENTSUI_UPLOAD_NAME'")"
+  printf 'documentsui_open_upload compared=%s:expected-documentsui-upload.bin bytes=%s PASS\n' \
+    "$DOCUMENTSUI_UPLOAD_NAME" "$documentsui_uploaded_bytes"
+  ssh_remote "cmp -s '$REMOTE_ROOT/$DOCUMENTSUI_DOWNLOAD_NAME' '$REMOTE_ROOT/expected-documentsui-download.bin'" \
+    || fail 'the same-run Docker DocumentsUI download source differs from its fixture bytes'
+  documentsui_download_bytes="$(ssh_remote "wc -c < '$REMOTE_ROOT/$DOCUMENTSUI_DOWNLOAD_NAME'")"
+  printf 'documentsui_create_source compared=%s:expected-documentsui-download.bin bytes=%s PASS\n' \
+    "$DOCUMENTSUI_DOWNLOAD_NAME" "$documentsui_download_bytes"
+  printf 'documentsui_created_download compared=Android-result:Docker-expected bytes=%s exact=true PASS\n' \
+    "$(wc -c < "$ARTIFACTS_DIR/documentsui-download-result.bin" | tr -d '[:space:]')"
 } | tee "$ARTIFACTS_DIR/host-oracle.txt"
 
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/J10/$RUN_ID"
 mkdir -p "$ARTIFACTS_DIR/device-screenshots"
-for screenshot in files-home.png files-edit-conflict.png files-saved.png files-downloaded.png files-uploaded.png; do
+for screenshot in files-home.png files-edit-conflict.png files-saved.png files-downloaded.png files-uploaded.png \
+  documentsui-open-picker.png documentsui-open-selected.png documentsui-uploaded.png \
+  documentsui-create-picker.png documentsui-downloaded.png; do
   "$ADB" -s "$ANDROID_SERIAL" pull "$SCREENSHOT_DIR/$screenshot" \
     "$ARTIFACTS_DIR/device-screenshots/$screenshot" >/dev/null \
     || fail "could not retrieve packaged Android screenshot: $screenshot"

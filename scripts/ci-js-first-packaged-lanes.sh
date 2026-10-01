@@ -62,6 +62,18 @@ else
   files_status=$?
 fi
 
+# Issue #2993: user-data writes must survive a kill right after the UI
+# acknowledged them. It builds its own i2993ci suffix into the shared
+# app-debug.apk output, so it runs before the composer and key-vault builds and
+# never inside the key-vault -> signed-upgrade window.
+if scripts/connected-js-durable-storage.sh \
+  --suffix i2993ci \
+  --run-id "js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  durable_status=0
+else
+  durable_status=$?
+fi
+
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
@@ -127,13 +139,38 @@ elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs
 fi
 shopt -u nullglob
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s smoke-junit-copy=%s\n' \
+if scripts/connected-js-key-vault-docker.sh \
+  --suffix i2926ci \
+  --port 2244 \
+  --container pocketshell-test-agents-2244 \
+  --run-id "js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  key_vault_status=0
+else
+  key_vault_status=$?
+fi
+
+# Signed 0.5.6-to-candidate upgrade (#2926/#2860). It must run last: it builds
+# and installs the unsuffixed com.pocketshell.app over a pinned signed v0.5.6
+# install, which the suffixed lanes above never touch. It reuses the key-vault
+# lane's isolated fixture after that lane has restored authorized_keys.
+if scripts/connected-js-key-vault-signed-upgrade.sh \
+  --port 2244 \
+  --container pocketshell-test-agents-2244 \
+  --run-id "up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  signed_upgrade_status=0
+else
+  signed_upgrade_status=$?
+fi
+
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
-  "$hotkeys_junit_status" "$copy_status"
+  "$hotkeys_junit_status" "$durable_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
 if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 \
       || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
-      || hotkeys_status != 0 || hotkeys_junit_status != 0 || copy_status != 0 )); then
+      || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
+      || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

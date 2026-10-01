@@ -242,6 +242,8 @@ button { color: inherit; }
 .form-field textarea { min-height: 100px; resize: vertical; }
 .form-field input:focus, .form-field textarea:focus, .form-field select:focus, .create-session-row input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
 .host-field-key { grid-column: 1 / -1; }
+.host-key-details { display: grid; gap: 3px; color: var(--fg-muted); font-size: var(--fs-100); line-height: 1.5; }
+.host-key-details code { overflow-wrap: anywhere; font: inherit; font-family: var(--font-mono); user-select: text; }
 .host-actions { display: flex; gap: 9px; margin-top: 12px; }
 .host-actions .action-button { flex: 1; }
 .host-actions .action-button--secondary { margin-top: 0; border-color: var(--border-strong); background: var(--surface-2); }
@@ -268,7 +270,7 @@ button { color: inherit; }
 .session-attach { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--accent); font-size: var(--fs-100); font-weight: 600; }
 .terminal-panel .panel-heading--terminal > div { display: grid; min-width: 0; gap: 2px; }
 .empty-sessions { margin: 11px 0 0; color: var(--fg-secondary); font-size: var(--fs-200); }
-.resource-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.resource-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr)); gap: 8px; margin: 0; }
 .resource-list > div { min-width: 0; border: 1px solid var(--border-soft); border-radius: var(--r-sm); background: var(--bg); padding: 8px; }
 .resource-list dt { color: var(--fg-muted); font-size: 10px; }
 .resource-list dd { margin: 3px 0 0; color: var(--fg); font: 600 16px/1.2 var(--font-mono); }

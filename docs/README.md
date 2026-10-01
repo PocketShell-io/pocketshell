@@ -3,10 +3,16 @@
 Product and engineering notes. Some planning docs preserve their original
 context; the README and current feature docs track released behavior.
 
+Branch layout (since #2934): `main` is JS-first 0.6.0 development (untagged
+and unreleased until its gates pass); `release/0.5.x` holds the released
+Kotlin `app2` line and takes 0.5.x hotfixes only. Docs that describe `app2`,
+`shared/` or root Gradle commands apply to `release/0.5.x`. See
+[release.md](release.md#branch-layout-since-2934).
+
 | File | What it covers |
 |---|---|
 | [vision.md](vision.md) | Historical product brief — the original goals and UX vocabulary |
-| [architecture.md](architecture.md) | Previous Android module map and session design; describes the existing app2 line while JS parity is built |
+| [architecture.md](architecture.md) | Previous Android module map and session design; describes the `release/0.5.x` app2 line while JS parity is built on `main` |
 | [js-first-rewrite-plan.md](js-first-rewrite-plan.md) | Planned 0.6.0 JS-first Android rewrite, shared desktop design, native boundary and test gates |
 | [js-first-rewrite-inventory.md](js-first-rewrite-inventory.md) | Pre-deletion map of Android destinations, journeys, stored data, replacement issues and Docker baseline |
 | [migration/installed-data-map.md](migration/installed-data-map.md) | Exact legacy private-data owners, Room 16–22 records, preference shapes and encrypted-store limits for #2860 |
@@ -27,8 +33,8 @@ context; the README and current feature docs track released behavior.
 | [rewrite-implementation-plan.md](rewrite-implementation-plan.md) | Historical app2 rewrite playbook, superseded by the shipped app2/aplexer contract |
 | [aplexer-integration.md](aplexer-integration.md) | Aplexer integration record: current runtime status and historical transition notes |
 | [decisions.md](decisions.md) | Log of what's locked, what's still open |
-| [release.md](release.md) | How we cut candidate, stabilize, fast-forward the exact SHA to main, push main, and tag from main (release-owner agent) |
-| [testing.md](testing.md) | Main/stable Android emulator + Docker gates and the JS-first branch checks |
+| [release.md](release.md) | `main` vs `release/0.5.x` branch layout, why 0.6.0 is not releasable yet, the 0.5.x hotfix path and its gaps, and the release procedure (release-owner agent) |
+| [testing.md](testing.md) | JS-first checks and packaged lanes on `main`, legacy app2 emulator + Docker gates on `release/0.5.x` |
 | [docker-emulator-runbook.md](docker-emulator-runbook.md) | Docker fixture targets, ports, emulator commands, connected-test runbook |
 | [screenshots/](screenshots/) | Curated README screenshot assets captured from the visual-audit workflow |
 | [tmux-socket-recovery.md](tmux-socket-recovery.md) | Operational runner-only tmux socket recovery and namespace guardrails |

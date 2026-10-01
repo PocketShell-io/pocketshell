@@ -1,35 +1,36 @@
 # PocketShell
 
 PocketShell is a voice-first Android SSH client with an app UI that follows the
-shared PocketShell desktop design. This `rewrite/js-first-0.6.0` branch is the
-new Vue 3, TypeScript, and Capacitor foundation. The shell currently shows
+shared PocketShell desktop design. The `main` branch is the
+0.6.0 development line: the new Vue 3, TypeScript, and Capacitor app. It is
+untagged and unreleased until its release gates pass. The released 0.5.x
+Kotlin app lives on the `release/0.5.x` branch. The shell currently shows
 offline host/workspace states and a sample terminal; it does not yet connect to
 SSH hosts or implement the old app's feature set.
 
 The rewrite is tracked by umbrella issue [#2854](https://github.com/PocketShell-io/pocketshell/issues/2854).
 The pre-deletion destination, journey, and stored-data map is in
-[docs/js-first-rewrite-inventory.md](docs/js-first-rewrite-inventory.md). UI
-component extraction is tracked by
-[pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3).
+[docs/js-first-rewrite-inventory.md](docs/js-first-rewrite-inventory.md). The
+shared Vue UI package lives in `pocketshell-core/packages/ui`.
 
 ## Build and test
 
 Requirements: Node.js 22, pnpm 12.5.1, JDK 21, and Android SDK platform 36.
-Clone the repository with its pinned core and desktop UI sources:
+Clone the repository with its pinned core source (which carries the shared UI):
 
 ```sh
-git clone --branch rewrite/js-first-0.6.0 --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
+git clone --recurse-submodules https://github.com/PocketShell-io/pocketshell.git
 cd pocketshell
 pnpm install --frozen-lockfile
-pnpm test:unit
+scripts/run-js-unit-gate.sh
 scripts/assemble-debug.sh
 ```
 
-`vendor/pocketshell-core` and `vendor/pocketshell-desktop` are Git submodules
-pinned by the superproject. Android imports core TypeScript and the desktop
-repository's browser-safe `packages/ui/` source directly; neither PocketShell
-repo is an npm package or registry dependency. The APK build manifest records
-both source commits and the SHA-256 of its bundled web assets. JS tooling
+`vendor/pocketshell-core` is the only Git submodule, pinned by the
+superproject. Android imports core TypeScript (`@pocketshell/core`) and core's
+browser-safe `packages/ui/` source (`@ui`, the alias desktop and web use)
+directly; it is not an npm package or registry dependency. The APK build
+manifest records the core commit and the SHA-256 of its bundled web assets. JS tooling
 dependencies are locked in `pnpm-lock.yaml`. To build and install under an
 isolated package name:
 

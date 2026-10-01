@@ -12,7 +12,7 @@ The compose file is `tests/docker/docker-compose.yml`.
 | Target | Port | Use |
 |---|---:|---|
 | `sshd` | 2222 | Minimal OpenSSH transport host |
-| `agents` | 2222 | Main app2 fixture with real aplexer and deterministic agent tools |
+| `agents` | 2222 | Main fixture with real aplexer and deterministic agent tools (packaged JS lanes; the Kotlin journeys on `release/0.5.x`) |
 | `bootstrap-*` | 2230–2236 | Host-install and setup-state scenarios |
 | `agents-old-cli` | 2238 | Host helper/version mismatch behavior |
 | `agents-daemon` | 2239 | Durable host-side tree registry |
@@ -39,9 +39,9 @@ scripts/agents-pool.sh down 2243 2244
 Do not assign port 2222 to a pool lane. It is the legacy single-lane identity
 used by the default connected-test path.
 
-## JS-first rewrite branch
+## JS-first lanes on `main`
 
-On `rewrite/js-first-0.6.0`, use the explicit packaged lane through
+On `main` (the JS-first 0.6.0 line since #2934), use the explicit packaged lane through
 `scripts/connected-test.sh`. Every run needs a worktree-specific package suffix;
 Docker lanes also take the exact fixture port, and lifecycle takes the
 container name:
@@ -104,7 +104,7 @@ Never kill an emulator owned by another lane. If `/dev/kvm` is unavailable,
 `AVD_HOLD=1` lets the local starter retain the booted device for the connected
 run. Install the debug APK with `scripts/assemble-debug.sh --install`.
 
-## Legacy app2 connected journeys on main/stable
+## Legacy app2 connected journeys (0.5.x history, `release/0.5.x` only)
 
 Start the default fixture and run the unfiltered app2 suite:
 

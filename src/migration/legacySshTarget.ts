@@ -2,9 +2,8 @@ import type { SshHostTarget } from '@pocketshell/core';
 import type { ImportedLegacyHost } from './installedDataMigration';
 
 export interface LegacyPrivateKeyCredentialReference {
-  kind: 'legacy-private-key';
-  keyId: number;
-  sha256: string;
+  kind: 'key-handle';
+  handleId: string;
   passphrase?: string;
 }
 
@@ -16,16 +15,16 @@ export type AppSshHostTarget = Omit<SshHostTarget, 'credential'> & {
 export function makeLegacySshHostTarget(
   host: ImportedLegacyHost,
   passphrase: string,
-): AppSshHostTarget {
+): SshHostTarget {
+  if (!host.keyHandleId) throw new Error('This saved host has no imported SSH key. Open SSH keys and import its key before connecting.');
   return {
     hostId: String(host.id),
     hostname: host.hostname,
     port: host.port,
     username: host.username,
     credential: {
-      kind: 'legacy-private-key',
-      keyId: host.keyId,
-      sha256: host.keySha256,
+      kind: 'key-handle',
+      handleId: host.keyHandleId,
       ...(host.keyHasPassphrase && passphrase ? { passphrase } : {}),
     },
   };

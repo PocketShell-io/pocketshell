@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
-import { AppIcon, ComposerControls } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
+import ComposerControls from '@ui/components/ComposerControls.vue';
 import type { ComposerDeliveryIntent, ComposerDeliveryResult, DictationController, DictationSnapshot } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
 import { createSharedDictationController } from '../session/dictationController';
@@ -796,7 +797,7 @@ function startPromptDictation() {
   position: fixed;
   z-index: 90;
   inset: 0;
-  background: rgb(7 9 13 / 0.62);
+  background: var(--scrim);
   backdrop-filter: blur(2px);
 }
 
@@ -822,7 +823,7 @@ function startPromptDictation() {
   border-radius: 22px 22px 0 0;
   background: var(--surface);
   padding: 8px 16px calc(16px + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
-  box-shadow: 0 -10px 36px rgb(0 0 0 / 0.3);
+  box-shadow: 0 -10px 36px var(--scrim);
 }
 
 .composer-sheet-handle { display: flex; height: 12px; align-items: flex-start; justify-content: center; }

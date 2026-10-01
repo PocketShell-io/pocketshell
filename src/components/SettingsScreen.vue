@@ -7,8 +7,8 @@ import {
   useAppSettings,
 } from '../stores/appSettings';
 import { useNavigationStore } from '../stores/navigation';
-import { THEME_CHOICE_SYSTEM, THEMES } from '@pocketshell/ui';
-import { AppIcon } from '@pocketshell/ui';
+import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
+import AppIcon from '@ui/components/AppIcon.vue';
 import HostSnippetsScreen from './HostSnippetsScreen.vue';
 
 defineProps<{

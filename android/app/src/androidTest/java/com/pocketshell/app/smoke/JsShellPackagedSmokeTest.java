@@ -1,6 +1,7 @@
 package com.pocketshell.app.smoke;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -50,6 +51,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -58,6 +61,9 @@ import java.util.function.Consumer;
 public final class JsShellPackagedSmokeTest {
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final long WAIT_TIMEOUT_MILLIS = 12_000;
+    private static final long RELOAD_SETTLE_TIMEOUT_MILLIS = 30_000;
+    private static final int BRIDGE_RELOADS = 300;
+    private static final int LOAD_THREADS_PER_CORE = 2;
 
     private ActivityScenario<MainActivity> scenario;
     private MainActivity directActivity;
@@ -82,20 +88,20 @@ public final class JsShellPackagedSmokeTest {
     public void launchShowsVerifiedSourcesAndAssetIdentity() throws Exception {
         JSONObject manifest = packagedManifest();
         String expectedCoreRevision = manifest.getString("coreSourceRevision");
-        String expectedUiRevision = manifest.getString("uiSourceRevision");
+        assertFalse("the shared UI rides inside the core pin; no separate UI revision is recorded",
+                manifest.has("uiSourceRevision"));
         String expectedAssetHash = manifest.getString("bundleAssetHash");
 
         assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
-        assertTrue("manifest shared UI revision must be a full git revision", expectedUiRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
         assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
-        assertTrue("the visible build strip must identify the pinned shared UI", visibleIdentity.contains(expectedUiRevision.substring(0, 12)));
+        assertFalse("the visible build strip must not name a separate UI source", visibleIdentity.contains(" ui "));
         assertTrue("the visible build strip must identify the packaged assets", visibleIdentity.contains(expectedAssetHash.substring(0, 12)));
         assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
-        assertEquals(expectedUiRevision, evalString("document.querySelector('[data-testid=ui-revision]')?.textContent.trim()"));
+        assertEquals("false", evalRaw("document.querySelector('[data-testid=ui-revision]') !== null"));
         assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=bundle-asset-hash]')?.textContent.trim()"));
         JSONObject statusBounds = evalJson("(() => {const node = document.querySelector('[data-testid=build-status]');"
                 + "const rect = node.getBoundingClientRect();"
@@ -153,9 +159,13 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
                 + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
 
+        assertInjectedInputReachesPage("before the picker Back key");
         evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
                 + ".then((value)=>window.__ps2857PickerResult=value)");
-        Thread.sleep(700);
+        // Back must reach the system picker, not the app: wait until the
+        // picker's window owns input focus instead of sleeping a fixed time
+        // (on a loaded emulator the picker takes >2 s to display).
+        awaitSystemFocus("documentsui", true);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("window.__ps2857PickerResult?.cancelled === true && window.__ps2857PickerResult?.files?.length === 0");
         assertTrue("the packaged share fixture should be removed", sharedFile.delete());
@@ -209,6 +219,7 @@ public final class JsShellPackagedSmokeTest {
     public void settingsAndAndroidBackReturnHome() throws Exception {
         awaitJsTrue("document.querySelector('[aria-label=Settings]') !== null");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        assertInjectedInputReachesPage("before the first Settings tap");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
         awaitJsTrue("document.querySelector('[data-testid=setting-theme]') !== null");
@@ -393,6 +404,68 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    /**
+     * Issue #2946 self-test: a real system window (the expanded notification
+     * shade) takes input focus from the resumed app. The probe must fail with
+     * its distinct signature and name the focus owner, then pass again once
+     * focus returns, so it can neither miss the hosted failure shape nor
+     * block a healthy device.
+     */
+    @Test
+    public void injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+        assertInjectedInputReachesPage("self-test baseline");
+
+        AndroidInputDeliveryProbe.runShell("cmd statusbar expand-notifications");
+        try {
+            awaitSystemFocus("NotificationShade", true);
+            AssertionError failure = null;
+            try {
+                assertInjectedInputReachesPage("self-test while the notification shade owns focus");
+            } catch (AssertionError expected) {
+                failure = expected;
+            }
+            assertNotNull("the probe must fail while another window owns input focus", failure);
+            String message = String.valueOf(failure.getMessage());
+            assertTrue("the probe failure must carry the distinct signature: " + message,
+                    message.startsWith(AndroidInputDeliveryProbe.SIGNATURE + ":"));
+            assertTrue("the probe failure must name the window that owns focus: " + message,
+                    message.contains("NotificationShade"));
+            assertTrue("the probe failure must report the page and native focus state: " + message,
+                    message.contains("page={") && message.contains("native=activityHasWindowFocus="));
+        } finally {
+            AndroidInputDeliveryProbe.runShell("cmd statusbar collapse");
+        }
+        awaitSystemFocus("NotificationShade", false);
+        assertInjectedInputReachesPage("self-test after focus returns");
+    }
+
+    /**
+     * Wait until InputDispatcher (not just WindowManager) routes keys to, or
+     * away from, the named window, stable for three consecutive samples.
+     */
+    private void awaitSystemFocus(String windowName, boolean present) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String focus = "<not read>";
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            focus = AndroidInputDeliveryProbe.currentInputDispatcherFocus();
+            if (focus.contains(windowName) == present) {
+                if (++stableSamples >= 3) return;
+            } else {
+                stableSamples = 0;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("input focus did not " + (present ? "move to " : "leave ") + windowName
+                + ": " + focus);
+    }
+
+    private void assertInjectedInputReachesPage(String context) throws Exception {
+        AndroidInputDeliveryProbe.assertInjectedKeyReachesPage(context, this::evalRaw,
+                action -> runOnCurrentActivity(action::accept));
+    }
+
     private void awaitRoute(String route) throws Exception {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === " + JSONObject.quote(route));
     }
@@ -406,7 +479,10 @@ public final class JsShellPackagedSmokeTest {
         float expectedSafeTop = Math.round(systemInsets.top / density);
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
 
-        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
+        // The shell mounts once durable storage is hydrated (#2993), so wait for
+        // the mounted app bar rather than assume it exists at first evaluation.
+        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0"
+                + " && document.querySelector('.app-shell .app-bar') !== null");
         JSONObject beforeIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"
@@ -426,6 +502,7 @@ public final class JsShellPackagedSmokeTest {
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
+        assertInjectedInputReachesPage("before the SSH host input tap");
         tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);
@@ -529,13 +606,78 @@ public final class JsShellPackagedSmokeTest {
             int count;
             while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
             JSONObject manifest = new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
-            assertEquals(1, manifest.getInt("schema"));
+            assertEquals(2, manifest.getInt("schema"));
             return manifest;
         }
     }
 
+    /**
+     * Regression for #3000: after an in-place page reload Capacitor 8.1.0 can
+     * deliver the reply to the page's FIRST native call to the previous
+     * document. Startup's first real call is DurableStorage.open(), so a lost
+     * reply used to leave the app unmounted on a blank screen. The page now
+     * sends a sacrificial, retried BridgeReady ping first. Every reload must
+     * mount the app with native-durable storage from one, unretried
+     * DurableStorage.open() call; without the warm-up a lost reply surfaces
+     * as the bounded open's localStorage fallback ("failed").
+     */
+    @Test
+    public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
+        assertTrue("the packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        // A busy device: CPU-bound threads in the app process make the main
+        // thread lose its core between Capacitor's dispatch and its storing of
+        // the new page's reply channel, which is when the reply gets lost.
+        AtomicBoolean loading = new AtomicBoolean(true);
+        List<Thread> load = new ArrayList<>();
+        for (int index = 0; index < Runtime.getRuntime().availableProcessors() * LOAD_THREADS_PER_CORE; index += 1) {
+            Thread thread = new Thread(() -> {
+                while (loading.get()) Thread.onSpinWait();
+            }, "ps3000-load-" + index);
+            thread.setDaemon(true);
+            thread.start();
+            load.add(thread);
+        }
+        try {
+            int warmUpRetried = reloadAndRequireAnsweredFirstCall();
+            android.util.Log.i("PocketshellBridgeEvidence", "BRIDGE reloads=" + BRIDGE_RELOADS + " warmUpRetried=" + warmUpRetried
+                    + " loadThreads=" + load.size());
+        } finally {
+            loading.set(false);
+            for (Thread thread : load) thread.join(1_000);
+        }
+    }
+
+    private int reloadAndRequireAnsweredFirstCall() throws Exception {
+        int warmUpRetried = 0;
+        for (int reload = 1; reload <= BRIDGE_RELOADS; reload += 1) {
+            evalRaw("location.replace(location.origin + location.pathname + '?ps3000Reload=" + reload + "'); 'reload'");
+            // Warm-up (<= 4 x 1.5 s) plus the bounded open (8 s) always settle well inside this.
+            awaitJsTrue("new URLSearchParams(location.search).get('ps3000Reload') === '" + reload + "'"
+                    + " && !!document.documentElement.dataset.durableStorage"
+                    + " && !!document.querySelector('.app-shell')", RELOAD_SETTLE_TIMEOUT_MILLIS);
+            JSONObject state = evalJson("(() => {const data = document.documentElement.dataset;"
+                    + "return JSON.stringify({storage: data.durableStorage ?? null, reason: data.durableStorageReason ?? null,"
+                    + "openCalls: data.durableStorageOpenCalls ?? null,"
+                    + "bridge: JSON.parse(data.bridgeWarmUp ?? 'null')});})()");
+            assertEquals("DurableStorage.open() must answer after reload " + reload + ": " + state,
+                    "native-durable", state.getString("storage"));
+            assertEquals("DurableStorage.open() must succeed on its single attempt after reload " + reload + ": " + state,
+                    "1", state.getString("openCalls"));
+            JSONObject bridge = state.optJSONObject("bridge");
+            assertNotNull("the bridge warm-up must run on every page load (reload " + reload + "): " + state, bridge);
+            assertTrue("the bridge warm-up must be answered after reload " + reload + ": " + state, bridge.getBoolean("answered"));
+            if (bridge.getInt("attempts") > 1) warmUpRetried += 1;
+        }
+        return warmUpRetried;
+    }
+
     private void awaitJsTrue(String expression) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
+    }
+
+    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
             last = evalRaw(expression);

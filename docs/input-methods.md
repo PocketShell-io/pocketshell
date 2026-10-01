@@ -2,6 +2,12 @@
 
 The full alternative-to-typing strategy. PocketShell reduces keyboard reliance through four coordinated surfaces.
 
+> **0.5.x history in places.** Sections that name Kotlin classes
+> (`SessionViewModel`, `HotkeyCatalog.kt`, `KeyBytes.kt` and similar) describe
+> the Kotlin app on `release/0.5.x`. On `main`, the 0.6.0 app's key-to-byte
+> mapping belongs in pocketshell-core `src/terminalKeys.ts`, and parity for
+> these surfaces is tracked under #2854.
+
 ## Overview
 
 | Surface | Purpose | Trigger |

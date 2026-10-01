@@ -3,13 +3,13 @@
 The Android client is a Capacitor host around a Vue 3 and TypeScript app. The
 first shell is an explicitly offline preview: host and workspace lists are
 empty, terminal output is marked as mock, and the composer field is local only.
-Its theme, font policy, icons, and composer controls come from the pinned
-desktop UI source. Feature behavior and parity work belong to the issues listed in
+Its theme, font policy, icons, and composer controls come from the shared UI
+package in the pinned core source. Feature behavior and parity work belong to the issues listed in
 [the pre-deletion inventory](js-first-rewrite-inventory.md).
 
 ## Build and test
 
-Clone the repository with its pinned core and desktop UI sources, install the
+Clone the repository with its pinned core source, install the
 locked JS tool dependencies, and build the debug APK:
 
 ```sh
@@ -21,19 +21,25 @@ pnpm build:android:debug
 scripts/connected-js-smoke.sh --suffix i2855
 ```
 
-The shell imports TypeScript directly from `vendor/pocketshell-core`, and
-imports browser-safe Vue components and design data from
-`vendor/pocketshell-desktop/packages/ui/`. Both repositories are git submodules
-pinned by superproject gitlinks; neither PocketShell source is an npm package
+The shell imports TypeScript directly from `vendor/pocketshell-core/src`
+(`@pocketshell/core`, plus the `@pocketshell/core/shared`, `/attachments` and
+`/preview` subpaths), and imports browser-safe Vue components and design data
+from `vendor/pocketshell-core/packages/ui/src` (`@ui`). These are the same
+aliases pocketshell-desktop and pocketshell-web use. The core repository is the
+only git submodule, pinned by a superproject gitlink; it is not an npm package
 or published to a package registry. `pnpm-lock.yaml` pins the JS app,
 Capacitor, Vue, xterm, and test/build tool dependencies. `pnpm-workspace.yaml`
 allows build scripts only for esbuild and vue-demi, the packages that require
 them for Vite's native executable and Vue compatibility setup.
 
-`pnpm build:web` fails unless both submodule checkouts are present, clean, and
-at their gitlink revisions. Vite embeds both source revisions and writes a
-manifest with SHA-256 hashes for packaged JS, CSS, fonts, and other assets. The
-app verifies both revisions and the fetched asset bytes at startup. A mismatch
+`pnpm build:web` runs `scripts/verify-js-source.mjs`, which fails unless
+`vendor/pocketshell-core` is the only gitlink and its checkout is present,
+clean, at the gitlink revision, and carries `packages/ui/src`. When bumping the
+pin, run `node scripts/verify-js-source.mjs --require-upstream-main` to also
+require the pin to equal upstream core `main`. Vite embeds the core revision and
+writes a schema-2 manifest with SHA-256 hashes for packaged JS, CSS, fonts, and
+other assets. The app verifies the revision and the fetched asset bytes at
+startup. A mismatch
 appears as a visible failed build status with the reason, rather than a
 verified status. The production bundle also fails the build if it contains an
 Electron import, Node builtin import, or Electron IPC bridge reference.
@@ -62,37 +68,45 @@ Capacitor template drift.
 
 ## Visual baseline
 
-`packages/ui/src/` in the pinned desktop source supplies the theme data and CSS
+`packages/ui/src/` in the pinned core source supplies the theme data and CSS
 tokens, Inter loading, monospace policy, `AppIcon`, and `ComposerControls`. The
 Android shell imports those sources directly. Its local `src/styles.css` owns
 the phone card flow, safe-area padding, touch-sized controls, responsive
-viewport sizing, and Android Back handling. The local-only composer preview
-uses the shared disabled controls without desktop keyboard shortcut hints.
-`TerminalPreview.vue` uses the shared terminal palette with fixed sample output
-and cannot connect to a host. The visible source and asset diagnostics are
-temporary rewrite verification UI, not a planned product surface.
+viewport sizing, and Android Back handling.
+`src/components/PromptComposer.vue` uses the shared `ComposerControls` row, and
+`src/components/TerminalViewport.vue` renders the live session in xterm.js with
+the shared terminal theme and reports its geometry to the native PTY.
+[design-system.md](design-system.md) maps the shared tokens and components. The
+visible source and asset diagnostics are temporary rewrite verification UI, not
+a planned product surface.
 
 The shell is not a visual acceptance claim. Follow
 [review-standards.md](review-standards.md) for emulator review; later UI work
-should use the extracted shared desktop components tracked by
-[pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3).
+should use the shared components in core's `packages/ui/src/app`.
 
-## Temporary branch CI boundary
+## CI boundary on `main`
 
+Since #2934 the rewrite lives on `main` (0.6.0 development, not released) and
+the pre-rewrite line lives on `release/0.5.x`.
 `.github/workflows/js-first-rewrite.yml` runs on pushes and pull requests to
-`rewrite/js-first-0.6.0`. It installs the locked JS dependencies, requires the
+`main`; its job `JS checks and Android debug APK` is the required PR check. It
+installs the locked JS dependencies, requires the
 exact registered JS unit suite, packages the debug APK, verifies its package,
 signature, and `derive-version.sh` version, runs a packaged API 35 Android
 smoke suite, and runs the pinned Docker agents fixture. The smoke suite
-executes exactly three tests: the installed shell must show the verified core
-revision and asset hash, a Settings tap and Android Back must return to Hosts,
-and the focused composer must remain above the real IME while Capacitor
+executes exactly six tests, the set `scripts/check-js-smoke-results.py`
+requires: the installed shell must show the verified core revision and asset
+hash; an open-document data URI must be included once; the packaged share
+adapters must deliver shared text and exact file bytes, including a multi-item
+share without `ClipData`; a Settings tap and Android Back must return to
+Hosts; and the focused composer must remain above the real IME while Capacitor
 safe-area insets are applied.
 This is shell coverage, not feature parity. It does not cover the SSH/session
 journeys, create a signed release artifact, or establish a nightly release
 verdict.
 
-The 24 feature journey classes mapped from app2 are registered in
+The 24 feature journey classes mapped from app2 (the Kotlin line, now on
+`release/0.5.x`) are registered in
 [`scripts/js-journey-class-manifest.json`](../scripts/js-journey-class-manifest.json).
 Run `scripts/check-js-journey-results.py --json --results-dir <connected-XML-dir>`
 to get a machine-readable qualification result. It blocks missing classes,
@@ -103,18 +117,18 @@ At the current foundation state the checker reports all 24 journeys missing.
 Its class-level contract must be tightened to exact method names as the real
 journeys land.
 
-The existing `app2.yml` and `tests.yml` D36/D37 lanes remain attached to
-`main` and `stable`; they are not valid for this JS tree because their Kotlin
-modules are gone. This branch has no JS replacement for the scheduled D36
-full-suite verdict or the exact-commit D37 fault verdict. Pull requests into
-those branches must wait for [#2863](https://github.com/PocketShell-io/pocketshell/issues/2863),
-which owns those blocking gates. A green foundation workflow is not release
-evidence: 0.6.0 is blocked until the feature journeys and both release verdicts
-are migrated and reviewer-validated. Do not manually dispatch a legacy Gradle
-workflow against this branch.
+The Kotlin-only `tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
+`full-suite-notify.yml` workflows were hard-cut from `main` by #2934; they
+remain on `release/0.5.x`. `main` has no JS replacement yet for the scheduled
+D36 full-suite verdict or the exact-commit D37 fault verdict, and no
+`schedule:` workflow at all:
+[#2863](https://github.com/PocketShell-io/pocketshell/issues/2863) owns those
+blocking gates. A green `JS-first rewrite` run is not release evidence: 0.6.0
+is blocked until the feature journeys and both release verdicts are migrated
+and reviewer-validated.
 
 The legacy `scripts/check-unit-gate-wiring.sh` is not part of the rewrite CI.
-On this branch it exits 123 with no output: its C9 scan treats the retained
+On `main` it exits 123 with no output: its C9 scan treats the retained
 Capacitor `android/app/build.gradle` as the old Kotlin test graph, then `xargs`
 returns 123 when `grep` finds no Kotlin test harness path in that file. Keep
 that guard unchanged until #2863 replaces its Gradle-specific scan with a

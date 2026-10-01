@@ -2,9 +2,9 @@ name: JS-first rewrite
 
 on:
   push:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
   pull_request:
-    branches: [rewrite/js-first-0.6.0]
+    branches: [main]
 
 concurrency:
   group: js-first-rewrite-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
@@ -64,11 +64,17 @@ jobs:
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
 
+      - name: Check CI watcher required-check defaults
+        run: python3 scripts/watch-ci.py --self-test
+
       - name: Check fail-closed feature journey qualification guard
         run: scripts/check-js-journey-results.py --self-test
 
       - name: Check fail-closed packaged lifecycle result guard
         run: scripts/check-js-lifecycle-results.py --self-test
+
+      - name: Check Android input-focus failure diagnostics guard
+        run: scripts/check-android-input-diagnostics.py --self-test
 
       - name: Check fail-closed packaged usage and ports result guards
         run: |
@@ -81,6 +87,14 @@ jobs:
       - name: Check fail-closed packaged Files result guard
         run: scripts/check-js-files-results.py --self-test
 
+      - name: Check fail-closed packaged key-vault and signed-upgrade result guards
+        run: |
+          scripts/check-js-key-vault-results.py --self-test
+          scripts/check-js-signed-upgrade-results.py --self-test
+
+      - name: Check fail-closed packaged durable-storage result guard
+        run: scripts/check-js-durable-storage-results.py --self-test
+
       - name: Check JS Android journey dispatch guard
         run: |
           scripts/check-test-validity.sh --j1-only --self-test
@@ -89,12 +103,65 @@ jobs:
       - name: Check JS-first connected-test dispatch and lock contracts
         run: |
           tests/scripts/connected-test-js-runner-test.sh
+          tests/scripts/android-input-preflight-test.sh
           tests/scripts/connected-test-root-guard-test.sh
+          tests/scripts/connected-test-serial-ownership-test.sh
+          tests/scripts/avd-lock-test.sh
+          tests/scripts/avd-lock-sharing-test.sh
+          scripts/test-gradle-output-lock.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
           tests/scripts/js-first-rewrite-hotkeys-gate-test.sh
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
+
+      # Issue #2856: run after the debug APK step above has generated the
+      # ignored Capacitor Gradle inputs; validate fresh results from all four
+      # production close paths in this required JS-first check.
+      - name: Run native SSH close-accounting unit regression (issue #2856)
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch "${RUNNER_TEMP}/ssh-close-unit-start"
+          set -o pipefail
+          android/gradlew -p android :app:testDebugUnitTest \
+            --tests com.pocketshell.app.SshCapabilityPluginCloseTest \
+            --rerun-tasks --no-build-cache --no-daemon --stacktrace --console=plain \
+            2>&1 | tee "${RUNNER_TEMP}/ssh-close-unit-gradle.log"
+          python3 - "${RUNNER_TEMP}/ssh-close-unit-start" <<'PY'
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          report = Path("android/app/build/test-results/testDebugUnitTest/TEST-com.pocketshell.app.SshCapabilityPluginCloseTest.xml")
+          marker = Path(sys.argv[1])
+          if not report.is_file():
+              raise SystemExit(f"FAIL: missing close-accounting JUnit report: {report}")
+          if report.stat().st_mtime_ns <= marker.stat().st_mtime_ns:
+              raise SystemExit("FAIL: close-accounting JUnit report predates this run")
+          root = ET.parse(report).getroot()
+          cases = root.findall("testcase")
+          if not cases or int(root.attrib.get("tests", "0")) != len(cases):
+              raise SystemExit("FAIL: close-accounting report declares no tests or disagrees with testcase rows")
+          if int(root.attrib.get("skipped", "0")) != 0 or int(root.attrib.get("failures", "0")) != 0 or int(root.attrib.get("errors", "0")) != 0:
+              raise SystemExit("FAIL: close-accounting class has skipped, failed, or errored tests")
+          names = {case.attrib.get("name") for case in cases}
+          required = {
+              "actualConnectionCloseKeepsSnapshotEntryUntilNativeSocketCloses",
+              "productionPtyCloseKeepsSnapshotEntryUntilNativeChannelCloses",
+              "productionSftpCloseKeepsSnapshotEntryUntilNativeClientCloses",
+              "productionForwardCloseKeepsSnapshotEntryUntilNativeListenerCloses",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"FAIL: required production-path regressions did not execute: {missing}")
+          print(f"PASS: {len(cases)} close-accounting tests executed; connection, PTY, SFTP, and forward regressions present")
+          PY
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: Run native Android unit tests
+        run: scripts/run-android-unit-gate.sh
 
       - name: Validate packaged Android identity and derived version
         run: |
@@ -114,6 +181,7 @@ jobs:
         run: |
           scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
           scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
+          scripts/connected-js-key-vault-docker.sh --suffix i2926ci --prepare-only
 
       - name: Start version-matched Docker agents fixture
         run: |
@@ -124,8 +192,8 @@ jobs:
           wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
           cat /tmp/js-lifecycle-agents-health.log
 
-      - name: Start isolated Docker agents lane for the composer journey
-        run: scripts/agents-pool.sh up 2245
+      - name: Start isolated Docker agents lanes for Composer and key-vault journeys
+        run: scripts/agents-pool.sh up 2244 2245
 
       - name: Start isolated Docker agents lane for the mobile fast-key journey
         run: scripts/agents-pool.sh up 2243
@@ -202,6 +270,12 @@ jobs:
             --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Key-vault scripts/check-js-key-vault-results.py \
+            --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Durable storage" scripts/check-js-durable-storage-results.py \
+            --run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \
+            --artifacts-dir "android/app/build/outputs/js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           composer_root="android/app/build/outputs/js-composer"
           composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
@@ -275,9 +349,9 @@ jobs:
           path: android/app/build/outputs/js-hotkeys/
           if-no-files-found: error
 
-      - name: Stop isolated composer Docker agents lane
+      - name: Stop isolated Composer, key-vault and fast-key Docker agents lanes
         if: always()
-        run: scripts/agents-pool.sh down 2243 2245
+        run: scripts/agents-pool.sh down 2243 2244 2245
 
       - name: Upload packaged APK and connected journey evidence
         if: always()
@@ -288,10 +362,14 @@ jobs:
             android/app/build/outputs/apk/debug/app-debug.apk
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
             android/app/build/outputs/js-smoke-results/TEST-*.xml
+            android/app/build/outputs/js-smoke-diagnostics/**
             android/app/build/outputs/js-usage-ports/**
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**
             android/app/build/outputs/js-files/**
+            android/app/build/outputs/js-key-vault/**
+            android/app/build/outputs/js-key-vault-upgrade/**
+            android/app/build/outputs/js-durable-storage/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture

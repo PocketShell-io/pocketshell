@@ -77,41 +77,43 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
-# The protected-`main` required checks of the `Tests` workflow
-# (.github/workflows/tests.yml — see process.md "Protected `main` checks").
-# Overridable with --required-check (repeatable).
+# The protected-`main` required checks. Since #2934 `main` is the JS-first
+# 0.6.0 line and its CI is ONE workflow, `JS-first rewrite`
+# (.github/workflows/js-first-rewrite.yml — see process.md "Protected `main`
+# checks"). Both jobs run in the same run, so one watch covers both.
+# Overridable with --required-check (repeatable). `--self-test` pins these
+# names to the job `name:` lines of that workflow.
 #
 # Issue #2545: every name here MUST be a real job name in the workflow the
 # watcher is pointed at. A required name that matches no job in the watched
-# run is a loud config error (see classify_run), never a silent `missing` —
-# the old third entry, `Emulator journey subset (load-bearing, Docker
-# agents)`, matched no workflow at all after the app2 rewrite and produced
-# permanent vacuous greens.
+# run is a loud config error (see classify_run), never a silent `missing`.
 #
-# The journey lane is NOT in `Tests` any more: it lives in
-# .github/workflows/app2.yml as `app2 journey suite (emulator + Docker
-# agents)`. This watcher watches ONE run; to watch the journey lane, invoke
-# it a second time against the app2 run with
-#   --required-check "app2 journey suite (emulator + Docker agents)"
+# release/0.5.x keeps the old Kotlin `Tests` workflow; to watch it, pass
+#   --required-check "Unit tests" --required-check "Integration tests (Docker)"
+# (and "app2 journey suite (emulator + Docker agents)" against its app2 run).
+REQUIRED_CHECKS_WORKFLOW = ".github/workflows/js-first-rewrite.yml"
 DEFAULT_REQUIRED_CHECKS = (
-    "Unit tests",
-    "Integration tests (Docker)",
+    "JS checks and Android debug APK",
+    "Docker agents fixture contract",
 )
 
 DEFAULT_INTERVAL_S = 25.0
 
 # Issue #1650: the no-progress guard must out-last the LONGEST single job, since
 # a healthy job that runs for its whole duration produces NO job-state change.
-# The emulator journey shards are capped at 95 min (`timeout-minutes: 95` in
-# .github/workflows/tests.yml) and routinely run 20-40 min. The old 20-min
+# The old app2 emulator journey shards were capped at 95 min; the JS-first
+# `JS checks and Android debug APK` job is capped at 60 min
+# (`timeout-minutes: 60` in .github/workflows/js-first-rewrite.yml). The cap
+# below keeps the larger value so release/0.5.x watches stay safe. The old 20-min
 # default meant EVERY `main` emulator watch reported a bogus HANG while the
 # shards were perfectly healthy. Keep this strictly above the job cap, and keep
 # the wall-clock cap above it so the no-progress guard can actually fire.
-EMULATOR_JOB_CAP_S = 95 * 60  # .github/workflows/tests.yml: timeout-minutes: 95
+EMULATOR_JOB_CAP_S = 95 * 60  # >= every watched job's timeout-minutes (JS job: 60)
 DEFAULT_NO_PROGRESS_TIMEOUT_S = 100 * 60
 DEFAULT_MAX_WALL_CLOCK_S = 3 * 60 * 60
 GH_RETRY_BUDGET = 3
@@ -1287,7 +1289,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--workflow",
-        help="Workflow name to disambiguate when resolving by --branch (e.g. 'Tests').",
+        help="Workflow name to disambiguate when resolving by --branch "
+        "(e.g. 'JS-first rewrite'; 'Tests' on release/0.5.x).",
     )
     p.add_argument("--repo", help="owner/name; defaults to the cwd repo.")
     p.add_argument(
@@ -1315,8 +1318,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="append",
         dest="required_checks",
         metavar="NAME",
-        help="Required check name (repeatable). Defaults to the Tests "
-        "workflow's protected-main pair; see DEFAULT_REQUIRED_CHECKS. A name "
+        help="Required check name (repeatable). Defaults to the JS-first "
+        "rewrite workflow's protected-main pair; see DEFAULT_REQUIRED_CHECKS. A name "
         "matching no job in the watched run is a loud config error (issue "
         "#2545), never a silent pass.",
     )
@@ -1369,7 +1372,118 @@ def _best_effort_console_print(text: str, *, stream) -> None:
             os.close(devnull_fd)
 
 
+def _workflow_job_names(path: Path) -> list[str]:
+    """Job display names (`    name:` at job level) from a workflow file.
+
+    Text parse on purpose: the watcher has no third-party dependencies.
+    """
+    names: list[str] = []
+    in_jobs = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("jobs:"):
+            in_jobs = True
+            continue
+        if in_jobs and line and not line.startswith(" "):
+            break
+        m = re.match(r"^    name:\s*(.+?)\s*$", line) if in_jobs else None
+        if m:
+            names.append(m.group(1).strip("'\""))
+    return names
+
+
+def self_test() -> int:
+    """Pin the defaults to the real `main` workflow and exercise classify_run."""
+    root = Path(__file__).resolve().parent.parent
+    wf = root / REQUIRED_CHECKS_WORKFLOW
+    job_names = _workflow_job_names(wf) if wf.is_file() else []
+    js_ok = [
+        {"name": n, "status": "completed", "conclusion": "success"}
+        for n in DEFAULT_REQUIRED_CHECKS
+    ]
+    defaults = list(DEFAULT_REQUIRED_CHECKS)
+
+    def verdict(status, conclusion, jobs, names=None):
+        return classify_run(status, conclusion, jobs, names or defaults).result
+
+    cases: list[tuple[str, Callable[[], bool]]] = [
+        (
+            f"{REQUIRED_CHECKS_WORKFLOW} exists and names jobs",
+            lambda: len(job_names) > 0,
+        ),
+        (
+            "every default required check is an exact job name of the main workflow",
+            lambda: all(n in job_names for n in DEFAULT_REQUIRED_CHECKS),
+        ),
+        (
+            "no legacy Tests/app2 check name remains a default",
+            lambda: not any(
+                n in {"Unit tests", "Integration tests (Docker)"} or "app2" in n
+                for n in DEFAULT_REQUIRED_CHECKS
+            ),
+        ),
+        (
+            "both JS checks green -> green",
+            lambda: verdict("completed", "success", js_ok) == RESULT_GREEN,
+        ),
+        (
+            "JS APK job failed -> failed",
+            lambda: verdict(
+                "completed",
+                "failure",
+                [dict(js_ok[0], conclusion="failure"), js_ok[1]],
+            )
+            == RESULT_FAILED,
+        ),
+        (
+            "Docker fixture job missing from the run -> failed (config error)",
+            lambda: verdict("completed", "success", js_ok[:1]) == RESULT_FAILED,
+        ),
+        (
+            "a legacy Tests run matches no default -> unresolved, never green",
+            lambda: verdict(
+                "completed",
+                "success",
+                [
+                    {"name": "Unit tests", "status": "completed", "conclusion": "success"},
+                    {"name": "Integration tests (Docker)", "status": "completed", "conclusion": "success"},
+                ],
+            )
+            == RESULT_UNRESOLVED,
+        ),
+        (
+            "skipped required check is not green by default",
+            lambda: verdict(
+                "completed", "success", [dict(js_ok[0], conclusion="skipped"), js_ok[1]]
+            )
+            != RESULT_GREEN,
+        ),
+        (
+            "in-flight run has no verdict yet",
+            lambda: verdict(
+                "in_progress", None, [dict(js_ok[0], status="in_progress", conclusion=None), js_ok[1]]
+            )
+            is None,
+        ),
+    ]
+    failures = 0
+    for i, (label, check) in enumerate(cases, 1):
+        try:
+            ok = bool(check())
+        except Exception as exc:  # noqa: BLE001 - report, don't crash
+            ok = False
+            label = f"{label} (raised {exc!r})"
+        print(f"  {'ok ' if ok else 'FAIL'} [{i}/{len(cases)}] {label}")
+        failures += 0 if ok else 1
+    if failures:
+        print(f"SELF-TEST FAIL: {failures}/{len(cases)} watch-ci checks failed")
+        return 1
+    print(f"SELF-TEST PASS: watch-ci defaults and verdicts ({len(cases)}/{len(cases)})")
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
+    if (argv if argv is not None else sys.argv[1:]) == ["--self-test"]:
+        return self_test()
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

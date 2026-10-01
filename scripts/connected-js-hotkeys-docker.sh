@@ -91,6 +91,7 @@ python3 "$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py" --self-test
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-hotkeys-docker.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-hotkeys-docker.sh suffix=$SUFFIX port=$PORT"
@@ -133,6 +134,8 @@ export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
 pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
+pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$evidence_dir/input-preflight.txt" \
+  || fail "Android input preflight failed on $ANDROID_SERIAL; see $evidence_dir/input-preflight.txt"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 python3 - "$RESULTS_DIR" <<'PY'
@@ -145,7 +148,7 @@ if results.exists():
     shutil.rmtree(results)
 PY
 
-encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 test_class='com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest'
 asset_logcat="$evidence_dir/hotkeys-assets-live-logcat.txt"
 asset_logcat_pid=""
@@ -210,23 +213,26 @@ prepare_asset_logcat_path "$asset_logcat"
 [[ "$asset_logcat" != "$RESULTS_DIR/"* ]] || fail 'live artifact collector output must survive Gradle result cleanup'
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s PS2884Asset:I PS2884Geometry:I PS2884DictationFailure:I PS2897Prompt:I > "$asset_logcat" 2>&1 &
-asset_logcat_pid=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s PS2884Asset:I PS2884Geometry:I PS2884DictationFailure:I PS2897Prompt:I > "$asset_logcat" 2>&1
+asset_logcat_pid="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live fast-key artifact logcat collector'
 printf 'Running packaged fast-key Docker journey on %s (API %s), Docker port %s, sessions %s-*.\n' \
   "$ANDROID_SERIAL" "$device_api" "$PORT" "$SESSION_BASE"
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+if pocketshell_run_without_avd_lock_fd_to_log "$evidence_dir/hotkeys-gradle.log" \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$SESSION_BASE" \
     "-Pandroid.testInstrumentationRunnerArguments.artifactRunId=$ARTIFACT_RUN_ID" \
     "-Pandroid.testInstrumentationRunnerArguments.fastKeysForceFirstPostAttachTapMiss=$FORCE_FIRST_POST_ATTACH_TAP_MISS" \
     "-Pandroid.testInstrumentationRunnerArguments.fastKeysPromptFocusMaxAttempts=$PROMPT_FOCUS_MAX_ATTEMPTS" \
-    --stacktrace --console=plain 2>&1 | tee "$evidence_dir/hotkeys-gradle.log"; then
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?
@@ -246,6 +252,8 @@ else
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 5000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  pocketshell_android_capture_input_diagnostics "$ADB" "$ANDROID_SERIAL" "$evidence_dir/failure-android-input"
+  "$ROOT_DIR/scripts/check-android-input-diagnostics.py" --dir "$evidence_dir/failure-android-input" >&2 || true
   "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" \
     --output-dir "$evidence_dir" --preserve-test-failure || true
   exit "$test_exit_code"
