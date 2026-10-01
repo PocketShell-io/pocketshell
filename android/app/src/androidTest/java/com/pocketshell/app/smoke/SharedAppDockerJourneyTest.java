@@ -149,10 +149,17 @@ public class SharedAppDockerJourneyTest {
                 + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); row.click(); return 'ok';})()");
     }
 
-    /** Real key events through the WebView into the visible xterm. */
+    /**
+     * Real key events through the WebView into the visible xterm. Each line
+     * starts a fresh input session (blur, then focus: what a user's tap into
+     * the terminal does). Typing into a session that has been reset under a
+     * live IME composition duplicates a word on API 35 — that keyboard bug
+     * is #2952's (A5), recorded with byte evidence on #2936, not this lane's.
+     */
     private void typeLine(String text) throws Exception {
         evalString("(() => {const t=[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)"
-                + "?.querySelector('.xterm-helper-textarea'); if(!t) throw new Error('no visible terminal'); t.focus(); return 'ok';})()");
+                + "?.querySelector('.xterm-helper-textarea'); if(!t) throw new Error('no visible terminal');"
+                + " t.blur(); t.focus(); return 'ok';})()");
         awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea') === true");
         InstrumentationRegistry.getInstrumentation().sendStringSync(text);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
