@@ -5,12 +5,10 @@
  *
  * Two kinds of host appear:
  *  - hosts imported from the signed 0.5.x app (`readImportedLegacyHosts`),
- *    whose private keys never leave native storage — they dial with the
- *    opaque `legacy-private-key` reference the native plugin resolves;
- *  - hosts added on this phone. Their metadata persists; the pasted private
- *    key is held for this app session only, because the durable home for
- *    key material is the native key-handle store (#2926), not WebView
- *    storage. A saved host whose key is gone asks for it again.
+ *    dialled with the native key handle their key was imported under;
+ *  - hosts added on this phone, saved with the handle of a key in the
+ *    Android key vault (#2926). Key bytes never enter the WebView: a host
+ *    only names its handle, and the native plugin resolves it at dial time.
  */
 import type { HostEntry, SshHostTarget } from '@pocketshell/core';
 import { makeLegacySshHostTarget } from '@/migration/legacySshTarget';
@@ -23,6 +21,8 @@ export interface SavedHost {
   hostname: string;
   port: number;
   user: string;
+  /** The Android key vault handle this host authenticates with (#2926). */
+  keyHandleId: string;
 }
 
 export interface StringStorage {
@@ -39,12 +39,12 @@ export interface AndroidHostStoreOptions {
 /** Why a host cannot be dialled right now, in words the picker can show. */
 export class MissingHostCredential extends Error {
   constructor(hostName: string) {
-    super(`No private key for “${hostName}” in this app session — add the host again with its key.`);
+    super(`No SSH key is chosen for “${hostName}” — add the host again with a key from the key vault.`);
     this.name = 'MissingHostCredential';
   }
 }
 
-function toEntry(host: SavedHost): HostEntry {
+function toEntry(host: Omit<SavedHost, 'keyHandleId'>): HostEntry {
   return {
     name: host.name,
     hostname: host.hostname,
@@ -65,7 +65,8 @@ function isSavedHost(value: unknown): value is SavedHost {
   return typeof host.name === 'string' && host.name.length > 0
     && typeof host.hostname === 'string' && host.hostname.length > 0
     && typeof host.user === 'string'
-    && typeof host.port === 'number' && Number.isInteger(host.port) && host.port > 0 && host.port < 65536;
+    && typeof host.port === 'number' && Number.isInteger(host.port) && host.port > 0 && host.port < 65536
+    && (host.keyHandleId === undefined || typeof host.keyHandleId === 'string');
 }
 
 export function validateSavedHost(host: SavedHost): string | null {
@@ -73,11 +74,11 @@ export function validateSavedHost(host: SavedHost): string | null {
   if (!host.hostname.trim()) return 'Enter a hostname or IP address.';
   if (!host.user.trim()) return 'Enter the SSH user.';
   if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) return 'Port must be 1–65535.';
+  if (!host.keyHandleId) return 'Choose an SSH key from the key vault.';
   return null;
 }
 
 export class AndroidHostStore {
-  private readonly sessionKeys = new Map<string, string>();
   private legacy: ImportedLegacyHost[] = [];
 
   constructor(private readonly options: AndroidHostStoreOptions) {}
@@ -93,24 +94,24 @@ export class AndroidHostStore {
     return [...saved.map(toEntry), ...imported];
   }
 
-  /** Add or replace a host; the key is kept for this app session only. */
-  save(host: SavedHost, privateKeyPem: string): void {
+  /** Add or replace a host, bound to a key-vault handle. */
+  save(host: SavedHost): void {
     const problem = validateSavedHost(host);
     if (problem) throw new Error(problem);
     const saved = this.readSaved().filter((existing) => existing.name !== host.name);
-    saved.push({ name: host.name.trim(), hostname: host.hostname.trim(), port: host.port, user: host.user.trim() });
+    saved.push({
+      name: host.name.trim(),
+      hostname: host.hostname.trim(),
+      port: host.port,
+      user: host.user.trim(),
+      keyHandleId: host.keyHandleId,
+    });
     this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));
-    if (privateKeyPem.trim()) this.sessionKeys.set(host.name.trim(), privateKeyPem.trim());
   }
 
   remove(name: string): void {
     const saved = this.readSaved().filter((existing) => existing.name !== name);
     this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));
-    this.sessionKeys.delete(name);
-  }
-
-  hasSessionKey(name: string): boolean {
-    return this.sessionKeys.has(name);
   }
 
   /**
@@ -124,14 +125,13 @@ export class AndroidHostStore {
       (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined) ??
       saved.find((host) => host.hostname === request.host && host.port === port);
     if (savedMatch) {
-      const key = this.sessionKeys.get(savedMatch.name);
-      if (!key) throw new MissingHostCredential(savedMatch.name);
+      if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch.name);
       return {
         hostId: `${savedMatch.user}@${savedMatch.hostname}:${savedMatch.port}`,
         hostname: savedMatch.hostname,
         port: savedMatch.port,
         username: request.user || savedMatch.user,
-        credential: { kind: 'private-key', privateKeyPem: key },
+        credential: { kind: 'key-handle', handleId: savedMatch.keyHandleId },
       };
     }
     if (this.legacy.length === 0) this.legacy = await this.options.readLegacyHosts().catch(() => []);
@@ -139,8 +139,8 @@ export class AndroidHostStore {
       (request.hostAlias ? this.legacy.find((host) => host.name === request.hostAlias) : undefined) ??
       this.legacy.find((host) => host.hostname === request.host && host.port === port);
     if (legacyMatch) {
-      // The native plugin resolves the opaque reference; no key bytes in JS.
-      return makeLegacySshHostTarget(legacyMatch, '') as unknown as SshHostTarget;
+      // The native plugin resolves the imported key's handle; no key bytes in JS.
+      return makeLegacySshHostTarget(legacyMatch, '');
     }
     throw new Error(`No saved host for ${request.user ? `${request.user}@` : ''}${request.host}:${port}.`);
   }

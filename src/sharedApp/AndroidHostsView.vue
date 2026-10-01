@@ -1,10 +1,12 @@
 <script setup lang="ts">
 // The phone's host source, the Android counterpart of desktop's
-// ~/.ssh/config and web's /app hosts page: add a host with its private key.
-// The shared picker owns CONNECTING; this page only prepares hosts for it.
-import { ref } from 'vue';
+// ~/.ssh/config and web's /app hosts page: add a host and the key-vault key
+// it authenticates with. Key bytes stay native (#2926): this page only
+// lists, imports and names key handles. The shared picker owns CONNECTING.
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '@ui/app/stores/connection';
+import { listSshKeys, parseSshKeyMetadata, sshKeyVault, type SshKeyMetadata } from '@/native/sshKeyVault';
 import { androidHosts } from './platform';
 import { validateSavedHost } from '@/platform/android/hostStore';
 
@@ -14,18 +16,49 @@ const name = ref('');
 const hostname = ref('');
 const port = ref('22');
 const user = ref('');
-const privateKey = ref('');
+const keyHandleId = ref('');
+const keys = ref<SshKeyMetadata[]>([]);
 const error = ref<string | null>(null);
 
+async function loadKeys(): Promise<void> {
+  try {
+    keys.value = await listSshKeys();
+    if (!keyHandleId.value && keys.value.length === 1) keyHandleId.value = keys.value[0]!.handleId;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
+async function importKey(): Promise<void> {
+  error.value = null;
+  try {
+    const picked = await sshKeyVault.pickKeyDocument();
+    if (picked.cancelled || !picked.documentId) return;
+    const key = parseSshKeyMetadata(
+      await sshKeyVault.importPickedKey({ documentId: picked.documentId, label: picked.name ?? 'SSH key' }),
+    );
+    await loadKeys();
+    keyHandleId.value = key.handleId;
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e);
+  }
+}
+
 async function save(): Promise<void> {
-  const host = { name: name.value.trim() || hostname.value.trim(), hostname: hostname.value, port: Number(port.value), user: user.value };
-  const problem = validateSavedHost(host) ?? (privateKey.value.trim() ? null : 'Paste the private key for this host.');
+  const host = {
+    name: name.value.trim() || hostname.value.trim(),
+    hostname: hostname.value,
+    port: Number(port.value),
+    user: user.value,
+    keyHandleId: keyHandleId.value,
+  };
+  const problem = validateSavedHost(host);
   if (problem) {
     error.value = problem;
     return;
   }
   try {
-    androidHosts.save(host, privateKey.value);
+    androidHosts.save(host);
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e);
     return;
@@ -33,6 +66,8 @@ async function save(): Promise<void> {
   await connection.loadHosts();
   void router.push({ name: 'hosts' });
 }
+
+onMounted(() => void loadKeys());
 </script>
 
 <template>
@@ -46,8 +81,13 @@ async function save(): Promise<void> {
       <label>Hostname<input v-model="hostname" data-testid="host-hostname" autocomplete="off" autocapitalize="off" inputmode="url" /></label>
       <label>Port<input v-model="port" data-testid="host-port" inputmode="numeric" /></label>
       <label>User<input v-model="user" data-testid="host-user" autocomplete="off" autocapitalize="off" /></label>
-      <label>Private key<textarea v-model="privateKey" data-testid="host-private-key" rows="6" spellcheck="false" autocapitalize="off" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" /></label>
-      <p class="muted">The key is kept for this app session only.</p>
+      <label>SSH key
+        <select v-model="keyHandleId" data-testid="host-key">
+          <option value="" disabled>Choose a key</option>
+          <option v-for="key in keys" :key="key.handleId" :value="key.handleId">{{ key.label }} · {{ key.fingerprintSha256 }}</option>
+        </select>
+      </label>
+      <button class="btn-ghost" type="button" data-testid="host-import-key" @click="importKey">Import key file…</button>
       <p v-if="error" class="error" data-testid="host-error">{{ error }}</p>
       <button class="android-hosts__save" type="submit" data-testid="host-save">Save host</button>
     </form>
@@ -81,7 +121,7 @@ async function save(): Promise<void> {
   color: var(--fg-secondary);
 }
 .android-hosts__form input,
-.android-hosts__form textarea {
+.android-hosts__form select {
   min-height: 48px;
   padding: var(--sp-2);
   background: var(--surface-2);
@@ -89,10 +129,6 @@ async function save(): Promise<void> {
   border: 1px solid var(--border-strong);
   border-radius: var(--r-md);
   font: inherit;
-}
-.android-hosts__form textarea {
-  font-family: var(--font-mono);
-  font-size: 12px;
 }
 .android-hosts__save {
   min-height: 48px;

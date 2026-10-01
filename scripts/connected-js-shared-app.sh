@@ -166,13 +166,18 @@ if results.exists():
     shutil.rmtree(results)
 PY
 
+# The key reaches the app only through the key vault's content-URI import;
+# the raw copy sits outside every app package and the test deletes it.
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
+
 printf 'Running shared-app journey on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SharedAppDockerJourneyTest \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$SESSION_RUN" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     --stacktrace --console=plain; then
   :
 else

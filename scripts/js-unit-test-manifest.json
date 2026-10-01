@@ -290,7 +290,7 @@
         "maps controller phases onto the shared connection states",
         "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
         "refuses unimplemented work by name instead of pretending",
-        "reports a saved host whose key did not survive the app session as a dial failure",
+        "reports a saved host with no key-vault handle as a dial failure",
         "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
         "mounts the legacy screens unless the launch opted into the shared app",
         "records each boot so a load-then-reload launch is visible as two entries"

@@ -12,8 +12,6 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.MainActivity;
 import com.pocketshell.app.SharedShellLaunch;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -66,13 +64,12 @@ public class SharedAppDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         String run = arguments.getString("sessionRun");
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
+        assertNotNull("pass the runner-staged test key with sshPrivateKeyPath", keyPath);
         assertNotNull("pass the runner-created session run id with sessionRun", run);
         assertTrue("sessionRun must be a safe folder token", run.matches("[a-z0-9-]{6,40}"));
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         String folderA = run + "-a";
         String folderB = run + "-b";
 
@@ -82,6 +79,16 @@ public class SharedAppDockerJourneyTest {
         assertEquals("[\"shared\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
         assertEquals("the opt-in launch must load exactly one page (no load-then-reload)", 1, pageStartCount());
 
+        // The fixture key enters the Android key vault from a content URI; only
+        // its handle crosses into the WebView (#2926).
+        java.io.File keyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, run);
+        evalString(SshKeyVaultTestSupport.beginImport(SshKeyVaultTestSupport.asContentUri(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyDocument), "Docker fixture key"));
+        awaitJsTrue("window." + SshKeyVaultTestSupport.IMPORT_RESULT + "?.state === 'ready'");
+        String handle = evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".handleId");
+        keyDocument.delete();
+
         evalString("(() => {const b=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Add a host');"
                 + "if(!b) throw new Error('no Add a host action'); b.click(); return 'ok';})()");
         awaitJsTrue("!!document.querySelector('[data-testid=android-add-host]')");
@@ -89,7 +96,8 @@ public class SharedAppDockerJourneyTest {
         setValue("[data-testid=host-hostname]", host);
         setValue("[data-testid=host-port]", port);
         setValue("[data-testid=host-user]", "testuser");
-        setValue("[data-testid=host-private-key]", privateKey);
+        awaitJsTrue("[...document.querySelectorAll('[data-testid=host-key] option')].some((o)=>o.value===" + JSONObject.quote(handle) + ")");
+        setSelect("[data-testid=host-key]", handle);
         click("[data-testid=host-save]");
 
         awaitJsTrue("[...document.querySelectorAll('.host-row')].some((n)=>n.textContent.includes('fixture-" + run + "'))");
@@ -180,6 +188,13 @@ public class SharedAppDockerJourneyTest {
                 + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "node.value = " + JSONObject.quote(value) + ";"
                 + "node.dispatchEvent(new Event('input', {bubbles: true})); return 'set';})()");
+    }
+
+    private void setSelect(String selector, String value) throws Exception {
+        evalString("(() => {const node = document.querySelector(" + JSONObject.quote(selector) + ");"
+                + "if (!node) throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
+                + "node.value = " + JSONObject.quote(value) + ";"
+                + "node.dispatchEvent(new Event('change', {bubbles: true})); return 'set';})()");
     }
 
     private void click(String selector) throws Exception {

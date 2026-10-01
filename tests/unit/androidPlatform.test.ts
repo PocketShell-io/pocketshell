@@ -185,7 +185,7 @@ const target = {
   hostname: 'fixture',
   port: 2222,
   username: 'u',
-  credential: { kind: 'private-key' as const, privateKeyPem: 'KEY' },
+  credential: { kind: 'key-handle' as const, handleId: '00000000-0000-4000-8000-000000000001' },
 };
 
 function harness(pin: HostKeyTrustPin | null = null) {
@@ -460,12 +460,12 @@ describe('Android PocketShellApi platform', () => {
     expect(await created.api.ssh.listConfigHosts()).toEqual([]);
     expect(created.api.hosts?.emptyAction).toEqual({ label: 'Add a host', route: '/android/hosts' });
 
-    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u' }, 'PEM');
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
     expect((await created.api.ssh.listConfigHosts()).map((host) => host.name)).toEqual(['fixture']);
     const result = await created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u', tofuDecision: 'accept-always' });
     expect(result.ok).toBe(true);
     open.push({ hub: created.hub, id: result.connectionId! });
-    expect(native.connects[0]).toMatchObject({ hostname: 'fixture', port: 2222, username: 'u', credential: { kind: 'private-key', privateKeyPem: 'PEM' } });
+    expect(native.connects[0]).toMatchObject({ hostname: 'fixture', port: 2222, username: 'u', credential: { kind: 'key-handle', handleId: 'handle-1' } });
 
     expect(await created.api.projects.home(result.connectionId!)).toEqual({ ok: true, home: '/home/u', error: null });
     expect((await created.api.helper.usage(result.connectionId!))).toHaveLength(1);
@@ -482,16 +482,16 @@ describe('Android PocketShellApi platform', () => {
     expect(await created.api.forwards.list('android-1')).toEqual([]);
   });
 
-  it('reports a saved host whose key did not survive the app session as a dial failure', async () => {
+  it('reports a saved host with no key-vault handle as a dial failure', async () => {
     const { storage, created } = platform();
     storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify([{ name: 'box', hostname: 'box', port: 22, user: 'u' }]));
     const result = await created.api.ssh.connect({ host: 'box', port: 22, user: 'u' });
-    expect(result).toEqual({ ok: false, error: expect.stringContaining('No private key for “box”') });
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('No SSH key is chosen for “box”') });
   });
 
   it('drives the controller grace from Android lifecycle and never feeds the shared resume probe', async () => {
     const { hosts, created, controllers, emitActive } = platform();
-    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u' }, 'PEM');
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
     const result = await created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u' });
     open.push({ hub: created.hub, id: result.connectionId! });
     let resumed = 0;
