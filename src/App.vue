@@ -39,6 +39,7 @@ import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
+import { rememberDiagnosticTerms } from './platform/androidDiagnostics';
 import { ConnectionController } from './session/connectionController';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
@@ -582,6 +583,8 @@ async function connectHost() {
   if (migrationBlocksConnection.value) return;
   const host = makeHostTarget();
   if (!host) return;
+  rememberDiagnosticTerms([host.hostname, host.username, host.hostId,
+    ...importedLegacyHosts.value.flatMap((saved) => [saved.name, saved.hostname, saved.username])]);
   await closeController();
   resourceSnapshot.value = null;
   resourceSnapshotStatus.value = 'unverified';
@@ -604,6 +607,23 @@ async function connectHost() {
   else if (next.getSnapshot().phase !== 'awaiting-trust') {
     recordOperationFailure('connect');
     connectionMessage.value = result.message;
+  }
+}
+
+const reconnectRequested = ref(false);
+
+/** Explicit Reconnect after a lost connection: same host, same selected session (core controller). */
+async function reconnectHost() {
+  const active = controller;
+  if (!active || reconnectRequested.value) return;
+  reconnectRequested.value = true;
+  try {
+    await active.reconnect();
+  } catch (error) {
+    recordFailure('ssh-bridge-failed', 'connect', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    reconnectRequested.value = false;
   }
 }
 
@@ -956,7 +976,7 @@ onMounted(() => {
       const active = controller;
       if (!active) return;
       const phase = active.getSnapshot().phase;
-      if (isActive && phase === 'background') void active.returnToForeground().catch((error: unknown) => {
+      if (isActive && phase === 'background') void active.returnToForeground({ reconnect: appSettings.reconnectOnReturn }).catch((error: unknown) => {
         recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
       });
@@ -1145,6 +1165,21 @@ onBeforeUnmount(() => {
         @click="retryDataImport"
       >
         {{ installedDataMigrationState.retrying ? 'Checking…' : installedDataMigrationState.status === 'partial' ? 'Check installed data again' : 'Retry import' }}
+      </button>
+    </section>
+
+    <section
+      v-if="navigation.route === 'home' && currentPhase === 'lost' && connectionSnapshot?.hostId"
+      class="migration-error"
+      role="alert"
+      data-testid="reconnect-banner"
+    >
+      <div class="migration-error__copy">
+        <strong>Disconnected</strong>
+        <p>{{ connectionSnapshot.error || 'The connection closed.' }}</p>
+      </div>
+      <button class="small-action" type="button" data-testid="ssh-reconnect" :disabled="reconnectRequested" @click="reconnectHost">
+        {{ reconnectRequested ? 'Reconnecting…' : 'Reconnect' }}
       </button>
     </section>
 

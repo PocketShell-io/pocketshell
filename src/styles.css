@@ -313,6 +313,16 @@ button { color: inherit; }
   color: var(--fg);
   font: 14px var(--font-ui);
 }
+.settings-control:has(> .settings-switch) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.settings-switch {
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  accent-color: var(--accent);
+}
 .settings-control select:focus, .settings-control input:focus-visible {
   border-color: var(--accent);
   outline: 2px solid var(--accent-soft);

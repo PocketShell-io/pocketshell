@@ -5,6 +5,9 @@ import '@ui/styles.css';
 import '@xterm/xterm/css/xterm.css';
 import './styles.css';
 import { applySharedUiDefaults } from './sharedUiDefaults';
+import { installAndroidPlatformServices } from './platform/androidPlatformServices';
 
 applySharedUiDefaults(document.documentElement);
-createApp(App).use(createPinia()).mount('#app');
+const app = createApp(App);
+installAndroidPlatformServices(app, window);
+app.use(createPinia()).mount('#app');

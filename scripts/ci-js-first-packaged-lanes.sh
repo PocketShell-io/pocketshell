@@ -71,9 +71,20 @@ else
   composer_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$copy_status"
+if scripts/connected-js-settings.sh \
+  --suffix i2855ci \
+  --port 2222 \
+  --container pocketshell-test-agents \
+  --run-id "js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  settings_status=0
+else
+  settings_status=$?
+fi
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || copy_status != 0 )); then
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s settings=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$settings_status" "$copy_status"
+
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || settings_status != 0 || copy_status != 0 )); then
   exit 1
 fi

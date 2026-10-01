@@ -84,6 +84,9 @@ jobs:
       - name: Check fail-closed packaged Files result guard
         run: scripts/check-js-files-results.py --self-test
 
+      - name: Check fail-closed packaged settings and support result guard
+        run: scripts/check-js-settings-results.py --self-test
+
       - name: Check JS Android journey dispatch guard
         run: |
           scripts/check-test-validity.sh --j1-only --self-test
@@ -98,6 +101,7 @@ jobs:
           tests/scripts/avd-lock-test.sh
           tests/scripts/avd-lock-sharing-test.sh
           scripts/test-gradle-output-lock.sh
+          tests/scripts/js-fixture-port-lock-test.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
 
       - name: Build Android debug APK
@@ -251,6 +255,11 @@ jobs:
             --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Settings scripts/check-js-settings-results.py \
+            --results-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --reconnect-evidence "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/reconnect-evidence.json" \
+            --host-listing "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host-pocketshell-sessions-list.json"
 
           composer_root="android/app/build/outputs/js-composer"
           composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
@@ -309,6 +318,7 @@ jobs:
             android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
             android/app/build/outputs/js-lifecycle/**
             android/app/build/outputs/js-files/**
+            android/app/build/outputs/js-settings/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture

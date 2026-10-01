@@ -21,6 +21,45 @@ The executable old-to-new route map, including the current available, partial, i
 | `Diagnostics`, `DiagnosticReport` | On-device diagnostics log and crash-report detail/share | #2861 settings/diagnostics/lifecycle. Android replacement journey `J16SettingsSupportJourney.kt` plus report export assertion. |
 | `About`, `Update` | Build identity, release check and Android update handoff | #2861 settings/diagnostics/lifecycle. Android replacement journey under #2861. |
 
+### Settings, diagnostics and About/Update gap list (#2861)
+
+Behavioral reference: `origin/release/0.5.x` `shared/ui-screens/.../settings/*`, `app2/.../settings/SettingsRepository.kt`, `app2/.../crash/*` and `app2/.../release/*`. The maintainer's decisions are to carry everything over with no product cuts, and to have Android run the shared app from `pocketshell-core/packages/ui` (#2936) with no Android-only screens.
+
+Shared settings, diagnostics and About therefore live in pocketshell-core, on branch `issue-2861-shared-settings`:
+
+- `packages/ui` `SettingsView`, `stores/settings.ts`, `DiagnosticsPanel.vue`, `settingsSections.ts` and `diag.ts`;
+- core `appSettingsPolicy.ts`, `releaseCheck.ts`, `diagnosticReports.ts` and `ConnectionController`.
+
+Android-only pieces stay in this repository behind the shared seams. They are wired in `src/platform/` and `android/`, and plug into the `settingsSections` extension point once #2936 mounts the shared app.
+
+| 0.5.x setting or surface | Owner and status |
+|---|---|
+| Terminal text size, theme | Done (Android route today; shared `SettingsView` Display group). |
+| Show common keys (`show_common_keys`) | Pending with #2884: the fast-keys dock owns its consumer. It registers as a platform settings section. |
+| Dictation language and silence window | #2857 / PR #2897. On the shared path this is an Android settings section. |
+| Background grace 30 s / 1 min / 90 s / 5 min / 10 min | Done. Core `BACKGROUND_GRACE_OPTIONS` lists all five, and `ConnectionController` caps grace at 10 minutes by default (`maxBackgroundGraceMs`). The Android route and importer both use the core list, so a legacy 10-minute value imports exactly. Shared `SettingsView` shows it where `api.app.backgroundGrace` is set. |
+| Reconnect when I return (`reconnect_when_return`) | Done. Core `returnToForeground({ reconnect })` releases a grace-spent connection and waits in `lost`; `reconnect()` reattaches the same session. Grace and this switch have one owner, the shared settings store `pocketshell.settings.v1` (D42): the Android lifecycle reads it, and both the shared Connections group and the phone Connections route edit it. The phone shows a Reconnect banner while `lost`. The shared desktop/web workspace already has its own Reconnect banner; honouring the switch in the shared connection store is #2936's wiring. |
+| Enter-key delay (`agent_submit_enter_delay_ms`) | Done in the shared composer. `useComposerSend` reads `settings.submitEnterDelayMs` per send (default 250 ms, 0–1000 in 50 ms steps). The importer writes the legacy value into the shared settings store. The Android route's composer adopts it with #2936. |
+| Usage warning threshold, Reset advanced defaults | Done in the shared Advanced group. The threshold defaults to not set, which keeps the shipped desktop/web meter bands (core `usageMeterTone`); only an explicit threshold (or an imported 0.5.x one) switches to the threshold bands. |
+| Connections → per-host workspace roots | #2924 / #2925. |
+| Account & sync | #2852. |
+| Diagnostics list, report, export, clear | Done (Android route today). The shared `DiagnosticsPanel` covers the same flow over `api.diagnostics`. |
+| Delete one report | Done in shared `DiagnosticsPanel` with the Android `api.diagnostics` implementation (`src/platform/androidDiagnostics.ts`). |
+| Uncaught-error capture | Done. Shared `installDiagCapture` covers Vue, unhandled rejections and window errors, and Android installs the same capture at startup (`src/platform/androidPlatformServices.ts`). Native Java crashes go through `NativeCrashRecorder` plus the `NativeCrashReports` plugin; the recorder writes exception classes and stack frames only, never messages, so nothing sensitive crosses the bridge or reaches debug logcat. All reports pass core redaction (hosts, credentials, key blocks, known host-store names). |
+| Imported 0.5.x crash reports and diagnostic history | Done. The installed-data import stages them read-only; `api.diagnostics` lists them redacted by core `diagnosticReports.ts`. Deleting one hides it, and the source files are never modified. |
+| About: installed version and versionCode | Done as `api.app.info` (Android: `App.getInfo()`), shown by the shared About group. |
+| Update check, release notes, open release, update banner | Done. Core `releaseCheck.ts` plus the Android `api.update` capability hand the download to `ACTION_VIEW`, and the shared `UpdateBanner` and Updates group render it. Per-worktree test installs omit the capability so journeys stay deterministic. |
+| `update_check` preferences | Deliberately expired: they are bookkeeping, not user data. #2860 leaves the source file untouched. |
+| Open-source licenses | Pending: a real licenses screen is still to be built (it was a toast placeholder in 0.5.x). |
+
+Packaged proof: API 35 `JsSettingsSupportJourneyTest` via `scripts/connected-js-settings.sh`, wired as the `settings` lane of `scripts/ci-js-first-packaged-lanes.sh`.
+
+- `j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport` covers J16: a native crash, uncaught errors and a real SSH bridge failure to a named host, seeded with host names, a PKCS#8 block, a password and a Bearer token; none survive in the reports or (for the native path) the same-run logcat. Then review, per-report delete, clear and export.
+- `j24SettingsDestinationsReachableWithAndroidBackAndPersist` covers J24: every settings destination and Android Back, plus the 10-minute grace and the reconnect switch persisting in the shared store across activity recreation.
+- `reconnectWhenIReturnOffWaitsThenReconnectsSameSession` (Docker agents fixture): with the switch off, a session outlives grace, the app waits in `lost` with a visible Reconnect, and Reconnect reattaches the same host session on a new connection, checked against the host's own session list.
+- Theme and terminal text size still live in the phone blob `pocketshell.js.settings.v1` beside the shared store's `theme`/`terminalFontSize`; they move to the shared store when #2936 mounts the shared app.
+- The class name is distinct from #2897's voice-settings `J24SettingsReachJourney`.
+
 ## Existing Android journeys → replacement tests
 
 All 24 `*Journey.kt` classes under `app2/src/androidTest/` are mapped below. Replacement tests must run against the packaged WebView APK; host behavior assertions use the real Docker fixture and an independent host-side oracle. These target names are proposed test contracts, not tests already present.

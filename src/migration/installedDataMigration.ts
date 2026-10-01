@@ -1,5 +1,6 @@
 import { Capacitor } from '@capacitor/core';
 import { reactive } from 'vue';
+import { parseBackgroundGraceMs, parseSubmitEnterDelayMs, parseUsageWarnPercent } from '@pocketshell/core';
 import {
   installedDataMigrationNative,
   type NativeAssetChunk,
@@ -9,6 +10,8 @@ import {
 } from '../native/installedDataMigration';
 
 export const SETTINGS_STORAGE_KEY = 'pocketshell.js.settings.v1';
+/** The shared app's settings store (core packages/ui `stores/settings.ts`). */
+export const SHARED_SETTINGS_STORAGE_KEY = 'pocketshell.settings.v1';
 export const IMPORT_DATABASE_NAME = 'pocketshell-installed-data-v1';
 export const IMPORT_RECORD_ID = 'legacy-import-v1';
 export const IMPORT_STATUS_KEY = 'records';
@@ -214,6 +217,8 @@ function readLegacySetting(snapshot: NativeLegacySnapshot, key: string): unknown
 
 export interface PreparedLocalStorageWrites {
   settings?: string;
+  /** Carried-over preferences only the shared app's settings store owns. */
+  sharedSettings?: string;
   trustPins: Array<{ key: string; value: string }>;
   warnings: string[];
 }
@@ -249,20 +254,30 @@ export function prepareLocalStorageWrites(
     else warnings.push('The legacy terminal text size is preserved in the migration record but cannot be represented by the current settings range.');
   }
 
+  // Grace and reconnect-on-return have ONE owner: the shared settings store
+  // (pocketshell.settings.v1) that the Android lifecycle reads and the shared
+  // Settings screen edits (D42). A value an earlier JS build kept in the local
+  // blob still counts as already set.
+  const lifecycle: Record<string, unknown> = {};
   const oldGrace = readLegacySetting(snapshot, 'background_grace_millis');
-  if (oldGrace !== undefined && !hasOwn(settings, 'backgroundGraceMs')) {
-    const grace = typeof oldGrace === 'string' ? Number(oldGrace) : oldGrace;
-    if (!Number.isSafeInteger(grace) || ![30_000, 90_000, 300_000].includes(grace as number)) {
+  if (oldGrace !== undefined) {
+    const grace = parseBackgroundGraceMs(oldGrace);
+    if (grace === undefined) {
       throw new InstalledDataMigrationError('The saved background grace period is not supported by the current settings.');
     }
-    settings.backgroundGraceMs = grace;
+    if (!hasOwn(settings, 'backgroundGraceMs')) lifecycle.backgroundGraceMs = grace;
+  }
+  const oldReconnect = readLegacySetting(snapshot, 'reconnect_when_return');
+  if (typeof oldReconnect === 'boolean' && !hasOwn(settings, 'reconnectOnReturn')) {
+    lifecycle.reconnectOnReturn = oldReconnect;
   }
 
-  const settingsChanged = settings.terminalFontSize !== originalSettings.terminalFontSize
-    || settings.backgroundGraceMs !== originalSettings.backgroundGraceMs;
-  const settingsWrite = settingsChanged || (serialized === null && (oldFontPx !== undefined || oldGrace !== undefined))
+  const settingsChanged = settings.terminalFontSize !== originalSettings.terminalFontSize;
+  const settingsWrite = settingsChanged || (serialized === null && oldFontPx !== undefined)
     ? JSON.stringify(settings)
     : undefined;
+
+  const sharedSettingsWrite = prepareSharedSettingsWrite(snapshot, storage, lifecycle);
 
   const trustPins: PreparedLocalStorageWrites['trustPins'] = [];
   const hosts = snapshot.database.tables.hosts ?? [];
@@ -290,7 +305,50 @@ export function prepareLocalStorageWrites(
     trustPins.push({ key, value });
   }
 
-  return { settings: settingsWrite, trustPins, warnings };
+  return {
+    settings: settingsWrite,
+    ...(sharedSettingsWrite !== undefined ? { sharedSettings: sharedSettingsWrite } : {}),
+    trustPins,
+    warnings,
+  };
+}
+
+/**
+ * The 0.5.x lifecycle (grace, reconnect-on-return) and Advanced values (usage
+ * warning threshold, composer Enter delay) go to the shared settings store,
+ * parsed by core's policy. An existing shared value always wins; an
+ * unreadable shared blob is left untouched.
+ */
+function prepareSharedSettingsWrite(
+  snapshot: NativeLegacySnapshot,
+  storage: StringStorage,
+  lifecycle: Record<string, unknown>,
+): string | undefined {
+  const mapped: Record<string, unknown> = { ...lifecycle };
+  const warn = parseUsageWarnPercent(readLegacySetting(snapshot, 'usage_warn_threshold_percent'));
+  if (warn !== undefined) mapped.usageWarnPercent = warn;
+  const delay = parseSubmitEnterDelayMs(readLegacySetting(snapshot, 'agent_submit_enter_delay_ms'));
+  if (delay !== undefined) mapped.submitEnterDelayMs = delay;
+  if (Object.keys(mapped).length === 0) return undefined;
+  const serialized = storage.getItem(SHARED_SETTINGS_STORAGE_KEY);
+  let current: Record<string, unknown> = {};
+  if (serialized !== null) {
+    try {
+      const parsed: unknown = JSON.parse(serialized);
+      if (!isRecord(parsed)) return undefined;
+      current = parsed;
+    } catch {
+      return undefined;
+    }
+  }
+  const next = { ...current };
+  let changed = false;
+  for (const [key, value] of Object.entries(mapped)) {
+    if (hasOwn(current, key)) continue;
+    next[key] = value;
+    changed = true;
+  }
+  return changed ? JSON.stringify(next) : undefined;
 }
 
 function readStoredFingerprint(raw: string): string | null {
@@ -311,6 +369,7 @@ function applyLocalStorageWrites(
 ): PreparedLocalStorageWrites {
   const writes = prepareLocalStorageWrites(snapshot, storage, pixelRatio);
   if (writes.settings !== undefined) storage.setItem(SETTINGS_STORAGE_KEY, writes.settings);
+  if (writes.sharedSettings !== undefined) storage.setItem(SHARED_SETTINGS_STORAGE_KEY, writes.sharedSettings);
   for (const pin of writes.trustPins) storage.setItem(pin.key, pin.value);
   return writes;
 }
@@ -655,7 +714,7 @@ export async function runInstalledDataMigration(
         const writes = applyLocalStorageWrites(priorRecord.snapshot, dependencies.storage, dependencies.pixelRatio());
         installedDataMigrationState.status = priorRecord.warnings.length > 0 ? 'partial' : 'complete';
         installedDataMigrationState.error = priorRecord.warnings.join(' ');
-        return writes.settings !== undefined;
+        return writes.settings !== undefined || writes.sharedSettings !== undefined;
       }
     }
     const snapshot = await dependencies.native.readLegacyInstalledData();
@@ -681,7 +740,7 @@ export async function runInstalledDataMigration(
     writes = applyLocalStorageWrites(snapshot, dependencies.storage, dependencies.pixelRatio());
     installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
     installedDataMigrationState.error = warnings.join(' ');
-    return writes.settings !== undefined;
+    return writes.settings !== undefined || writes.sharedSettings !== undefined;
   } catch (error) {
     installedDataMigrationState.status = 'failed';
     installedDataMigrationState.error = error instanceof Error
