@@ -318,7 +318,15 @@
         "refuses to save a host without a key",
         "asks before deleting a key a shared-app host uses, then detaches that host",
         "restores the host reference when the native delete fails",
+        "one key used by a 0.5.x host and a shared-app host: delete confirms, restores on failure, then detaches both",
+        "rolls back the earlier store when a later store refuses the detach",
         "clears hosts whose key is gone from the vault"
+      ]
+    },
+    "tests/unit/androidKeyManager.test.ts": {
+      "suite": "shared Android key manager",
+      "tests": [
+        "reports a host saved through the shared app before deleting its key"
       ]
     }
   }

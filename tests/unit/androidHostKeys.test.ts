@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CredentialKeyManager, type SshKeyReferenceStore } from '@/credentials/keyManagement';
+import { createLegacySshKeyReferenceStore } from '@/migration/legacySshKeyReferences';
+import { IMPORT_RECORD_ID, type ImportPersistence, type ImportRecord } from '@/migration/installedDataMigration';
 import type { NativeSshKeyVaultPlugin } from '@/native/sshKeyVault';
 import { AndroidHostStore } from '@/platform/android/hostStore';
 import { combineKeyReferenceStores, createAndroidHostKeyReferenceStore } from '@/platform/android/hostKeyReferences';
@@ -39,6 +41,34 @@ function fakeVault(initial = [meta(HANDLE_A, 'a')]) {
 
 function hostStore() {
   return new AndroidHostStore({ storage: new MemoryStorage(), readLegacyHosts: async () => [] });
+}
+
+/** A signed 0.5.x import record: host 41 uses HANDLE_A (key 7), host 42 another key. */
+function legacyPersistence(): { persistence: ImportPersistence; read: () => ImportRecord } {
+  let current: ImportRecord = {
+    id: IMPORT_RECORD_ID,
+    status: 'complete',
+    importedAt: 1,
+    warnings: [],
+    credentialHandles: { '7': HANDLE_A, '8': '00000000-0000-4000-8000-000000000008' },
+    credentialHandleTombstones: [],
+    snapshot: {
+      database: { tables: { hosts: [
+        { id: 41, name: 'devbox', hostname: 'dev.example', keyId: 7 },
+        { id: 42, name: 'old host', hostname: 'old.example', keyId: 8 },
+      ] } },
+    } as unknown as ImportRecord['snapshot'],
+  };
+  const persistence = {
+    async readRecord() { return current; },
+    async compareAndSetCredentialHandles(expected: Record<string, string | null>, next: Record<string, string | null>, tombstones?: { expected: number[]; next: number[] }) {
+      if (JSON.stringify(current.credentialHandles ?? {}) !== JSON.stringify(expected)) return false;
+      if (tombstones && JSON.stringify(current.credentialHandleTombstones ?? []) !== JSON.stringify(tombstones.expected)) return false;
+      current = { ...current, credentialHandles: { ...next }, ...(tombstones ? { credentialHandleTombstones: [...tombstones.next] } : {}) };
+      return true;
+    },
+  } as unknown as ImportPersistence;
+  return { persistence, read: () => current };
 }
 
 describe('Android add-host key flow', () => {
@@ -112,6 +142,47 @@ describe('Android add-host key flow', () => {
     const manager = new CredentialKeyManager(vault, combineKeyReferenceStores(legacyNone, createAndroidHostKeyReferenceStore(hosts)));
     const refs = (await manager.delete(HANDLE_A)).affectedHosts;
     await expect(manager.delete(HANDLE_A, refs)).rejects.toThrow();
+    expect(hosts.savedHosts()[0]!.keyHandleId).toBe(HANDLE_A);
+  });
+
+  it('one key used by a 0.5.x host and a shared-app host: delete confirms, restores on failure, then detaches both', async () => {
+    const { vault } = fakeVault();
+    vault.deleteKey.mockRejectedValueOnce(new Error('keystore busy'));
+    const legacy = legacyPersistence();
+    const hosts = hostStore();
+    hosts.save({ name: 'box', hostname: 'box', port: 22, user: 'u', keyHandleId: HANDLE_A });
+    const manager = new CredentialKeyManager(vault, combineKeyReferenceStores(
+      createLegacySshKeyReferenceStore(legacy.persistence), createAndroidHostKeyReferenceStore(hosts),
+    ));
+
+    const asked = await manager.delete(HANDLE_A);
+    expect(asked.status).toBe('confirmation-required');
+    expect(asked.affectedHosts.map((host) => host.hostLabel).sort()).toEqual(['box', 'devbox']);
+
+    // The native delete fails: both stores get their host back.
+    await expect(manager.delete(HANDLE_A, asked.affectedHosts)).rejects.toThrow();
+    expect(legacy.read().credentialHandles?.['7']).toBe(HANDLE_A);
+    expect(hosts.savedHosts()[0]!.keyHandleId).toBe(HANDLE_A);
+
+    // Confirmed again and the delete commits: both hosts are detached.
+    expect((await manager.delete(HANDLE_A, asked.affectedHosts)).status).toBe('deleted');
+    expect(legacy.read().credentialHandles?.['7']).toBeNull();
+    expect(hosts.savedHosts()[0]!.keyHandleId).toBe('');
+  });
+
+  it('rolls back the earlier store when a later store refuses the detach', async () => {
+    const hosts = hostStore();
+    hosts.save({ name: 'box', hostname: 'box', port: 22, user: 'u', keyHandleId: HANDLE_A });
+    const refusing: SshKeyReferenceStore = {
+      list: async () => [{ hostId: 'other:1', hostLabel: 'other' }],
+      detach: async () => false,
+      restore: async () => true,
+    };
+    const { vault } = fakeVault();
+    const manager = new CredentialKeyManager(vault, combineKeyReferenceStores(createAndroidHostKeyReferenceStore(hosts), refusing));
+    const asked = await manager.delete(HANDLE_A);
+    await expect(manager.delete(HANDLE_A, asked.affectedHosts)).rejects.toThrow(/associations changed/);
+    expect(vault.deleteKey).not.toHaveBeenCalled();
     expect(hosts.savedHosts()[0]!.keyHandleId).toBe(HANDLE_A);
   });
 
