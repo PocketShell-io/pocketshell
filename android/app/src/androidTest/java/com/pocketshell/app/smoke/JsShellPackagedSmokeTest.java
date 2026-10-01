@@ -507,6 +507,7 @@ public final class JsShellPackagedSmokeTest {
         Insets systemInsets = readRootInsets(safeAreaTypes);
         float density = targetContext().getResources().getDisplayMetrics().density;
         float expectedSafeTop = Math.round(systemInsets.top / density);
+        final int safeAreaTypesForIme = safeAreaTypes;
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
         android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_TESTED_INSETS_DP top=" + expectedSafeTop
                 + " bottom=" + expectedSafeBottom + " source="
@@ -536,6 +537,18 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("safe bottom inset must reach CSS", expectedSafeBottom, beforeIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe bottom padding must be applied to the shell", expectedShellPaddingBottom, beforeIme.getDouble("paddingBottom"), 1.0);
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
+        if (bottomCutoutEnabled) {
+            // Remove the emulated cutout before the IME phase, and prove the
+            // bridge also follows the inset back down to the device's own
+            // value, so the IME checks below run on the unmodified device.
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
+            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
+            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
+        }
+        expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
@@ -543,7 +556,8 @@ public final class JsShellPackagedSmokeTest {
         tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);
-        awaitImeSafeAreaSettled(expectedSafeTop);
+        awaitImeSafeAreaSettled(safeAreaTypesForIme, density);
+        float liveSafeTopDuringIme = Math.round(readRootInsets(safeAreaTypesForIme).top / density);
 
         JSONObject duringIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
@@ -568,7 +582,8 @@ public final class JsShellPackagedSmokeTest {
                 + "viewportScale: window.visualViewport ? window.visualViewport.scale : 1"
                 + "});})()");
         android.util.Log.i("JsShellPackagedSmokeTest", "IME_SAFE_AREA dom=" + duringIme + "; android=" + nativeImeState());
-        assertEquals("top system bar clearance must persist while the IME is open", expectedSafeTop, duringIme.getDouble("safeTop"), 1.0);
+        assertEquals("top system bar clearance must persist while the IME is open (native top while the IME is open)",
+                liveSafeTopDuringIme, duringIme.getDouble("safeTop"), 1.0);
         assertEquals("IME inset must replace the navigation safe-area padding", 0.0, duringIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe-area padding must remain clear of the IME", 0.0, duringIme.getDouble("paddingBottom"), 1.0);
         assertTrue("JS keyboard mode must follow native IME visibility", duringIme.getBoolean("keyboardVisible"));
@@ -587,6 +602,18 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitImeVisible(false);
+    }
+
+    private void awaitRootBottomInsetPx(int safeAreaTypes, int expectedPx) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int bottom = -1;
+        while (SystemClock.uptimeMillis() < deadline) {
+            bottom = readRootInsets(safeAreaTypes).bottom;
+            if (bottom == expectedPx) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("bottom inset did not return to " + expectedPx + "px after removing the emulated cutout (bottom="
+                + bottom + "px)");
     }
 
     private void enableEmulatedBottomCutout(int safeAreaTypes) throws Exception {
@@ -929,12 +956,15 @@ public final class JsShellPackagedSmokeTest {
      * root CSS value, keyboard state, and actual shell padding to settle;
      * assertions still fail if navigation-bar padding remains under the IME.
      */
-    private void awaitImeSafeAreaSettled(float expectedSafeTop) throws Exception {
+    private void awaitImeSafeAreaSettled(int safeAreaTypes, float density) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         JSONObject previous = null;
         JSONObject latest = imeSafeAreaDomState();
         int stableSamples = 0;
+        float expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
         while (SystemClock.uptimeMillis() < deadline) {
+            // CSS must track the device's live top inset while the IME is open.
+            expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
             boolean correctInsets = closeTo(latest.optDouble("safeTop"), expectedSafeTop, 1.0)
                     && closeTo(latest.optDouble("safeBottom"), 0.0, 0.5)
                     && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5)
@@ -955,7 +985,7 @@ public final class JsShellPackagedSmokeTest {
             latest = imeSafeAreaDomState();
         }
         throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: DOM=" + latest
-                + "; Android=" + nativeImeState());
+                + "; nativeSafeTopDp=" + expectedSafeTop + "; Android=" + nativeImeState());
     }
 
     private JSONObject imeSafeAreaDomState() throws Exception {
