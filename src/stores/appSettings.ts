@@ -2,13 +2,15 @@ import { defineStore } from 'pinia';
 import { parseFontSize } from '@ui/fonts';
 import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
+/**
+ * Phone-route preferences not owned by the shared settings store (theme,
+ * text size, and the Android-only dictation language and silence window).
+ * Background grace and reconnect-on-return are NOT here: their one
+ * owner is the shared settings store (core packages/ui `stores/settings.ts`,
+ * key `pocketshell.settings.v1`, D42), which the Connections group edits and
+ * the Android lifecycle reads.
+ */
 export const SETTINGS_STORAGE_KEY = 'pocketshell.js.settings.v1';
-
-export const BACKGROUND_GRACE_OPTIONS = [
-  { milliseconds: 30_000, label: '30 seconds' },
-  { milliseconds: 90_000, label: '90 seconds · recommended' },
-  { milliseconds: 300_000, label: '5 minutes' },
-] as const;
 
 export const VOICE_LANGUAGE_AUTO = 'auto' as const;
 export const VOICE_LANGUAGE_OPTIONS = [
@@ -28,7 +30,6 @@ export const VOICE_SILENCE_MAX_SECONDS = 60;
 export interface AppSettings {
   themeChoice: string;
   terminalFontSize: number;
-  backgroundGraceMs: number;
   voiceLanguage: VoiceLanguageCode;
   voiceSilenceSeconds: number;
 }
@@ -36,7 +37,6 @@ export interface AppSettings {
 export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = {
   themeChoice: THEME_CHOICE_DEFAULT,
   terminalFontSize: 16,
-  backgroundGraceMs: 90_000,
   voiceLanguage: VOICE_LANGUAGE_AUTO,
   voiceSilenceSeconds: VOICE_SILENCE_DEFAULT_SECONDS,
 };
@@ -52,10 +52,6 @@ function browserStorage(): SettingsStorage | null {
   } catch {
     return null;
   }
-}
-
-function isGracePeriod(value: unknown): value is AppSettings['backgroundGraceMs'] {
-  return BACKGROUND_GRACE_OPTIONS.some((option) => option.milliseconds === value);
 }
 
 export function normalizeVoiceLanguage(value: unknown): VoiceLanguageCode {
@@ -81,9 +77,6 @@ export function parseAppSettings(raw: unknown): AppSettings {
   return {
     themeChoice: parseThemeChoice(input.themeChoice) ?? DEFAULT_APP_SETTINGS.themeChoice,
     terminalFontSize: parseFontSize(input.terminalFontSize) ?? DEFAULT_APP_SETTINGS.terminalFontSize,
-    backgroundGraceMs: isGracePeriod(input.backgroundGraceMs)
-      ? input.backgroundGraceMs
-      : DEFAULT_APP_SETTINGS.backgroundGraceMs,
     voiceLanguage: normalizeVoiceLanguage(input.voiceLanguage ?? input.dictationLanguageTag),
     voiceSilenceSeconds: normalizeVoiceSilenceSeconds(
       input.voiceSilenceSeconds
@@ -96,7 +89,7 @@ export function readAppSettings(storage: SettingsStorage | null = browserStorage
   if (!storage) return { ...DEFAULT_APP_SETTINGS };
   try {
     const serialized = storage.getItem(SETTINGS_STORAGE_KEY);
-    return serialized === null ? { ...DEFAULT_APP_SETTINGS } : parseAppSettings(JSON.parse(serialized));
+    return parseAppSettings(serialized === null ? null : JSON.parse(serialized));
   } catch {
     return { ...DEFAULT_APP_SETTINGS };
   }
@@ -124,11 +117,6 @@ export const useAppSettings = defineStore('appSettings', {
       const parsed = parseFontSize(size);
       if (parsed === undefined) return;
       this.terminalFontSize = parsed;
-      this.persist();
-    },
-    setBackgroundGraceMs(milliseconds: unknown) {
-      if (!isGracePeriod(milliseconds)) return;
-      this.backgroundGraceMs = milliseconds;
       this.persist();
     },
     setVoiceLanguage(language: unknown) {

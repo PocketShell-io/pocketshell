@@ -1,12 +1,13 @@
 export interface AppLifecycleController {
   getSnapshot(): { phase: string };
   enterBackground(graceMs: number): Promise<void>;
-  returnToForeground(): Promise<void>;
+  returnToForeground(options: { reconnect: boolean }): Promise<void>;
 }
 
 export interface AppLifecycleOptions {
   getController: () => AppLifecycleController | null;
   getBackgroundGraceMs: () => number;
+  getReconnectOnReturn: () => boolean;
   onError: (error: unknown) => void;
 }
 
@@ -14,6 +15,7 @@ export interface AppLifecycleOptions {
 export function createAppLifecycleHandler({
   getController,
   getBackgroundGraceMs,
+  getReconnectOnReturn,
   onError,
 }: AppLifecycleOptions): (isActive: boolean) => void {
   let appIsActive = true;
@@ -35,7 +37,7 @@ export function createAppLifecycleHandler({
         // latest state after awaiting it so the active app cannot remain in the
         // background phase with its PTY grace close still scheduled.
         if (getController() === active && appIsActive && active.getSnapshot().phase === 'background') {
-          await active.returnToForeground();
+          await active.returnToForeground({ reconnect: getReconnectOnReturn() });
         }
       })
       .catch(onError);

@@ -564,7 +564,7 @@ make_lifecycle_checkout() {
     chmod +x "$root/scripts/$file"
   done
   for file in avd-lock.sh disk-preflight.sh gradle-output-lock.sh js-lifecycle-cleanup.sh \
-      android-input-preflight.sh; do
+      android-input-preflight.sh js-fixture-port-lock.sh; do
     cp "$ROOT_DIR/scripts/lib/$file" "$root/scripts/lib/$file"
   done
   cp "$ROOT_DIR/tests/docker/test_key" "$root/tests/docker/test_key"
@@ -684,12 +684,21 @@ lifecycle_lane_background_children_do_not_inherit_the_serial_lock() {
     fail "only the lifecycle lane shell may hold the serial lock; holders: ${holder_pids:-<none>}"
   }
 
+  # #2861: the lane also owns the Docker fixture port for the whole run. The
+  # port must be held (by its own holder process, which the AVD-holder check
+  # above already proves carries no serial-lock FD), and freed on exit.
+  local port_lock="$SANDBOX/avd-locks/agents-port-lock-2222"
+  [[ -e "$port_lock" ]] && ! "$REAL_FLOCK" -n "$port_lock" true \
+    || fail 'lifecycle lane is running without holding the fixture port lock'
+
   touch "$SANDBOX/device-state/$run_id.release"
   if wait "$lane_pid"; then rc=0; else rc=$?; fi
   forget_group "$lane_pid"
   [[ "$rc" == 3 ]] || { cat "$SANDBOX/$run_id.err" >&2; fail "lifecycle lane should return the instrumentation exit 3, got $rc"; }
   wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$lane_pid" 3 \
     || fail 'serial lock remained held after the failed lifecycle lane exited'
+  wait_for_serial_flock_reclaim "$port_lock" "$lane_pid" 3 \
+    || fail 'fixture port lock remained held after the failed lifecycle lane exited'
 }
 
 ALL_CASES=(

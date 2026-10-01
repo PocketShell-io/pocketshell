@@ -246,7 +246,7 @@ describe('Android durable storage seam', () => {
     const committed = JSON.parse(writer.committed.get(HOST_SNIPPETS_STORAGE_KEY) ?? 'null');
     expect(committed.snippets.map((item: { label: string }) => item.label)).toEqual(['keep']);
 
-    persistAppSettings({ ...DEFAULT_APP_SETTINGS, themeChoice: 'gruvbox-dark', terminalFontSize: 16, backgroundGraceMs: 90_000 }, local);
+    persistAppSettings({ ...DEFAULT_APP_SETTINGS, themeChoice: 'gruvbox-dark', terminalFontSize: 16 }, local);
     expect(JSON.parse(writer.committed.get(SETTINGS_STORAGE_KEY) ?? '{}').themeChoice).toBe('gruvbox-dark');
     expect(readAppSettings(local).themeChoice).toBe('gruvbox-dark');
 

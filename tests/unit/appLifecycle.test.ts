@@ -27,6 +27,7 @@ describe('native app lifecycle transitions', () => {
     const handleAppState = createAppLifecycleHandler({
       getController: () => controller,
       getBackgroundGraceMs: () => 12_000,
+      getReconnectOnReturn: () => false,
       onError,
     });
 
@@ -38,6 +39,7 @@ describe('native app lifecycle transitions', () => {
     await vi.waitFor(() => expect(controller.returnToForeground).toHaveBeenCalledOnce());
     expect(controller.enterBackground).toHaveBeenCalledOnce();
     expect(controller.enterBackground).toHaveBeenCalledWith(12_000);
+    expect(controller.returnToForeground).toHaveBeenCalledWith({ reconnect: false });
     expect(phase).toBe('live');
     expect(onError).not.toHaveBeenCalled();
   });

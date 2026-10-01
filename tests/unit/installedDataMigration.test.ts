@@ -4,6 +4,7 @@ import {
   InstalledDataMigrationError,
   IMPORT_RECORD_ID,
   SETTINGS_STORAGE_KEY,
+  SHARED_SETTINGS_STORAGE_KEY,
   installedDataMigrationState,
   prepareLocalStorageWrites,
   readImportedLegacyHosts,
@@ -210,10 +211,46 @@ describe('installed Android data migration', () => {
     const mapped = prepareLocalStorageWrites(snapshot, empty, 2);
     expect(JSON.parse(mapped.settings ?? '{}')).toEqual({
       terminalFontSize: 16,
-      backgroundGraceMs: 90_000,
       voiceLanguage: 'de',
       voiceSilenceSeconds: 8,
     });
+    expect(JSON.parse(mapped.sharedSettings ?? '{}')).toEqual({ backgroundGraceMs: 90_000 });
+  });
+
+  it('imports every 0.5.x background-grace option, reconnect choice and Advanced values instead of failing the import', () => {
+    const imported = (graceMillis: string, extra: Record<string, { type: string; value: unknown }> = {}, storage = new MemoryStorage()) => {
+      const snapshot = legacySnapshot();
+      snapshot.preferences.next_settings!.entries = {
+        background_grace_millis: { type: 'long', value: graceMillis },
+        ...extra,
+      };
+      return prepareLocalStorageWrites(snapshot, storage, 2);
+    };
+
+    for (const grace of [30_000, 60_000, 90_000, 300_000, 600_000]) {
+      const writes = imported(String(grace));
+      expect(JSON.parse(writes.sharedSettings ?? '{}').backgroundGraceMs, String(grace)).toBe(grace);
+      expect(writes.settings).toBeUndefined();
+      expect(writes.warnings).toEqual([]);
+    }
+    expect(() => imported('45000')).toThrow(InstalledDataMigrationError);
+
+    const advanced = imported('90000', {
+      reconnect_when_return: { type: 'boolean', value: false },
+      usage_warn_threshold_percent: { type: 'int', value: 65 },
+      agent_submit_enter_delay_ms: { type: 'int', value: 400 },
+    });
+    expect(JSON.parse(advanced.sharedSettings ?? '{}')).toEqual({
+      backgroundGraceMs: 90_000, reconnectOnReturn: false, usageWarnPercent: 65, submitEnterDelayMs: 400,
+    });
+
+    const shared = new MemoryStorage();
+    shared.setItem(SHARED_SETTINGS_STORAGE_KEY, JSON.stringify({ usageWarnPercent: 90, theme: 'nord' }));
+    const kept = imported('90000', {
+      usage_warn_threshold_percent: { type: 'int', value: 65 },
+      agent_submit_enter_delay_ms: { type: 'int', value: 400 },
+    }, shared);
+    expect(JSON.parse(kept.sharedSettings ?? '{}')).toEqual({ usageWarnPercent: 90, theme: 'nord', backgroundGraceMs: 90_000, submitEnterDelayMs: 400 });
   });
 
   it('stages complete history, trust and asset bytes before marking the import complete', async () => {
@@ -259,10 +296,10 @@ describe('installed Android data migration', () => {
     });
     expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({
       terminalFontSize: 16,
-      backgroundGraceMs: 90_000,
       voiceLanguage: 'de',
       voiceSilenceSeconds: 8,
     }));
+    expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBe(JSON.stringify({ backgroundGraceMs: 90_000 }));
     expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
   });
 
@@ -298,10 +335,10 @@ describe('installed Android data migration', () => {
     expect(native.readLegacyInstalledData).not.toHaveBeenCalled();
     expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({
       terminalFontSize: 16,
-      backgroundGraceMs: 90_000,
       voiceLanguage: 'de',
       voiceSilenceSeconds: 8,
     }));
+    expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBe(JSON.stringify({ backgroundGraceMs: 90_000 }));
     expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
   });
 

@@ -42,7 +42,9 @@ import SshKeysScreen from './components/SshKeysScreen.vue';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
+import { useSettingsStore } from '@ui/app/stores/settings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
+import { rememberDiagnosticTerms } from './platform/androidDiagnostics';
 import { ConnectionController } from './session/connectionController';
 import { createAppLifecycleHandler } from './session/appLifecycle';
 import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
@@ -125,6 +127,8 @@ type SnippetEvidenceWindow = Window & {
 
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
+// Background grace and reconnect-on-return live in the shared settings store (D42).
+const sharedSettings = useSettingsStore();
 const diagnostics = useDiagnosticsStore();
 // Shared with the shared app (#2936) so key deletes warn about every host.
 const keyManager = androidKeyManager;
@@ -834,6 +838,8 @@ async function connectHost() {
   if (migrationBlocksConnection.value) return;
   const host = makeHostTarget();
   if (!host) return;
+  rememberDiagnosticTerms([host.hostname, host.username, host.hostId,
+    ...importedLegacyHosts.value.flatMap((saved) => [saved.name, saved.hostname, saved.username])]);
   const passphrase = host.credential.kind === 'key-handle' ? host.credential.passphrase ?? undefined : undefined;
   pendingTrustPassphrase = passphrase;
   legacyKeyPassphrase.value = '';
@@ -862,6 +868,23 @@ async function connectHost() {
     pendingTrustPassphrase = undefined;
     recordOperationFailure('connect');
     connectionMessage.value = result.message;
+  }
+}
+
+const reconnectRequested = ref(false);
+
+/** Explicit Reconnect after a lost connection: same host, same selected session (core controller). */
+async function reconnectHost() {
+  const active = controller;
+  if (!active || reconnectRequested.value) return;
+  reconnectRequested.value = true;
+  try {
+    await active.reconnect();
+  } catch (error) {
+    recordFailure('ssh-bridge-failed', 'connect', error);
+    connectionMessage.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    reconnectRequested.value = false;
   }
 }
 
@@ -1321,7 +1344,9 @@ onMounted(() => {
   if (Capacitor.isNativePlatform()) {
     const handleAppState = createAppLifecycleHandler({
       getController: () => controller,
-      getBackgroundGraceMs: () => appSettings.backgroundGraceMs,
+      // Grace and reconnect-on-return are owned by the shared settings store (D42, #2861).
+      getBackgroundGraceMs: () => sharedSettings.backgroundGraceMs,
+      getReconnectOnReturn: () => sharedSettings.reconnectOnReturn,
       onError: (error) => {
         recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
@@ -1599,6 +1624,21 @@ onBeforeUnmount(() => {
         @click="retryDataImport"
       >
         {{ installedDataMigrationState.retrying ? 'Checking…' : installedDataMigrationState.status === 'partial' ? 'Check installed data again' : 'Retry import' }}
+      </button>
+    </section>
+
+    <section
+      v-if="navigation.route === 'home' && currentPhase === 'lost' && connectionSnapshot?.hostId"
+      class="migration-error"
+      role="alert"
+      data-testid="reconnect-banner"
+    >
+      <div class="migration-error__copy">
+        <strong>Disconnected</strong>
+        <p>{{ connectionSnapshot.error || 'The connection closed.' }}</p>
+      </div>
+      <button class="small-action" type="button" data-testid="ssh-reconnect" :disabled="reconnectRequested" @click="reconnectHost">
+        {{ reconnectRequested ? 'Reconnecting…' : 'Reconnect' }}
       </button>
     </section>
 

@@ -57,7 +57,9 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(InstalledDataMigrationPlugin.class);
         registerPlugin(DocumentContentPlugin.class);
         registerPlugin(SpeechRecognitionPlugin.class);
+        registerPlugin(NativeCrashReportsPlugin.class);
         registerPlugin(BridgeReadyPlugin.class);
+        NativeCrashRecorder.install(this);
         super.onCreate(savedInstanceState);
     }
 
