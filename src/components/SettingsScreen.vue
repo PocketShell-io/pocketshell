@@ -135,17 +135,23 @@ function setGracePeriod(event: Event) {
           <option v-for="option in BACKGROUND_GRACE_OPTIONS" :key="option.milliseconds" :value="option.milliseconds">{{ option.label }}</option>
         </select>
       </label>
-      <label class="settings-control">
+      <div class="settings-control">
         <span><strong>Reconnect when I return</strong><small>Off leaves a closed connection waiting until you tap Reconnect.</small></span>
-        <input
-          type="checkbox"
+        <!-- The shared Settings switch: a toggle icon plus an On/Off word, accent when on. -->
+        <button
+          type="button"
           role="switch"
           class="settings-switch"
+          :class="{ 'settings-switch--on': settings.reconnectOnReturn }"
           data-testid="setting-reconnect-on-return"
-          :checked="settings.reconnectOnReturn"
-          @change="settings.setReconnectOnReturn(($event.target as HTMLInputElement).checked)"
-        />
-      </label>
+          :aria-checked="settings.reconnectOnReturn"
+          aria-label="Reconnect when I return"
+          @click="settings.setReconnectOnReturn(!settings.reconnectOnReturn)"
+        >
+          <AppIcon :name="settings.reconnectOnReturn ? 'toggle-right' : 'toggle-left'" />
+          <span>{{ settings.reconnectOnReturn ? 'On' : 'Off' }}</span>
+        </button>
+      </div>
       <p class="settings-note">PocketShell does not keep the phone connection open indefinitely in the background.</p>
     </section>
   </main>

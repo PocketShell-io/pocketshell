@@ -318,10 +318,21 @@ button { color: inherit; }
   align-items: center;
 }
 .settings-switch {
-  width: 44px;
-  height: 44px;
-  margin: 0;
-  accent-color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 88px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--fg-secondary);
+  font: 600 var(--fs-300)/1 var(--font-ui);
+}
+.settings-switch--on {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 .settings-control select:focus, .settings-control input:focus-visible {
   border-color: var(--accent);
