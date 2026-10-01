@@ -134,8 +134,7 @@ public class SharedAppDockerJourneyTest {
         // late line is also the sync point that the re-join has completed.
         openFolder(folderA);
         // The background job prints after the prompt, so it shares the "$ " row.
-        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim().endsWith("
-                + JSONObject.quote("PS2936_LATE_42_" + run) + "))");
+        awaitJsTrue(terminalHasLine("PS2936_LATE_42_" + run, "endsWith"));
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         // Typing right after the re-attach's terminal reset: #2936 captured
         // "echo PS2 PS936_..." here.
@@ -426,7 +425,39 @@ public class SharedAppDockerJourneyTest {
     }
 
     private void awaitTerminalLine(String line) throws Exception {
-        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim()===" + JSONObject.quote(line) + ")");
+        awaitJsTrue(terminalHasLine(line, "equals"));
+    }
+
+    /**
+     * Whether the visible terminal shows {@code expected} as one logical line,
+     * across xterm soft wraps. The matcher is the test APK's
+     * {@code terminal-logical-lines.js} asset, which
+     * tests/unit/terminalLogicalLines.test.ts replays against captured texts
+     * (an exactly full-width line, a wrapped one, 4- and 5-digit run ids).
+     */
+    private static String terminalHasLine(String expected, String mode) throws java.io.IOException {
+        return "(" + logicalLineMatcher() + ")(" + VISIBLE_TERMINAL + ", " + JSONObject.quote(expected) + ", "
+                + JSONObject.quote(mode) + ")";
+    }
+
+    private static String logicalLineMatcher;
+
+    private static synchronized String logicalLineMatcher() throws java.io.IOException {
+        if (logicalLineMatcher == null) {
+            try (java.io.InputStream input = InstrumentationRegistry.getInstrumentation().getContext().getAssets()
+                    .open("terminal-logical-lines.js")) {
+                logicalLineMatcher = new String(readAll(input), java.nio.charset.StandardCharsets.UTF_8)
+                        .replaceFirst("(?s)^/\\*.*?\\*/\\s*", "").trim();
+            }
+        }
+        return logicalLineMatcher;
+    }
+
+    private static byte[] readAll(java.io.InputStream input) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        for (int n; (n = input.read(buffer)) > 0; ) out.write(buffer, 0, n);
+        return out.toByteArray();
     }
 
     private void setValue(String selector, String value) throws Exception {
