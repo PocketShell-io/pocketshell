@@ -59,6 +59,14 @@ describe('terminal logical-line matcher', () => {
     expect(terminalHasLine('$ echo PS2936_42_x_a1\n$ ', 'PS2936_42_x_a1', 'equals')).toBe(false);
   });
 
+  it('does not join a row shorter than the widest row (a hard newline) to the next', () => {
+    // The host printed two lines; together they spell the expected token, but
+    // the first is not full width, so it is not a soft wrap.
+    const text = '$ echo a-full-width-row-that-sets-the-width-x\nPS2936_42_r\n_a1\n$ ';
+    expect(terminalHasLine(text, 'PS2936_42_r_a1', 'equals')).toBe(false);
+    expect(terminalHasLine(text, 'PS2936_42_r_a1', 'endsWith')).toBe(false);
+  });
+
   it('does not glue a full-width row to the prompt after it', () => {
     // The old width join turned this into one "line" ending in "$  ".
     const text = `PS2936_42_${SEED8}_a1\n$  `;
