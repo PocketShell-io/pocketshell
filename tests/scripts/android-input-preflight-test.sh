@@ -57,6 +57,7 @@ case "$*" in
     cat "$state/hide" 2>/dev/null || printf 'null\n'
     ;;
   'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
+    [[ -e "$state/query-fails" ]] && { printf 'error: closed\n'; exit 1; }
     printf 'activities found:\n'
     disabled "$launcher" && [[ ! -e "$state/disable-ignored" ]] || printf '    %s/.NexusLauncherActivity\n' "$launcher"
     # The hosted post-boot race: the setup app answers HOME only once the
@@ -298,10 +299,21 @@ rm -f "$FAKE_ADB_STATE/disable-ignored"
 pocketshell_android_restore_launchers 2> /dev/null
 pass 'launcher that stays enabled fails closed'
 
+# 12b. An adb error while listing HOME providers fails the lane instead of
+#     being read as "no launcher".
+reset_state query-fails
+touch "$FAKE_ADB_STATE/query-fails"
+if preflight "$SANDBOX/query/input-preflight.txt" > "$SANDBOX/query.out" 2>&1; then
+  fail 'preflight passed although the HOME query failed'
+fi
+grep -Fq "FAIL: could not list HOME activities on $SERIAL" "$SANDBOX/query.out" \
+  || fail 'HOME query failure lacks its precise message'
+pass 'failed HOME query fails closed'
+
 # 12. The shared lock release path re-enables launchers on every lane exit.
 grep -Fq 'pocketshell_android_restore_launchers' "$ROOT_DIR/scripts/lib/avd-lock.sh" \
   || fail 'pocketshell_release_all does not restore launchers'
 pass 'pocketshell_release_all restores disabled launchers'
 
-(( CASES == 12 )) || fail "ran $CASES/12 cases"
-printf 'PASS: Android input preflight contract (%s/12 cases)\n' "$CASES"
+(( CASES == 13 )) || fail "ran $CASES/13 cases"
+printf 'PASS: Android input preflight contract (%s/13 cases)\n' "$CASES"

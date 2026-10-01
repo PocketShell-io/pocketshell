@@ -48,13 +48,15 @@ pocketshell_android_error_windows() {
 
 # Print every package that provides a HOME activity, except Android's own
 # FallbackHome (com.android.settings) and the framework resolver.
+# Fails (status 1) when the query itself did not answer, so an adb error is
+# never mistaken for "no launcher".
 pocketshell_android_home_packages() {
-  local adb="$1" serial="$2"
-  "$adb" -s "$serial" shell cmd package query-activities --brief \
-      -a android.intent.action.MAIN -c android.intent.category.HOME 2>/dev/null \
-    | tr -d '\r' \
-    | sed -nE 's#^ *([A-Za-z0-9._]+)/[A-Za-z0-9._$]+$#\1#p' \
-    | grep -vxE 'com\.android\.settings|android' \
+  local adb="$1" serial="$2" output
+  output="$("$adb" -s "$serial" shell cmd package query-activities --brief \
+      -a android.intent.action.MAIN -c android.intent.category.HOME 2>&1 | tr -d '\r')" || return 1
+  [[ "$output" == *"activities found"* || "$output" == *"No activities found"* ]] || return 1
+  sed -nE 's#^ *([A-Za-z0-9._]+)/[A-Za-z0-9._$]+$#\1#p' <<< "$output" \
+    | { grep -vxE 'com\.android\.settings|android' || true; } \
     | sort -u
 }
 
@@ -152,8 +154,13 @@ pocketshell_android_disable_launchers() {
   record="$(pocketshell_android_launcher_record "$serial")"
   deadline=$((SECONDS + ${POCKETSHELL_LAUNCHER_DISABLE_SECONDS:-60}))
   stable=0
+  local listing
   while (( stable < ${POCKETSHELL_LAUNCHER_STABLE_SAMPLES:-5} )); do
-    mapfile -t current < <(pocketshell_android_home_packages "$adb" "$serial")
+    if ! listing="$(pocketshell_android_home_packages "$adb" "$serial")"; then
+      printf 'FAIL: could not list HOME activities on %s\n' "$serial" | tee -a "$evidence" >&2
+      return 1
+    fi
+    mapfile -t current < <(printf '%s' "$listing" | sed '/^$/d')
     if (( ${#current[@]} == 0 )); then
       stable=$((stable + 1))
     else
