@@ -108,9 +108,13 @@ describe('Android PocketShellApi platform', () => {
     const received: Array<[string, string]> = [];
     hub.onData(({ shellId, data }) => received.push([shellId, new TextDecoder().decode(data)]));
 
+    let mainShell: string | null = null;
     for (const [name, id] of [['main', 'main-id'], ['tests', 'tests-id'], ['main', 'main-id']] as const) {
+      // The third pass re-joins main after its pane gave the shell up.
+      if (name === 'main' && mainShell) await hub.closeShell(mainShell);
       const attached = await hub.attachSession({ connectionId: connectionId!, sessionName: name, aplexerId: id, cols: 40, rows: 12 });
-      // The snapshot was read inside switchSession, before this id existed.
+      if (name === 'main') mainShell = attached.shellId;
+      // The snapshot was read inside attachSession, before this id existed.
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(received.filter(([shellId]) => shellId === attached.shellId)).toEqual([]);
       await hub.resize(attached.shellId, 40, 12);
@@ -146,7 +150,9 @@ describe('Android PocketShellApi platform', () => {
     await hub.sessionsList(connectionId!);
     const main1 = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
     const tests = await hub.attachSession({ connectionId: connectionId!, sessionName: 'tests', aplexerId: 'tests-id' });
-    // main's pane still holds main1 (retired) while tests is current: refused.
+    // main's pane gives its shell up (a rejoin), so main1 is retired.
+    expect(await hub.closeShell(main1.shellId)).toBe(true);
+    // A retired id with no current shell of its session: refused.
     expect(await hub.input(main1.shellId, 'wrong', 'main')).toBe(false);
     expect(native.writes).toEqual([]);
 
@@ -155,11 +161,15 @@ describe('Android PocketShellApi platform', () => {
     const typed = hub.input(main1.shellId, 'early\r', 'main');
     const main2 = await rejoin;
     expect(await typed).toBe(true);
-    expect(native.writes).toEqual(['early\r']);
+    expect(native.channelWrites).toEqual([[native.channelOf('main'), 'early\r']]);
     expect(native.opened.at(-1)!.command).toContain(":main'");
-    expect(await hub.input(tests.shellId, 'x', 'tests')).toBe(false);
+    // The fence still holds: main's retired id never types into tests.
+    expect(await hub.input(main1.shellId, 'x', 'tests')).toBe(false);
     expect(await hub.input(main2.shellId, 'late\r', 'main')).toBe(true);
-    expect(native.writes).toEqual(['early\r', 'late\r']);
+    expect(await hub.input(tests.shellId, 'b\r', 'tests')).toBe(true);
+    expect(native.channelWrites).toEqual([
+      [native.channelOf('main'), 'early\r'], [native.channelOf('main'), 'late\r'], [native.channelOf('tests'), 'b\r'],
+    ]);
   });
 
   it('a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id', async () => {
@@ -210,7 +220,7 @@ describe('Android PocketShellApi platform', () => {
     expect(received.join('')).toBe('snap');
   });
 
-  it('retires the superseded shell id when another session is attached', async () => {
+  it('keeps the first session\'s shell id live when another session is attached', async () => {
     const { native, hub } = harness();
     const { connectionId } = await hub.connect(target);
     open.push({ hub, id: connectionId! });
@@ -220,9 +230,10 @@ describe('Android PocketShellApi platform', () => {
     const main = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
     const tests = await hub.attachSession({ connectionId: connectionId!, sessionName: 'tests', aplexerId: 'tests-id' });
     expect(tests.shellId).not.toBe(main.shellId);
-    expect(exited).toEqual([main.shellId]);
-    expect(native.closedPtys).toHaveLength(1);
-    expect(await hub.input(main.shellId, 'late', 'main')).toBe(false);
+    expect(exited).toEqual([]);
+    expect(native.closedPtys).toHaveLength(0);
+    expect(await hub.input(main.shellId, 'late', 'main')).toBe(true);
+    expect(native.channelWrites).toEqual([[native.channelOf('main'), 'late']]);
   });
 
   it('keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials', async () => {
@@ -257,7 +268,7 @@ describe('Android PocketShellApi platform', () => {
   });
 
   it('maps controller phases onto the shared connection states', () => {
-    const base = { revision: 1, hostId: null, hostLabel: null, generationId: null, sessions: [], sessionListErrors: [], selectedSession: null, retryAttempt: 0, error: null, trustDecision: null, uncertainMutation: null };
+    const base = { revision: 1, hostId: null, hostLabel: null, generationId: null, sessions: [], sessionListErrors: [], selectedSession: null, terminals: [], retryAttempt: 0, error: null, trustDecision: null, uncertainMutation: null };
     expect(connectionStateFor({ ...base, phase: 'live', connectionId: 'c' })).toBe('connected');
     expect(connectionStateFor({ ...base, phase: 'background', connectionId: null })).toBe('connected');
     expect(connectionStateFor({ ...base, phase: 'awaiting-trust', connectionId: null })).toBe('connecting');

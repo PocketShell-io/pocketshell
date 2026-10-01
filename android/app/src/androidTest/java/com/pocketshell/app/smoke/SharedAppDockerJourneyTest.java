@@ -69,6 +69,14 @@ import org.junit.runner.RunWith;
  *  - a real session end on a healthy transport reads as ended, with no
  *    reconnect, no new connection and no new dial.
  * Native dials are counted at the Capacitor bridge, so a failed dial counts.
+ *
+ * #2955 (U2) adds the D28 multi-session switch oracle: two sessions in ONE
+ * folder are two tabs, each on its own controller PTY. Switching A -> B -> A
+ * must not cost A its PTY: A's screen is still in its pane, the output A
+ * printed while B was in front reached A's pane live, no tab is re-attached
+ * (exactly one native openPty per session, no closePty), and the Docker
+ * host's own capture of each session holds exactly that session's bytes,
+ * its full history included.
  */
 @RunWith(AndroidJUnit4.class)
 public class SharedAppDockerJourneyTest {
@@ -456,6 +464,162 @@ public class SharedAppDockerJourneyTest {
     }
 
     /**
+     * #2955 (U2), the D28 multi-session switch oracle: A -> B -> A between two
+     * session tabs of one folder keeps each tab's own PTY. The load-bearing
+     * evidence is host-side and bridge-side, not just the pane: the native
+     * bridge sees exactly one openPty per session and no closePty across the
+     * switches, and the Docker host's `a capture` of each session holds
+     * exactly that session's markers and none of the other's.
+     */
+    @Test
+    public void sharedAppSwitchesSessionTabsKeepingEachTerminal() throws Exception {
+        String run = Long.toString(System.currentTimeMillis(), 36);
+        File artifacts = artifactDirectory(run);
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        installRecoveryRecorder();
+        openFixtureHost(sessionRun());
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+        JSONObject transport = new JSONObject(evalString("JSON.stringify([...(window.__pocketshellConnectionJournal ?? [])]"
+                + ".reverse().find((e)=>e.transportId && e.generationId) ?? null)"));
+
+        // Two plain shells in ONE folder of this run's own: two tabs.
+        String folder = "ps-multi-" + run;
+        String tagA = "mpa-" + run;
+        String tagB = "mpb-" + run;
+        for (String tag : new String[] {tagA, tagB}) {
+            JSONObject created = awaitNativeExec("create-" + tag, transport.getString("transportId"),
+                    transport.getString("generationId"), "set -eu\nmkdir -p \"$HOME/" + folder + "\"\n"
+                    + "PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions create --json --cwd \"$HOME/" + folder
+                    + "\" -- " + shellQuote(tag) + " >/dev/null");
+            assertEquals("session " + tag + " must be created: " + created, 0, created.getInt("exitCode"));
+        }
+        awaitFolder(folder);
+        openFolder(folder);
+        awaitJsTrue(tabExpression(tagA) + " && " + tabExpression(tagB), 30_000);
+
+        // A: a long listing (its first lines scroll out of view) and a job
+        // that prints while A is NOT the tab in front.
+        selectTab(tagA);
+        String idA = awaitFocusedSessionId(tagA);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
+        typeLine("for i in $(seq 1 60); do echo PS2955_A_${i}_" + run + "; done");
+        awaitTerminalLine("PS2955_A_60_" + run);
+        String late = "(sleep 4; echo PS2955_ALATE_$((6*7))_" + run + ") &";
+        typeLine(late);
+        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\n/g, '').includes(" + JSONObject.quote(late) + ")");
+
+        // B, while A's job is still running on the host.
+        long leftA = SystemClock.uptimeMillis();
+        selectTab(tagB);
+        String idB = awaitFocusedSessionId(tagB);
+        assertFalse("the two tabs must be two host sessions", idA.equals(idB));
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$') && !" + VISIBLE_TERMINAL + ".includes('PS2955_A_')");
+        typeLine("echo PS2955_B_$((6*7))_" + run);
+        awaitTerminalLine("PS2955_B_42_" + run);
+        long stayOnB = 6_000 - (SystemClock.uptimeMillis() - leftA);
+        if (stayOnB > 0) Thread.sleep(stayOnB);
+        assertFalse("B's pane never shows A's bytes", evalString(VISIBLE_TERMINAL).contains("PS2955_A"));
+        captureScreen(new File(artifacts, "tab-b.png"));
+
+        // Back to A. A kept pane is only shown again: nothing asks the
+        // controller for anything, so no attach and no repaint — the late line
+        // A printed while B was in front can only have reached A's pane over
+        // A's own still-open PTY (the bridge counts below prove no re-attach).
+        // `a attach` holds the pane on the alternate screen, so a session's
+        // history is aplexer's (checked on the host below), and what the pane
+        // keeps is its screen: A's listing, untouched, and nothing of B's.
+        selectTab(tagA);
+        awaitJsTrue(terminalHasLine("PS2955_ALATE_42_" + run, "endsWith"));
+        String paneAOnReturn = evalString(VISIBLE_TERMINAL);
+        int rowsBefore = Integer.parseInt(evalString("String(" + VISIBLE_TERMINAL
+                + ".split('\\n').filter((l)=>/^PS2955_A_[0-9]+_/.test(l.trim())).length)"));
+        assertTrue("A's listing is still on A's screen: " + paneAOnReturn,
+                paneAOnReturn.contains("PS2955_A_60_" + run) && rowsBefore >= 5);
+        assertFalse("A's pane never shows B's bytes", paneAOnReturn.contains("PS2955_B"));
+        captureScreen(new File(artifacts, "tab-a-returned.png"));
+        typeLine("echo PS2955_A2_$((6*7))_" + run);
+        awaitTerminalLine("PS2955_A2_42_" + run);
+
+        // And B again: its own output is still in its pane, and it types.
+        selectTab(tagB);
+        awaitTerminalLine("PS2955_B_42_" + run);
+        typeLine("echo PS2955_B2_$((6*7))_" + run);
+        awaitTerminalLine("PS2955_B2_42_" + run);
+        assertFalse("B's pane never shows A's bytes", evalString(VISIBLE_TERMINAL).contains("PS2955_A"));
+        captureScreen(new File(artifacts, "tab-b-again.png"));
+
+        // Bridge evidence: one attach per session over A -> B -> A -> B, none closed.
+        JSONArray opens = new JSONArray(evalString("JSON.stringify(window.__ps2954.opens)"));
+        JSONArray closes = new JSONArray(evalString("JSON.stringify(window.__ps2954.closes)"));
+        writeText(new File(artifacts, "native-pty-calls.json"),
+                new JSONObject().put("opens", opens).put("closes", closes).toString(2));
+        Log.i(TAG, "RUN " + run + " NATIVE_PTY_OPENS " + opens + " CLOSES " + closes);
+        int opensA = 0;
+        int opensB = 0;
+        for (int i = 0; i < opens.length(); i += 1) {
+            String command = opens.getJSONObject(i).getString("command");
+            if (command.contains(tagA)) opensA += 1;
+            if (command.contains(tagB)) opensB += 1;
+        }
+        assertEquals("A is attached exactly once across the switches (no re-attach): " + opens, 1, opensA);
+        assertEquals("B is attached exactly once across the switches (no re-attach): " + opens, 1, opensB);
+        assertEquals("no PTY is closed by a tab switch: " + closes, 0, closes.length());
+
+        // Independent host oracle: each aplexer session holds its own bytes only.
+        JSONObject live = latestLiveJournalEntry();
+        String liveTransport = live.getString("transportId");
+        String liveGeneration = live.getString("generationId");
+        JSONObject captureA = awaitNativeExec("u2-capture-a-" + run, liveTransport, liveGeneration,
+                "/usr/bin/a capture --bytes 65536 " + shellQuote(idA));
+        JSONObject captureB = awaitNativeExec("u2-capture-b-" + run, liveTransport, liveGeneration,
+                "/usr/bin/a capture --bytes 65536 " + shellQuote(idB));
+        assertEquals("host capture of A must succeed: " + captureA, 0, captureA.getInt("exitCode"));
+        assertEquals("host capture of B must succeed: " + captureB, 0, captureB.getInt("exitCode"));
+        String hostA = captureA.getString("stdout");
+        String hostB = captureB.getString("stdout");
+        writeText(new File(artifacts, "host-capture-a.txt"), hostA);
+        writeText(new File(artifacts, "host-capture-b.txt"), hostB);
+        // The job prints after the prompt, so its line shares the "$ " row.
+        assertEquals("A holds its late line exactly once", 1, countLinesEndingWith(hostA, "PS2955_ALATE_42_" + run));
+        assertEquals("A holds its post-switch line exactly once", 1, countExactLines(hostA, "PS2955_A2_42_" + run));
+        assertEquals("A's history holds its first listing line exactly once", 1, countExactLines(hostA, "PS2955_A_1_" + run));
+        assertEquals("A holds its last listing line exactly once", 1, countExactLines(hostA, "PS2955_A_60_" + run));
+        assertEquals("B holds its line exactly once", 1, countExactLines(hostB, "PS2955_B_42_" + run));
+        assertEquals("B holds its post-switch line exactly once", 1, countExactLines(hostB, "PS2955_B2_42_" + run));
+        assertFalse("no byte of B reached host session A", hostA.contains("PS2955_B"));
+        assertFalse("no byte of A reached host session B", hostB.contains("PS2955_A"));
+
+        JSONObject summary = new JSONObject()
+                .put("run", run)
+                .put("sessionA", idA)
+                .put("sessionB", idB)
+                .put("nativeOpensA", opensA)
+                .put("nativeOpensB", opensB)
+                .put("nativeCloses", closes.length())
+                .put("paneListingRowsOnReturn", rowsBefore)
+                .put("hostMarkersExact", true);
+        writeText(new File(artifacts, "summary.json"), summary.toString(2));
+        Log.i(TAG, "RUN " + run + " MULTI_SESSION_SWITCH_OK " + summary);
+    }
+
+    private static String tabExpression(String tag) {
+        return "[...document.querySelectorAll('.folder-bar button.tab')].some((n)=>n.textContent.includes("
+                + JSONObject.quote(tag) + "))";
+    }
+
+    private void selectTab(String tag) throws Exception {
+        evalString("(() => {const tab=[...document.querySelectorAll('.folder-bar button.tab')].find((n)=>n.textContent"
+                + ".includes(" + JSONObject.quote(tag) + ")); if(!tab) throw new Error('no tab'); tab.click(); return 'ok';})()");
+    }
+
+    /** The aplexer id of the session the controller last attached, once it is `tag`'s. */
+    private String awaitFocusedSessionId(String tag) throws Exception {
+        String find = "[...(window.__pocketshellConnectionJournal ?? [])].reverse().find((e)=>e.phase==='live')";
+        awaitJsTrue("(" + find + ")?.selectedTag===" + JSONObject.quote(tag), WAIT_TIMEOUT_MILLIS);
+        return evalString("(" + find + ").selectedId");
+    }
+
+    /**
      * The non-happy host: the transport drops while the host refuses logins
      * (its authorized_keys is moved aside for 8 s), so the controller's
      * re-dial is refused and it gives up. The shared store must then stay
@@ -559,11 +723,6 @@ public class SharedAppDockerJourneyTest {
     }
 
     /**
-     * Add the fixture host through the Android host route, connect, create a
-     * shell session of this run's own (its own folder, so neither the other
-     * tests nor earlier lanes share it) and open it.
-     */
-    /**
      * Open this run's fixture host (shared with the other tests of the run),
      * then create a shell session of this test's own — its own folder, so
      * neither the other tests nor earlier lanes share it — and open it.
@@ -591,13 +750,18 @@ public class SharedAppDockerJourneyTest {
      * banner's text each time it changes, and native exec results.
      */
     private void installRecoveryRecorder() throws Exception {
-        String script = "(() => {window.__ps2954={lost:[],events:[],banners:[],dials:[],sawExited:false,execs:{},ready:false};"
+        String script = "(() => {window.__ps2954={lost:[],events:[],banners:[],dials:[],opens:[],closes:[],"
+                + "sawExited:false,execs:{},ready:false};"
                 + "const plugin=window.Capacitor?.Plugins?.SshCapability;"
                 // Every native dial, failed ones included: the plugin proxy
                 // resolves Capacitor.nativePromise on each call.
                 + "const nativePromise=window.Capacitor.nativePromise.bind(window.Capacitor);"
                 + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin==='SshCapability'&&method==='connect') window.__ps2954.dials.push({at:Date.now()});"
+                // Every PTY the app opens or closes (#2955): a tab switch that
+                // re-attaches would show up here as a second open.
+                + "if(plugin==='SshCapability'&&method==='openPty') window.__ps2954.opens.push({at:Date.now(),command:String(options?.command??'')});"
+                + "if(plugin==='SshCapability'&&method==='closePty') window.__ps2954.closes.push({at:Date.now(),channelId:String(options?.channelId??'')});"
                 + "return nativePromise(plugin,method,options);};"
                 + "if(!plugin?.addListener) throw new Error('SSH native event bridge missing');"
                 + "const sample=()=>{const t=document.querySelector('.link-lost-text')?.textContent?.trim();"
@@ -677,6 +841,15 @@ public class SharedAppDockerJourneyTest {
         int count = 0;
         for (String line : plain.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
             if (expected.equals(line.trim())) count += 1;
+        }
+        return count;
+    }
+
+    private static int countLinesEndingWith(String raw, String expected) {
+        String plain = raw.replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "");
+        int count = 0;
+        for (String line : plain.replace("\r\n", "\n").replace('\r', '\n').split("\n")) {
+            if (line.trim().endsWith(expected)) count += 1;
         }
         return count;
     }

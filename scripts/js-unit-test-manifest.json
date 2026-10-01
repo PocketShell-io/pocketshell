@@ -328,7 +328,7 @@
         "a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id",
         "caps output held for an unclaimed shell id, keeping the newest bytes",
         "delivers held output after a fallback when the pane never calls on its new shell id",
-        "retires the superseded shell id when another session is attached",
+        "keeps the first session's shell id live when another session is attached",
         "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
         "maps controller phases onto the shared connection states",
         "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
@@ -411,6 +411,15 @@
         "routes by the shared map plus exactly the Android host form",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
+    },
+    "tests/unit/multiPtyHub.test.ts": {
+      "suite": "Android hub keeps one PTY per attached session (#2955)",
+      "tests": [
+        "keeps every attached session live, routing each one's bytes and keystrokes to its own shell id",
+        "closes only the PTY of the shell the pane gave up",
+        "re-attaches every open session exactly once after a drop, under the same shell ids",
+        "retires only the shell whose session ended"
       ]
     }
   }

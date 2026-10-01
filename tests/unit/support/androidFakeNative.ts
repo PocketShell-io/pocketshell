@@ -51,6 +51,10 @@ export class FakeNative {
   readonly writes: string[] = [];
   readonly resizes: Array<[number, number]> = [];
   readonly closedPtys: string[] = [];
+  /** Every PTY the controller opened, with the attach command it ran. */
+  readonly channels: Array<{ channelId: string; command: string }> = [];
+  /** Every PTY write, with the channel it was addressed to. */
+  readonly channelWrites: Array<[string, string]> = [];
   sessions = [sessionJson('main', '/home/u/git/demo'), sessionJson('tests', '/home/u/git/demo')];
   /** While true every dial fails the way an unreachable host does (retryable). */
   refuseDials = false;
@@ -103,7 +107,9 @@ export class FakeNative {
       },
       openPty: async (options: SshPtyOpenOptions) => {
         this.opened.push(options);
-        return { requestId: options.requestId, connectionId: options.connectionId, generationId: options.generationId, channelId: `pty-${++this.ordinal}` };
+        const channelId = `pty-${++this.ordinal}`;
+        this.channels.push({ channelId, command: options.command });
+        return { requestId: options.requestId, connectionId: options.connectionId, generationId: options.generationId, channelId };
       },
       readPty: (options: SshPtyReadOptions) =>
         new Promise<SshPtyReadResult>((resolve) => {
@@ -125,6 +131,7 @@ export class FakeNative {
         }),
       writePty: async (options: SshPtyWriteOptions) => {
         this.writes.push(atob(options.dataBase64));
+        this.channelWrites.push([options.channelId, atob(options.dataBase64)]);
         return { ...options };
       },
       resizePty: async (options: SshPtyResizeOptions) => {
@@ -153,6 +160,23 @@ export class FakeNative {
     const channel = [...this.pendingReads.keys()].at(-1);
     if (!channel) throw new Error('no pending PTY read');
     this.resolveRead(channel, text, eof);
+  }
+
+  /** The newest channel attached to session tag `name`. */
+  channelOf(name: string): string {
+    const channel = [...this.channels].reverse().find((entry) => entry.command.includes(`:${name}'`));
+    if (!channel) throw new Error(`no PTY was opened for ${name}`);
+    return channel.channelId;
+  }
+
+  /** Deliver PTY output on one channel (its pending read must exist). */
+  outputOn(channel: string, text: string, eof = false): void {
+    if (!this.pendingReads.has(channel)) throw new Error(`no pending PTY read on ${channel}`);
+    this.resolveRead(channel, text, eof);
+  }
+
+  hasPendingReadOn(channel: string): boolean {
+    return this.pendingReads.has(channel);
   }
 
   hasPendingRead(): boolean {

@@ -248,6 +248,12 @@ function navigateHomeSurface(action: HomeSurfaceAction) {
   homeSurface.value = transitionHomeSurface(homeSurface.value, action);
 }
 
+/** The controller's session identity: id when both rows have one, else name + workspace. */
+function sameSessionRow(left: SessionRow, right: SessionRow): boolean {
+  if (left.id && right.id) return left.id === right.id;
+  return left.name === right.name && left.workspace === right.workspace;
+}
+
 function isSelectedSession(session: SessionRow): boolean {
   const selected = selectedSessionRow.value;
   if (!selected?.id || session.id !== selected.id) return false;
@@ -537,7 +543,10 @@ function bindController(next: ConnectionController) {
       lastReportedError = '';
     }
   });
-  removeTerminalOutput = next.subscribeTerminalOutput((_session, bytes) => {
+  removeTerminalOutput = next.subscribeTerminalOutput((session, bytes) => {
+    // This screen shows one terminal: only the selected session's bytes.
+    const selected = connectionSnapshot.value?.selectedSession;
+    if (selected && !sameSessionRow(selected, session)) return;
     const smokeEvidence = window as ComposerSmokeEvidenceWindow;
     const target = terminal.value;
     // Instrumentation opts in before connection setup; keep terminal output private in normal sessions.
@@ -751,11 +760,16 @@ async function attachSession(session: SessionRow) {
   if (!active) return;
   terminalAttachEpoch += 1;
   terminal.value?.clear();
-  const result = await active.switchSession(session).catch((error: unknown) => {
+  const result = await active.attachSession(session).catch((error: unknown) => {
     recordFailure('ssh-bridge-failed', 'attach-session', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
     return null;
   });
+  // This screen shows one terminal at a time: the session it left gives up
+  // its PTY (the controller would otherwise keep it open, #2955). Detached
+  // after the attach so the selection never reads empty in between.
+  const left = active.getSnapshot().terminals.filter((row) => !sameSessionRow(row, session));
+  for (const row of left) await active.detachSession(row).catch(() => undefined);
   if (result && !result.ok) {
     recordOperationFailure('attach-session');
     connectionMessage.value = result.message;
@@ -777,7 +791,9 @@ async function sendTerminalInput(data: string) {
   const attachEpoch = terminalAttachEpoch;
   terminalInputPending.value += 1;
   try {
-    const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
+    const selected = active.getSnapshot().selectedSession;
+    if (!selected) return;
+    const result = await active.writeTerminalBytes(selected, new TextEncoder().encode(data));
     if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
@@ -804,7 +820,9 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   }
   const active = controller;
   if (!active) return { ok: false, message: 'No active PTY.' };
-  const result = await active.writeTerminalBytes(bytes);
+  const selected = active.getSnapshot().selectedSession;
+  if (!selected) return { ok: false, message: 'No active PTY.' };
+  const result = await active.writeTerminalBytes(selected, bytes);
   if (result.ok) terminal.value?.scrollToBottom();
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
@@ -816,11 +834,14 @@ async function resizeTerminal(size: TerminalResizeRequest) {
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
-    const result = await controller.resizeTerminal(size.cols, size.rows).catch((error: unknown) => {
-      recordFailure('ssh-bridge-failed', 'resize-terminal', error);
-      connectionMessage.value = error instanceof Error ? error.message : String(error);
-      return null;
-    });
+    const selected = controller.getSnapshot().selectedSession;
+    const result = selected
+      ? await controller.resizeTerminal(selected, size.cols, size.rows).catch((error: unknown) => {
+        recordFailure('ssh-bridge-failed', 'resize-terminal', error);
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+        return null;
+      })
+      : null;
     if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`

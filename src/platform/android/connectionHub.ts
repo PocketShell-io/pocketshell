@@ -19,9 +19,11 @@
  *  - the hub advertises `ssh.reconnect` (see `androidApi.ts`), so the shared
  *    store runs no ladder of its own and its Retry asks the controller for
  *    one recovery of the same logical id (#2954, D28: one reconnect owner);
- *  - a shell id names one attach of one session; the controller keeps one
- *    PTY per connection, so attaching another session supersedes the
- *    previous shell id, which is reported exited (honest: its PTY closed).
+ *  - a shell id names one attach of one session. The controller keeps one
+ *    PTY per attached session (#2955), so every visited tab keeps its shell
+ *    id, its screen and its live output while another tab is in front;
+ *    a shell id is reported exited only when its own session's PTY is gone
+ *    (the session ended, or it vanished from the host after a reconnect).
  */
 import type { ConnectionStateEvent } from '@ui/app/api';
 import {
@@ -87,9 +89,10 @@ interface ConnectionRecord {
   controller: ConnectionController;
   lastState: ConnectionState | null;
   lastAttempt: number;
-  lastPhase: ConnectionSnapshot['phase'] | null;
-  shell: ShellBinding | null;
-  attaching: PendingAttach | null;
+  /** One shell id per attached session, at most one per session. */
+  shells: ShellBinding[];
+  /** Attaches in flight, at most one per session. */
+  attaching: PendingAttach[];
   unsubscribe: Array<() => void>;
 }
 
@@ -205,9 +208,8 @@ export class AndroidConnectionHub {
       controller,
       lastState: null,
       lastAttempt: 0,
-      lastPhase: null,
-      shell: null,
-      attaching: null,
+      shells: [],
+      attaching: [],
       unsubscribe: [],
     };
     this.records.set(id, record);
@@ -219,13 +221,15 @@ export class AndroidConnectionHub {
         // before `switchSession` resolves (the pump starts inside it) and
         // before the pane has adopted the new shell id, so it is captured,
         // never dropped (#2936 review).
-        const attaching = record.attaching;
-        if (attaching && sameRow(attaching.row, session)) {
+        // Each session's bytes go to that session's own shell id, whichever
+        // tab is in front (#2955).
+        const attaching = record.attaching.find((pending) => sameRow(pending.row, session));
+        if (attaching) {
           holdBounded(attaching.buffer, bytes);
           return;
         }
-        const shell = record.shell;
-        if (!shell || !sameRow(shell.row, session)) return;
+        const shell = record.shells.find((binding) => sameRow(binding.row, session));
+        if (!shell) return;
         if (shell.held) {
           holdBounded(shell.held, bytes);
           return;
@@ -241,7 +245,7 @@ export class AndroidConnectionHub {
     if (!record) return false;
     this.records.delete(connectionId);
     for (const unsubscribe of record.unsubscribe) unsubscribe();
-    this.retireShell(record);
+    for (const shell of [...record.shells]) this.retireShell(record, shell);
     await record.controller.close().catch(() => undefined);
     this.emitState(connectionId, 'idle');
     return true;
@@ -302,34 +306,46 @@ export class AndroidConnectionHub {
       if (refreshed.ok) row = findSessionRow(refreshed.value.sessions, request);
     }
     if (!row) throw new Error(`Session “${request.sessionName}” is no longer in the host list.`);
+    const target = row;
 
-    const current = record.shell;
+    const geometry = request.cols && request.rows ? { cols: request.cols, rows: request.rows } : undefined;
+    const current = record.shells.find((binding) => sameRow(binding.row, target));
     const snapshot = controller.getSnapshot();
-    if (current && sameRow(current.row, row) && snapshot.phase === 'live') {
-      return { shellId: current.shellId, switched: true };
+    const controllerHolds = snapshot.terminals.some((open) => sameRow(open, target));
+    if (current && controllerHolds && snapshot.phase === 'live') {
+      // The pane asks again for a session it already holds (a re-join of a
+      // live tab): its PTY and screen never left. Only the controller's focus
+      // moves — no attach, no repaint.
+      const focused = await controller.attachSession(target, geometry);
+      if (focused.ok) return { shellId: current.shellId, switched: true };
+    }
+    if (!current && controllerHolds) {
+      // A PTY no pane holds (its shell id was retired): open a fresh attach,
+      // so the pane that adopts it gets aplexer's repaint.
+      await controller.detachSession(target);
     }
 
     let settle!: () => void;
-    const pending: PendingAttach = { row, buffer: [], done: new Promise<void>((resolve) => { settle = resolve; }) };
-    record.attaching = pending;
+    const pending: PendingAttach = { row: target, buffer: [], done: new Promise<void>((resolve) => { settle = resolve; }) };
+    record.attaching.push(pending);
     let attached;
     try {
       // Geometry-first: the PTY opens at the pane's size, so the attach
       // snapshot is drawn for the screen the user has.
-      const geometry = request.cols && request.rows ? { cols: request.cols, rows: request.rows } : undefined;
-      attached = await controller.switchSession(row, geometry);
+      attached = await controller.attachSession(target, geometry);
     } finally {
-      if (record.attaching === pending) record.attaching = null;
+      record.attaching = record.attaching.filter((entry) => entry !== pending);
     }
     if (!attached.ok) {
       settle();
       throw new Error(attached.message);
     }
-    this.retireShell(record);
+    const previous = record.shells.find((binding) => sameRow(binding.row, target));
+    if (previous) this.retireShell(record, previous);
     const shellId = `${record.id}:shell-${this.nextShell++}`;
     const binding: ShellBinding = { shellId, row: attached.value, held: pending.buffer, claimTimer: null };
     binding.claimTimer = setTimeout(() => this.claim(binding), SHELL_CLAIM_FALLBACK_MS);
-    record.shell = binding;
+    record.shells.push(binding);
     settle();
     return { shellId, switched: false };
   }
@@ -340,35 +356,35 @@ export class AndroidConnectionHub {
   }
 
   async input(shellId: ShellId, data: string, sessionName?: string, workspace?: string): Promise<boolean> {
-    let record = this.recordForShell(shellId);
+    let found = this.shellOf(shellId);
     // Only the pane's own use of the CURRENT id proves it adopted it; keys
     // under a retired id never release the held repaint (#2936 re-review).
-    const ownsCurrentId = record !== null;
-    if (!record) {
+    const ownsCurrentId = found !== null;
+    if (!found) {
       // Keystrokes addressed to a shell id this hub retired — a pane typing
       // while it re-joins the SAME session (its id is replaced only when the
-      // new attach resolves). The controller's one PTY is, or is about to be,
-      // that session, so they are delivered there in order rather than
-      // dropped. A retired id of any other session still gets `false`.
-      record = await this.recordForRetiredShell(shellId);
-      if (!record) return false;
+      // new attach resolves). They are delivered to that session's current
+      // shell, in order, rather than dropped. A retired id whose session has
+      // no shell (or any other session) gets `false`.
+      found = await this.shellForRetired(shellId);
+      if (!found) return false;
     }
-    if (!record.shell) return false;
-    if (ownsCurrentId) this.claim(record.shell);
-    const row = record.shell.row;
-    // The shared pane's fence: a caller still holding a superseded tab's
-    // shell gets an honest `false` instead of typing into another session.
+    const { record, binding } = found;
+    if (ownsCurrentId) this.claim(binding);
+    const row = binding.row;
+    // The shared pane's fence: a caller still holding another tab's shell
+    // gets an honest `false` instead of typing into another session.
     if (sessionName && sessionName !== (row.tag ?? row.name) && sessionName !== row.name) return false;
     if (workspace && row.workspace && workspace !== row.workspace) return false;
-    const result = await record.controller.writeTerminalBytes(this.encoder.encode(data));
+    const result = await record.controller.writeTerminalBytes(row, this.encoder.encode(data));
     return result.ok;
   }
 
   async resize(shellId: ShellId, cols: number, rows: number): Promise<boolean> {
-    const record = this.recordForShell(shellId);
-    if (!record?.shell) return false;
-    this.claim(record.shell);
-    return (await record.controller.resizeTerminal(cols, rows)).ok;
+    const found = this.shellOf(shellId);
+    if (!found) return false;
+    this.claim(found.binding);
+    return (await found.record.controller.resizeTerminal(found.binding.row, cols, rows)).ok;
   }
 
   /**
@@ -380,26 +396,29 @@ export class AndroidConnectionHub {
    * reach the pane, which the claim below guarantees.
    */
   async redraw(shellId: ShellId): Promise<boolean> {
-    const record = this.recordForShell(shellId);
-    if (!record?.shell) return false;
-    this.claim(record.shell);
+    const found = this.shellOf(shellId);
+    if (!found) return false;
+    this.claim(found.binding);
     return true;
   }
 
   /**
-   * The pane is done with this shell (tab closed, workspace left): detach the
-   * controller's PTY so the next attach of the session — the same one
-   * included — is a fresh aplexer attach that repaints. While another attach
+   * The pane is done with this shell (tab closed, workspace left): detach
+   * that session's PTY — and only that one — so its next attach is a fresh
+   * aplexer attach that repaints. While another attach of the same session
    * is already in flight the pane's close is only bookkeeping: that attach
-   * replaces the PTY itself, and detaching would supersede it.
+   * owns the PTY, and detaching would supersede it.
    */
   async closeShell(shellId: ShellId): Promise<boolean> {
-    const record = this.recordForShell(shellId);
-    if (!record?.shell) return false;
-    this.rememberRetired(record, record.shell);
-    this.dropBinding(record.shell);
-    record.shell = null;
-    if (!record.attaching) await record.controller.detachSession().catch(() => undefined);
+    const found = this.shellOf(shellId);
+    if (!found) return false;
+    const { record, binding } = found;
+    this.rememberRetired(record, binding);
+    this.dropBinding(binding);
+    record.shells = record.shells.filter((entry) => entry !== binding);
+    if (!record.attaching.some((pending) => sameRow(pending.row, binding.row))) {
+      await record.controller.detachSession(binding.row).catch(() => undefined);
+    }
     return true;
   }
 
@@ -458,17 +477,15 @@ export class AndroidConnectionHub {
       selectedTag: snapshot.selectedSession?.tag ?? null,
       error: snapshot.error,
     });
-    const previousPhase = record.lastPhase;
-    record.lastPhase = snapshot.phase;
-    // The attached session's PTY reached EOF (the session ended) or the
-    // controller gave up: the shell id is spent. A reconnect in progress
-    // keeps it — the controller re-attaches the same session under it.
-    if (
-      record.shell &&
-      previousPhase === 'live' &&
-      (snapshot.phase === 'connected' || snapshot.phase === 'lost')
-    ) {
-      this.retireShell(record);
+    // A shell id is spent once its session's PTY is gone from the
+    // controller (the session ended, or it no longer exists after a
+    // reconnect). A reconnect in progress — or a give-up awaiting Retry —
+    // keeps every terminal, and the controller re-attaches each under its
+    // same shell id.
+    for (const shell of [...record.shells]) {
+      if (snapshot.terminals.some((open) => sameRow(open, shell.row))) continue;
+      if (record.attaching.some((pending) => sameRow(pending.row, shell.row))) continue;
+      this.retireShell(record, shell);
     }
     const state = connectionStateFor(snapshot);
     const attempt = state === 'reconnecting' ? snapshot.retryAttempt : 0;
@@ -488,10 +505,8 @@ export class AndroidConnectionHub {
     }
   }
 
-  private retireShell(record: ConnectionRecord): void {
-    const shell = record.shell;
-    record.shell = null;
-    if (!shell) return;
+  private retireShell(record: ConnectionRecord, shell: ShellBinding): void {
+    record.shells = record.shells.filter((entry) => entry !== shell);
     this.rememberRetired(record, shell);
     this.dropBinding(shell);
     for (const listener of this.exitListeners) listener({ shellId: shell.shellId, exitCode: 0 });
@@ -548,18 +563,21 @@ export class AndroidConnectionHub {
     }
   }
 
-  /** The record now showing a retired id's session, after any in-flight attach of it. */
-  private async recordForRetiredShell(shellId: ShellId): Promise<ConnectionRecord | null> {
+  /** The shell now showing a retired id's session, after any in-flight attach of it. */
+  private async shellForRetired(shellId: ShellId): Promise<{ record: ConnectionRecord; binding: ShellBinding } | null> {
     const entry = this.retired.get(shellId);
     if (!entry || !this.records.has(entry.record.id)) return null;
     const { record, row } = entry;
-    if (record.attaching && sameRow(record.attaching.row, row)) await record.attaching.done;
-    return record.shell && sameRow(record.shell.row, row) ? record : null;
+    const pending = record.attaching.find((attach) => sameRow(attach.row, row));
+    if (pending) await pending.done;
+    const binding = record.shells.find((shell) => sameRow(shell.row, row));
+    return binding ? { record, binding } : null;
   }
 
-  private recordForShell(shellId: ShellId): ConnectionRecord | null {
+  private shellOf(shellId: ShellId): { record: ConnectionRecord; binding: ShellBinding } | null {
     for (const record of this.records.values()) {
-      if (record.shell?.shellId === shellId) return record;
+      const binding = record.shells.find((shell) => shell.shellId === shellId);
+      if (binding) return { record, binding };
     }
     return null;
   }
