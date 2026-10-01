@@ -155,8 +155,7 @@ public final class JsSettingsSupportJourneyTest {
         setValue("[data-testid=ssh-host]", RUNTIME_SEED_HOST);
         setValue("[data-testid=ssh-port]", "2222");
         setValue("[data-testid=ssh-username]", "support-journey");
-        setValue("[data-testid=ssh-private-key]",
-                "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAsupportjourney\n-----END OPENSSH PRIVATE KEY-----");
+        selectDockerKey();
         scrollIntoView("[data-testid=ssh-connect]");
         tapDomCenter("[data-testid=ssh-connect]");
         awaitJsTrue("(document.querySelector('[data-testid=ssh-message]')?.textContent.trim().length ?? 0) > 0", 45_000);
@@ -304,10 +303,7 @@ public final class JsSettingsSupportJourneyTest {
         android.os.Bundle arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
-        String privateKey = new String(java.util.Base64.getDecoder().decode(encodedKey), java.nio.charset.StandardCharsets.UTF_8);
         String tag = runId + "-r";
         awaitBuildVerified();
 
@@ -327,7 +323,7 @@ public final class JsSettingsSupportJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        selectDockerKey();
         clickJs("[data-testid=ssh-connect]");
         awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')", 30_000);
         clickJs("[data-testid=trust-host-key]");
@@ -407,6 +403,36 @@ public final class JsSettingsSupportJourneyTest {
             if (bridge.getInt("attempts") > 1) retried += 1;
         }
         android.util.Log.i("PocketshellSettingsEvidence", "BRIDGE reloads=15 warmUpRetried=" + retried + " " + reloads);
+    }
+
+    /**
+     * The connection form takes a key from the native key vault (#2926). The
+     * runner stages the Docker fixture key once under /data/local/tmp; the
+     * first method that needs it moves it into the app's private cache and
+     * every method imports (or reuses) it by fingerprint and selects it.
+     */
+    private static File stagedKeyDocument;
+
+    private void selectDockerKey() throws Exception {
+        Context context = targetContext();
+        if (stagedKeyDocument == null || !stagedKeyDocument.isFile()) {
+            String keyPath = InstrumentationRegistry.getArguments().getString("sshPrivateKeyPath");
+            assertNotNull("pass the runner-staged fixture key path with sshPrivateKeyPath", keyPath);
+            stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(context, keyPath, runId);
+        }
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(context, stagedKeyDocument), "Docker fixture key"));
+        awaitJsTrue("['ready','failed'].includes(window." + SshKeyVaultTestSupport.IMPORT_RESULT + "?.state)", 30_000);
+        assertEquals("the fixture key must import into the native vault",
+                "ready", evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".state"));
+        String handle = evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".handleId");
+        scrollIntoView("[data-testid=open-ssh-keys]");
+        clickJs("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'"
+                + " && !!document.querySelector('[data-testid=select-ssh-key-" + handle + "]')");
+        clickJs("[data-testid=select-ssh-key-" + handle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('[data-testid=ssh-key-selection]')?.value === " + JSONObject.quote(handle));
     }
 
     private void exerciseGraceChoices() throws Exception {

@@ -89,7 +89,6 @@ fi
 [[ "$(docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)" == true ]] \
   || fail "Docker agents fixture container is not running: $CONTAINER"
 [[ -f "$ROOT_DIR/tests/docker/test_key" ]] || fail 'committed Docker test key is missing'
-ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 
 if [[ -z "${ANDROID_SERIAL:-}" ]]; then
   mapfile -t online_emulators < <("$ADB" devices | awk '$1 ~ /^emulator-/ && $2 == "device" { print $1 }')
@@ -116,6 +115,12 @@ ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-settings/$RUN_ID"
 rm -rf -- "$RESULTS_DIR"
 mkdir -p "$ARTIFACTS_DIR/instrumentation-results" "$ARTIFACTS_DIR/device-screenshots"
 
+# The connection form imports keys through the native key vault (#2926): stage
+# the fixture key outside every app package; the journey moves it into the
+# app's private cache through UiAutomation's shell and deletes this copy.
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-settings-key.pem"
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null \
+  || fail 'could not stage the Docker fixture key on the device'
 SCREENSHOT_DIR="/sdcard/Pictures/PocketShell/JsSettings/$RUN_ID"
 printf 'Running packaged JS settings journeys on %s (API %s), suffix %s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$SUFFIX" "$RUN_ID"
@@ -126,7 +131,7 @@ pocketshell_run_without_avd_lock_fd "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/an
   "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
   -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
   "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-  "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
+  "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
   --stacktrace --console=plain || test_status=$?
 
 shopt -s nullglob
@@ -144,7 +149,7 @@ done < <(pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell "
 relative_screenshot_dir="Pictures/PocketShell/JsSettings/$RUN_ID/"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell \
   "content delete --uri content://media/external/images/media --where \"relative_path='$relative_screenshot_dir'\"" >/dev/null 2>&1 || true
-pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell "rm -rf '$SCREENSHOT_DIR'" >/dev/null 2>&1 || true
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell "rm -rf '$SCREENSHOT_DIR' '$DEVICE_KEY_PATH'" >/dev/null 2>&1 || true
 
 (( test_status == 0 )) || fail "connected settings journeys failed (exit $test_status); evidence in $ARTIFACTS_DIR"
 
