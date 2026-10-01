@@ -22,10 +22,7 @@
  */
 import type { PocketShellApi } from '@ui/app/api';
 import {
-  pathAwareCommand,
-  parseUsageNdjson,
-  isHelperMissing,
-  annotateHelperRejection,
+  readHostUsage,
   runHostBootstrap,
   type ConnectionController,
   type ConnectionState,
@@ -33,6 +30,9 @@ import {
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type TofuDecision } from './connectionHub';
 import type { AndroidHostStore } from './hostStore';
+
+/** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
+const CONTROLLER_GENERATION = 'controller';
 
 export class UnsupportedCapability extends Error {
   constructor(method: string) {
@@ -120,14 +120,19 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       bootstrap: (connectionId) => runHostBootstrap((command) => exec(connectionId, command)),
       sessionsList: (connectionId) => hub.sessionsList(connectionId),
       sessionsCreate: unsupported('helper.sessionsCreate'),
-      async usage(connectionId) {
-        const res = await exec(connectionId, pathAwareCommand('pocketshell usage --json'));
-        if (res.exitCode === 0) return parseUsageNdjson(res.stdout);
-        const output = `${res.stdout}\n${res.stderr}`;
-        if (isHelperMissing(res.exitCode, output)) return [];
-        const hostMessage = res.stderr.trim() || res.stdout.trim() || `pocketshell usage exited ${res.exitCode}`;
-        throw new Error(annotateHelperRejection(hostMessage, output));
-      },
+      // Core's usage source (#2937). Its exec goes through the controller,
+      // which owns the transport generation; the controller has already
+      // checked the request/generation echo the source re-checks here.
+      usage: (connectionId) =>
+        readHostUsage(
+          {
+            exec: async (options) => {
+              const outcome = await hub.hostCommand(connectionId, options.command, options.timeoutMs);
+              return { ...options, exitCode: outcome.exitCode, stdout: outcome.stdout, stderr: outcome.stderr, timedOut: outcome.timedOut ?? false };
+            },
+          },
+          { connectionId, generationId: CONTROLLER_GENERATION },
+        ),
       // Crash/OOM warnings ride HostCliCore's warnings verbs (stage S3).
       warnings: async () => [],
       ackWarnings: unsupported('helper.ackWarnings'),
