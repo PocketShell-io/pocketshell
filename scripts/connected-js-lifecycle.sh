@@ -159,7 +159,11 @@ if results.exists():
     shutil.rmtree(results)
 PY
 
-ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
+# Stage the fixture key outside any app package: the instrumentation reads it
+# through UiAutomation's shell and deletes it, so it never depends on which
+# suffixed APK is currently installed.
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged JS lifecycle journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
 
@@ -278,7 +282,7 @@ pocketshell_start_without_avd_lock_fd bash -o pipefail -c \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain
 INSTRUMENTATION_PID="$POCKETSHELL_AVD_CHILD_PID"

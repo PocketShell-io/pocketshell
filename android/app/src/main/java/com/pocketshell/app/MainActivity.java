@@ -50,6 +50,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(android.os.Bundle savedInstanceState) {
         registerPlugin(SshCapabilityPlugin.class);
+        registerPlugin(SshKeyVaultPlugin.class);
         registerPlugin(KeyboardInsetsPlugin.class);
         registerPlugin(InstalledDataMigrationPlugin.class);
         registerPlugin(DocumentContentPlugin.class);

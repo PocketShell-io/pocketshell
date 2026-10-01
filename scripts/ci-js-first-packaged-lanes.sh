@@ -72,19 +72,43 @@ else
 fi
 
 # The shared PocketShell app (#2936): list, attach, re-attach and type, on
-# its own isolated agents lane (the workflow starts 2244 for it).
+# its own isolated agents lane (the workflow starts 2243 for it).
 if scripts/connected-js-shared-app.sh \
   --suffix i2855ci \
-  --port 2244 \
+  --port 2243 \
   --test-only; then
   shared_app_status=0
 else
   shared_app_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s shared-app=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$shared_app_status" "$copy_status"
+if scripts/connected-js-key-vault-docker.sh \
+  --suffix i2926ci \
+  --port 2244 \
+  --container pocketshell-test-agents-2244 \
+  --run-id "js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  key_vault_status=0
+else
+  key_vault_status=$?
+fi
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || shared_app_status != 0 || copy_status != 0 )); then
+# Signed 0.5.6-to-candidate upgrade (#2926/#2860). It must run last: it builds
+# and installs the unsuffixed com.pocketshell.app over a pinned signed v0.5.6
+# install, which the suffixed lanes above never touch. It reuses the key-vault
+# lane's isolated fixture after that lane has restored authorized_keys.
+if scripts/connected-js-key-vault-signed-upgrade.sh \
+  --port 2244 \
+  --container pocketshell-test-agents-2244 \
+  --run-id "up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  signed_upgrade_status=0
+else
+  signed_upgrade_status=$?
+fi
+
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
+
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

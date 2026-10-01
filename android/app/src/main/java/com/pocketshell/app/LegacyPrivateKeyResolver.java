@@ -5,7 +5,6 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import java.io.File;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.security.MessageDigest;
 import java.util.Locale;
@@ -16,7 +15,8 @@ final class LegacyPrivateKeyResolver {
 
     private LegacyPrivateKeyResolver() {}
 
-    static String readPrivateKey(Context context, long keyId, String expectedSha256) throws IOException {
+    /** Native-only compatibility read used while encrypting a migrated key into the vault. */
+    static byte[] readPrivateKeyBytes(Context context, long keyId, String expectedSha256) throws IOException {
         if (keyId < 1 || expectedSha256 == null || !expectedSha256.matches("[a-f0-9]{64}")) {
             throw new IOException("Saved SSH key reference is invalid.");
         }
@@ -72,7 +72,7 @@ final class LegacyPrivateKeyResolver {
         if (!expectedSha256.equals(sha256(contents))) {
             throw new IOException("Saved SSH key changed since the installed-data import.");
         }
-        return new String(contents, StandardCharsets.UTF_8);
+        return contents;
     }
 
     private static String sha256(byte[] contents) throws IOException {
