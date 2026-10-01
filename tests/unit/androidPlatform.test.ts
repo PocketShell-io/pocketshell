@@ -375,7 +375,7 @@ describe('Android PocketShellApi platform', () => {
   });
 
   it('maps controller phases onto the shared connection states', () => {
-    const base = { revision: 1, hostId: null, hostLabel: null, generationId: null, sessions: [], selectedSession: null, retryAttempt: 0, error: null, trustDecision: null, uncertainMutation: null };
+    const base = { revision: 1, hostId: null, hostLabel: null, generationId: null, sessions: [], sessionListErrors: [], selectedSession: null, retryAttempt: 0, error: null, trustDecision: null, uncertainMutation: null };
     expect(connectionStateFor({ ...base, phase: 'live', connectionId: 'c' })).toBe('connected');
     expect(connectionStateFor({ ...base, phase: 'background', connectionId: null })).toBe('connected');
     expect(connectionStateFor({ ...base, phase: 'awaiting-trust', connectionId: null })).toBe('connecting');
