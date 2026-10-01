@@ -172,10 +172,26 @@ fi
 J10_LOGCAT="$(find "$ARTIFACTS_DIR/instrumentation-results" -type f \
   -name 'logcat-com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest-*.txt' -print -quit)"
 [[ -n "$J10_LOGCAT" ]] || fail 'the packaged J10 logcat evidence artifact is missing'
-grep -F "J10_DOCUMENTSUI_OPEN chooser=com.android.documentsui action=ACTION_OPEN_DOCUMENT selected=$DOCUMENTSUI_UPLOAD_NAME returned=true uploadedBytes=15" \
+# The system DocumentsUI is com.android.documentsui on AOSP images and
+# com.google.android.documentsui on Google APIs images (the hosted CI emulator).
+# Resolve it independently of the journey, then require the journey's chooser
+# evidence to name exactly that package.
+system_packages="$("$ADB" -s "$ANDROID_SERIAL" shell pm list packages -s | tr -d '\r')" \
+  || fail 'could not list Android system packages'
+DOCUMENTSUI_PACKAGE=""
+for candidate in com.android.documentsui com.google.android.documentsui; do
+  if grep -Fxq "package:$candidate" <<<"$system_packages"; then
+    [[ -z "$DOCUMENTSUI_PACKAGE" ]] || fail "both $DOCUMENTSUI_PACKAGE and $candidate are system DocumentsUI packages"
+    DOCUMENTSUI_PACKAGE="$candidate"
+  fi
+done
+[[ -n "$DOCUMENTSUI_PACKAGE" ]] || fail 'the emulator has no system DocumentsUI package'
+grep -F "J10_DOCUMENTSUI_PACKAGE resolved=$DOCUMENTSUI_PACKAGE" "$J10_LOGCAT" >/dev/null \
+  || fail "the packaged J10 log did not resolve the device's system DocumentsUI $DOCUMENTSUI_PACKAGE"
+grep -F "J10_DOCUMENTSUI_OPEN chooser=$DOCUMENTSUI_PACKAGE action=ACTION_OPEN_DOCUMENT selected=$DOCUMENTSUI_UPLOAD_NAME returned=true uploadedBytes=15" \
   "$J10_LOGCAT" >/dev/null \
   || fail 'the packaged J10 log is missing evidence that DocumentsUI returned the selected upload document'
-grep -F "J10_DOCUMENTSUI_CREATE chooser=com.android.documentsui action=ACTION_CREATE_DOCUMENT selected=Downloads/$DOCUMENTSUI_DOWNLOAD_NAME returned=true savedStatus=true expectedBytes=7" \
+grep -F "J10_DOCUMENTSUI_CREATE chooser=$DOCUMENTSUI_PACKAGE action=ACTION_CREATE_DOCUMENT selected=Downloads/$DOCUMENTSUI_DOWNLOAD_NAME returned=true savedStatus=true expectedBytes=7" \
   "$J10_LOGCAT" >/dev/null \
   || fail 'the packaged J10 log is missing evidence that DocumentsUI returned the selected save destination and the app completed its save'
 

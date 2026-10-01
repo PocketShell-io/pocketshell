@@ -45,6 +45,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -54,11 +55,19 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class J10FilesBrowseEditJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+    /**
+     * The platform's system document picker. AOSP images ship it as com.android.documentsui;
+     * Google APIs images (the hosted CI emulator) ship the same DocumentsUI as
+     * com.google.android.documentsui. Nothing else is accepted as the chooser.
+     */
+    private static final List<String> SYSTEM_DOCUMENTS_UI_PACKAGES =
+            Arrays.asList("com.android.documentsui", "com.google.android.documentsui");
     private ActivityScenario<MainActivity> scenario;
     private File downloadedFixture;
     private File uploadFixture;
     private String screenshotRunId;
     private Uri documentsUiSourceUri;
+    private String documentsUiPackage;
 
     @Before
     public void launchPackagedShell() {
@@ -101,6 +110,11 @@ public final class J10FilesBrowseEditJourneyTest {
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
         setValue("[data-testid=ssh-private-key]", privateKey);
+        // A cold first launch keeps Connect disabled while the installed-data migration check
+        // runs (and Vue re-renders `disabled` a tick after the input events), so wait for the
+        // real enabled state instead of clicking into a disabled button.
+        awaitJsTrue("(() => {const node=document.querySelector('[data-testid=ssh-connect]');"
+                + "return !!node && !node.disabled;})()");
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
@@ -149,6 +163,8 @@ public final class J10FilesBrowseEditJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Saved') === true");
         captureScreenshot(artifacts, "files-saved.png");
 
+        documentsUiPackage = resolveSystemDocumentsUiPackage();
+        System.out.println("J10_DOCUMENTSUI_PACKAGE resolved=" + documentsUiPackage);
         String documentsUiUploadName = "documentsui-upload-" + screenshotRunId + ".bin";
         byte[] documentsUiUploadBytes = new byte[] {
                 'D', 'O', 'C', 'S', 0, 'F', 'R', 'O', 'M', ' ', 'D', 'O', 'C', 'S', (byte) 0xff
@@ -157,8 +173,8 @@ public final class J10FilesBrowseEditJourneyTest {
         int openDocumentCountBefore = intentCountForAction(Intent.ACTION_OPEN_DOCUMENT);
         click("[data-testid=file-upload]");
         String openChooserPackage = awaitDocumentsUiForeground();
-        assertEquals("the real ACTION_OPEN_DOCUMENT chooser must be Android DocumentsUI",
-                "com.android.documentsui", openChooserPackage);
+        assertEquals("the real ACTION_OPEN_DOCUMENT chooser must be the installed system DocumentsUI",
+                documentsUiPackage, openChooserPackage);
         captureForegroundScreenshot(artifacts, "documentsui-open-picker.png");
         browseDocumentsUiDownloads();
         awaitDocumentsUiText(documentsUiUploadName);
@@ -183,8 +199,8 @@ public final class J10FilesBrowseEditJourneyTest {
         int createDocumentCountBefore = intentCountForAction(Intent.ACTION_CREATE_DOCUMENT);
         click("[data-testid=file-download]");
         String createChooserPackage = awaitDocumentsUiForeground();
-        assertEquals("the real ACTION_CREATE_DOCUMENT chooser must be Android DocumentsUI",
-                "com.android.documentsui", createChooserPackage);
+        assertEquals("the real ACTION_CREATE_DOCUMENT chooser must be the installed system DocumentsUI",
+                documentsUiPackage, createChooserPackage);
         assertTrue("the save chooser must show the Downloads destination: " + documentUiSnapshot(),
                 documentUiHasText("Downloads"));
         captureForegroundScreenshot(artifacts, "documentsui-create-picker.png");
@@ -333,6 +349,38 @@ public final class J10FilesBrowseEditJourneyTest {
         return count;
     }
 
+    /**
+     * Resolve which system DocumentsUI package this image ships, verified through the shell's
+     * unrestricted package list (no package-visibility filtering) to be a system package.
+     */
+    private String resolveSystemDocumentsUiPackage() throws Exception {
+        String systemPackages = shell("pm list packages -s");
+        String found = null;
+        for (String candidate : SYSTEM_DOCUMENTS_UI_PACKAGES) {
+            if (systemPackages.contains("package:" + candidate + "\n")
+                    || systemPackages.endsWith("package:" + candidate)) {
+                if (found != null) {
+                    throw new AssertionError("both " + found + " and " + candidate
+                            + " are installed system DocumentsUI packages; the chooser is ambiguous");
+                }
+                found = candidate;
+            }
+        }
+        if (found == null) {
+            throw new AssertionError("no system DocumentsUI package " + SYSTEM_DOCUMENTS_UI_PACKAGES
+                    + " is installed on this image");
+        }
+        return found;
+    }
+
+    private String shell(String command) throws Exception {
+        android.os.ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().executeShellCommand(command);
+        try (java.io.InputStream input = new android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
+            return new String(readAllBytes(input), StandardCharsets.UTF_8);
+        }
+    }
+
     private String awaitDocumentsUiForeground() throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         String last = "<no active window>";
@@ -342,7 +390,7 @@ public final class J10FilesBrowseEditJourneyTest {
             if (root != null) {
                 last = root.getPackageName() + "\n" + documentUiSnapshot(root);
                 String packageName = String.valueOf(root.getPackageName());
-                if ("com.android.documentsui".equals(packageName)) return packageName;
+                if (documentsUiPackage.equals(packageName)) return packageName;
             }
             Thread.sleep(100);
         }
@@ -381,7 +429,7 @@ public final class J10FilesBrowseEditJourneyTest {
                     .getUiAutomation().getRootInActiveWindow();
             if (root != null) {
                 last = documentUiSnapshot(root);
-                if ("com.android.documentsui".equals(String.valueOf(root.getPackageName()))
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
                         && longClickDocumentsUiNode(root, text)) {
                     Thread.sleep(300);
                     return;
@@ -433,7 +481,7 @@ public final class J10FilesBrowseEditJourneyTest {
                     .getUiAutomation().getRootInActiveWindow();
             if (root != null) {
                 last = documentUiSnapshot(root);
-                if ("com.android.documentsui".equals(String.valueOf(root.getPackageName()))
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
                         && documentUiHasText(root, text)) return;
             }
             Thread.sleep(100);
@@ -449,7 +497,7 @@ public final class J10FilesBrowseEditJourneyTest {
                     .getUiAutomation().getRootInActiveWindow();
             if (root != null) {
                 last = documentUiSnapshot(root);
-                if ("com.android.documentsui".equals(String.valueOf(root.getPackageName()))
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
                         && clickDocumentsUiNode(root, text)) {
                     Thread.sleep(300);
                     return;
@@ -464,7 +512,7 @@ public final class J10FilesBrowseEditJourneyTest {
         for (String label : labels) {
             AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
                     .getUiAutomation().getRootInActiveWindow();
-            if (root != null && "com.android.documentsui".equals(String.valueOf(root.getPackageName()))
+            if (root != null && documentsUiPackage.equals(String.valueOf(root.getPackageName()))
                     && clickDocumentsUiNode(root, label)) {
                 Thread.sleep(300);
                 return true;
@@ -545,7 +593,13 @@ public final class J10FilesBrowseEditJourneyTest {
     }
 
     private byte[] readAllBytes(File file) throws Exception {
-        try (FileInputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+        try (FileInputStream input = new FileInputStream(file)) {
+            return readAllBytes(input);
+        }
+    }
+
+    private byte[] readAllBytes(java.io.InputStream input) throws Exception {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192];
             int read;
             while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
@@ -693,13 +747,15 @@ public final class J10FilesBrowseEditJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+        // evaluateJavascript reports a thrown script as null, so return the reason as a value.
+        String outcome = evalString("(() => {try {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "if('disabled' in node && node.disabled)throw new Error('disabled ' + " + JSONObject.quote(selector)
                 + " + '; loading=' + (document.querySelector('[data-testid=file-loading]')?.textContent.trim() ?? 'none')"
                 + " + '; status=' + (document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? 'none')"
                 + " + '; error=' + (document.querySelector('[data-testid=file-error]')?.textContent.trim() ?? 'none'));"
-                + "node.click();return 'clicked';})()");
+                + "node.click();return 'clicked';} catch (error) {return 'click failed: ' + error.message;}})()");
+        assertEquals("packaged file UI click on " + selector, "clicked", outcome);
     }
 
     private void awaitFileDownloadReady() throws Exception {
