@@ -113,20 +113,31 @@ probes create → list → attach → kill against an actual container.
 
 ### Android input preflight (#2946)
 
+A system-app ANR dialog (Pixel Launcher in every recorded hosted failure) owns
+input focus on a starved emulator, and every injected key and tap goes to it.
 Every packaged lane runner calls `pocketshell_android_input_preflight`
-(`scripts/lib/android-input-preflight.sh`) before the device is used. It sets
-`hide_error_dialogs=1` and force-stops the owner of any "isn't responding" or
-crash dialog already on screen. A system-app ANR dialog on a starved emulator
-otherwise owns input focus, and every injected key and tap goes to it. The
-lane's `input-preflight.txt` records each dismissal. A dialog owned by a
-`com.pocketshell*` package is never dismissed: the lane fails with
-`POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash. Inside the tests,
-`AndroidInputDeliveryProbe` injects a no-op Shift key before the first injected
-tap/key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the system
-focus owner when the page does not see it. On failure, the smoke and lifecycle
-runners write `dumpsys input`/`window`/`input_method`/`activity`, unfiltered
-`logcat -b all`, and a screenshot to their `failure-diagnostics`, checked by
-`scripts/check-android-input-diagnostics.py`.
+(`scripts/lib/android-input-preflight.sh`) before the device is used:
+
+- It disables every HOME launcher for the lane (`pm disable-user` plus
+  `am force-stop`), so the launcher cannot run or ANR. Android's own Settings
+  `FallbackHome` is HOME meanwhile. `pocketshell_release_all` re-enables
+  exactly those packages on every lane exit, while the AVD lock is held.
+  Where the launcher draws the navigation bar, the bottom inset is then 0 and
+  the shell keeps its `max(24px, inset)` padding floor.
+- It sets `hide_error_dialogs=1` (best effort: hosted run 36792962871 showed a
+  launcher ANR dialog despite it) and force-stops the owner of any other
+  "isn't responding" or crash dialog already on screen.
+- A dialog owned by a `com.pocketshell*` package is never dismissed: the lane
+  fails with `POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash.
+
+The lane's `input-preflight.txt` records every action. Inside the tests, the
+`AndroidInputGuardRule` JUnit rule repeats the dismissal before each test
+method's first injected input, then `AndroidInputDeliveryProbe` injects a no-op
+Shift key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the
+system focus owner when the page does not see it. The probe is never retried.
+On failure, every packaged runner writes `dumpsys input`/`window`/
+`input_method`/`activity`, unfiltered `logcat -b all`, and a screenshot to its
+failure diagnostics, checked by `scripts/check-android-input-diagnostics.py`.
 
 ## Disk preflight
 

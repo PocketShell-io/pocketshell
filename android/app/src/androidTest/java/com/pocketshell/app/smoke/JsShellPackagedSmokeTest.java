@@ -39,6 +39,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -59,6 +60,10 @@ import java.util.function.Consumer;
 public final class JsShellPackagedSmokeTest {
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final long WAIT_TIMEOUT_MILLIS = 12_000;
+
+    /** #2946: per-test dismiss-and-probe before each test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
 
     private ActivityScenario<MainActivity> scenario;
     private MainActivity directActivity;
@@ -154,7 +159,7 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
                 + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
 
-        assertInjectedInputReachesPage("before the picker Back key");
+        beforeFirstInjectedInput("before the picker Back key");
         evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
                 + ".then((value)=>window.__ps2857PickerResult=value)");
         // Back must reach the system picker, not the app: wait until the
@@ -214,7 +219,7 @@ public final class JsShellPackagedSmokeTest {
     public void settingsAndAndroidBackReturnHome() throws Exception {
         awaitJsTrue("document.querySelector('[aria-label=Settings]') !== null");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
-        assertInjectedInputReachesPage("before the first Settings tap");
+        beforeFirstInjectedInput("before the first Settings tap");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
         awaitJsTrue("document.querySelector('[data-testid=setting-theme]') !== null");
@@ -410,7 +415,7 @@ public final class JsShellPackagedSmokeTest {
     @Test
     public void injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus() throws Exception {
         awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
-        assertInjectedInputReachesPage("self-test baseline");
+        beforeFirstInjectedInput("self-test baseline");
 
         AndroidInputDeliveryProbe.runShell("cmd statusbar expand-notifications");
         try {
@@ -457,6 +462,11 @@ public final class JsShellPackagedSmokeTest {
                 + ": " + focus);
     }
 
+    private void beforeFirstInjectedInput(String context) throws Exception {
+        inputGuard.beforeFirstInjectedInput(context, this::evalRaw,
+                action -> runOnCurrentActivity(action::accept));
+    }
+
     private void assertInjectedInputReachesPage(String context) throws Exception {
         AndroidInputDeliveryProbe.assertInjectedKeyReachesPage(context, this::evalRaw,
                 action -> runOnCurrentActivity(action::accept));
@@ -474,6 +484,12 @@ public final class JsShellPackagedSmokeTest {
         float density = targetContext().getResources().getDisplayMetrics().density;
         float expectedSafeTop = Math.round(systemInsets.top / density);
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
+        // styles.css pads the Android shell by max(24px, safe-area inset). The
+        // lanes disable the HOME launcher (#2946), and on images where the
+        // launcher draws the navigation bar the bottom inset is then 0, so the
+        // shell keeps its 24px floor while the CSS inset itself stays exact.
+        float expectedShellPaddingTop = Math.max(24f, expectedSafeTop);
+        float expectedShellPaddingBottom = Math.max(24f, expectedSafeBottom);
 
         awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
         JSONObject beforeIme = evalJson("(() => {"
@@ -488,14 +504,14 @@ public final class JsShellPackagedSmokeTest {
                 + "appBarTop: document.querySelector('.app-bar').getBoundingClientRect().top"
                 + "});})()");
         assertEquals("status bar inset must reach CSS", expectedSafeTop, beforeIme.getDouble("safeTop"), 1.0);
-        assertEquals("safe top padding must be applied to the shell", expectedSafeTop, beforeIme.getDouble("paddingTop"), 1.0);
+        assertEquals("safe top padding must be applied to the shell", expectedShellPaddingTop, beforeIme.getDouble("paddingTop"), 1.0);
         assertEquals("safe bottom inset must reach CSS", expectedSafeBottom, beforeIme.getDouble("safeBottom"), 1.0);
-        assertEquals("safe bottom padding must be applied to the shell", expectedSafeBottom, beforeIme.getDouble("paddingBottom"), 1.0);
+        assertEquals("safe bottom padding must be applied to the shell", expectedShellPaddingBottom, beforeIme.getDouble("paddingBottom"), 1.0);
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
-        assertInjectedInputReachesPage("before the SSH host input tap");
+        beforeFirstInjectedInput("before the SSH host input tap");
         tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);

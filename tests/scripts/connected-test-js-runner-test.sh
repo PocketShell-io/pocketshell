@@ -61,6 +61,9 @@ case "${1:-}" in
       'settings get global hide_error_dialogs') printf '1\n' ;;
       'dumpsys window windows') printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n' ;;
       'dumpsys window displays') printf '  mCurrentFocus=Window{1 u0 fixture}\n' ;;
+      # No third-party HOME launcher to disable on this fixture device.
+      'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
+        printf '1 activities found:\n  Activity #0:\n    com.android.settings/.FallbackHome\n' ;;
       *) printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90 ;;
     esac
     ;;

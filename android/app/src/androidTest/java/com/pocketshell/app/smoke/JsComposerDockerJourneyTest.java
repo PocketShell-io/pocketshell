@@ -31,6 +31,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -51,6 +52,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class JsComposerDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+
+    /** #2946: per-test dismiss-and-probe before the test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
 
     private ActivityScenario<MainActivity> scenario;
     private String bytesSession;
@@ -313,6 +318,7 @@ public final class JsComposerDockerJourneyTest {
         click("[data-testid=open-terminal-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
         int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+        beforeFirstInjectedInput("before the nested Settings Back key");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
                 + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
@@ -1624,7 +1630,12 @@ public final class JsComposerDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
+    private void beforeFirstInjectedInput(String context) throws Exception {
+        inputGuard.beforeFirstInjectedInput(context, this::evalRaw, action -> scenario.onActivity(action::accept));
+    }
+
     private long tapDomCenter(String selector) throws Exception {
+        beforeFirstInjectedInput("before the first physical tap on " + selector);
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
                 + "const height=window.visualViewport?.height ?? innerHeight;"
