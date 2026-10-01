@@ -109,6 +109,30 @@ export class AndroidHostStore {
     this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));
   }
 
+  /** Every saved host (metadata and key handle; never key bytes). */
+  savedHosts(): SavedHost[] {
+    return this.readSaved();
+  }
+
+  /** Saved hosts that authenticate with `handleId`. */
+  hostsUsingKey(handleId: string): SavedHost[] {
+    return this.readSaved().filter((host) => host.keyHandleId === handleId);
+  }
+
+  /**
+   * Point the named hosts at `nextHandleId` ('' = no key) only if each still
+   * uses `expectedHandleId`; all or nothing. The key-vault delete flow uses
+   * it to detach and restore references (#2926 CredentialKeyManager).
+   */
+  replaceKeyHandle(names: readonly string[], expectedHandleId: string, nextHandleId: string): boolean {
+    const saved = this.readSaved();
+    const targets = saved.filter((host) => names.includes(host.name));
+    if (targets.length !== names.length || targets.some((host) => host.keyHandleId !== expectedHandleId)) return false;
+    for (const host of targets) host.keyHandleId = nextHandleId;
+    this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));
+    return true;
+  }
+
   remove(name: string): void {
     const saved = this.readSaved().filter((existing) => existing.name !== name);
     this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));

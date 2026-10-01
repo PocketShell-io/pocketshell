@@ -1,68 +1,20 @@
 <script setup lang="ts">
 // The phone's host source, the Android counterpart of desktop's
 // ~/.ssh/config and web's /app hosts page: add a host and the key-vault key
-// it authenticates with. Key bytes stay native (#2926): this page only
-// lists, imports and names key handles. The shared picker owns CONNECTING.
-import { onMounted, ref } from 'vue';
+// it authenticates with. Logic lives in hostForm.ts; the shared picker owns
+// CONNECTING.
+import { onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '@ui/app/stores/connection';
-import { listSshKeys, parseSshKeyMetadata, sshKeyVault, type SshKeyMetadata } from '@/native/sshKeyVault';
-import { androidHosts } from './platform';
-import { validateSavedHost } from '@/platform/android/hostStore';
+import { androidHosts, androidKeyManager } from '@/platform/android/hosts';
+import { createHostForm } from './hostForm';
 
 const router = useRouter();
 const connection = useConnectionStore();
-const name = ref('');
-const hostname = ref('');
-const port = ref('22');
-const user = ref('');
-const keyHandleId = ref('');
-const keys = ref<SshKeyMetadata[]>([]);
-const error = ref<string | null>(null);
+const { state, loadKeys, importKey, save } = createHostForm({ keys: androidKeyManager, hosts: androidHosts });
 
-async function loadKeys(): Promise<void> {
-  try {
-    keys.value = await listSshKeys();
-    if (!keyHandleId.value && keys.value.length === 1) keyHandleId.value = keys.value[0]!.handleId;
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function importKey(): Promise<void> {
-  error.value = null;
-  try {
-    const picked = await sshKeyVault.pickKeyDocument();
-    if (picked.cancelled || !picked.documentId) return;
-    const key = parseSshKeyMetadata(
-      await sshKeyVault.importPickedKey({ documentId: picked.documentId, label: picked.name ?? 'SSH key' }),
-    );
-    await loadKeys();
-    keyHandleId.value = key.handleId;
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-  }
-}
-
-async function save(): Promise<void> {
-  const host = {
-    name: name.value.trim() || hostname.value.trim(),
-    hostname: hostname.value,
-    port: Number(port.value),
-    user: user.value,
-    keyHandleId: keyHandleId.value,
-  };
-  const problem = validateSavedHost(host);
-  if (problem) {
-    error.value = problem;
-    return;
-  }
-  try {
-    androidHosts.save(host);
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : String(e);
-    return;
-  }
+async function submit(): Promise<void> {
+  if (!save()) return;
   await connection.loadHosts();
   void router.push({ name: 'hosts' });
 }
@@ -76,19 +28,24 @@ onMounted(() => void loadKeys());
       <button class="btn-ghost" type="button" data-testid="android-add-host-back" @click="router.back()">Back</button>
       <h1>Add a host</h1>
     </header>
-    <form class="android-hosts__form" @submit.prevent="save">
-      <label>Name<input v-model="name" data-testid="host-name" autocomplete="off" placeholder="dev box" /></label>
-      <label>Hostname<input v-model="hostname" data-testid="host-hostname" autocomplete="off" autocapitalize="off" inputmode="url" /></label>
-      <label>Port<input v-model="port" data-testid="host-port" inputmode="numeric" /></label>
-      <label>User<input v-model="user" data-testid="host-user" autocomplete="off" autocapitalize="off" /></label>
+    <form class="android-hosts__form" @submit.prevent="submit">
+      <label>Name<input v-model="state.name" data-testid="host-name" autocomplete="off" placeholder="dev box" /></label>
+      <label>Hostname<input v-model="state.hostname" data-testid="host-hostname" autocomplete="off" autocapitalize="off" inputmode="url" /></label>
+      <label>Port<input v-model="state.port" data-testid="host-port" inputmode="numeric" /></label>
+      <label>User<input v-model="state.user" data-testid="host-user" autocomplete="off" autocapitalize="off" /></label>
       <label>SSH key
-        <select v-model="keyHandleId" data-testid="host-key">
+        <select v-model="state.keyHandleId" data-testid="host-key">
           <option value="" disabled>Choose a key</option>
-          <option v-for="key in keys" :key="key.handleId" :value="key.handleId">{{ key.label }} · {{ key.fingerprintSha256 }}</option>
+          <option v-for="key in state.keys" :key="key.handleId" :value="key.handleId">{{ key.label }} · {{ key.fingerprintSha256 }}</option>
         </select>
       </label>
-      <button class="btn-ghost" type="button" data-testid="host-import-key" @click="importKey">Import key file…</button>
-      <p v-if="error" class="error" data-testid="host-error">{{ error }}</p>
+      <details class="android-hosts__import">
+        <summary>Import a key file</summary>
+        <label>Key label<input v-model="state.keyLabel" data-testid="host-import-label" autocomplete="off" /></label>
+        <label>Key passphrase (if the key has one)<input v-model="state.keyPassphrase" data-testid="host-import-passphrase" type="password" autocomplete="off" /></label>
+        <button class="btn-ghost" type="button" data-testid="host-import-key" :disabled="state.importing" @click="importKey">Import key file…</button>
+      </details>
+      <p v-if="state.error" class="error" data-testid="host-error">{{ state.error }}</p>
       <button class="android-hosts__save" type="submit" data-testid="host-save">Save host</button>
     </form>
   </main>

@@ -309,6 +309,17 @@
         "boots the app only after durable storage is installed, because stores read saved data at import time",
         "finds no property-style localStorage writes that would bypass the durable path in this app or the shared core/ui"
       ]
+    },
+    "tests/unit/androidHostKeys.test.ts": {
+      "suite": "Android add-host key flow",
+      "tests": [
+        "\"Import key file…\" imports the picked document with its passphrase and selects the new key",
+        "a cancelled pick changes nothing, and an import failure is shown, not thrown",
+        "refuses to save a host without a key",
+        "asks before deleting a key a shared-app host uses, then detaches that host",
+        "restores the host reference when the native delete fails",
+        "clears hosts whose key is gone from the vault"
+      ]
     }
   }
 }

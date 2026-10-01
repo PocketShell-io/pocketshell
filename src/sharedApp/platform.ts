@@ -7,9 +7,8 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } from '@pocketshell/core';
 import { sshCapability } from '@/native/sshCapability';
-import { readImportedLegacyHosts } from '@/migration/installedDataMigration';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
-import { AndroidHostStore } from '@/platform/android/hostStore';
+import { androidHosts } from '@/platform/android/hosts';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE } from './router';
 
@@ -25,11 +24,6 @@ const capacitorLifecycle: AndroidLifecycle = {
   },
 };
 
-export const androidHosts = new AndroidHostStore({
-  storage: window.localStorage,
-  readLegacyHosts: () => readImportedLegacyHosts(),
-});
-
 const trustStore: HostKeyTrustStore = createLocalTrustStore(window.localStorage);
 
 export const androidPlatform = createAndroidPlatform({
@@ -42,3 +36,4 @@ export const androidPlatform = createAndroidPlatform({
 });
 
 export type { HostKeyTrustPin };
+export { androidHosts };
