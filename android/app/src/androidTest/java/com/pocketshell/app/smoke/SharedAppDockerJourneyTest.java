@@ -81,16 +81,6 @@ public class SharedAppDockerJourneyTest {
 
     /** Both tests run in one instrumentation process; the first adds the run's host. */
     private static boolean fixtureHostAdded;
-    /**
-     * The visible terminal's LOGICAL lines: a row as wide as the widest row is
-     * a soft wrap and joins the next. The pane's width is layout's business
-     * (the phone layout gives the terminal ~35 columns at the default font),
-     * and a run-tagged line longer than that must still match as one line.
-     */
-    private static final String VISIBLE_LINES = "((rows)=>{const w=Math.max(0,...rows.map((r)=>r.length));"
-            + "const out=[];let cur=null;for(const r of rows){cur=(cur===null?'':cur)+r;"
-            + "if(r.length<w){out.push(cur);cur=null;}}if(cur!==null)out.push(cur);return out;})("
-            + VISIBLE_TERMINAL + ".split('\\n'))";
     private ActivityScenario<MainActivity> scenario;
     private ScriptedIme ime;
 
@@ -144,8 +134,7 @@ public class SharedAppDockerJourneyTest {
         // late line is also the sync point that the re-join has completed.
         openFolder(folderA);
         // The background job prints after the prompt, so it shares the "$ " row.
-        awaitJsTrue(VISIBLE_LINES + ".some((l)=>l.trim().endsWith("
-                + JSONObject.quote("PS2936_LATE_42_" + run) + "))");
+        awaitJsTrue(terminalHasLine("PS2936_LATE_42_" + run, "endsWith"));
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         // Typing right after the re-attach's terminal reset: #2936 captured
         // "echo PS2 PS936_..." here.
@@ -199,8 +188,16 @@ public class SharedAppDockerJourneyTest {
         Log.i(TAG, "ime script finished " + ScriptedIme.describe(typed));
 
         // Hardware keys: a Bluetooth keyboard's Tab and Enter.
+        recordPageKeyUps();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_TAB);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        // sendKeyDownUpSync returns once the view hierarchy has the keys, but the
+        // WebView hands them to its renderer asynchronously, and an
+        // evaluateJavascript paste can overtake them (the host then got
+        // "PASTE1\r" instead of "\rPASTE1"). A person cannot paste inside that
+        // window; wait until the page has seen Enter's keyup — after its
+        // keydown, where xterm sends "\r" — before pasting.
+        awaitJsTrue("(window.__psKeyUps ?? []).join(',').endsWith('Tab,Enter')");
         // A real clipboard paste on the focused textarea.
         pasteIntoTerminal("PASTE1");
         assertTerminalKeepsFocus("after typing");
@@ -393,6 +390,14 @@ public class SharedAppDockerJourneyTest {
      * A real ClipboardEvent paste on xterm's focused textarea, the event an
      * Android long-press Paste delivers.
      */
+    /** Record the key of every keyup the page sees, in order, from now on. */
+    private void recordPageKeyUps() throws Exception {
+        evalString("(() => {window.__psKeyUps=[];"
+                + "if(!window.__psKeyUpHook){window.__psKeyUpHook=true;"
+                + "document.addEventListener('keyup',(e)=>window.__psKeyUps.push(e.key),true);}"
+                + "return 'ok';})()");
+    }
+
     private void pasteIntoTerminal(String text) throws Exception {
         String result = evalString("JSON.stringify((() => {"
                 + "const textarea=" + VISIBLE_TEXTAREA + ";"
@@ -436,7 +441,39 @@ public class SharedAppDockerJourneyTest {
     }
 
     private void awaitTerminalLine(String line) throws Exception {
-        awaitJsTrue(VISIBLE_LINES + ".some((l)=>l.trim()===" + JSONObject.quote(line) + ")");
+        awaitJsTrue(terminalHasLine(line, "equals"));
+    }
+
+    /**
+     * Whether the visible terminal shows {@code expected} as one logical line,
+     * across xterm soft wraps. The matcher is the test APK's
+     * {@code terminal-logical-lines.js} asset, which
+     * tests/unit/terminalLogicalLines.test.ts replays against captured texts
+     * (an exactly full-width line, a wrapped one, 4- and 5-digit run ids).
+     */
+    private static String terminalHasLine(String expected, String mode) throws java.io.IOException {
+        return "(" + logicalLineMatcher() + ")(" + VISIBLE_TERMINAL + ", " + JSONObject.quote(expected) + ", "
+                + JSONObject.quote(mode) + ")";
+    }
+
+    private static String logicalLineMatcher;
+
+    private static synchronized String logicalLineMatcher() throws java.io.IOException {
+        if (logicalLineMatcher == null) {
+            try (java.io.InputStream input = InstrumentationRegistry.getInstrumentation().getContext().getAssets()
+                    .open("terminal-logical-lines.js")) {
+                logicalLineMatcher = new String(readAll(input), java.nio.charset.StandardCharsets.UTF_8)
+                        .replaceFirst("(?s)^/\\*.*?\\*/\\s*", "").trim();
+            }
+        }
+        return logicalLineMatcher;
+    }
+
+    private static byte[] readAll(java.io.InputStream input) throws java.io.IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[4096];
+        for (int n; (n = input.read(buffer)) > 0; ) out.write(buffer, 0, n);
+        return out.toByteArray();
     }
 
     private void setValue(String selector, String value) throws Exception {

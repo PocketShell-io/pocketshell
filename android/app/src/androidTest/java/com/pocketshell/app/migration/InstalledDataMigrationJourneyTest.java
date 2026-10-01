@@ -108,7 +108,7 @@ public final class InstalledDataMigrationJourneyTest {
         assertTrue("the migrated-host cycle must not seed malformed encrypted preferences",
             !malformedEncryptedFixtureRequested());
         scenario = ActivityScenario.launch(MainActivity.class);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'complete'");
+        awaitPublishedMigrationStatus("complete");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]') === null");
 
         evalRaw("(() => {"
@@ -199,6 +199,7 @@ public final class InstalledDataMigrationJourneyTest {
                 evalString("document.querySelector('[data-testid=ssh-resource-connections]')?.textContent.trim()"));
         }
 
+        assertSameMigratedDocument();
         Map<String, String> afterHashes = snapshotSourceHashes();
         assertEquals("the migration must not alter any original installed source file", sourceHashes, afterHashes);
         preserveSourceHashes("migration-source-hashes.json", afterHashes);
@@ -209,11 +210,12 @@ public final class InstalledDataMigrationJourneyTest {
         assertTrue("the runner must request the malformed encrypted-preferences fixture",
             malformedEncryptedFixtureRequested());
         scenario = ActivityScenario.launch(MainActivity.class);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
+        awaitPublishedMigrationStatus("partial");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('pocketshell-voice-secrets') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
         assertTrue("the partial import must identify the unreadable encrypted source: " + warning,
             warning.contains("Encrypted preferences") && warning.contains("pocketshell-voice-secrets"));
+        assertSameMigratedDocument();
         Map<String, String> afterHashes = snapshotSourceHashes();
         assertEquals("the packaged partial import must not change any source file", sourceHashes, afterHashes);
         preserveSourceHashes("malformed-encrypted-source-hashes.json", afterHashes);
@@ -224,7 +226,7 @@ public final class InstalledDataMigrationJourneyTest {
         assertEquals("the runner must seed the malformed private-key fixture", "true",
             InstrumentationRegistry.getArguments().getString("installedDataMigrationMalformedKeyFixture"));
         scenario = ActivityScenario.launch(MainActivity.class);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === 'partial'");
+        awaitPublishedMigrationStatus("partial");
         awaitJsTrue("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent.includes('Migrated Docker key') === true");
         String warning = evalString("document.querySelector('[data-testid=installed-data-migration-error]')?.textContent ?? ''");
         assertTrue("an unreadable key must be named and its preserved source explained: " + warning,
@@ -237,9 +239,34 @@ public final class InstalledDataMigrationJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=ssh-message]')?.textContent.includes('select an SSH key') === true");
         assertEquals("a malformed migrated key must not leave a connectable dangling handle", "idle",
             evalString("document.querySelector('.app-shell')?.dataset.sshPhase"));
+        assertSameMigratedDocument();
         Map<String, String> afterHashes = snapshotSourceHashes();
         assertEquals("the malformed key and every legacy source must remain untouched", sourceHashes, afterHashes);
         preserveSourceHashes("malformed-key-source-hashes.json", afterHashes);
+    }
+
+    /**
+     * Issue #3005: the fixture always writes imported settings, so the first launch reloads the
+     * WebView once to apply them. A document that publishes a settled migration status must be the
+     * document that stays: if the pre-reload page published it, every interaction the journey made
+     * (host selection, key messages) would be wiped by the reload. Tag the document at the moment
+     * the status is observed, then require the same tag at the end of the journey.
+     */
+    private void awaitPublishedMigrationStatus(String status) throws Exception {
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.migrationStatus === " + JSONObject.quote(status));
+        assertEquals("the settled migration status must be published by the document that stays: "
+                + "a pending settings reload must not expose it (issue #3005)",
+            "tagged",
+            evalString("(() => {"
+                + "if (document.querySelector('.app-shell')?.dataset.migrationStatus !== " + JSONObject.quote(status) + ") return 'status-changed';"
+                + "window.__ps3005MigratedDocument = 'ps3005-document'; return 'tagged';})()"));
+    }
+
+    private void assertSameMigratedDocument() throws Exception {
+        assertEquals("the WebView reloaded after it published the settled migration status, discarding the "
+                + "journey's interactions (issue #3005)",
+            "ps3005-document",
+            evalString("window.__ps3005MigratedDocument ?? 'reloaded'"));
     }
 
     private boolean malformedEncryptedFixtureRequested() {
