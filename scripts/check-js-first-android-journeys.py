@@ -88,7 +88,12 @@ LANES = (
         class_name="com.pocketshell.app.smoke.SharedAppDockerJourneyTest",
         child_runner="scripts/connected-js-shared-app.sh",
         result_checker="scripts/check-js-shared-app-results.py",
-        methods=frozenset({"sharedAppListsAttachesAndTypesIntoFixtureSession"}),
+        methods=frozenset(
+            {
+                "sharedAppListsAttachesAndTypesIntoFixtureSession",
+                "sharedTerminalDeliversImeEditsAsExactBytes",
+            }
+        ),
     ),
     LaneContract(
         name="key-vault-docker",
