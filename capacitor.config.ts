@@ -4,6 +4,9 @@ const config: CapacitorConfig = {
   appId: 'com.pocketshell.app',
   appName: 'PocketShell',
   webDir: 'dist',
+  // Never echo plugin calls or results to logcat: the SSH connect call
+  // carries the private key, and debug builds are what we install for tests.
+  loggingBehavior: 'none',
   android: {
     allowMixedContent: false,
   },
