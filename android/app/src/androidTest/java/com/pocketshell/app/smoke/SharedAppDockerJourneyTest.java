@@ -107,7 +107,12 @@ public class SharedAppDockerJourneyTest {
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         // Output A will produce while it is NOT attached: only aplexer's
         // re-attach snapshot can bring it to the pane.
-        typeLine("(sleep 3; echo PS2936_LATE_$((6*7))_" + run + ") &");
+        String late = "(sleep 3; echo PS2936_LATE_$((6*7))_" + run + ") &";
+        typeLine(late);
+        // Leave only once the shell has the whole line (its echo is back):
+        // switching closes A's PTY, and keystrokes still in flight would die.
+        // (Rows are joined: a phone-width terminal wraps the long command.)
+        awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\n/g, '').includes(" + JSONObject.quote(late) + ")");
 
         // Switch to B (a fresh attach on the controller's one PTY) and stay
         // there until A's late line has been written on the host.
