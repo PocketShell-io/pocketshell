@@ -1,0 +1,635 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
+RUNNER="$ROOT_DIR/scripts/connected-js-hotkeys-docker.sh"
+LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
+EXTRACTOR="$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py"
+PTY_GEOMETRY="$ROOT_DIR/scripts/check-js-hotkeys-pty-geometry.py"
+RESULT_CHECKER="$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py"
+JOURNEY="$ROOT_DIR/android/app/src/androidTest/java/com/pocketshell/app/smoke/JsFastKeysDockerJourneyTest.java"
+MOBILE_HOTKEYS="$ROOT_DIR/src/components/MobileHotkeys.vue"
+APP="$ROOT_DIR/src/App.vue"
+
+[[ -f "$WORKFLOW" && -x "$RUNNER" && -x "$LANES" && -f "$EXTRACTOR" && -f "$PTY_GEOMETRY" && -f "$RESULT_CHECKER" && -f "$JOURNEY" && -f "$MOBILE_HOTKEYS" && -f "$APP" ]] || {
+  printf 'FAIL: rewrite fast-key gate inputs are missing\n' >&2
+  exit 1
+}
+
+bash -n "$RUNNER"
+bash -n "$LANES"
+python3 - "$WORKFLOW" "$RUNNER" "$LANES" "$EXTRACTOR" "$PTY_GEOMETRY" "$RESULT_CHECKER" "$JOURNEY" "$MOBILE_HOTKEYS" "$APP" <<'PY'
+import ast
+import re
+import sys
+from pathlib import Path
+
+workflow_path, runner_path, lanes_path, extractor_path, pty_geometry_path, checker_path, journey_path, mobile_hotkeys_path, app_path = map(Path, sys.argv[1:])
+workflow = workflow_path.read_text()
+runner = runner_path.read_text()
+lanes = lanes_path.read_text()
+extractor = extractor_path.read_text()
+pty_geometry = pty_geometry_path.read_text()
+checker = checker_path.read_text()
+journey = journey_path.read_text()
+mobile_hotkeys = mobile_hotkeys_path.read_text()
+terminal_dictation = mobile_hotkeys_path.with_name("TerminalDictationBar.vue").read_text()
+prompt_composer = mobile_hotkeys_path.with_name("PromptComposer.vue").read_text()
+app = app_path.read_text()
+inline_dictation = app_path.parent.joinpath("session/inlineDictation.ts").read_text()
+unit_test_manifest = (app_path.parent.parent / "scripts/js-unit-test-manifest.json").read_text()
+unit_test = (app_path.parent.parent / "tests/unit/mobileHotkeys.test.ts").read_text()
+extractor_module = ast.parse(extractor, filename=str(extractor_path))
+ast.parse(pty_geometry, filename=str(pty_geometry_path))
+ast.parse(checker, filename=str(checker_path))
+asset_sets = {}
+for node in extractor_module.body:
+    if (isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in {"SCREENSHOTS", "VIEWPORT_SCREENSHOTS", "FAILURE_ONLY_SCREENSHOTS"}):
+        asset_sets[node.targets[0].id] = set(ast.literal_eval(node.value))
+captured_assets = set(re.findall(r'capture(?:TerminalViewport)?Screenshot\("([^"]+)"', journey))
+extracted_assets = (asset_sets.get("SCREENSHOTS", set()) | asset_sets.get("VIEWPORT_SCREENSHOTS", set())
+                   | asset_sets.get("FAILURE_ONLY_SCREENSHOTS", set()))
+if captured_assets != extracted_assets:
+    missing = sorted(extracted_assets - captured_assets)
+    unextracted = sorted(captured_assets - extracted_assets)
+    raise AssertionError(f"same-run screenshot capture/extraction mismatch: missing={missing}, unextracted={unextracted}")
+keyboard_baseline_start = journey.index('JSONObject keyboardGeometry = captureGeometry("keyboard-up-compact-row");')
+keyboard_baseline_end = journey.index("tapDomCenter(\"[data-key-id='arrow-up']\");", keyboard_baseline_start)
+keyboard_baseline = journey[keyboard_baseline_start:keyboard_baseline_end]
+keyboard_assertion = 'assertAcceptedKeyboardUpViewport("initial API 35 keyboard-up baseline", keyboardGeometry);'
+keyboard_captures = (
+    'captureScreenshot("fastkeys-ime-open.png");',
+    'captureScreenshot("fastkeys-row-closed-ime-open.png");',
+    'captureTerminalViewportScreenshot("fastkeys-row-closed-ime-open-viewport.png", keyboardGeometry);',
+)
+if keyboard_assertion not in keyboard_baseline or any(capture not in keyboard_baseline for capture in keyboard_captures):
+    raise AssertionError("keyboard-up screenshots must be captured before the xterm containment assertion")
+if max(keyboard_baseline.index(capture) for capture in keyboard_captures) > keyboard_baseline.index(keyboard_assertion):
+    raise AssertionError("keyboard-up screenshots must precede the assertion that can fail on xterm positioning")
+for xterm_metric in ("terminalXtermMetrics", "terminalXtermAncestors", "terminalXtermChildSurfaces"):
+    if xterm_metric not in journey:
+        raise AssertionError(f"terminal geometry must retain computed positioning evidence: {xterm_metric}")
+
+
+def require_contract(source: str, packaged_lanes: str, packaged_runner: str, artifact_extractor: str) -> None:
+    required = (
+        ("hotkeys gate self-test is wired into CI", "tests/scripts/js-first-rewrite-hotkeys-gate-test.sh"),
+        ("isolated fast-key Docker fixture starts", "scripts/agents-pool.sh up 2243"),
+        ("packaged-lanes wrapper runs in the emulator action", "script: scripts/ci-js-first-packaged-lanes.sh"),
+        ("always-run exact fast-key JUnit guard", "name: Assert the packaged JS mobile fast-key journey executed exactly once"),
+        ("exact JUnit self-test", "scripts/check-js-hotkeys-journey-results.py --self-test"),
+        ("artifact timing validator self-test", 'extract-js-hotkeys-artifacts.py" --self-test'),
+        ("same-run fast-key JUnit result", '--results-dir "${evidence_runs[0]}"'),
+        ("run-scoped fast-key artifact upload", "name: Upload packaged JS fast-key run evidence"),
+        ("fast-key output bundle", "android/app/build/outputs/js-hotkeys/"),
+        ("pre-assert keyboard failure screenshots are preserved", "--preserve-test-failure"),
+        ("same-run resize and geometry trace collector", "-s PS2884Asset:I PS2884Geometry:I"),
+        ("isolated fixture diagnostics", "docker logs pocketshell-test-agents-2243"),
+        ("run-scoped composer evidence upload", "android/app/build/outputs/js-composer/"),
+        ("composer phase JUnit check before fastkeys", 'composer_root="android/app/build/outputs/js-composer"'),
+        ("fast-key invocation", "scripts/connected-js-hotkeys-docker.sh \\\n  --suffix i2884ci \\\n  --port 2243"),
+        ("one-turn rerun controls reach instrumentation", "fastKeysPromptFocusMaxAttempts"),
+        ("fast-key aggregate status", "hotkeys_status=$?"),
+        ("exact fast-key JUnit status", "hotkeys_junit_status=0"),
+        ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"'),
+        ("fail-closed fast-key aggregate", "hotkeys_status != 0 || hotkeys_junit_status != 0"),
+        ("isolated fixture teardown", "scripts/agents-pool.sh down 2243"),
+        ("fast-key runner exact JUnit guard", 'check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"'),
+        ("run-scoped Android evidence", "android/app/build/outputs/js-hotkeys/$ARTIFACT_RUN_ID"),
+        ("dictation final byte oracle is read from this run's journey", 'journey.get("dictation")'),
+        ("dictation bytes are checked on the host fixture", 'dictation PTY bytes mismatch'),
+        ("keyboard-up viewport cap is established before the dock opens", "keyboardComposerMode.value"),
+        ("viewport cap is limited to the accepted 144px budget", "terminalViewportDockPreferredCapPx = 144"),
+        ("fractional measured viewport caps round down under the 144px maximum", "Math.min(terminalViewportDockPreferredCapPx, Math.floor(height))"),
+        ("narrow toolbar scroll reachability is checked", "narrowToolbarReachability"),
+        ("Android dock heights reserve the status, key, and catalog rows", "INLINE_DICTATION_STATUS_ROW_HEIGHT_PX"),
+        ("catalog scroller stays within the 144px in-flow rail", "catalogScrollerInsideSheet"),
+        ("main and Ctrl rails record their terminal-region semantics", "catalogSheetRole"),
+        ("prompt composer entry has same-run measured reachability", "promptComposerLauncher"),
+        ("dock stays within its clipping terminal panel", "insideTerminalPanel"),
+        ("terminal slot stays within its clipping panel", "terminalSlotInsideTerminalPanel"),
+        ("live keyboard row must not overflow", "live-width persistent row is clipped"),
+        ("clipped hit-area intersection is checked", "visibleHeightInKeybar"),
+        ("narrow-toolbar scroll checks visible hit-area intersection", "visibleHeight\""),
+        ("dictation target uses a phase-specific accessible name", "expected_terminal_dictation_accessible_name"),
+        ("dictation target checks its mic state", "expected_terminal_dictation_mic_state"),
+        ("dictation target center must receive the tap", 'mic.get("hitTarget") is not True'),
+        ("icon bounds are checked against the button", "icon_is_inside_button"),
+        ("dictation raw byte count is checked", 'dictation raw byte file length mismatch'),
+        ("IME-hidden ResizeObserver fit stays bound to its accepted PTY ACK", "IME-hidden ResizeObserver fit with matching accepted native PTY resize ACK accepted"),
+        ("IME-hidden resume rejects an unmatched native PTY ACK", "IME-hidden resume with an unmatched native PTY resize ACK rejected"),
+        ("dictation listening screenshot is uploaded", "fastkeys-dictation-listening-ime-open.png"),
+        ("dictation transcribing screenshot is uploaded", "fastkeys-dictation-transcribing-ime-open.png"),
+        ("dictation stopped screenshot is uploaded", "fastkeys-dictation-stopped-ime-open.png"),
+        ("dictation error screenshot is uploaded", "fastkeys-dictation-error-ime-open.png"),
+        ("prompt composer Dictate action is measured", '"Dictate prompt draft"'),
+        ("dictation reattach screenshot is uploaded", "fastkeys-dictation-reattached-ime-open.png"),
+        ("starting dictation Prompt guard screenshot is uploaded", "fastkeys-dictation-starting-prompt-unavailable.png"),
+        ("listening dictation Prompt guard screenshot is uploaded", "fastkeys-dictation-listening-prompt-unavailable.png"),
+        ("closed fast-key row screenshot is uploaded", "fastkeys-row-closed-ime-open.png"),
+        ("catalog sheet front and tail screenshots are hashed for review", "fastkeys-sheet-ctrl-tail-ime-open.png"),
+        ("closed row has same-run terminal viewport evidence", "fastkeys-row-closed-ime-open-viewport.png"),
+        ("main catalog tail has same-run terminal viewport evidence", "fastkeys-sheet-main-tail-ime-open-viewport.png"),
+        ("Ctrl catalog tail has same-run terminal viewport evidence", "fastkeys-sheet-ctrl-tail-ime-open-viewport.png"),
+        ("dictation listening has same-run terminal viewport evidence", "fastkeys-dictation-listening-ime-open-viewport.png"),
+        ("dictation stopped has same-run terminal viewport evidence", "fastkeys-dictation-stopped-ime-open-viewport.png"),
+        ("dictation error has same-run terminal viewport evidence", "fastkeys-dictation-error-ime-open-viewport.png"),
+        ("composer recording screenshot is retained", "fastkeys-prompt-dictation-recording.png"),
+        ("composer transcribing screenshot is retained", "fastkeys-prompt-dictation-transcribing.png"),
+        ("composer review screenshot is retained", "fastkeys-prompt-dictation-review.png"),
+        ("composer recording artifact self-test remains active", "complete prompt dictation recording/transcribing/review artifacts are accepted"),
+        ("Prompt reopen failure screenshot is failure-only evidence", "fastkeys-prompt-reopen-failure.png"),
+        ("Prompt reopen failure screenshot extraction self-test remains active", "Prompt reopen failure screenshot is preserved as failure-only evidence"),
+    )
+    for label, needle in required:
+        combined = source + packaged_lanes + packaged_runner + artifact_extractor + app
+        if needle not in combined:
+            raise AssertionError(f"fast-key workflow is missing {label}: {needle}")
+    start = source.index("scripts/agents-pool.sh up 2243")
+    run = packaged_lanes.index("scripts/connected-js-hotkeys-docker.sh")
+    stop = source.index("scripts/agents-pool.sh down 2243")
+    if not start < source.index("script: scripts/ci-js-first-packaged-lanes.sh") < stop:
+        raise AssertionError("the fast-key fixture must start before the packaged lanes and stop after them")
+    if packaged_lanes.index("scripts/connected-js-composer-docker.sh") > run:
+        raise AssertionError("the fast-key lane must run after composer")
+    composer_phase_checks = packaged_lanes.index(
+        'for phase in prepare resume; do',
+        packaged_lanes.index('composer_root="android/app/build/outputs/js-composer"'),
+    )
+    if not packaged_lanes.index("scripts/connected-js-composer-docker.sh") < composer_phase_checks < run:
+        raise AssertionError("both same-run composer phase JUnit reports must be checked before fastkeys")
+
+    guard_start = source.index("- name: Assert the packaged JS mobile fast-key journey executed exactly once")
+    guard_end = source.index("- name:", guard_start + 8)
+    guard = source[guard_start:guard_end]
+    if "if: always()" not in guard or '--results-dir "${evidence_runs[0]}"' not in guard:
+        raise AssertionError("the always-run checker must validate the unique run-scoped fast-key JUnit copy")
+    upload_start = source.index("- name: Upload packaged JS fast-key run evidence")
+    upload_end = source.index("- name:", upload_start + 8)
+    upload = source[upload_start:upload_end]
+    if "if: always()" not in upload or "if-no-files-found: error" not in upload:
+        raise AssertionError("fast-key evidence upload must run after failures and fail when no evidence exists")
+    if "android/app/build/outputs/js-hotkeys/" not in upload:
+        raise AssertionError("fast-key upload omits the packaged journey evidence directory")
+
+
+require_contract(workflow, lanes, runner, extractor)
+
+styles = app_path.parent.joinpath("styles.css").read_text()
+if "live keyboard row must contain all persistent controls without clipping or scrolling" not in journey:
+    raise AssertionError("Android journey must reject live-width fast-key row clipping")
+if ("TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01" not in journey
+        or "TERMINAL_VIEWPORT_ROUNDING_EPSILON_CSS_PX = 0.01" not in extractor
+        or "terminal viewport overlap greater than 0.01px CSS rejected" not in extractor):
+    raise AssertionError("Fast Keys geometry must document the 0.01px viewport rounding epsilon and reject larger overlaps")
+if ("Math.min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_DP," not in journey
+        or "private JSONObject assertAcceptedKeyboardUpViewport" not in journey
+        or "38, grid.getInt(\"cols\")" not in journey
+        or "6, grid.getInt(\"rows\")" not in journey
+        or "acceptedKeyboardGrid, runtimeGrid(afterNavigationTaps)" not in journey
+        or "acceptedKeyboardGrid, runtimeGrid(afterReconnectGeometry)" not in journey):
+    raise AssertionError("Android journey must lock the API 35 144px/38x6 keyboard baseline through navigation and reattach")
+if ("terminalViewportDockCapPx.value = terminalViewportDockBaseCapPx.value;" not in app
+        or '(afterGeometry.optBoolean("inlineDictationStatusVisible") ? 16 : 0)' in journey):
+    raise AssertionError("dictation status must not shrink the captured terminal viewport cap")
+if ("min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX, math.floor(idle_viewport_height))" not in extractor
+        or "min(ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX,\n                                math.floor(baseline_viewport_height))" not in extractor
+        or "API35_ACCEPTED_TERMINAL_GRID = (38, 6)" not in extractor
+        or "API 35 keyboard-up baseline must lock the accepted 144px / 38×6 terminal grid" not in extractor
+        or "with_api35_expanded_keyboard_viewport(sample_journey()), False" not in extractor):
+    raise AssertionError("artifact gate must reject a 172px viewport and enforce the accepted API35 144px/38x6 grid")
+if ("the status row keeps its phase-specific height above the 48dp key row" not in journey
+        or 'geometry.getInt("inlineDictationWaveformBars")' not in journey
+        or 'geometry.getString("inlineDictationElapsed").matches' not in journey
+        or 'recording action is visibly captioned Stop' not in journey):
+    raise AssertionError("Android journey must verify the distinct 40dp recording band, timer, waveform, and explicit Stop action")
+if "gap: 0;" not in styles or "margin-top: 0;" not in styles:
+    raise AssertionError("keyboard-up catalog must return reclaimed gap and remove dock overflow margin")
+if "the persistent mic must remain fully inside the key row" not in journey:
+    raise AssertionError("Android journey must measure the mic inside the persistent row")
+if ("journey.put(\"promptComposerEntry\", promptComposerEntry);" not in journey
+        or '"dialog".equals(promptComposerEntry.optString("role"))' not in journey
+        or '"Dictate prompt draft".equals(promptComposerEntry.optString("micLabel"))' not in journey
+        or "promptComposerLauncher" not in journey):
+    raise AssertionError("Fast Keys journey must keep a measured Prompt entry and Dictate action inside PromptComposer")
+if ("prompt composer entry without its modal dictation target rejected" not in extractor
+        or 'composer_entry.get("micLabel") != "Dictate prompt draft"' not in extractor):
+    raise AssertionError("artifact self-tests must enforce a reachable prompt dictation mode in the composer")
+if "dictation status shrinking the pre-dock viewport cap rejected" not in extractor:
+    raise AssertionError("artifact self-tests must reject a dictation status that shrinks the accepted viewport cap")
+if "keeps active dictation status above the persistent controls on both catalog pages" not in unit_test_manifest:
+    raise AssertionError("full JS unit gate manifest must include the active status row component test")
+if "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page" not in unit_test_manifest:
+    raise AssertionError("full JS unit gate manifest must include the common-key row layout component test")
+if '.mobile-hotkeys--dictation-available .mobile-hotkeys__dictation-dock {\n  border-top: 1px solid var(--border-soft);' not in mobile_hotkeys:
+    raise AssertionError("Android inline dictation must use its one-pixel hairline as the dock boundary")
+if ("data-testid=\"mobile-hotkeys-enter-divider\"" not in mobile_hotkeys
+        or ".mobile-hotkeys__enter-divider { width: 1px; height: 24px;" not in mobile_hotkeys):
+    raise AssertionError("persistent arrows and Enter must keep the Kotlin divider without consuming a hit target")
+if (':aria-label="promptComposerEnabled ? \'Open prompt composer to type or dictate a prompt\' : \'Prompt unavailable while terminal dictation is active\'"' not in mobile_hotkeys
+        or 'data-testid="prompt-composer-launcher-label"' not in mobile_hotkeys
+        or '>Prompt</span>' not in mobile_hotkeys
+        or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
+        or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
+        or 'mobile-hotkeys__destination-label' in mobile_hotkeys
+        or 'data-testid="inline-dictation-destination"' in mobile_hotkeys
+        or 'data-testid="prompt-dictation-launcher"' in mobile_hotkeys
+        or 'data-testid="mobile-hotkeys-main-scroll-hint"' not in mobile_hotkeys
+        or 'Swipe →' not in mobile_hotkeys
+        or 'class="terminal-dictation-action sr-only"' in terminal_dictation
+        or ':aria-label="buttonLabel()"' not in terminal_dictation
+        or ':title="buttonLabel()"' not in terminal_dictation
+        or '<DictationMicIcon :size="20" :stopped="state.phase === \'listening\'" />' not in terminal_dictation
+        or 'data-testid="inline-dictation-dock-label"' not in terminal_dictation
+        or 'buttonCaption' not in terminal_dictation
+        or 'data-testid="inline-dictation-stop-hint"' in mobile_hotkeys
+        or 'Stop to insert · ' in mobile_hotkeys
+        or 'data-testid="inline-dictation-elapsed"' not in mobile_hotkeys
+        or 'data-testid="inline-dictation-waveform"' not in mobile_hotkeys
+        or 'data-testid="inline-dictation-preview"' not in mobile_hotkeys
+        or "actions.closePalette();" not in mobile_hotkeys
+        or any(label not in terminal_dictation for label in (
+            "Dictate at terminal cursor", "Stop dictation and insert at terminal cursor", "Cancel terminal cursor dictation request",
+            "Cancelling terminal dictation", "Transcribing speech for terminal cursor", "Inserting speech at terminal cursor",
+            "Terminal cursor dictation unavailable",
+        ))
+        or '.mobile-hotkeys__dock-label { color: var(--fg-muted); font: 600 var(--fs-100)/1 var(--font-ui);' not in mobile_hotkeys
+        or '.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-label)' in mobile_hotkeys):
+    raise AssertionError("Prompt must open the shared composer while terminal dictation has a labeled idle target and a distinct active recording mode")
+if ("offers a labeled 48px Prompt launcher with an accessible route to the prompt draft" not in unit_test
+        or "matches the mobile input row with a visible Dictate action and a separate Prompt entry" not in unit_test
+        or "prompt-dictation-launcher')).toBeUndefined()" not in unit_test
+        or 'geometry.isNull("promptDictationLauncher")' not in journey
+        or 'there is no standalone Prompt Dictate action in the dock' not in journey
+        or 'visibleText") != "Prompt"' not in extractor
+        or 'mic.get("visibleText") != "Dictate"' not in extractor
+        or "visible Prompt caption inside the dock launcher accepted" not in extractor
+        or "missing Prompt button caption rejected" not in extractor
+        or "duplicate Stop destination label on the terminal mic rejected" not in extractor
+        or "old Cursor caption on idle terminal dictation target rejected" not in extractor
+        or '"visibleText": "Prompt"' not in extractor
+        or '"visibleText": "Stop"' not in extractor
+        or '"inlineDictationElapsed": "00:01"' not in extractor
+        or '"inlineDictationWaveformBars": 12' not in extractor
+        or 'visibleText:promptComposerLauncherNode.innerText.trim()' not in journey
+        or 'visibleText:inlineDictationMicNode.innerText.trim()' not in journey):
+    raise AssertionError("component and packaged gates must verify Prompt-to-composer routing, a Kotlin-sized terminal mic with explicit Stop status, and accessible labels")
+if ("More terminal keys" not in mobile_hotkeys
+        or 'class="mobile-hotkeys__keys-icon"' not in mobile_hotkeys
+        or ':aria-label="paletteOpen ? \'Close terminal keys\' : \'More terminal keys\'"' not in mobile_hotkeys
+        or "border: 0;\n  border-radius: var(--r-md);\n  background: transparent;" not in styles):
+    raise AssertionError("More keys and the mic must use the shared quiet toolbar treatment without changing their glyphs")
+if ("openKeys: [];" not in prompt_composer
+        or 'data-testid="composer-open-keys" aria-label="More terminal keys"' not in prompt_composer
+        or "@pointerdown.prevent @click=\"requestTerminalKeys\"" not in prompt_composer
+        or "width: 48px;" not in prompt_composer or "height: 48px;" not in prompt_composer
+        or "async function openTerminalKeysFromComposer()" not in app
+        or "mobilePromptComposerOpen.value = false;" not in app
+        or "mobileHotkeys.value?.openPalette();" not in app
+        or "await nextTick();" not in app
+        or "terminal.value?.focus();" not in app):
+    raise AssertionError("composer-to-keys must be an accessible 48px alternate-surface handoff with a return path")
+if ("inlineDictationState.value.phase !== 'idle'" not in app
+        or "inlineDictationState.value.tone === 'error'" not in app
+        or "inlineDictationState.value.tone === 'warning'" not in app
+        or "inlineDictationState.value.tone !== 'quiet'" in app):
+    raise AssertionError("only active, error, or warning terminal dictation states may reserve the Kotlin status row")
+if ("composerKeysTransition" not in journey
+        or "terminalGridBefore" not in journey
+        or "terminalGridDuringKeys" not in journey
+        or '"imeVisibleAfterReturn"' not in journey
+        or '"keyboardVisibleAfterReturn"' not in journey
+        or "fastkeys-composer-keys-ime-open.png" not in journey
+        or "fastkeys-composer-returned.png" not in journey
+        or "expandedInputSurfaceCount" not in journey
+        or "catalog is the only expanded surface before starting dictation" not in journey
+        or "!document.querySelector('[data-testid=mobile-hotkeys-sheet]')" not in journey
+        or "!!document.querySelector('[data-testid=mobile-hotkeys-sheet]')" not in journey
+        or "terminalNativeDictation" not in journey
+        or "installNativeSpeechBridgeObserver()" not in journey
+        or 'new JSONObject(injectNativeDictationTestEvent("result", dictatedText))' not in journey
+        or '.put("finalInjection", finalInjection)' not in journey
+        or '.put("finalInjectedThroughNativePlugin", true)' not in journey
+        or '.put("explicitStopRequestId", insertedStopRequestId)' not in journey
+        or '.put("resultCompletesTurn", true)' not in journey
+        or 'assertEquals("an explicit Stop must not rearm another native recognizer turn", 1, insertedNativeStartCalls)' not in journey):
+    raise AssertionError("packaged journey must capture the composer/keys return cycle and final result completing an explicitly stopped native turn")
+if ("validate_composer_alternate_surface(" not in extractor
+        or 'stage_name in {"composer-keys-before-ime-open", "keys-to-composer-return"}' not in extractor
+        or '"imeVisibleAfterReturn"' not in extractor
+        or '"keyboardVisibleAfterReturn"' not in extractor
+        or "must show the modal composer alone" not in extractor
+        or "composer and key catalog competing for input rejected" not in extractor):
+    raise AssertionError("artifact validation must check only the visible controls on each alternate input surface")
+if (".mobile-hotkeys--dictation-available.mobile-hotkeys--main-open,\n"
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--ctrl-open { height: 145px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog without visible dictation status must reserve its 145px compact dock")
+if (".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--main-open,\n"
+        ".mobile-hotkeys--dictation-available.mobile-hotkeys--dictation-listening.mobile-hotkeys--ctrl-open { height: 185px; }") not in mobile_hotkeys:
+    raise AssertionError("Android catalog during listening must reserve its 185px status band and compact key catalog")
+if "const inlineDictationListeningStatusRowHeightPx = 40;" not in app:
+    raise AssertionError("App dock sizing must reserve the matching 40px terminal listening band")
+if ("finishInsertUnconfirmed(gen, text)" not in inline_dictation
+        or "preview: text" not in inline_dictation
+        or "Terminal insertion was not confirmed" not in inline_dictation
+        or 'data-testid="inline-dictation-copy-transcript"' not in mobile_hotkeys
+        or "Copy recognized transcript" not in mobile_hotkeys
+        or "const inlineDictationRecoveryStatusRowHeightPx = 64;" not in app
+        or ".mobile-hotkeys--dictation-recovery .mobile-hotkeys__dictation-status-row {\n  height: 64px;" not in mobile_hotkeys):
+    raise AssertionError("failed PTY insertion must retain the transcript and reserve the visible copy-recovery row")
+for recovery_test in (
+    "keeps the final transcript available when PTY insertion returns false",
+    "keeps the final transcript available when PTY insertion rejects",
+    "offers an explicit copy action for an unconfirmed terminal transcript",
+):
+    if recovery_test not in unit_test_manifest:
+        raise AssertionError(f"full JS unit gate manifest omits inline transcript recovery coverage: {recovery_test}")
+if "const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;" not in app:
+    raise AssertionError("terminal viewport reservation must track the rendered 96px catalog height")
+if ("height: 96px;" not in mobile_hotkeys or "height: 48px;" not in mobile_hotkeys
+        or "overflow-x: auto;" not in mobile_hotkeys or "overflow-y: hidden;" not in mobile_hotkeys
+        or "touch-action: pan-x;" not in mobile_hotkeys
+        or "width: max-content;" not in mobile_hotkeys or "gap: var(--sp-2);" not in mobile_hotkeys
+        or "overflow-y: auto;" not in mobile_hotkeys or "touch-action: pan-y;" not in mobile_hotkeys):
+    raise AssertionError("Fast Keys must use a 96px catalog with one horizontal Main row and a vertical Ctrl scroller")
+if ("scroll-snap-type: y mandatory;" not in mobile_hotkeys
+        or "scroll-snap-type: x mandatory;" not in mobile_hotkeys
+        or "padding-inline: 0;" not in mobile_hotkeys
+        or "padding-right: 0.33px;" not in mobile_hotkeys
+        or "scroll-padding-inline: 0;" not in mobile_hotkeys
+        or "scroll-snap-align: start; scroll-snap-stop: always;" not in mobile_hotkeys
+        or ".mobile-hotkeys__main-row > .mobile-hotkeys__key--catalog:last-child" not in mobile_hotkeys
+        or "scroll-snap-align: end;" not in mobile_hotkeys
+        or 'startY = towardEnd ? container.getDouble("bottom") - 2' not in journey
+        or "Math.rint(scrollTop / 48.0)" not in journey
+        or "assertMainCatalogEndpointReachability" not in journey
+        or "endpointIntersectsContent" not in journey
+        or "const insideContent=r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom;" not in journey
+        or "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)};});" not in journey
+        or "Main rail end clamp must stay on the 56dp key-slot boundary" not in journey
+        or "scrollSnapType" not in extractor
+        or "Ctrl catalog reachability between 48dp row boundaries rejected" not in extractor
+        or "Main endpoint clamp clipping Tab at x=6.38 rejected" not in extractor):
+    raise AssertionError("Fast Keys physical swipes must snap to rows and preserve fully visible 48dp targets")
+if ("mainRows.map((row) => findAll(row" not in unit_test
+        or ".toEqual([10])" not in unit_test
+        or "assertMainCatalogSingleRow(scroll, geometry);" not in journey
+        or "List.of(10)" not in journey
+        or "sorted(row_counts.values()) != [10]" not in extractor
+        or "rejected 144px filled two-row catalog hierarchy fails the visual contract" not in extractor):
+    raise AssertionError("Fast Keys unit, packaged journey, and extractor must enforce the compact single-row Main layout")
+if ("catalogTabs" not in journey or "assertCatalogTabsReachable" not in journey
+        or "catalogSurfaceStyle" not in journey or "mainKeyLayout" not in journey
+        or "fontToken" not in journey or "fontToken" not in extractor):
+    raise AssertionError("packaged Fast Keys evidence must measure catalog navigation, flat styling, Main row, and UI-kit type token")
+if ('role="region"' not in mobile_hotkeys or 'role="dialog"' in mobile_hotkeys):
+    raise AssertionError("Fast Keys catalog must remain in the terminal hierarchy rather than float as a dialog")
+if "translateY(0.95px)" in mobile_hotkeys:
+    raise AssertionError("Android inline dictation must not translate 48dp controls out of the clipped toolbar row")
+if "scrollbar-width: none;" not in mobile_hotkeys or ".mobile-hotkeys__bar::-webkit-scrollbar { display: none; }" not in mobile_hotkeys:
+    raise AssertionError("Android narrow-width toolbar must keep full-height touch targets with scrolling available only for real overflow")
+if "dictationModeSelector" in journey or "dictationModeOptions" in journey or "inlineDictationMode" in app:
+    raise AssertionError("the Kotlin-aligned inline mic/status dock must not retain the JS-only Prompt/Command mode state")
+if "terminalSlotInsideTerminalPanel" not in journey or "terminalSlotInsideTerminalPanel" not in extractor:
+    raise AssertionError("Fast Keys must explicitly verify the full terminal slot stays within its clipped panel")
+if "10.333px past its panel rejected" not in extractor:
+    raise AssertionError("artifact self-tests must reject the listening + Ctrl catalog slot overflow regression")
+if ("catalogScrollerRect.bottom<=catalogSheet.bottom+" not in journey
+        or "catalog scroller overflow above the 0.01px CSS rounding epsilon rejected" not in extractor):
+    raise AssertionError("catalog containment must allow only 0.01px float noise and reject larger overflow")
+
+for label, damaged in (
+    ("fast-key invocation", lanes.replace(
+        'if scripts/connected-js-hotkeys-docker.sh \\\n',
+        "if scripts/connected-js-unrelated-docker.sh \\\n",
+        1,
+    )),
+    ("exact JUnit check", lanes.replace(
+        'elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"; then\n',
+        "if true; then\n",
+        1,
+    )),
+    ("evidence upload", workflow.replace(
+        "          path: android/app/build/outputs/js-hotkeys/\n",
+        "          path: android/app/build/outputs/missing/\n",
+        1,
+    )),
+):
+    try:
+        require_contract(damaged if label == "evidence upload" else workflow,
+                         damaged if label != "evidence upload" else lanes, runner, extractor)
+    except (AssertionError, ValueError):
+        print(f"PASS: missing {label} fails the fast-key workflow contract")
+    else:
+        raise AssertionError(f"workflow contract missed removed {label}")
+
+if '[[ "$health" == healthy ]]' not in runner or 'install -m 600 "$ROOT_DIR/tests/docker/test_key"' not in runner:
+    raise AssertionError("dedicated runner must require a healthy fixture and use its committed private key")
+if not runner.index('[[ "$health" == healthy ]]') < runner.index('ssh -q "${ssh_opts[@]}"'):
+    raise AssertionError("Docker fixture health must be confirmed before SSH setup")
+if "expected_first='1b5b411b5b421b091b5b5a110303030404040d'" not in runner \
+        or "expected_resumed='1b5b41'" not in runner:
+    raise AssertionError("dedicated runner lost its independent first-session or reattached PTY byte oracle")
+if "hotkeys-host-oracle.txt" not in runner \
+        or 'pocketshell_run_without_avd_lock_fd_to_log "$evidence_dir/hotkeys-gradle.log"' not in runner:
+    raise AssertionError("dedicated runner must preserve host byte and Gradle evidence")
+if "sshPrivateKeyPath=$DEVICE_KEY_PATH" not in runner or "sshPrivateKeyBase64" in runner:
+    raise AssertionError("dedicated runner must stage the fixture key for native key-vault import (#2926), never pass key bytes")
+if "pocketshell_android_input_preflight" not in runner:
+    raise AssertionError("dedicated runner must run the Android input preflight before the journey (#2946)")
+if '(set +m; stty raw -echo;' not in journey:
+    raise AssertionError("byte receiver must suppress background sampler job notices that evict the visible marker")
+if 'includes(" + JSONObject.quote(resumedDone) + ")' not in journey:
+    raise AssertionError("reattached fast-key journey must retain its visible resumed DONE marker assertion")
+if 'appLastContainsDone:app.includes(done)' not in journey or 'terminalLastContainsDone:term.includes(done)' not in journey:
+    raise AssertionError("failed marker diagnostics must distinguish app delivery from xterm write parsing")
+for focus_contract in (
+    "reattachEarlyPromptTapWhileHeld",
+    "reattachEarlyPromptTapAfterAttach",
+    "terminal-enabled-watcher",
+    "attach-resize",
+    "attach-final-focus",
+):
+    if focus_contract not in extractor:
+        raise AssertionError(f"artifact validator omits attach focus evidence: {focus_contract}")
+
+for timing_field in ("connectToPromptMs", "tapToVisibleOutputMs", "reconnectTapToVisibleOutputMs"):
+    if timing_field not in journey or timing_field not in extractor:
+        raise AssertionError(f"same-run timing contract omits {timing_field}")
+for timing_expression in (
+    'journey.put("connectToPromptMs", SystemClock.uptimeMillis() - connectToPromptStartedAt);',
+    'journey.put("tapToVisibleOutputMs", SystemClock.uptimeMillis() - tapToVisibleOutputStartedAt);',
+    'journey.put("reconnectTapToVisibleOutputMs", SystemClock.uptimeMillis() - reconnectTapToVisibleOutputStartedAt);',
+):
+    if timing_expression not in journey:
+        raise AssertionError(f"same-run timing is not derived from monotonic elapsed time: {timing_expression}")
+reconnected_screenshot = 'captureScreenshot("fastkeys-reconnected-ime-open.png");'
+if journey.count(reconnected_screenshot) != 4:
+    raise AssertionError("reattach screen must be captured once on success and once in each of its three failure paths")
+failure_screenshot_contexts = (
+    'JSONObject failureGeometry = captureGeometry("reattach-ime-wait-failure");\n'
+    '            captureScreenshot("fastkeys-reconnected-ime-open.png");\n'
+    '            throw new AssertionError("reattached terminal did not settle',
+    'JSONObject failureGeometry = captureGeometry("reconnect-ready-failure");\n'
+    '            captureScreenshot("fastkeys-reconnected-ime-open.png");\n'
+    '            throw new AssertionError(error.getMessage()',
+    '// Preserve the real packaged screen at the failed render boundary before instrumentation tears the app down.\n'
+    '            captureScreenshot("fastkeys-reconnected-ime-open.png");\n'
+    '            throw new AssertionError(error.getMessage()',
+)
+for failure_context in failure_screenshot_contexts:
+    if failure_context not in journey:
+        raise AssertionError("a reattach failure path lost its diagnostic screen capture")
+success_capture_checkpoint = 'assertTrue("resumed session must keep the Android IME open", isImeVisible());'
+if journey.count(success_capture_checkpoint) != 1:
+    raise AssertionError("reattach screenshot success checkpoint must be unique")
+success_capture_start = journey.index(success_capture_checkpoint)
+success_capture_end = journey.index('click("[data-testid=ssh-disconnect]")', success_capture_start)
+if journey[success_capture_start:success_capture_end].count(reconnected_screenshot) != 1:
+    raise AssertionError("reattach screenshot must be emitted exactly once on the successful journey path")
+if journey.index('journey.put("resumedDoneMarker", resumedDone);') > success_capture_start:
+    raise AssertionError("successful reattach screenshot must follow the rendered resumed-output marker")
+if "firstDoneMarker" not in journey or "resumedDoneMarker" not in journey:
+    raise AssertionError("timings must be paired with the first and reattached rendered-output events")
+if "after-reconnect-loss" not in journey or "after-reconnect-loss" not in extractor \
+        or "hotkeyControls" not in journey or "hotkeyControls" not in extractor:
+    raise AssertionError("post-reattach loss evidence must capture and validate every live-only hotkey control")
+
+for sheet_screenshot in (
+    "fastkeys-sheet-main-ime-open.png",
+    "fastkeys-sheet-main-tail-ime-open.png",
+    "fastkeys-sheet-ctrl-ime-open.png",
+    "fastkeys-sheet-ctrl-tail-ime-open.png",
+):
+    if f'captureScreenshot("{sheet_screenshot}")' not in journey or sheet_screenshot not in extractor:
+        raise AssertionError(f"same-run sheet screenshot is not captured and extracted: {sheet_screenshot}")
+for viewport_screenshot in (
+    "fastkeys-row-closed-ime-open-viewport.png",
+    "fastkeys-sheet-main-ime-open-viewport.png",
+    "fastkeys-sheet-main-tail-ime-open-viewport.png",
+    "fastkeys-sheet-ctrl-ime-open-viewport.png",
+    "fastkeys-sheet-ctrl-tail-ime-open-viewport.png",
+    "fastkeys-dictation-listening-ime-open-viewport.png",
+    "fastkeys-dictation-stopped-ime-open-viewport.png",
+    "fastkeys-dictation-error-ime-open-viewport.png",
+):
+    if f'captureTerminalViewportScreenshot("{viewport_screenshot}"' not in journey or viewport_screenshot not in extractor:
+        raise AssertionError(f"same-run full-device and terminal viewport evidence is not paired: {viewport_screenshot}")
+if "private void scrollCatalogToStart(String selector)" not in journey:
+    raise AssertionError("catalog sheet screenshots must include the visible first scroll position")
+
+for swipe_contract in (
+    "private void swipeFastKeyIntoView(String selector)",
+    "MAX_CATALOG_SWIPE_ATTEMPTS = 8",
+    "private void injectSwipe(float startX, float startY, float endX, float endY)",
+    "MotionEvent.ACTION_MOVE",
+    "towardEnd ? offsetDelta > 0.5 : offsetDelta < -0.5",
+    "insideContent:r.left>=c.left-0.5",
+    "clearOfButtons",
+    "insideScroller",
+    "double startX = anchor.getDouble(\"x\")",
+    "double startY = anchor.getDouble(\"y\")",
+    "lastInjectedSwipe",
+    "screenStartX",
+    "writesBeforeReachabilitySwipes",
+    "a physical catalog swipe must not activate a key or write to the PTY",
+):
+    if swipe_contract not in journey:
+        raise AssertionError(f"packaged fast-key journey omits physical catalog swipe proof: {swipe_contract}")
+for mutation in ("container.scrollLeft+=", "container.scrollLeft-=", "container.scrollTop+=", "container.scrollTop-="):
+    if mutation in journey:
+        raise AssertionError(f"catalog reachability may not be faked by mutating scroll position in JS: {mutation}")
+for geometry_contract in ("intersectsComposerPanel", "inlineDictationBarInsideTray"):
+    if geometry_contract not in journey or geometry_contract not in extractor:
+        raise AssertionError(f"fast-key tray evidence omits the no-overlap geometry contract: {geometry_contract}")
+if "mobile-hotkeys__mode-selector" in mobile_hotkeys or "InlineDictationMode" in mobile_hotkeys:
+    raise AssertionError("Kotlin-aligned inline dictation must use the existing persistent Mic/Stop row")
+if "dictationModeSelector" in extractor or "dictationModeOptions" in extractor:
+    raise AssertionError("Fast Keys artifact validation must not retain the removed JS-only selector contract")
+if "narrowToolbarReachability" not in journey or "scrollWidth" not in journey or "insideToolbar:r.left>=clip.left" not in journey:
+    raise AssertionError("Fast Keys acceptance omits measured narrow-width visibility and overflow evidence")
+for catalog_contract in ("catalogHeaderControlsDoNotOverlap", "catalogTitle", "catalogSheetRole",
+                         "promptComposerLauncher", "clientHeight", "scrollHeight",
+                         "terminalGridViewport", "terminalCanvasEndsAtDock"):
+    if catalog_contract not in journey or catalog_contract not in extractor:
+        raise AssertionError(f"Fast Keys acceptance omits measured terminal/catalog hierarchy: {catalog_contract}")
+for dictation_contract in (
+    "inlineDictationMicInsideBar",
+    "inlineDictationMicCount",
+    "destinationLabels",
+    "destinationLabelBounds",
+    "visibleText",
+    "inlineDictationTargetKey",
+    "sshAttachEpoch",
+    "dictation-stop-awaiting-final",
+    "dictation-final-inserted",
+    "dictation-attach-cancel-complete",
+    "dictation-background-cancel-resumed",
+):
+    if dictation_contract not in journey or dictation_contract not in extractor:
+        raise AssertionError(f"combined fast-key journey omits the integrated dictation contract: {dictation_contract}")
+if "validate_dictation_behavior(journey)" not in extractor or "expectedHostHex" not in extractor:
+    raise AssertionError("artifact validator must fail closed on partial/final/Stop/error/reattach dictation behavior")
+if ("dictation-final-awaiting-stopped" in extractor
+        or "legacy finish and stopped-event dictation contract rejected" not in extractor
+        or "--force-first-post-attach-tap-miss" not in runner
+        or "--prompt-focus-max-attempts" not in runner
+        or "fastKeysForceFirstPostAttachTapMiss=$FORCE_FIRST_POST_ATTACH_TAP_MISS" not in runner
+        or "fastKeysPromptFocusMaxAttempts=$PROMPT_FOCUS_MAX_ATTEMPTS" not in runner
+        or '[[ "$PROMPT_FOCUS_MAX_ATTEMPTS" =~ ^[12]$ ]]' not in runner):
+    raise AssertionError("the one-turn extractor, legacy-contract regression, and bounded packaged rerun controls must stay in sync")
+if ("dictation-final-awaiting-stopped" in pty_geometry
+        or '"dictation-stop-awaiting-final"' not in pty_geometry
+        or "validate_stop_waiting_final" not in pty_geometry
+        or "journey missing the pre-final Stop checkpoint is rejected" not in pty_geometry
+        or "Stop checkpoint without a transcribing dock is rejected" not in pty_geometry
+        or 'captureGeometry("dictation-stop-awaiting-final")' not in journey):
+    raise AssertionError("the PTY geometry oracle must cover the explicit-Stop transcribing stage before final insertion")
+stop_ack = journey.index('assertEquals("explicit Stop must call the Android speech plugin once"')
+stop_checkpoint = journey.index('assertEquals("explicit Stop alone must not insert before a final result"')
+final_injection = journey.index('injectNativeDictationTestEvent("result", dictatedText)')
+if not stop_ack < stop_checkpoint < final_injection:
+    raise AssertionError("the packaged journey must prove explicit Stop and no write before injecting its final result")
+for journey_contract in (
+    "title:n.title",
+    "iconVisible",
+    "iconBounds",
+    "iconComputedWidth",
+    "iconComputedHeight",
+    "iconInside",
+    "pressed:n.getAttribute('aria-pressed')==='true'",
+    "micState:n.dataset.micState||''",
+    "hitTarget:!!hit&&(hit===n||n.contains(hit))",
+):
+    if journey_contract not in journey:
+        raise AssertionError(f"Fast Keys journey omits visible dictation action evidence: {journey_contract}")
+if ("mic.get(\"title\") != expected_accessible_name" not in extractor
+        or 'mic.get("iconVisible") is not True' not in extractor
+        or 'mic.get("pressed") is not (phase == "listening")' not in extractor):
+    raise AssertionError("artifact validator must enforce accessible labels and the visible mic/Stop state")
+if ("prompt_icon_matches_computed_size" not in extractor
+        or "iconComputedWidth" not in extractor
+        or "iconComputedHeight" not in extractor
+        or "expected_narrow_labels" not in extractor
+        or "len(controls) != 6" not in extractor
+        or "len(narrow_targets) != 6" not in extractor
+        or "narrow_scroll_width > narrow_client_width + 0.5" not in extractor
+        or 'narrow_row.get("scrollable") is not False' not in extractor
+        or "abs(narrow_max_scroll_left) > 0.5" not in extractor
+        or "narrow_mic_right > narrow_client_width + 0.5" not in extractor
+        or "six narrow dock controls fit 330px without horizontal scrolling" not in extractor
+        or "unnecessary horizontal scroll at 330px rejected" not in extractor
+        or "clipped final Dictate target at 330px rejected" not in extractor
+        or "separate prompt-dictation dock shortcut rejected" not in extractor):
+    raise AssertionError("artifact validator must require six fully visible 48dp controls at 330px without overflow or clipping")
+if ('"Listening" not in status_text' not in extractor
+        or 'listening.get("inlineDictationPreview") != dictation.get("partialText")' not in extractor
+        or 'listening.get("inlineDictationStatusVisible") is not True' not in extractor):
+    raise AssertionError("artifact validator must require the active visible status and matching partial preview")
+
+print("PASS: rewrite CI runs the API 35 fast-key Docker journey, checks exact JUnit, aggregates lane status, and uploads same-run evidence")
+print("PASS: fast-key runner and shared packaged-lanes wrapper parse and preserve focus/IME evidence")
+PY

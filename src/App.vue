@@ -19,6 +19,7 @@ import {
   type SshHostTarget,
   type SshResourceSnapshot,
   type UsageRow,
+  type TerminalKeyId,
 } from '@pocketshell/core';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { fontCssVariables } from '@ui/fonts';
@@ -45,13 +46,18 @@ import { useSettingsStore } from '@ui/app/stores/settings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { rememberDiagnosticTerms } from './platform/androidDiagnostics';
 import { ConnectionController } from './session/connectionController';
+import { createAppLifecycleHandler } from './session/appLifecycle';
+import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import { createKeyboardInsetsStateSync } from './native/keyboardInsetsState';
 import TerminalViewport from './components/TerminalViewport.vue';
+import MobileHotkeys from './components/MobileHotkeys.vue';
+import TerminalDictationBar from './components/TerminalDictationBar.vue';
 import PromptComposer from './components/PromptComposer.vue';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
+import type { InlineDictationState } from './session/inlineDictation';
 import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './terminalGeometry';
 import SettingsScreen from './components/SettingsScreen.vue';
 import ProviderUsageScreen from './components/ProviderUsageScreen.vue';
@@ -71,12 +77,42 @@ interface TerminalViewportHandle {
   scrollToBottom(): void;
 }
 
+interface MobileHotkeysHandle {
+  closePalette(): void;
+  openPalette(): void;
+}
+
 type ComposerSmokeEvidenceWindow = Window & {
   __ps2857CaptureTerminalEvidence?: boolean;
+  __ps2857AppTerminalInputChunks?: Array<{
+    text: string;
+    sessionName: string;
+    sessionId: string;
+    sessionTag: string;
+    attachEpoch: number;
+    phase: string;
+  }>;
+  __ps2857AppTerminalInputChars?: number;
+  __ps2857AppTerminalInputDroppedChunks?: number;
   __ps2857AppTerminalDeliveryCount?: number;
   __ps2857AppTerminalLastChunk?: string;
   __ps2857AppTerminalMissingRefCount?: number;
+  __ps2884HotkeyWrites?: Array<{ key: TerminalKeyId; bytes: number[] }>;
+  __ps2884CaptureResizeFitEvidence?: boolean;
+  __ps2884ResizeFitMarker?: string;
+  __ps2884ResizeAckEvents?: Array<{
+    atMs: number;
+    marker: string;
+    requestId: number;
+    cols: number;
+    rows: number;
+    attachEpoch: number;
+    result: 'accepted' | 'failed' | 'missing';
+  }>;
 };
+
+const MAX_APP_TERMINAL_INPUT_EVIDENCE_CHUNKS = 128;
+const MAX_APP_TERMINAL_INPUT_EVIDENCE_CHARS = 2_048;
 
 type SettingsSyncProbeWindow = Window & {
   __ps2852RunSettingsSync?: typeof runSyncRound;
@@ -121,7 +157,19 @@ const terminalFontFamily = computed(() => fontCssVariables({
 const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
+const mobilePromptComposerOpen = ref(false);
+const mobilePromptComposerInline = ref(false);
 const promptComposerHasFocus = ref(false);
+const mobileHotkeysHasFocus = ref(false);
+const terminalViewportHasFocus = ref(false);
+const terminalViewportDockCapPx = ref<number | null>(null);
+const terminalViewportDockBaseCapPx = ref<number | null>(null);
+const mobileHotkeysPaletteOpen = ref(false);
+const mobileHotkeysPage = ref<'main' | 'ctrl'>('main');
+const inlineDictationStatusRowHeightPx = 32;
+const inlineDictationListeningStatusRowHeightPx = 40;
+const inlineDictationRecoveryStatusRowHeightPx = 64;
+const terminalViewportDockPreferredCapPx = 144;
 const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
@@ -150,6 +198,7 @@ const retainedHomeScreenStyle = ref<CSSProperties>();
 const hiddenHomeScreenStyle: CSSProperties = { display: 'none' };
 const terminalResizeStatus = ref('waiting for a live PTY');
 const terminal = ref<TerminalViewportHandle | null>(null);
+const mobileHotkeys = ref<MobileHotkeysHandle | null>(null);
 const terminalInputPending = ref(0);
 const terminalInputAckCount = ref(0);
 const terminalInputFailureCount = ref(0);
@@ -157,8 +206,17 @@ const terminalResizePending = ref(0);
 const terminalResizeAckCount = ref(0);
 const terminalResizeFailureCount = ref(0);
 const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
+const inlineDictationState = ref<InlineDictationState>({
+  phase: 'idle',
+  preview: '',
+  message: 'Tap Dictate to speak at the terminal cursor.',
+  tone: 'quiet',
+});
 // Resize callbacks can finish after the user has selected a different PTY.
-let terminalAttachEpoch = 0;
+const terminalAttachEpoch = ref(0);
+const terminalAttachFocusWindowEpoch = ref(0);
+const terminalAttachPromptFocusEpoch = ref(0);
+const terminalAttachResizeAckEpoch = ref(0);
 
 let controller: ConnectionController | null = null;
 let pendingTrustPassphrase: string | undefined;
@@ -188,8 +246,15 @@ const publishedMigrationStatus = computed(() => installedDataMigrationState.relo
 const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
   || publishedMigrationStatus.value === 'pending');
 const isLive = computed(() => currentPhase.value === 'live');
+const terminalAutofocusAllowed = computed(() => (terminalAttachPromptFocusEpoch.value === 0
+  || terminalAttachPromptFocusEpoch.value !== terminalAttachEpoch.value)
+  && !promptComposerHasFocus.value);
+const mobileHotkeysEnabled = computed(() => isLive.value
+  && homeSurface.value === 'live'
+  && navigation.route === 'home');
 const keyboardComposerMode = computed(() =>
-  keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
+  keyboardVisible.value && isLive.value
+    && (promptComposerHasFocus.value || mobileHotkeysHasFocus.value || terminalViewportHasFocus.value),
 );
 const composerTargetKey = computed(() => {
   const session = connectionSnapshot.value?.selectedSession;
@@ -198,6 +263,63 @@ const composerTargetKey = computed(() => {
   if (!session || !hostname || !username) return '';
   return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
 });
+watch(composerTargetKey, (targetKey, previousTargetKey) => {
+  if (targetKey === previousTargetKey) return;
+  mobilePromptComposerInline.value = false;
+  mobilePromptComposerOpen.value = false;
+});
+const inlineDictationTargetKey = computed(() => composerTargetKey.value
+  ? `${composerTargetKey.value}/attach-${terminalAttachEpoch.value}`
+  : '');
+const inlineDictationStatusVisible = computed(() => Capacitor.getPlatform() === 'android' && (
+  inlineDictationState.value.phase !== 'idle'
+  || inlineDictationState.value.tone === 'error'
+  || inlineDictationState.value.tone === 'warning'
+));
+const inlineDictationRecoveryVisible = computed(() => inlineDictationStatusVisible.value
+  && inlineDictationState.value.phase === 'idle'
+  && inlineDictationState.value.tone === 'warning'
+  && inlineDictationState.value.preview.length > 0);
+const mobileHotkeysDockHeight = computed(() => {
+  const dictationStatusRowHeight = inlineDictationStatusVisible.value
+    ? inlineDictationState.value.phase === 'listening'
+      ? inlineDictationListeningStatusRowHeightPx
+      : inlineDictationRecoveryVisible.value
+        ? inlineDictationRecoveryStatusRowHeightPx
+        : inlineDictationStatusRowHeightPx
+    : 0;
+  const catalogHeight = mobileHotkeysPaletteOpen.value ? 96 : 0;
+  const dockInset = Capacitor.getPlatform() === 'android' ? 1 : 0;
+  return 48 + dictationStatusRowHeight + dockInset + catalogHeight;
+});
+watch(
+  () => [keyboardVisible.value, keyboardComposerMode.value, mobileHotkeysPaletteOpen.value,
+    inlineDictationStatusVisible.value, inlineDictationRecoveryVisible.value, inlineDictationState.value.phase] as const,
+  ([imeOpen, keyboardMode, paletteOpen, dictationStatusOpen]) => {
+    const androidKeyboardUp = Capacitor.getPlatform() === 'android' && imeOpen && keyboardMode;
+    if (!paletteOpen && !dictationStatusOpen && !androidKeyboardUp) {
+      terminalViewportDockCapPx.value = null;
+      terminalViewportDockBaseCapPx.value = null;
+      return;
+    }
+    if (!imeOpen) return;
+    // Establish the accepted Android terminal grid as soon as the keyboard-up
+    // composer is active, before a fast-key catalog or dictation status opens.
+    // A smaller measured viewport wins; larger API 35 viewports stay capped at
+    // the approved 144px/38×6 budget across dock, status, and reattach states.
+    if (terminalViewportDockBaseCapPx.value === null) {
+      const viewport = document.querySelector<HTMLElement>('.terminal-slot > .terminal-viewport');
+      const height = viewport?.getBoundingClientRect().height ?? 0;
+      if (height > 0) {
+        terminalViewportDockBaseCapPx.value = Math.min(terminalViewportDockPreferredCapPx, Math.floor(height));
+      }
+    }
+    if (terminalViewportDockBaseCapPx.value !== null) {
+      terminalViewportDockCapPx.value = terminalViewportDockBaseCapPx.value;
+    }
+  },
+  { flush: 'sync' },
+);
 const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
   if (!connectionSnapshot.value?.selectedSession) return 'closed';
   if (currentPhase.value === 'live') return 'connected';
@@ -242,6 +364,7 @@ const snippetHostLabel = computed(() => connectionSnapshot.value?.hostLabel
   || (snippetHostId.value ? `${hostDraft.value.username.trim()}@${hostDraft.value.hostname.trim()}:${Number(hostDraft.value.port)}` : 'No host selected'));
 
 function navigateHomeSurface(action: HomeSurfaceAction) {
+  mobilePromptComposerOpen.value = false;
   if (action !== 'session-attached' && document.activeElement instanceof HTMLElement) {
     document.activeElement.blur();
   }
@@ -466,6 +589,55 @@ watch(() => navigation.route, (route) => {
   if (route === 'keys') void refreshSshKeys();
 });
 
+function openPromptComposer() {
+  // Inline terminal recognition owns the dock until it reaches idle. Leaving
+  // Prompt closed keeps its Stop/Cancel action physically reachable.
+  if (inlineDictationState.value.phase !== 'idle' || mobilePromptComposerInline.value) return;
+  mobileHotkeys.value?.closePalette();
+  mobilePromptComposerOpen.value = true;
+}
+
+function showInlinePromptComposerAfterSend() {
+  if (Capacitor.getPlatform() !== 'android') return;
+  // Keep the connected workspace's terminal-first layout after an acknowledged
+  // Send. The existing normal-flow composer leaves the fresh PTY output above
+  // the input surface instead of dimming it behind the mobile sheet.
+  setMobilePromptComposerOpen(false);
+  mobilePromptComposerInline.value = true;
+}
+
+async function openTerminalKeysFromComposer() {
+  if ((!mobilePromptComposerOpen.value && !mobilePromptComposerInline.value) || !isLive.value) return;
+  // The composer and catalog are alternate input surfaces. Keep the draft in
+  // its per-PTY store, close the modal, then transfer focus to xterm so the
+  // palette can stay open above Android's keyboard without a second composer.
+  mobilePromptComposerOpen.value = false;
+  mobilePromptComposerInline.value = false;
+  await nextTick();
+  mobileHotkeys.value?.openPalette();
+  await nextTick();
+  terminal.value?.focus();
+}
+
+function setMobilePromptComposerOpen(open: boolean) {
+  if (!open) mobilePromptComposerInline.value = false;
+  if (!open && Capacitor.getPlatform() === 'android') {
+    // Blurring a WebView editor does not reliably dismiss Android's IME on
+    // API 35. Request the native inset transition while the Prompt sheet is
+    // closing so the dock and terminal regain their full viewport.
+    void keyboardInsets.hideIme().catch((error: unknown) => {
+      console.error('Could not dismiss the Android IME after closing Prompt.', error);
+    });
+  }
+  mobilePromptComposerOpen.value = open;
+  if (!open) {
+    void nextTick(() => {
+      document.querySelector<HTMLButtonElement>('[data-testid="prompt-composer-launcher"]')
+        ?.focus({ preventScroll: true });
+    });
+  }
+}
+
 function pinStoreKey(hostId: string): string {
   return `pocketshell.ssh.host-key.${hostId}`;
 }
@@ -474,15 +646,41 @@ function isPromptComposerElement(target: Element | null): boolean {
   return target !== null && target.closest('[data-testid="prompt-composer"]') !== null;
 }
 
+function isMobileHotkeysElement(target: Element | null): boolean {
+  return target !== null && target.closest('[data-testid="mobile-hotkeys"]') !== null;
+}
+
+function isTerminalViewportElement(target: Element | null): boolean {
+  return target !== null && target.closest('.terminal-viewport') !== null;
+}
+
 function recordFocusedElement(event: FocusEvent) {
-  promptComposerHasFocus.value = event.target instanceof Element
-    && isPromptComposerElement(event.target);
+  const target = event.target instanceof Element ? event.target : null;
+  promptComposerHasFocus.value = isPromptComposerElement(target);
+  mobileHotkeysHasFocus.value = isMobileHotkeysElement(target);
+  terminalViewportHasFocus.value = isTerminalViewportElement(target);
+  if (event.type === 'focusin') recordAttachComposerInteraction(target);
+}
+
+function recordAttachComposerPointer(event: PointerEvent) {
+  recordAttachComposerInteraction(event.target instanceof Element ? event.target : null);
+}
+
+function recordAttachComposerInteraction(target: Element | null) {
+  // Keep composer intent for this PTY even if the tap lands just after the
+  // attach focus window closes. TerminalViewport's enabled watcher can still
+  // finish its async autofocus after attachSession has returned to the caller.
+  // A later attach gets a new epoch, so it naturally clears this intent.
+  if (homeSurface.value !== 'live' || !isLive.value || !isPromptComposerElement(target)) return;
+  terminalAttachPromptFocusEpoch.value = terminalAttachEpoch.value;
 }
 
 function recordFocusAfterBlur() {
   queueMicrotask(() => {
-    promptComposerHasFocus.value = document.activeElement instanceof Element
-      && isPromptComposerElement(document.activeElement);
+    const activeElement = document.activeElement instanceof Element ? document.activeElement : null;
+    promptComposerHasFocus.value = isPromptComposerElement(activeElement);
+    mobileHotkeysHasFocus.value = isMobileHotkeysElement(activeElement);
+    terminalViewportHasFocus.value = isTerminalViewportElement(activeElement);
   });
 }
 
@@ -749,36 +947,50 @@ async function createSession() {
 async function attachSession(session: SessionRow) {
   const active = controller;
   if (!active) return;
-  terminalAttachEpoch += 1;
-  terminal.value?.clear();
-  const result = await active.switchSession(session).catch((error: unknown) => {
-    recordFailure('ssh-bridge-failed', 'attach-session', error);
-    connectionMessage.value = error instanceof Error ? error.message : String(error);
-    return null;
-  });
-  if (result && !result.ok) {
-    recordOperationFailure('attach-session');
-    connectionMessage.value = result.message;
-  }
-  else if (result?.ok) {
-    navigateHomeSurface('session-attached');
-    await nextTick();
-    // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
-    // have identical geometry. Explicitly resize each newly attached PTY.
-    const size = await terminal.value?.fit();
-    if (size) await resizeTerminal(size);
-    terminal.value?.focus();
+  const attachEpoch = ++terminalAttachEpoch.value;
+  terminalAttachFocusWindowEpoch.value = attachEpoch;
+  try {
+    terminal.value?.clear();
+    const result = await active.switchSession(session).catch((error: unknown) => {
+      recordFailure('ssh-bridge-failed', 'attach-session', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+      return null;
+    });
+    if (attachEpoch !== terminalAttachEpoch.value) return;
+    if (result && !result.ok) {
+      recordOperationFailure('attach-session');
+      connectionMessage.value = result.message;
+      return;
+    }
+    if (result?.ok) {
+      navigateHomeSurface('session-attached');
+      await nextTick();
+      // Reusing a visible terminal can leave ResizeObserver silent when two PTYs
+      // have identical geometry. Explicitly resize each newly attached PTY.
+      const size = await terminal.value?.fit();
+      if (size) {
+        const resizeGate = waitForAttachAutofocusTestGate('attach-resize');
+        if (resizeGate) await resizeGate;
+        await resizeTerminal(size, attachEpoch);
+      }
+      await nextTick();
+      const focusGate = waitForAttachAutofocusTestGate('attach-final-focus');
+      if (focusGate) await focusGate;
+      if (terminalAutofocusAllowed.value) terminal.value?.focus();
+    }
+  } finally {
+    if (terminalAttachFocusWindowEpoch.value === attachEpoch) terminalAttachFocusWindowEpoch.value = 0;
   }
 }
 
-async function sendTerminalInput(data: string) {
+async function sendTerminalBytes(bytes: Uint8Array) {
   const active = controller;
   if (!active || !isLive.value) return;
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalInputPending.value += 1;
   try {
-    const result = await active.writeTerminalBytes(new TextEncoder().encode(data));
-    if (attachEpoch !== terminalAttachEpoch || (!result.ok && result.reason === 'superseded')) return;
+    const result = await active.writeTerminalBytes(bytes);
+    if (attachEpoch !== terminalAttachEpoch.value || (!result.ok && result.reason === 'superseded')) return;
     if (!result.ok) {
       terminalInputFailureCount.value += 1;
       recordOperationFailure('send-terminal-input');
@@ -787,13 +999,67 @@ async function sendTerminalInput(data: string) {
       terminalInputAckCount.value += 1;
     }
   } catch (error: unknown) {
-    if (attachEpoch !== terminalAttachEpoch) return;
+    if (attachEpoch !== terminalAttachEpoch.value) return;
     terminalInputFailureCount.value += 1;
     recordFailure('ssh-bridge-failed', 'send-terminal-input', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
   } finally {
     terminalInputPending.value -= 1;
   }
+}
+
+function captureAppTerminalInputChunk(data: string, attachEpoch: number) {
+  const smokeEvidence = window as ComposerSmokeEvidenceWindow;
+  if (!smokeEvidence.__ps2857CaptureTerminalEvidence || data.length === 0) return;
+
+  const chunks = smokeEvidence.__ps2857AppTerminalInputChunks
+    ?? (smokeEvidence.__ps2857AppTerminalInputChunks = []);
+  const capturedChars = smokeEvidence.__ps2857AppTerminalInputChars ?? 0;
+  const remainingChars = MAX_APP_TERMINAL_INPUT_EVIDENCE_CHARS - capturedChars;
+  if (chunks.length >= MAX_APP_TERMINAL_INPUT_EVIDENCE_CHUNKS || remainingChars <= 0) {
+    smokeEvidence.__ps2857AppTerminalInputDroppedChunks =
+      (smokeEvidence.__ps2857AppTerminalInputDroppedChunks ?? 0) + 1;
+    return;
+  }
+
+  const selected = connectionSnapshot.value?.selectedSession;
+  const captured = data.slice(0, remainingChars);
+  chunks.push({
+    text: captured,
+    sessionName: selected?.name ?? '',
+    sessionId: selected?.id ?? '',
+    sessionTag: selected?.tag ?? '',
+    attachEpoch,
+    phase: currentPhase.value,
+  });
+  smokeEvidence.__ps2857AppTerminalInputChars = capturedChars + captured.length;
+  if (captured.length < data.length) {
+    smokeEvidence.__ps2857AppTerminalInputDroppedChunks =
+      (smokeEvidence.__ps2857AppTerminalInputDroppedChunks ?? 0) + 1;
+  }
+}
+
+async function sendTerminalInput(data: string) {
+  captureAppTerminalInputChunk(data, terminalAttachEpoch.value);
+  await sendTerminalBytes(new TextEncoder().encode(data));
+}
+
+function sendMobileHotkey(bytes: Uint8Array, key: TerminalKeyId) {
+  if (!mobileHotkeysEnabled.value) return;
+  const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+  if (evidenceWindow.__ps2857CaptureTerminalEvidence) {
+    evidenceWindow.__ps2884HotkeyWrites = [
+      ...(evidenceWindow.__ps2884HotkeyWrites ?? []),
+      { key, bytes: Array.from(bytes) },
+    ];
+  }
+  // Keep core-generated key sequences in one PTY write, including Ctrl+C/D holds.
+  void sendTerminalBytes(bytes);
+}
+
+function keepMobileHotkeysImeOpen() {
+  if (!mobileHotkeysEnabled.value) return;
+  document.querySelector<HTMLTextAreaElement>('[data-testid="prompt-draft"]')?.focus({ preventScroll: true });
 }
 
 async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgement> {
@@ -809,10 +1075,50 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
   return result.ok ? { ok: true } : { ok: false, message: result.message };
 }
 
-async function resizeTerminal(size: TerminalResizeRequest) {
+async function insertInlineDictationText(targetKey: string, text: string): Promise<boolean> {
+  const active = controller;
+  const attachEpoch = terminalAttachEpoch.value;
+  if (!active || !isLive.value || targetKey !== inlineDictationTargetKey.value) return false;
+  terminalInputPending.value += 1;
+  try {
+    // Partials stay in the dock. The controller sanitizes control characters,
+    // and only its explicit Stop path calls this function with final text.
+    const result = await active.writeTerminalBytes(new TextEncoder().encode(text));
+    if (attachEpoch !== terminalAttachEpoch.value
+      || targetKey !== inlineDictationTargetKey.value
+      || active !== controller) return false;
+    if (!result.ok) {
+      terminalInputFailureCount.value += 1;
+      recordOperationFailure('insert-inline-dictation');
+      connectionMessage.value = result.message;
+      return false;
+    }
+    terminalInputAckCount.value += 1;
+    // Return the next physical keyboard input to xterm. Its focus also keeps
+    // the compact keyboard layout active while the native IME remains open.
+    terminal.value?.focus();
+    terminal.value?.scrollToBottom();
+    return true;
+  } catch (error) {
+    if (attachEpoch === terminalAttachEpoch.value && targetKey === inlineDictationTargetKey.value) {
+      terminalInputFailureCount.value += 1;
+      recordFailure('ssh-bridge-failed', 'insert-inline-dictation', error);
+      connectionMessage.value = error instanceof Error ? error.message : String(error);
+    }
+    return false;
+  } finally {
+    terminalInputPending.value -= 1;
+  }
+}
+
+function updateInlineDictationState(next: InlineDictationState) {
+  inlineDictationState.value = next;
+}
+
+async function resizeTerminal(size: TerminalResizeRequest, attachEpochForAck?: number) {
   if (!controller || !isLive.value) return;
   const requestId = size.requestId ?? allocateTerminalResizeRequestId();
-  const attachEpoch = terminalAttachEpoch;
+  const attachEpoch = terminalAttachEpoch.value;
   terminalResizeStatus.value = `${size.cols} × ${size.rows} (local fit)`;
   terminalResizePending.value += 1;
   try {
@@ -821,11 +1127,29 @@ async function resizeTerminal(size: TerminalResizeRequest) {
       connectionMessage.value = error instanceof Error ? error.message : String(error);
       return null;
     });
-    if (attachEpoch !== terminalAttachEpoch || (result && !result.ok && result.reason === 'superseded')) return;
+    const evidenceWindow = window as ComposerSmokeEvidenceWindow;
+    if (evidenceWindow.__ps2884CaptureResizeFitEvidence) {
+      const events = evidenceWindow.__ps2884ResizeAckEvents
+        ?? (evidenceWindow.__ps2884ResizeAckEvents = []);
+      events.push({
+        atMs: Math.round(performance.now() * 10) / 10,
+        marker: evidenceWindow.__ps2884ResizeFitMarker ?? 'unmarked',
+        requestId,
+        cols: size.cols,
+        rows: size.rows,
+        attachEpoch,
+        result: result === null ? 'missing' : result.ok ? 'accepted' : 'failed',
+      });
+      if (events.length > 100) events.shift();
+    }
+    if (attachEpoch !== terminalAttachEpoch.value || (result && !result.ok && result.reason === 'superseded')) return;
     terminalResizeStatus.value = result?.ok
       ? `${size.cols} × ${size.rows} accepted by SSH`
       : `resize failed: ${result && 'message' in result ? result.message : 'native bridge error'}`;
-    if (result?.ok) terminalResizeAckCount.value += 1;
+    if (result?.ok) {
+      terminalResizeAckCount.value += 1;
+      if (attachEpochForAck === terminalAttachEpoch.value) terminalAttachResizeAckEpoch.value = attachEpochForAck;
+    }
     else {
       terminalResizeFailure.value = { ...size, requestId };
       terminalResizeFailureCount.value += 1;
@@ -1018,6 +1342,16 @@ onMounted(() => {
     void importLegacySnippets();
   });
   if (Capacitor.isNativePlatform()) {
+    const handleAppState = createAppLifecycleHandler({
+      getController: () => controller,
+      // Grace and reconnect-on-return are owned by the shared settings store (D42, #2861).
+      getBackgroundGraceMs: () => sharedSettings.backgroundGraceMs,
+      getReconnectOnReturn: () => sharedSettings.reconnectOnReturn,
+      onError: (error) => {
+        recordFailure('ssh-bridge-failed', 'lifecycle', error);
+        connectionMessage.value = error instanceof Error ? error.message : String(error);
+      },
+    });
     void CapacitorApp.addListener('backButton', () => {
       backButtonEvents.value += 1;
       const activeElement = document.activeElement;
@@ -1025,14 +1359,31 @@ onMounted(() => {
         || activeElement instanceof HTMLTextAreaElement
         || activeElement instanceof HTMLSelectElement
         || (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+      const hotkeysHaveFocus = activeElement instanceof Element && isMobileHotkeysElement(activeElement);
       const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-      const keyboardIsVisible = window.screen.height - viewportHeight > 120;
-      if (inputHasFocus && keyboardIsVisible) {
+      const keyboardIsVisible = keyboardVisible.value || window.screen.height - viewportHeight > 120;
+      if ((inputHasFocus || hotkeysHaveFocus) && keyboardIsVisible) {
         (activeElement as HTMLElement).blur();
         return;
       }
-      switch (resolveAndroidBackDestination(navigation.canGoBack, homeSurface.value, !!connectionSnapshot.value)) {
-        case 'navigation': navigation.back(); break;
+      if (mobilePromptComposerOpen.value || mobilePromptComposerInline.value) {
+        setMobilePromptComposerOpen(false);
+        return;
+      }
+      if (mobileHotkeysPaletteOpen.value) {
+        mobileHotkeys.value?.closePalette();
+        return;
+      }
+      switch (resolveAndroidBackDestination(
+        navigation.canGoBack,
+        homeSurface.value,
+        !!connectionSnapshot.value,
+        navigation.route !== 'home',
+      )) {
+        case 'navigation':
+          if (navigation.canGoBack) navigation.back();
+          else navigation.home();
+          break;
         case 'workspace': navigateHomeSurface('back'); break;
         case 'minimize':
           void CapacitorApp.minimizeApp().catch((error: unknown) => {
@@ -1048,17 +1399,7 @@ onMounted(() => {
     });
     void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
       diagnostics.record(isActive ? 'app-foregrounded' : 'app-backgrounded', 'lifecycle', 'OK');
-      const active = controller;
-      if (!active) return;
-      const phase = active.getSnapshot().phase;
-      if (isActive && phase === 'background') void active.returnToForeground({ reconnect: sharedSettings.reconnectOnReturn }).catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
-      else if (!isActive && phase === 'live') void active.enterBackground(sharedSettings.backgroundGraceMs).catch((error: unknown) => {
-        recordFailure('ssh-bridge-failed', 'lifecycle', error);
-        connectionMessage.value = error instanceof Error ? error.message : String(error);
-      });
+      handleAppState(isActive);
     }).then((listener) => {
       removeAppState = () => listener.remove();
     }).catch((error: unknown) => {
@@ -1087,8 +1428,19 @@ watchEffect(() => {
     editorFontSize: 13,
   }, 'ui-monospace, monospace');
   for (const [name, value] of Object.entries(fontVariables)) root.style.setProperty(name, value);
+  // Keep five measured xterm rows visible with the default 8px viewport inset
+  // and a little room for Android/WebView font metric rounding.
+  root.style.setProperty('--terminal-min-grid-height', `${Math.ceil(appSettings.terminalFontSize * 7.6 + 22)}px`);
 });
 
+watch(() => navigation.route, (route) => {
+  if (route !== 'home') {
+    // Leaving Home closes Prompt in both forms; the draft stays in its per-PTY
+    // store and the returned Home shows the dock's Prompt launcher (#2908).
+    mobilePromptComposerOpen.value = false;
+    mobilePromptComposerInline.value = false;
+  }
+});
 
 onBeforeUnmount(() => {
   removeKeyboardViewportListeners?.();
@@ -1109,6 +1461,12 @@ onBeforeUnmount(() => {
     :data-native-platform="Capacitor.getPlatform()"
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
+    :data-prompt-composer-open="mobilePromptComposerOpen"
+    :data-prompt-composer-inline="mobilePromptComposerInline"
+    :data-terminal-viewport-focused="terminalViewportHasFocus"
+    :data-fast-keys-ctrl="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'ctrl'"
+    :data-fast-keys-main="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'main'"
+    :data-inline-dictation-status="inlineDictationStatusVisible"
     :data-ssh-phase="currentPhase"
     :data-home-surface="homeSurface"
     :data-ssh-connection-id="connectionSnapshot?.connectionId ?? ''"
@@ -1128,10 +1486,17 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-pending="terminalResizePending"
     :data-ssh-terminal-resize-acks="terminalResizeAckCount"
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
+    :data-ssh-attach-epoch="terminalAttachEpoch"
+    :data-ssh-attach-focus-pending="terminalAttachFocusWindowEpoch !== 0"
+    :data-ssh-attach-prompt-focus-epoch="terminalAttachPromptFocusEpoch"
+    :data-ssh-attach-resize-ack-epoch="terminalAttachResizeAckEpoch"
+    :data-ssh-terminal-autofocus-allowed="terminalAutofocusAllowed"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
+    @pointerdown.capture="recordAttachComposerPointer"
     :data-migration-status="publishedMigrationStatus"
   >
+    <div id="prompt-composer-portal" aria-live="off"></div>
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
       <template v-if="navigation.route === 'home' && connectionSnapshot">
         <div class="session-context" aria-live="polite">
@@ -1472,16 +1837,65 @@ onBeforeUnmount(() => {
           </div>
           <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
         </div>
-        <TerminalViewport
-          ref="terminal"
-          :enabled="isLive"
-          :resize-failure="terminalResizeFailure"
-          :theme="activeTheme.terminal"
-          :font-family="terminalFontFamily"
-          :font-size="appSettings.terminalFontSize"
-          @input="sendTerminalInput"
-          @resize="resizeTerminal"
-        />
+        <div
+          class="terminal-slot"
+          data-testid="terminal-slot"
+          :data-terminal-viewport-dock-cap="terminalViewportDockCapPx ?? ''"
+          :data-terminal-hotkeys-dock-height="mobileHotkeysDockHeight"
+          :style="{
+            '--terminal-viewport-dock-cap': terminalViewportDockCapPx === null ? undefined : `${terminalViewportDockCapPx}px`,
+            '--terminal-hotkeys-dock-height': `${mobileHotkeysDockHeight}px`,
+          }"
+          :class="{
+            'terminal-slot--hotkeys': isLive,
+            'terminal-slot--fast-keys-main': mobileHotkeysPaletteOpen && mobileHotkeysPage === 'main',
+            'terminal-slot--fast-keys-ctrl': mobileHotkeysPaletteOpen && mobileHotkeysPage === 'ctrl',
+            'terminal-slot--dictation-status': inlineDictationStatusVisible,
+            'terminal-slot--preserve-grid': terminalViewportDockCapPx !== null,
+          }"
+          :data-keyboard-visible="keyboardVisible"
+        >
+          <TerminalViewport
+            ref="terminal"
+            :enabled="isLive"
+            :resize-failure="terminalResizeFailure"
+            :autofocus-allowed="terminalAutofocusAllowed"
+            :theme="activeTheme.terminal"
+            :font-family="terminalFontFamily"
+            :font-size="appSettings.terminalFontSize"
+            @input="sendTerminalInput"
+            @resize="resizeTerminal"
+          />
+          <MobileHotkeys
+            v-if="isLive"
+            ref="mobileHotkeys"
+            :enabled="mobileHotkeysEnabled"
+            :keyboard-visible="keyboardVisible"
+            :dictation-available="Capacitor.getPlatform() === 'android'"
+            :show-inline-dictation-status="inlineDictationStatusVisible"
+            :prompt-composer-available="Capacitor.getPlatform() === 'android' && !mobilePromptComposerInline"
+            :prompt-composer-enabled="inlineDictationState.phase === 'idle'"
+            :dictation-state="inlineDictationState"
+            :dictation-target-key="inlineDictationTargetKey"
+            @send="sendMobileHotkey"
+            @palette-change="mobileHotkeysPaletteOpen = $event"
+            @page-change="mobileHotkeysPage = $event"
+            @keep-keyboard-open="keepMobileHotkeysImeOpen"
+            @open-composer="openPromptComposer"
+          >
+            <template #persistent-accessory>
+              <TerminalDictationBar
+                v-if="Capacitor.getPlatform() === 'android'"
+                :enabled="mobileHotkeysEnabled"
+                :target-key="inlineDictationTargetKey"
+                :language-tag="appSettings.voiceLanguage === 'auto' ? '' : appSettings.voiceLanguage"
+                :silence-window-ms="appSettings.voiceSilenceSeconds * 1_000"
+                :insert-text="insertInlineDictationText"
+                @state-change="updateInlineDictationState"
+              />
+            </template>
+          </MobileHotkeys>
+        </div>
         <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
         </section>
         <PromptComposer
@@ -1492,6 +1906,12 @@ onBeforeUnmount(() => {
           :keyboard-visible="keyboardVisible"
           :transport-state="composerTransportState"
           :write-pty="writeComposerPty"
+          :mobile-sheet="Capacitor.getPlatform() === 'android' && !mobilePromptComposerInline"
+          :mobile-inline="Capacitor.getPlatform() === 'android' && mobilePromptComposerInline"
+          :open="mobilePromptComposerOpen"
+          @open-change="setMobilePromptComposerOpen"
+          @submit-delivered="showInlinePromptComposerAfterSend"
+          @open-keys="openTerminalKeysFromComposer"
           @manage="openSnippetSettings"
         />
       </section>

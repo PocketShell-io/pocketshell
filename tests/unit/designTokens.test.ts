@@ -18,6 +18,9 @@ const RUNTIME_TOKENS = new Set([
   '--safe-area-inset-right',
   '--safe-area-inset-bottom',
   '--safe-area-inset-left',
+  // App.vue writes the font-size-derived minimum terminal grid height onto
+  // the document root with style.setProperty (#2884).
+  '--terminal-min-grid-height',
 ]);
 
 const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/;
@@ -102,7 +105,9 @@ function stripComments(css: string): string {
 }
 
 function declaredTokens(css: string): Set<string> {
-  return new Set([...stripComments(css).matchAll(/(--[a-zA-Z0-9-]+)\s*:/g)].map((match) => match[1]));
+  // A quoted key also counts: a bound :style="{ '--x': value }" defines --x on
+  // that element at runtime.
+  return new Set([...stripComments(css).matchAll(/(--[a-zA-Z0-9-]+)['"]?\s*:/g)].map((match) => match[1]));
 }
 
 describe('phone design tokens', () => {

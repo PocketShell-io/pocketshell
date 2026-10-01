@@ -24,12 +24,13 @@ const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'u
 describe('mobile app settings', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
-  it('reads and persists only the phone theme and terminal text size', () => {
+  it('reads and persists only the phone theme, terminal text size and Android dictation settings', () => {
     const storage = new MemoryStorage();
-    persistAppSettings({ themeChoice: 'nord', terminalFontSize: 19 }, storage);
-    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toEqual({ themeChoice: 'nord', terminalFontSize: 19 });
+    const settings = { themeChoice: 'nord', terminalFontSize: 19, voiceLanguage: 'ru', voiceSilenceSeconds: 8 } as const;
+    persistAppSettings(settings, storage);
+    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toEqual(settings);
     expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBeNull();
-    expect(readAppSettings(storage)).toEqual({ themeChoice: 'nord', terminalFontSize: 19 });
+    expect(readAppSettings(storage)).toEqual(settings);
   });
 
   it('degrades malformed or unsupported saved values to safe defaults', () => {
@@ -37,6 +38,8 @@ describe('mobile app settings', () => {
       themeChoice: 'url(javascript:alert(1))',
       terminalFontSize: 'not-a-number',
       backgroundGraceMs: 999_999_999,
+      voiceLanguage: 'xx',
+      voiceSilenceSeconds: Number.NaN,
       host: 'secret.example',
       privateKey: 'private data',
     })).toEqual(DEFAULT_APP_SETTINGS);
@@ -45,6 +48,35 @@ describe('mobile app settings', () => {
   it('clamps terminal size using the pinned desktop font-size policy', () => {
     expect(parseAppSettings({ terminalFontSize: 4 }).terminalFontSize).toBe(8);
     expect(parseAppSettings({ terminalFontSize: 400 }).terminalFontSize).toBe(32);
+  });
+
+  it('persists a supported recognizer language and clamps the silence window to the 2–60 second range', () => {
+    const storage = new MemoryStorage();
+    const settings = parseAppSettings({ voiceLanguage: ' FR ', voiceSilenceSeconds: 78.2 });
+    expect(settings.voiceLanguage).toBe('fr');
+    expect(settings.voiceSilenceSeconds).toBe(60);
+    persistAppSettings(settings, storage);
+    expect(readAppSettings(storage)).toEqual(settings);
+    expect(parseAppSettings({ voiceLanguage: 'unknown', voiceSilenceSeconds: 0 })).toMatchObject({
+      voiceLanguage: 'auto',
+      voiceSilenceSeconds: 2,
+    });
+  });
+
+  it('ignores the unreleased branch-only dictation keys (D22) and maps a BCP-47 tag to its base language', () => {
+    expect(parseAppSettings({
+      dictationLanguageTag: 'de-DE',
+      dictationSilenceWindowMs: 9_000,
+    })).toMatchObject({
+      voiceLanguage: 'auto',
+      voiceSilenceSeconds: 4,
+    });
+    expect(parseAppSettings({ voiceLanguage: 'de-DE' }).voiceLanguage).toBe('de');
+  });
+
+  it('uses the Kotlin-aligned automatic language and four-second silence defaults', () => {
+    expect(DEFAULT_APP_SETTINGS.voiceLanguage).toBe('auto');
+    expect(DEFAULT_APP_SETTINGS.voiceSilenceSeconds).toBe(4);
   });
 
   it('offers every 0.5.x grace window from the shared core policy, including 10 minutes', () => {
@@ -81,7 +113,10 @@ describe('mobile app settings', () => {
     expect(screen).not.toMatch(/setting-reconnect-on-return|setting-background-grace|role="switch"/);
     expect(source('../../src/styles.css')).not.toContain('settings-switch');
     const app = source('../../src/App.vue');
-    expect(app).toContain('returnToForeground({ reconnect: sharedSettings.reconnectOnReturn })');
-    expect(app).toContain('enterBackground(sharedSettings.backgroundGraceMs)');
+    expect(app).toContain('getBackgroundGraceMs: () => sharedSettings.backgroundGraceMs');
+    expect(app).toContain('getReconnectOnReturn: () => sharedSettings.reconnectOnReturn');
+    const lifecycle = source('../../src/session/appLifecycle.ts');
+    expect(lifecycle).toContain('active.returnToForeground({ reconnect: getReconnectOnReturn() })');
+    expect(lifecycle).toContain('active.enterBackground(getBackgroundGraceMs())');
   });
 });

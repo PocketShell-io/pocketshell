@@ -21,6 +21,7 @@ JS-first packaged Android lanes:
   lifecycle         SSH session switching and background-grace journey plus
                     independent Docker host/screenshot evidence
   composer-docker   Packaged composer journey plus Docker PTY byte oracles
+  hotkeys-docker    Packaged mobile fast-key journey plus Docker PTY byte oracles
   key-vault-docker  Encrypted SSH key import, auth, and secret-leak journey
   durable-storage   User data survives a kill right after acknowledgement
                     (seed / mutate+SIGKILL / verify; no Docker, issue #2993)
@@ -36,6 +37,8 @@ Examples:
   scripts/agents-pool.sh up 2245
   scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
     --session-prefix js2863-local
+  scripts/connected-test.sh hotkeys-docker --suffix i2884 --port 2245 \
+    --session-prefix js2884-local
   scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 \
     --container pocketshell-test-agents-2244 --run-id js2926-local
   scripts/connected-test.sh durable-storage --suffix i2993 --run-id js2993-local
@@ -74,6 +77,9 @@ case "$LANE" in
   composer-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-composer-docker.sh"
     ;;
+  hotkeys-docker)
+    TARGET="$ROOT_DIR/scripts/connected-js-hotkeys-docker.sh"
+    ;;
   key-vault-docker)
     TARGET="$ROOT_DIR/scripts/connected-js-key-vault-docker.sh"
     ;;
@@ -81,7 +87,7 @@ case "$LANE" in
     TARGET="$ROOT_DIR/scripts/connected-js-durable-storage.sh"
     ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, key-vault-docker, or durable-storage"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, or durable-storage"
     ;;
 esac
 

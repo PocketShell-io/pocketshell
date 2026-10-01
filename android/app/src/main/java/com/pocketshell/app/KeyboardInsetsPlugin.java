@@ -7,6 +7,7 @@ import android.view.ViewTreeObserver;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -44,6 +45,17 @@ public final class KeyboardInsetsPlugin extends Plugin {
         getActivity().runOnUiThread(() -> {
             View view = decorView != null ? decorView : getActivity().getWindow().getDecorView();
             call.resolve(state(ViewCompat.getRootWindowInsets(view)));
+        });
+    }
+
+    @PluginMethod
+    public void hideIme(PluginCall call) {
+        getActivity().runOnUiThread(() -> {
+            View view = decorView != null ? decorView : getActivity().getWindow().getDecorView();
+            WindowInsetsControllerCompat controller = new WindowInsetsControllerCompat(
+                    getActivity().getWindow(), view);
+            controller.hide(WindowInsetsCompat.Type.ime());
+            call.resolve();
         });
     }
 

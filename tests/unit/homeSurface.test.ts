@@ -34,12 +34,17 @@ describe('phone workspace destinations', () => {
     for (const route of ['settings-terminal', 'diagnostics-report', 'about-update'] as ShellRoute[]) {
       navigation.home();
       navigation.open(route);
-      expect(resolveAndroidBackDestination(navigation.canGoBack, 'live', true)).toBe('navigation');
-      navigation.back();
+    expect(resolveAndroidBackDestination(navigation.canGoBack, 'live', true)).toBe('navigation');
+    navigation.back();
       expect(navigation.route).toBe('home');
     }
     expect(resolveAndroidBackDestination(navigation.canGoBack, 'live', true)).toBe('workspace');
     expect(resolveAndroidBackDestination(navigation.canGoBack, 'sessions', true)).toBe('workspace');
     expect(resolveAndroidBackDestination(navigation.canGoBack, 'connection', true)).toBe('minimize');
+  });
+
+  it('closes a route overlay without stepping away from the current connected surface', () => {
+    expect(resolveAndroidBackDestination(false, 'live', true, true)).toBe('navigation');
+    expect(resolveAndroidBackDestination(false, 'sessions', true, true)).toBe('navigation');
   });
 });
