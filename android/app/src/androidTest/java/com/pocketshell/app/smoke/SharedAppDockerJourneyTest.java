@@ -150,18 +150,24 @@ public class SharedAppDockerJourneyTest {
     }
 
     /**
-     * Real key events through the WebView into the visible xterm. Each line
-     * starts a fresh input session (blur, then focus: what a user's tap into
-     * the terminal does). Typing into a session that has been reset under a
-     * live IME composition duplicates a word on API 35 — that keyboard bug
-     * is #2952's (A5), recorded with byte evidence on #2936, not this lane's.
+     * Type a line into the visible xterm the way the legacy PTY journey does:
+     * the text arrives as a real ClipboardEvent paste on xterm's focused
+     * textarea, and Enter as a real key event. Synthesized per-character key
+     * events go through the emulator IME, whose composition duplicates
+     * letters on API 35 (byte evidence on #2936; keyboard work is #2952) —
+     * a property of the input method, not of the PTY path under test.
      */
     private void typeLine(String text) throws Exception {
-        evalString("(() => {const t=[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)"
-                + "?.querySelector('.xterm-helper-textarea'); if(!t) throw new Error('no visible terminal');"
-                + " t.blur(); t.focus(); return 'ok';})()");
-        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea') === true");
-        InstrumentationRegistry.getInstrumentation().sendStringSync(text);
+        String result = evalString("JSON.stringify((() => {"
+                + "const textarea=[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)"
+                + "?.querySelector('.xterm-helper-textarea');"
+                + "if(!textarea) throw new Error('no visible terminal'); textarea.focus();"
+                + "const transfer=new DataTransfer();transfer.setData('text/plain'," + JSONObject.quote(text) + ");"
+                + "const event=new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true});"
+                + "const accepted=textarea.dispatchEvent(event);"
+                + "return {focused:document.activeElement===textarea,accepted};})())");
+        JSONObject paste = new JSONObject(result);
+        assertTrue("the visible terminal must hold focus for the paste: " + result, paste.getBoolean("focused"));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
     }
 
