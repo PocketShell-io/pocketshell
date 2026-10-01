@@ -1672,8 +1672,20 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void closePromptComposerSheet() throws Exception {
-        if ("true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+        // A physical Close tap measured while the sheet is still moving (IME
+        // inset animation) can land beside the button. Re-measure after a
+        // rendered frame and tap again, at most three times; the sheet must
+        // still be closed by its own Close button, never by script.
+        for (int attempt = 1; attempt <= 3
+                && "true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')")); attempt++) {
+            awaitRenderedFrame();
             tapDomCenter("[data-testid=composer-close]");
+            long deadline = SystemClock.uptimeMillis() + 3_000;
+            while (SystemClock.uptimeMillis() < deadline
+                    && "true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+                SystemClock.sleep(100);
+            }
+            if (attempt > 1) Log.i("PS2897Prompt", "COMPOSER_CLOSE_RETAP attempt=" + attempt);
         }
         awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')");
         awaitImeVisible(false);
