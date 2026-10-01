@@ -9,6 +9,7 @@ import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } fr
 import { sshCapability } from '@/native/sshCapability';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
 import { androidHosts } from '@/platform/android/hosts';
+import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE } from './router';
 
@@ -26,6 +27,26 @@ const capacitorLifecycle: AndroidLifecycle = {
 
 const trustStore: HostKeyTrustStore = createLocalTrustStore(window.localStorage);
 
+/** How many controller snapshots the diagnostics journal keeps. */
+const CONNECTION_JOURNAL_LIMIT = 500;
+
+declare global {
+  interface Window {
+    /**
+     * Bounded journal of controller snapshots per logical connection. Read by
+     * the packaged shared-app journey to count recovery ladders and dials
+     * against the real transport (#2954); nothing in the app reads it.
+     */
+    __pocketshellConnectionJournal?: ConnectionJournalEntry[];
+  }
+}
+
+function journalConnection(entry: ConnectionJournalEntry): void {
+  const journal = (window.__pocketshellConnectionJournal ??= []);
+  journal.push(entry);
+  if (journal.length > CONNECTION_JOURNAL_LIMIT) journal.splice(0, journal.length - CONNECTION_JOURNAL_LIMIT);
+}
+
 export const androidPlatform = createAndroidPlatform({
   createController: () => new ConnectionController({ capability: sshCapability, trustStore }),
   hosts: androidHosts,
@@ -33,6 +54,7 @@ export const androidPlatform = createAndroidPlatform({
   backgroundGraceMs: () => BACKGROUND_GRACE_MS,
   addHostRoute: ADD_HOST_ROUTE,
   log: (entry) => console.info(`[pocketshell] ${entry.kind}: ${entry.message}`, entry.detail ?? ''),
+  observeConnections: journalConnection,
 });
 
 export type { HostKeyTrustPin };
