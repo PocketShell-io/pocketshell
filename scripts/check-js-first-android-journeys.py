@@ -113,6 +113,8 @@ LANES = (
             {
                 "sharedAppListsAttachesAndTypesIntoFixtureSession",
                 "sharedTerminalDeliversImeEditsAsExactBytes",
+                "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
+                "sharedAppReportsARealSessionEndWithoutReconnecting",
             }
         ),
     ),

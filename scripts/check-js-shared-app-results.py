@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the exact packaged shared-app journeys (#2936, #2952) to execute and pass once.
+"""Require the exact packaged shared-app journeys (#2936, #2952, #2954) to execute and pass once each.
 
 Also the host half of #2952's byte oracle: the raw-mode reader on the Docker
 fixture writes the bytes it received as hex, the runner copies that file next
@@ -23,6 +23,9 @@ REQUIRED_METHODS = frozenset(
     {
         "sharedAppListsAttachesAndTypesIntoFixtureSession",
         "sharedTerminalDeliversImeEditsAsExactBytes",
+        # #2954: the D28 reconnect/EOF oracle on the shared shell.
+        "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
+        "sharedAppReportsARealSessionEndWithoutReconnecting",
     }
 )
 HOST_BYTES_NAME = "host-ime-bytes.hex"
@@ -152,23 +155,27 @@ def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
 
 
 def self_test() -> int:
-    first, second = sorted(REQUIRED_METHODS)
-    both = [(REQUIRED_CLASS, first, "passed"), (REQUIRED_CLASS, second, "passed")]
+    every = [(REQUIRED_CLASS, method, "passed") for method in sorted(REQUIRED_METHODS)]
     good_bytes = EXPECTED_IME_BYTES_HEX
     duplicated = ("echo PS2 PS936".encode() + EXPECTED_IME_BYTES.encode()).hex()
     cases = [
-        ("both exact passing shared-app journeys pass", both, good_bytes, True),
+        ("every exact passing shared-app journey passes", every, good_bytes, True),
         ("zero tests block", [], good_bytes, False),
-        ("a missing IME journey blocks", [(REQUIRED_CLASS, first, "passed")], good_bytes, False),
-        ("a missing attach journey blocks", [(REQUIRED_CLASS, second, "passed")], good_bytes, False),
-        ("unexpected class blocks", [("example.OtherJourney", first, "passed"), (REQUIRED_CLASS, second, "passed")], good_bytes, False),
-        ("extra test blocks", both + [(REQUIRED_CLASS, "extra", "passed")], good_bytes, False),
-        ("duplicate test blocks", both + [(REQUIRED_CLASS, first, "passed")], good_bytes, False),
-        ("failed journey blocks", [(REQUIRED_CLASS, first, "passed"), (REQUIRED_CLASS, second, "failed")], good_bytes, False),
-        ("skipped journey blocks", [(REQUIRED_CLASS, first, "skipped"), (REQUIRED_CLASS, second, "passed")], good_bytes, False),
-        ("missing host byte record blocks", both, None, False),
-        ("duplicated host bytes block", both, duplicated, False),
-        ("empty host byte record blocks", both, "", False),
+        *(
+            (f"a missing {method} blocks", [row for row in every if row[1] != method], good_bytes, False)
+            for method in sorted(REQUIRED_METHODS)
+        ),
+        *(
+            (f"a failed {method} blocks", [(c, m, "failed" if m == method else s) for c, m, s in every], good_bytes, False)
+            for method in sorted(REQUIRED_METHODS)
+        ),
+        ("unexpected class blocks", [("example.OtherJourney", every[0][1], "passed"), *every[1:]], good_bytes, False),
+        ("extra test blocks", every + [(REQUIRED_CLASS, "extra", "passed")], good_bytes, False),
+        ("duplicate test blocks", every + [every[0]], good_bytes, False),
+        ("skipped journey blocks", [(every[0][0], every[0][1], "skipped"), *every[1:]], good_bytes, False),
+        ("missing host byte record blocks", every, None, False),
+        ("duplicated host bytes block", every, duplicated, False),
+        ("empty host byte record blocks", every, "", False),
     ]
     failures = 0
     with tempfile.TemporaryDirectory(prefix="pocketshell-js-shared-app-results-") as temporary:
