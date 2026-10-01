@@ -37,8 +37,7 @@ import {
   type ImportedLegacyHost,
 } from './migration/installedDataMigration';
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
-import { createLegacySshKeyReferenceStore } from './migration/legacySshKeyReferences';
-import { CredentialKeyManager } from './credentials/keyManagement';
+import { androidKeyManager } from './platform/android/hosts';
 import SshKeysScreen from './components/SshKeysScreen.vue';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
@@ -127,7 +126,8 @@ type SnippetEvidenceWindow = Window & {
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
 const diagnostics = useDiagnosticsStore();
-const keyManager = new CredentialKeyManager(sshKeyVault, createLegacySshKeyReferenceStore());
+// Shared with the shared app (#2936) so key deletes warn about every host.
+const keyManager = androidKeyManager;
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);

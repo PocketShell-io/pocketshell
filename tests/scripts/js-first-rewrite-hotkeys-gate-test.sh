@@ -96,7 +96,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
         ("exact fast-key JUnit status", "hotkeys_junit_status=0"),
         ("exact fast-key result check", 'scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"'),
         ("fail-closed fast-key aggregate", "hotkeys_status != 0 || hotkeys_junit_status != 0"),
-        ("isolated fixture teardown", "scripts/agents-pool.sh down 2243 2244 2245"),
+        ("isolated fixture teardown", "scripts/agents-pool.sh down 2243"),
         ("fast-key runner exact JUnit guard", 'check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"'),
         ("run-scoped Android evidence", "android/app/build/outputs/js-hotkeys/$ARTIFACT_RUN_ID"),
         ("dictation final byte oracle is read from this run's journey", 'journey.get("dictation")'),
@@ -150,7 +150,7 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
             raise AssertionError(f"fast-key workflow is missing {label}: {needle}")
     start = source.index("scripts/agents-pool.sh up 2243")
     run = packaged_lanes.index("scripts/connected-js-hotkeys-docker.sh")
-    stop = source.index("scripts/agents-pool.sh down 2243 2244 2245")
+    stop = source.index("scripts/agents-pool.sh down 2243")
     if not start < source.index("script: scripts/ci-js-first-packaged-lanes.sh") < stop:
         raise AssertionError("the fast-key fixture must start before the packaged lanes and stop after them")
     if packaged_lanes.index("scripts/connected-js-composer-docker.sh") > run:

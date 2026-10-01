@@ -134,11 +134,9 @@ def require_contract(source: str, packaged_script: str) -> None:
     if upgrade_call is None:
         raise AssertionError("packaged wrapper does not execute the signed-upgrade migration lane")
     key_vault = packaged_script.index("if scripts/connected-js-key-vault-docker.sh")
-    if not composer < key_vault < upgrade_call.start():
-        raise AssertionError("signed-upgrade must run last, after the suffixed key-vault lane")
-    # Issue #2993: the durable-storage lane rebuilds the shared app-debug.apk
-    # under its own suffix, so it must stay outside the key-vault build ->
-    # signed-upgrade window (here: after Files, before composer and key-vault).
+    shared_app = packaged_script.index("if scripts/connected-js-shared-app.sh")
+    if not composer < shared_app < key_vault < upgrade_call.start():
+        raise AssertionError("shared-app runs after composer; signed-upgrade runs last, after the suffixed key-vault lane")
     durable_call = re.search(
         r"(?m)^if scripts/connected-js-durable-storage\.sh \\\n"
         r"  --suffix i2993ci \\\n"
@@ -154,8 +152,8 @@ def require_contract(source: str, packaged_script: str) -> None:
     if "signed_upgrade_status != 0" not in packaged_script:
         raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
-                 "hotkeys_status", "hotkeys_junit_status", "durable_status", "key_vault_status",
-                 "signed_upgrade_status", "copy_status"):
+                 "hotkeys_status", "hotkeys_junit_status", "durable_status", "shared_app_status",
+                 "key_vault_status", "signed_upgrade_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -551,8 +549,8 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
-                            usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, key_vault: int = 0,
-                            signed_upgrade: int = 0, omit_junit: bool = False,
+                            usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, shared_app: int = 0,
+                            key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
                             hotkeys_checker: int = 0, omit_hotkeys_junit: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
@@ -656,6 +654,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         fake_hotkeys_checker.chmod(0o755)
         for script_name, lane_name, status_var in (
             ("connected-js-durable-storage.sh", "durable-storage", "FIXTURE_DURABLE_STATUS"),
+            ("connected-js-shared-app.sh", "shared-app", "FIXTURE_SHARED_APP_STATUS"),
             ("connected-js-key-vault-docker.sh", "key-vault", "FIXTURE_KEY_VAULT_STATUS"),
             ("connected-js-key-vault-signed-upgrade.sh", "signed-upgrade", "FIXTURE_SIGNED_UPGRADE_STATUS"),
         ):
@@ -683,6 +682,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_HOTKEYS_RUN_ID": "js2884-run-1-hotkeys-fixture",
             "FIXTURE_OMIT_HOTKEYS_JUNIT": "1" if omit_hotkeys_junit else "0",
             "FIXTURE_DURABLE_STATUS": str(durable),
+            "FIXTURE_SHARED_APP_STATUS": str(shared_app),
             "FIXTURE_KEY_VAULT_STATUS": str(key_vault),
             "FIXTURE_SIGNED_UPGRADE_STATUS": str(signed_upgrade),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
@@ -706,12 +706,12 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
-            f"durable-storage={durable} key-vault={key_vault} signed-upgrade={signed_upgrade} "
-            f"smoke-junit-copy={expected_copy}"
+            f"durable-storage={durable} shared-app={shared_app} key-vault={key_vault} "
+            f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, durable, key_vault, signed_upgrade,
-                                  expected_copy)) else 0
+                                  expected_hotkeys_junit, durable, shared_app, key_vault,
+                                  signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
@@ -720,7 +720,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         trace_lines = trace.read_text().splitlines()
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
-            "hotkeys-check", "key-vault", "signed-upgrade",
+            "hotkeys-check", "shared-app", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -759,8 +759,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         if (hotkeys_evidence / "TEST-fastkeys.xml").is_file() == omit_hotkeys_junit:
             raise AssertionError(f"{label}: Fast Keys JUnit fixture did not match the requested report state")
         expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
-        if trace_lines[9] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
-            raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[9]!r}")
+        if trace_lines[-1] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
+            raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[-1]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -787,6 +787,7 @@ exercise_packaged_lanes("Fast Keys failure is fail-closed", hotkeys=29)
 exercise_packaged_lanes("Fast Keys result check failure is fail-closed", hotkeys_checker=31)
 exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_junit=True)
 exercise_packaged_lanes("durable-storage failure is fail-closed", durable=31)
+exercise_packaged_lanes("shared-app failure is fail-closed", shared_app=27)
 exercise_packaged_lanes("key-vault failure is fail-closed", key_vault=27)
 exercise_packaged_lanes("signed-upgrade migration failure is fail-closed", signed_upgrade=29)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)

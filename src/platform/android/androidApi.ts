@@ -1,0 +1,264 @@
+/**
+ * The Android half of the shared app's transport seam: one `PocketShellApi`
+ * over the Capacitor native plugins, provided to the shared app tree
+ * (`@ui/app`) through `provideApi()` — the same seam desktop fills with its
+ * Electron preload bridge and web with its browser transport.
+ *
+ * Groups and what backs them:
+ *
+ *   ssh / shell / helper — {@link AndroidConnectionHub}: one core
+ *              ConnectionController per logical connection over the native
+ *              `SshCapability` plugin (sshj). The controller owns dial, trust,
+ *              listing, attach, reconnect and grace (D28);
+ *   hosts    — {@link AndroidHostStore}: hosts added on the phone plus the
+ *              0.5.x import;
+ *   app      — Android lifecycle drives the controllers' background grace
+ *              directly (see `bindLifecycle`), so the shared store's resume
+ *              probe is deliberately NOT fed;
+ *   everything else — not wired yet. Reads that the workspace polls on every
+ *              mount answer empty (the web client's pattern); anything that
+ *              would claim to do work fails with its own name, so nothing can
+ *              pretend to succeed. Each is a row of the #2936 staged plan.
+ */
+import type { PocketShellApi } from '@ui/app/api';
+import {
+  readHostUsage,
+  runHostBootstrap,
+  type ConnectionController,
+  type ConnectionState,
+  type HomeResult,
+} from '@pocketshell/core';
+import { AndroidConnectionHub, type TofuDecision } from './connectionHub';
+import type { AndroidHostStore } from './hostStore';
+
+/** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
+const CONTROLLER_GENERATION = 'controller';
+
+export class UnsupportedCapability extends Error {
+  constructor(method: string) {
+    super(`Android does not implement ${method} yet`);
+    this.name = 'UnsupportedCapability';
+  }
+}
+
+const unsupported = (method: string) => (): Promise<never> =>
+  Promise.reject(new UnsupportedCapability(method));
+
+export interface AndroidLifecycle {
+  /** Register for foreground/background transitions; returns an unsubscribe. */
+  onActiveChange(handler: (active: boolean) => void): () => void;
+}
+
+export interface AndroidApiDeps {
+  createController: () => ConnectionController;
+  hosts: AndroidHostStore;
+  lifecycle?: AndroidLifecycle;
+  /** The user's background grace, read at the moment the app backgrounds. */
+  backgroundGraceMs: () => number;
+  /** Route the shared picker's empty state sends the user to. */
+  addHostRoute: string;
+  log?: (entry: { kind: string; message: string; detail?: Record<string, unknown> }) => void;
+}
+
+export interface AndroidPlatform {
+  api: PocketShellApi;
+  hub: AndroidConnectionHub;
+  dispose(): void;
+}
+
+export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
+  const hub = new AndroidConnectionHub({ createController: deps.createController });
+  const unbindLifecycle = deps.lifecycle
+    ? deps.lifecycle.onActiveChange((active) => {
+        if (active) void hub.returnToForeground();
+        else void hub.enterBackground(deps.backgroundGraceMs());
+      })
+    : () => undefined;
+
+  const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
+
+  const api: PocketShellApi = {
+    ssh: {
+      async listConfigHosts() {
+        return deps.hosts.list();
+      },
+      async connect(payload) {
+        let target;
+        try {
+          target = await deps.hosts.resolve(payload);
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+        return hub.connect(target, (payload.tofuDecision ?? 'accept-always') as TofuDecision);
+      },
+      exec,
+      close: (connectionId) => hub.close(connectionId),
+      onState: (listener) => hub.onState(listener as (payload: { connectionId: string; state: ConnectionState }) => void),
+    },
+
+    hosts: {
+      groupLabel: 'On this phone',
+      sourceName: 'saved hosts',
+      emptyHint: 'No hosts saved on this phone yet.',
+      emptyAction: { label: 'Add a host', route: deps.addHostRoute },
+    },
+
+    shell: {
+      open: () => hub.open(),
+      attachSession: (payload) => hub.attachSession(payload),
+      input: (shellId, data, sessionName, workspace) => hub.input(shellId, data, sessionName, workspace),
+      resize: (shellId, cols, rows) => hub.resize(shellId, cols, rows),
+      redraw: (shellId) => hub.redraw(shellId),
+      // One PTY per controller, sized by the pane; no tmux geometry to probe.
+      windowSize: async () => ({ kind: 'bare' as const }),
+      close: (shellId) => hub.closeShell(shellId),
+      onData: (handler) => hub.onData(handler),
+      onExited: (handler) => hub.onExited(handler),
+    },
+
+    helper: {
+      bootstrap: (connectionId) => runHostBootstrap((command) => exec(connectionId, command)),
+      sessionsList: (connectionId) => hub.sessionsList(connectionId),
+      sessionsCreate: unsupported('helper.sessionsCreate'),
+      // Core's usage source (#2937). Its exec goes through the controller,
+      // which owns the transport generation; the controller has already
+      // checked the request/generation echo the source re-checks here.
+      usage: (connectionId) =>
+        readHostUsage(
+          {
+            exec: async (options) => {
+              const outcome = await hub.hostCommand(connectionId, options.command, options.timeoutMs);
+              return { ...options, exitCode: outcome.exitCode, stdout: outcome.stdout, stderr: outcome.stderr, timedOut: outcome.timedOut ?? false };
+            },
+          },
+          { connectionId, generationId: CONTROLLER_GENERATION },
+        ),
+      // Crash/OOM warnings ride HostCliCore's warnings verbs (stage S3).
+      warnings: async () => [],
+      ackWarnings: unsupported('helper.ackWarnings'),
+    },
+
+    projects: {
+      async home(connectionId): Promise<HomeResult> {
+        try {
+          const res = await exec(connectionId, 'printf %s "$HOME"');
+          const home = res.stdout.trim();
+          return res.exitCode === 0 && home.startsWith('/')
+            ? { ok: true, home, error: null }
+            : { ok: false, home: null, error: res.stderr.trim() || 'The host did not report a home directory.' };
+        } catch (error) {
+          return { ok: false, home: null, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+      deriveName: unsupported('projects.deriveName'),
+      createFolder: unsupported('projects.createFolder'),
+      reposList: unsupported('projects.reposList'),
+      reposClone: unsupported('projects.reposClone'),
+      startSession: unsupported('projects.startSession'),
+      renameSession: unsupported('projects.renameSession'),
+      killSession: unsupported('projects.killSession'),
+      onCloneProgress: () => () => undefined,
+    },
+
+    sftp: {
+      list: unsupported('sftp.list'),
+      stat: unsupported('sftp.stat'),
+      readFile: unsupported('sftp.readFile'),
+      readBinary: unsupported('sftp.readBinary'),
+      writeFile: unsupported('sftp.writeFile'),
+      createFile: unsupported('sftp.createFile'),
+      mkdir: unsupported('sftp.mkdir'),
+      rename: unsupported('sftp.rename'),
+      deleteFile: unsupported('sftp.deleteFile'),
+      rmdir: unsupported('sftp.rmdir'),
+      realPath: unsupported('sftp.realPath'),
+      upload: unsupported('sftp.upload'),
+      download: unsupported('sftp.download'),
+      saveAs: unsupported('sftp.saveAs'),
+      onProgress: () => () => undefined,
+    },
+
+    preview: {
+      openHtml: unsupported('preview.openHtml'),
+      openMarkdown: unsupported('preview.openMarkdown'),
+      openSvg: unsupported('preview.openSvg'),
+      release: () => undefined,
+      onStats: () => () => undefined,
+    },
+
+    // The workspace polls list/isAutoEnabled on every mount: empty is the
+    // honest answer until the native forward engine is wired (stage F2).
+    forwards: {
+      scan: unsupported('forwards.scan'),
+      startAuto: unsupported('forwards.startAuto'),
+      stopAuto: unsupported('forwards.stopAuto'),
+      addManual: unsupported('forwards.addManual'),
+      remove: unsupported('forwards.remove'),
+      list: async () => [],
+      refresh: async () => false,
+      discovered: async () => [],
+      status: async () => null,
+      setName: unsupported('forwards.setName'),
+      setRemap: unsupported('forwards.setRemap'),
+      clearRemap: unsupported('forwards.clearRemap'),
+      setIntent: unsupported('forwards.setIntent'),
+      togglePort: unsupported('forwards.togglePort'),
+      isAutoEnabled: async () => false,
+      onStates: () => () => undefined,
+    },
+
+    attachments: {
+      stage: unsupported('attachments.stage'),
+      pickFiles: unsupported('attachments.pickFiles'),
+      readLocal: unsupported('attachments.readLocal'),
+    },
+
+    agent: {
+      kinds: async () => null,
+      profiles: async () => [],
+      envList: async () => [],
+      envGet: async () => ({}),
+      envSet: unsupported('agent.envSet'),
+    },
+
+    diag: {
+      log(entry) {
+        deps.log?.(entry);
+      },
+    },
+
+    sync: {
+      status: async () => ({ loggedIn: false, email: null, keychainAvailable: false }),
+      login: unsupported('sync.login'),
+      logout: async () => undefined,
+      pull: unsupported('sync.pull'),
+      push: unsupported('sync.push'),
+      accountHosts: async () => null,
+      applyHosts: unsupported('sync.applyHosts'),
+    },
+
+    win: {
+      setTitle(title) {
+        document.title = title;
+      },
+      openAccount: unsupported('win.openAccount'),
+      setZoom: () => undefined,
+      onZoomCommand: () => () => undefined,
+    },
+
+    app: {
+      // Android's lifecycle drives the controllers' own grace/resume path
+      // (bindLifecycle above). Feeding the shared store's resume probe too
+      // would start a second reconnect decision on the same event (D28).
+      onResumed: () => () => undefined,
+    },
+  };
+
+  return {
+    api,
+    hub,
+    dispose() {
+      unbindLifecycle();
+    },
+  };
+}

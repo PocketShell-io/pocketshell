@@ -305,6 +305,46 @@
         "settles a slow promise as undefined after the bound and passes through answers and errors"
       ]
     },
+    "tests/unit/androidPlatform.test.ts": {
+      "suite": "Android PocketShellApi platform",
+      "tests": [
+        "dials through the controller, pins a first-contact key, and never accepts a changed one",
+        "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
+        "never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane",
+        "re-attaches and repaints the same session after its pane closed the shell",
+        "delivers keystrokes a re-joining pane types under its retired id of the same session, never into another",
+        "a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id",
+        "delivers held output after a fallback when the pane never calls on its new shell id",
+        "retires the superseded shell id when another session is attached",
+        "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
+        "maps controller phases onto the shared connection states",
+        "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
+        "refuses unimplemented work by name instead of pretending",
+        "reports a saved host with no key-vault handle as a dial failure",
+        "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
+        "mounts the legacy screens unless the launch opted into the shared app",
+        "records each boot so a load-then-reload launch is visible as two entries"
+      ]
+    },
+    "tests/unit/androidHostKeys.test.ts": {
+      "suite": "Android add-host key flow",
+      "tests": [
+        "\"Import key file…\" imports the picked document with its passphrase and selects the new key",
+        "a cancelled pick changes nothing, and an import failure is shown, not thrown",
+        "refuses to save a host without a key",
+        "asks before deleting a key a shared-app host uses, then detaches that host",
+        "restores the host reference when the native delete fails",
+        "one key used by a 0.5.x host and a shared-app host: delete confirms, restores on failure, then detaches both",
+        "rolls back the earlier store when a later store refuses the detach",
+        "clears hosts whose key is gone from the vault"
+      ]
+    },
+    "tests/unit/androidKeyManager.test.ts": {
+      "suite": "shared Android key manager",
+      "tests": [
+        "reports a host saved through the shared app before deleting its key"
+      ]
+    },
     "tests/unit/appLifecycle.test.ts": {
       "suite": "native app lifecycle transitions",
       "tests": [

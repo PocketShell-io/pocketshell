@@ -195,7 +195,7 @@ jobs:
       - name: Start isolated Docker agents lanes for Composer and key-vault journeys
         run: scripts/agents-pool.sh up 2244 2245
 
-      - name: Start isolated Docker agents lane for the mobile fast-key journey
+      - name: Start isolated Docker agents lane for the mobile fast-key and shared-app journeys
         run: scripts/agents-pool.sh up 2243
 
       - name: Enable KVM
@@ -270,6 +270,8 @@ jobs:
             --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Shared app" scripts/check-js-shared-app-results.py \
+            --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
             --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check "Durable storage" scripts/check-js-durable-storage-results.py \
@@ -349,9 +351,13 @@ jobs:
           path: android/app/build/outputs/js-hotkeys/
           if-no-files-found: error
 
-      - name: Stop isolated Composer, key-vault and fast-key Docker agents lanes
+      - name: Stop isolated Composer and key-vault Docker agents lanes
         if: always()
-        run: scripts/agents-pool.sh down 2243 2244 2245
+        run: scripts/agents-pool.sh down 2244 2245
+
+      - name: Stop isolated fast-key and shared-app Docker agents lane
+        if: always()
+        run: scripts/agents-pool.sh down 2243
 
       - name: Upload packaged APK and connected journey evidence
         if: always()
