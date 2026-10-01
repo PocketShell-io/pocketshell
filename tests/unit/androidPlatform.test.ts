@@ -337,6 +337,27 @@ describe('Android PocketShellApi platform', () => {
     expect(native.writes).toEqual(['early\r', 'late\r']);
   });
 
+  it('a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id', async () => {
+    const { native, hub } = harness();
+    native.attachSnapshot = 'REPAINT';
+    const { connectionId } = await hub.connect(target);
+    open.push({ hub, id: connectionId! });
+    await hub.sessionsList(connectionId!);
+    const events: string[] = [];
+    hub.onData(({ shellId, data }) => events.push(`data:${shellId}:${new TextDecoder().decode(data)}`));
+    const main1 = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    await hub.resize(main1.shellId, 80, 24);
+    await hub.attachSession({ connectionId: connectionId!, sessionName: 'tests', aplexerId: 'tests-id' });
+    events.length = 0;
+    // Mirrors terminalPane: private async requestShell() { return api.shell.attachSession(...) }; showTarget awaits it.
+    const requestShell = async () => hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    const showTarget = async () => { const r = await requestShell(); events.push(`adopted:${r.shellId}`); };
+    const shown = showTarget();
+    const typed = hub.input(main1.shellId, 'early\r', 'main');
+    await shown; await typed;
+    expect(events[0]?.startsWith('adopted:')).toBe(true); // a9aedabb1: ["data:android-1:shell-3:REPAINT","adopted:android-1:shell-3"]
+  });
+
   it('delivers held output after a fallback when the pane never calls on its new shell id', async () => {
     const { native, hub } = harness();
     native.attachSnapshot = 'snap';

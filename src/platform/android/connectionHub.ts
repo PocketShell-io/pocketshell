@@ -285,6 +285,9 @@ export class AndroidConnectionHub {
 
   async input(shellId: ShellId, data: string, sessionName?: string, workspace?: string): Promise<boolean> {
     let record = this.recordForShell(shellId);
+    // Only the pane's own use of the CURRENT id proves it adopted it; keys
+    // under a retired id never release the held repaint (#2936 re-review).
+    const ownsCurrentId = record !== null;
     if (!record) {
       // Keystrokes addressed to a shell id this hub retired — a pane typing
       // while it re-joins the SAME session (its id is replaced only when the
@@ -295,7 +298,7 @@ export class AndroidConnectionHub {
       if (!record) return false;
     }
     if (!record.shell) return false;
-    this.claim(record.shell);
+    if (ownsCurrentId) this.claim(record.shell);
     const row = record.shell.row;
     // The shared pane's fence: a caller still holding a superseded tab's
     // shell gets an honest `false` instead of typing into another session.

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Run the shared-app journey (#2936): the default launch mounts the shared
-# PocketShell app over Android's PocketShellApi, and it must list, attach and
-# type into a session on one Docker agents fixture (--port, an isolated
-# scripts/agents-pool.sh lane). Shares the machine-wide AVD and Android
-# output-tree locks with the other packaged JS lanes.
+# Run the shared-app journey (#2936): a launch that opts into the shared
+# PocketShell app (the pocketshell.shell=shared extra; legacy screens stay the
+# default) must list, attach, re-attach and type into this run's own two
+# sessions on an isolated agents-pool lane (--port, never 2222), whose port
+# lock the run claims. Shares the machine-wide AVD and Android output-tree
+# locks with the other packaged JS lanes.
 
 set -euo pipefail
 
