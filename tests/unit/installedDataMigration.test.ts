@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { watch } from 'vue';
 import {
   InstalledDataMigrationError,
   IMPORT_RECORD_ID,
@@ -347,6 +348,82 @@ describe('installed Android data migration', () => {
     expect(shouldReloadForImportedSettings(false, reloadSession)).toBe(false);
     expect(shouldReloadForImportedSettings(true, reloadSession)).toBe(true);
     expect(shouldReloadForImportedSettings(true, reloadSession)).toBe(false);
+  });
+
+  it('never publishes a settled status on a page that must reload to apply imported settings', async () => {
+    // Issue #3005: the first launch after an upgrade writes imported settings and
+    // reloads once. The settled status used to be published first, so the
+    // soon-discarded document showed a finished migration that a user or journey
+    // could act on before the reload wiped it. Capture reloadPending at the exact
+    // moment the status settles, on both the first-import and durable-record paths.
+    const snapshot = legacySnapshot();
+    const persistence = memoryPersistence();
+    const reloadSession = new MemoryStorage();
+    const observed: Array<{ status: string; reloadPending: boolean }> = [];
+    installedDataMigrationState.status = 'pending';
+    installedDataMigrationState.error = '';
+    installedDataMigrationState.reloadPending = false;
+    const stop = watch(
+      () => installedDataMigrationState.status,
+      (status) => observed.push({ status, reloadPending: installedDataMigrationState.reloadPending }),
+      { flush: 'sync' },
+    );
+    const run = (storage: MemoryStorage) => runInstalledDataMigration({
+      native: nativePlugin(snapshot),
+      keyVault: nativeKeyVault(),
+      persistence: persistence.persistence,
+      storage,
+      nativePlatform: true,
+      now: () => 123,
+      pixelRatio: () => 2,
+      requestSettingsReload: (settingsWritten) => shouldReloadForImportedSettings(settingsWritten, reloadSession),
+    });
+
+    try {
+      // First document: settings are written, so it must stay pending and reload.
+      expect(await run(new MemoryStorage())).toBe(true);
+      expect(observed).toEqual([{ status: 'complete', reloadPending: true }]);
+
+      // Reloaded document (same session, durable record): no second reload, so
+      // this is the document that publishes the settled status.
+      installedDataMigrationState.status = 'pending';
+      observed.length = 0;
+      expect(await run(new MemoryStorage())).toBe(true);
+      expect(observed).toEqual([{ status: 'complete', reloadPending: false }]);
+
+      // A shell that does not reload (the shared app) never opts in, so it
+      // never hides its settled status behind a reload that will not happen.
+      installedDataMigrationState.status = 'pending';
+      await runInstalledDataMigration({
+        native: nativePlugin(snapshot),
+        keyVault: nativeKeyVault(),
+        persistence: memoryPersistence().persistence,
+        storage: new MemoryStorage(),
+        nativePlatform: true,
+        now: () => 123,
+        pixelRatio: () => 2,
+      });
+      expect(installedDataMigrationState.status).toBe('complete');
+      expect(installedDataMigrationState.reloadPending).toBe(false);
+
+      // A failed run never leaves a stale pending reload behind.
+      installedDataMigrationState.reloadPending = true;
+      await runInstalledDataMigration({
+        native: nativePlugin(snapshot),
+        keyVault: nativeKeyVault(),
+        persistence: { ...persistence.persistence, readRecord: vi.fn(async () => { throw new Error('store closed'); }) },
+        storage: new MemoryStorage(),
+        nativePlatform: true,
+        now: () => 123,
+        pixelRatio: () => 2,
+        requestSettingsReload: () => true,
+      });
+      expect(installedDataMigrationState.status).toBe('failed');
+      expect(installedDataMigrationState.reloadPending).toBe(false);
+    } finally {
+      stop();
+      installedDataMigrationState.reloadPending = false;
+    }
   });
 
   it('refuses malformed sync state without staging or marking partial data complete', async () => {

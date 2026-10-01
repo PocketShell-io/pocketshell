@@ -82,6 +82,11 @@ export interface MigrationDependencies {
   now: () => number;
   pixelRatio: () => number;
   refreshPartial?: boolean;
+  /**
+   * Decides whether written settings need the one-time page reload. Only a shell
+   * that actually reloads (the legacy App.vue) opts in; the default never does.
+   */
+  requestSettingsReload: (settingsWritten: boolean) => boolean;
 }
 
 export interface ImportedLegacyHost {
@@ -101,6 +106,11 @@ export const installedDataMigrationState = reactive({
   status: 'pending' as 'pending' | 'complete' | 'partial' | 'failed',
   error: '',
   retrying: false,
+  // True when this run wrote imported settings and the page must reload once to
+  // apply them. It is decided in the same synchronous step that publishes the
+  // settled status, so the soon-discarded document never presents a settled
+  // migration the user (or a journey) could act on (issue #3005).
+  reloadPending: false,
 });
 
 export class InstalledDataMigrationError extends Error {
@@ -802,7 +812,16 @@ export async function runInstalledDataMigration(
     nativePlatform,
     now: Date.now,
     pixelRatio: () => globalThis.devicePixelRatio || 1,
+    requestSettingsReload: () => false,
     ...overrides,
+  };
+  // The reload decision and the settled status are published together: a page
+  // that is about to reload must keep presenting the migration as pending.
+  const publish = (warnings: string[], settingsWritten: boolean): boolean => {
+    installedDataMigrationState.reloadPending = dependencies.requestSettingsReload(settingsWritten);
+    installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
+    installedDataMigrationState.error = warnings.join(' ');
+    return settingsWritten;
   };
   installedDataMigrationState.retrying = true;
   try {
@@ -836,9 +855,7 @@ export async function runInstalledDataMigration(
           JSON.stringify(priorRecord.warnings) !== JSON.stringify(warnings) || priorRecord.status !== status) {
           await dependencies.persistence.updateRecord(updated);
         }
-        installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
-        installedDataMigrationState.error = warnings.join(' ');
-        return writes.settings !== undefined;
+        return publish(warnings, writes.settings !== undefined);
       }
     }
     const snapshot = await dependencies.native.readLegacyInstalledData();
@@ -871,10 +888,9 @@ export async function runInstalledDataMigration(
     const warnings = record.warnings;
     await dependencies.persistence.markComplete(warnings.length > 0 ? 'partial' : 'complete');
     writes = applyLocalStorageWrites(snapshot, dependencies.storage, dependencies.pixelRatio());
-    installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
-    installedDataMigrationState.error = warnings.join(' ');
-    return writes.settings !== undefined;
+    return publish(warnings, writes.settings !== undefined);
   } catch (error) {
+    installedDataMigrationState.reloadPending = false;
     installedDataMigrationState.status = 'failed';
     installedDataMigrationState.error = error instanceof Error
       ? error.message
@@ -885,6 +901,8 @@ export async function runInstalledDataMigration(
   }
 }
 
-export function retryInstalledDataMigration(): Promise<boolean> {
-  return runInstalledDataMigration({ refreshPartial: true });
+export function retryInstalledDataMigration(
+  overrides: Partial<MigrationDependencies> = {},
+): Promise<boolean> {
+  return runInstalledDataMigration({ ...overrides, refreshPartial: true });
 }
