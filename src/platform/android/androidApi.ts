@@ -94,8 +94,16 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
-        return hub.connect(target, (payload.tofuDecision ?? 'accept-always') as TofuDecision);
+        // Android advertises `onTrustDecision`, so trusting a key is the
+        // user's answer on the prompt, never a caller's standing decision: a
+        // supplied accept-once/accept-always is ignored; only reject is kept.
+        const standing: TofuDecision | undefined = payload.tofuDecision === 'reject' ? 'reject' : undefined;
+        return hub.connect(target, standing, deps.hosts.labelFor(payload));
       },
+      // Android asks before trusting a first-contact key: the shared store
+      // registers its prompt here and stops dialling with a standing
+      // accept-always (the #2953 regression against the legacy screen).
+      onTrustDecision: (decider) => hub.setTrustDecider(decider),
       exec,
       close: (connectionId) => hub.close(connectionId),
       onState: (listener) => hub.onState(listener),

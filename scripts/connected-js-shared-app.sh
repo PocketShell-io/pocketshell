@@ -7,6 +7,15 @@
 # raw-mode reader on the host records the exact bytes the IME journey typed;
 # the result checker compares the host's record, not just the screen. Shares the machine-wide AVD and Android output-tree
 # locks with the other packaged JS lanes.
+#
+# #2953: the same class proves the shared host-key prompt. The runner computes
+# the fixtures' real host keys on the Docker host (the oracle the app's prompt
+# is checked against), brings up the `sshd-rekeyed` fixture (port 2246; new
+# host keys on every container start) under that port's
+# machine-wide lock, and serves a rotation controller the journey calls to
+# restart it mid-run, so "the host key changed" is a real rotation.
+
+
 
 set -euo pipefail
 
@@ -18,6 +27,8 @@ ADB="${ADB:-$ANDROID_SDK/platform-tools/adb}"
 PNPM="${PNPM:-pnpm}"
 SUFFIX="i2936shared"
 PORT=""
+# The sshd-rekeyed compose service's fixed host port (tests/docker/docker-compose.yml).
+REKEYED_PORT=2246
 PREPARE_ONLY=0
 TEST_ONLY=0
 
@@ -40,6 +51,9 @@ Options:
 The connected phase selects ANDROID_SERIAL when supplied, otherwise it
 requires exactly one online emulator. Both Gradle output and AVD mutations are
 protected by the shared PocketShell locks.
+
+The connected phase also brings up the sshd-rekeyed fixture on 2246 (#2953)
+under that port's machine-wide lock and restarts it once mid-journey.
 USAGE
 }
 
@@ -87,6 +101,9 @@ done
 [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'generated android/gradlew is missing; initialize the JS-first Android project first'
 [[ -x "$ROOT_DIR/scripts/check-js-shared-app-results.py" ]] || fail 'shared-app result verifier is missing'
 "$ROOT_DIR/scripts/check-js-shared-app-results.py" --self-test
+HOST_KEY_FIXTURE="$ROOT_DIR/scripts/shared-app-host-key-fixture.py"
+[[ -x "$HOST_KEY_FIXTURE" ]] || fail 'shared-app host-key fixture helper is missing'
+"$HOST_KEY_FIXTURE" --self-test
 
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
@@ -187,6 +204,54 @@ export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
 pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
+# The AVD lock acquire just replaced the EXIT trap with
+# pocketshell_release_all, dropping cleanup_fixture_sessions. Re-install ONE
+# handler for everything this run holds, right now, so no `fail` from here on
+# (rekeyed fixture setup included) can leak this run's fixture sessions.
+rotation_pid=""
+on_exit() {
+  if [[ -n "$rotation_pid" ]]; then kill "$rotation_pid" 2>/dev/null || true; fi
+  cleanup_fixture_sessions
+  pocketshell_release_all
+}
+trap on_exit EXIT
+
+# --- #2953 host-key fixtures ------------------------------------------------
+source "$ROOT_DIR/tests/docker/lib/wait-for-healthy.sh"
+COMPOSE_FILE="$ROOT_DIR/tests/docker/docker-compose.yml"
+REKEYED_CONTAINER=pocketshell-test-ssh-rekeyed
+HOST_KEY_DIR="$ROOT_DIR/android/app/build/outputs/js-shared-app-host-keys"
+mkdir -p "$HOST_KEY_DIR"
+
+# The rekeyed fixture is restarted mid-run: hold its port's machine-wide lock
+# (the one agents-pool.sh and --pool lanes take) so no sibling uses it meanwhile.
+rekeyed_lock_file="$(pocketshell_agents_lock_file_for_port "$ROOT_DIR" "$REKEYED_PORT")"
+mkdir -p "$(dirname "$rekeyed_lock_file")"
+exec 7>"$rekeyed_lock_file"
+flock -w 900 7 || fail "port $REKEYED_PORT (sshd-rekeyed) is held by another run"
+
+docker compose -f "$COMPOSE_FILE" up -d --build --no-deps sshd-rekeyed 7>&- \
+  || fail 'could not start the sshd-rekeyed fixture'
+wait_for_container_healthy "$COMPOSE_FILE" sshd-rekeyed "$HOST_KEY_DIR/sshd-rekeyed-health.log" 90 \
+  || fail 'the sshd-rekeyed fixture did not become healthy'
+
+agents_host_keys="$("$HOST_KEY_FIXTURE" keys --port "$PORT")" || fail "no host keys answered on agents port $PORT"
+rekeyed_host_keys="$("$HOST_KEY_FIXTURE" keys --port "$REKEYED_PORT")" || fail "no host keys answered on rekeyed port $REKEYED_PORT"
+printf 'agents %s: %s\nrekeyed %s: %s\n' "$PORT" "$agents_host_keys" "$REKEYED_PORT" "$rekeyed_host_keys" \
+  | tee "$HOST_KEY_DIR/host-keys-before.txt"
+
+rotation_port_file="$HOST_KEY_DIR/rotation-port"
+rm -f -- "$rotation_port_file"
+"$HOST_KEY_FIXTURE" serve --ssh-port "$REKEYED_PORT" --container "$REKEYED_CONTAINER" \
+  --port-file "$rotation_port_file" > "$HOST_KEY_DIR/rotation-controller.log" 2>&1 7>&- &
+# on_exit (installed after the AVD lock) stops it.
+rotation_pid=$!
+for _ in $(seq 1 50); do
+  [[ -s "$rotation_port_file" ]] && break
+  sleep 0.1
+done
+[[ -s "$rotation_port_file" ]] || fail 'the rotation controller did not start'
+rotation_port="$(tr -d '[:space:]' < "$rotation_port_file")"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 SHARED_APP_RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/js-shared-app-results"
@@ -219,7 +284,12 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$SESSION_RUN" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
-    --stacktrace --console=plain; then
+    "-Pandroid.testInstrumentationRunnerArguments.rekeyedPort=$REKEYED_PORT" \
+    "-Pandroid.testInstrumentationRunnerArguments.rotationPort=$rotation_port" \
+    "-Pandroid.testInstrumentationRunnerArguments.agentsHostKeysBase64=$(printf '%s' "$agents_host_keys" | base64 -w0)" \
+    "-Pandroid.testInstrumentationRunnerArguments.rekeyedHostKeysBase64=$(printf '%s' "$rekeyed_host_keys" | base64 -w0)" \
+    ${POCKETSHELL_EVIDENCE_HOLD_MS:+"-Pandroid.testInstrumentationRunnerArguments.evidenceHoldMillis=$POCKETSHELL_EVIDENCE_HOLD_MS"} \
+    --stacktrace --console=plain 7>&-; then
   :
 else
   test_exit_code=$?
@@ -227,13 +297,13 @@ else
   mkdir -p "$RESULTS_DIR"
   fetch_host_bytes
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
-  "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 \
+  "$ADB" -s "$ANDROID_SERIAL" logcat -d 7>&- -v threadtime -t 4000 \
     > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method \
+  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method 7>&- \
     > "$RESULTS_DIR/diagnostics-input-method.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys window \
+  "$ADB" -s "$ANDROID_SERIAL" shell dumpsys window 7>&- \
     > "$RESULTS_DIR/diagnostics-window.txt" 2>&1 || true
-  "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
+  "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p 7>&- \
     > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
   # Later packaged lanes clear the shared connected-results directory, so the
   # failed run's JUnit XML, per-method logcats and diagnostics are kept in

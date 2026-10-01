@@ -19,7 +19,7 @@ import { createAndroidPlatform, type AndroidPlatform } from '@/platform/android/
 import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { AndroidHostStore } from '@/platform/android/hostStore';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
-import { FakeNative, MemoryStorage } from './support/androidFakeNative';
+import { FakeNative, HOST_KEY, MemoryStorage } from './support/androidFakeNative';
 
 /** The controller's own ladder in these tests: dial now, then 1 s, then 1 s. */
 const RETRY_DELAYS_MS = [0, 1_000, 1_000];
@@ -40,6 +40,9 @@ function setup() {
   const storage = new MemoryStorage();
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
   hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+  // The host's key is already trusted: these tests are about recovery, not
+  // the first-contact prompt the shared store raises since #2953.
+  void createLocalTrustStore(storage).record('u@fixture:2222', { kind: 'wire-key', ...HOST_KEY });
   const controllers: ConnectionController[] = [];
   const journal: ConnectionJournalEntry[] = [];
   let ids = 0;

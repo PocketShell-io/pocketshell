@@ -11,6 +11,7 @@ import {
   readHostUsage,
   runSyncRound,
   type ConnectionSnapshot,
+  type HostKeyTrustChoice,
   type HostKeyTrustPin,
   type HostKeyTrustStore,
   type PortForwardControllerSnapshot,
@@ -23,6 +24,8 @@ import {
 import AppIcon from '@ui/components/AppIcon.vue';
 import { fontCssVariables } from '@ui/fonts';
 import { resolveTheme } from '@ui/themes';
+import HostKeyTrustPrompt from '@ui/app/components/HostKeyTrustPrompt.vue';
+import { hostKeyAnswer, hostKeyCard, hostKeyRefusalMessage } from './session/hostKeyCard';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
 import {
@@ -205,6 +208,9 @@ const composerTransportState = computed<'connected' | 'lost' | 'closed'>(() => {
   return 'closed';
 });
 const trustDecision = computed(() => connectionSnapshot.value?.trustDecision ?? null);
+const legacyHostKeyCard = computed(() => (
+  trustDecision.value ? hostKeyCard(trustDecision.value, hostDraft.value) : null
+));
 const sessions = computed(() => connectionSnapshot.value?.sessions ?? []);
 const selectedSessionRow = computed(() => resolveSelectedSessionRow(
   connectionSnapshot.value?.selectedSession,
@@ -690,13 +696,21 @@ async function reconnectHost() {
   }
 }
 
-async function acceptHostKey() {
+function decideHostKey(choice: HostKeyTrustChoice) {
+  const decision = trustDecision.value;
+  if (!decision) return;
+  const answer = hostKeyAnswer(decision, choice);
+  if (answer === 'reject') void rejectHostKey(hostKeyRefusalMessage(decision));
+  else void acceptHostKey(answer === 'accept-always');
+}
+
+async function acceptHostKey(persist = true) {
   const active = controller;
   if (!active) return;
   connectionMessage.value = '';
   let result;
   try {
-    result = await active.acceptPresentedHostKey({ passphrase: pendingTrustPassphrase });
+    result = await active.acceptPresentedHostKey({ passphrase: pendingTrustPassphrase, persist });
   } catch (error) {
     pendingTrustPassphrase = undefined;
     recordFailure('ssh-bridge-failed', 'accept-host-key', error);
@@ -885,10 +899,10 @@ async function disconnectHost() {
   }
 }
 
-async function rejectHostKey() {
+async function rejectHostKey(message = 'Host key was not trusted. No SSH connection remains open.') {
   pendingTrustPassphrase = undefined;
   legacyKeyPassphrase.value = '';
-  connectionMessage.value = 'Host key was not trusted. No SSH connection remains open.';
+  connectionMessage.value = message;
   await disconnectHost();
 }
 
@@ -1346,15 +1360,15 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div v-if="trustDecision" class="trust-prompt" role="alert" data-testid="host-key-decision">
-          <strong>{{ trustDecision.reason === 'mismatch' ? 'Host key changed' : 'Verify this host key' }}</strong>
-          <p>{{ trustDecision.hostLabel }} presented:</p>
-          <code data-testid="host-key-fingerprint">{{ trustDecision.presented.fingerprintSha256 }}</code>
-          <div class="host-actions">
-            <button class="action-button" type="button" data-testid="trust-host-key" @click="acceptHostKey">Trust key and connect</button>
-            <button class="action-button action-button--secondary" type="button" data-testid="reject-host-key" @click="rejectHostKey">Reject</button>
-          </div>
-        </div>
+        <!-- The shared host-key card (#2953): the first-contact prompt, or the
+             changed-key refusal with no trust action. -->
+        <HostKeyTrustPrompt
+          v-if="legacyHostKeyCard"
+          :key="legacyHostKeyCard.request.fingerprintSha256"
+          :request="legacyHostKeyCard.request"
+          :trusted-fingerprint-sha256="legacyHostKeyCard.trustedFingerprintSha256"
+          @decide="decideHostKey"
+        />
         <p v-if="connectionMessage || connectionSnapshot?.error" class="connection-message" role="alert" data-testid="ssh-message">
           {{ connectionMessage || connectionSnapshot?.error }}
         </p>

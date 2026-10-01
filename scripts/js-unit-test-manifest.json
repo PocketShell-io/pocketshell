@@ -320,7 +320,12 @@
     "tests/unit/androidPlatform.test.ts": {
       "suite": "Android PocketShellApi platform",
       "tests": [
-        "dials through the controller, pins a first-contact key, and never accepts a changed one",
+        "never pins a first-contact key without a decision: no decider means refused",
+        "asks the registered decider with host, key type and fingerprint, and honours each answer",
+        "refuses a changed host key with a visible message and never asks about it",
+        "the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always",
+        "abandons a waiting host-key question when the user disconnects",
+        "ignores a caller-supplied standing accept: only the user's answer on the prompt trusts a key",
         "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
         "never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane",
         "re-attaches and repaints the same session after its pane closed the shell",
@@ -411,6 +416,13 @@
         "routes by the shared map plus exactly the Android host form",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
+    },
+    "tests/unit/legacyHostKeyCard.test.ts": {
+      "suite": "legacy screen host-key card",
+      "tests": [
+        "asks on first contact with the three shared answers",
+        "refuses a changed key: both fingerprints, no first-contact wording, no trust action"
       ]
     }
   }

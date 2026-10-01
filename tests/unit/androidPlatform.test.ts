@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConnectionController, type HostKeyTrustPin } from '@pocketshell/core';
+import { createPinia, setActivePinia } from 'pinia';
+import { provideApi } from '@ui/app/ipc';
+import { useConnectionStore } from '@ui/app/stores/connection';
+import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustRequest } from '@pocketshell/core';
 import {
   AndroidConnectionHub,
   connectionStateFor,
@@ -11,9 +14,12 @@ import { createAndroidPlatform, UnsupportedCapability } from '@/platform/android
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
 import { createLocalTrustStore, pinStorageKey } from '@/platform/android/trustStore';
 import { recordShellBoot, selectShell, SHELL_BOOT_LOG_KEY } from '@/shellSelection';
-import { FakeNative, MemoryStorage, settle, target } from './support/androidFakeNative';
+import { FakeNative, HOST_KEY, MemoryStorage, settle, target } from './support/androidFakeNative';
 
-function harness(pin: HostKeyTrustPin | null = null) {
+/** The fixture key already pinned — for tests whose subject is not first contact. */
+const PIN: HostKeyTrustPin = { kind: 'wire-key', ...HOST_KEY };
+
+function harness(pin: HostKeyTrustPin | null = PIN) {
   const native = new FakeNative();
   const storage = new MemoryStorage();
   const trust = createLocalTrustStore(storage);
@@ -41,21 +47,126 @@ afterEach(async () => {
 });
 
 describe('Android PocketShellApi platform', () => {
-  it('dials through the controller, pins a first-contact key, and never accepts a changed one', async () => {
-    const first = harness();
-    const connected = await first.hub.connect(target);
-    expect(connected).toEqual({ ok: true, connectionId: 'android-1' });
-    open.push({ hub: first.hub, id: 'android-1' });
-    expect(JSON.parse(first.storage.getItem(pinStorageKey(target.hostId))!)).toMatchObject({ fingerprintSha256: 'SHA256:abc123' });
+  it('never pins a first-contact key without a decision: no decider means refused', async () => {
+    const first = harness(null);
+    const refused = await first.hub.connect(target);
+    expect(refused).toEqual({ ok: false, error: expect.stringContaining('was not trusted') });
+    expect(first.storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+    expect(first.native.opened).toHaveLength(0);
+  });
 
+  it('asks the registered decider with host, key type and fingerprint, and honours each answer', async () => {
+    const asked: HostKeyTrustRequest[] = [];
+    const answering = (choice: 'accept-once' | 'accept-always' | 'reject') => {
+      const h = harness(null);
+      h.hub.setTrustDecider(async (request) => {
+        asked.push(request);
+        // Nothing may be pinned while the user is still looking at the key.
+        expect(h.storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+        return choice;
+      });
+      return h;
+    };
+
+    const rejected = answering('reject');
+    const refused = await rejected.hub.connect(target, undefined, 'fixture box');
+    expect(refused).toEqual({ ok: false, error: 'Host key for fixture box was not trusted. No connection was opened.' });
+    expect(asked[0]).toEqual({
+      hostLabel: 'fixture box', hostname: 'fixture', port: 2222, user: 'u',
+      keyType: 'ssh-ed25519', fingerprintSha256: 'SHA256:abc123',
+    });
+    expect(rejected.storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+    expect((await rejected.native.capability().resourceSnapshot('x')).connections).toBe(0);
+
+    const once = answering('accept-once');
+    const onceResult = await once.hub.connect(target);
+    expect(onceResult).toEqual({ ok: true, connectionId: 'android-1' });
+    open.push({ hub: once.hub, id: 'android-1' });
+    expect(once.storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+    // The next connection is a new first contact: asked again.
+    const askedBefore = asked.length;
+    const again = await once.hub.connect(target);
+    open.push({ hub: once.hub, id: again.connectionId! });
+    expect(asked.length).toBe(askedBefore + 1);
+
+    const always = answering('accept-always');
+    const alwaysResult = await always.hub.connect(target);
+    expect(alwaysResult.ok).toBe(true);
+    open.push({ hub: always.hub, id: alwaysResult.connectionId! });
+    expect(JSON.parse(always.storage.getItem(pinStorageKey(target.hostId))!)).toMatchObject({ fingerprintSha256: 'SHA256:abc123' });
+    const pinnedAsks = asked.length;
+    const pinned = await always.hub.connect(target);
+    open.push({ hub: always.hub, id: pinned.connectionId! });
+    expect(pinned.ok).toBe(true);
+    expect(asked.length).toBe(pinnedAsks);
+  });
+
+  it('refuses a changed host key with a visible message and never asks about it', async () => {
     const changed = harness({ kind: 'sha256-fingerprint', fingerprintSha256: 'SHA256:other' });
-    const refused = await changed.hub.connect(target);
+    let asked = 0;
+    changed.hub.setTrustDecider(async () => { asked += 1; return 'accept-always'; });
+    const refused = await changed.hub.connect(target, undefined, 'fixture');
     expect(refused.ok).toBe(false);
-    expect(refused.error).toMatch(/host key .* changed/i);
+    expect(refused.error).toMatch(/^Host key for fixture has changed — connection refused\. It now presents SHA256:abc123 instead of the trusted SHA256:other\./);
+    expect(asked).toBe(0);
     expect(changed.native.opened).toHaveLength(0);
+    expect(JSON.parse(changed.storage.getItem(pinStorageKey(target.hostId))!)).toMatchObject({ fingerprintSha256: 'SHA256:other' });
+    // Not even an explicit standing decision overrides a changed key.
+    expect((await changed.hub.connect(target, 'accept-always')).ok).toBe(false);
+  });
 
-    const rejectFirst = harness();
-    expect((await rejectFirst.hub.connect(target, 'reject')).ok).toBe(false);
+  it('the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always', async () => {
+    const { storage, hosts, created } = platform(null);
+    hosts.save({ name: 'dev box', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+    expect(typeof created.api.ssh.onTrustDecision).toBe('function');
+    provideApi(created.api);
+    setActivePinia(createPinia());
+    const connection = useConnectionStore();
+    const host = (await created.api.ssh.listConfigHosts())[0]!;
+
+    const dial = connection.connect(host);
+    await settle(() => connection.pendingTrust !== null);
+    expect(connection.pendingTrust).toMatchObject({ hostLabel: 'dev box', hostname: 'fixture', port: 2222, keyType: 'ssh-ed25519', fingerprintSha256: 'SHA256:abc123' });
+    expect(connection.state).toBe('connecting');
+    expect(storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+    connection.answerTrust('reject');
+    expect(await dial).toBe(false);
+    expect(connection.pendingTrust).toBeNull();
+    expect(connection.error).toMatch(/was not trusted/);
+    expect(storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+
+    const second = connection.connect(host);
+    await settle(() => connection.pendingTrust !== null);
+    connection.answerTrust('accept-always');
+    expect(await second).toBe(true);
+    open.push({ hub: created.hub, id: connection.connectionId! });
+    expect(connection.state).toBe('connected');
+    expect(JSON.parse(storage.getItem(pinStorageKey(target.hostId))!)).toMatchObject({ fingerprintSha256: 'SHA256:abc123' });
+  });
+
+  it('abandons a waiting host-key question when the user disconnects', async () => {
+    const { hosts, created } = platform(null);
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+    provideApi(created.api);
+    setActivePinia(createPinia());
+    const connection = useConnectionStore();
+    const dial = connection.connect((await created.api.ssh.listConfigHosts())[0]!);
+    await settle(() => connection.pendingTrust !== null);
+    await connection.disconnect();
+    expect(await dial).toBe(false);
+    expect(connection.pendingTrust).toBeNull();
+  });
+
+  it('ignores a caller-supplied standing accept: only the user\'s answer on the prompt trusts a key', async () => {
+    const { storage, hosts, created, native } = platform(null);
+    hosts.save({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: 'handle-1' });
+    for (const tofuDecision of ['accept-always', 'accept-once'] as const) {
+      const result = await created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u', tofuDecision });
+      // No decider is registered, so the unknown key is refused, not pinned.
+      expect(result).toEqual({ ok: false, error: expect.stringContaining('was not trusted') });
+    }
+    expect(storage.getItem(pinStorageKey(target.hostId))).toBeNull();
+    expect(native.opened).toHaveLength(0);
   });
 
   it('lists sessions as shared summaries and attaches, types and resizes on the selected PTY', async () => {
@@ -271,8 +382,8 @@ describe('Android PocketShellApi platform', () => {
     expect(connectionStateFor({ ...base, phase: 'lost', connectionId: null })).toBe('lost');
   });
 
-  function platform() {
-    const { native, storage, controllers } = harness();
+  function platform(pin: HostKeyTrustPin | null = PIN) {
+    const { native, storage, controllers } = harness(pin);
     const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
     let lifecycle: ((active: boolean) => void) | null = null;
     let ids = 0;

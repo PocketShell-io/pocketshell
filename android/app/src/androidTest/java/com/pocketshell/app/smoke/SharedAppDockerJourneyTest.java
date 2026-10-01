@@ -19,9 +19,17 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.MainActivity;
 import com.pocketshell.app.SharedShellLaunch;
 import com.pocketshell.app.ime.ScriptedIme;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -69,11 +77,25 @@ import org.junit.runner.RunWith;
  *  - a real session end on a healthy transport reads as ended, with no
  *    reconnect, no new connection and no new dial.
  * Native dials are counted at the Capacitor bridge, so a failed dial counts.
+ *
+ * #2953 (A6): a first-contact host key is shown to the user — host, key type
+ * and SHA-256 fingerprint — before anything is trusted, and each answer does
+ * what it says: reject opens nothing, "this time only" connects without a pin,
+ * "remember" connects and pins. A key that CHANGED after it was pinned is
+ * refused with a visible message. The fingerprints the app shows are checked
+ * against the fixtures' real keys, computed on the Docker host by the runner
+ * (ssh-keyscan), and the changed key is a real rotation of the rekeyed
+ * fixture (a container restart mints new host keys), not a doctored pin.
+ * Every other journey here meets the same prompt on its host's first contact
+ * and answers "remember" ({@link #trustFirstContactIfAsked}).
  */
 @RunWith(AndroidJUnit4.class)
 public class SharedAppDockerJourneyTest {
     private static final String TAG = "PocketshellImeJourney";
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    private static final String PIN_PREFIX = "pocketshell.ssh.host-key.";
+    private static final String HOSTS_STORAGE_KEY = "pocketshell.android.hosts.v1";
+    private static final String GATE = "[data-testid=host-key-trust-gate] [data-testid=host-key-decision]";
     /** The visible terminal's text: hidden panes keep their own rows. */
     private static final String VISIBLE_TERMINAL =
             "([...document.querySelectorAll('.xterm-rows')].find((n)=>n.offsetParent!==null)?.innerText ?? '')";
@@ -98,6 +120,8 @@ public class SharedAppDockerJourneyTest {
 
     /** Both tests run in one instrumentation process; the first adds the run's host. */
     private static boolean fixtureHostAdded;
+    /** The key-vault handle of the runner's key, imported once per run. */
+    private static String fixtureKeyHandle;
     private ActivityScenario<MainActivity> scenario;
     private ScriptedIme ime;
 
@@ -455,6 +479,247 @@ public class SharedAppDockerJourneyTest {
                 .put("nativeConnections", transportsBefore));
     }
 
+    @Test
+    public void firstContactHostKeyAsksAndHonoursRejectOnceAndAlways() throws Exception {
+        String run = sessionRun();
+        String port = requiredArgument("sshPort");
+        Set<String> realKeys = hostKeys("agentsHostKeys");
+        String name = "fixture-" + run;
+        String pinKey = PIN_PREFIX + "testuser@" + fixtureHost() + ":" + port;
+        ensureFixtureHost(run);
+        // Another journey of this run may have pinned the lane already: start
+        // from a first contact for this endpoint.
+        evalString("(() => {localStorage.removeItem(" + JSONObject.quote(pinKey) + "); return 'ok';})()");
+
+        // 1. First contact shows the key, with nothing trusted or connected yet.
+        tapHost(name);
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ")");
+        String fingerprint = assertPresentedKeyIn(realKeys);
+        holdForEvidence();
+        assertTrue("the prompt names the host", text("[data-testid=host-key-host]").equals(name));
+        assertTrue("three answers are offered", exists("[data-testid=trust-host-key-once]")
+                && exists("[data-testid=trust-host-key]") && exists("[data-testid=reject-host-key]"));
+        assertEquals("nothing is pinned while the user decides", "null", evalString("String(localStorage.getItem('" + pinKey + "'))"));
+        assertFalse("no workspace behind the prompt", exists(".dir-header"));
+
+        // 2. Reject: no connection, no pin, the refusal is visible on the picker.
+        click("[data-testid=reject-host-key]");
+        awaitJsTrue("!document.querySelector('[data-testid=host-key-decision]')");
+        awaitJsTrue("(document.querySelector('main p.error')?.textContent ?? '').includes('was not trusted')");
+        assertEquals("null", evalString("String(localStorage.getItem('" + pinKey + "'))"));
+        assertFalse(exists(".dir-header"));
+        assertEquals("the native plugin holds no SSH connection after a reject", 0, nativeConnections());
+
+        // 3. Trust this time only: connects (the host lists its sessions) and pins nothing.
+        tapHost(name);
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ")");
+        assertEquals(fingerprint, text("[data-testid=host-key-fingerprint]"));
+        click("[data-testid=trust-host-key-once]");
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+        assertEquals("accept-once must not pin", "null", evalString("String(localStorage.getItem('" + pinKey + "'))"));
+        backToPickerAndDisconnect();
+
+        // 4. The next connection asks again; "remember" connects and pins exactly the shown key.
+        tapHost(name);
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ")");
+        assertEquals(fingerprint, text("[data-testid=host-key-fingerprint]"));
+        click("[data-testid=trust-host-key]");
+        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
+        String pin = evalString("localStorage.getItem('" + pinKey + "') ?? ''");
+        assertFalse("accept-always pins the host key", pin.isEmpty());
+        assertEquals(fingerprint, new JSONObject(pin).getString("fingerprintSha256"));
+        backToPickerAndDisconnect();
+
+        // 5. Pinned: the next connection goes straight through, never asking.
+        tapHost(name);
+        awaitJsTrueNeverSeeing("document.querySelectorAll('.dir-header').length > 0",
+                "!!document.querySelector('[data-testid=host-key-decision]')");
+    }
+
+    @Test
+    public void changedHostKeyIsRefusedWithVisibleMessage() throws Exception {
+        String run = sessionRun();
+        String port = requiredArgument("rekeyedPort");
+        Set<String> firstKeys = hostKeys("rekeyedHostKeys");
+        String name = "rekeyed-" + run;
+        String pinKey = PIN_PREFIX + "testuser@" + fixtureHost() + ":" + port;
+        ensureFixtureHost(run);
+        evalString("(() => {localStorage.removeItem(" + JSONObject.quote(pinKey) + "); return 'ok';})()");
+        addSavedHostWithFixtureKey(name, fixtureHost(), port);
+
+        // Pin the fixture's current key through the prompt.
+        tapHost(name);
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ")");
+        String trusted = assertPresentedKeyIn(firstKeys);
+        click("[data-testid=trust-host-key]");
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]')");
+        assertEquals(trusted, new JSONObject(evalString("localStorage.getItem('" + pinKey + "') ?? '{}'"))
+                .getString("fingerprintSha256"));
+        backToPickerAndDisconnect();
+
+        // The server's host key really changes: the runner restarts the
+        // rekeyed fixture, which mints new host keys, and reports them.
+        Set<String> rotatedKeys = rotateRekeyedFixture();
+        for (String entry : rotatedKeys) {
+            assertFalse("the rotated fixture must present new keys: " + entry, firstKeys.contains(entry));
+        }
+
+        // Refused with a visible message naming the new and the trusted key; never asked.
+        tapHost(name);
+        awaitJsTrueNeverSeeing(
+                "(document.querySelector('main p.error')?.textContent ?? '').includes('has changed — connection refused')",
+                "!!document.querySelector('[data-testid=host-key-decision]')");
+        holdForEvidence();
+        String message = text("main p.error");
+        assertTrue("the refusal names the trusted fingerprint: " + message, message.contains(trusted));
+        boolean namesPresented = false;
+        for (String entry : rotatedKeys) {
+            if (message.contains(entry.substring(entry.indexOf(' ') + 1))) namesPresented = true;
+        }
+        assertTrue("the refusal names the key the server presents now: " + message, namesPresented);
+        assertEquals("a changed key never replaces the pin", trusted,
+                new JSONObject(evalString("localStorage.getItem('" + pinKey + "') ?? '{}'")).getString("fingerprintSha256"));
+        assertFalse("no workspace for a refused host", exists("button[title=\"Back to hosts\"]"));
+        assertEquals("the native plugin holds no SSH connection after the refusal", 0, nativeConnections());
+    }
+
+    // --- #2953 host-key steps ------------------------------------------------
+
+    /**
+     * Keep a key state on screen for an external screen recorder when the
+     * runner passes {@code evidenceHoldMillis} (manual evidence runs only;
+     * the lane leaves it unset, so CI waits nothing).
+     */
+    private void holdForEvidence() throws InterruptedException {
+        String hold = InstrumentationRegistry.getArguments().getString("evidenceHoldMillis");
+        if (hold != null) Thread.sleep(Long.parseLong(hold));
+    }
+
+    private String fixtureHost() {
+        return InstrumentationRegistry.getArguments().getString("sshHost", "10.0.2.2");
+    }
+
+    private String requiredArgument(String name) {
+        String value = InstrumentationRegistry.getArguments().getString(name);
+        assertNotNull("pass instrumentation argument " + name + " (scripts/connected-js-shared-app.sh does)", value);
+        return value;
+    }
+
+    /** "keyType SHA256:..." entries the runner computed on the Docker host (base64: the list has spaces). */
+    private Set<String> hostKeys(String argument) {
+        Set<String> keys = new LinkedHashSet<>();
+        String decoded = new String(Base64.getDecoder().decode(requiredArgument(argument + "Base64")), StandardCharsets.UTF_8);
+        for (String entry : decoded.split(";")) {
+            if (!entry.trim().isEmpty()) keys.add(entry.trim());
+        }
+        assertFalse(argument + " lists no host keys", keys.isEmpty());
+        return keys;
+    }
+
+    /** The prompt's key type + fingerprint must be one of the server's real keys. */
+    private String assertPresentedKeyIn(Set<String> realKeys) throws Exception {
+        String keyType = text("[data-testid=host-key-type]");
+        String fingerprint = text("[data-testid=host-key-fingerprint]");
+        assertTrue("the prompt shows a SHA-256 fingerprint: " + fingerprint, fingerprint.startsWith("SHA256:"));
+        assertTrue("the prompt's key (" + keyType + " " + fingerprint + ") must be the fixture's real key " + realKeys,
+                realKeys.contains(keyType + " " + fingerprint));
+        return fingerprint;
+    }
+
+    private void tapHost(String name) throws Exception {
+        evalString("(() => {[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes("
+                + JSONObject.quote(name) + ")).click(); return 'ok';})()");
+    }
+
+    private void backToPickerAndDisconnect() throws Exception {
+        click("button[title=\"Back to hosts\"]");
+        awaitJsTrue("!!document.querySelector('.disconnect')");
+        click(".disconnect");
+        awaitJsTrue("!document.querySelector('.disconnect')");
+        assertEquals("disconnect leaves no native SSH connection", 0, nativeConnections());
+    }
+
+    /** Open SSH connections held by the native plugin — the layer below the shared app. */
+    private int nativeConnections() throws Exception {
+        evalString("(() => {window.__ps2953Snapshot = null;"
+                + "window.Capacitor.Plugins.SshCapability.resourceSnapshot({requestId: 'journey-' + Date.now()})"
+                + ".then((r) => {window.__ps2953Snapshot = String(r.connections);})"
+                + ".catch((e) => {window.__ps2953Snapshot = 'error:' + e;}); return 'ok';})()");
+        awaitJsTrue("window.__ps2953Snapshot !== null");
+        String value = evalString("window.__ps2953Snapshot");
+        assertFalse("native resource snapshot failed: " + value, value.startsWith("error:"));
+        return Integer.parseInt(value);
+    }
+
+    /**
+     * Ask the runner's rotation controller (a socket on the Docker host) to
+     * restart the rekeyed fixture; it answers with the new "type fp;..." keys.
+     */
+    private Set<String> rotateRekeyedFixture() throws Exception {
+        int port = Integer.parseInt(requiredArgument("rotationPort"));
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(fixtureHost(), port), 10_000);
+            socket.setSoTimeout(120_000);
+            OutputStream out = socket.getOutputStream();
+            out.write("rotate\n".getBytes(StandardCharsets.UTF_8));
+            out.flush();
+            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+            String line = in.readLine();
+            assertNotNull("the rotation controller closed without an answer", line);
+            assertTrue("rotation failed: " + line, line.startsWith("ok "));
+            Set<String> keys = new LinkedHashSet<>();
+            for (String entry : line.substring(3).split(";")) {
+                if (!entry.trim().isEmpty()) keys.add(entry.trim());
+            }
+            assertFalse("the rotated fixture reported no keys", keys.isEmpty());
+            return keys;
+        }
+    }
+
+    private boolean exists(String selector) throws Exception {
+        return "true".equals(evalRaw("!!document.querySelector(" + JSONObject.quote(selector) + ")"));
+    }
+
+    private String text(String selector) throws Exception {
+        return evalString("(document.querySelector(" + JSONObject.quote(selector) + ")?.textContent ?? '').trim()");
+    }
+
+    /** Wait for {@code expression}; fail at once if {@code forbidden} ever holds meanwhile. */
+    private void awaitJsTrueNeverSeeing(String expression, String forbidden) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String last = "<not evaluated>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            if (forbidden != null && "true".equals(evalRaw(forbidden))) {
+                throw new AssertionError("WebView reached a forbidden state: " + forbidden
+                        + " (page=" + evalString("document.body.innerText") + ")");
+            }
+            last = evalRaw(expression);
+            if ("true".equals(last)) return;
+            Thread.sleep(150);
+        }
+        throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
+                + "; page=" + evalString("document.body.innerText") + ")");
+    }
+
+    /**
+     * A second saved host on the run's imported key (the rekeyed fixture). The
+     * picker offers "Add a host" only while the list is empty, and adding a
+     * host through the form is the fixture host's own journey, so this one is
+     * written to the phone's host list directly and the app relaunched to load it.
+     */
+    private void addSavedHostWithFixtureKey(String name, String host, String port) throws Exception {
+        assertNotNull("the run's key must have been imported first", fixtureKeyHandle);
+        JSONObject entry = new JSONObject()
+                .put("name", name).put("hostname", host).put("port", Integer.parseInt(port))
+                .put("user", "testuser").put("keyHandleId", fixtureKeyHandle);
+        evalString("(() => {const key=" + JSONObject.quote(HOSTS_STORAGE_KEY) + ";"
+                + "const hosts=JSON.parse(localStorage.getItem(key) ?? '[]').filter((h)=>h.name!==" + JSONObject.quote(name) + ");"
+                + "hosts.push(" + entry + "); localStorage.setItem(key, JSON.stringify(hosts)); return 'ok';})()");
+        scenario.close();
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("[...document.querySelectorAll('.host-row')].some((n)=>n.textContent.includes(" + JSONObject.quote(name) + "))");
+    }
+
     /**
      * The non-happy host: the transport drops while the host refuses logins
      * (its authorized_keys is moved aside for 8 s), so the controller's
@@ -717,8 +982,20 @@ public class SharedAppDockerJourneyTest {
     /**
      * Boots the shared app and opens this run's fixture host, adding it (and
      * importing the runner's key) only if an earlier test of the run has not.
+     * Its first contact meets the #2953 host-key prompt, answered "remember".
      */
     private void openFixtureHost(String run) throws Exception {
+        ensureFixtureHost(run);
+        tapHost("fixture-" + run);
+        trustFirstContactIfAsked(hostKeys("agentsHostKeys"));
+    }
+
+    /**
+     * Boots the shared app and makes sure this run's fixture host exists,
+     * adding it (and importing the runner's key) only if an earlier test of
+     * the run has not.
+     */
+    private void ensureFixtureHost(String run) throws Exception {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
@@ -748,6 +1025,7 @@ public class SharedAppDockerJourneyTest {
             awaitJsTrue("window." + SshKeyVaultTestSupport.IMPORT_RESULT + "?.state === 'ready'");
             String handle = evalString("window." + SshKeyVaultTestSupport.IMPORT_RESULT + ".handleId");
             keyDocument.delete();
+            fixtureKeyHandle = handle;
 
             evalString("(() => {const b=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Add a host');"
                     + "if(!b) throw new Error('no Add a host action'); b.click(); return 'ok';})()");
@@ -761,8 +1039,19 @@ public class SharedAppDockerJourneyTest {
             click("[data-testid=host-save]");
             awaitJsTrue(hostRow);
         }
-        evalString("(() => {[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes('fixture-" + run
-                + "')).click(); return 'ok';})()");
+    }
+
+    /**
+     * After tapping a host: on its first contact the shared prompt asks
+     * (#2953) and is answered "remember" once its key is checked against the
+     * runner's oracle; a pinned host connects without asking.
+     */
+    private void trustFirstContactIfAsked(Set<String> realKeys) throws Exception {
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(GATE) + ") || !!document.querySelector('button[title=\"Back to hosts\"]')");
+        if (exists(GATE)) {
+            assertPresentedKeyIn(realKeys);
+            click("[data-testid=trust-host-key]");
+        }
     }
 
     private int pageStartCount() {
