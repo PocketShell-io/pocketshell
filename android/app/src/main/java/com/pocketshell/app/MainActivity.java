@@ -29,6 +29,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(InstalledDataMigrationPlugin.class);
         registerPlugin(DocumentContentPlugin.class);
         registerPlugin(SpeechRecognitionPlugin.class);
+        registerPlugin(BridgeReadyPlugin.class);
         super.onCreate(savedInstanceState);
     }
 
