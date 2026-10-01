@@ -3624,7 +3624,7 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void tapDomCenter(String selector) throws Exception {
-        JSONObject point = domPoint(selector);
+        JSONObject point = awaitStableTapTarget(selector);
         assertTrue("fast-key target must be visible inside the Android viewport: " + point, point.getBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
         long downTime = SystemClock.uptimeMillis();
@@ -3664,6 +3664,39 @@ public final class JsFastKeysDockerJourneyTest {
         SystemClock.sleep(durationMillis);
         injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
         SystemClock.sleep(100);
+    }
+
+    /**
+     * Measure a physical-tap target only once the layout has held still: the
+     * target's rect, the visual viewport and the native IME state must repeat
+     * across consecutive samples, and the target must own its center hit.
+     * Hosted runs (36907806792, 36910611490) tapped while an IME inset
+     * animation was still moving the dock, so the tap landed beside the
+     * control and the journey timed out.
+     */
+    private JSONObject awaitStableTapTarget(String selector) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 4_000;
+        String previous = null;
+        int stableSamples = 0;
+        JSONObject point = domPoint(selector);
+        while (SystemClock.uptimeMillis() < deadline) {
+            point = domPoint(selector);
+            boolean hitsTarget = "true".equals(evalRaw("(() => {const n=document.querySelector("
+                    + JSONObject.quote(selector) + ");if(!n)return false;const r=n.getBoundingClientRect();"
+                    + "const h=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);"
+                    + "return !!h&&(h===n||n.contains(h));})()"));
+            String signature = Math.round(point.getDouble("x")) + "," + Math.round(point.getDouble("y")) + ","
+                    + Math.round(point.getDouble("height")) + "," + isImeVisible() + "," + hitsTarget;
+            if (hitsTarget && signature.equals(previous)) {
+                stableSamples += 1;
+                if (stableSamples >= 2) return point;
+            } else {
+                stableSamples = 0;
+            }
+            previous = signature;
+            SystemClock.sleep(120);
+        }
+        return point;
     }
 
     private JSONObject domPoint(String selector) throws Exception {
