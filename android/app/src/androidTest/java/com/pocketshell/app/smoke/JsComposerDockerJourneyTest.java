@@ -2154,25 +2154,11 @@ public final class JsComposerDockerJourneyTest {
             screen[1] = currentMapping.getInt("webViewScreenY")
                     + (float) point.optDouble("y") * (float) currentMapping.getDouble("scaleY");
         }
-        long downTime = SystemClock.uptimeMillis();
-        var instrumentation = InstrumentationRegistry.getInstrumentation();
-        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
-        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        // Queue ACTION_DOWN without waiting for its dispatch. A synchronous
-        // down on a heavily loaded host can take ~700ms to return, which turns
-        // the tap into a long press and suppresses the click (seen as
-        // pointerdown/pointerup 700-850ms apart with no click). ACTION_UP below
-        // stays synchronous, so the gesture is fully delivered on return.
-        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, false);
-        down.recycle();
-        assertTrue("Android touchscreen ACTION_DOWN must be injected", downInjected);
-        SystemClock.sleep(60);
-        long upTime = SystemClock.uptimeMillis();
-        MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, screen[0], screen[1], 0);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
-        up.recycle();
-        assertTrue("Android touchscreen ACTION_UP must be injected", upInjected);
+        PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);
+        long downTime = tapResult.downTime;
+        long upTime = tapResult.upEventTime;
+        boolean downInjected = tapResult.downInjected;
+        boolean upInjected = tapResult.upInjected;
         lastPhysicalTapEvidence = new JSONObject(point.toString())
                 .put("nativeMapping", nativeMapping.get())
                 .put("screenX", screen[0])

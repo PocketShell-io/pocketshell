@@ -58,6 +58,12 @@ case "$*" in
     ;;
   'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1')
     ;;
+  'settings put secure long_press_timeout 3000')
+    [[ -e "$state/long-press-ignored" ]] || printf '3000\n' > "$state/long-press"
+    ;;
+  'settings get secure long_press_timeout')
+    cat "$state/long-press" 2>/dev/null || printf '400\n'
+    ;;
   'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
     [[ -e "$state/query-fails" ]] && { printf 'error: closed\n'; exit 1; }
     printf 'activities found:\n'
@@ -138,6 +144,7 @@ grep -Fxq "$LAUNCHER" "$RECORD" || fail 'disabled launcher is not recorded next 
 grep -Fq "DISABLED_LAUNCHER_FOR_LANE: $LAUNCHER" "$evidence" || fail 'evidence does not record the disabled launcher'
 grep -Fq 'HOME during lane: com.android.settings FallbackHome only' "$evidence" || fail 'evidence does not record FallbackHome as the only HOME'
 grep -Fxq 'hide_error_dialogs=1' "$evidence" || fail 'evidence does not record hide_error_dialogs=1'
+grep -Fxq 'long_press_timeout=3000' "$evidence" || fail 'evidence does not record long_press_timeout=3000'
 grep -Fq 'mCurrentFocus=Window{74237e0' "$evidence" || fail 'evidence does not record the focus owner'
 first_disable="$(grep -n "pm disable-user --user 0 $LAUNCHER" "$FAKE_ADB_STATE/commands" | head -1 | cut -d: -f1)"
 [[ -n "$first_disable" ]] || fail 'launcher was never disabled'
@@ -279,6 +286,17 @@ grep -Fq 'could not disable system error dialogs' "$SANDBOX/ignored.out" \
   || fail 'ignored setting failure lacks its precise message'
 pass 'unset hide_error_dialogs fails closed'
 
+# 9b. A device that keeps the stock long-press timeout fails (#2884, #2946).
+reset_state longpress
+touch "$FAKE_ADB_STATE/long-press-ignored"
+if preflight "$SANDBOX/longpress/input-preflight.txt" > "$SANDBOX/longpress.out" 2>&1; then
+  fail 'preflight passed although injected taps could still turn into long presses'
+fi
+pocketshell_android_restore_launchers 2> /dev/null
+grep -Fq 'could not raise the long-press timeout' "$SANDBOX/longpress.out" \
+  || fail 'ignored long-press timeout lacks its precise message'
+pass 'stock long-press timeout fails closed'
+
 # 10. PocketShell's own ANR dialog is a product failure: fail loudly, never
 #     force-stop it into a green lane.
 reset_state own
@@ -320,5 +338,5 @@ grep -Fq 'pocketshell_android_restore_launchers' "$ROOT_DIR/scripts/lib/avd-lock
   || fail 'pocketshell_release_all does not restore launchers'
 pass 'pocketshell_release_all restores disabled launchers'
 
-(( CASES == 13 )) || fail "ran $CASES/13 cases"
-printf 'PASS: Android input preflight contract (%s/13 cases)\n' "$CASES"
+(( CASES == 14 )) || fail "ran $CASES/14 cases"
+printf 'PASS: Android input preflight contract (%s/14 cases)\n' "$CASES"

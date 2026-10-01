@@ -859,3 +859,14 @@ button { color: inherit; }
     background-color: var(--term-bg);
   }
 }
+
+/* Mobile controls are tapped, never read as text (#2884, #2946): a long press
+   on a dock key, the Prompt launcher or a Composer button must not select its
+   label, open the callout, or hand the selection to Select-to-Speak. */
+.mobile-hotkeys button,
+.composer-panel button,
+.terminal-dictation-button {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}

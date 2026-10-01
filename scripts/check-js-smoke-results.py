@@ -37,6 +37,7 @@ REQUIRED_METHODS = frozenset(
         "safeAreaBottomInsetBridgeCarriesANonZeroInset",
         "composerInputStaysAboveImeWithinSafeArea",
         "pageReloadsKeepFirstNativeCallAnswered",
+        "injectedTapStaysATapWhenItsUpArrivesLate",
     }
 )
 SELF_TEST_CASES = 8

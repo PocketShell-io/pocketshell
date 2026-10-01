@@ -3627,13 +3627,7 @@ public final class JsFastKeysDockerJourneyTest {
         JSONObject point = awaitStableTapTarget(selector);
         assertTrue("fast-key target must be visible inside the Android viewport: " + point, point.getBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
-        long downTime = SystemClock.uptimeMillis();
-        // Queue ACTION_DOWN without waiting for dispatch: a synchronous down on
-        // a starved emulator has taken 12s to return, turning the tap into a
-        // long press with no click. ACTION_UP stays synchronous.
-        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime, false);
-        SystemClock.sleep(60);
-        injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
+        PhysicalTap.tap(screen[0], screen[1]);
         SystemClock.sleep(100);
     }
 
@@ -3645,13 +3639,7 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("disabled Prompt launcher must remain visible for the physical-tap check: " + point,
                 !point.optBoolean("missing") && point.optBoolean("disabled") && point.optBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
-        long downTime = SystemClock.uptimeMillis();
-        // Queue ACTION_DOWN without waiting for dispatch: a synchronous down on
-        // a starved emulator has taken 12s to return, turning the tap into a
-        // long press with no click. ACTION_UP stays synchronous.
-        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime, false);
-        SystemClock.sleep(60);
-        injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
+        PhysicalTap.tap(screen[0], screen[1]);
         SystemClock.sleep(100);
     }
 

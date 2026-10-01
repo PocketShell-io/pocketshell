@@ -290,6 +290,29 @@ pocketshell_android_recover_stale_launchers_on_devices() {
   return "$status"
 }
 
+# Injected taps (#2884, #2946): Android and the WebView start the long-press
+# timer in real time when ACTION_DOWN is dispatched. On a starved hosted
+# emulator the ACTION_UP can reach the app most of a second later, which at the
+# stock 400 ms timeout turns a tap into a long press: no click, a text
+# selection, and Select-to-Speak taking window focus. Stamping the up with an
+# early event time does not help (the timer is not event-time based), so every
+# lane raises the system long-press timeout; journeys that hold a key do so far
+# below it. Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_raise_long_press_timeout() {
+  local adb="$1" serial="$2" evidence="$3" value
+  local wanted="${POCKETSHELL_LANE_LONG_PRESS_TIMEOUT_MS:-3000}"
+  mkdir -p "$(dirname -- "$evidence")"
+  {
+    "$adb" -s "$serial" shell settings put secure long_press_timeout "$wanted"
+    value="$("$adb" -s "$serial" shell settings get secure long_press_timeout | tr -d '\r')"
+    printf 'long_press_timeout=%s\n' "$value"
+  } >> "$evidence" 2>&1
+  if [[ "$value" != "$wanted" ]]; then
+    printf 'FAIL: could not raise the long-press timeout on %s (long_press_timeout=%s)\n' "$serial" "$value" | tee -a "$evidence" >&2
+    return 1
+  fi
+}
+
 # Usage: pocketshell_android_input_preflight ADB SERIAL EVIDENCE_FILE
 pocketshell_android_input_preflight() {
   local adb="$1" serial="$2" evidence="$3"
@@ -314,6 +337,7 @@ pocketshell_android_input_preflight() {
     printf 'FAIL: could not disable system error dialogs on %s (hide_error_dialogs=%s)\n' "$serial" "$value" | tee -a "$evidence" >&2
     return 1
   fi
+  pocketshell_android_raise_long_press_timeout "$adb" "$serial" "$evidence" || return 1
 
   deadline=$((SECONDS + ${POCKETSHELL_INPUT_PREFLIGHT_DISMISS_SECONDS:-30}))
   while :; do
@@ -348,7 +372,7 @@ pocketshell_android_input_preflight() {
     printf 'system error dialogs: none\n'
     "$adb" -s "$serial" shell dumpsys window displays | tr -d '\r' | grep -E 'mCurrentFocus=|mFocusedApp=' || true
   } >> "$evidence" 2>&1
-  printf 'PASS: Android input preflight on %s (no system error dialog; hide_error_dialogs=1)\n' "$serial"
+  printf 'PASS: Android input preflight on %s (no system error dialog; hide_error_dialogs=1; long_press_timeout=%s)\n' "$serial" "${POCKETSHELL_LANE_LONG_PRESS_TIMEOUT_MS:-3000}"
 }
 
 # Usage: pocketshell_android_capture_input_diagnostics ADB SERIAL OUTPUT_DIR

@@ -164,6 +164,8 @@ case "${1:-}" in
       'settings put global hide_error_dialogs 1')
         printf '1\n' > "$state/$serial.hide-error-dialogs" ;;
       'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1') ;;
+      'settings put secure long_press_timeout 3000') ;;
+      'settings get secure long_press_timeout') printf '3000\n' ;;
       'settings get global hide_error_dialogs')
         if [[ -f "$state/$serial.hide-error-dialogs" ]]; then
           cat "$state/$serial.hide-error-dialogs"

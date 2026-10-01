@@ -515,16 +515,7 @@ public final class JsSettingsSupportJourneyTest {
             screen.set(new float[] {x, y});
         });
         float[] xy = screen.get();
-        long downTime = SystemClock.uptimeMillis();
-        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, xy[0], xy[1], 0);
-        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(down, true);
-        down.recycle();
-        SystemClock.sleep(60);
-        MotionEvent up = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, xy[0], xy[1], 0);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(up, true);
-        up.recycle();
+        PhysicalTap.tap(xy[0], xy[1]);
     }
 
     /**
