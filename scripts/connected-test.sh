@@ -17,7 +17,7 @@ Usage:
   scripts/connected-test.sh --help
 
 JS-first packaged Android lanes:
-  smoke             Exact packaged-shell smoke suite (8 JUnit methods)
+  smoke             Exact packaged-shell smoke suite (9 JUnit methods)
   lifecycle         SSH session switching and background-grace journey plus
                     independent Docker host/screenshot evidence
   composer-docker   Packaged composer journey plus Docker PTY byte oracles

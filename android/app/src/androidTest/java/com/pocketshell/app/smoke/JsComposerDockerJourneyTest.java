@@ -32,6 +32,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -74,6 +75,10 @@ public final class JsComposerDockerJourneyTest {
             this.evidence = evidence;
         }
     }
+
+    /** #2946: per-test dismiss-and-probe before the test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
 
     private ActivityScenario<MainActivity> scenario;
     private File stagedKeyDocument;
@@ -378,6 +383,7 @@ public final class JsComposerDockerJourneyTest {
         hideImeUntilStableWithoutEditableFocus();
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
         int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
+        beforeFirstInjectedInput("before the nested Settings Back key");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
                 + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
@@ -2056,11 +2062,16 @@ public final class JsComposerDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
+    private void beforeFirstInjectedInput(String context) throws Exception {
+        inputGuard.beforeFirstInjectedInput(context, this::evalRaw, action -> scenario.onActivity(action::accept));
+    }
+
     private long tapDomCenter(String selector) throws Exception {
         return tapDomCenter(selector, null);
     }
 
     private long tapDomCenter(String selector, JSONObject expectedStableLayout) throws Exception {
+        beforeFirstInjectedInput("before the first physical tap on " + selector);
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
                 + "const height=window.visualViewport?.height ?? innerHeight;"

@@ -59,6 +59,8 @@ cd "$ROOT_DIR"
 
 source "$ROOT_DIR/scripts/lib/avd-clone.sh"
 source "$ROOT_DIR/scripts/lib/scope-run.sh"
+source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 ANDROID_SDK="${ANDROID_SDK:-/home/alexey/Android/Sdk}"
 ADB="${ADB:-$ANDROID_SDK/platform-tools/adb}"
@@ -186,6 +188,8 @@ boot_one() {
 
   if serial_online "$serial" && boot_completed_for "$serial"; then
     printf 'Pool emulator %s already booted (%s).\n' "$clone_name" "$serial" >&2
+    # Issue #2946: re-enable a launcher a killed lane left disabled.
+    pocketshell_android_recover_stale_launchers_if_idle "$ADB" "$serial" || true
     return 0
   fi
 
@@ -204,6 +208,7 @@ boot_one() {
   while (( SECONDS < deadline )); do
     if boot_completed_for "$serial"; then
       printf 'Booted: %s (%s)\n' "$clone_name" "$serial" >&2
+      pocketshell_android_recover_stale_launchers_if_idle "$ADB" "$serial" || true
       return 0
     fi
     # If the emulator process died and the device never came online, fail fast.

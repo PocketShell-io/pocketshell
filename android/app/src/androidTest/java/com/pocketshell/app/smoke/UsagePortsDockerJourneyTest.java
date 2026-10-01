@@ -176,6 +176,10 @@ public final class UsagePortsDockerJourneyTest {
         String serverStartedMarker = marker(runId, "HTTP_STARTED");
         String serverStoppedMarker = marker(runId, "HTTP_STOPPED");
         fixtureHttpServerMayBeRunning = true;
+        // #2946: hosted runs garbled this command when it was typed with
+        // Instrumentation.sendStringSync (per-character key injection through
+        // the IME reordered and repeated bytes, e.g. "pytthn3 ..."), so it goes
+        // through the packaged composer like the stop command below.
         sendComposerCommandAndAwaitMarker(
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
                         + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
