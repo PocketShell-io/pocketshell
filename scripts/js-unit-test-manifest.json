@@ -148,6 +148,7 @@
         "repairs missing JS settings and trust pins from a completed import without rereading native data",
         "preserves newer JS settings and skips the startup reload when no setting was written",
         "requests only one reload in the current startup session after writing imported settings",
+        "never publishes a settled status on a page that must reload to apply imported settings",
         "refuses malformed sync state without staging or marking partial data complete",
         "imports unrelated data as partial and visibly retains an unavailable encrypted store",
         "shows an unmappable legacy terminal size on first import and completed-record startup",
