@@ -101,6 +101,7 @@ jobs:
         run: |
           tests/scripts/connected-test-js-runner-test.sh
           tests/scripts/android-input-preflight-test.sh
+          tests/scripts/start-local-avd-launcher-recovery-test.sh
           tests/scripts/connected-test-root-guard-test.sh
           tests/scripts/connected-test-serial-ownership-test.sh
           tests/scripts/avd-lock-test.sh
