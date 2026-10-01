@@ -89,6 +89,9 @@ jobs:
           scripts/check-js-key-vault-results.py --self-test
           scripts/check-js-signed-upgrade-results.py --self-test
 
+      - name: Check fail-closed packaged durable-storage result guard
+        run: scripts/check-js-durable-storage-results.py --self-test
+
       - name: Check JS Android journey dispatch guard
         run: |
           scripts/check-test-validity.sh --j1-only --self-test
@@ -267,6 +270,8 @@ jobs:
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
             --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Durable storage" scripts/check-js-durable-storage-results.py \
+            --run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \
             --artifacts-dir "android/app/build/outputs/js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
@@ -333,6 +338,7 @@ jobs:
             android/app/build/outputs/js-files/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**
+            android/app/build/outputs/js-durable-storage/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture

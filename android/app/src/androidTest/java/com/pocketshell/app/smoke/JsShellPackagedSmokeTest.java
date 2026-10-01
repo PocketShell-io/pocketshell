@@ -481,10 +481,10 @@ public final class JsShellPackagedSmokeTest {
         float expectedSafeTop = Math.round(systemInsets.top / density);
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
 
-        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
-        // The native inset variable exists before the lazily loaded shell
-        // mounts; the probe below reads the shell's own elements (#2936).
-        awaitJsTrue("!!document.querySelector('.app-shell') && !!document.querySelector('.app-bar')");
+        // The shell mounts once durable storage is hydrated (#2993), so wait for
+        // the mounted app bar rather than assume it exists at first evaluation.
+        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0"
+                + " && document.querySelector('.app-shell .app-bar') !== null");
         JSONObject beforeIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"

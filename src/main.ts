@@ -1,17 +1,15 @@
 import { recordShellBoot, selectShell } from './shellSelection';
+import { installAndroidDurableStorage, recordDurableStorageStatus } from './native/durableStorage';
 
 /**
- * The Android entry. The pre-#2936 phone screens (`App.vue`) are the default
- * shell; the shared PocketShell app (core packages/ui) is opt-in until each
- * legacy screen's shared replacement passes the same packaged journey and
- * the maintainer signs the shared app off (#2936 / #2941).
- *
- * Each shell is its own lazily loaded chunk so neither shell's global CSS
- * reaches the other (legacy `styles.css` and the shared app both style
- * `.status-dot`, for one). The mount therefore lands a chunk-load after the
- * document starts: readiness probes wait for the shell's own root element.
+ * The Android entry. Durable storage is hydrated first (#2993), then the
+ * shell is chosen: the pre-#2936 phone screens are the default and the
+ * shared PocketShell app (core packages/ui) is opt-in until parity (#2941).
+ * Each shell is a lazy chunk, so neither's global CSS reaches the other.
  */
 async function boot(): Promise<void> {
+  // Issue #2993: hydrate and make localStorage durable before any store reads it.
+  recordDurableStorageStatus(document.documentElement, await installAndroidDurableStorage());
   const shell = selectShell(window.location.search);
   recordShellBoot(shell, window.sessionStorage);
   if (shell === 'shared') {

@@ -55,6 +55,7 @@ scripts/connected-test.sh lifecycle --suffix i2863 --port 2222 \
 scripts/agents-pool.sh up 2245
 scripts/connected-test.sh composer-docker --suffix i2863 --port 2245 \
   --session-prefix js2863-local
+scripts/connected-test.sh durable-storage --suffix i2863 --run-id js2993-local
 ```
 
 The smoke lane requires exactly the six registered packaged-shell JUnit
@@ -66,13 +67,27 @@ execution, and no execution after an uncertain write against the Docker host.
 It also captures the keyboard-up screenshot and computed viewport bounds from
 live logcat, verifies their SHA-256 values, and saves them under `/tmp` so
 Gradle's suffixed-app cleanup does not remove them.
+The durable-storage lane (issue #2993) needs no Docker fixture. It runs
+`DurableStorageRestartJourneyTest` three times with a force-stop between each
+run. `seed` creates two command chips, a theme and raw localStorage keys, then
+waits for them to settle. `mutate` changes the theme, deletes a chip, updates
+and removes the raw keys, logs an acknowledgement and SIGKILLs its own process
+`--kill-delay-ms` (default 0) later. `verify` requires every mutation after
+restart. Because `mutate` ends in its own kill, it has no JUnit pass; the
+runner accepts it only when it ends with `Process crashed` after the logged
+ACK and KILL lines. `check-js-durable-storage-results.py --run-dir` then
+requires passing `seed` and `verify` reports and an ACK-to-KILL gap under one
+second. Without the native store behind localStorage, the deleted chip comes
+back after the restart. The lane builds its own suffix into the shared
+`app-debug.apk` output, so CI runs it before the composer and key-vault builds,
+never between key-vault and the signed upgrade.
 Each connected phase owns the Android output tree and selected emulator,
 removes stale JUnit XML before instrumentation, and checks the report from that
 run. Provide a new suffix for each worktree so parallel APK installs have
 distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
-rewrite tree it verifies the seven packaged contracts: smoke selects the exact
+rewrite tree it verifies the eight packaged contracts: smoke selects the exact
 seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
@@ -81,6 +96,8 @@ Files selects
 `J10FilesBrowseEditJourneyTest#browseEditConflictAndTransferFilesWithinTheConfiguredRoot`;
 and composer selects
 `JsComposerDockerJourneyTest#composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop`.
+The durable-storage lane selects
+`DurableStorageRestartJourneyTest#userDataWritesSurviveForceStopShortlyAfterAcknowledgement`.
 The key vault lane selects
 `SshKeyVaultDockerJourneyTest#importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState`.
 It imports an encrypted document URI, generates a second key, and authenticates

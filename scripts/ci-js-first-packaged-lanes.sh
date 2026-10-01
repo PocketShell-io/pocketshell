@@ -62,6 +62,18 @@ else
   files_status=$?
 fi
 
+# Issue #2993: user-data writes must survive a kill right after the UI
+# acknowledged them. It builds its own i2993ci suffix into the shared
+# app-debug.apk output, so it runs before the composer and key-vault builds and
+# never inside the key-vault -> signed-upgrade window.
+if scripts/connected-js-durable-storage.sh \
+  --suffix i2993ci \
+  --run-id "js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  durable_status=0
+else
+  durable_status=$?
+fi
+
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
@@ -106,9 +118,9 @@ else
   signed_upgrade_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s durable-storage=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$durable_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || composer_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || durable_status != 0 || composer_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi
