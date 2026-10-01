@@ -127,7 +127,8 @@ pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$DIAGNOSTICS_DIR/i
   || fail "Android input preflight failed on $ANDROID_SERIAL; see $DIAGNOSTICS_DIR/input-preflight.txt"
 
 printf 'Running packaged JS smoke suite on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
-if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
+if pocketshell_run_without_avd_lock_fd \
+    "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.JsShellPackagedSmokeTest \
     --stacktrace --console=plain; then
