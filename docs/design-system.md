@@ -33,14 +33,12 @@ core submodule.
 | Android: token guard | [`tests/unit/designTokens.test.ts`](../tests/unit/designTokens.test.ts) |
 | Visual brief | [`design-language.md`](design-language.md), [`ux-rules.md`](ux-rules.md), [`decisions.md`](decisions.md) |
 
-**How the alias resolves.** Android imports the package as `@pocketshell/ui`.
-The alias is set in `vite.config.ts`, `vitest.config.ts` and `tsconfig.json`.
-It still points at the pre-move copy in `vendor/pocketshell-desktop/packages/ui/src/`.
-The core issue that moved the package into core states that Android should map
-the alias to core's `packages/ui/src` instead. At the current pins the two
-copies are identical except `AppIcon.vue`, where core's is newer. Until the
-alias moves, a token or component change must land in core. It reaches Android
-only once the alias points at core, or the desktop pin is bumped.
+**How the alias resolves.** Android imports the package as `@ui`, the same
+alias pocketshell-desktop and pocketshell-web use. The alias is set in
+`vite.config.ts`, `vitest.config.ts` and `tsconfig.json`, and points at
+`vendor/pocketshell-core/packages/ui/src/` inside the core pin (#2935). A token
+or component change lands in core first and reaches Android through a reviewed
+core gitlink bump.
 
 When this document and the code disagree, the code in `packages/ui` wins. Fix
 this document.

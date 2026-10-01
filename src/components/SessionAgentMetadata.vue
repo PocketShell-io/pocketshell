@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import type { SessionRow } from '@pocketshell/core';
 import { projectSessionAgentPresentation } from '@/session/agentMetadata';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 
 const props = defineProps<{
   session: SessionRow;

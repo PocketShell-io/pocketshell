@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { hostSnippets, type ManagedHostItem } from '../stores/hostSnippets';
 
 const props = defineProps<{ hostId: string; hostLabel: string }>();

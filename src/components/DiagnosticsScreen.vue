@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import { makeDiagnosticExport, useDiagnosticsStore, type DiagnosticEvent } from '../diagnostics';
 import { useNavigationStore } from '../stores/navigation';
 

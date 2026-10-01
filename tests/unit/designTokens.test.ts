@@ -26,9 +26,15 @@ function sharedUiSourceDir(): string {
   const tsconfig = JSON.parse(readFileSync(path.join(repoRoot, 'tsconfig.json'), 'utf8')) as {
     compilerOptions: { paths: Record<string, string[]> };
   };
-  const [pattern] = tsconfig.compilerOptions.paths['@pocketshell/ui/*'] ?? [];
-  if (!pattern?.endsWith('/*')) throw new Error('tsconfig.json has no @pocketshell/ui/* path');
-  return path.join(repoRoot, pattern.slice(0, -2));
+  // The shared UI package rides inside the core pin (issue #2935); `@ui` is
+  // the same alias pocketshell-desktop and pocketshell-web use.
+  const [pattern] = tsconfig.compilerOptions.paths['@ui/*'] ?? [];
+  if (!pattern?.endsWith('/*')) throw new Error('tsconfig.json has no @ui/* path');
+  const dir = pattern.slice(0, -2);
+  if (dir !== 'vendor/pocketshell-core/packages/ui/src') {
+    throw new Error(`@ui/* must resolve inside the core pin, got ${dir}`);
+  }
+  return path.join(repoRoot, dir);
 }
 
 /** CSS named colours (CSS Color 4), excluding keywords such as transparent/currentColor. */
@@ -103,7 +109,7 @@ describe('phone design tokens', () => {
   const files = phoneStyleSources();
   const sharedTokens = declaredTokens(readFileSync(path.join(sharedUiSourceDir(), 'tokens.css'), 'utf8'));
 
-  it('reads the shared token source the @pocketshell/ui alias points at', () => {
+  it('reads the shared token source the @ui alias points at', () => {
     expect(sharedTokens.size).toBeGreaterThan(50);
     for (const token of ['--bg', '--fg', '--accent', '--font-ui', '--font-mono', '--sp-4', '--r-md']) {
       expect(sharedTokens, `shared tokens.css lacks ${token}`).toContain(token);

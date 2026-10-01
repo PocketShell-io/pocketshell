@@ -7,7 +7,7 @@ import {
   type UsageRow,
   type UsageWindow,
 } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 
 const props = defineProps<{
   connected: boolean;
