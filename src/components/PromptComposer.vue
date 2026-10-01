@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
-import { ComposerControls } from '@pocketshell/ui';
+import ComposerControls from '@ui/components/ComposerControls.vue';
 import type { ComposerDeliveryIntent, ComposerDeliveryResult } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
 import { createDictationStartCancellation } from '../session/dictationStartCancellation';

@@ -1,6 +1,7 @@
 package com.pocketshell.app.smoke;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -82,20 +83,20 @@ public final class JsShellPackagedSmokeTest {
     public void launchShowsVerifiedSourcesAndAssetIdentity() throws Exception {
         JSONObject manifest = packagedManifest();
         String expectedCoreRevision = manifest.getString("coreSourceRevision");
-        String expectedUiRevision = manifest.getString("uiSourceRevision");
+        assertFalse("the shared UI rides inside the core pin; no separate UI revision is recorded",
+                manifest.has("uiSourceRevision"));
         String expectedAssetHash = manifest.getString("bundleAssetHash");
 
         assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
-        assertTrue("manifest shared UI revision must be a full git revision", expectedUiRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
         assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
-        assertTrue("the visible build strip must identify the pinned shared UI", visibleIdentity.contains(expectedUiRevision.substring(0, 12)));
+        assertFalse("the visible build strip must not name a separate UI source", visibleIdentity.contains(" ui "));
         assertTrue("the visible build strip must identify the packaged assets", visibleIdentity.contains(expectedAssetHash.substring(0, 12)));
         assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
-        assertEquals(expectedUiRevision, evalString("document.querySelector('[data-testid=ui-revision]')?.textContent.trim()"));
+        assertEquals("false", evalRaw("document.querySelector('[data-testid=ui-revision]') !== null"));
         assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=bundle-asset-hash]')?.textContent.trim()"));
         JSONObject statusBounds = evalJson("(() => {const node = document.querySelector('[data-testid=build-status]');"
                 + "const rect = node.getBoundingClientRect();"
@@ -598,7 +599,7 @@ public final class JsShellPackagedSmokeTest {
             int count;
             while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
             JSONObject manifest = new JSONObject(output.toString(StandardCharsets.UTF_8.name()));
-            assertEquals(1, manifest.getInt("schema"));
+            assertEquals(2, manifest.getInt("schema"));
             return manifest;
         }
     }
