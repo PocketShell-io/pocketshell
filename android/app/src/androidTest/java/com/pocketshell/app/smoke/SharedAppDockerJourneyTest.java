@@ -81,6 +81,16 @@ public class SharedAppDockerJourneyTest {
 
     /** Both tests run in one instrumentation process; the first adds the run's host. */
     private static boolean fixtureHostAdded;
+    /**
+     * The visible terminal's LOGICAL lines: a row as wide as the widest row is
+     * a soft wrap and joins the next. The pane's width is layout's business
+     * (the phone layout gives the terminal ~35 columns at the default font),
+     * and a run-tagged line longer than that must still match as one line.
+     */
+    private static final String VISIBLE_LINES = "((rows)=>{const w=Math.max(0,...rows.map((r)=>r.length));"
+            + "const out=[];let cur=null;for(const r of rows){cur=(cur===null?'':cur)+r;"
+            + "if(r.length<w){out.push(cur);cur=null;}}if(cur!==null)out.push(cur);return out;})("
+            + VISIBLE_TERMINAL + ".split('\\n'))";
     private ActivityScenario<MainActivity> scenario;
     private ScriptedIme ime;
 
@@ -134,7 +144,7 @@ public class SharedAppDockerJourneyTest {
         // late line is also the sync point that the re-join has completed.
         openFolder(folderA);
         // The background job prints after the prompt, so it shares the "$ " row.
-        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim().endsWith("
+        awaitJsTrue(VISIBLE_LINES + ".some((l)=>l.trim().endsWith("
                 + JSONObject.quote("PS2936_LATE_42_" + run) + "))");
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         // Typing right after the re-attach's terminal reset: #2936 captured
@@ -426,7 +436,7 @@ public class SharedAppDockerJourneyTest {
     }
 
     private void awaitTerminalLine(String line) throws Exception {
-        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim()===" + JSONObject.quote(line) + ")");
+        awaitJsTrue(VISIBLE_LINES + ".some((l)=>l.trim()===" + JSONObject.quote(line) + ")");
     }
 
     private void setValue(String selector, String value) throws Exception {
