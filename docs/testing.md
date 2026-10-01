@@ -72,7 +72,7 @@ run. Provide a new suffix for each worktree so parallel APK installs have
 distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
-rewrite tree it verifies the five packaged contracts: smoke selects the exact
+rewrite tree it verifies the seven packaged contracts: smoke selects the exact
 seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
@@ -81,9 +81,37 @@ Files selects
 `J10FilesBrowseEditJourneyTest#browseEditConflictAndTransferFilesWithinTheConfiguredRoot`;
 and composer selects
 `JsComposerDockerJourneyTest#composerWritesUtf8AndMultilineInsertAndRetainsAfterDrop`.
-The opt-in `InstalledDataMigrationJourneyTest` remains attached to #2860 because
-it requires a signed prior install that the regular package lanes do not
-prepare. The guard checks that justification and rejects any other undispatched
+The key vault lane selects
+`SshKeyVaultDockerJourneyTest#importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState`.
+It imports an encrypted document URI, generates a second key, and authenticates
+both against Docker. It checks accepted public-key fingerprints and sessions
+independently, exercises referenced-key deletion confirmation, and inspects
+the actual Diagnostics export. It saves timings and the actual key list,
+host form, and resource status screenshots under
+`android/app/build/outputs/js-key-vault/<run-id>/device-screenshots` for
+maintainer visual sign-off. Run it with
+`scripts/agents-pool.sh up 2244`, then run
+`scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 --container pocketshell-test-agents-2244 --run-id js2926-local`.
+The signed-upgrade lane runs `InstalledDataMigrationJourneyTest` last in the
+blocking packaged CI run (`scripts/ci-js-first-packaged-lanes.sh`), after the
+suffixed lanes, because it owns the unsuffixed `com.pocketshell.app` install.
+Its fixture is the published v0.5.6 debug APK, downloaded and pinned by
+SHA-256; it is signed with the same committed debug keystore as the candidate.
+Run it locally with
+`scripts/connected-js-key-vault-signed-upgrade.sh --port 2244 --container pocketshell-test-agents-2244 --run-id upgrade2926-local`
+on an API 35 emulator without an existing `com.pocketshell.app` install.
+`LEGACY_APK` only moves the download cache; the pinned hash still applies.
+The runner checks matching certificates, installs 0.5.6 with synthetic private
+data, then updates it in place. Three exact-method cycles verify migrated-key
+Docker authentication, malformed encrypted preferences, and a malformed
+private key. Source hashes must remain unchanged in all three cycles. Evidence
+lives under `android/app/build/outputs/js-key-vault-upgrade/<run-id>`; existing
+run directories are never overwritten. `scripts/check-js-signed-upgrade-results.py`
+checks the whole run: 3/3 exact tests with no skips, unchanged sources,
+migrated-key authentication, and APK provenance. The workflow runs that check
+again after the emulator step. Missing fixture arguments fail the test instead
+of skipping it. The J1 guard rejects removing the invocation, dropping a cycle,
+or restoring an opt-in exclusion marker. It also rejects any other undispatched
 `*SmokeTest`, `*JourneyTest`, `*DockerTest`, or `*E2eTest` source.
 
 Run its synthetic contract checks with

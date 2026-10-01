@@ -54,6 +54,15 @@ export interface NativeInstalledDataMigrationPlugin {
   }): Promise<NativeAssetChunk>;
 }
 
+export interface NativeSshKeyMigrationPlugin {
+  importLegacyKeys(options: {
+    keys: Array<{ legacyKeyId: number; sha256: string; label: string; passphraseRequired: boolean }>;
+  }): Promise<{
+    keys: Array<{ legacyKeyId: number; key: unknown }>;
+    failures: Array<{ legacyKeyId: number; message: string }>;
+  }>;
+}
+
 export const installedDataMigrationNative = registerPlugin<NativeInstalledDataMigrationPlugin>(
   'InstalledDataMigration',
 );

@@ -201,7 +201,7 @@ make_dispatch_fixture() {
   cp "$WRAPPER" "$path/scripts/connected-test.sh"
   init_repo "$path"
   local lane
-  for lane in smoke lifecycle composer-docker; do
+  for lane in smoke lifecycle composer-docker key-vault-docker; do
     cat > "$path/scripts/connected-js-$lane.sh" <<'LANE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -256,6 +256,7 @@ no_lane_and_unknown_lane_fail_closed() {
   run_dispatch "$SANDBOX/script-root" '' --help
   (( RUN_RC == 0 )) || fail "top-level help exited $RUN_RC"
   grep -q 'composer-docker' "$RUN_OUT" || fail 'top-level help omitted the composer Docker lane'
+  grep -q 'key-vault-docker' "$RUN_OUT" || fail 'top-level help omitted the key-vault Docker lane'
   assert_no_dispatch
   run_dispatch "$SANDBOX/script-root" ''
   (( RUN_RC == 2 )) || fail "missing lane exited $RUN_RC, expected 2"
@@ -317,6 +318,20 @@ composer_dispatch_preserves_pool_port_and_session_prefix() {
     || fail 'composer lane lost its suffix, Docker pool port, or session prefix'
 }
 
+key_vault_dispatch_preserves_fixture_identity() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' key-vault-docker --suffix i2926 \
+    --port 2244 --container pocketshell-test-agents-2244 --run-id js2926-local
+  (( RUN_RC == 0 )) || fail "key-vault lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-key-vault-docker.sh"
+    --suffix i2926 --port 2244 --container pocketshell-test-agents-2244
+    --run-id js2926-local
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'key-vault lane lost its suffix, Docker port/container, or run ID'
+}
+
 foreign_checkout_is_refused_before_lane_dispatch() {
   make_dispatch_fixture
   init_repo "$SANDBOX/foreign"
@@ -351,7 +366,8 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   local host_check_line recheck_line
   [[ -x "$ROOT_DIR/android/gradlew" ]] || fail 'JS Android Gradle wrapper is missing'
   [[ -x "$source" && -x "$ROOT_DIR/scripts/connected-js-lifecycle.sh" \
-     && -x "$ROOT_DIR/scripts/connected-js-composer-docker.sh" ]] \
+     && -x "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
+     && -x "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" ]] \
     || fail 'one or more dispatched JS lane runners are missing'
 
   grep -Fq '"$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest' "$source" \
@@ -375,6 +391,15 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'composer runner does not validate its exact same-run JUnit report'
   grep -Fq 'PASS: host PTY output contained' "$ROOT_DIR/scripts/connected-js-composer-docker.sh" \
     || fail 'composer runner lost its independent remote PTY output oracle'
+  grep -Fq 'check-js-key-vault-results.py" --results-dir "$RESULTS_DIR"' \
+    "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner does not validate its exact same-run JUnit report'
+  grep -Fq 'Accepted publickey for testuser' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its Docker accepted-fingerprint oracle'
+  grep -Fq 'independent_session_list_for_both_credentials=PASS' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its independent host session-list oracle for imported and generated keys'
+  grep -Fq 'secret-nonleak-oracle.txt' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
+    || fail 'key-vault runner lost its secret non-leak evidence'
   grep -Fq 'Exact packaged-shell smoke suite (7 JUnit methods)' "$WRAPPER" \
     || fail 'connected-test help does not describe the seven-method packaged smoke contract'
   grep -Fq 'scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");' "$smoke_test_source" \
@@ -394,6 +419,7 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   "$ROOT_DIR/scripts/test-js-lifecycle-cleanup.sh"
   "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --self-test
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --self-test
+  "$ROOT_DIR/scripts/check-js-key-vault-results.py" --self-test
 }
 
 same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
@@ -450,13 +476,14 @@ CASES=(
   smoke_dispatch_keeps_explicit_package_identity
   lifecycle_dispatch_preserves_fixture_identity
   composer_dispatch_preserves_pool_port_and_session_prefix
+  key_vault_dispatch_preserves_fixture_identity
   foreign_checkout_is_refused_before_lane_dispatch
   old_gradle_selectors_are_not_forwarded
   real_js_lanes_keep_exact_same_run_guards_and_host_oracles
   same_emulator_is_serialized_across_worktrees_and_reports_are_run_local
   failure_artifacts_are_preserved_after_gradle_failure
 )
-EXPECTED_FULL_CASES=10
+EXPECTED_FULL_CASES=11
 (( ${#CASES[@]} == EXPECTED_FULL_CASES )) \
   || fail "expected $EXPECTED_FULL_CASES cases; found ${#CASES[@]}"
 

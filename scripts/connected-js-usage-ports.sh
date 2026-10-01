@@ -215,7 +215,8 @@ release_usage_ports_locks() {
 }
 trap release_usage_ports_locks EXIT
 
-ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
@@ -235,7 +236,7 @@ if pocketshell_run_connected_js_usage_ports_gradle \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain; then
   :
