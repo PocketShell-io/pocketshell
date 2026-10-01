@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!--
+          #2952: a real input method, installed only with the androidTest APK.
+          Journeys select it with `ime set` and script it over a broadcast, so
+          keystrokes reach the packaged WebView through the framework's
+          InputConnection exactly as Gboard's do (composing text, commits,
+          composing-region rewrites, surrounding-text deletes), not as
+          synthesized key events or a paste.
+        -->
+        <service
+            android:name="com.pocketshell.app.ime.ScriptedTestIme"
+            android:exported="true"
+            android:label="PocketShell scripted test IME"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/scripted_test_ime" />
+        </service>
+    </application>
+</manifest>

@@ -9,14 +9,42 @@ import android.webkit.WebView;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.CapConfig;
+import com.getcapacitor.WebViewListener;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "MainActivity";
     private static final int MAX_RESUME_LAYOUT_ATTEMPTS = 30;
     private static final int WINDOW_HEIGHT_TOLERANCE_PX = 120;
     private static final long RESUME_LAYOUT_RETRY_DELAY_MS = 50L;
+    /**
+     * Launch extra opting into the shared PocketShell app (#2936). The
+     * pre-#2936 phone screens stay the default until the shared app reaches
+     * parity (#2941) and the maintainer signs it off; then the default flips
+     * and this extra is deleted with the last legacy screen. Read in
+     * {@link #load()}, before the WebView loads anything, so a launch boots
+     * exactly one shell (no load-then-reload).
+     */
+    public static final String EXTRA_SHELL = "pocketshell.shell";
+    public static final String SHELL_SHARED = "shared";
+    /** The start path the web entry reads (src/shellSelection.ts). */
+    static final String SHARED_SHELL_START_PATH = "/?shell=shared";
 
     private Runnable resumeWebViewLayoutRefresh;
+    /** Main-frame page loads of this activity's WebView; one per launch (#2936). */
+    private final AtomicInteger pageStarts = new AtomicInteger();
+
+    /** How many pages this activity's WebView has started loading. A launch loads exactly one. */
+    public int pageStartCount() {
+        return pageStarts.get();
+    }
     private int resumeWebViewLayoutAttempts;
 
     @Override
@@ -31,6 +59,64 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(SpeechRecognitionPlugin.class);
         registerPlugin(BridgeReadyPlugin.class);
         super.onCreate(savedInstanceState);
+    }
+
+    /**
+     * Pick the shell before the bridge is built: Capacitor's first and only
+     * page load is {@code appUrl + server.appStartPath}, so the shared app's
+     * opt-in becomes that start path rather than a reload of a page that has
+     * already booted the default shell.
+     */
+    @Override
+    protected void load() {
+        bridgeBuilder.addWebViewListener(new WebViewListener() {
+            @Override
+            public void onPageStarted(WebView webView) {
+                pageStarts.incrementAndGet();
+            }
+        });
+        if (SHELL_SHARED.equals(getIntent().getStringExtra(EXTRA_SHELL))) {
+            config = sharedShellConfig();
+        }
+        super.load();
+    }
+
+    private CapConfig sharedShellConfig() {
+        CapConfig defaults = CapConfig.loadDefault(this);
+        try {
+            JSONObject json = new JSONObject(readAsset("capacitor.config.json"));
+            JSONObject server = json.optJSONObject("server");
+            if (server == null) server = new JSONObject();
+            server.put("appStartPath", SHARED_SHELL_START_PATH);
+            json.put("server", server);
+            // The JSON constructor cannot see the APK's debuggable flag; carry
+            // the two values loadDefault derived from it.
+            JSONObject android = json.optJSONObject("android");
+            if (android == null) android = new JSONObject();
+            if (!android.has("webContentsDebuggingEnabled")) {
+                android.put("webContentsDebuggingEnabled", defaults.isWebContentsDebuggingEnabled());
+            }
+            if (!android.has("loggingBehavior")) {
+                android.put("loggingBehavior", defaults.isLoggingEnabled() ? "production" : "none");
+            }
+            json.put("android", android);
+            @SuppressWarnings("deprecation")
+            CapConfig shared = new CapConfig(getAssets(), json);
+            return shared;
+        } catch (IOException | JSONException error) {
+            Log.e(TAG, "Shared shell requested but the Capacitor config could not be read", error);
+            return defaults;
+        }
+    }
+
+    private String readAsset(String name) throws IOException {
+        try (InputStream input = getAssets().open(name)) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            return output.toString(StandardCharsets.UTF_8.name());
+        }
     }
 
     @Override

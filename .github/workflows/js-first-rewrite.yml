@@ -192,6 +192,9 @@ jobs:
       - name: Start isolated Docker agents lanes for Composer and key-vault journeys
         run: scripts/agents-pool.sh up 2244 2245
 
+      - name: Start isolated Docker agents lane for the shared-app journey
+        run: scripts/agents-pool.sh up 2243
+
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -264,6 +267,8 @@ jobs:
             --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check Usage/Ports scripts/check-js-usage-ports-results.py \
             --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Shared app" scripts/check-js-shared-app-results.py \
+            --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
             --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check "Durable storage" scripts/check-js-durable-storage-results.py \
@@ -313,6 +318,10 @@ jobs:
       - name: Stop isolated Composer and key-vault Docker agents lanes
         if: always()
         run: scripts/agents-pool.sh down 2244 2245
+
+      - name: Stop isolated shared-app Docker agents lane
+        if: always()
+        run: scripts/agents-pool.sh down 2243
 
       - name: Upload packaged APK and connected journey evidence
         if: always()

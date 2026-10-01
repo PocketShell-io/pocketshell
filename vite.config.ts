@@ -64,6 +64,18 @@ function bundledAssetManifest(coreRevision: string): Plugin {
   };
 }
 
+/** Libraries the shared app imports from inside the core submodule. */
+export const SHARED_APP_DEDUPE = [
+  'vue', 'pinia', 'vue-router',
+  '@xterm/xterm', '@xterm/addon-fit', '@xterm/addon-web-links', '@xterm/addon-unicode11',
+  '@codemirror/commands', '@codemirror/language', '@codemirror/state', '@codemirror/view',
+  '@codemirror/legacy-modes', '@codemirror/lang-cpp', '@codemirror/lang-css', '@codemirror/lang-go',
+  '@codemirror/lang-html', '@codemirror/lang-java', '@codemirror/lang-javascript', '@codemirror/lang-json',
+  '@codemirror/lang-markdown', '@codemirror/lang-php', '@codemirror/lang-python', '@codemirror/lang-rust',
+  '@codemirror/lang-sql', '@codemirror/lang-vue', '@codemirror/lang-xml', '@codemirror/lang-yaml',
+  '@lezer/highlight', '@lezer/common', '@lezer/lr', 'marked',
+];
+
 export default defineConfig(() => {
   const core = readPinnedCore(repoRoot);
 
@@ -91,6 +103,9 @@ export default defineConfig(() => {
         '@pocketshell/core': core.sourceEntry,
         '@': path.join(repoRoot, 'src'),
       },
+      // The shared app tree lives inside the core submodule; without dedupe
+      // its bare imports could resolve a second vue/pinia/xterm instance (#2936).
+      dedupe: SHARED_APP_DEDUPE,
     },
   };
 });
