@@ -87,6 +87,11 @@ jobs:
       - name: Check fail-closed packaged settings and support result guard
         run: scripts/check-js-settings-results.py --self-test
 
+      - name: Check fail-closed packaged key-vault and signed-upgrade result guards
+        run: |
+          scripts/check-js-key-vault-results.py --self-test
+          scripts/check-js-signed-upgrade-results.py --self-test
+
       - name: Check JS Android journey dispatch guard
         run: |
           scripts/check-test-validity.sh --j1-only --self-test
@@ -152,6 +157,9 @@ jobs:
         env:
           RUNNER_TEMP: ${{ runner.temp }}
 
+      - name: Run native Android unit tests
+        run: scripts/run-android-unit-gate.sh
+
       - name: Validate packaged Android identity and derived version
         run: |
           scripts/check-js-apk-metadata.py --self-test
@@ -170,6 +178,7 @@ jobs:
         run: |
           scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
           scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
+          scripts/connected-js-key-vault-docker.sh --suffix i2926ci --prepare-only
 
       - name: Start version-matched Docker agents fixture
         run: |
@@ -180,8 +189,8 @@ jobs:
           wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
           cat /tmp/js-lifecycle-agents-health.log
 
-      - name: Start isolated Docker agents lane for the composer journey
-        run: scripts/agents-pool.sh up 2245
+      - name: Start isolated Docker agents lanes for Composer and key-vault journeys
+        run: scripts/agents-pool.sh up 2244 2245
 
       - name: Enable KVM
         run: |
@@ -260,6 +269,10 @@ jobs:
             --screenshots-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --reconnect-evidence "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/reconnect-evidence.json" \
             --host-listing "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host-pocketshell-sessions-list.json"
+          run_check Key-vault scripts/check-js-key-vault-results.py \
+            --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \
+            --artifacts-dir "android/app/build/outputs/js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
           composer_root="android/app/build/outputs/js-composer"
           composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
@@ -300,9 +313,9 @@ jobs:
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
           if-no-files-found: error
 
-      - name: Stop isolated composer Docker agents lane
+      - name: Stop isolated Composer and key-vault Docker agents lanes
         if: always()
-        run: scripts/agents-pool.sh down 2245
+        run: scripts/agents-pool.sh down 2244 2245
 
       - name: Upload packaged APK and connected journey evidence
         if: always()
@@ -319,6 +332,8 @@ jobs:
             android/app/build/outputs/js-lifecycle/**
             android/app/build/outputs/js-files/**
             android/app/build/outputs/js-settings/**
+            android/app/build/outputs/js-key-vault/**
+            android/app/build/outputs/js-key-vault-upgrade/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture

@@ -38,7 +38,7 @@ if "scripts/ci-emulator-prune-toolcache.sh" not in disk_cleanup:
 
 def require_contract(source: str, packaged_script: str) -> None:
     required = (
-        ("isolated fixture", "scripts/agents-pool.sh up 2245"),
+        ("isolated fixtures", "scripts/agents-pool.sh up 2244 2245"),
         ("single packaged-lanes wrapper invocation", "script: scripts/ci-js-first-packaged-lanes.sh"),
         ("always-run exact result guard", "- name: Require exact reports for every packaged JS lane"),
         ("smoke result guard", "scripts/check-js-smoke-results.py"),
@@ -46,6 +46,11 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("Files result guard", "scripts/check-js-files-results.py"),
         ("Usage/Ports result guard", "scripts/check-js-usage-ports-results.py"),
         ("Composer result guard", "scripts/check-js-composer-journey-results.py"),
+        ("key-vault result guard", "scripts/check-js-key-vault-results.py"),
+        ("signed-upgrade result guard", "scripts/check-js-signed-upgrade-results.py"),
+        ("signed-upgrade guard self-test", "scripts/check-js-signed-upgrade-results.py --self-test"),
+        ("signed-upgrade evidence upload", "android/app/build/outputs/js-key-vault-upgrade/**"),
+        ("native Android unit gate", "        run: scripts/run-android-unit-gate.sh\n"),
         ("run-scoped artifact output", "android/app/build/outputs/js-composer/"),
         ("usage/ports run-scoped artifacts", "android/app/build/outputs/js-usage-ports/"),
         ("always-run artifact upload", "name: Upload packaged JS composer run evidence"),
@@ -88,7 +93,26 @@ def require_contract(source: str, packaged_script: str) -> None:
        "--run-id \"js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\"" not in packaged_script or \
        "--test-only" not in packaged_script:
         raise AssertionError("Files lane invocation must preserve its packaged fixture arguments and run identity")
-    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status", "settings_status", "copy_status"):
+    # The signed 0.5.6 upgrade (#2926) is part of the blocking packaged run:
+    # it must be executed (not commented/documented), last, on its isolated
+    # fixture, and its status must reach the wrapper's exit.
+    upgrade_call = re.search(
+        r"(?m)^if scripts/connected-js-key-vault-signed-upgrade\.sh \\\n"
+        r"  --port 2244 \\\n"
+        r"  --container pocketshell-test-agents-2244 \\\n"
+        r"  --run-id \"up2926-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}\"; then$",
+        packaged_script,
+    )
+    if upgrade_call is None:
+        raise AssertionError("packaged wrapper does not execute the signed-upgrade migration lane")
+    key_vault = packaged_script.index("if scripts/connected-js-key-vault-docker.sh")
+    settings_call = packaged_script.index("if scripts/connected-js-settings.sh")
+    if not composer < settings_call < key_vault < upgrade_call.start():
+        raise AssertionError("signed-upgrade must run last, after the suffixed key-vault lane")
+    if "signed_upgrade_status != 0" not in packaged_script:
+        raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
+    for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status", "settings_status",
+                 "key_vault_status", "signed_upgrade_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -105,6 +129,8 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("lifecycle", "js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("Files", "js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("Usage/Ports", "js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("key-vault", "js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("signed-upgrade", "js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"),
     )
     for lane, report_path in exact_lane_reports:
         if report_path not in guard:
@@ -122,6 +148,8 @@ def require_contract(source: str, packaged_script: str) -> None:
         "scripts/check-js-files-results.py",
         "scripts/check-js-usage-ports-results.py",
         "scripts/check-js-composer-journey-results.py",
+        "scripts/check-js-key-vault-results.py",
+        "scripts/check-js-signed-upgrade-results.py",
     ):
         if f"run_check " not in guard or checker not in guard:
             raise AssertionError(f"the always-run result guard does not invoke {checker}")
@@ -209,6 +237,26 @@ for label, damaged in (
         "",
         1,
     )),
+    ("signed-upgrade invocation", packaged_lanes.replace(
+        "if scripts/connected-js-key-vault-signed-upgrade.sh \\\n",
+        "if true \\\n",
+        1,
+    )),
+    ("signed-upgrade exit aggregation", packaged_lanes.replace(
+        " || signed_upgrade_status != 0",
+        "",
+        1,
+    )),
+    ("signed-upgrade always-run report check", workflow.replace(
+        "          run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \\\n",
+        "          true \\\n",
+        1,
+    )),
+    ("native Android unit gate", workflow.replace(
+        "        run: scripts/run-android-unit-gate.sh\n",
+        "        run: true\n",
+        1,
+    )),
     ("composer artifact path", workflow.replace(
         "            android/app/build/outputs/js-composer/\n",
         "            android/app/build/outputs/other/\n",
@@ -216,7 +264,7 @@ for label, damaged in (
     )),
 ):
     try:
-        if label == "composer invocation":
+        if label in {"composer invocation", "signed-upgrade invocation", "signed-upgrade exit aggregation"}:
             require_contract(workflow, damaged)
         else:
             require_contract(damaged, packaged_lanes)
@@ -352,6 +400,8 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         ("check-js-lifecycle-results.py", "lifecycle"),
         ("check-js-usage-ports-results.py", "usage-ports"),
         ("check-js-composer-journey-results.py", "composer"),
+        ("check-js-key-vault-results.py", "key-vault"),
+        ("check-js-signed-upgrade-results.py", "signed-upgrade"),
     ):
         execute = (
             'exec "$PYTHON" "$ACTUAL_COMPOSER_CHECKER" "$@"\n'
@@ -405,9 +455,9 @@ with tempfile.TemporaryDirectory(prefix="js rewrite live lane reports ") as temp
         raise AssertionError(f"isolated Composer phases did not accept the real run's duplicated summary copy: {result.stderr!r}")
     checked_lines = result_trace.read_text().splitlines()
     checked_lanes = [line.split("\t", 1)[0] for line in checked_lines]
-    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "composer", "composer"]:
+    if checked_lanes != ["smoke", "lifecycle", "usage-ports", "key-vault", "signed-upgrade", "composer", "composer"]:
         raise AssertionError(f"the always-run report guard stopped before all present lanes: {checked_lanes!r}")
-    if "/phase-prepare" not in checked_lines[3] or "/phase-resume" not in checked_lines[4]:
+    if "/phase-prepare" not in checked_lines[5] or "/phase-resume" not in checked_lines[6]:
         raise AssertionError(f"the guard did not check the two Composer process phases independently: {checked_lines!r}")
 print("PASS: a dormant Files invocation fails the always-run workflow report guard despite a zero lane status")
 
@@ -425,7 +475,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, settings: int = 0,
-                            omit_junit: bool = False,
+                            key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix="js rewrite action ") as temporary:
         fixture = Path(temporary)
@@ -489,13 +539,18 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "exit \"$FIXTURE_COMPOSER_STATUS\"\n"
         )
         fake_composer.chmod(0o755)
-        fake_settings = fake_scripts / "connected-js-settings.sh"
-        fake_settings.write_text(
-            "#!/bin/bash\n"
-            "printf 'settings\\t%s\\t%s\\n' \"$FIXTURE_SETTINGS_STATUS\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
-            "exit \"$FIXTURE_SETTINGS_STATUS\"\n"
-        )
-        fake_settings.chmod(0o755)
+        for script_name, lane_name, status_var in (
+            ("connected-js-settings.sh", "settings", "FIXTURE_SETTINGS_STATUS"),
+            ("connected-js-key-vault-docker.sh", "key-vault", "FIXTURE_KEY_VAULT_STATUS"),
+            ("connected-js-key-vault-signed-upgrade.sh", "signed-upgrade", "FIXTURE_SIGNED_UPGRADE_STATUS"),
+        ):
+            fake_lane = fake_scripts / script_name
+            fake_lane.write_text(
+                "#!/bin/bash\n"
+                f"printf '{lane_name}\\t%s\\t%s\\n' \"${status_var}\" \"$*\" >> \"$FIXTURE_TRACE\"\n"
+                f"exit \"${status_var}\"\n"
+            )
+            fake_lane.chmod(0o755)
 
         env = {
             "PATH": f"{runtime_bin}:/usr/bin:/bin",
@@ -509,6 +564,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_FILES_STATUS": str(files),
             "FIXTURE_COMPOSER_STATUS": str(composer),
             "FIXTURE_SETTINGS_STATUS": str(settings),
+            "FIXTURE_KEY_VAULT_STATUS": str(key_vault),
+            "FIXTURE_SIGNED_UPGRADE_STATUS": str(signed_upgrade),
             "FIXTURE_OMIT_JUNIT": "1" if omit_junit else "0",
             "GITHUB_RUN_ID": "run",
             "GITHUB_RUN_ATTEMPT": "1",
@@ -525,16 +582,19 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         expected_summary = (
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} settings={settings} "
-            f"smoke-junit-copy={expected_copy}"
+            f"key-vault={key_vault} "
+            f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
-        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, settings, expected_copy)) else 0
+        expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, settings, key_vault, signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
                 f"{label}: wrapper did not preserve its lane statuses: exit={result.returncode}, "
                 f"stdout={result.stdout!r}, stderr={result.stderr!r}"
             )
         trace_lines = trace.read_text().splitlines()
-        if [line.split("\t", 1)[0] for line in trace_lines] != ["smoke", "lifecycle", "usage-ports", "files", "composer", "settings"]:
+        if [line.split("\t", 1)[0] for line in trace_lines] != [
+            "smoke", "lifecycle", "usage-ports", "files", "composer", "settings", "key-vault", "signed-upgrade",
+        ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
             raise AssertionError(f"{label}: lifecycle run identity was not forwarded: {trace_lines[1]!r}")
@@ -552,6 +612,9 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(f"{label}: composer session identity was not forwarded: {trace_lines[4]!r}")
         if trace_lines[5] != f"settings\t{settings}\t--suffix i2855ci --port 2222 --container pocketshell-test-agents --run-id js2861s-run-1 --test-only":
             raise AssertionError(f"{label}: settings lane arguments/status were not preserved: {trace_lines[5]!r}")
+        expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
+        if trace_lines[7] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
+            raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[7]!r}")
         if runtime_capture.read_text().splitlines() != [
             str(fake_pnpm),
             env["PATH"],
@@ -575,6 +638,8 @@ exercise_packaged_lanes("usage/ports failure is fail-closed", usage=21)
 exercise_packaged_lanes("Files failure is fail-closed", files=25)
 exercise_packaged_lanes("composer failure is fail-closed", composer=23)
 exercise_packaged_lanes("settings failure is fail-closed", settings=27)
+exercise_packaged_lanes("key-vault failure is fail-closed", key_vault=27)
+exercise_packaged_lanes("signed-upgrade migration failure is fail-closed", signed_upgrade=29)
 exercise_packaged_lanes("missing JUnit is fail-closed", omit_junit=True)
 exercise_packaged_lanes("JUnit copy command failure is fail-closed", fail_junit_copy=True)
 

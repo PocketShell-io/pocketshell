@@ -263,13 +263,13 @@ public final class LegacyInstalledDataReaderTest {
         String sourceSha256 = sha256(sourceBytes);
         byte[] databaseBytes = Files.readAllBytes(databaseFile.toPath());
         MigrationContext context = new MigrationContext(targetContext, fixtureRoot, fixturePreferencesName);
-        String resolvedKey = LegacyPrivateKeyResolver.readPrivateKey(context, 7, sourceSha256);
-        assertEquals(SYNTHETIC_PRIVATE_KEY, resolvedKey);
+        byte[] resolvedKey = LegacyPrivateKeyResolver.readPrivateKeyBytes(context, 7, sourceSha256);
+        assertArrayEquals(sourceBytes, resolvedKey);
         assertArrayEquals("native key resolution must not rewrite the original key file",
             sourceBytes, Files.readAllBytes(key.toPath()));
-        assertThrows(IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKey(context, 8, sourceSha256));
+        assertThrows(IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKeyBytes(context, 8, sourceSha256));
         assertThrows("a key changed after import must be rejected",
-            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKey(context, 7, "0".repeat(64)));
+            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKeyBytes(context, 7, "0".repeat(64)));
         assertArrayEquals("read-only key lookup must not rewrite the Room source",
             databaseBytes, Files.readAllBytes(databaseFile.toPath()));
         assertFalse(new File(databaseFile.getPath() + "-wal").exists());
@@ -280,7 +280,7 @@ public final class LegacyInstalledDataReaderTest {
             new Object[] {new File(fixtureRoot, "outside.pem").getAbsolutePath(), 7L});
         database.close();
         assertThrows("A key path outside the private key directory must be rejected",
-            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKey(context, 7, sourceSha256));
+            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKeyBytes(context, 7, sourceSha256));
 
         File symlink = new File(key.getParentFile(), "legacy-key-link.pem");
         Files.createSymbolicLink(symlink.toPath(), key.toPath());
@@ -289,9 +289,10 @@ public final class LegacyInstalledDataReaderTest {
             new Object[] {symlink.getAbsolutePath(), 7L});
         database.close();
         assertThrows("A symbolic-link key path must be rejected",
-            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKey(context, 7, sourceSha256));
+            IOException.class, () -> LegacyPrivateKeyResolver.readPrivateKeyBytes(context, 7, sourceSha256));
 
-        loadKeyThroughSshj(resolvedKey);
+        loadKeyThroughSshj(new String(resolvedKey, StandardCharsets.UTF_8));
+        java.util.Arrays.fill(resolvedKey, (byte) 0);
     }
 
     private File createRoom22Fixture(File key) throws Exception {

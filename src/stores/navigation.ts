@@ -12,6 +12,7 @@ export const SHELL_ROUTES = [
   'settings-snippets',
   'usage',
   'ports',
+  'keys',
   'diagnostics',
   'diagnostics-report',
   'diagnostics-clear',

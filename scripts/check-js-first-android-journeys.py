@@ -3,7 +3,7 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-six packaged lanes, and that the lane's exact method
+eight packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
 24-class feature qualification gate remains separate and incomplete until
 those journeys exist.
@@ -96,6 +96,28 @@ LANES = (
             }
         ),
     ),
+    LaneContract(
+        name="key-vault-docker",
+        class_name="com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest",
+        child_runner="scripts/connected-js-key-vault-docker.sh",
+        result_checker="scripts/check-js-key-vault-results.py",
+        methods=frozenset({"importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState"}),
+    ),
+    # Signed 0.5.6-to-candidate upgrade: one exact method per instrumentation
+    # cycle, selected as `class=...#$method` from literal run_cycle calls.
+    LaneContract(
+        name="signed-upgrade",
+        class_name="com.pocketshell.app.migration.InstalledDataMigrationJourneyTest",
+        child_runner="scripts/connected-js-key-vault-signed-upgrade.sh",
+        result_checker="scripts/check-js-signed-upgrade-results.py",
+        methods=frozenset(
+            {
+                "startupStagesLegacyDataAndLeavesOriginalFilesUntouched",
+                "malformedEncryptedPreferencesAppearInPackagedWebView",
+                "malformedPrivateKeyAppearsInPackagedWebViewAndLeavesSourceUntouched",
+            }
+        ),
+    ),
 )
 
 JOURNEY_SUFFIX = re.compile(r"(?:E2eTest|DockerTest|JourneyTest|SmokeTest)$")
@@ -151,6 +173,11 @@ def _class_selector_matches(source: str, contract: LaneContract) -> bool:
     )
     if direct is not None:
         selected_method = direct.group("method")
+        if selected_method is not None and selected_method.startswith("$"):
+            # A per-cycle `#$method` selector is exact only when every literal
+            # run_cycle call names a contract method and together they cover it.
+            cycles = re.findall(r"(?m)^\s*run_cycle\s+\S+\s+([A-Za-z_][\w]*)(?=\s)", active)
+            return bool(cycles) and len(cycles) == len(set(cycles)) and set(cycles) == set(contract.methods)
         if selected_method is not None and contract.methods != {selected_method}:
             return False
         return True
@@ -323,12 +350,21 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed six-lane inventory makes an empty/partially deleted registry a
+    # A fixed eight-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
-    required_lanes = {"smoke", "lifecycle", "usage-ports", "files", "composer-docker", "settings"}
+    required_lanes = {
+        "smoke",
+        "lifecycle",
+        "usage-ports",
+        "files",
+        "composer-docker",
+        "key-vault-docker",
+        "signed-upgrade",
+        "settings",
+    }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required six-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required eight-lane packaged journey inventory changed"))
 
     for lane in LANES:
         if not _script_invokes(dispatcher, lane.child_runner):
@@ -412,6 +448,13 @@ def check_js(repo_root: Path) -> list[Finding]:
                     "ERROR",
                     f"{lane.name} source methods drift for {class_name}: expected "
                     f"{','.join(sorted(lane.methods))}; found {','.join(sorted(methods)) or '<none>'}",
+                )
+            )
+        if _valid_justification(source):
+            findings.append(
+                Finding(
+                    "ERROR",
+                    f"{lane.name} class {class_name} is dispatched but still carries a CI_JOURNEY_SUITE_JUSTIFIED exclusion",
                 )
             )
         wired_classes.add(class_name)
@@ -556,6 +599,11 @@ def _write_fixture(
         selector += f"  local phase_args=({phase_selector}-e composerPhase prepare)\n"
         selector += '  "$ADB" shell am instrument -w -r "${phase_args[@]}" "$INSTRUMENTATION_COMPONENT"\n'
         selector += "}\n"
+    elif lane.name == "signed-upgrade":
+        target = "wrong.Class" if wrong_selector else lane.class_name
+        selector = f'./gradlew "-Pandroid.testInstrumentationRunnerArguments.class={target}#$method"\n'
+        cycle_methods = methods[:-1] if omit_selector else methods
+        selector += "".join(f'run_cycle cycle{index} {method} "$RUN_ID-{index}" none\n' for index, method in enumerate(cycle_methods))
     else:
         target = "wrong.Class" if (omit_selector or wrong_selector) else lane.class_name
         selector = f"./gradlew -Pandroid.testInstrumentationRunnerArguments.class={target}\n"
@@ -594,7 +642,7 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all six exact packaged lane classes and methods dispatch", result == 0, True)
+        probe("all eight exact packaged lane classes and methods dispatch", result == 0, True)
 
         dispatcher = root / "scripts/ci-js-first-packaged-lanes.sh"
         full_dispatcher = dispatcher.read_text(encoding="utf-8")
@@ -609,6 +657,31 @@ def self_test() -> int:
         )
         probe("missing parent dispatcher lane fails", check(root, "js") != 0, True)
         dispatcher.write_text(full_dispatcher, encoding="utf-8")
+
+        upgrade = next(lane for lane in LANES if lane.name == "signed-upgrade")
+        dispatcher.write_text(
+            "\n".join(line for line in full_dispatcher.splitlines() if line.strip() != upgrade.child_runner) + "\n",
+            encoding="utf-8",
+        )
+        probe("removed signed-upgrade migration lane invocation fails", check(root, "js") != 0, True)
+        dispatcher.write_text(
+            full_dispatcher.replace(upgrade.child_runner, "# " + upgrade.child_runner), encoding="utf-8"
+        )
+        probe("commented-out signed-upgrade migration lane fails", check(root, "js") != 0, True)
+        dispatcher.write_text(full_dispatcher, encoding="utf-8")
+        _write_fixture(root, upgrade, omit_selector=True)
+        probe("signed-upgrade runner dropping one migration cycle fails", check(root, "js") != 0, True)
+        _write_fixture(root, upgrade, wrong_selector=True)
+        probe("signed-upgrade runner selecting the wrong class fails", check(root, "js") != 0, True)
+        _write_fixture(root, upgrade)
+        upgrade_source = root / "android/app/src/androidTest/java" / Path(*upgrade.class_name.split(".")).with_suffix(".java")
+        full_upgrade_source = upgrade_source.read_text(encoding="utf-8")
+        upgrade_source.write_text(
+            full_upgrade_source.replace("public class", "// CI_JOURNEY_SUITE_JUSTIFIED: #2860 opt-in signed install only\npublic class"),
+            encoding="utf-8",
+        )
+        probe("dispatched migration journey carrying an opt-in exclusion marker fails", check(root, "js") != 0, True)
+        upgrade_source.write_text(full_upgrade_source, encoding="utf-8")
 
         smoke = next(lane for lane in LANES if lane.name == "smoke")
         smoke_source = root / "android/app/src/androidTest/java" / Path(*smoke.class_name.split(".")).with_suffix(".java")

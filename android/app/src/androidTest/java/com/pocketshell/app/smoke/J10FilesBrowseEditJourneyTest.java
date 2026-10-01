@@ -65,6 +65,7 @@ public final class J10FilesBrowseEditJourneyTest {
     private ActivityScenario<MainActivity> scenario;
     private File downloadedFixture;
     private File uploadFixture;
+    private File stagedKeyDocument;
     private String screenshotRunId;
     private Uri documentsUiSourceUri;
     private String documentsUiPackage;
@@ -82,6 +83,7 @@ public final class J10FilesBrowseEditJourneyTest {
         if (downloadedFixture != null) downloadedFixture.delete();
         if (uploadFixture != null) uploadFixture.delete();
         if (documentsUiSourceUri != null) targetContext().getContentResolver().delete(documentsUiSourceUri, null, null);
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -90,17 +92,16 @@ public final class J10FilesBrowseEditJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         String fixtureRoot = arguments.getString("fileFixtureRoot");
         assertTrue("the Docker SSH port is required", port != null && port.matches("[0-9]{1,5}"));
-        assertTrue("the test-only SSH key is required", encodedKey != null && !encodedKey.isEmpty());
+        assertTrue("the app-private staged SSH key path is required", keyPath != null && !keyPath.isEmpty());
         assertTrue("the host must seed a run-scoped remote folder", fixtureRoot != null
                 && fixtureRoot.matches("/home/testuser/\\.ps2858-files-[A-Za-z0-9_-]+"));
         String requestedScreenshotRunId = arguments.getString("screenshotRunId");
         assertTrue("the host must provide a safe screenshot collection folder", requestedScreenshotRunId != null
                 && requestedScreenshotRunId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         screenshotRunId = requestedScreenshotRunId;
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
         String remoteHome = "/home/testuser";
         File artifacts = new File(targetContext().getFilesDir(), "js2858-files/" + screenshotRunId);
         assertTrue("run-scoped screenshot directory must be new", artifacts.mkdirs());
@@ -109,7 +110,15 @@ public final class J10FilesBrowseEditJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(targetContext(), keyPath, screenshotRunId);
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(targetContext(), stagedKeyDocument), "Docker fixture key"));
+        awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid^=select-ssh-key-]')");
+        String handle = evalString("window.__ps2926ImportedKey.handleId");
+        click("[data-testid=select-ssh-key-" + handle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.value === '" + handle + "'");
         // A cold first launch keeps Connect disabled while the installed-data migration check
         // runs (and Vue re-renders `disabled` a tick after the input events), so wait for the
         // real enabled state instead of clicking into a disabled button.

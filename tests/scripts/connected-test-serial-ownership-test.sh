@@ -202,6 +202,12 @@ case "${1:-}" in
     printf 'adb: error: remote object %s does not exist\n' "${2:-}" >&2
     exit 1
     ;;
+  push)
+    # Docker-backed lanes stage the fixture key under /data/local/tmp (#2926).
+    [[ "${3:-}" == /data/local/tmp/pocketshell-*-key.pem ]] \
+      || { printf 'unexpected adb push target: %s\n' "$*" >&2; exit 90; }
+    printf '%s: 1 file pushed\n' "${2:-}"
+    ;;
   uninstall)
     # Lifecycle lane (#2943) removes its own APKs before and after the run.
     printf 'Success\n'
