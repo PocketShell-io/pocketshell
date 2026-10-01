@@ -650,9 +650,22 @@ lifecycle_lane_background_children_do_not_inherit_the_serial_lock() {
   [[ "$(ps -o ppid= -p "$instrumentation_pid" | tr -d ' ')" == "$lane_pid" ]] \
     || fail "background instrumentation $instrumentation_pid is not a direct child of the lane $lane_pid"
 
-  local holders holder_pids
-  holders="$(serial_lock_fds_in_group "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$lane_pid")"
-  holder_pids="$(sed -n 's/.* pid=\([0-9]*\) .*/\1/p' <<< "$holders" | sort -u | tr '\n' ' ')"
+  # The lane's own short foreground commands (e.g. its `sleep 0.2` start-up
+  # probe) legitimately inherit the FD for a moment while the lane waits on
+  # them. The defect is a LONG-LIVED holder: instrumentation stays blocked on
+  # the release file and the watcher on instrumentation, so any inherited FD
+  # there persists. Poll (bounded) for the holder set to settle on the lane.
+  local holders holder_pids attempt
+  for attempt in $(seq 1 50); do
+    holders="$(serial_lock_fds_in_group "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$lane_pid")"
+    holder_pids="$(sed -n 's/.* pid=\([0-9]*\) .*/\1/p' <<< "$holders" | sort -u | tr '\n' ' ')"
+    [[ "$holder_pids" == "$lane_pid " ]] && break
+    sleep 0.1
+  done
+  [[ -e "$SANDBOX/device-state/$run_id.release" ]] \
+    && fail 'harness released instrumentation before the lock-holder check settled'
+  kill -0 "$instrumentation_pid" 2>/dev/null && kill -0 "$watcher_pid" 2>/dev/null \
+    || fail 'instrumentation or watcher exited before the lock-holder check, so it would pass vacuously'
   [[ "$holder_pids" == "$lane_pid " ]] || {
     printf 'evidence: lane=%s instrumentation=%s gradle=%s watcher=%s\n%s\n' \
       "$lane_pid" "$instrumentation_pid" "$gradle_pid" "$watcher_pid" "$holders" >&2
