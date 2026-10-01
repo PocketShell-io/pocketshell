@@ -79,6 +79,8 @@ public class SharedAppDockerJourneyTest {
             + "\t\r"                   // hardware Tab and Enter
             + "PASTE1";                // a real clipboard paste on the textarea
 
+    /** Both tests run in one instrumentation process; the first adds the run's host. */
+    private static boolean fixtureHostAdded;
     private ActivityScenario<MainActivity> scenario;
     private ScriptedIme ime;
 
@@ -232,7 +234,12 @@ public class SharedAppDockerJourneyTest {
         assertEquals("the opt-in launch must load exactly one page (no load-then-reload)", 1, pageStartCount());
 
         String hostRow = "[...document.querySelectorAll('.host-row')].some((n)=>n.textContent.includes('fixture-" + run + "'))";
-        if (!"true".equals(evalRaw(hostRow))) {
+        if (fixtureHostAdded) {
+            // An earlier test of this run added it (and consumed the staged
+            // key); the saved host list loads asynchronously after the picker.
+            awaitJsTrue(hostRow);
+        } else {
+            fixtureHostAdded = true;
             // The fixture key enters the Android key vault from a content URI; only
             // its handle crosses into the WebView (#2926).
             java.io.File keyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
