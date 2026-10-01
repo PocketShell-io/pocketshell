@@ -71,6 +71,8 @@ unset POCKETSHELL_GRADLE_OUTPUT_LOCK_HELD_FILE \
 # runs on every fixture here and a crash in it would still surface.
 # tests/scripts/disk-preflight-test.sh owns the disk behaviour.
 export POCKETSHELL_DISK_MIN_FREE_MB=0
+# Keep the launcher preflight's HOME stability sampling short (#2946).
+export POCKETSHELL_LAUNCHER_SAMPLE_SECONDS=0.05
 export POCKETSHELL_DISK_WARN_FREE_MB=0
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -286,6 +288,11 @@ if [[ "$*" == 'shell settings get global hide_error_dialogs' ]]; then
 fi
 if [[ "$*" == 'shell dumpsys window windows' ]]; then
   printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n'
+  exit 0
+fi
+# The launcher preflight lists HOME providers (none to disable here).
+if [[ "$*" == 'shell cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME' ]]; then
+  printf '1 activities found:\n  Activity #0:\n    com.android.settings/.FallbackHome\n'
   exit 0
 fi
 exit 0

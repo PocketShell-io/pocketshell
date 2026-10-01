@@ -163,6 +163,7 @@ case "${1:-}" in
       'getprop ro.build.version.sdk') printf '35\n' ;;
       'settings put global hide_error_dialogs 1')
         printf '1\n' > "$state/$serial.hide-error-dialogs" ;;
+      'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1') ;;
       'settings get global hide_error_dialogs')
         if [[ -f "$state/$serial.hide-error-dialogs" ]]; then
           cat "$state/$serial.hide-error-dialogs"
@@ -179,6 +180,10 @@ case "${1:-}" in
         printf '  mFocusedApp=ActivityRecord{4d5e6f u0 com.pocketshell.app/.MainActivity}\n'
         ;;
       'dumpsys input') printf 'Input Dispatcher State:\n' ;;
+      # No third-party HOME launcher to disable, and none left disabled.
+      'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
+        printf '1 activities found:\n  Activity #0:\n    com.android.settings/.FallbackHome\n' ;;
+      'pm list packages -d') ;;
       'dumpsys window lastanr') printf 'WINDOW MANAGER LAST ANR (dumpsys window lastanr)\n' ;;
       'dumpsys input_method') printf '  mCurTokenDisplayId=0\n' ;;
       'dumpsys activity activities') printf 'ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n' ;;
@@ -345,6 +350,7 @@ start_runner() {
     POCKETSHELL_GRADLE_OUTPUT_LOCK_PARENT_POLL_SECONDS=0.05 \
     POCKETSHELL_DISK_MIN_FREE_MB=0 \
     POCKETSHELL_DISK_WARN_FREE_MB=0 \
+    POCKETSHELL_LAUNCHER_SAMPLE_SECONDS=0.05 \
     FAKE_ONLINE_SERIALS="$online_serials" \
     FAKE_DEVICE_STATE="$SANDBOX/device-state" \
     FAKE_RUN_ID="$run_id" \
