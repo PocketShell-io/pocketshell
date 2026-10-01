@@ -382,6 +382,17 @@
         "turns a predicted space the keyboard removes before punctuation into one DEL",
         "sends one DEL per code point when a multi-code-point emoji is deleted"
       ]
+    },
+    "tests/unit/terminalLogicalLines.test.ts": {
+      "suite": "terminal logical-line matcher",
+      "tests": [
+        "matches an exactly full-width line that is not wrapped (4-digit run id, RANDOM=8)",
+        "matches a soft-wrapped line (5-digit run id) and a wrapped line sharing the prompt row",
+        "matches a short line on a terminal whose widest row is not a wrap",
+        "stays red for a line that is not there: wrong token, prefix only, or only the echoed command",
+        "does not join a row shorter than the widest row (a hard newline) to the next",
+        "does not glue a full-width row to the prompt after it"
+      ]
     }
   }
 }
