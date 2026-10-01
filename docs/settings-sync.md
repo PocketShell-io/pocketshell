@@ -15,15 +15,16 @@ shared: API Gateway + Lambda + DynamoDB, deployed from
 `{"hosts":[…]}` payload, same envelope — so one account works from the phone
 and the laptop at once once platform integration is restored.
 
-The rewrite adapter is `src/sync/settingsSync.ts`; it calls the pinned
-`vendor/pocketshell-core/src/syncMerge.ts` functions. Settings → Advanced →
+The sync round is core's `runSyncRound`
+(`vendor/pocketshell-core/src/syncRound.ts`), the same loop the shared desktop
+and web sync store runs; Android keeps no copy of it. Settings → Advanced →
 Account sync is informational until native integration is available.
 
 ## JS-first rewrite status
 
-The Android JS adapter owns selection and retry orchestration through the
-shared core. It does not own credentials, encryption, network requests, or
-persistent storage. Its platform effects are injected at the boundary; there
+Selection and retry orchestration belong to the shared core round. Android
+does not own credentials, encryption, network requests, or persistent storage
+yet. Its platform effects are injected at the boundary; there
 is no production implementation in this rewrite.
 
 The payload parser refuses malformed JSON, invalid entries, unsupported

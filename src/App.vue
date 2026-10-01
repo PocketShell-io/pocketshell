@@ -7,9 +7,13 @@ import {
   formatBytes,
   isValidTcpPort,
   joinRemoteChildPath,
+  PortForwardController,
+  readHostUsage,
+  runSyncRound,
   type ConnectionSnapshot,
   type HostKeyTrustPin,
   type HostKeyTrustStore,
+  type PortForwardControllerSnapshot,
   type SessionRow,
   type SshConnectionRef,
   type SshHostTarget,
@@ -39,7 +43,6 @@ import { ConnectionController } from './session/connectionController';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
-import { syncSelectedHosts } from './sync/settingsSync';
 import { createKeyboardInsetsStateSync } from './native/keyboardInsetsState';
 import TerminalViewport from './components/TerminalViewport.vue';
 import PromptComposer from './components/PromptComposer.vue';
@@ -48,8 +51,6 @@ import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './t
 import SettingsScreen from './components/SettingsScreen.vue';
 import ProviderUsageScreen from './components/ProviderUsageScreen.vue';
 import PortForwardScreen from './components/PortForwardScreen.vue';
-import { readHostUsage } from './policy/usage';
-import { PortForwardController, type PortForwardControllerSnapshot } from './policy/portForwardController';
 import DiagnosticsScreen from './components/DiagnosticsScreen.vue';
 import AboutScreen from './components/AboutScreen.vue';
 import FileWorkspaceScreen from './components/FileWorkspaceScreen.vue';
@@ -73,7 +74,7 @@ type ComposerSmokeEvidenceWindow = Window & {
 };
 
 type SettingsSyncProbeWindow = Window & {
-  __ps2852RunSettingsSync?: typeof syncSelectedHosts;
+  __ps2852RunSettingsSync?: typeof runSyncRound;
 };
 const SETTINGS_SYNC_PROBE_STORAGE_KEY = 'pocketshell.settings-sync-test-probe';
 
@@ -858,7 +859,7 @@ onMounted(() => {
   try {
     if (Capacitor.isNativePlatform()
       && window.localStorage.getItem(SETTINGS_SYNC_PROBE_STORAGE_KEY) === 'enabled') {
-      (window as SettingsSyncProbeWindow).__ps2852RunSettingsSync = syncSelectedHosts;
+      (window as SettingsSyncProbeWindow).__ps2852RunSettingsSync = runSyncRound;
     }
   } catch {
     // A denied browser-storage read simply leaves the instrumentation probe off.
