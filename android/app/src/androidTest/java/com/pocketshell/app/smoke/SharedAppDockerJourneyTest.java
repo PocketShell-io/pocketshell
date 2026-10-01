@@ -188,8 +188,16 @@ public class SharedAppDockerJourneyTest {
         Log.i(TAG, "ime script finished " + ScriptedIme.describe(typed));
 
         // Hardware keys: a Bluetooth keyboard's Tab and Enter.
+        recordPageKeyUps();
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_TAB);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+        // sendKeyDownUpSync returns once the view hierarchy has the keys, but the
+        // WebView hands them to its renderer asynchronously, and an
+        // evaluateJavascript paste can overtake them (the host then got
+        // "PASTE1\r" instead of "\rPASTE1"). A person cannot paste inside that
+        // window; wait until the page has seen Enter's keyup — after its
+        // keydown, where xterm sends "\r" — before pasting.
+        awaitJsTrue("(window.__psKeyUps ?? []).join(',').endsWith('Tab,Enter')");
         // A real clipboard paste on the focused textarea.
         pasteIntoTerminal("PASTE1");
         assertTerminalKeepsFocus("after typing");
@@ -382,6 +390,14 @@ public class SharedAppDockerJourneyTest {
      * A real ClipboardEvent paste on xterm's focused textarea, the event an
      * Android long-press Paste delivers.
      */
+    /** Record the key of every keyup the page sees, in order, from now on. */
+    private void recordPageKeyUps() throws Exception {
+        evalString("(() => {window.__psKeyUps=[];"
+                + "if(!window.__psKeyUpHook){window.__psKeyUpHook=true;"
+                + "document.addEventListener('keyup',(e)=>window.__psKeyUps.push(e.key),true);}"
+                + "return 'ok';})()");
+    }
+
     private void pasteIntoTerminal(String text) throws Exception {
         String result = evalString("JSON.stringify((() => {"
                 + "const textarea=" + VISIBLE_TEXTAREA + ";"
