@@ -95,6 +95,12 @@ public final class JsShellPackagedSmokeTest {
         assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        // The default launch boots the legacy shell exactly once: no other
+        // shell first, no reload after (#2936 shell selection before load).
+        assertEquals("[\"legacy\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
+        AtomicReference<Integer> pageStarts = new AtomicReference<>();
+        scenario.onActivity(activity -> pageStarts.set(activity.pageStartCount()));
+        assertEquals("the default launch must load exactly one page (no reload)", Integer.valueOf(1), pageStarts.get());
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
         assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));

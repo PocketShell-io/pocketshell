@@ -3,7 +3,7 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-nine packaged lanes, and that the lane's exact method
+ten packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
 24-class feature qualification gate remains separate and incomplete until
 those journeys exist.
@@ -93,6 +93,18 @@ LANES = (
                 "j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport",
                 "j24SettingsDestinationsReachableWithAndroidBackAndPersist",
                 "reconnectWhenIReturnOffWaitsThenReconnectsSameSession",
+            }
+        ),
+    ),
+    LaneContract(
+        name="shared-app",
+        class_name="com.pocketshell.app.smoke.SharedAppDockerJourneyTest",
+        child_runner="scripts/connected-js-shared-app.sh",
+        result_checker="scripts/check-js-shared-app-results.py",
+        methods=frozenset(
+            {
+                "sharedAppListsAttachesAndTypesIntoFixtureSession",
+                "sharedTerminalDeliversImeEditsAsExactBytes",
             }
         ),
     ),
@@ -357,7 +369,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed nine-lane inventory makes an empty/partially deleted registry a
+    # A fixed ten-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
     required_lanes = {
@@ -367,12 +379,13 @@ def check_js(repo_root: Path) -> list[Finding]:
         "files",
         "composer-docker",
         "key-vault-docker",
+        "shared-app",
         "signed-upgrade",
         "settings",
         "durable-storage",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required nine-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required ten-lane packaged journey inventory changed"))
 
     for lane in LANES:
         if not _script_invokes(dispatcher, lane.child_runner):
@@ -650,7 +663,7 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all nine exact packaged lane classes and methods dispatch", result == 0, True)
+        probe("all ten exact packaged lane classes and methods dispatch", result == 0, True)
 
         dispatcher = root / "scripts/ci-js-first-packaged-lanes.sh"
         full_dispatcher = dispatcher.read_text(encoding="utf-8")
