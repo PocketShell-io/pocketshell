@@ -249,8 +249,8 @@
         "resolves the shared UI package from inside the clean core pin",
         "fails closed unless the core pin equals the upstream main head",
         "keeps no tracked app, test, config or script reference to the desktop checkout"
-        ]
-      },
+      ]
+    },
     "tests/unit/sharedControllersSource.test.ts": {
       "suite": "shared controllers are bound from core, never copied",
       "tests": [
@@ -273,6 +273,20 @@
         "detaches imported-host references by CAS and clears handles absent from the vault",
         "tombstones deleted migrated keys even when no saved host currently references them",
         "reconciles a fresh signed snapshot without a hosts table"
+      ]
+    },
+    "tests/unit/durableStorage.test.ts": {
+      "suite": "Android durable storage seam",
+      "tests": [
+        "imports existing localStorage once and makes the native store authoritative",
+        "restores writes and removals the WebView lost to a kill from the committed entries",
+        "commits every localStorage write, removal and clear natively before returning",
+        "leaves sessionStorage and other storage areas non-durable",
+        "rolls back and throws when the native commit fails, so no write is acknowledged without being durable",
+        "keeps plain localStorage and records a Diagnostics event when the native writer or snapshot is unavailable",
+        "makes the real snippet and settings stores durable, and refuses to acknowledge a delete that did not commit",
+        "boots the app only after durable storage is installed, because stores read saved data at import time",
+        "finds no property-style localStorage writes that would bypass the durable path in this app or the shared core/ui"
       ]
     }
   }

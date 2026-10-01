@@ -3,7 +3,7 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-seven packaged lanes, and that the lane's exact method
+eight packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
 24-class feature qualification gate remains separate and incomplete until
 those journeys exist.
@@ -89,6 +89,13 @@ LANES = (
         child_runner="scripts/connected-js-key-vault-docker.sh",
         result_checker="scripts/check-js-key-vault-results.py",
         methods=frozenset({"importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState"}),
+    ),
+    LaneContract(
+        name="durable-storage",
+        class_name="com.pocketshell.app.smoke.DurableStorageRestartJourneyTest",
+        child_runner="scripts/connected-js-durable-storage.sh",
+        result_checker="scripts/check-js-durable-storage-results.py",
+        methods=frozenset({"userDataWritesSurviveForceStopShortlyAfterAcknowledgement"}),
     ),
     # Signed 0.5.6-to-candidate upgrade: one exact method per instrumentation
     # cycle, selected as `class=...#$method` from literal run_cycle calls.
@@ -337,7 +344,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed seven-lane inventory makes an empty/partially deleted registry a
+    # A fixed eight-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
     required_lanes = {
@@ -348,9 +355,10 @@ def check_js(repo_root: Path) -> list[Finding]:
         "composer-docker",
         "key-vault-docker",
         "signed-upgrade",
+        "durable-storage",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required seven-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required eight-lane packaged journey inventory changed"))
 
     for lane in LANES:
         if not _script_invokes(dispatcher, lane.child_runner):
@@ -577,7 +585,7 @@ def _write_fixture(
     dispatcher.write_text("#!/bin/sh\n" + "\n".join(lane.child_runner for lane in LANES) + "\n", encoding="utf-8")
     child = root / lane.child_runner
     child.parent.mkdir(parents=True, exist_ok=True)
-    if lane.name == "composer-docker":
+    if lane.name in {"composer-docker", "durable-storage"}:
         selected_class = "wrong.Class" if wrong_selector else lane.class_name
         selector = f"test_class='{selected_class}'\n"
         phase_selector = "" if omit_selector else '-e class "$test_class" '
@@ -628,7 +636,7 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all seven exact packaged lane classes and methods dispatch", result == 0, True)
+        probe("all eight exact packaged lane classes and methods dispatch", result == 0, True)
 
         dispatcher = root / "scripts/ci-js-first-packaged-lanes.sh"
         full_dispatcher = dispatcher.read_text(encoding="utf-8")

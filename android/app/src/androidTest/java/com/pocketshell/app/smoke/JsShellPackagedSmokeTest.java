@@ -550,7 +550,10 @@ public final class JsShellPackagedSmokeTest {
         float expectedShellPaddingTop = Math.max(24f, expectedSafeTop);
         float expectedShellPaddingBottom = Math.max(24f, expectedSafeBottom);
 
-        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
+        // The shell mounts once durable storage is hydrated (#2993), so wait for
+        // the mounted app bar rather than assume it exists at first evaluation.
+        awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0"
+                + " && document.querySelector('.app-shell .app-bar') !== null");
         JSONObject beforeIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"

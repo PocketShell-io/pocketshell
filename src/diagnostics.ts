@@ -13,6 +13,7 @@ export const DIAGNOSTIC_KINDS = [
   'ssh-operation-failed',
   'ssh-bridge-failed',
   'resource-snapshot-failed',
+  'storage-durability-failed',
 ] as const;
 
 export type DiagnosticKind = (typeof DIAGNOSTIC_KINDS)[number];
@@ -34,6 +35,7 @@ export interface DiagnosticStorage {
 const OPERATIONS = new Set([
   'startup', 'assets', 'connect', 'accept-host-key', 'refresh-sessions', 'create-session',
   'attach-session', 'send-terminal-input', 'resize-terminal', 'resource-snapshot', 'lifecycle',
+  'storage',
 ]);
 const KINDS = new Set<string>(DIAGNOSTIC_KINDS);
 const ERROR_CODES = new Set([
