@@ -58,32 +58,128 @@ pocketshell_android_home_packages() {
     | sort -u
 }
 
+# Launchers known to be safe to re-enable when found disabled with no live
+# lane owning the emulator (recovery of a lane killed before its restore).
+POCKETSHELL_KNOWN_LAUNCHERS=(com.google.android.apps.nexuslauncher com.android.launcher3)
+
 POCKETSHELL_DISABLED_LAUNCHERS=()
 POCKETSHELL_LAUNCHER_ADB=""
 POCKETSHELL_LAUNCHER_SERIAL=""
 
-# Usage: pocketshell_android_disable_launchers ADB SERIAL EVIDENCE_FILE
-pocketshell_android_disable_launchers() {
+# Host-side record of launchers a lane disabled on SERIAL, next to that
+# serial's AVD lock. It is written BEFORE `pm disable-user` and an entry is
+# removed only after `pm enable` succeeded, so a SIGKILLed lane or an
+# emulator that disconnected mid-restore leaves a record the next lane (or
+# the emulator start path) uses to re-enable the launcher.
+pocketshell_android_launcher_record() {
+  local serial="$1" dir
+  if declare -F pocketshell_avd_lock_dir > /dev/null 2>&1; then
+    dir="$(pocketshell_avd_lock_dir)"
+  else
+    dir="${POCKETSHELL_AVD_LOCK_DIR:-${HOME:-/tmp}/.cache/pocketshell/avd-locks}"
+  fi
+  mkdir -p "$dir" 2> /dev/null || true
+  # Same token as the serial's AVD lock file (pocketshell_avd_lock_file_for_serial).
+  local token="${serial//[^A-Za-z0-9._-]/_}"
+  printf '%s/avd-lock-%s.disabled-launchers\n' "${dir%/}" "${token:-default}"
+}
+
+_pocketshell_launcher_record_add() {
+  local record="$1" package="$2"
+  grep -Fxq -- "$package" "$record" 2> /dev/null || printf '%s\n' "$package" >> "$record"
+}
+
+_pocketshell_launcher_record_remove() {
+  local record="$1" package="$2" rest
+  [[ -f "$record" ]] || return 0
+  rest="$(grep -Fxv -- "$package" "$record" || true)"
+  if [[ -n "$rest" ]]; then
+    printf '%s\n' "$rest" > "$record.tmp" && mv -f "$record.tmp" "$record"
+  else
+    rm -f -- "$record"
+  fi
+}
+
+# `pm enable` and report success only when the package really is enabled.
+_pocketshell_enable_package() {
+  local adb="$1" serial="$2" package="$3" output
+  output="$("$adb" -s "$serial" shell pm enable "$package" 2>&1 | tr -d '\r')" || return 1
+  [[ "$output" == *"new state: enabled"* ]]
+}
+
+# Re-enable launchers left disabled by a lane that never restored them
+# (SIGKILL, lost adb). Call only while holding SERIAL's AVD lock, or after
+# proving no lane holds it. Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_recover_stale_launchers() {
   local adb="$1" serial="$2" evidence="$3"
-  local package remaining
-  POCKETSHELL_LAUNCHER_ADB="$adb"
-  POCKETSHELL_LAUNCHER_SERIAL="$serial"
-  while IFS= read -r package; do
-    [[ -n "$package" ]] || continue
-    if [[ "$package" == com.pocketshell || "$package" == com.pocketshell.* ]]; then
-      printf 'FAIL: a PocketShell package declares a HOME activity: %s\n' "$package" | tee -a "$evidence" >&2
+  local record package disabled
+  record="$(pocketshell_android_launcher_record "$serial")"
+  if [[ -s "$record" ]]; then
+    while IFS= read -r package; do
+      [[ -n "$package" ]] || continue
+      if _pocketshell_enable_package "$adb" "$serial" "$package"; then
+        _pocketshell_launcher_record_remove "$record" "$package"
+        printf 'RECOVERED_STALE_DISABLED_LAUNCHER: %s (recorded in %s)\n' "$package" "$record" | tee -a "$evidence" >&2
+      else
+        printf 'FAIL: could not re-enable stale disabled launcher %s on %s (record kept: %s)\n' \
+          "$package" "$serial" "$record" | tee -a "$evidence" >&2
+        return 1
+      fi
+    done < <(cat -- "$record")
+  fi
+  disabled="$("$adb" -s "$serial" shell pm list packages -d 2> /dev/null | tr -d '\r' | sed -n 's/^package://p' || true)"
+  for package in "${POCKETSHELL_KNOWN_LAUNCHERS[@]}"; do
+    grep -Fxq -- "$package" <<< "$disabled" || continue
+    if _pocketshell_enable_package "$adb" "$serial" "$package"; then
+      printf 'RECOVERED_STALE_DISABLED_LAUNCHER: %s (unrecorded)\n' "$package" | tee -a "$evidence" >&2
+    else
+      printf 'FAIL: could not re-enable stale disabled launcher %s on %s\n' "$package" "$serial" | tee -a "$evidence" >&2
       return 1
     fi
-    "$adb" -s "$serial" shell pm disable-user --user 0 "$package" >> "$evidence" 2>&1
-    POCKETSHELL_DISABLED_LAUNCHERS+=("$package")
-    "$adb" -s "$serial" shell am force-stop "$package" >> "$evidence" 2>&1 || true
-    printf 'DISABLED_LAUNCHER_FOR_LANE: %s\n' "$package" | tee -a "$evidence" >&2
-  done < <(pocketshell_android_home_packages "$adb" "$serial")
-  mapfile -t remaining < <(pocketshell_android_home_packages "$adb" "$serial")
-  if (( ${#remaining[@]} != 0 )); then
-    printf 'FAIL: HOME launcher still enabled on %s after disable: %s\n' "$serial" "${remaining[*]}" | tee -a "$evidence" >&2
-    return 1
-  fi
+  done
+}
+
+# Disable every HOME provider until the set stays empty. A post-boot setup
+# app (com.google.android.googlesdksetup on the hosted image) can start
+# answering HOME only after the launcher is disabled, so one pass is not
+# enough. Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_disable_launchers() {
+  local adb="$1" serial="$2" evidence="$3"
+  local package record deadline stable found existing
+  local -a current
+  POCKETSHELL_LAUNCHER_ADB="$adb"
+  POCKETSHELL_LAUNCHER_SERIAL="$serial"
+  record="$(pocketshell_android_launcher_record "$serial")"
+  deadline=$((SECONDS + ${POCKETSHELL_LAUNCHER_DISABLE_SECONDS:-60}))
+  stable=0
+  while (( stable < ${POCKETSHELL_LAUNCHER_STABLE_SAMPLES:-5} )); do
+    mapfile -t current < <(pocketshell_android_home_packages "$adb" "$serial")
+    if (( ${#current[@]} == 0 )); then
+      stable=$((stable + 1))
+    else
+      stable=0
+      if (( SECONDS >= deadline )); then
+        printf 'FAIL: HOME launcher still enabled on %s after disable: %s\n' "$serial" "${current[*]}" | tee -a "$evidence" >&2
+        return 1
+      fi
+      for package in "${current[@]}"; do
+        if [[ "$package" == com.pocketshell || "$package" == com.pocketshell.* ]]; then
+          printf 'FAIL: a PocketShell package declares a HOME activity: %s\n' "$package" | tee -a "$evidence" >&2
+          return 1
+        fi
+        _pocketshell_launcher_record_add "$record" "$package"
+        found=0
+        for existing in "${POCKETSHELL_DISABLED_LAUNCHERS[@]}"; do
+          [[ "$existing" == "$package" ]] && found=1
+        done
+        (( found )) || POCKETSHELL_DISABLED_LAUNCHERS+=("$package")
+        "$adb" -s "$serial" shell pm disable-user --user 0 "$package" >> "$evidence" 2>&1
+        "$adb" -s "$serial" shell am force-stop "$package" >> "$evidence" 2>&1 || true
+        printf 'DISABLED_LAUNCHER_FOR_LANE: %s\n' "$package" | tee -a "$evidence" >&2
+      done
+    fi
+    sleep "${POCKETSHELL_LAUNCHER_SAMPLE_SECONDS:-1}"
+  done
   local attempt
   for package in "${POCKETSHELL_DISABLED_LAUNCHERS[@]}"; do
     # force-stop normally kills at once. A launcher process that was still
@@ -99,20 +195,50 @@ pocketshell_android_disable_launchers() {
       sleep 0.5
     done
   done
-  printf 'HOME during lane: com.android.settings FallbackHome only\n' >> "$evidence"
+  printf 'HOME during lane: com.android.settings FallbackHome only (stable for %s samples)\n' \
+    "${POCKETSHELL_LAUNCHER_STABLE_SAMPLES:-5}" >> "$evidence"
 }
 
-# Re-enable exactly the launchers this process disabled. Called from
-# pocketshell_release_all, so every lane exit path restores the device.
+# Re-enable exactly the launchers this process disabled, last-disabled
+# first. Called from pocketshell_release_all, so every catchable lane exit
+# restores the device; a record entry is dropped only after `pm enable`
+# succeeded, so anything left over is recovered by the next lane.
 pocketshell_android_restore_launchers() {
-  local package
+  local index package record
   (( ${#POCKETSHELL_DISABLED_LAUNCHERS[@]} > 0 )) || return 0
-  for package in "${POCKETSHELL_DISABLED_LAUNCHERS[@]}"; do
-    "$POCKETSHELL_LAUNCHER_ADB" -s "$POCKETSHELL_LAUNCHER_SERIAL" shell pm enable "$package" > /dev/null 2>&1 \
-      && printf 'RESTORED_LAUNCHER: %s\n' "$package" >&2 \
-      || printf 'WARNING: could not re-enable launcher %s on %s\n' "$package" "$POCKETSHELL_LAUNCHER_SERIAL" >&2
+  record="$(pocketshell_android_launcher_record "$POCKETSHELL_LAUNCHER_SERIAL")"
+  for (( index = ${#POCKETSHELL_DISABLED_LAUNCHERS[@]} - 1; index >= 0; index-- )); do
+    package="${POCKETSHELL_DISABLED_LAUNCHERS[$index]}"
+    if _pocketshell_enable_package "$POCKETSHELL_LAUNCHER_ADB" "$POCKETSHELL_LAUNCHER_SERIAL" "$package"; then
+      _pocketshell_launcher_record_remove "$record" "$package"
+      printf 'RESTORED_LAUNCHER: %s\n' "$package" >&2
+    else
+      printf 'WARNING: could not re-enable launcher %s on %s; kept in %s for the next lane to recover\n' \
+        "$package" "$POCKETSHELL_LAUNCHER_SERIAL" "$record" >&2
+    fi
   done
   POCKETSHELL_DISABLED_LAUNCHERS=()
+}
+
+# Emulator start path (start-local-avd.sh, avd-pool.sh start): recover stale
+# launchers only when no lane holds SERIAL's AVD lock, so a live lane's
+# deliberately disabled launcher is never re-enabled underneath it.
+pocketshell_android_recover_stale_launchers_if_idle() {
+  local adb="$1" serial="$2" lock_file
+  [[ -n "$serial" && "$serial" != unknown ]] || return 0
+  if declare -F pocketshell_avd_lock_file_for_serial > /dev/null 2>&1; then
+    lock_file="$(pocketshell_avd_lock_file_for_serial "" "$serial")"
+  else
+    return 0
+  fi
+  (
+    exec 9> "$lock_file"
+    if flock -n 9; then
+      pocketshell_android_recover_stale_launchers "$adb" "$serial" /dev/null
+    else
+      printf 'Skipping stale-launcher recovery on %s: a lane holds its AVD lock.\n' "$serial" >&2
+    fi
+  )
 }
 
 # Usage: pocketshell_android_input_preflight ADB SERIAL EVIDENCE_FILE
@@ -121,6 +247,7 @@ pocketshell_android_input_preflight() {
   local deadline title package value remaining
   mkdir -p "$(dirname -- "$evidence")"
   : > "$evidence" || return 1
+  pocketshell_android_recover_stale_launchers "$adb" "$serial" "$evidence" || return 1
   pocketshell_android_disable_launchers "$adb" "$serial" "$evidence" || return 1
   {
     printf 'android input preflight (#2946) on %s at %s\n' "$serial" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

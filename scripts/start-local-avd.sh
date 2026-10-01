@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 source "$ROOT_DIR/scripts/lib/scope-run.sh"
 pocketshell_acquire_avd_lock "$ROOT_DIR" "${1:-}"
 
@@ -226,7 +227,16 @@ hold_if_requested() {
 grep -Fxq "$AVD_NAME" "$RUN_DIR/available-avds.txt" ||
   fail "AVD '$AVD_NAME' was not listed by $EMULATOR -list-avds"
 
+# Issue #2946: a lane killed before its restore can leave the HOME launcher
+# disabled. Re-enable it here unless a live lane owns this emulator.
+recover_stale_launchers() {
+  local serial
+  serial="$("$ADB" get-serialno 2>/dev/null | tr -d '\r' || true)"
+  pocketshell_android_recover_stale_launchers_if_idle "$ADB" "$serial" || true
+}
+
 if has_adb_device && boot_completed; then
+  recover_stale_launchers
   write_summary "PASS" "existing adb device is already booted"
   printf 'Existing adb device is already booted.\n'
   printf 'Summary: %s\n' "$SUMMARY_PATH"
@@ -269,6 +279,7 @@ fi
 deadline=$((SECONDS + BOOT_TIMEOUT_SECONDS))
 while (( SECONDS < deadline )); do
   if boot_completed; then
+    recover_stale_launchers
     write_summary "PASS" "sys.boot_completed=1"
     printf 'Emulator readiness confirmed: sys.boot_completed=1\n'
     printf 'Summary: %s\n' "$SUMMARY_PATH"

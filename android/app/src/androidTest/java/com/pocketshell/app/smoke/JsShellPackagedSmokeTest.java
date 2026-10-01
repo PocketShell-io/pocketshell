@@ -68,13 +68,25 @@ public final class JsShellPackagedSmokeTest {
     private ActivityScenario<MainActivity> scenario;
     private MainActivity directActivity;
 
+    /** Emulated bottom display cutout used to keep a non-zero bottom inset (#2946). */
+    private static final String BOTTOM_CUTOUT_OVERLAY = "com.android.internal.display.cutout.emulation.double";
+    private boolean bottomCutoutEnabled;
+
     @Before
     public void launchPackagedShell() {
+        // A run killed mid-test must not leave the emulated cutout for later tests.
+        if (AndroidInputDeliveryProbe.runShell("cmd overlay list").contains("[x] " + BOTTOM_CUTOUT_OVERLAY)) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+        }
         scenario = ActivityScenario.launch(MainActivity.class);
     }
 
     @After
     public void closeShell() {
+        if (bottomCutoutEnabled) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+        }
         if (directActivity != null) {
             MainActivity activity = directActivity;
             InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);
@@ -480,16 +492,32 @@ public final class JsShellPackagedSmokeTest {
     public void composerInputStaysAboveImeWithinSafeArea() throws Exception {
         assertTrue("safe-area CSS injection is supported by the API 35+ smoke device", Build.VERSION.SDK_INT >= 35);
 
-        Insets systemInsets = readRootInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        int safeAreaTypes = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        Insets naturalInsets = readRootInsets(safeAreaTypes);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_NATURAL_INSETS_PX top=" + naturalInsets.top
+                + " bottom=" + naturalInsets.bottom + " navigationBarsBottom="
+                + readRootInsets(WindowInsets.Type.navigationBars()).bottom);
+        // The lanes disable the HOME launcher (#2946). On images where the
+        // launcher draws the navigation bar, the bottom inset is then 0, and
+        // CSS == native would pass as 0 == 0 even with a broken bridge. Give
+        // the device a real bottom inset through the same systemBars |
+        // displayCutout path the native plugin reads: an emulated bottom
+        // display cutout.
+        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
+        Insets systemInsets = readRootInsets(safeAreaTypes);
         float density = targetContext().getResources().getDisplayMetrics().density;
         float expectedSafeTop = Math.round(systemInsets.top / density);
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
-        // styles.css pads the Android shell by max(24px, safe-area inset). The
-        // lanes disable the HOME launcher (#2946), and on images where the
-        // launcher draws the navigation bar the bottom inset is then 0, so the
-        // shell keeps its 24px floor while the CSS inset itself stays exact.
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_TESTED_INSETS_DP top=" + expectedSafeTop
+                + " bottom=" + expectedSafeBottom + " source="
+                + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
+        assertTrue("the safe-area check needs a non-zero bottom inset to be load-bearing (bottom="
+                + systemInsets.bottom + "px)", expectedSafeBottom > 0);
+        // styles.css pads the Android shell by max(24px, safe-area inset).
         float expectedShellPaddingTop = Math.max(24f, expectedSafeTop);
         float expectedShellPaddingBottom = Math.max(24f, expectedSafeBottom);
+        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                + ".getPropertyValue('--safe-area-inset-bottom')) - " + expectedSafeBottom + ") <= 1");
 
         awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
         JSONObject beforeIme = evalJson("(() => {"
@@ -559,6 +587,20 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitImeVisible(false);
+    }
+
+    private void enableEmulatedBottomCutout(int safeAreaTypes) throws Exception {
+        String result = AndroidInputDeliveryProbe.runShell("cmd overlay enable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+        bottomCutoutEnabled = true;
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int bottom = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            bottom = readRootInsets(safeAreaTypes).bottom;
+            if (bottom > 0) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("emulated bottom display cutout did not produce a bottom inset (overlay result="
+                + result.trim() + ", bottom=" + bottom + "px)");
     }
 
     private Context targetContext() {

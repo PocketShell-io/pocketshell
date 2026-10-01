@@ -118,12 +118,23 @@ input focus on a starved emulator, and every injected key and tap goes to it.
 Every packaged lane runner calls `pocketshell_android_input_preflight`
 (`scripts/lib/android-input-preflight.sh`) before the device is used:
 
-- It disables every HOME launcher for the lane (`pm disable-user` plus
-  `am force-stop`), so the launcher cannot run or ANR. Android's own Settings
-  `FallbackHome` is HOME meanwhile. `pocketshell_release_all` re-enables
-  exactly those packages on every lane exit, while the AVD lock is held.
-  Where the launcher draws the navigation bar, the bottom inset is then 0 and
-  the shell keeps its `max(24px, inset)` padding floor.
+- It disables every HOME provider for the lane (`pm disable-user` plus
+  `am force-stop`) and re-queries until the set stays empty, because a setup
+  app (`com.google.android.googlesdksetup` on the hosted image) can start
+  answering HOME only after the launcher is gone. Android's own Settings
+  `FallbackHome` is HOME meanwhile. Each package is written to
+  `avd-lock-<serial>.disabled-launchers` next to the AVD lock before it is
+  disabled. `pocketshell_release_all` re-enables exactly those packages on
+  every lane exit and drops a record entry only after `pm enable` succeeded.
+  A lane killed with SIGKILL leaves the record, so the next lane's preflight
+  and the emulator start path (`start-local-avd.sh`, `avd-pool.sh start`, only
+  when no lane holds the lock) re-enable it first and log
+  `RECOVERED_STALE_DISABLED_LAUNCHER`.
+- Where the launcher draws the navigation bar, the bottom inset is 0 while it
+  is disabled. The smoke safe-area test logs the natural insets and then
+  enables Android's emulated bottom display cutout
+  (`com.android.internal.display.cutout.emulation.double`), so its CSS ==
+  native bottom-inset check still runs against a non-zero inset.
 - It sets `hide_error_dialogs=1` (best effort: hosted run 36792962871 showed a
   launcher ANR dialog despite it) and force-stops the owner of any other
   "isn't responding" or crash dialog already on screen.
