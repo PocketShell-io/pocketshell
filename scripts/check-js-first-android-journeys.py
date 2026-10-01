@@ -51,6 +51,7 @@ LANES = (
                 "settingsAndAndroidBackReturnHome",
                 "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
                 "composerInputStaysAboveImeWithinSafeArea",
+                "pageReloadsKeepFirstNativeCallAnswered",
             }
         ),
     ),

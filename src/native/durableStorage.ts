@@ -66,6 +66,24 @@ export interface DurableStorageDependencies {
   prototype: StoragePrototype;
   writer: DurableStorageWriter | undefined;
   open: () => Promise<DurableStorageOpenResult>;
+  /** Give up on `open` after this long (default DURABLE_STORAGE_OPEN_TIMEOUT_MS). */
+  openTimeoutMs?: number;
+}
+
+/**
+ * Upper bound for the launch-time `open`. Startup waits on it, so an
+ * unanswered native call must become a recorded failure, not a blank screen.
+ */
+export const DURABLE_STORAGE_OPEN_TIMEOUT_MS = 8_000;
+
+function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`The native durable storage did not answer within ${ms} ms.`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
 }
 
 export class DurableStorageError extends Error {
@@ -103,7 +121,7 @@ export async function installDurableStorage(dependencies: DurableStorageDependen
 
   let opened: DurableStorageOpenResult;
   try {
-    opened = await dependencies.open();
+    opened = await bounded(dependencies.open(), dependencies.openTimeoutMs ?? DURABLE_STORAGE_OPEN_TIMEOUT_MS);
   } catch (error) {
     return { state: 'failed', reason: error instanceof Error ? error.message : String(error) };
   }
@@ -196,6 +214,16 @@ export async function installDurableStorage(dependencies: DurableStorageDependen
   return { state: 'native-durable', imported, restored, removed };
 }
 
+let openCalls = 0;
+
+/**
+ * Native `open` calls made by this page. Startup asks exactly once and never
+ * retries, so a lost reply cannot be masked by a second attempt (#3000).
+ */
+export function durableStorageOpenCalls(): number {
+  return openCalls;
+}
+
 /** Android entry point; web/desktop builds of this shell keep plain localStorage. */
 export async function installAndroidDurableStorage(): Promise<DurableStorageStatus> {
   if (Capacitor.getPlatform() !== 'android') {
@@ -205,7 +233,10 @@ export async function installAndroidDurableStorage(): Promise<DurableStorageStat
     storage: globalThis.localStorage,
     prototype: Storage.prototype as unknown as StoragePrototype,
     writer: (globalThis as unknown as Record<string, DurableStorageWriter | undefined>)[DURABLE_STORAGE_INTERFACE],
-    open: () => DurableStorage.open(),
+    open: () => {
+      openCalls += 1;
+      return DurableStorage.open();
+    },
   });
   if (status.state !== 'native-durable') {
     console.error(`PocketShell durable storage unavailable: ${status.reason}`);
