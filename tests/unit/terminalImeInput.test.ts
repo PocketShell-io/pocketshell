@@ -111,6 +111,23 @@ class ChromiumTextarea {
     return this;
   }
 
+  /** Moves the cursor (setSelection with an empty range): the text is unchanged. */
+  moveCursor(to: number): this {
+    this.ime(() => {
+      this.cursor = to;
+    });
+    return this;
+  }
+
+  /** Replaces [start, end) — a selection or a word the keyboard rewrites — committing `text`. */
+  replaceRange(start: number, end: number, text: string): this {
+    this.ime(() => {
+      this.replace(start, end, text);
+      this.model.input(text === '' ? 'deleteContentBackward' : 'insertReplacementText');
+    });
+    return this;
+  }
+
   deleteBefore(n: number): this {
     this.ime(() => {
       this.replace(this.cursor - n, this.cursor, '');
@@ -146,6 +163,119 @@ class ChromiumTextarea {
     return this;
   }
 }
+
+/**
+ * What a shell's line editor shows after these bytes: DEL rubs out one
+ * character (readline deletes per code point), CR ends the line.
+ */
+function shellLine(bytes: string): string {
+  const line: string[] = [];
+  for (const char of Array.from(bytes)) {
+    if (char === DEL) line.pop();
+    else if (char === '\r') line.length = 0;
+    else line.push(char);
+  }
+  return line.join('');
+}
+
+type Listener = (event: never) => void;
+
+/**
+ * A terminal container, its xterm textarea, the window and the document, with
+ * events dispatched in the browser's order: the adapter's capture listener on
+ * the container, then xterm's own textarea listener (recorded unless stopped).
+ */
+function fakeTerminal() {
+  const registry = (owner: string) => {
+    const listeners = new Map<string, Listener[]>();
+    return {
+      listeners,
+      addEventListener: (type: string, listener: Listener) => {
+        listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+      },
+      removeEventListener: (type: string, listener: Listener) => {
+        listeners.set(type, (listeners.get(type) ?? []).filter((entry) => entry !== listener));
+      },
+      owner,
+    };
+  };
+  const container = registry('container');
+  const windowTarget = registry('window');
+  const documentTarget = { ...registry('document'), visibilityState: 'visible', defaultView: windowTarget };
+  const textarea = { value: '', ownerDocument: documentTarget };
+  const xtermSaw: string[] = [];
+  const sent: string[] = [];
+  const event = (type: string, init: Record<string, unknown>) => ({
+    type,
+    target: textarea as unknown,
+    stopped: false,
+    defaultPrevented: false,
+    stopImmediatePropagation() {
+      this.stopped = true;
+    },
+    preventDefault() {
+      this.defaultPrevented = true;
+    },
+    key: '',
+    keyCode: 0,
+    isComposing: false,
+    ctrlKey: false,
+    altKey: false,
+    metaKey: false,
+    ...init,
+  });
+  const fire = (target: { listeners: Map<string, Listener[]> }, value: ReturnType<typeof event>) => {
+    for (const listener of target.listeners.get(value.type) ?? []) {
+      if (!value.stopped) (listener as (event: unknown) => void)(value);
+    }
+  };
+  const detach = attachTerminalImeInput({
+    textarea: textarea as unknown as HTMLTextAreaElement,
+    element: container as unknown as HTMLElement,
+    sessionKey: 's',
+    sendInput: (data) => sent.push(data),
+  });
+  return {
+    textarea,
+    sent,
+    xtermSaw,
+    detach,
+    listenerCount: () =>
+      [container, windowTarget, documentTarget].reduce(
+        (total, target) => total + [...target.listeners.values()].reduce((sum, list) => sum + list.length, 0),
+        0,
+      ),
+    /** An event on the textarea: window capture, container capture, then xterm. */
+    onTextarea(type: string, init: Record<string, unknown> = {}) {
+      const value = event(type, init);
+      if (type === 'keyup') fire(windowTarget, value);
+      fire(container, value);
+      if (!value.stopped && value.target === textarea) xtermSaw.push(`${type}:${value.key}`);
+      return value;
+    },
+    /** A keyup that lands on another element (the composer took focus). */
+    keyUpElsewhere(init: Record<string, unknown>) {
+      fire(windowTarget, event('keyup', { ...init, target: {} }));
+    },
+    windowBlur() {
+      fire(windowTarget, event('blur', { target: windowTarget }));
+    },
+    background() {
+      documentTarget.visibilityState = 'hidden';
+      fire(documentTarget, event('visibilitychange', { target: documentTarget }));
+    },
+    /** One keyboard edit: keydown 229, the textarea change, input. */
+    imeCommit(text: string) {
+      this.onTextarea('keydown', { key: 'Unidentified', keyCode: 229 });
+      textarea.value += text;
+      this.onTextarea('input', { inputType: 'insertText' });
+      this.onTextarea('keyup', { key: 'Unidentified', keyCode: 229 });
+    },
+  };
+}
+
+const CONTROL = key('Control', 17, { ctrlKey: true });
+const CTRL_V = key('v', 86, { ctrlKey: true });
 
 describe('Android terminal IME input (#2952)', () => {
   it('sends each letter of a Gboard-style composing word once, and the committing space', () => {
@@ -249,71 +379,111 @@ describe('Android terminal IME input (#2952)', () => {
   });
 
   it('takes composition and input over from xterm in the capture phase, leaving real keys to it', () => {
-    // The container's capture listeners run before xterm's textarea listeners;
-    // this dispatcher reproduces that order without a DOM.
-    const containerListeners = new Map<string, (event: unknown) => void>();
-    const element = {
-      addEventListener: (type: string, listener: (event: unknown) => void, capture: boolean) => {
-        expect(capture).toBe(true);
-        containerListeners.set(type, listener);
-      },
-      removeEventListener: (type: string) => containerListeners.delete(type),
-    };
-    const textarea = { value: '' };
-    const xtermSaw: string[] = [];
-    const dispatch = (type: string, init: Record<string, unknown> = {}) => {
-      const event = {
-        type,
-        target: textarea,
-        stopped: false,
-        defaultPrevented: false,
-        stopImmediatePropagation() {
-          this.stopped = true;
-        },
-        preventDefault() {
-          this.defaultPrevented = true;
-        },
-        key: '',
-        keyCode: 0,
-        isComposing: false,
-        ctrlKey: false,
-        altKey: false,
-        metaKey: false,
-        ...init,
-      };
-      containerListeners.get(type)?.(event);
-      if (!event.stopped) xtermSaw.push(`${type}:${event.key}`);
-      return event;
-    };
-    const sent: string[] = [];
-    const detach = attachTerminalImeInput({
-      textarea: textarea as unknown as HTMLTextAreaElement,
-      element: element as unknown as HTMLElement,
-      sessionKey: 's',
-      sendInput: (data) => sent.push(data),
-    });
+    const terminal = fakeTerminal();
+    terminal.onTextarea('keydown', { key: 'Unidentified', keyCode: 229 });
+    terminal.onTextarea('compositionstart');
+    terminal.textarea.value = 'hi';
+    terminal.onTextarea('compositionupdate');
+    terminal.onTextarea('input', { inputType: 'insertCompositionText' });
+    terminal.onTextarea('compositionend');
+    terminal.onTextarea('keyup', { key: 'Unidentified', keyCode: 229 });
+    const printable = terminal.onTextarea('keydown', { key: '7', keyCode: 55 });
+    terminal.onTextarea('keydown', { key: 'Enter', keyCode: 13 });
+    terminal.onTextarea('paste');
 
-    dispatch('keydown', { key: 'Unidentified', keyCode: 229 });
-    dispatch('compositionstart');
-    textarea.value = 'hi';
-    dispatch('compositionupdate');
-    dispatch('input', { inputType: 'insertCompositionText' });
-    dispatch('compositionend');
-    dispatch('keyup', { key: 'Unidentified', keyCode: 229 });
-    const printable = dispatch('keydown', { key: '7', keyCode: 55 });
-    dispatch('keydown', { key: 'Enter', keyCode: 13 });
-    dispatch('paste');
-
-    expect(sent.join('')).toBe('hi7');
+    expect(terminal.sent.join('')).toBe('hi7');
     expect(printable.defaultPrevented).toBe(true);
     // xterm saw only what it maps itself: real keys, keyups and paste.
-    expect(xtermSaw).toEqual(['keyup:Unidentified', 'keydown:Enter', 'paste:']);
+    expect(terminal.xtermSaw).toEqual(['keyup:Unidentified', 'keydown:Enter', 'paste:']);
     // An event aimed at another element inside the terminal is not touched.
-    dispatch('input', { inputType: 'insertText', target: {} });
-    expect(sent.join('')).toBe('hi7');
-    expect(xtermSaw).toContain('input:');
+    terminal.onTextarea('input', { inputType: 'insertText', target: {} });
+    expect(terminal.sent.join('')).toBe('hi7');
 
-    detach();
-    expect(containerListeners.size).toBe(0);
+    terminal.detach();
+    expect(terminal.listenerCount()).toBe(0);
+  });
+
+  it('forgets a held key when focus leaves the textarea before its keyup (blur while held)', () => {
+    const editor = new ChromiumTextarea();
+    expect(editor.model.keyDown(CONTROL)).toBe('xterm');
+    expect(editor.model.keyDown(CTRL_V)).toBe('xterm');
+    // Ctrl+V hands focus to the composer: both keyups land there, not here.
+    editor.model.releaseKeys();
+    expect(editor.model.holdsKeys).toBe(false);
+    editor.composeWord('ls').commit('ls');
+    expect(editor.bytes).toBe('ls');
+  });
+
+  it('forgets a held key when the app goes to the background before its keyup (background while held)', () => {
+    const editor = new ChromiumTextarea().composeWord('git').commit('git').commit(' ');
+    expect(editor.model.keyDown(key('ArrowUp', 38))).toBe('xterm');
+    editor.model.releaseKeys();
+    editor.commit('x');
+    // The keyboard's text starts afresh after the release; nothing is re-sent.
+    expect(editor.bytes).toBe('git x');
+  });
+
+  it('releases held keys on the textarea losing focus, a keyup anywhere, window blur and backgrounding', () => {
+    const scenarios: Array<[string, (terminal: ReturnType<typeof fakeTerminal>) => void]> = [
+      ['textarea focusout', (terminal) => terminal.onTextarea('focusout')],
+      ['keyup on the composer', (terminal) => {
+        terminal.keyUpElsewhere({ key: 'v', keyCode: 86, ctrlKey: true });
+        terminal.keyUpElsewhere({ key: 'Control', keyCode: 17 });
+      }],
+      ['window blur', (terminal) => terminal.windowBlur()],
+      ['visibilitychange to hidden', (terminal) => terminal.background()],
+    ];
+    for (const [label, release] of scenarios) {
+      const terminal = fakeTerminal();
+      terminal.onTextarea('keydown', { key: 'Control', keyCode: 17, ctrlKey: true });
+      terminal.onTextarea('keydown', { key: 'v', keyCode: 86, ctrlKey: true });
+      release(terminal);
+      terminal.imeCommit('ls');
+      expect(terminal.sent.join(''), label).toBe('ls');
+      terminal.detach();
+    }
+  });
+
+  it('rewrites the line from the edit point when the keyboard edits after a cursor move', () => {
+    const editor = new ChromiumTextarea().commit('hello world');
+    editor.moveCursor(5);
+    expect(editor.bytes).toBe('hello world');
+    editor.replaceRange(5, 5, 'X');
+    expect(editor.bytes).toBe(`hello world${DEL.repeat(6)}X world`);
+    expect(shellLine(editor.bytes)).toBe('helloX world');
+  });
+
+  it('replaces a selection with exactly the new text', () => {
+    const editor = new ChromiumTextarea().commit('cat old.txt');
+    editor.replaceRange(4, 7, 'new');
+    expect(editor.bytes).toBe(`cat old.txt${DEL.repeat(7)}new.txt`);
+    expect(shellLine(editor.bytes)).toBe('cat new.txt');
+  });
+
+  it('deletes inside a word away from the end', () => {
+    const editor = new ChromiumTextarea().commit('grep pattern file');
+    editor.replaceRange(8, 9, '');
+    expect(editor.bytes).toBe(`grep pattern file${DEL.repeat(9)}ern file`);
+    expect(shellLine(editor.bytes)).toBe('grep patern file');
+  });
+
+  it('turns a predicted space the keyboard removes before punctuation into one DEL', () => {
+    const editor = new ChromiumTextarea().composeWord('word').commit('word').commit(' ');
+    editor.deleteBefore(1).commit('.');
+    expect(editor.bytes).toBe(`word ${DEL}.`);
+    expect(shellLine(editor.bytes)).toBe('word.');
+  });
+
+  it('sends one DEL per code point when a multi-code-point emoji is deleted', () => {
+    const family = '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}'; // 5 code points, 8 UTF-16 units
+    const flag = '\u{1F1EB}\u{1F1F7}'; // 2 code points
+    const editor = new ChromiumTextarea().commit(`a${family}`);
+    editor.deleteBefore(family.length);
+    expect(editor.bytes).toBe(`a${family}${DEL.repeat(5)}`);
+    expect(shellLine(editor.bytes)).toBe('a');
+    const flagged = new ChromiumTextarea().commit(`b${flag}`);
+    flagged.deleteBefore(flag.length);
+    expect(flagged.bytes).toBe(`b${flag}${DEL.repeat(2)}`);
+    expect(shellLine(flagged.bytes)).toBe('b');
   });
 });

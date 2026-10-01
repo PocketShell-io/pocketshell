@@ -32,7 +32,11 @@
  * Enter, Backspace, Tab, arrows, Ctrl chords — exactly as on desktop. Two
  * guards keep that single-delivery too: any textarea change that happens while
  * such a key is down is the key's own default action (xterm has already sent
- * the key's bytes), so it is absorbed rather than diffed; and a plain
+ * the key's bytes), so it is absorbed rather than diffed — and a held key is
+ * forgotten the moment its keyup can no longer be expected here (a keyup
+ * anywhere in the window, the textarea losing focus, the window blurring, the
+ * app going to the background), because a key left "held" would absorb every
+ * later keyboard edit; and a plain
  * printable key is sent here directly instead of through xterm's key handler,
  * whose "typing opens the composer" hand-off would otherwise move focus to the
  * composer on the first digit LatinIME sends as a key, and the rest of the
@@ -112,6 +116,24 @@ export class TerminalImeInput {
     // A key xterm handled moved the shell's line on (Enter, an arrow, ^C):
     // the keyboard's old text no longer describes it, so start it afresh.
     if (this.keysDown.size === 0 && !this.composing) this.reset();
+  }
+
+  /**
+   * Focus left the textarea, the window blurred, or the app went to the
+   * background: no keyup for a held key is coming here. Forget the held keys
+   * (what the keys changed was already delivered by xterm) and start the
+   * keyboard's text afresh, so the next edit is diffed, not absorbed.
+   */
+  releaseKeys(): void {
+    if (this.keysDown.size === 0) return;
+    this.keysDown.clear();
+    if (this.composing) this.absorb();
+    else this.reset();
+  }
+
+  /** Whether a real key is being treated as held (its default edits are absorbed). */
+  get holdsKeys(): boolean {
+    return this.keysDown.size > 0;
   }
 
   compositionStart(): void {
@@ -198,6 +220,8 @@ function keyIdentity(event: Pick<ImeKeyDown, 'key' | 'keyCode'>): string {
 /** Binds a {@link TerminalImeInput} to a terminal's textarea; returns the detach. */
 export function attachTerminalImeInput(target: TerminalInputTarget): () => void {
   const { textarea, element } = target;
+  const doc = textarea.ownerDocument as Document | null;
+  const win = doc?.defaultView ?? null;
   const model = new TerminalImeInput(
     {
       get value() {
@@ -220,8 +244,15 @@ export function attachTerminalImeInput(target: TerminalInputTarget): () => void 
     event.stopImmediatePropagation();
     if (disposition === 'sent') event.preventDefault();
   };
-  const onKeyUp = (event: KeyboardEvent) => {
-    if (fromTextarea(event)) model.keyUp(event);
+  // Keyups are taken from the whole window: a key that went down here can be
+  // released after focus moved (Ctrl+V hands focus to the composer).
+  const onKeyUp = (event: KeyboardEvent) => model.keyUp(event);
+  const release = () => model.releaseKeys();
+  const onFocusOut = (event: Event) => {
+    if (fromTextarea(event)) release();
+  };
+  const onVisibility = () => {
+    if (doc?.visibilityState === 'hidden') release();
   };
   const onCompositionStart = (event: CompositionEvent) => {
     if (!fromTextarea(event)) return;
@@ -247,7 +278,7 @@ export function attachTerminalImeInput(target: TerminalInputTarget): () => void 
 
   const listeners: Array<[string, (event: never) => void]> = [
     ['keydown', onKeyDown],
-    ['keyup', onKeyUp],
+    ['focusout', onFocusOut],
     ['compositionstart', onCompositionStart],
     ['compositionupdate', onCompositionUpdate],
     ['compositionend', onCompositionEnd],
@@ -255,8 +286,16 @@ export function attachTerminalImeInput(target: TerminalInputTarget): () => void 
     ['paste', onPaste],
   ];
   for (const [type, listener] of listeners) element.addEventListener(type, listener as EventListener, true);
+  win?.addEventListener('keyup', onKeyUp as EventListener, true);
+  win?.addEventListener('blur', release);
+  win?.addEventListener('pagehide', release);
+  doc?.addEventListener('visibilitychange', onVisibility);
   return () => {
     for (const [type, listener] of listeners) element.removeEventListener(type, listener as EventListener, true);
+    win?.removeEventListener('keyup', onKeyUp as EventListener, true);
+    win?.removeEventListener('blur', release);
+    win?.removeEventListener('pagehide', release);
+    doc?.removeEventListener('visibilitychange', onVisibility);
   };
 }
 
