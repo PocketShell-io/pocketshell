@@ -28,6 +28,16 @@ unset POCKETSHELL_AVD_LOCK_ACQUIRED \
       ADB_SERIAL
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+
+# The fake connected Gradle publishes exactly the smoke methods the REAL
+# result checker requires (issue #2946 added one). Deriving the set instead of
+# hard-coding it keeps this harness from rotting into a lane that dies at the
+# exact-report check before reaching the property under test.
+SMOKE_METHODS="$(python3 -c 'import runpy, sys; print("\n".join(sorted(runpy.run_path(sys.argv[1])["REQUIRED_METHODS"])))' \
+  "$ROOT_DIR/scripts/check-js-smoke-results.py")"
+SMOKE_COUNT="$(grep -c . <<< "$SMOKE_METHODS")"
+(( SMOKE_COUNT > 0 )) || { printf 'FAIL: could not read the required smoke methods\n' >&2; exit 1; }
+SMOKE_PASS_LINE="$SMOKE_COUNT executed tests, $SMOKE_COUNT passed"
 REAL_FLOCK="$(command -v flock)"
 SANDBOX=""
 ACTIVE_GROUPS=()
@@ -143,9 +153,44 @@ case "${1:-}" in
     esac
     ;;
   shell)
-    [[ "${2:-}" == 'getprop' && "${3:-}" == 'ro.build.version.sdk' ]] \
-      || { printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90; }
-    printf '35\n'
+    shift
+    state="${FAKE_DEVICE_STATE:?}"
+    # Issue #2946: every lane runs the Android input preflight before it
+    # touches the device and captures input diagnostics on failure. Answer
+    # exactly those commands like an API 35 emulator with no system error
+    # dialog; anything else is still an unexpected command.
+    case "$*" in
+      'getprop ro.build.version.sdk') printf '35\n' ;;
+      'settings put global hide_error_dialogs 1')
+        printf '1\n' > "$state/$serial.hide-error-dialogs" ;;
+      'settings get global hide_error_dialogs')
+        if [[ -f "$state/$serial.hide-error-dialogs" ]]; then
+          cat "$state/$serial.hide-error-dialogs"
+        else
+          printf 'null\n'
+        fi
+        ;;
+      'dumpsys window windows')
+        printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n'
+        printf '  Window #0 Window{1a2b3c u0 com.pocketshell.app/com.pocketshell.app.MainActivity}:\n'
+        ;;
+      'dumpsys window displays')
+        printf '  mCurrentFocus=Window{1a2b3c u0 com.pocketshell.app/com.pocketshell.app.MainActivity}\n'
+        printf '  mFocusedApp=ActivityRecord{4d5e6f u0 com.pocketshell.app/.MainActivity}\n'
+        ;;
+      'dumpsys input') printf 'Input Dispatcher State:\n' ;;
+      'dumpsys window lastanr') printf 'WINDOW MANAGER LAST ANR (dumpsys window lastanr)\n' ;;
+      'dumpsys input_method') printf '  mCurTokenDisplayId=0\n' ;;
+      'dumpsys activity activities') printf 'ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n' ;;
+      *) printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90 ;;
+    esac
+    ;;
+  logcat)
+    printf -- '--------- beginning of main\n'
+    ;;
+  exec-out)
+    [[ "${2:-}" == 'screencap' ]] || { printf 'unexpected adb exec-out command: %s\n' "$*" >&2; exit 90; }
+    printf '\x89PNG\r\n\x1a\n'
     ;;
   *)
     printf 'unexpected adb command: %s\n' "$*" >&2
@@ -180,6 +225,9 @@ printf '%s\n' "$args" > "$state/$run_id.gradle-args"
 printf '%s\n' "$serial" > "$state/$run_id.serial"
 printf '%s\n' "${POCKETSHELL_AVD_LOCK_FILE:-}" > "$state/$run_id.lock-file"
 printf '%s\n' "$BASHPID" > "$state/$run_id.gradle-pid"
+# The #2946 input preflight must have disabled error dialogs on THIS serial
+# before instrumentation started.
+cat "$state/$serial.hide-error-dialogs" > "$state/$run_id.preflight" 2>/dev/null || true
 
 lock_path="$(readlink -f "${POCKETSHELL_AVD_LOCK_FILE:?}")"
 inherited_fds=()
@@ -211,31 +259,23 @@ fi
 
 results="$(cd -- "$(dirname -- "$0")" && pwd -P)/app/build/outputs/androidTest-results/connected/debug"
 mkdir -p "$results"
-if [[ "${FAKE_RED_JUNIT_RUN_ID:-}" == "$run_id" ]]; then
-  cat > "$results/TEST-smoke.xml" <<'XML'
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="6" failures="1" errors="0" skipped="0">
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity"><failure message="fixture red"/></testcase>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedMultipleShareReadsStandardStreamListWithoutClipData"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea"/>
-</testsuite>
-XML
-else
-  cat > "$results/TEST-smoke.xml" <<'XML'
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="6" failures="0" errors="0" skipped="0">
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedMultipleShareReadsStandardStreamListWithoutClipData"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome"/>
-  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea"/>
-</testsuite>
-XML
-fi
+methods_file="$(cd -- "$(dirname -- "$0")" && pwd -P)/fake-smoke-methods.txt"
+mapfile -t methods < "$methods_file"
+(( ${#methods[@]} > 0 )) || { printf 'fake smoke method list is empty\n' >&2; exit 94; }
+failures=0
+[[ "${FAKE_RED_JUNIT_RUN_ID:-}" == "$run_id" ]] && failures=1
+{
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+  printf '<testsuite name="smoke" tests="%s" failures="%s" errors="0" skipped="0">\n' "${#methods[@]}" "$failures"
+  for index in "${!methods[@]}"; do
+    if (( failures == 1 && index == 0 )); then
+      printf '  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="%s"><failure message="fixture red"/></testcase>\n' "${methods[$index]}"
+    else
+      printf '  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="%s"/>\n' "${methods[$index]}"
+    fi
+  done
+  printf '</testsuite>\n'
+} > "$results/TEST-smoke.xml"
 exit 0
 GRADLEW
   chmod +x "$root/android/gradlew"
@@ -247,11 +287,14 @@ make_checkout() {
   cp "$ROOT_DIR/scripts/connected-test.sh" "$root/scripts/connected-test.sh"
   cp "$ROOT_DIR/scripts/connected-js-smoke.sh" "$root/scripts/connected-js-smoke.sh"
   cp "$ROOT_DIR/scripts/check-js-smoke-results.py" "$root/scripts/check-js-smoke-results.py"
+  cp "$ROOT_DIR/scripts/check-android-input-diagnostics.py" "$root/scripts/check-android-input-diagnostics.py"
+  cp "$ROOT_DIR/scripts/lib/android-input-preflight.sh" "$root/scripts/lib/android-input-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/avd-lock.sh" "$root/scripts/lib/avd-lock.sh"
   cp "$ROOT_DIR/scripts/lib/disk-preflight.sh" "$root/scripts/lib/disk-preflight.sh"
   cp "$ROOT_DIR/scripts/lib/gradle-output-lock.sh" "$root/scripts/lib/gradle-output-lock.sh"
   chmod +x "$root/scripts/connected-test.sh" "$root/scripts/connected-js-smoke.sh" \
-    "$root/scripts/check-js-smoke-results.py"
+    "$root/scripts/check-js-smoke-results.py" "$root/scripts/check-android-input-diagnostics.py"
+  printf '%s\n' "$SMOKE_METHODS" > "$root/android/fake-smoke-methods.txt"
   make_fake_gradle "$root"
 }
 
@@ -306,7 +349,7 @@ wait_runner_failure() {
   (( rc != 0 )) || fail "JS connected lane $run_id unexpectedly accepted a red JUnit report"
   grep -Fq 'instrumentation tests failed' "$SANDBOX/$run_id.err" \
     || fail "JS connected lane $run_id did not report the exact JUnit failure"
-  ! grep -Fq '6 executed tests, 6 passed' "$SANDBOX/$run_id.out" \
+  ! grep -Fq "$SMOKE_PASS_LINE" "$SANDBOX/$run_id.out" \
     || fail "JS connected lane $run_id printed a green result for a red JUnit report"
 }
 
@@ -318,6 +361,8 @@ assert_run_identity() {
     || fail "$run_id lost its isolated package suffix"
   [[ "$(<"$SANDBOX/device-state/$run_id.serial")" == "$serial" ]] \
     || fail "$run_id mutated the wrong emulator serial"
+  [[ "$(<"$SANDBOX/device-state/$run_id.preflight")" == 1 ]] \
+    || fail "$run_id reached instrumentation without the #2946 Android input preflight on $serial"
 }
 
 same_serial_lanes_serialize_across_worktrees() {
@@ -348,10 +393,10 @@ same_serial_lanes_serialize_across_worktrees() {
 
   assert_run_identity same-a i2863a emulator-5554
   assert_run_identity same-b i2863b emulator-5554
-  grep -Fq '6 executed tests, 6 passed' "$SANDBOX/same-a.out" \
-    || fail 'first JS lane did not validate its own exact six-method report'
-  grep -Fq '6 executed tests, 6 passed' "$SANDBOX/same-b.out" \
-    || fail 'second JS lane did not validate its own exact six-method report'
+  grep -Fq "$SMOKE_PASS_LINE" "$SANDBOX/same-a.out" \
+    || fail 'first JS lane did not validate its own exact smoke-method report'
+  grep -Fq "$SMOKE_PASS_LINE" "$SANDBOX/same-b.out" \
+    || fail 'second JS lane did not validate its own exact smoke-method report'
   wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$second_pid" 3 \
     || fail 'same-serial lock remained held after both JS wrappers exited'
 }
@@ -404,7 +449,7 @@ red_junit_fails_closed_and_releases_the_serial() {
     || fail 'a red JUnit verdict left the shared serial lock wedged'
   touch "$SANDBOX/device-state/after-red.release"
   wait_runner_success "$green_pid" after-red
-  grep -Fq '6 executed tests, 6 passed' "$SANDBOX/after-red.out" \
+  grep -Fq "$SMOKE_PASS_LINE" "$SANDBOX/after-red.out" \
     || fail 'post-failure JS lane did not validate its exact JUnit report'
   wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$green_pid" 3 \
     || fail 'serial lock remained held after the post-failure lane exited'
