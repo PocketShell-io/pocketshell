@@ -36,6 +36,7 @@ REQUIRED_METHODS = frozenset(
         "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
         "safeAreaBottomInsetBridgeCarriesANonZeroInset",
         "composerInputStaysAboveImeWithinSafeArea",
+        "pageReloadsKeepFirstNativeCallAnswered",
     }
 )
 SELF_TEST_CASES = 8

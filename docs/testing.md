@@ -88,7 +88,7 @@ distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
 rewrite tree it verifies the eight packaged contracts: smoke selects the exact
-eight methods in `JsShellPackagedSmokeTest`; lifecycle selects
+nine methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
 `UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;

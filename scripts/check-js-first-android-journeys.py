@@ -52,6 +52,7 @@ LANES = (
                 "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
                 "safeAreaBottomInsetBridgeCarriesANonZeroInset",
                 "composerInputStaysAboveImeWithinSafeArea",
+                "pageReloadsKeepFirstNativeCallAnswered",
             }
         ),
     ),

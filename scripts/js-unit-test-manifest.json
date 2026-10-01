@@ -284,9 +284,19 @@
         "leaves sessionStorage and other storage areas non-durable",
         "rolls back and throws when the native commit fails, so no write is acknowledged without being durable",
         "keeps plain localStorage and records a Diagnostics event when the native writer or snapshot is unavailable",
+        "falls back to plain localStorage with a Diagnostics entry when native open never answers, ignoring a late answer",
+        "warms up the native bridge as the first native call, before durable storage opens",
         "makes the real snippet and settings stores durable, and refuses to acknowledge a delete that did not commit",
         "boots the app only after durable storage is installed, because stores read saved data at import time",
         "finds no property-style localStorage writes that would bypass the durable path in this app or the shared core/ui"
+      ]
+    },
+    "tests/unit/bridgeReady.test.ts": {
+      "suite": "bridge warm-up",
+      "tests": [
+        "retries the sacrificial ping when the first reply is lost, as after a page reload",
+        "reports an unanswered bridge instead of waiting forever",
+        "settles a slow promise as undefined after the bound and passes through answers and errors"
       ]
     }
   }
