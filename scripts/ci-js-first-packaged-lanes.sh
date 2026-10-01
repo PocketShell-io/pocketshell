@@ -83,6 +83,17 @@ else
   composer_status=$?
 fi
 
+if scripts/connected-js-settings.sh \
+  --suffix i2855ci \
+  --port 2222 \
+  --container pocketshell-test-agents \
+  --run-id "js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  settings_status=0
+else
+  settings_status=$?
+fi
+
 # The shared PocketShell app (#2936): list, attach, re-attach and type, on
 # its own isolated agents lane (the workflow starts 2243 for it).
 if scripts/connected-js-shared-app.sh \
@@ -118,9 +129,9 @@ else
   signed_upgrade_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s durable-storage=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$durable_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s durable-storage=%s settings=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$durable_status" "$settings_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || durable_status != 0 || composer_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || durable_status != 0 || composer_status != 0 || settings_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

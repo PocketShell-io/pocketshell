@@ -7,6 +7,9 @@ pocketshell_js_lifecycle_cleanup() {
   if declare -F stop_host_socket_watcher >/dev/null 2>&1; then
     stop_host_socket_watcher || true
   fi
+  if declare -F pocketshell_release_js_fixture_port_lock >/dev/null 2>&1; then
+    pocketshell_release_js_fixture_port_lock
+  fi
   if declare -F pocketshell_release_all >/dev/null 2>&1; then
     pocketshell_release_all
   fi

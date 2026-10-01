@@ -139,7 +139,12 @@ fixture() { ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"; }
 # This run's own three sessions, each in its own folder, so the journeys never
 # depend on (or click) whatever earlier runs left on the lane. Session c gets
 # the raw-mode byte reader the IME journey starts (#2952).
-SESSION_RUN="ps2936-$(date +%s)-$RANDOM"
+# SHARED_APP_RUN_RANDOM pins the run id's random part (1-5 digits), so a run
+# can be aimed at a line length: on the 35-column phone layout a 4-digit id
+# makes the journey's tagged output line fill a row exactly (#2949).
+RUN_RANDOM="${SHARED_APP_RUN_RANDOM:-$RANDOM}"
+[[ "$RUN_RANDOM" =~ ^[0-9]{1,5}$ ]] || fail "SHARED_APP_RUN_RANDOM must be 1-5 digits (got: $RUN_RANDOM)"
+SESSION_RUN="ps2936-$(date +%s)-$RUN_RANDOM"
 SIDES=(a b c)
 for side in "${SIDES[@]}"; do
   fixture "mkdir -p ~/$SESSION_RUN-$side && pocketshell sessions create --json --cwd ~/$SESSION_RUN-$side -- $SESSION_RUN-$side >/dev/null" \
