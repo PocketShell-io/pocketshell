@@ -295,7 +295,12 @@ check_workflow() {
     tracked="$(git -C "$scan_root" ls-files)"
     # Tier 1: the Gradle test graph itself.
     direct="$(printf '%s\n' "$tracked" |
-      grep -E '(/src/(test|androidTest)/|(^|/)build\.gradle(\.kts)?$)' || true)"
+      grep -E '(/src/(test|androidTest)/|(^|/)build\.gradle(\.kts)?$)' || {
+        grep_status=$?
+        if [ "$grep_status" -ne 1 ]; then
+          exit "$grep_status"
+        fi
+      })" || fail "C9: failed to select tracked test/build files"
     # Tier 2 (issue #2435): the scripts a Gradle test task shells OUT to. The
     # JVM tests in app/src/test/.../scripts/ exist to run tests/scripts/*.sh
     # harnesses through `runShellHarness(relativePath = "...")`, so a harness
@@ -324,16 +329,50 @@ check_workflow() {
     #     not a shell-out.
     harnesses=""
     if [ -n "$direct" ]; then
-      harnesses="$(cd "$scan_root" && printf '%s\n' "$direct" | tr '\n' '\0' |
-        xargs -0 -r grep -ohE '"(tests/)?scripts/[A-Za-z0-9._/-]+"' 2>/dev/null |
-        tr -d '"' | LC_ALL=C sort -u |
-        { grep -Fx -f <(printf '%s\n' "$tracked") || true; })"
+      # grep status 1 means a candidate batch has no harness path. Normalize
+      # only that status inside the xargs child, because xargs maps it to 123;
+      # grep errors (2+) remain nonzero and fail the enclosing C9 check.
+      harnesses="$(
+        cd "$scan_root" &&
+          printf '%s\n' "$direct" | tr '\n' '\0' |
+          xargs -0 -r sh -c '
+            pattern="$1"
+            shift
+            grep -ohE -- "$pattern" "$@" 2>/dev/null || {
+              grep_status=$?
+              if [ "$grep_status" -ne 1 ]; then
+                exit "$grep_status"
+              fi
+            }
+          ' sh '"(tests/)?scripts/[A-Za-z0-9._/-]+"' |
+          tr -d '"' | LC_ALL=C sort -u |
+          {
+            grep -Fx -f <(printf '%s\n' "$tracked") || {
+              grep_status=$?
+              if [ "$grep_status" -ne 1 ]; then
+                exit "$grep_status"
+              fi
+            }
+          }
+      )" || fail "C9: failed to scan selected test/build files for quoted harness paths"
     fi
     candidates="$(printf '%s\n%s\n' "$direct" "$harnesses" | sorted_unique)"
     offenders=""
     if [ -n "$candidates" ]; then
-      offenders="$(cd "$scan_root" && printf '%s\n' "$candidates" |
-        tr '\n' '\0' | xargs -0 -r grep -lE "$SELECTION_GUARD_SCRIPTS" 2>/dev/null || true)"
+      offenders="$(
+        cd "$scan_root" &&
+          printf '%s\n' "$candidates" | tr '\n' '\0' |
+          xargs -0 -r sh -c '
+            pattern="$1"
+            shift
+            grep -lE -- "$pattern" "$@" 2>/dev/null || {
+              grep_status=$?
+              if [ "$grep_status" -ne 1 ]; then
+                exit "$grep_status"
+              fi
+            }
+          ' sh "$SELECTION_GUARD_SCRIPTS"
+      )" || fail "C9: failed to scan selected test/build files for selection-guard references"
     fi
     if [ -n "$offenders" ]; then
       fail "C9: the #2063 selection guards are reachable from the Gradle test graph again:
@@ -412,7 +451,7 @@ $out"
 # for the intended reason. The pass count is asserted at the end, so the
 # anti-vacuous guard cannot itself pass vacuously.
 
-SELFTEST_EXPECTED_CASES=17  # was 18; #2643 deleted case 4b (the second required check) with its subject
+SELFTEST_EXPECTED_CASES=18  # includes a direct C9 source with no harness match; #2643 deleted case 4b with its subject
 selftest_passed=0
 selftest_failed=0
 # Overridden per case so C9's scan can be pointed at a sandbox checkout instead
@@ -578,6 +617,22 @@ self_test() {
 
   EXPECT_SCAN_ROOT="$scan_sandbox"
   expect_green "9 a non-test script may reference the guards" "$src"
+
+  # Case 17 — no harness path is a normal result, not a broken grep/xargs
+  # invocation. Keep this separate from case 10's positive path so the direct
+  # source batch contains zero quoted harness references when the guard runs.
+  local no_harness_sandbox="$sandbox/no-harness-scan-repo"
+  mkdir -p "$no_harness_sandbox/app/src/test/java/com/pocketshell/app"
+  git -C "$no_harness_sandbox" init -q
+  git -C "$no_harness_sandbox" config user.email selftest@example.invalid
+  git -C "$no_harness_sandbox" config user.name selftest
+  printf 'class NoHarnessPathTest { fun test() = Unit }\n' \
+    > "$no_harness_sandbox/app/src/test/java/com/pocketshell/app/NoHarnessPathTest.kt"
+  git -C "$no_harness_sandbox" add -A
+  git -C "$no_harness_sandbox" commit -qm base
+  EXPECT_SCAN_ROOT="$no_harness_sandbox"
+  expect_green "17 a direct test source with no harness reference is accepted" "$src"
+  EXPECT_SCAN_ROOT="$scan_sandbox"
 
   # Case 10 — the regression #2067 removed: a JVM test shelling out to the guards,
   # which puts the ~165 s suite back inside `./gradlew test`, once per variant.

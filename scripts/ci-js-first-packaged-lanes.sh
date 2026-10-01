@@ -77,11 +77,67 @@ fi
 if scripts/connected-js-composer-docker.sh \
   --suffix i2891ci \
   --port 2245 \
-  --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  --session-prefix "js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --force-first-post-attach-tap-miss \
+  --composer-focus-max-attempts 2; then
   composer_status=0
 else
   composer_status=$?
 fi
+
+composer_root="android/app/build/outputs/js-composer"
+composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+composer_junit_copy_status=0
+shopt -s nullglob
+composer_runs=("$composer_root/$composer_prefix"*)
+if (( ${#composer_runs[@]} != 1 )); then
+  printf 'FAIL: expected exactly one run-scoped composer evidence directory for %s; found %s\n' \
+    "$composer_prefix" "${#composer_runs[@]}" >&2
+  composer_junit_copy_status=1
+else
+  composer_run="${composer_runs[0]}"
+  for phase in prepare resume; do
+    if [[ ! -s "$composer_run/phase-$phase/TEST-composer.xml" ]]; then
+      printf 'FAIL: packaged composer %s phase has no same-run JUnit report\n' "$phase" >&2
+      composer_junit_copy_status=1
+    fi
+  done
+fi
+shopt -u nullglob
+
+composer_junit_status=0
+if (( composer_junit_copy_status != 0 )); then
+  composer_junit_status=1
+else
+  for phase in prepare resume; do
+    if ! scripts/check-js-composer-journey-results.py --results-dir "$composer_run/phase-$phase"; then
+      composer_junit_status=1
+    fi
+  done
+fi
+
+if scripts/connected-js-hotkeys-docker.sh \
+  --suffix i2884ci \
+  --port 2243 \
+  --session-prefix "js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"; then
+  hotkeys_status=0
+else
+  hotkeys_status=$?
+fi
+
+hotkeys_root="android/app/build/outputs/js-hotkeys"
+hotkeys_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+hotkeys_junit_status=0
+shopt -s nullglob
+hotkeys_runs=("$hotkeys_root/$hotkeys_prefix"*)
+if (( ${#hotkeys_runs[@]} != 1 )); then
+  printf 'FAIL: expected exactly one run-scoped fast-key evidence directory for %s; found %s\n' \
+    "$hotkeys_prefix" "${#hotkeys_runs[@]}" >&2
+  hotkeys_junit_status=1
+elif ! scripts/check-js-hotkeys-journey-results.py --results-dir "${hotkeys_runs[0]}"; then
+  hotkeys_junit_status=1
+fi
+shopt -u nullglob
 
 if scripts/connected-js-settings.sh \
   --suffix i2855ci \
@@ -129,9 +185,16 @@ else
   signed_upgrade_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s durable-storage=%s settings=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
-  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" "$durable_status" "$settings_status" "$shared_app_status" "$key_vault_status" "$signed_upgrade_status" "$copy_status"
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+  "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
+  "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
+  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$shared_app_status" \
+  "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
-if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 || durable_status != 0 || composer_status != 0 || settings_status != 0 || shared_app_status != 0 || key_vault_status != 0 || signed_upgrade_status != 0 || copy_status != 0 )); then
+if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 \
+      || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
+      || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
+      || settings_status != 0 || shared_app_status != 0 || key_vault_status != 0 \
+      || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

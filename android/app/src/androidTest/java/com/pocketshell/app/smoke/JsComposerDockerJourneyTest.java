@@ -5,6 +5,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Insets;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -42,6 +43,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -52,6 +54,27 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class JsComposerDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+    private static final int MAX_PRE_INJECTION_LAYOUT_ATTEMPTS = 3;
+    private static final int MAX_SELECTED_SCREENSHOT_ATTEMPTS = 4;
+    private static final int MIN_DRAFT_PIXEL_CHANGES = 256;
+    private static final int MIN_SELECTED_CHIP_PIXEL_CHANGES = 256;
+    /** The selected snippet's echo is the wrapped command visible above the keyboard-up composer. */
+    private static final String KEYBOARD_UP_WRAPPED_COMMAND_START = "$ printf 'alpha";
+    private static final String POST_SEND_WRAPPED_COMMAND_START = "$ printf '%s' 'caf";
+    private static final String POST_SEND_BYTE_OUTPUT = "636166c3a920f09fa7aa";
+    private JSONObject keyboardUpGridFidelity;
+
+    private static final class SnippetScreenshotCapture {
+        final byte[] png;
+        final JSONObject geometry;
+        final JSONObject evidence;
+
+        SnippetScreenshotCapture(byte[] png, JSONObject geometry, JSONObject evidence) {
+            this.png = png;
+            this.geometry = geometry;
+            this.evidence = evidence;
+        }
+    }
 
     /** #2946: per-test dismiss-and-probe before the test's first injected input. */
     @Rule
@@ -62,6 +85,7 @@ public final class JsComposerDockerJourneyTest {
     private String bytesSession;
     private String uncertainSession;
     private String artifactRunId;
+    private String expectedSnippetHostId;
     private boolean forceFirstPostAttachTapMiss;
     private int composerFocusMaxAttempts = 2;
     private final JSONArray focusTapAttempts = new JSONArray();
@@ -109,6 +133,7 @@ public final class JsComposerDockerJourneyTest {
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         assertNotNull("pass unique composer session names with sshSessionName", nameBase);
+        expectedSnippetHostId = "testuser@" + host.trim() + ":" + Integer.parseInt(port);
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
 
@@ -153,13 +178,18 @@ public final class JsComposerDockerJourneyTest {
         emitArtifact(artifactRunId, "snippet-restart-evidence.json",
                 restartEvidence.toString(2).getBytes(StandardCharsets.UTF_8));
         evalString("window.__ps2885CaptureSnippetEvidence = true; window.__ps2885ComposerWriteCount = 0; 'enabled'");
+        hideImeUntilStableWithoutEditableFocus();
         awaitImeVisible(false);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'"
+                + " && !!document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=command-chips]')");
         JSONObject chipsDown = readSnippetChipGeometry(chipLabel, chipBody)
                 .put("imeVisible", isImeVisible()).put("expectedLabel", "Insert " + chipLabel);
-        saveSnippetScreenshot(artifactRunId, "snippet-keyboard-down.png");
-        emitArtifact(artifactRunId, "snippet-keyboard-down-geometry.json", chipsDown.toString().getBytes(StandardCharsets.UTF_8));
         assertSnippetChipLayout(chipsDown, false);
+        SnippetScreenshotCapture chipsDownScreenshot = saveSnippetScreenshot(
+                artifactRunId, "snippet-keyboard-down.png", chipsDown, null);
+        chipsDown.put("screenshotCapture", chipsDownScreenshot.evidence);
+        emitArtifact(artifactRunId, "snippet-keyboard-down-geometry.json", chipsDown.toString().getBytes(StandardCharsets.UTF_8));
 
         JSONObject accessibility = activateSnippetThroughAccessibility("Insert " + chipLabel);
         String selectedChipExpression = "Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
@@ -176,7 +206,9 @@ public final class JsComposerDockerJourneyTest {
                 .put("composerWriteCountBeforeSend", Integer.parseInt(evalString("String(window.__ps2885ComposerWriteCount ?? 0)")))
                 .put("acknowledgedWritesBeforeSend", Integer.parseInt(evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? '0'")));
         assertSnippetChipLayout(chipSelected, true);
-        saveSnippetScreenshot(artifactRunId, "snippet-selected-chip.png");
+        SnippetScreenshotCapture selectedScreenshot = saveSnippetScreenshot(
+                artifactRunId, "snippet-selected-chip.png", chipSelected, chipsDownScreenshot);
+        chipSelected.put("screenshotCapture", selectedScreenshot.evidence);
         emitArtifact(artifactRunId, "snippet-selected-chip-geometry.json", chipSelected.toString().getBytes(StandardCharsets.UTF_8));
 
         // The selected here-document must stay a draft until this explicit Send.
@@ -213,6 +245,19 @@ public final class JsComposerDockerJourneyTest {
         long sendToVisibleOutputLatencyMs = waitForTerminalMarkerOrCaptureWindow(sentMarker, sendTouchUpUptimeMs);
         awaitDeliveredAndCleared();
         savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
+
+        // Exercise the inline composer's handoff only after the untouched
+        // post-Send viewport and screenshot have passed their visibility oracle.
+        String followUpDraft = "draft retained after Send " + nameBase;
+        setComposerDraft(followUpDraft);
+        tapComposerAction("[data-testid=composer-open-keys]", "post-send-open-keys");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        openPromptComposerAndAssertDraftFocus();
+        awaitJsTrue("!document.querySelector('[data-testid=mobile-hotkeys-sheet]')");
+        assertEquals("More keys and Prompt must retain the inline follow-up draft", followUpDraft,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
 
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
@@ -333,6 +378,10 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         click("[data-testid=open-terminal-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
+        // This checkpoint tests route navigation. A late composer IME would
+        // correctly consume the first Android Back as a keyboard dismissal.
+        hideImeUntilStableWithoutEditableFocus();
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
         int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
         beforeFirstInjectedInput("before the nested Settings Back key");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
@@ -340,15 +389,19 @@ public final class JsComposerDockerJourneyTest {
                 + " && Number(document.querySelector('.app-shell')?.dataset.backButtonEvents) > " + before);
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
                 + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
-                + " && !!document.querySelector('[data-testid=prompt-composer]')");
+                + " && !document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
+        openPromptComposerAndAssertDraftFocus();
     }
 
     private void createHostSnippet(String label, String body) throws Exception {
+        openPromptComposerAndAssertDraftFocus();
         click("[data-testid=manage-snippets]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
         awaitJsTrue("document.querySelector('[data-testid=host-snippets-screen]')?.dataset.hostId === "
-                + "document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId");
+                + JSONObject.quote(expectedSnippetHostId));
         setValue("[data-testid=snippet-label]", label);
         setValue("[data-testid=snippet-body]", body);
         click("[data-testid=save-snippet]");
@@ -405,6 +458,7 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void openSnippetManager() throws Exception {
+        openPromptComposerAndAssertDraftFocus();
         click("[data-testid=manage-snippets]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-snippets'");
     }
@@ -415,6 +469,7 @@ public final class JsComposerDockerJourneyTest {
         click("button[aria-label='Back']");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
                 + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'");
+        openPromptComposerAndAssertDraftFocus();
     }
 
     private void deleteManagedSnippet(String label) throws Exception {
@@ -440,7 +495,11 @@ public final class JsComposerDockerJourneyTest {
         String restartedPid = processIds.isEmpty() ? "" : processIds.split("\\s+")[0];
         assertTrue("external wrapper force-stop must have launched a new packaged process on resume",
                 !restartedPid.isEmpty() && !oldPid.equals(restartedPid));
+        openSnippetManager();
         JSONObject storageAtResume = readHostSnippetStorage();
+        leaveSnippetManager();
+        assertEquals("host-bound snippet identity must match the SSH host after process restart",
+                expectedSnippetHostId, storageAtResume.getString("hostId"));
         Log.i("PS2885Storage", "after-resume-attach|" + storageAtResume);
         awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
                 + ".filter(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + chipLabel) + ").length === 1"
@@ -451,7 +510,8 @@ public final class JsComposerDockerJourneyTest {
                         + ".map(node=>node.textContent.trim()))"));
         assertEquals("the reordered host chip order must persist after process restart and reconnect",
                 new JSONArray().put(uncertainChipLabel).put(chipLabel).toString(), restoredOrder.toString());
-        JSONObject storage = evalJson("(() => {const hostId=document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId||'';"
+        String hostId = storageAtResume.getString("hostId");
+        JSONObject storage = evalJson("(() => {const hostId=" + JSONObject.quote(hostId) + ";"
                 + "const saved=JSON.parse(localStorage.getItem('pocketshell.js.host-snippets.v1')||'null');"
                 + "const hostSnippets=saved?.snippets?.filter(item=>item.hostId===hostId)||[];"
                 + "return JSON.stringify({hostId,storedSnippetCount:hostSnippets.length,exactMain:hostSnippets.filter(item=>item.label==="
@@ -481,7 +541,9 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private JSONObject readHostSnippetStorage() throws Exception {
-        return evalJson("(() => {const hostId=document.querySelector('[data-testid=prompt-composer]')?.dataset.snippetHostId||'';"
+        awaitJsTrue("document.querySelector('[data-testid=host-snippets-screen]')?.dataset.hostId === "
+                + JSONObject.quote(expectedSnippetHostId));
+        return evalJson("(() => {const hostId=document.querySelector('[data-testid=host-snippets-screen]')?.dataset.hostId||'';"
                 + "const saved=JSON.parse(localStorage.getItem('pocketshell.js.host-snippets.v1')||'null');"
                 + "const snippets=saved?.snippets?.filter(item=>item.hostId===hostId)||[];"
                 + "return JSON.stringify({hostId,legacyImportComplete:saved?.legacyImportComplete??false,"
@@ -502,6 +564,7 @@ public final class JsComposerDockerJourneyTest {
         return evalJson("(() => {const shell=document.querySelector('.app-shell');"
                 + "const row=document.querySelector('[data-testid=command-chips]');"
                 + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
                 + "const terminal=document.querySelector('.terminal-viewport');"
                 + "const target=Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
                 + ".find(node=>node.getAttribute('aria-label')===" + labelExpression + ");"
@@ -510,9 +573,13 @@ public final class JsComposerDockerJourneyTest {
                 + "label:node.getAttribute('aria-label')||'',width:rect(node)?.width??0,height:rect(node)?.height??0,"
                 + "top:rect(node)?.top??0,bottom:rect(node)?.bottom??0,left:rect(node)?.left??0,right:rect(node)?.right??0,"
                 + "current:node.getAttribute('aria-current')||''}));"
-                + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible==='true',hostId:composer?.dataset.snippetHostId||'',"
-                + "viewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight},"
-                + "rowVisible:!!row&&getComputedStyle(row).display!=='none'&&rect(row)?.height>0,chipRow:rect(row),composer:rect(composer),terminal:rect(terminal),"
+                + "return JSON.stringify({keyboardVisible:shell?.dataset.keyboardVisible==='true',hostId:"
+                + JSONObject.quote(expectedSnippetHostId) + ","
+                + "viewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
+                + "rowVisible:!!row&&getComputedStyle(row).display!=='none'&&rect(row)?.height>0,chipRow:rect(row),"
+                + "composerPresent:!!composer,composer:rect(composer),terminalPresent:!!terminal,terminal:rect(terminal),"
+                + "draft:rect(draft),"
                 + "target:{tag:target?.tagName||'',label:target?.getAttribute('aria-label')||'',current:target?.getAttribute('aria-current')||'',"
                 + "top:rect(target)?.top??0,bottom:rect(target)?.bottom??0,left:rect(target)?.left??0,right:rect(target)?.right??0,"
                 + "width:rect(target)?.width??0,height:rect(target)?.height??0},"
@@ -525,14 +592,25 @@ public final class JsComposerDockerJourneyTest {
     private void assertSnippetChipLayout(JSONObject geometry, boolean selected) throws Exception {
         assertTrue("command chip rail must be visible with the Android keyboard down", geometry.getBoolean("rowVisible")
                 && !geometry.getBoolean("keyboardVisible"));
+        assertTrue("Prompt composer and terminal must remain mounted for geometry verification",
+                geometry.getBoolean("composerPresent") && geometry.getBoolean("terminalPresent"));
         JSONObject chipRow = geometry.getJSONObject("chipRow");
         JSONObject composer = geometry.getJSONObject("composer");
         JSONObject terminal = geometry.getJSONObject("terminal");
         JSONObject viewport = geometry.getJSONObject("viewport");
-        assertTrue("keyboard-down chips, terminal, and composer must fit without overlap or page scrolling",
-                chipRow.getDouble("top") >= composer.getDouble("top")
+        assertTrue("Prompt composer must remain mounted with measurable bounds inside the keyboard-down viewport",
+                geometry.getBoolean("composerPresent")
+                        && composer.getDouble("width") > 0 && composer.getDouble("height") > 0
+                        && composer.getDouble("top") >= 0
+                        && composer.getDouble("bottom") <= viewport.getDouble("height") + 0.5
+                        && composer.getDouble("left") >= 0
+                        && composer.getDouble("right") <= viewport.getDouble("width") + 0.5);
+        assertTrue("command chip row must stay inside the composer and viewport without page scrolling or IME",
+                chipRow.getDouble("width") > 0 && chipRow.getDouble("height") > 0
+                        && chipRow.getDouble("top") >= composer.getDouble("top")
                         && chipRow.getDouble("bottom") <= composer.getDouble("bottom") + 0.5
-                        && terminal.getDouble("bottom") <= composer.getDouble("top") + 0.5
+                        && chipRow.getDouble("left") >= composer.getDouble("left")
+                        && chipRow.getDouble("right") <= composer.getDouble("right") + 0.5
                         && chipRow.getDouble("top") >= 0
                         && chipRow.getDouble("bottom") <= viewport.getDouble("height") + 0.5
                         && chipRow.getDouble("left") >= 0
@@ -540,6 +618,14 @@ public final class JsComposerDockerJourneyTest {
                         && !geometry.getBoolean("imeVisible")
                         && geometry.getInt("screenScrollTop") == 0
                         && geometry.getInt("documentScrollTop") == 0);
+        double terminalAreaAboveComposer = Math.min(Math.min(terminal.getDouble("bottom"), composer.getDouble("top")),
+                viewport.getDouble("height")) - Math.max(terminal.getDouble("top"), 0);
+        assertTrue("live terminal must remain mounted with a visible area above the intentionally overlaid composer",
+                geometry.getBoolean("terminalPresent")
+                        && terminal.getDouble("width") > 0 && terminal.getDouble("height") > 0
+                        && terminal.getDouble("left") >= 0
+                        && terminal.getDouble("right") <= viewport.getDouble("width") + 0.5
+                        && terminalAreaAboveComposer >= 48);
         JSONArray chips = geometry.getJSONArray("chips");
         assertTrue("a saved snippet chip must be present", chips.length() > 0);
         for (int index = 0; index < chips.length(); index += 1) {
@@ -691,31 +777,205 @@ public final class JsComposerDockerJourneyTest {
         return summary.toString();
     }
 
-    private void saveSnippetScreenshot(String runId, String name) throws Exception {
-        awaitWebViewVisualState();
-        AtomicReference<byte[]> artifact = new AtomicReference<>();
-        AtomicReference<Boolean> saved = new AtomicReference<>(false);
+    private SnippetScreenshotCapture saveSnippetScreenshot(
+            String runId, String name, JSONObject geometry, SnippetScreenshotCapture baseline) throws Exception {
+        boolean selectedCapture = baseline != null;
+        Bitmap baselineBitmap = selectedCapture
+                ? BitmapFactory.decodeByteArray(baseline.png, 0, baseline.png.length) : null;
+        assertTrue("keyboard-down baseline PNG must decode before selected-state comparison", !selectedCapture || baselineBitmap != null);
+        JSONObject lastAttempt = null;
+        int attempts = selectedCapture ? MAX_SELECTED_SCREENSHOT_ATTEMPTS : 1;
+        try {
+            for (int attempt = 1; attempt <= attempts; attempt += 1) {
+                awaitSnippetVisualState();
+                InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+                JSONObject mapping = readSnippetScreenshotMapping(geometry);
+
+                // takeScreenshot must run on the instrumentation thread: blocking the Activity UI thread here
+                // can prevent the WebView compositor from presenting the state already confirmed by JS.
+                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+                assertNotNull("same-run Android screenshot must be captured: " + name, screenshot);
+                try {
+                    ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+                    boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+                    byte[] png = encoded.toByteArray();
+                    assertTrue("same-run Android screenshot must contain a non-empty PNG: " + name,
+                            compressed && png.length >= 1024);
+                    JSONObject evidence = new JSONObject()
+                            .put("captureMethod", "UiAutomation.takeScreenshot")
+                            .put("captureThread", "instrumentation")
+                            .put("visualStateCallbackCompleted", true)
+                            .put("attempt", attempt)
+                            .put("pixelWidth", screenshot.getWidth())
+                            .put("pixelHeight", screenshot.getHeight())
+                            .put("webViewFrameOnScreen", mapping.getJSONObject("webViewFrameOnScreen"))
+                            .put("cssViewport", mapping.getJSONObject("cssViewport"))
+                            .put("screenshotSha256", hex(MessageDigest.getInstance("SHA-256").digest(png)));
+
+                    if (selectedCapture) {
+                        boolean screenshotChanged = !Arrays.equals(baseline.png, png);
+                        assertEquals("selected screenshot width must match its keyboard-down baseline",
+                                baselineBitmap.getWidth(), screenshot.getWidth());
+                        assertEquals("selected screenshot height must match its keyboard-down baseline",
+                                baselineBitmap.getHeight(), screenshot.getHeight());
+                        int[] draftRegion = mappedRect(geometry, mapping, "draft");
+                        int[] baselineDraftRegion = mappedRect(baseline.geometry, baseline.evidence, "draft");
+                        int[] targetRegion = mappedRect(geometry, mapping, "target");
+                        int[] baselineTargetRegion = mappedRect(baseline.geometry, baseline.evidence, "target");
+                        int draftChangedPixels = countChangedPixels(
+                                baselineBitmap, baselineDraftRegion, screenshot, draftRegion);
+                        int targetChangedPixels = countChangedPixels(
+                                baselineBitmap, baselineTargetRegion, screenshot, targetRegion);
+                        long draftRegionPixels = comparableRegionArea(baselineDraftRegion, draftRegion);
+                        long targetRegionPixels = comparableRegionArea(baselineTargetRegion, targetRegion);
+                        boolean draftPixelsChanged = draftChangedPixels >= MIN_DRAFT_PIXEL_CHANGES;
+                        boolean selectedChipPixelsChanged = targetChangedPixels >= MIN_SELECTED_CHIP_PIXEL_CHANGES;
+                        lastAttempt = new JSONObject()
+                                .put("attempt", attempt)
+                                .put("screenshotChanged", screenshotChanged)
+                                .put("draftChangedPixels", draftChangedPixels)
+                                .put("draftComparedPixels", draftRegionPixels)
+                                .put("minimumDraftChangedPixels", MIN_DRAFT_PIXEL_CHANGES)
+                                .put("baselineDraftRect", pixelRectEvidence(baselineDraftRegion))
+                                .put("selectedDraftRect", pixelRectEvidence(draftRegion))
+                                .put("targetChipChangedPixels", targetChangedPixels)
+                                .put("targetChipComparedPixels", targetRegionPixels)
+                                .put("minimumTargetChipChangedPixels", MIN_SELECTED_CHIP_PIXEL_CHANGES)
+                                .put("baselineTargetChipRect", pixelRectEvidence(baselineTargetRegion))
+                                .put("selectedTargetChipRect", pixelRectEvidence(targetRegion))
+                                .put("draftPixelsChanged", draftPixelsChanged)
+                                .put("selectedChipPixelsChanged", selectedChipPixelsChanged);
+                        if (screenshotChanged && draftPixelsChanged && selectedChipPixelsChanged) {
+                            evidence.put("selectedVisualStateVerified", true)
+                                    .put("baselinePngSha256", baseline.evidence.getString("screenshotSha256"))
+                                    .put("draftRegion", new JSONObject()
+                                    .put("changedPixels", draftChangedPixels)
+                                    .put("comparedPixels", draftRegionPixels)
+                                    .put("minimumChangedPixels", MIN_DRAFT_PIXEL_CHANGES)
+                                    .put("baselineRect", pixelRectEvidence(baselineDraftRegion))
+                                    .put("selectedRect", pixelRectEvidence(draftRegion)))
+                                    .put("selectedChipRegion", new JSONObject()
+                                            .put("changedPixels", targetChangedPixels)
+                                            .put("comparedPixels", targetRegionPixels)
+                                            .put("minimumChangedPixels", MIN_SELECTED_CHIP_PIXEL_CHANGES)
+                                            .put("baselineRect", pixelRectEvidence(baselineTargetRegion))
+                                            .put("selectedRect", pixelRectEvidence(targetRegion)));
+                            return persistSnippetScreenshot(runId, name, png, geometry, evidence);
+                        }
+                        Log.w("PS2932Snippet", "PRE_CAPTURE_FRAME_RETRY|" + runId + "|" + lastAttempt);
+                    } else {
+                        evidence.put("selectedVisualStateVerified", false);
+                        return persistSnippetScreenshot(runId, name, png, geometry, evidence);
+                    }
+                } finally {
+                    screenshot.recycle();
+                }
+                SystemClock.sleep(100);
+            }
+        } finally {
+            if (baselineBitmap != null) baselineBitmap.recycle();
+        }
+        throw new AssertionError("selected-chip screenshot did not render changed draft text and selected-chip pixels after "
+                + attempts + " WebView visual-state captures; last pixel comparison=" + lastAttempt);
+    }
+
+    private SnippetScreenshotCapture persistSnippetScreenshot(
+            String runId, String name, byte[] png, JSONObject geometry, JSONObject evidence) throws Exception {
+        try (FileOutputStream output = new FileOutputStream(new File(
+                InstrumentationRegistry.getInstrumentation().getTargetContext().getFilesDir(), name))) {
+            output.write(png);
+        }
+        evidence.put("screenshotSha256", hex(MessageDigest.getInstance("SHA-256").digest(png)));
+        emitArtifact(runId, name, png);
+        return new SnippetScreenshotCapture(png, geometry, evidence);
+    }
+
+    private JSONObject readSnippetScreenshotMapping(JSONObject geometry) throws Exception {
+        AtomicReference<JSONObject> mapping = new AtomicReference<>();
         scenario.onActivity(activity -> {
             try {
-                Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-                if (screenshot == null) return;
-                ByteArrayOutputStream encoded = new ByteArrayOutputStream();
-                boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
-                byte[] png = encoded.toByteArray();
-                if (compressed && png.length >= 1024) {
-                    try (FileOutputStream output = new FileOutputStream(new File(activity.getFilesDir(), name))) {
-                        output.write(png);
-                    }
-                    artifact.set(png);
-                    saved.set(true);
-                }
-                screenshot.recycle();
+                WebView webView = findWebView(activity.getWindow().getDecorView());
+                assertNotNull("packaged activity must contain a WebView for screenshot coordinate mapping", webView);
+                int[] location = new int[2];
+                webView.getLocationOnScreen(location);
+                JSONObject frame = new JSONObject()
+                        .put("left", location[0]).put("top", location[1])
+                        .put("width", webView.getWidth()).put("height", webView.getHeight());
+                JSONObject viewport = geometry.getJSONObject("viewport");
+                mapping.set(new JSONObject()
+                        .put("webViewFrameOnScreen", frame)
+                        .put("cssViewport", new JSONObject()
+                                .put("width", viewport.getDouble("width"))
+                                .put("height", viewport.getDouble("height"))
+                                .put("offsetLeft", viewport.optDouble("offsetLeft", 0.0))
+                                .put("offsetTop", viewport.optDouble("offsetTop", 0.0))));
             } catch (Exception error) {
                 throw new RuntimeException(error);
             }
         });
-        assertTrue("same-run Android screenshot must be captured: " + name, saved.get());
-        emitArtifact(runId, name, artifact.get());
+        assertNotNull("native WebView bounds must be available for screenshot pixel checks", mapping.get());
+        return mapping.get();
+    }
+
+    private void awaitSnippetVisualState() throws Exception {
+        String token = evalString("(() => {const token=(window.__ps2885SnippetPaintToken??0)+1;"
+                + "window.__ps2885SnippetPaintToken=token;window.__ps2885SnippetPaintedToken=0;"
+                + "requestAnimationFrame(()=>requestAnimationFrame(()=>{"
+                + "if(window.__ps2885SnippetPaintToken===token)window.__ps2885SnippetPaintedToken=token;"
+                + "}));return String(token);})()");
+        awaitJsTrue("window.__ps2885SnippetPaintedToken === " + token, 5_000);
+        awaitWebViewVisualState();
+    }
+
+    private int[] mappedRect(JSONObject geometry, JSONObject mapping, String key) throws Exception {
+        JSONObject rect = geometry.getJSONObject(key);
+        JSONObject frame = mapping.getJSONObject("webViewFrameOnScreen");
+        JSONObject viewport = mapping.getJSONObject("cssViewport");
+        double scaleX = frame.getDouble("width") / viewport.getDouble("width");
+        double scaleY = frame.getDouble("height") / viewport.getDouble("height");
+        int left = frame.getInt("left") + (int) Math.round((rect.getDouble("left") + viewport.getDouble("offsetLeft")) * scaleX);
+        int top = frame.getInt("top") + (int) Math.round((rect.getDouble("top") + viewport.getDouble("offsetTop")) * scaleY);
+        int right = frame.getInt("left") + (int) Math.round((rect.getDouble("right") + viewport.getDouble("offsetLeft")) * scaleX);
+        int bottom = frame.getInt("top") + (int) Math.round((rect.getDouble("bottom") + viewport.getDouble("offsetTop")) * scaleY);
+        return new int[]{left, top, right, bottom};
+    }
+
+    private long comparableRegionArea(int[] first, int[] second) throws Exception {
+        int leftDelta = Math.abs(first[0] - second[0]);
+        int topDelta = Math.abs(first[1] - second[1]);
+        int rightDelta = Math.abs(first[2] - second[2]);
+        int bottomDelta = Math.abs(first[3] - second[3]);
+        int width = Math.min(first[2] - first[0], second[2] - second[0]);
+        int height = Math.min(first[3] - first[1], second[3] - second[1]);
+        assertTrue("screenshot crop must stay pixel-aligned with the same DOM region",
+                leftDelta <= 1 && topDelta <= 1 && rightDelta <= 1 && bottomDelta <= 1
+                && width >= 2 && height >= 2);
+        return (long) width * height;
+    }
+
+    private JSONObject pixelRectEvidence(int[] rect) throws JSONException {
+        return new JSONObject()
+                .put("left", rect[0]).put("top", rect[1])
+                .put("right", rect[2]).put("bottom", rect[3]);
+    }
+
+    private int countChangedPixels(Bitmap first, int[] firstRect, Bitmap second, int[] secondRect) throws Exception {
+        comparableRegionArea(firstRect, secondRect);
+        int left = Math.max(firstRect[0], secondRect[0]);
+        int top = Math.max(firstRect[1], secondRect[1]);
+        int width = Math.min(firstRect[2] - left, secondRect[2] - left);
+        int height = Math.min(firstRect[3] - top, secondRect[3] - top);
+        assertTrue("draft/chip screenshot crop must stay inside the captured display",
+                left >= 0 && top >= 0 && left + width <= first.getWidth() && left + width <= second.getWidth()
+                        && top + height <= first.getHeight() && top + height <= second.getHeight());
+        int changed = 0;
+        for (int y = 0; y < height; y += 1) {
+            for (int x = 0; x < width; x += 1) {
+                if ((first.getPixel(left + x, top + y) & 0x00ffffff)
+                        != (second.getPixel(left + x, top + y) & 0x00ffffff)) changed += 1;
+            }
+        }
+        return changed;
     }
 
     private void createSession(String name) throws Exception {
@@ -738,8 +998,88 @@ public final class JsComposerDockerJourneyTest {
         String actualName = evalString(match + "?.dataset.sessionName ?? ''");
         click("[data-session-name=" + JSONObject.quote(actualName) + "]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'");
-        awaitJsTrue("!!document.querySelector('[data-testid=prompt-composer]')");
-        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea')", 5_000);
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
+        openPromptComposerAndAssertDraftFocus();
+    }
+
+    private void openPromptComposerAndAssertDraftFocus() throws Exception {
+        if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) {
+            awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                    + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
+            try {
+                awaitAppWindowActive("before physically opening Prompt");
+                awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
+                        + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                        + "return shell?.dataset.homeSurface === 'live' && shell?.dataset.sshPhase === 'live'"
+                        + " && !!launcher && launcher.disabled === false;})()", 10_000);
+            } catch (AssertionError error) {
+                throw new AssertionError("Prompt launcher did not reach its enabled idle state: "
+                        + promptLauncherState(), error);
+            }
+            // Session attach can focus xterm after the dock first appears. Let
+            // that focus settle and dismiss its IME before measuring the
+            // launcher, then wait for the measured frame to reach WebView's
+            // compositor. This only establishes the pre-Send starting state;
+            // the post-Send capture never hides the IME or scrolls the terminal.
+            hideImeUntilStableWithoutEditableFocus();
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+            awaitWebViewVisualState();
+            assertTrue("Prompt launcher starts with a settled hidden native IME", !isImeVisible());
+            Log.i("PS2932Prompt", "LAUNCHER_PRECONDITION|" + artifactRunId + "|" + promptLauncherState());
+            String launcherSelector = "[data-testid=prompt-composer-launcher]";
+            StalePhysicalTapGeometryException lastGeometryChange = null;
+            boolean tapInjected = false;
+            for (int attempt = 1; attempt <= MAX_PRE_INJECTION_LAYOUT_ATTEMPTS; attempt += 1) {
+                JSONObject stableLauncherLayout = awaitStablePhysicalTapLayout(launcherSelector);
+                try {
+                    tapDomCenter(launcherSelector, stableLauncherLayout);
+                    tapInjected = true;
+                    break;
+                } catch (StalePhysicalTapGeometryException error) {
+                    lastGeometryChange = error;
+                    Log.w("PS2897Prompt", "PRE_INJECTION_LAYOUT_RETRY|" + artifactRunId + "|attempt=" + attempt
+                            + "|max=" + MAX_PRE_INJECTION_LAYOUT_ATTEMPTS + "|noTouchInjected=true|" + error.getMessage());
+                }
+            }
+            if (!tapInjected) {
+                throw new AssertionError("Prompt launcher geometry kept changing before physical touch injection after "
+                        + MAX_PRE_INJECTION_LAYOUT_ATTEMPTS + " bounded attempts; state=" + promptLauncherState(),
+                        lastGeometryChange);
+            }
+        }
+        try {
+            awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
+                    + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'"
+                    + " && document.querySelector('.app-shell')?.dataset.promptComposerOpen === 'true'", 10_000);
+        } catch (AssertionError error) {
+            throw new AssertionError("Prompt did not open after its physical launcher tap: "
+                    + promptLauncherState(), error);
+        }
+        if (!"true".equals(evalRaw("document.activeElement === document.querySelector('[data-testid=prompt-draft]')"))) {
+            tapDomCenter("[data-testid=prompt-draft]");
+        }
+        awaitJsTrue("document.activeElement === document.querySelector('[data-testid=prompt-draft]')", 5_000);
+    }
+
+    private JSONObject promptLauncherState() throws Exception {
+        JSONObject state = evalJson("(() => {const shell=document.querySelector('.app-shell');"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');"
+                + "const dictation=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const rect=launcher?.getBoundingClientRect();"
+                + "return JSON.stringify({route:shell?.dataset.route??'',homeSurface:shell?.dataset.homeSurface??'',"
+                + "sshPhase:shell?.dataset.sshPhase??'',promptComposerOpen:shell?.dataset.promptComposerOpen??'',"
+                + "composerPresent:!!document.querySelector('[data-testid=prompt-composer]'),"
+                + "launcherPresent:!!launcher,launcherDisabled:launcher?.disabled??null,"
+                + "launcherAriaLabel:launcher?.getAttribute('aria-label')??'',launcherTitle:launcher?.getAttribute('title')??'',"
+                + "launcherRect:rect?{top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,width:rect.width,height:rect.height}:null,"
+                + "dictationMicState:dictation?.dataset.micState??'',dictationAriaLabel:dictation?.getAttribute('aria-label')??'',"
+                + "keyboardVisible:shell?.dataset.keyboardVisible??'',activeElement:{tag:document.activeElement?.tagName??'',"
+                + "id:document.activeElement?.id??'',testid:document.activeElement?.getAttribute?.('data-testid')??''}});})()");
+        state.put("nativeImeVisible", isImeVisible());
+        state.put("lastPhysicalTap", lastPhysicalTapEvidence == null
+                ? JSONObject.NULL : new JSONObject(lastPhysicalTapEvidence.toString()));
+        return state;
     }
 
     private void setComposerDraft(String value) throws Exception {
@@ -807,12 +1147,17 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
+        keyboardUpGridFidelity = readTerminalGridFidelity(KEYBOARD_UP_WRAPPED_COMMAND_START, null);
         assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
         String geometry = saveKeyboardGeometry(runId);
         try {
             awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
                     + "const appBar=document.querySelector('.app-bar')?.getBoundingClientRect();"
                     + "const terminal=document.querySelector('.terminal-viewport')?.getBoundingClientRect();"
+                    + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                    + "const dock=document.querySelector('.mobile-hotkeys__bar')?.getBoundingClientRect();"
+                    + "const inlineDockVisible=!composer?.closest('.live-workspace') || (!!dock && dock.height>=47.9"
+                    + " && dock.top>=terminal.bottom && dock.bottom<=composer.getBoundingClientRect().top+0.5);"
                     + "const height=window.visualViewport?.height ?? innerHeight;"
                     + "const safeTop=parseFloat(getComputedStyle(shell).paddingTop)||0;"
                     + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
@@ -827,7 +1172,7 @@ public final class JsComposerDockerJourneyTest {
                     + "return shell?.dataset.keyboardVisible === 'true' && !!appBar && !!terminal && terminal.height >= 48"
                     + " && appBar.top >= safeTop - 0.5 && appBar.bottom <= height + 0.5"
                     + " && terminal.top >= appBar.bottom && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
-                    + " && navVisible && visible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
+                    + " && navVisible && visible && inlineDockVisible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
         } catch (AssertionError error) {
             throw new AssertionError(error.getMessage() + "; captured keyboard screenshot precedes geometry=" + geometry, error);
         }
@@ -844,6 +1189,7 @@ public final class JsComposerDockerJourneyTest {
                     bounds.getDouble("bottom") - bounds.getDouble("top") >= 47.9);
         }
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
+        assertTerminalGridFidelity("keyboard-up composer", keyboardGeometry.getJSONObject("terminalGridFidelity"), false);
     }
 
     private void ensureImeVisible(String stage) throws Exception {
@@ -860,7 +1206,14 @@ public final class JsComposerDockerJourneyTest {
                 awaitWebViewVisualState();
                 boolean injectMiss = forceFirstPostAttachTapMiss
                         && mustPhysicallyTapAfterAttach && attemptIndex == 0;
-                String targetSelector = injectMiss ? ".terminal-viewport" : "[data-testid=prompt-draft]";
+                // The forced miss must land off the draft without dismissing
+                // Prompt: over the modal sheet, the terminal sits under the
+                // scrim, whose tap closes the sheet by design. Miss onto the
+                // sheet's own title there; inline, miss onto the terminal.
+                String missSelector = "true".equals(evalRaw(
+                        "!!document.querySelector('[data-testid=prompt-composer-scrim]')"))
+                        ? "#composer-title" : ".terminal-viewport";
+                String targetSelector = injectMiss ? missSelector : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
                 boolean imeBefore = isImeVisible();
@@ -944,12 +1297,18 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void awaitStableComposerActionTarget(String selector) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 5_000;
+        // Each sample is a WebView evaluation plus a main-thread native read.
+        // On a starved emulator one sample has taken over 7s (two samples in
+        // 15s), so use the file's standard wait budget; the three-stable-sample
+        // condition itself is unchanged.
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         JSONObject previous = null;
         JSONObject last = null;
         int stableSamples = 0;
+        int samples = 0;
         while (SystemClock.uptimeMillis() < deadline) {
             last = readComposerActionTapLayout(selector);
+            samples += 1;
             boolean valid = !last.optBoolean("missing")
                     && !last.optBoolean("disabled")
                     && last.optBoolean("centerHitMatchesTarget")
@@ -970,7 +1329,7 @@ public final class JsComposerDockerJourneyTest {
             Thread.sleep(75);
         }
         throw new AssertionError("Composer action target did not reach three stable visible layout samples before its physical tap: "
-                + selector + " (last=" + last + ")");
+                + selector + " (samples=" + samples + ", stable=" + stableSamples + ", previous=" + previous + ", last=" + last + ")");
     }
 
     private JSONObject readComposerActionTapLayout(String selector) throws Exception {
@@ -1318,6 +1677,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
                 + "const composerRect=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const composerScrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
+                + "const shell=document.querySelector('.app-shell');"
                 + "const terminalScreenRect=viewport?.querySelector('.xterm-screen')?.getBoundingClientRect();"
                 + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
                 + "const markerRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
@@ -1338,9 +1700,16 @@ public final class JsComposerDockerJourneyTest {
                 + "&&byteOutputRect.top>=rect.top&&byteOutputRect.bottom<=rect.bottom&&byteOutputRect.left>=rect.left&&byteOutputRect.right<=rect.right"
                 + "&&byteOutputRect.top>=terminalScreenRect.top&&byteOutputRect.bottom<=terminalScreenRect.bottom"
                 + "&&byteOutputRect.left>=terminalScreenRect.left&&byteOutputRect.right<=terminalScreenRect.right;"
+                + "const terminalOutputRowsAboveComposer=!!composerRect&&!!markerRect&&!!byteOutputRect"
+                + "&&markerRect.bottom<=composerRect.top+0.5&&byteOutputRect.bottom<=composerRect.top+0.5;"
                 + "const screenScrollTop=document.querySelector('.screen-content')?.scrollTop??null;"
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
+                + "const composerControlBounds=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
+                + "'[data-testid=composer-open-keys]','[data-testid=composer-close]','[data-testid=composer-dictate]',"
+                + "'[data-testid=composer-insert]','.composer-shared-controls .send'].map(selector=>{"
+                + "const bounds=document.querySelector(selector)?.getBoundingClientRect();"
+                + "return {selector,top:bounds?.top,bottom:bounds?.bottom,left:bounds?.left,right:bounds?.right};});"
                 + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
                 + ",sendToVisibleOutputLatencyMs:" + sendToVisibleOutputLatencyMs
                 + ",sendToVisibleOutputTiming:'Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen',"
@@ -1354,15 +1723,27 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalScreen:terminalScreenRect?{top:terminalScreenRect.top,bottom:terminalScreenRect.bottom,left:terminalScreenRect.left,right:terminalScreenRect.right}:null,"
                 + "appBar:appBarRect?{top:appBarRect.top,bottom:appBarRect.bottom,left:appBarRect.left,right:appBarRect.right}:null,"
                 + "composer:composerRect?{top:composerRect.top,bottom:composerRect.bottom,left:composerRect.left,right:composerRect.right}:null,"
+                + "composerInline:!!composer&&!composer.classList.contains('composer-panel--sheet')&&!!composer.closest('.live-workspace'),"
+                + "composerModal:composer?.getAttribute('aria-modal')==='true',"
+                + "composerScrimVisible:!!composerScrim&&getComputedStyle(composerScrim).display!=='none',"
+                + "promptComposerOpen:shell?.dataset.promptComposerOpen==='true',"
+                + "composerControlBounds,"
                 + "markerRow:markerRect?{top:markerRect.top,bottom:markerRect.bottom,left:markerRect.left,right:markerRect.right}:null,"
                 + "byteOutputRow:byteOutputRect?{top:byteOutputRect.top,bottom:byteOutputRect.bottom,left:byteOutputRect.left,right:byteOutputRect.right}:null,"
                 + "terminalScroller:{scrollTop:terminalScroller?.scrollTop??null,scrollHeight:terminalScroller?.scrollHeight??null,clientHeight:terminalScroller?.clientHeight??null},"
-                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top+0.5,"
+                + "terminalOutputRowsAboveComposer,"
+                + "terminalOutputRowVisible:markerVisible&&byteOutputVisible&&terminalOutputRowsAboveComposer"
+                + "&&byteOutputRow!==markerRow&&byteOutputRect.bottom<=markerRect.top+0.5,"
                 + "byteOutputVisible,visualViewport:{height,width:window.visualViewport?.width ?? innerWidth},"
                 + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible==='true',"
                 + "screenScrollTop,documentScrollTop,"
                 + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
         JSONObject measured = new JSONObject(report);
+        measured.put("nativeImeVisible", isImeVisible());
+        measured.put("terminalGridFidelity",
+                readTerminalGridFidelity(POST_SEND_WRAPPED_COMMAND_START, POST_SEND_BYTE_OUTPUT));
+        measured.put("keyboardUpGridCols", keyboardUpGridFidelity == null ? JSONObject.NULL
+                : keyboardUpGridFidelity.opt("cols"));
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
         awaitWebViewVisualState();
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
@@ -1398,30 +1779,69 @@ public final class JsComposerDockerJourneyTest {
                 measured.getString("deliveryStatus").contains("Sent to the terminal"));
         JSONObject viewport = measured.getJSONObject("terminalViewport");
         JSONObject visualViewport = measured.getJSONObject("visualViewport");
-        assertTrue("same-run terminal viewport must remain onscreen", viewport.getDouble("top") >= 0
+        assertTrue("same-run terminal viewport must remain within the screen and below the app bar",
+                viewport.getDouble("top") >= 0
                 && viewport.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
                 && viewport.getDouble("left") >= 0
                 && viewport.getDouble("right") <= visualViewport.getDouble("width") + 0.5
+                && viewport.getDouble("top") >= measured.getJSONObject("appBar").getDouble("bottom") - 0.5
                 && viewport.getDouble("height") >= 48);
         JSONObject appBar = measured.getJSONObject("appBar");
         JSONObject composer = measured.getJSONObject("composer");
-        assertTrue("immediate post-send chrome, terminal and composer must remain visible without scrolling",
-                !measured.getBoolean("keyboardVisible")
-                        && appBar.getDouble("top") >= 0
+        JSONObject terminalScreen = measured.getJSONObject("terminalScreen");
+        assertTrue("the complete post-send xterm screen must fit inside the visible terminal viewport",
+                terminalScreen.getDouble("top") >= viewport.getDouble("top") - 0.5
+                        && terminalScreen.getDouble("bottom") <= viewport.getDouble("bottom") + 0.5
+                        && terminalScreen.getDouble("left") >= viewport.getDouble("left") - 0.5
+                        && terminalScreen.getDouble("right") <= viewport.getDouble("right") + 0.5);
+        assertTrue("post-send app bar must remain inside the viewport",
+                appBar.getDouble("top") >= 0
                         && appBar.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
-                && appBar.getDouble("bottom") <= viewport.getDouble("top")
-                && composer.getDouble("top") >= viewport.getDouble("bottom")
-                && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
+                        && appBar.getDouble("left") >= 0
+                        && appBar.getDouble("right") <= visualViewport.getDouble("width") + 0.5);
+        assertTrue("post-send inline composer must remain inside the viewport",
+                composer.getDouble("top") >= 0
+                        && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
+                        && composer.getDouble("left") >= 0
+                        && composer.getDouble("right") <= visualViewport.getDouble("width") + 0.5
+                        && composer.getDouble("bottom") > composer.getDouble("top"));
+        assertTrue("a delivered mobile Send must return to the inline composer without a modal or backdrop",
+                measured.getBoolean("composerInline")
+                        && !measured.getBoolean("composerModal")
+                        && !measured.getBoolean("composerScrimVisible")
+                        && !measured.getBoolean("promptComposerOpen")
+                        && viewport.getDouble("bottom") <= composer.getDouble("top") + 0.5);
+        JSONArray controls = measured.getJSONArray("composerControlBounds");
+        assertEquals("capture every post-send draft and action control", 7, controls.length());
+        for (int index = 0; index < controls.length(); index += 1) {
+            JSONObject control = controls.getJSONObject(index);
+            assertTrue("post-send control must fit inside the composer: " + control.getString("selector"),
+                    control.getDouble("top") >= composer.getDouble("top") - 0.5
+                            && control.getDouble("bottom") <= composer.getDouble("bottom") + 0.5
+                            && control.getDouble("left") >= composer.getDouble("left") - 0.5
+                            && control.getDouble("right") <= composer.getDouble("right") + 0.5
+                            && control.getDouble("bottom") > control.getDouble("top")
+                            && control.getDouble("right") > control.getDouble("left"));
+        }
+        assertTrue("immediate post-send chrome, terminal and composer must remain visible without scrolling or IME",
+                !measured.getBoolean("keyboardVisible")
+                        && appBar.getDouble("bottom") <= viewport.getDouble("top")
+                        && !measured.getBoolean("nativeImeVisible")
                         && measured.getBoolean("capturedBeforeScroll")
                         && measured.getDouble("screenScrollTop") == 0
                         && measured.getDouble("documentScrollTop") == 0);
         assertTrue("the app terminal subscription must deliver PTY bytes to its mounted Xterm component",
                 measured.getInt("appTerminalDeliveryCount") > 0 && measured.getInt("appTerminalMissingRefCount") == 0
                         && measured.getInt("terminalWriteCount") > 0);
-        assertTrue("the sent output row must already be rendered inside the onscreen terminal without test scrolling",
+        assertTrue("the sent output rows must already be rendered visibly above the inline composer without test scrolling",
                 measured.getBoolean("terminalOutputRowVisible")
+                        && measured.getBoolean("terminalOutputRowsAboveComposer")
                         && visibleText.contains(expectedMarker)
                         && measured.getString("terminalDomText").contains(expectedMarker));
+        JSONObject fidelity = measured.getJSONObject("terminalGridFidelity");
+        assertTerminalGridFidelity("post-send inline composer", fidelity, true);
+        assertEquals("Send must not change the xterm column count it was tapped at; post-send=" + fidelity,
+                measured.get("keyboardUpGridCols"), fidelity.get("cols"));
     }
 
     private void awaitWebViewVisualState() throws Exception {
@@ -1464,6 +1884,7 @@ public final class JsComposerDockerJourneyTest {
                 + "height:document.querySelector('.screen-content')?.scrollHeight}});})() ");
         JSONObject measured = new JSONObject(geometry);
         measured.put("androidImeVisible", isImeVisible());
+        measured.put("terminalGridFidelity", keyboardUpGridFidelity);
         AtomicReference<JSONObject> nativeInsets = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
@@ -1591,7 +2012,9 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void awaitStableFocusTarget() throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 5_000;
+        // Same load allowance as awaitStableComposerActionTarget: the 500ms
+        // stability window is unchanged, only the wall-clock budget grows.
+        long deadline = SystemClock.uptimeMillis() + 15_000;
         String current = evalString("(() => {const node=document.activeElement;return JSON.stringify({"
                 + "tag:node?.tagName||'',id:node?.id||'',className:node?.className||''});})()");
         long stableSince = SystemClock.uptimeMillis();
@@ -1651,6 +2074,10 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private long tapDomCenter(String selector) throws Exception {
+        return tapDomCenter(selector, null);
+    }
+
+    private long tapDomCenter(String selector, JSONObject expectedStableLayout) throws Exception {
         beforeFirstInjectedInput("before the first physical tap on " + selector);
         JSONObject point = evalJson("(() => {const element = document.querySelector(" + JSONObject.quote(selector)
                 + "); if (!element) return JSON.stringify({missing:true}); const rect=element.getBoundingClientRect();"
@@ -1661,6 +2088,7 @@ public final class JsComposerDockerJourneyTest {
                 + "const targetHit=selector=>selector==='[data-testid=prompt-draft]'?hit===element:!!hit?.closest?.(selector);"
                 + "return JSON.stringify({selector:" + JSONObject.quote(selector)
                 + ",x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,height,"
+                + "targetWidth:rect.width,targetHeight:rect.height,"
                 + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
                 + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
                 + "centerHit:label(hit),centerHitMatchesTarget:targetHit(" + JSONObject.quote(selector) + "),"
@@ -1671,6 +2099,7 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("WebView touch target must be visibly inside the Android viewport: " + point,
                 point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("height") + 0.5
                         && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5);
+        JSONObject initiallyMeasuredPoint = point;
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
         scenario.onActivity(activity -> {
@@ -1678,12 +2107,12 @@ public final class JsComposerDockerJourneyTest {
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             int[] location = new int[2];
             webView.getLocationOnScreen(location);
-            double cssWidth = point.optDouble("width");
-            double cssHeight = point.optDouble("cssHeight");
+            double cssWidth = initiallyMeasuredPoint.optDouble("width");
+            double cssHeight = initiallyMeasuredPoint.optDouble("cssHeight");
             float scaleX = webView.getWidth() / (float) cssWidth;
             float scaleY = webView.getHeight() / (float) cssHeight;
-            float screenX = location[0] + (float) point.optDouble("x") * scaleX;
-            float screenY = location[1] + (float) point.optDouble("y") * scaleY;
+            float screenX = location[0] + (float) initiallyMeasuredPoint.optDouble("x") * scaleX;
+            float screenY = location[1] + (float) initiallyMeasuredPoint.optDouble("y") * scaleY;
             screenPoint.set(new float[] {screenX, screenY});
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
             View focusedView = activity.getWindow().getDecorView().findFocus();
@@ -1706,12 +2135,35 @@ public final class JsComposerDockerJourneyTest {
                 throw new RuntimeException(error);
             }
         });
+        if (expectedStableLayout != null) {
+            JSONObject mappedPoint = new JSONObject(point.toString()).put("nativeMapping", nativeMapping.get());
+            JSONObject immediatelyBeforeTap = readPhysicalTapLayout(selector);
+            if (!samePhysicalTapLayout(expectedStableLayout, mappedPoint)
+                    || !samePhysicalTapLayout(expectedStableLayout, immediatelyBeforeTap)) {
+                throw new StalePhysicalTapGeometryException(selector, expectedStableLayout, mappedPoint,
+                        immediatelyBeforeTap);
+            }
+            point = immediatelyBeforeTap;
+            nativeMapping.set(point.getJSONObject("nativeMapping"));
+        }
         float[] screen = screenPoint.get();
+        if (expectedStableLayout != null) {
+            JSONObject currentMapping = nativeMapping.get();
+            screen[0] = currentMapping.getInt("webViewScreenX")
+                    + (float) point.optDouble("x") * (float) currentMapping.getDouble("scaleX");
+            screen[1] = currentMapping.getInt("webViewScreenY")
+                    + (float) point.optDouble("y") * (float) currentMapping.getDouble("scaleY");
+        }
         long downTime = SystemClock.uptimeMillis();
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
+        // Queue ACTION_DOWN without waiting for its dispatch. A synchronous
+        // down on a heavily loaded host can take ~700ms to return, which turns
+        // the tap into a long press and suppresses the click (seen as
+        // pointerdown/pointerup 700-850ms apart with no click). ACTION_UP below
+        // stays synchronous, so the gesture is fully delivered on return.
+        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, false);
         down.recycle();
         assertTrue("Android touchscreen ACTION_DOWN must be injected", downInjected);
         SystemClock.sleep(60);
@@ -1732,6 +2184,115 @@ public final class JsComposerDockerJourneyTest {
         return SystemClock.uptimeMillis();
     }
 
+    private JSONObject awaitStablePhysicalTapLayout(String selector) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject previous = null;
+        JSONObject last = null;
+        long stableSince = 0;
+        int stableSamples = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            last = readPhysicalTapLayout(selector);
+            JSONObject nativeMapping = last.optJSONObject("nativeMapping");
+            boolean valid = !last.optBoolean("missing")
+                    && !last.optBoolean("disabled")
+                    && last.optBoolean("centerHitMatchesTarget")
+                    && nativeMapping != null
+                    && nativeMapping.optInt("webViewWidthPx") > 0
+                    && nativeMapping.optInt("webViewHeightPx") > 0
+                    && last.optDouble("top", -1) >= 0
+                    && last.optDouble("bottom", Double.MAX_VALUE) <= last.optDouble("height") + 0.5
+                    && last.optDouble("left", -1) >= 0
+                    && last.optDouble("right", Double.MAX_VALUE) <= last.optDouble("width") + 0.5;
+            long now = SystemClock.uptimeMillis();
+            if (valid && previous != null && samePhysicalTapLayout(previous, last)) {
+                stableSamples += 1;
+            } else {
+                stableSamples = valid ? 1 : 0;
+                stableSince = valid ? now : 0;
+            }
+            if (stableSamples >= 6 && now - stableSince >= 400) {
+                Log.i("PS2897Prompt", "LAUNCHER_LAYOUT_STABLE|" + artifactRunId + "|" + last);
+                return last;
+            }
+            previous = valid ? last : null;
+            Thread.sleep(75);
+        }
+        throw new AssertionError("Prompt launcher did not hold stable visible geometry and WebView mapping for 400 ms before physical tap: "
+                + selector + " (last=" + last + ", stableSamples=" + stableSamples + ")");
+    }
+
+    private static final class StalePhysicalTapGeometryException extends AssertionError {
+        StalePhysicalTapGeometryException(String selector, JSONObject stable, JSONObject mapped, JSONObject latest) {
+            super("physical tap rejected before any MotionEvent injection for " + selector
+                    + "; stable=" + stable + "; mapped=" + mapped + "; latest=" + latest);
+        }
+    }
+
+    private JSONObject readPhysicalTapLayout(String selector) throws Exception {
+        JSONObject layout = evalJson("(() => {const element=document.querySelector(" + JSONObject.quote(selector)
+                + ");if(!element)return JSON.stringify({missing:true});const rect=element.getBoundingClientRect();"
+                + "const height=window.visualViewport?.height??innerHeight;"
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "return JSON.stringify({selector:" + JSONObject.quote(selector)
+                + ",x,y,width:innerWidth,cssHeight:innerHeight,height,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,"
+                + "targetWidth:rect.width,targetHeight:rect.height,"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},"
+                + "centerHitMatchesTarget:!!hit?.closest?.(" + JSONObject.quote(selector) + "),disabled:!!element.disabled});})()");
+        if (layout.optBoolean("missing")) return layout;
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+            double cssWidth = layout.optDouble("width");
+            double cssHeight = layout.optDouble("cssHeight");
+            float scaleX = webView.getWidth() / (float) cssWidth;
+            float scaleY = webView.getHeight() / (float) cssHeight;
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("cssWidth", cssWidth)
+                        .put("cssHeight", cssHeight)
+                        .put("scaleX", scaleX)
+                        .put("scaleY", scaleY)
+                        .put("imeVisible", insets != null && insets.isVisible(WindowInsets.Type.ime())));
+            } catch (JSONException error) {
+                throw new RuntimeException(error);
+            }
+        });
+        layout.put("nativeMapping", nativeMapping.get());
+        return layout;
+    }
+
+    private boolean samePhysicalTapLayout(JSONObject left, JSONObject right) throws JSONException {
+        for (String key : new String[]{"x", "y", "width", "cssHeight", "height", "top", "bottom", "left", "right",
+                "targetWidth", "targetHeight"}) {
+            if (Math.abs(left.getDouble(key) - right.getDouble(key)) > 0.5) return false;
+        }
+        JSONObject leftViewport = left.getJSONObject("visualViewport");
+        JSONObject rightViewport = right.getJSONObject("visualViewport");
+        for (String key : new String[]{"width", "height", "offsetLeft", "offsetTop"}) {
+            if (Math.abs(leftViewport.getDouble(key) - rightViewport.getDouble(key)) > 0.5) return false;
+        }
+        JSONObject leftNative = left.getJSONObject("nativeMapping");
+        JSONObject rightNative = right.getJSONObject("nativeMapping");
+        for (String key : new String[]{"webViewScreenX", "webViewScreenY", "webViewWidthPx", "webViewHeightPx"}) {
+            if (leftNative.getInt(key) != rightNative.getInt(key)) return false;
+        }
+        for (String key : new String[]{"cssWidth", "cssHeight", "scaleX", "scaleY"}) {
+            if (Math.abs(leftNative.getDouble(key) - rightNative.getDouble(key)) > 0.001) return false;
+        }
+        return left.optBoolean("centerHitMatchesTarget") == right.optBoolean("centerHitMatchesTarget")
+                && left.optBoolean("disabled") == right.optBoolean("disabled")
+                && leftNative.optBoolean("imeVisible") == rightNative.optBoolean("imeVisible");
+    }
+
     private void awaitJsTrue(String expression) throws Exception {
         awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
     }
@@ -1746,6 +2307,104 @@ public final class JsComposerDockerJourneyTest {
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last=" + last
                 + "; page=" + evalString("document.body.innerText") + ")");
+    }
+
+    /**
+     * Terminal grid fidelity (#2932): every rendered xterm row must fit the
+     * visible grid that SSH accepted. A row whose rendered text extends past
+     * the xterm screen, or a screen that extends past the terminal viewport,
+     * drops characters at every wrap even though the row DOM and the buffer
+     * text still contain them. The wrapped command rows prove the check ran on
+     * full-width rows, not only on short marker rows.
+     */
+    private static String terminalGridFidelityExpression(String startNeedle, String stopNeedle) {
+        return "((startNeedle, stopNeedle) => {"
+                + "const v=document.querySelector('.terminal-slot > .terminal-viewport');"
+                + "const screen=v?.querySelector('.xterm-screen');"
+                + "let state=null;try{state=JSON.parse(window.__ps2857TerminalBufferState||'null');}catch(error){state=null;}"
+                + "const box=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null;};"
+                + "const viewport=box(v),screenBox=box(screen),style=v?getComputedStyle(v):null;"
+                + "const clip=viewport&&style?{top:viewport.top+parseFloat(style.borderTopWidth),bottom:viewport.bottom-parseFloat(style.borderBottomWidth),"
+                + "left:viewport.left+parseFloat(style.borderLeftWidth),right:viewport.right-parseFloat(style.borderRightWidth)}:null;"
+                + "const cols=typeof state?.cols==='number'?state.cols:null,gridRows=typeof state?.rows==='number'?state.rows:null;"
+                + "const cellWidth=cols&&screenBox?screenBox.width/cols:null;"
+                + "const rows=Array.from(v?.querySelectorAll('.xterm-rows > div')??[]).map((row,index)=>{"
+                + "const range=document.createRange();range.selectNodeContents(row);"
+                + "const rects=Array.from(range.getClientRects()).filter(rect=>rect.width>0);"
+                + "const right=rects.length?Math.max(...rects.map(rect=>rect.right)):null;"
+                + "const cells=right===null||!cellWidth||!screenBox?0:Math.round((right-screenBox.left)/cellWidth*100)/100;"
+                + "return {index,text:(row.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+$/,''),right,cells};});"
+                + "const rendered=rows.filter(row=>row.right!==null);"
+                + "const maxRowRight=rendered.length?Math.max(...rendered.map(row=>row.right)):null;"
+                + "const maxRowCells=rendered.length?Math.max(...rendered.map(row=>row.cells)):0;"
+                + "const overflowingRows=screenBox?rendered.filter(row=>row.right>screenBox.right+0.5).map(row=>({index:row.index,text:row.text,cells:row.cells})):[];"
+                + "const stopIndex=stopNeedle?rows.findIndex(row=>row.text.includes(stopNeedle)):-1;"
+                + "let startIndex=rows.findIndex(row=>row.text.includes(startNeedle));"
+                + "if(startIndex<0&&stopIndex>0)startIndex=0;"
+                + "const wrappedCommandRows=[];"
+                + "if(startIndex>=0){wrappedCommandRows.push(rows[startIndex]);"
+                + "for(let index=startIndex+1;index<rows.length;index+=1){const row=rows[index];"
+                + "if(stopIndex>=0?index>=stopIndex:(!row.text||row.text.startsWith('$')))break;wrappedCommandRows.push(row);}}"
+                + "const resizeStatus=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()??'';"
+                + "const accepted=/^(\\d+) \\u00d7 (\\d+) accepted by SSH$/.exec(resizeStatus);"
+                + "return JSON.stringify({cols,rows:gridRows,bufferType:state?.bufferType??null,cellWidth,viewport,clip,screen:screenBox,"
+                + "domRowCount:rows.length,maxRowRight,maxRowCells,overflowingRows,"
+                + "wrappedCommandRows:wrappedCommandRows.map(row=>({index:row.index,text:row.text,cells:row.cells,right:row.right})),"
+                + "resizeStatus,acceptedCols:accepted?Number(accepted[1]):null,acceptedRows:accepted?Number(accepted[2]):null,"
+                + "startNeedle,stopNeedle});})(" + JSONObject.quote(startNeedle) + ","
+                + (stopNeedle == null ? "null" : JSONObject.quote(stopNeedle)) + ")";
+    }
+
+    private JSONObject readTerminalGridFidelity(String startNeedle, String stopNeedle) throws Exception {
+        String expression = terminalGridFidelityExpression(startNeedle, stopNeedle);
+        // Wait (without failing) for the fitted grid to be the one SSH accepted,
+        // so a pending resize acknowledgement is not mistaken for a mismatch.
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject fidelity = new JSONObject(evalString(expression));
+        while (SystemClock.uptimeMillis() < deadline
+                && (fidelity.isNull("acceptedCols") || fidelity.isNull("cols")
+                        || fidelity.getInt("acceptedCols") != fidelity.getInt("cols")
+                        || fidelity.getInt("acceptedRows") != fidelity.getInt("rows"))) {
+            Thread.sleep(60);
+            fidelity = new JSONObject(evalString(expression));
+        }
+        return fidelity;
+    }
+
+    private static void assertTerminalGridFidelity(String stage, JSONObject fidelity, boolean requireFullGridHeight)
+            throws JSONException {
+        assertTrue(stage + " must record the fitted xterm grid: " + fidelity,
+                !fidelity.isNull("cols") && fidelity.getInt("cols") > 0 && !fidelity.isNull("cellWidth"));
+        int cols = fidelity.getInt("cols");
+        assertTrue(stage + " xterm grid must be the grid SSH accepted: " + fidelity,
+                !fidelity.isNull("acceptedCols") && fidelity.getInt("acceptedCols") == cols
+                        && fidelity.getInt("acceptedRows") == fidelity.getInt("rows"));
+        JSONObject clip = fidelity.getJSONObject("clip");
+        JSONObject screen = fidelity.getJSONObject("screen");
+        assertTrue(stage + " xterm screen must fit the visible terminal viewport width: " + fidelity,
+                screen.getDouble("left") >= clip.getDouble("left") - 0.5
+                        && screen.getDouble("right") <= clip.getDouble("right") + 0.5);
+        // The keyboard-up dock keeps #2884's accepted 38x6 PTY inside a 144px
+        // cap with at least five fully visible rows (checked by the Fast Keys
+        // lane), so only the keyboard-down grid must fit its full height here.
+        if (requireFullGridHeight) {
+            assertTrue(stage + " xterm screen must fit the visible terminal viewport height: " + fidelity,
+                    screen.getDouble("top") >= clip.getDouble("top") - 0.5
+                            && screen.getDouble("bottom") <= clip.getDouble("bottom") + 0.5);
+        }
+        assertEquals(stage + " every rendered row must fit the xterm screen; clipped rows lose characters at each wrap: "
+                + fidelity, 0, fidelity.getJSONArray("overflowingRows").length());
+        assertTrue(stage + " no rendered row may be wider than the accepted column count: " + fidelity,
+                fidelity.getDouble("maxRowCells") <= cols + 0.05
+                        && fidelity.getDouble("maxRowRight") <= screen.getDouble("right") + 0.5);
+        JSONArray wrapped = fidelity.getJSONArray("wrappedCommandRows");
+        assertTrue(stage + " must measure a wrapped long command, not only short rows: " + fidelity,
+                wrapped.length() >= 2);
+        for (int index = 0; index < wrapped.length() - 1; index += 1) {
+            double cells = wrapped.getJSONObject(index).getDouble("cells");
+            assertTrue(stage + " wrapped command row " + index + " must fill the accepted width without exceeding it: "
+                    + fidelity, cells >= cols - 1 - 0.05 && cells <= cols + 0.05);
+        }
     }
 
     private String evalString(String expression) throws Exception {

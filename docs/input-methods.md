@@ -12,8 +12,8 @@ The full alternative-to-typing strategy. PocketShell reduces keyboard reliance t
 
 | Surface | Purpose | Trigger |
 |---|---|---|
-| Prompt Composer | Voice/text composing for agent prompts | Tap mic FAB on session view |
-| Inline dictation | Voice straight into the terminal at cursor | Tap mic icon in the bottom controls |
+| Prompt Composer | Voice/text composing for agent prompts | Tap **Prompt** in the persistent dock; use the composer's mic to dictate a prompt |
+| Inline dictation | Voice straight into the terminal | Tap the terminal mic in the persistent dock |
 | Terminal hotkeys panel | Special keys, control combos, the `Ctrl+…` page's a–z letters, arrows | Tap More keys on `SessionTerminalBar`, or the hotkeys entry in the composer sheet |
 | Command chips / snippets | Whole commands or prompt templates | Always-visible chip row when keyboard is down |
 
@@ -29,13 +29,13 @@ native UI controls rather than terminal control sequences — see
 
 Prompt Composer dictation uses **Android built-in speech recognition** (`SpeechRecognizer`) only. A stored OpenAI API key does not select Whisper on this surface — that route crashed the phone after a v0.4.x upgrade restored the app id (#2520/#2521/#2529).
 
-Availability depends on the device image and installed speech service. Language support, offline packs, network use, and privacy handling are controlled by that service (often Google Speech Services on Play devices), not PocketShell. Partials stream into the draft while speaking; dictation is explicit-stop-only (tap the mic again).
+Availability depends on the device image and installed speech service. Language support, offline packs, network use, and privacy handling are controlled by that service (often Google Speech Services on Play devices), not PocketShell. Prompt partials stream into the draft while speaking; dictation ends when you tap **Stop**.
 
 Whisper / `AudioRecorder` is not started from the composer mic. Future: support self-hosted `whisper.cpp` on one of the user's SSH hosts (out of v1 scope).
 
 ### Prompt Composer (primary voice surface)
 
-~90% of voice input happens here, because agent prompts are sentences, not shell commands.
+~90% of voice input happens here, because agent prompts are sentences, not shell commands. Tap **Prompt** in the mobile dock to open this sheet. Tap its mic to dictate; Stop returns the transcript to the editable draft for review before Insert or Send.
 
 ```
 ┌─────────────────────────────────────────┐
@@ -45,37 +45,51 @@ Whisper / `AudioRecorder` is not started from the composer mic. Future: support 
 │  agent-main: 1 windows (attached)       │  terminal
 │  $ _                                    │  (dimmed)
 ├─────────────────────────────────────────┤
-│  Prompt Composer                    x   │  bottom sheet
+│  Review dictation                   x   │  bottom sheet
 │                                         │
 │  ┌─────────────────────────────────┐    │
 │  │ check the deploy log and tell   │    │
-│  │ me what failed in the last run_ │    │  editable
+│  │ me what failed in the last run_ │    │  editable transcript
 │  └─────────────────────────────────┘    │
 │                                         │
-│   ┌─────┐                               │
-│   │ MIC │  ▁▂▃▅▃▂▁   Listening...      │
-│   └─────┘                               │
+│  Transcript ready. Edit it, then choose │
+│  Insert or Send.                         │
 │                                         │
-│  [ Snippets ]  [ Insert ]  [ Send ]     │
+│  [ Discard ]  [ Insert ]  [ Send ] [MIC]│
 └─────────────────────────────────────────┘
 ```
 
 Behaviours:
 - Bottom sheet, modal over terminal (terminal dims behind)
 - Single idle control row: grouped 📎 / `{}` / `/` pill on the left; Insert, filled Send, 44dp mic disc on the right. `{}` opens message history; `/` seeds a leading `/` for slash autocomplete.
-- Mic tap requests `RECORD_AUDIO` if needed, then starts the system recognizer. Tap again to stop. The Android recognizer's own endpointing is treated as a pause, not the end of dictation (explicit-stop-only).
+- Mic tap requests `RECORD_AUDIO` if needed, then starts the system recognizer. Tap Stop in the recording controls to finish. The Android recognizer's own endpointing is treated as a pause, not the end of dictation (explicit-stop-only).
 - Partials stream into the draft (and the recording panel) while speaking.
-- Text area is editable — tap any word to fix before sending
+- After Stop, the transcript returns to the editable draft for review before Insert or Send.
 - `Insert` writes to PTY without submitting (sheet stays open). `Send` flushes the live field, hides the IME, submits with Enter, and dismisses the sheet so you are back on the terminal with the keyboard down. A send that cannot leave keeps the sheet, the draft, and the undelivered chip.
 - Keyboard up: the "Prompt Composer" title row hides; draft + action row sit on the IME. The title returns when the keyboard is down. IME inset is a flag — it is not subtracted from sheet height.
-- Recording: timer + waveform replace the editor; bottom row is `[Discard · Insert · Send]`. Attach / history / slash / mic hide mid-dictation.
+- Recording: timer + waveform replace the editor; Stop is in the recording panel and the bottom row offers `[Discard · Insert · Send]`. Attach / history / slash / mic hide mid-dictation.
 - Sheet dismissed = transcript preserved as draft per session
 
 ### Inline dictation (escape hatch)
 
-For short shell commands when the prompt composer is overkill. The mic sits in the terminal controls (the composer has its own mic). Tap to start; partials appear only in the status preview and never reach the PTY. Tap Stop to insert validated final text once at the terminal cursor. Enter remains a separate action, and no final transcript means no insertion. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
+For short shell commands when the prompt composer is overkill. The persistent 48dp terminal control is labeled **Dictate** at rest, so its purpose is visible before recording. Starting dictation closes an open key catalog and enters a separate recording presentation above the unchanged key row: **Terminal · Listening**, elapsed time, waveform, and a preview of partial text, with a filled **Stop** control. Partials stay in the preview and never reach the PTY. Stop finishes recognition; only a validated final transcript is inserted once into the active terminal at its current insertion point. Enter remains a separate action, and no final transcript means no insertion. Starting, transcribing, errors, and unavailable states have distinct status/action labels. The portable preview, stop, and insertion policy lives in JS; Android provides speech recognition through its narrow adapter.
 
-Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s).
+Inline dictation uses the same configured language and silence window as the prompt composer (4s default, adjustable from 2s to 60s under Settings → Advanced). A pause can end an Android recognition segment; PocketShell keeps dictation open until you tap Stop.
+
+Both speech surfaces use the shared `@pocketshell/core` `DictationController` for turn lifecycle, recoverable endpoint restart, request-ID isolation, and explicit Stop behavior. Android starts one `SpeechRecognizer` turn per native call and reports partial, final, recoverable, or error events with that turn's request ID. Partials remain preview-only; the composer draft and terminal input receive finalized segments only, and terminal input is inserted only after explicit Stop. Cancellation on backgrounding or target changes invalidates late callbacks.
+
+The Android dock order is **Prompt**, ↑, ↓, **Enter**, the keyboard icon
+(accessible name **More terminal keys**), then the labeled **Dictate** control.
+Prompt opens the shared composer; its in-composer mic starts prompt dictation
+and returns editable text for review. The separate terminal control starts
+inline dictation and becomes a filled, labeled **Stop** action while listening.
+Its 40dp recording band sits directly above the 48dp key row and shows the
+Terminal destination, Listening state, elapsed time, waveform, and preview.
+The active key catalog closes when recording starts, avoiding a competing
+surface; it can be reopened afterward if needed. Partials stay out of the PTY,
+and Stop inserts validated final text once into the active terminal. The full
+key catalog remains in normal terminal flow below the controls while the IME
+stays open.
 
 Used for: `git status`, file names mid-command, dictating an `ssh` target.
 
@@ -109,21 +123,31 @@ Composer remains the preferred surface for prose and longer agent prompts.
 
 ## Terminal hotkeys panel
 
-The terminal control keys live in a dedicated hotkeys panel —
-`TerminalHotkeysPaletteOverlay`, a draggable card that floats INSIDE the
-terminal slot, opened from `SessionTerminalBar`'s More keys affordance or from
-the composer sheet's hotkeys entry (NOT crammed above the soft keyboard;
-#784/#789 hard-cut the old in-keyboard bar). Because it floats rather than
-docking, opening it never resizes the cell grid. The panel opens on one
-screenful of common controls and stays open after a tap so you can fire several
-keys in a row. Each tap maps the visible label to its control byte through
-`keyBarBytes` (the 0.5.x Kotlin `KeyBytes.kt`) and hands the bytes to
-`SessionViewModel.sendBytes`, which writes them to the live terminal PTY — no
-terminal resize or redraw. Long-pressing `^C` / `^D` sends the doubled
-interrupt/EOF variant. The catalog itself lives in `HotkeyCatalog.kt`.
+The terminal controls use a normal-flow dock below xterm. On Android, its
+persistent row is ordered **Prompt**, ↑, ↓, **Enter**, the keyboard icon
+(accessible name **More terminal keys**), then the labeled **Dictate** control.
+Prompt opens the shared composer for typing; its in-composer mic starts prompt
+dictation, then shows an editable transcript for review. The separate terminal
+control starts inline speech and changes to a visibly labeled **Stop** action
+while listening. Its 40dp status band above the row identifies the terminal,
+shows Listening, elapsed time, a waveform, and the partial preview. Stop inserts
+validated final text once into the active terminal. With the IME open,
+the dock reserves its measured height while xterm keeps the same PTY grid and at
+least five terminal rows remain visible.
 
-Main page (`HOTKEY_PALETTE_MAIN_SECTIONS`) — ↑ / ↓ / Enter are NOT here: #2612
-moved them onto the bar itself, one tap each, no panel to open:
+More keys opens a flat, compact catalog in normal terminal flow. Its 48dp
+header keeps Main and Ctrl navigation visible. Main presents all ten common
+keys in one horizontally scrollable 48dp row; Ctrl scrolls vertically
+through its QWERTY rows in the same 48dp viewport. Both pages remain reachable
+while the Android IME is open and leave terminal output visually primary.
+Key actions map through `@pocketshell/core` and write to the active PTY.
+Long-pressing `^C` / `^D` sends the doubled interrupt/EOF sequence. Prompt,
+navigation keys, More keys, the terminal mic, and page tabs have 48dp targets.
+Prompt has its own labeled input group; navigation keys, More keys, and the
+terminal mic share the terminal-controls group.
+
+Main page (`HOTKEY_PALETTE_MAIN_SECTIONS`) — ↑ / ↓ / Enter stay in the
+persistent row so they remain one tap away:
 
 ```
 ARROWS           ←  →
@@ -132,7 +156,7 @@ CTRL             ^B  ^C  ^D  ^Q  ^X
                  [Ctrl+…]
 ```
 
-`Ctrl+…` opens a dedicated Ctrl page. Its 48dp-or-larger targets preserve
+The `Ctrl` tab opens the separate Ctrl page. Its 48dp targets preserve
 keyboard muscle memory in five-column QWERTY rows:
 
 ```
@@ -146,12 +170,13 @@ N M \
 
 Each tap immediately sends that key's control byte and leaves the page open,
 so sequences such as `^B ^B` need no re-entry. `^Q` is XON (`0x11`) and `^\`
-is SIGQUIT (`0x1c`). The panel header's back control returns to common keys;
-its close button, or toggling More keys again, dismisses. There is no scrim —
-the panel floats over the terminal without dimming it, and a tap that misses
-the card reaches the terminal. Reopening always starts on the main page. There
-is no hidden sticky-modifier state, and literal letters belong to the system
-IME.
+is SIGQUIT (`0x1c`). The `Main` tab returns to common keys; the More keys
+button closes the catalog. Reopening starts on the Main page. There is no
+hidden sticky-modifier state, and literal letters belong to the system IME.
+
+The Kotlin `TerminalHotkeysPaletteOverlay` and `HotkeyCatalog.kt` describe the
+earlier native implementation; the current shared JS controls use the dock and
+core key catalog described above.
 
 The main-page `^C` and `^D` keycaps show a persistent `hold ×2` cue. A normal
 tap sends one byte; holding sends the existing atomic two-byte sequence (`03
@@ -195,7 +220,7 @@ Keyboard up:
 ┌────────────────────────────┐
 │   terminal output          │
 ├────────────────────────────┤
-│                  [⌨ hotkeys]│  compact launcher above the IME
+│ Prompt ↑ ↓ Enter [⌨] [Mic]   │  persistent dock, Dictate labeled at rest
 ├────────────────────────────┤
 │  q w e r t y u i o p       │
 │   a s d f g h j k l        │  system keyboard
@@ -203,8 +228,10 @@ Keyboard up:
 └────────────────────────────┘
 ```
 
-(Tapping `⌨ hotkeys` opens the floating terminal hotkeys panel described
-above.)
+(The More keys icon opens the catalog below the persistent dock. While terminal
+dictation is active, its Listening state, elapsed time, waveform, and partial
+preview appear in the status band above the dock; the terminal action reads
+Stop.)
 
 Keyboard down:
 
@@ -214,7 +241,7 @@ Keyboard down:
 ├────────────────────────────┤
 │ git status   build   logs  │  command chips
 ├────────────────────────────┤
-│                       [MIC]│  FAB → prompt composer
+│ Prompt ↑ ↓ Enter [⌨] [Mic]   │  persistent dock, Dictate labeled at rest
 └────────────────────────────┘
 ```
 

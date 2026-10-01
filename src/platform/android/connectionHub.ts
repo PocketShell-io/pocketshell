@@ -399,6 +399,9 @@ export class AndroidConnectionHub {
     const found = this.shellOf(shellId);
     if (!found) return false;
     this.claim(found.binding);
+    // A pane redraws when its tab becomes visible: the tab in front is the
+    // last one the controller's channel bound may evict (#2955).
+    found.record.controller.focusSession(found.binding.row);
     return true;
   }
 

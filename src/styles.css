@@ -25,6 +25,12 @@ button { color: inherit; }
   padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   padding-left: max(0px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
   background: var(--bg);
+  /* Compact mobile live-terminal gutters. The keyboard-up workspace and the
+     inline composer after Send both use these, so they measure one xterm
+     width and keep one column count (#2932). */
+  --live-terminal-compact-shell-inline: var(--sp-2);
+  --live-terminal-compact-panel-inline: 6px;
+  --live-terminal-compact-grid-inline: var(--sp-1);
 }
 
 .app-shell[data-native-platform="android"] {
@@ -164,9 +170,47 @@ button { color: inherit; }
   gap: 8px;
   overflow: hidden;
   padding: 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--term-bg);
+}
+.live-workspace .terminal-slot {
+  display: flex;
+  min-width: 0;
+  min-height: max(120px, var(--terminal-min-grid-height, 110px));
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--term-bg);
+}
+.live-workspace .terminal-slot--hotkeys {
+  min-height: calc(var(--terminal-min-grid-height, 110px) + var(--terminal-hotkeys-dock-height, 48px));
 }
 .live-workspace .panel-heading--terminal { min-height: 34px; flex: 0 0 auto; margin: 0; }
-.live-workspace .terminal-viewport { height: auto; min-height: 120px; max-height: none; flex: 1 1 auto; }
+.live-workspace .terminal-slot > .terminal-viewport {
+  width: 100%;
+  height: auto;
+  min-height: var(--terminal-min-grid-height, 110px);
+  max-height: none;
+  flex: 1 1 auto;
+}
+.live-workspace .terminal-slot--preserve-grid > .terminal-viewport {
+  height: var(--terminal-viewport-dock-cap);
+  min-height: var(--terminal-viewport-dock-cap);
+  max-height: var(--terminal-viewport-dock-cap);
+  flex: 0 0 var(--terminal-viewport-dock-cap);
+  padding: 4px;
+  /* Keep the capped host as a clip boundary, not a scroll container. On
+     Android WebView, focusing xterm's IME textarea can otherwise scroll this
+     host and push the rendered terminal above its visible 144px viewport. */
+  overflow: clip;
+}
+.live-workspace .terminal-slot--preserve-grid > .terminal-viewport > .xterm {
+  height: calc(var(--terminal-viewport-dock-cap) - 5px);
+}
+.live-workspace .terminal-slot--preserve-grid {
+  justify-content: space-between;
+}
 .live-workspace .panel-footnote { flex: 0 0 auto; margin: 0; }
 .live-workspace > .composer-panel { min-width: 0; flex: 0 0 auto; margin: 0; }
 .live-connection-message { flex: 0 0 auto; margin: 0; }
@@ -236,10 +280,54 @@ button { color: inherit; }
 .workspace-placeholder__icon svg { width: 21px; height: 21px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 
 .panel-heading--terminal { align-items: center; }
-.terminal-viewport { width: 100%; height: clamp(220px, 36vh, 360px); min-height: 200px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--r-md); background: var(--term-bg); padding: 8px; }
+.terminal-viewport { width: 100%; height: clamp(220px, 36vh, 360px); min-height: 200px; overflow: hidden; border: 1px solid transparent; border-radius: 0; background: var(--term-bg); padding: 8px; }
 .terminal-viewport .xterm { height: 100%; }
 .terminal-viewport .xterm-viewport { overflow-y: auto !important; }
 .panel-footnote { margin: 9px 0 0; color: var(--fg-muted); font-size: var(--fs-100); line-height: 1.45; }
+.terminal-dictation-preview { color: var(--fg); font-family: var(--font-mono); }
+.terminal-dictation-button {
+  display: inline-flex;
+  width: 48px;
+  min-width: 48px;
+  max-width: 48px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
+  flex: 0 0 48px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  padding: 0;
+  color: var(--fg-secondary);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.terminal-dictation-button svg { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 2; }
+.terminal-dictation-button:hover:not(:disabled) { background: var(--state-hover); color: var(--fg); }
+.terminal-dictation-button[data-mic-state="starting"],
+.terminal-dictation-button[data-mic-state="listening"] {
+  background: var(--state-selected);
+  color: var(--accent);
+}
+.terminal-dictation-button[data-mic-state="transcribing"] {
+  background: var(--state-selected);
+  color: var(--warning);
+}
+.terminal-dictation-button[data-mic-state="error"] {
+  background: var(--state-selected);
+  color: var(--error);
+}
+.terminal-dictation-button:disabled {
+  background: transparent;
+  color: var(--fg-muted);
+  opacity: 1;
+}
+.terminal-dictation-button:disabled[data-mic-state="transcribing"] {
+  background: var(--state-selected);
+  color: var(--warning);
+}
 .composer-panel { display: grid; gap: 10px; }
 .command-chips { min-width: 0; }
 .command-chips__rail { display: flex; min-width: 0; align-items: center; gap: 7px; overflow-x: auto; overscroll-behavior-x: contain; padding: 1px 1px 3px; scrollbar-width: thin; }
@@ -418,6 +506,68 @@ button { color: inherit; }
 }
 
 @media (max-width: 719px) {
+  /* A terminal-focused reconnect also opens the Android IME. Compact the
+     workspace around that keyboard so the five-row xterm floor and the
+     navigation-key overlay both remain on screen. */
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .app-bar--workspace {
+    min-height: 48px;
+    padding: 0 6px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .home-screen--workspace {
+    gap: 5px;
+    padding: 4px 7px 3px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace { gap: 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-panel {
+    gap: 5px;
+    padding: 6px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal {
+    min-height: 24px;
+    margin: 0;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal .eyebrow { display: none; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal h2 { font-size: 13px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .panel-heading--terminal .state-tag { padding: 2px 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace > .composer-panel {
+    gap: 5px;
+    padding: 8px;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading { min-height: 22px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading .eyebrow { display: none; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-heading h3 {
+    overflow: hidden;
+    max-width: calc(100vw - 150px);
+    font-size: var(--fs-200);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-draft {
+    height: 68px;
+    min-height: 68px;
+    max-height: 80px;
+    resize: none;
+    padding: 6px 8px;
+    font-size: var(--fs-200);
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-status {
+    min-height: 14px;
+    max-height: 14px;
+    overflow: hidden;
+    font-size: var(--fs-100);
+    line-height: 14px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-actions { min-height: 48px; gap: 5px; }
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-discard,
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-insert,
+  .app-shell[data-keyboard-visible="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .composer-shared-controls .send {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+  }
+
   .app-shell[data-keyboard-composer-mode="true"] .app-bar {
     min-height: 44px;
     gap: 8px;
@@ -430,7 +580,7 @@ button { color: inherit; }
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding: 4px 8px 0;
+    padding: 4px var(--live-terminal-compact-shell-inline) 0;
   }
   .app-shell[data-keyboard-composer-mode="true"] .home-screen > .host-panel,
   .app-shell[data-keyboard-composer-mode="true"] .home-screen > .workspace-panel,
@@ -460,6 +610,12 @@ button { color: inherit; }
     gap: 6px;
     padding: 0;
   }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet {
+    padding-inline: 16px;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading { justify-content: flex-end; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading__copy,
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading > .state-tag { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading .eyebrow { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading h3 {
@@ -505,15 +661,23 @@ button { color: inherit; }
   .app-shell[data-keyboard-composer-mode="true"] .session-context__agent .session-agent-metadata__chip { min-height: 18px; padding: 1px 4px; }
   .app-shell[data-keyboard-composer-mode="true"] .workspace-nav-button { width: 48px; min-width: 48px; height: 48px; }
   .app-shell[data-keyboard-composer-mode="true"] .home-screen--workspace { gap: 5px; padding: 4px 7px 3px; }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .home-screen--workspace {
+    padding-top: 0;
+  }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace { gap: 5px; }
-  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px; }
+  .app-shell[data-keyboard-visible="true"][data-keyboard-composer-mode="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace {
+    /* The slot already budgets the full viewport and dock; give that space to
+       the terminal panel instead of leaving a gap that clips the dock. */
+    gap: 0;
+  }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px var(--live-terminal-compact-panel-inline); }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-heading--terminal { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-viewport {
     height: auto;
-    min-height: 80px;
+    min-height: var(--terminal-min-grid-height, 110px);
     max-height: none;
     flex: 1 1 auto;
-    padding: 4px;
+    padding: 4px var(--live-terminal-compact-grid-inline);
   }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-footnote { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace > .composer-panel {
@@ -552,4 +716,146 @@ button { color: inherit; }
 
 @media (max-width: 460px) {
   .migration-error { align-items: stretch; flex-direction: column; }
+}
+
+@media (max-width: 719px) {
+  /* Inline dictation adds one 16px status line above the existing terminal
+     controls. The composer gives up that row only while status is visible. */
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
+    height: 100px;
+    min-height: 100px;
+    max-height: 100px;
+    flex: 0 0 100px;
+    gap: 4px;
+    overflow: hidden;
+    padding: 0;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"]) .live-workspace .terminal-panel {
+    padding-top: 0;
+    padding-bottom: 1px;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace > .composer-panel {
+    gap: 0;
+    padding-bottom: 4px;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-heading,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-status { display: none; }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-draft {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 4px 8px;
+    resize: none;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-actions {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    gap: 4px;
+  }
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-discard,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-insert,
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .composer-shared-controls .send {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+  }
+}
+
+@media (max-width: 719px) {
+  .app-shell[data-keyboard-visible="true"]:is([data-fast-keys-main="true"], [data-fast-keys-ctrl="true"], [data-inline-dictation-status="true"]) .live-workspace .terminal-panel {
+    gap: 2px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace {
+    gap: 0;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .live-workspace .terminal-panel {
+    gap: 1px;
+    padding-block: 1px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal {
+    min-height: 24px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal h2 {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .panel-heading--terminal .state-tag {
+    padding: 1px 4px;
+    font-size: 9px;
+    line-height: 1.1;
+  }
+  .app-shell[data-keyboard-visible="true"][data-fast-keys-ctrl="true"][data-inline-dictation-status="true"] .home-screen--workspace {
+    padding-block: 0;
+  }
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace > .composer-panel {
+    height: 80px;
+    min-height: 80px;
+    max-height: 80px;
+    flex: 0 0 80px;
+    gap: 0;
+    padding: 0;
+  }
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace .composer-draft {
+    height: 25px;
+    min-height: 25px;
+    max-height: 25px;
+    padding: 2px 8px;
+    font: 14px/20px var(--font-mono);
+    resize: none;
+  }
+  .app-shell[data-keyboard-visible="true"][data-inline-dictation-status="true"] .live-workspace .composer-actions {
+    margin-top: -2px;
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .terminal-viewport {
+    height: var(--terminal-viewport-dock-cap);
+    min-height: var(--terminal-viewport-dock-cap);
+    max-height: var(--terminal-viewport-dock-cap);
+    flex: 0 0 var(--terminal-viewport-dock-cap);
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .terminal-viewport > .xterm {
+    height: calc(var(--terminal-viewport-dock-cap) - 5px);
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid {
+    /* Keep a one-pixel trailing containment slot after the dock. */
+    min-height: calc(var(--terminal-viewport-dock-cap) + var(--terminal-hotkeys-dock-height) + 1px);
+    justify-content: space-between;
+    background: var(--term-bg);
+  }
+  .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .mobile-hotkeys {
+    margin-top: 0;
+  }
+}
+
+@media (max-width: 719px) {
+  /* A delivered Android Send keeps the Prompt composer inline (#2932). Send
+     is tapped from the keyboard-up workspace, and the host multiplexer does
+     not re-wrap rows it already drew when its PTY gets narrower, so a column
+     loss here would clip the just-sent command at every wrap. Share the
+     compact horizontal gutters with the keyboard-up workspace so both states
+     measure the same xterm width and Send does not change the column count. */
+  .app-shell[data-prompt-composer-inline="true"] .screen-content.home-screen--workspace {
+    padding-inline: var(--live-terminal-compact-shell-inline);
+  }
+  .app-shell[data-prompt-composer-inline="true"] .live-workspace .terminal-panel {
+    padding-inline: var(--live-terminal-compact-panel-inline);
+  }
+  .app-shell[data-prompt-composer-inline="true"] .live-workspace .terminal-slot > .terminal-viewport {
+    padding-inline: var(--live-terminal-compact-grid-inline);
+  }
+  /* FitAddon measures its parent's border box and subtracts only xterm's own
+     padding. With the keyboard down, keep the vertical gutter on .xterm so the
+     last grid row stays inside the terminal above the inline composer. */
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport {
+    border-block-width: 0;
+    padding-block: 0;
+  }
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport > .xterm {
+    padding-block: var(--sp-2);
+  }
+  /* xterm's scroll layer spans that padding; keep the gutter on the terminal
+     background instead of xterm.css's #000 strips above and below the grid. */
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport .xterm-viewport {
+    background-color: var(--term-bg);
+  }
 }

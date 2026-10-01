@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
@@ -82,6 +83,74 @@ def validate(results: Path) -> None:
         raise GateFailure("skipped tests: " + ", ".join(skipped))
 
 
+LAUNCHER_PHASES = ("HTTP_START", "HTTP_CLEANUP")
+
+
+def validate_launcher_evidence(logcat: Path, run_id: str) -> None:
+    """Require same-run proof that both phases found Prompt closed and opened it by a trusted physical tap.
+
+    A scripted launcher activation would open the sheet before the journey's
+    physical tap (so the phase line is missing or says sheetOpenOnEntry=true) or
+    would record untrusted launcher events; either is red here.
+    """
+    if not run_id or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
+        raise GateFailure(f"invalid run id for launcher evidence: {run_id!r}")
+    try:
+        lines = logcat.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError as error:
+        raise GateFailure(f"launcher evidence logcat is unreadable: {logcat}: {error}") from error
+    prefix = f"UsagePortsDockerJourney: RUN {run_id} "
+    events: list[tuple[int, str, str]] = []
+    for number, line in enumerate(lines):
+        at = line.find(prefix)
+        if at < 0:
+            continue
+        rest = line[at + len(prefix):]
+        name, _, fields = rest.partition(" ")
+        events.append((number, name, fields))
+    if any(name.endswith("_PROMPT_ALREADY_OPEN_AFTER_FAILURE") for _, name, _ in events):
+        raise GateFailure("the Prompt sheet was already open when a cleanup phase started")
+
+    def only(name: str) -> tuple[int, str]:
+        found = [(number, fields) for number, event, fields in events if event == name]
+        if len(found) != 1:
+            raise GateFailure(f"expected exactly one {name} line for run {run_id}; found {len(found)}")
+        return found[0]
+
+    order: list[tuple[str, int]] = []
+    for phase in LAUNCHER_PHASES:
+        if phase == "HTTP_CLEANUP":
+            start_line, start_fields = only("HTTP_CLEANUP_START")
+            if not re.search(r"(?:^| )route=ports(?: |$)", start_fields) \
+               or not re.search(r"(?:^| )composerVisible=false(?: |$)", start_fields):
+                raise GateFailure("HTTP cleanup must start on Ports with the Composer hidden")
+            order.append(("HTTP_CLEANUP_START", start_line))
+        tap_line, tap_fields = only(f"{phase}_PROMPT_LAUNCHER_TAP")
+        head = tap_fields.split(" before=", 1)[0]
+        fields = dict(part.split("=", 1) for part in head.split() if "=" in part)
+        expected = {
+            "sheetOpenOnEntry": "false",
+            "trustedLauncherTapComplete": "true",
+            "launcherClicks": "1",
+            "zeroDetailLauncherClicks": "0",
+            "keyboardLauncherEvents": "0",
+            "keyEvents": "0",
+            "untrustedLauncherEvents": "0",
+            "promptSheetOpen": "true",
+        }
+        for key, value in expected.items():
+            if fields.get(key) != value:
+                raise GateFailure(f"{phase}_PROMPT_LAUNCHER_TAP needs {key}={value}; saw {fields.get(key)!r}")
+        if fields.get("attempts") not in ("1", "2", "3"):
+            raise GateFailure(f"{phase}_PROMPT_LAUNCHER_TAP needs 1-3 attempts; saw {fields.get('attempts')!r}")
+        order.append((f"{phase}_PROMPT_LAUNCHER_TAP", tap_line))
+        ready_line, _ = only(f"{phase}_COMPOSER_READY")
+        order.append((f"{phase}_COMPOSER_READY", ready_line))
+    positions = [line for _, line in order]
+    if positions != sorted(positions):
+        raise GateFailure("launcher evidence is out of order: " + ", ".join(name for name, _ in order))
+
+
 def write_report(directory: Path, cases: list[tuple[str, str, str]]) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     suite = ET.Element("testsuite", {
@@ -128,22 +197,94 @@ def self_test() -> int:
                 return 1
             print(f"ok [{index + 1}/{len(probes)}] {label}")
     print("PASS: packaged usage/ports result guard checks (8/8)")
+    return launcher_self_test()
+
+
+def launcher_self_test() -> int:
+    run_id = "js2908selftest"
+
+    def line(event: str, fields: str) -> str:
+        return f"09-30 23:06:29.139  3598  3613 I UsagePortsDockerJourney: RUN {run_id} {event} {fields}"
+
+    def tap(phase: str, **overrides: str) -> str:
+        fields = {"sheetOpenOnEntry": "false", "attempts": "1", "trustedLauncherTapComplete": "true",
+                  "launcherClicks": "1", "zeroDetailLauncherClicks": "0", "keyboardLauncherEvents": "0",
+                  "keyEvents": "0", "untrustedLauncherEvents": "0", "promptSheetOpen": "true"}
+        fields.update(overrides)
+        return line(f"{phase}_PROMPT_LAUNCHER_TAP", "sessionTag=t " + " ".join(f"{k}={v}" for k, v in fields.items())
+                    + ' before={"promptComposerOpen":"false"} taps=[] events=[]')
+
+    good = [
+        tap("HTTP_START"),
+        line("HTTP_START_COMPOSER_READY", "route=home transportState=connected"),
+        line("HTTP_CLEANUP_START", "route=ports composerVisible=false sshPhase=live"),
+        tap("HTTP_CLEANUP"),
+        line("HTTP_CLEANUP_COMPOSER_READY", "route=home transportState=connected"),
+    ]
+    probes: list[tuple[str, list[str], bool]] = [
+        ("both phases physically opened Prompt", good, True),
+        ("cleanup launcher tap missing (sheet opened some other way)", [good[0], good[1], good[2], good[4]], False),
+        ("startup launcher tap missing", good[1:], False),
+        ("sheet already open when cleanup started", good[:3] + [tap("HTTP_CLEANUP", sheetOpenOnEntry="true")] + good[4:], False),
+        ("untrusted launcher event recorded", good[:3] + [tap("HTTP_CLEANUP", untrustedLauncherEvents="1")] + good[4:], False),
+        ("trusted launcher click not completed", good[:3] + [tap("HTTP_CLEANUP", trustedLauncherTapComplete="false")] + good[4:], False),
+        ("sheet not open after the tap", [tap("HTTP_START", promptSheetOpen="false")] + good[1:], False),
+        ("two clicks reached the launcher (ignored tap + keyboard click)",
+         good[:3] + [tap("HTTP_CLEANUP", launcherClicks="2")] + good[4:], False),
+        ("keyboard-generated (detail 0) launcher click", [tap("HTTP_START", zeroDetailLauncherClicks="1")] + good[1:], False),
+        ("keyboard event on the launcher", good[:3] + [tap("HTTP_CLEANUP", keyboardLauncherEvents="2")] + good[4:], False),
+        ("keyboard input during the launcher open", [tap("HTTP_START", keyEvents="1")] + good[1:], False),
+        ("launcher modality fields missing (pre-hardening line)",
+         good[:3] + [tap("HTTP_CLEANUP").replace(" launcherClicks=1", "")] + good[4:], False),
+        ("more than three attempts", good[:3] + [tap("HTTP_CLEANUP", attempts="4")] + good[4:], False),
+        ("cleanup tap before cleanup start", [good[0], good[1], good[3], good[2], good[4]], False),
+        ("duplicate cleanup tap", good + [good[3]], False),
+        ("cleanup started with the Composer visible",
+         good[:2] + [line("HTTP_CLEANUP_START", "route=ports composerVisible=true")] + good[3:], False),
+        ("after-failure fallback found the sheet open",
+         good + [line("HTTP_CLEANUP_PROMPT_ALREADY_OPEN_AFTER_FAILURE", "sessionTag=t")], False),
+        ("another run's evidence does not count", [entry.replace(run_id, "js-other") for entry in good], False),
+    ]
+    with tempfile.TemporaryDirectory(prefix="pocketshell-js-usage-ports-launcher-") as scratch:
+        for index, (label, entries, expected) in enumerate(probes, start=1):
+            logcat = Path(scratch) / f"case-{index}.txt"
+            logcat.write_text("\n".join(entries) + "\n", encoding="utf-8")
+            try:
+                validate_launcher_evidence(logcat, run_id)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected:
+                print(f"FAIL: usage/ports launcher evidence probe {index}: {label}", file=sys.stderr)
+                return 1
+            print(f"ok [{index}/{len(probes)}] launcher evidence: {label}")
+    print(f"PASS: packaged usage/ports launcher evidence checks ({len(probes)}/{len(probes)})")
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS)
+    parser.add_argument("--launcher-logcat", type=Path,
+                        help="same-run logcat; requires trusted physical Prompt launcher evidence for both phases")
+    parser.add_argument("--run-id", help="run id whose launcher evidence --launcher-logcat must contain")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
+    if (args.launcher_logcat is None) != (args.run_id is None):
+        print("FAIL: --launcher-logcat and --run-id must be given together", file=sys.stderr)
+        return 2
     try:
         validate(args.results_dir)
+        if args.launcher_logcat is not None:
+            validate_launcher_evidence(args.launcher_logcat, args.run_id)
     except GateFailure as error:
         print(f"FAIL: packaged JS usage/ports journey: {error}", file=sys.stderr)
         return 1
     print(f"PASS: {REQUIRED_CLASS}#{REQUIRED_METHOD} executed exactly once")
+    if args.launcher_logcat is not None:
+        print(f"PASS: both Usage/Ports phases opened Prompt by a trusted physical launcher tap ({args.run_id})")
     return 0
 
 

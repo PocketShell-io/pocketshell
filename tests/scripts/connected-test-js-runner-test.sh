@@ -207,7 +207,7 @@ make_dispatch_fixture() {
   cp "$WRAPPER" "$path/scripts/connected-test.sh"
   init_repo "$path"
   local lane
-  for lane in smoke lifecycle composer-docker key-vault-docker durable-storage; do
+  for lane in smoke lifecycle composer-docker hotkeys-docker key-vault-docker durable-storage; do
     cat > "$path/scripts/connected-js-$lane.sh" <<'LANE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -323,6 +323,19 @@ composer_dispatch_preserves_pool_port_and_session_prefix() {
   )
   diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
     || fail 'composer lane lost its suffix, Docker pool port, or session prefix'
+}
+
+hotkeys_dispatch_preserves_pool_port_and_session_prefix() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' hotkeys-docker --suffix i2884 \
+    --port 2243 --session-prefix js2884-local
+  (( RUN_RC == 0 )) || fail "fast-key lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-hotkeys-docker.sh"
+    --suffix i2884 --port 2243 --session-prefix js2884-local
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'fast-key lane lost its suffix, Docker pool port, or session prefix'
 }
 
 key_vault_dispatch_preserves_fixture_identity() {
@@ -506,6 +519,7 @@ CASES=(
   smoke_dispatch_keeps_explicit_package_identity
   lifecycle_dispatch_preserves_fixture_identity
   composer_dispatch_preserves_pool_port_and_session_prefix
+  hotkeys_dispatch_preserves_pool_port_and_session_prefix
   key_vault_dispatch_preserves_fixture_identity
   durable_storage_dispatch_preserves_suffix_run_id_and_kill_delay
   foreign_checkout_is_refused_before_lane_dispatch
@@ -514,7 +528,7 @@ CASES=(
   same_emulator_is_serialized_across_worktrees_and_reports_are_run_local
   failure_artifacts_are_preserved_after_gradle_failure
 )
-EXPECTED_FULL_CASES=12
+EXPECTED_FULL_CASES=13
 (( ${#CASES[@]} == EXPECTED_FULL_CASES )) \
   || fail "expected $EXPECTED_FULL_CASES cases; found ${#CASES[@]}"
 

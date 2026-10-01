@@ -206,6 +206,36 @@ describe('Android hub keeps one PTY per attached session (#2955)', () => {
     expect(await hub.input(b2.shellId, 'b', 'tests', WORKSPACE)).toBe(true);
   });
 
+  it('evicts the tab the user has not touched, not the one shown again and typed into, when a new tab opens past the bound', async () => {
+    const { native, hub, attach, exited } = await connected({ maxOpenPtys: 2 });
+    const a = await attach('main');
+    const b = await attach('tests');
+    const opens = native.opened.length;
+    // What the shared pane does when tab A comes back to front and the user
+    // types: a redraw, a geometry push and input — never a re-attach.
+    expect(await hub.redraw(a.shellId)).toBe(true);
+    expect(await hub.resize(a.shellId, 90, 30)).toBe(true);
+    expect(await hub.input(a.shellId, 'work\r', 'main', WORKSPACE)).toBe(true);
+    expect(native.opened).toHaveLength(opens);
+
+    await attach('third');
+    expect(exited).toEqual([b.shellId]);
+    expect(await hub.input(a.shellId, 'still\r', 'main', WORKSPACE)).toBe(true);
+  });
+
+  it.each([
+    ['a redraw (the tab shown again)', (hub: AndroidConnectionHub, shellId: string) => hub.redraw(shellId)],
+    ['a geometry push', (hub: AndroidConnectionHub, shellId: string) => hub.resize(shellId, 90, 30)],
+    ['typing', (hub: AndroidConnectionHub, shellId: string) => hub.input(shellId, 'x', 'main', WORKSPACE)],
+  ])('counts %s alone as focus for eviction', async (_label, use) => {
+    const { hub, attach, exited } = await connected({ maxOpenPtys: 2 });
+    const a = await attach('main');
+    const b = await attach('tests');
+    expect(await use(hub, a.shellId)).toBe(true);
+    await attach('third');
+    expect(exited).toEqual([b.shellId]);
+  });
+
   it('states the native per-connection channel budget to core, so the controller keeps exec headroom', () => {
     const plugin = readFileSync(path.join(process.cwd(), 'android/app/src/main/java/com/pocketshell/app/SshCapabilityPlugin.java'), 'utf8');
     expect(plugin).toMatch(new RegExp(`MAX_CHANNELS_PER_CONNECTION = ${NATIVE_MAX_CHANNELS_PER_CONNECTION};`));
