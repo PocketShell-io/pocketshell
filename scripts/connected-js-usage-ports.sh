@@ -225,9 +225,10 @@ printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run 
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/usage-ports-assets-live-logcat.txt"
 : > "$LIVE_ASSET_LOGCAT"
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
-  > "$LIVE_ASSET_LOGCAT" 2>&1 &
-LIVE_ASSET_LOGCAT_PID=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \
+  > "$LIVE_ASSET_LOGCAT" 2>&1
+LIVE_ASSET_LOGCAT_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the same-run artifact logcat collector'
 
@@ -240,7 +241,7 @@ if pocketshell_run_connected_js_usage_ports_gradle \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then
+    --stacktrace --console=plain; then
   :
 else
   test_exit_code=$?

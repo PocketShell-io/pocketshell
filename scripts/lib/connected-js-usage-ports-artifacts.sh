@@ -47,10 +47,19 @@ pocketshell_run_connected_js_usage_ports_gradle() {
   shift 3
 
   set -o pipefail
-  if "$@" 2>&1 | tee "$artifacts_dir/gradle-connected.log"; then
+  if declare -F pocketshell_run_without_avd_lock_fd_to_log >/dev/null 2>&1; then
+    if pocketshell_run_without_avd_lock_fd_to_log "$artifacts_dir/gradle-connected.log" "$@"; then
+      return 0
+    else
+      test_exit_code=$?
+    fi
+  elif "$@" 2>&1 | tee "$artifacts_dir/gradle-connected.log"; then
     return 0
   else
     test_exit_code=$?
+  fi
+
+  if (( test_exit_code != 0 )); then
     pocketshell_preserve_connected_js_usage_ports_failure_outputs \
       "$results_dir" "$reports_dir" "$artifacts_dir"
     return "$test_exit_code"

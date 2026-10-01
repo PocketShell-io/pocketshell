@@ -295,6 +295,96 @@ def workflow_run_script(source: str, step_name: str) -> str:
     return "\n".join(script_lines)
 
 
+# #2863: the connected-lane lock harnesses (Gradle output-tree lock and JS
+# serial ownership) are only regression coverage if the rewrite branch's
+# blocking job actually executes them. Legacy tests.yml reachability does not
+# count, so pin each as an executable, fail-closed line of this job's step.
+LOCK_HARNESS_JOB = "web-and-android"
+LOCK_HARNESS_STEP = "Check JS-first connected-test dispatch and lock contracts"
+LOCK_HARNESSES = (
+    "scripts/test-gradle-output-lock.sh",
+    "tests/scripts/connected-test-serial-ownership-test.sh",
+    "tests/scripts/avd-lock-test.sh",
+    "tests/scripts/avd-lock-sharing-test.sh",
+)
+
+
+def blocking_job_section(source: str, job: str) -> str:
+    match = re.search(rf"(?m)^  {re.escape(job)}:\n", source)
+    if match is None:
+        raise AssertionError(f"workflow is missing the blocking job {job}")
+    following = re.search(r"(?m)^  [A-Za-z0-9_-]+:\n", source[match.end():])
+    end = match.end() + following.start() if following else len(source)
+    return source[match.start():end]
+
+
+def require_lock_harness_invocations(source: str) -> None:
+    job = blocking_job_section(source, LOCK_HARNESS_JOB)
+    if re.search(r"(?m)^    continue-on-error:", job):
+        raise AssertionError(f"the {LOCK_HARNESS_JOB} job must stay blocking")
+    if f"- name: {LOCK_HARNESS_STEP}\n" not in job:
+        raise AssertionError(f"the {LOCK_HARNESS_JOB} job is missing the step: {LOCK_HARNESS_STEP}")
+    step_start = job.index(f"- name: {LOCK_HARNESS_STEP}\n")
+    step_end = job.find("\n      - name:", step_start + 8)
+    step = job[step_start:step_end if step_end >= 0 else len(job)]
+    for key in ("if:", "continue-on-error:", "shell:"):
+        if re.search(rf"(?m)^        {re.escape(key)}", step):
+            raise AssertionError(f"the lock-contract step must run unconditionally with the default fail-fast shell ({key})")
+    script = workflow_run_script(job, LOCK_HARNESS_STEP)
+    subprocess.run(["bash", "-n"], input=script, text=True, check=True)
+    commands = [
+        line.strip() for line in script.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    if any(re.match(r"set\s+[+]", command) for command in commands):
+        raise AssertionError("the lock-contract step must not disable fail-fast execution")
+    for harness in LOCK_HARNESSES:
+        if harness not in commands:
+            raise AssertionError(f"the {LOCK_HARNESS_JOB} job does not execute {harness} as its own fail-closed command")
+        path = repository_root / harness
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise AssertionError(f"lock harness is missing or not executable: {harness}")
+
+
+require_lock_harness_invocations(workflow)
+for harness in LOCK_HARNESSES:
+    invocation = f"          {harness}\n"
+    if workflow.count(invocation) != 1:
+        raise AssertionError(f"lock-harness mutation fixture did not match exactly one {harness} line")
+    for label, damaged in (
+        ("removed", workflow.replace(invocation, "", 1)),
+        ("commented out", workflow.replace(invocation, f"          # {harness}\n", 1)),
+        ("failure-masked", workflow.replace(invocation, f"          {harness} || true\n", 1)),
+        ("moved to the fixture job", workflow.replace(invocation, "", 1).rstrip("\n")
+         + f"\n\n      - name: Relocated lock harness\n        run: {harness}\n"),
+    ):
+        try:
+            require_lock_harness_invocations(damaged)
+        except AssertionError:
+            print(f"PASS: {label} {harness} fails the rewrite blocking-job lock contract")
+        else:
+            raise AssertionError(f"rewrite lock contract missed a {label} {harness}")
+step_marker = f"      - name: {LOCK_HARNESS_STEP}\n"
+for label, damaged in (
+    ("non-blocking", workflow.replace(step_marker, step_marker + "        continue-on-error: true\n", 1)),
+    ("conditional", workflow.replace(step_marker, step_marker + "        if: false\n", 1)),
+    ("fail-fast disabled", workflow.replace(
+        step_marker + "        run: |\n",
+        step_marker + "        run: |\n          set +e\n",
+        1,
+    )),
+):
+    if damaged == workflow:
+        raise AssertionError(f"lock-contract {label} mutation fixture did not match the workflow")
+    try:
+        require_lock_harness_invocations(damaged)
+    except AssertionError:
+        print(f"PASS: a {label} lock-contract step fails the rewrite blocking-job lock contract")
+    else:
+        raise AssertionError(f"rewrite lock contract missed a {label} step")
+print("PASS: the rewrite blocking job executes the Gradle output-lock, JS serial-ownership, and AVD-lock harnesses")
+
+
 # Model the reviewer's dormant Files call: its wrapper status can be zero while
 # the run-scoped Files directory has no JUnit. The actual always-run workflow
 # step must still fail after checking the other lanes.

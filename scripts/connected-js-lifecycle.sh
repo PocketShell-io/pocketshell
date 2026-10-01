@@ -251,14 +251,15 @@ LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/lifecycle-assets-live-logcat.txt"
 [[ "$LIVE_ASSET_LOGCAT" != "$RESULTS_DIR/"* ]] || fail 'live artifact logcat must survive Gradle result cleanup'
 printf 'Capturing artifact logcat live outside Gradle cleanup: %s\n' "$LIVE_ASSET_LOGCAT"
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
-"$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime -s SshPtyDockerJourney PocketshellJourneyAsset \
-  > "$LIVE_ASSET_LOGCAT" 2>&1 &
-LIVE_ASSET_LOGCAT_PID=$!
+pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
+  -s SshPtyDockerJourney PocketshellJourneyAsset > "$LIVE_ASSET_LOGCAT" 2>&1
+LIVE_ASSET_LOGCAT_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$LIVE_ASSET_LOGCAT_PID" 2>/dev/null || fail 'could not start the live artifact logcat collector'
-python3 "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" \
-  --container "$CONTAINER" --output "$ARTIFACTS_DIR/host-ssh-connections.jsonl" &
-HOST_SOCKET_WATCHER_PID=$!
+pocketshell_start_without_avd_lock_fd python3 \
+  "$ROOT_DIR/scripts/watch-js-lifecycle-host-connections.py" \
+  --container "$CONTAINER" --output "$ARTIFACTS_DIR/host-ssh-connections.jsonl"
+HOST_SOCKET_WATCHER_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 1
 kill -0 "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || fail 'Docker SSH socket watcher exited before the packaged journey'
 capture_device_artifact_state before
@@ -268,8 +269,14 @@ capture_device_artifact_state before
 # an immediate failure if this Gradle/instrumentation process exits first. A
 # single launch-relative budget counted Gradle + install time against the journey
 # and gave up 21-90 s early on a loaded box.
-(
-  set -o pipefail
+#
+# Both background processes are started with the wrapper-owned continuous AVD
+# lock FD closed at process creation (issue #2863): a backgrounded `( ... ) &`
+# subshell or bare `&` child would inherit it and could keep the serial locked
+# after a killed wrapper. The wrapper itself stays the lock owner while it waits.
+pocketshell_start_without_avd_lock_fd bash -o pipefail -c \
+  'log_file=$1; shift; "$@" 2>&1 | tee "$log_file"' \
+  pocketshell-js-lifecycle-instrumentation "$ARTIFACTS_DIR/gradle-connected.log" \
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
@@ -278,15 +285,14 @@ capture_device_artifact_state before
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"
-) &
-INSTRUMENTATION_PID=$!
-python3 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" \
+    --stacktrace --console=plain
+INSTRUMENTATION_PID="$POCKETSHELL_AVD_CHILD_PID"
+pocketshell_start_without_avd_lock_fd python3 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" \
   --adb "$ADB" --serial "$ANDROID_SERIAL" --logcat "$LIVE_ASSET_LOGCAT" \
   --run-id "$RUN_ID" --expected-package "$APP_ID" --output-directory "$ARTIFACTS_DIR" \
   --instrumentation-pid "$INSTRUMENTATION_PID" \
-  > "$ARTIFACTS_DIR/artifact-pull-watcher.log" 2>&1 &
-ARTIFACT_PULL_WATCHER_PID=$!
+  > "$ARTIFACTS_DIR/artifact-pull-watcher.log" 2>&1
+ARTIFACT_PULL_WATCHER_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null \
   || { cat "$ARTIFACTS_DIR/artifact-pull-watcher.log" >&2 || true; fail 'same-run artifact pull watcher exited before the packaged journey'; }
