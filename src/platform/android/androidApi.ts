@@ -9,7 +9,8 @@
  *   ssh / shell / helper — {@link AndroidConnectionHub}: one core
  *              ConnectionController per logical connection over the native
  *              `SshCapability` plugin (sshj). The controller owns dial, trust,
- *              listing, attach, reconnect and grace (D28);
+ *              listing, attach, reconnect and grace (D28); `ssh.reconnect`
+ *              advertises that, so the shared store never re-dials (#2954);
  *   hosts    — {@link AndroidHostStore}: hosts added on the phone plus the
  *              0.5.x import;
  *   app      — Android lifecycle drives the controllers' background grace
@@ -25,10 +26,9 @@ import {
   readHostUsage,
   runHostBootstrap,
   type ConnectionController,
-  type ConnectionState,
   type HomeResult,
 } from '@pocketshell/core';
-import { AndroidConnectionHub, type TofuDecision } from './connectionHub';
+import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import type { AndroidHostStore } from './hostStore';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
@@ -58,6 +58,8 @@ export interface AndroidApiDeps {
   /** Route the shared picker's empty state sends the user to. */
   addHostRoute: string;
   log?: (entry: { kind: string; message: string; detail?: Record<string, unknown> }) => void;
+  /** Controller snapshots as the hub sees them (diagnostics only). */
+  observeConnections?: (entry: ConnectionJournalEntry) => void;
 }
 
 export interface AndroidPlatform {
@@ -67,7 +69,10 @@ export interface AndroidPlatform {
 }
 
 export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
-  const hub = new AndroidConnectionHub({ createController: deps.createController });
+  const hub = new AndroidConnectionHub({
+    createController: deps.createController,
+    observe: deps.observeConnections,
+  });
   const unbindLifecycle = deps.lifecycle
     ? deps.lifecycle.onActiveChange((active) => {
         if (active) void hub.returnToForeground();
@@ -93,7 +98,10 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       },
       exec,
       close: (connectionId) => hub.close(connectionId),
-      onState: (listener) => hub.onState(listener as (payload: { connectionId: string; state: ConnectionState }) => void),
+      onState: (listener) => hub.onState(listener),
+      // Its presence tells the shared store the controller owns recovery
+      // (#2954): no store ladder, and Retry recovers the same logical id.
+      reconnect: (connectionId) => hub.reconnect(connectionId),
     },
 
     hosts: {

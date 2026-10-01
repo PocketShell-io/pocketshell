@@ -326,6 +326,7 @@
         "re-attaches and repaints the same session after its pane closed the shell",
         "delivers keystrokes a re-joining pane types under its retired id of the same session, never into another",
         "a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id",
+        "caps output held for an unclaimed shell id, keeping the newest bytes",
         "delivers held output after a fallback when the pane never calls on its new shell id",
         "retires the superseded shell id when another session is attached",
         "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
@@ -381,6 +382,16 @@
         "deletes inside a word away from the end",
         "turns a predicted space the keyboard removes before punctuation into one DEL",
         "sends one DEL per code point when a multi-code-point emoji is deleted"
+      ]
+    },
+    "tests/unit/sharedRecoveryOwner.test.ts": {
+      "suite": "Shared store delegates recovery to the ConnectionController",
+      "tests": [
+        "advertises controller-owned recovery on the Android ssh group",
+        "recovers a dropped link with one ladder when an attempt inside it fails",
+        "runs no second ladder after the controller gives up, and Retry re-attaches through ssh.reconnect",
+        "words the lost-link banner from the controller ladder and its give-up reason",
+        "leaves the OS-resume probe to the controller when it owns recovery"
       ]
     },
     "tests/unit/terminalLogicalLines.test.ts": {

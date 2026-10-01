@@ -12,14 +12,18 @@
  *  - the connection id the shared app holds is LOGICAL and stable across the
  *    controller's internal re-dials, so the shared connection store never
  *    sees a new id and never re-keys its surfaces;
- *  - `reconnecting` is reported while the controller walks its ladder, and
- *    `lost` only once the controller has given up — the shared store's own
- *    `ReconnectLoop` starts on `lost` alone, so the two ladders never race
- *    (the remaining overlap after a give-up is stage U1 of the #2936 plan);
+ *  - `reconnecting` (with the ladder's attempt and budget) is reported while
+ *    the controller walks its ladder — including between a refused dial and
+ *    the next one — and `lost` (with the controller's reason) only once it
+ *    has given up;
+ *  - the hub advertises `ssh.reconnect` (see `androidApi.ts`), so the shared
+ *    store runs no ladder of its own and its Retry asks the controller for
+ *    one recovery of the same logical id (#2954, D28: one reconnect owner);
  *  - a shell id names one attach of one session; the controller keeps one
  *    PTY per connection, so attaching another session supersedes the
  *    previous shell id, which is reported exited (honest: its PTY closed).
  */
+import type { ConnectionStateEvent } from '@ui/app/api';
 import {
   findSessionRow,
   readSshCapabilityError,
@@ -39,7 +43,7 @@ import {
 /** Default timeout for a generic `ssh.exec` from the shared app. */
 export const HOST_COMMAND_TIMEOUT_MS = 30_000;
 
-export type ConnectionStateListener = (payload: { connectionId: string; state: ConnectionState }) => void;
+export type ConnectionStateListener = (payload: ConnectionStateEvent) => void;
 export type ShellDataListener = (payload: { shellId: ShellId; data: Uint8Array }) => void;
 export type ShellExitListener = (payload: { shellId: ShellId; exitCode: number }) => void;
 
@@ -82,6 +86,7 @@ interface ConnectionRecord {
   id: string;
   controller: ConnectionController;
   lastState: ConnectionState | null;
+  lastAttempt: number;
   lastPhase: ConnectionSnapshot['phase'] | null;
   shell: ShellBinding | null;
   attaching: PendingAttach | null;
@@ -95,9 +100,46 @@ interface ConnectionRecord {
  */
 export const SHELL_CLAIM_FALLBACK_MS = 1_000;
 
+/**
+ * The most output held for a shell id the pane has not claimed yet. Past it
+ * the OLDEST chunks go: the attach snapshot is a full repaint, so what a pane
+ * that claims late needs is the newest screen, not a busy session's history.
+ */
+export const HELD_OUTPUT_LIMIT_BYTES = 256 * 1024;
+
+/** Append to a held queue, dropping its oldest chunks past the byte limit. */
+export function holdBounded(queue: Uint8Array[], bytes: Uint8Array, limit = HELD_OUTPUT_LIMIT_BYTES): void {
+  queue.push(bytes);
+  let total = 0;
+  for (const chunk of queue) total += chunk.length;
+  while (total > limit && queue.length > 1) total -= queue.shift()!.length;
+}
+
+/**
+ * One controller snapshot as the hub saw it, keyed by the LOGICAL id — the
+ * diagnostics stream a packaged journey reads to count ladders and dials
+ * without trusting the UI (#2954).
+ */
+export interface ConnectionJournalEntry {
+  at: number;
+  /** The logical id the shared app holds. */
+  connectionId: string;
+  phase: ConnectionSnapshot['phase'];
+  retryAttempt: number;
+  /** The native transport id of the current generation (null between dials). */
+  transportId: string | null;
+  generationId: string | null;
+  selectedId: string | null;
+  selectedName: string | null;
+  selectedTag: string | null;
+  error: string | null;
+}
+
 export interface ConnectionHubOptions {
   /** A fresh controller per logical connection (bound to the native capability). */
   createController: () => ConnectionController;
+  /** Every controller snapshot, for diagnostics; never drives behaviour. */
+  observe?: (entry: ConnectionJournalEntry) => void;
 }
 
 /** Map the controller's phase to the shared app's four-word connection state. */
@@ -116,8 +158,11 @@ export function connectionStateFor(snapshot: ConnectionSnapshot): ConnectionStat
       return 'lost';
     case 'error':
       // An operation failed on a live transport (attach, resize): the link is
-      // still up. A failed dial leaves no transport behind.
-      return snapshot.connectionId ? 'connected' : 'lost';
+      // still up. A failed dial leaves no transport behind — inside the
+      // retry ladder that is one refused attempt, not the give-up (the
+      // controller says `lost` itself when the budget is spent).
+      if (snapshot.connectionId) return 'connected';
+      return snapshot.retryAttempt > 0 ? 'reconnecting' : 'lost';
     default:
       return 'connected';
   }
@@ -159,6 +204,7 @@ export class AndroidConnectionHub {
       id,
       controller,
       lastState: null,
+      lastAttempt: 0,
       lastPhase: null,
       shell: null,
       attaching: null,
@@ -175,13 +221,13 @@ export class AndroidConnectionHub {
         // never dropped (#2936 review).
         const attaching = record.attaching;
         if (attaching && sameRow(attaching.row, session)) {
-          attaching.buffer.push(bytes);
+          holdBounded(attaching.buffer, bytes);
           return;
         }
         const shell = record.shell;
         if (!shell || !sameRow(shell.row, session)) return;
         if (shell.held) {
-          shell.held.push(bytes);
+          holdBounded(shell.held, bytes);
           return;
         }
         this.emitData(shell.shellId, bytes);
@@ -220,6 +266,16 @@ export class AndroidConnectionHub {
     const result = await this.recordOf(connectionId).controller.runHostCommand(command, timeoutMs);
     if (!result.ok) throw new Error(result.message);
     return result.value;
+  }
+
+  /**
+   * The shared store's Retry: one controller recovery of this logical
+   * connection (joining a ladder already running). True once the transport
+   * and the attached session are back.
+   */
+  async reconnect(connectionId: string): Promise<boolean> {
+    const result = await this.recordOf(connectionId).controller.reconnect();
+    return result.ok;
   }
 
   onState(listener: ConnectionStateListener): () => void {
@@ -390,6 +446,18 @@ export class AndroidConnectionHub {
   // --- internals --------------------------------------------------------------
 
   private onSnapshot(record: ConnectionRecord, snapshot: ConnectionSnapshot): void {
+    this.options.observe?.({
+      at: Date.now(),
+      connectionId: record.id,
+      phase: snapshot.phase,
+      retryAttempt: snapshot.retryAttempt,
+      transportId: snapshot.connectionId,
+      generationId: snapshot.generationId,
+      selectedId: snapshot.selectedSession?.id ?? null,
+      selectedName: snapshot.selectedSession?.name ?? null,
+      selectedTag: snapshot.selectedSession?.tag ?? null,
+      error: snapshot.error,
+    });
     const previousPhase = record.lastPhase;
     record.lastPhase = snapshot.phase;
     // The attached session's PTY reached EOF (the session ended) or the
@@ -403,9 +471,21 @@ export class AndroidConnectionHub {
       this.retireShell(record);
     }
     const state = connectionStateFor(snapshot);
-    if (state === record.lastState) return;
+    const attempt = state === 'reconnecting' ? snapshot.retryAttempt : 0;
+    if (state === record.lastState && attempt === record.lastAttempt) return;
     record.lastState = state;
-    this.emitState(record.id, state);
+    record.lastAttempt = attempt;
+    if (state === 'reconnecting') {
+      this.emitState(record.id, state, {
+        attempt,
+        maxAttempts: record.controller.maxReconnectAttempts,
+        ...(snapshot.error ? { error: snapshot.error } : {}),
+      });
+    } else if (state === 'lost' && snapshot.error) {
+      this.emitState(record.id, state, { error: snapshot.error });
+    } else {
+      this.emitState(record.id, state);
+    }
   }
 
   private retireShell(record: ConnectionRecord): void {
@@ -444,8 +524,12 @@ export class AndroidConnectionHub {
     for (const listener of this.dataListeners) listener({ shellId, data });
   }
 
-  private emitState(connectionId: string, state: ConnectionState): void {
-    for (const listener of this.stateListeners) listener({ connectionId, state });
+  private emitState(
+    connectionId: string,
+    state: ConnectionState,
+    detail: Omit<ConnectionStateEvent, 'connectionId' | 'state'> = {},
+  ): void {
+    for (const listener of this.stateListeners) listener({ connectionId, state, ...detail });
   }
 
   private recordOf(connectionId: string): ConnectionRecord {
