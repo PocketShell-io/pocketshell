@@ -129,7 +129,6 @@ const legacyKeyPassphrase = ref('');
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
 const connectionMessage = ref('');
-const settingsReloading = ref(false);
 const resourceSnapshot = ref<SshResourceSnapshot | null>(null);
 const resourceSnapshotStatus = ref<'unverified' | 'pending' | 'verified' | 'failed'>('unverified');
 const usageRecords = ref<UsageRow[]>([]);
@@ -177,9 +176,13 @@ const isConnecting = computed(() => ['connecting', 'reconnecting'].includes(curr
 const isConnected = computed(() => ['connected', 'listing', 'attaching', 'live', 'background'].includes(currentPhase.value));
 const hasActiveConnection = computed(() => isConnected.value
   && Boolean(connectionSnapshot.value?.connectionId && connectionSnapshot.value.generationId));
+// A document that will reload to apply imported settings keeps presenting the
+// migration as pending, so nothing can act on a page the reload discards (#3005).
+const publishedMigrationStatus = computed(() => installedDataMigrationState.reloadPending
+  ? 'pending'
+  : installedDataMigrationState.status);
 const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
-  || installedDataMigrationState.status === 'pending'
-  || settingsReloading.value);
+  || publishedMigrationStatus.value === 'pending');
 const isLive = computed(() => currentPhase.value === 'live');
 const keyboardComposerMode = computed(() =>
   keyboardVisible.value && isLive.value && promptComposerHasFocus.value,
@@ -867,8 +870,8 @@ async function rejectHostKey() {
 }
 
 function retryDataImport() {
-  void retryInstalledDataMigration().then((settingsWritten) => {
-    reloadAfterSettingsImport(settingsWritten);
+  void retryInstalledDataMigration({ requestSettingsReload: requestImportedSettingsReload }).then((settingsWritten) => {
+    if (reloadAfterSettingsImport(settingsWritten)) return;
     void loadImportedLegacyHosts();
     void refreshSshKeys();
   });
@@ -900,18 +903,24 @@ async function importLegacySnippets(): Promise<void> {
   }
 }
 
-function reloadAfterSettingsImport(settingsWritten: boolean) {
+// This shell applies imported settings by reloading once per startup session.
+function requestImportedSettingsReload(settingsWritten: boolean): boolean {
+  return shouldReloadForImportedSettings(settingsWritten);
+}
+
+function reloadAfterSettingsImport(settingsWritten: boolean): boolean {
   if (!settingsWritten) {
     try {
       window.sessionStorage.removeItem(SETTINGS_RELOAD_SESSION_KEY);
     } catch {
       // A later launch can still use the imported value from local storage.
     }
-    return;
+    return false;
   }
-  if (!shouldReloadForImportedSettings(settingsWritten)) return;
-  settingsReloading.value = true;
+  // runInstalledDataMigration decided this together with the settled status.
+  if (!installedDataMigrationState.reloadPending) return false;
   window.location.reload();
+  return true;
 }
 
 onMounted(() => {
@@ -980,8 +989,8 @@ onMounted(() => {
     });
   }
 
-  void runInstalledDataMigration().then((settingsWritten) => {
-    reloadAfterSettingsImport(settingsWritten);
+  void runInstalledDataMigration({ requestSettingsReload: requestImportedSettingsReload }).then((settingsWritten) => {
+    if (reloadAfterSettingsImport(settingsWritten)) return;
     void loadImportedLegacyHosts();
     void importLegacySnippets();
   });
@@ -1098,7 +1107,7 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
-    :data-migration-status="installedDataMigrationState.status"
+    :data-migration-status="publishedMigrationStatus"
   >
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
       <template v-if="navigation.route === 'home' && connectionSnapshot">
@@ -1209,7 +1218,7 @@ onBeforeUnmount(() => {
     </div>
 
     <section
-      v-if="installedDataMigrationState.status === 'failed' || installedDataMigrationState.status === 'partial'"
+      v-if="publishedMigrationStatus === 'failed' || publishedMigrationStatus === 'partial'"
       class="migration-error"
       role="alert"
       data-testid="installed-data-migration-error"
