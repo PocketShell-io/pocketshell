@@ -314,6 +314,29 @@ describe('Android PocketShellApi platform', () => {
     expect(received.filter(([id]) => id === again.shellId).map(([, text]) => text)).toEqual(['repaint']);
   });
 
+  it('delivers keystrokes a re-joining pane types under its retired id of the same session, never into another', async () => {
+    const { native, hub } = harness();
+    const { connectionId } = await hub.connect(target);
+    open.push({ hub, id: connectionId! });
+    await hub.sessionsList(connectionId!);
+    const main1 = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    const tests = await hub.attachSession({ connectionId: connectionId!, sessionName: 'tests', aplexerId: 'tests-id' });
+    // main's pane still holds main1 (retired) while tests is current: refused.
+    expect(await hub.input(main1.shellId, 'wrong', 'main')).toBe(false);
+    expect(native.writes).toEqual([]);
+
+    // main's pane re-joins main and types before the new id reaches it.
+    const rejoin = hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    const typed = hub.input(main1.shellId, 'early\r', 'main');
+    const main2 = await rejoin;
+    expect(await typed).toBe(true);
+    expect(native.writes).toEqual(['early\r']);
+    expect(native.opened.at(-1)!.command).toContain(":main'");
+    expect(await hub.input(tests.shellId, 'x', 'tests')).toBe(false);
+    expect(await hub.input(main2.shellId, 'late\r', 'main')).toBe(true);
+    expect(native.writes).toEqual(['early\r', 'late\r']);
+  });
+
   it('delivers held output after a fallback when the pane never calls on its new shell id', async () => {
     const { native, hub } = harness();
     native.attachSnapshot = 'snap';

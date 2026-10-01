@@ -71,7 +71,12 @@ interface ShellBinding {
 interface PendingAttach {
   row: SessionRow;
   buffer: Uint8Array[];
+  /** Settles when the attach does, either way. */
+  done: Promise<void>;
 }
+
+/** How many retired shell ids keep their session for input routing. */
+const RETIRED_SHELL_MEMORY = 32;
 
 interface ConnectionRecord {
   id: string;
@@ -248,7 +253,8 @@ export class AndroidConnectionHub {
       return { shellId: current.shellId, switched: true };
     }
 
-    const pending: PendingAttach = { row, buffer: [] };
+    let settle!: () => void;
+    const pending: PendingAttach = { row, buffer: [], done: new Promise<void>((resolve) => { settle = resolve; }) };
     record.attaching = pending;
     let attached;
     try {
@@ -259,12 +265,16 @@ export class AndroidConnectionHub {
     } finally {
       if (record.attaching === pending) record.attaching = null;
     }
-    if (!attached.ok) throw new Error(attached.message);
+    if (!attached.ok) {
+      settle();
+      throw new Error(attached.message);
+    }
     this.retireShell(record);
     const shellId = `${record.id}:shell-${this.nextShell++}`;
     const binding: ShellBinding = { shellId, row: attached.value, held: pending.buffer, claimTimer: null };
     binding.claimTimer = setTimeout(() => this.claim(binding), SHELL_CLAIM_FALLBACK_MS);
     record.shell = binding;
+    settle();
     return { shellId, switched: false };
   }
 
@@ -274,8 +284,17 @@ export class AndroidConnectionHub {
   }
 
   async input(shellId: ShellId, data: string, sessionName?: string, workspace?: string): Promise<boolean> {
-    const record = this.recordForShell(shellId);
-    if (!record?.shell) return false;
+    let record = this.recordForShell(shellId);
+    if (!record) {
+      // Keystrokes addressed to a shell id this hub retired — a pane typing
+      // while it re-joins the SAME session (its id is replaced only when the
+      // new attach resolves). The controller's one PTY is, or is about to be,
+      // that session, so they are delivered there in order rather than
+      // dropped. A retired id of any other session still gets `false`.
+      record = await this.recordForRetiredShell(shellId);
+      if (!record) return false;
+    }
+    if (!record.shell) return false;
     this.claim(record.shell);
     const row = record.shell.row;
     // The shared pane's fence: a caller still holding a superseded tab's
@@ -318,6 +337,7 @@ export class AndroidConnectionHub {
   async closeShell(shellId: ShellId): Promise<boolean> {
     const record = this.recordForShell(shellId);
     if (!record?.shell) return false;
+    this.rememberRetired(record, record.shell);
     this.dropBinding(record.shell);
     record.shell = null;
     if (!record.attaching) await record.controller.detachSession().catch(() => undefined);
@@ -389,6 +409,7 @@ export class AndroidConnectionHub {
     const shell = record.shell;
     record.shell = null;
     if (!shell) return;
+    this.rememberRetired(record, shell);
     this.dropBinding(shell);
     for (const listener of this.exitListeners) listener({ shellId: shell.shellId, exitCode: 0 });
   }
@@ -428,6 +449,25 @@ export class AndroidConnectionHub {
     const record = this.records.get(connectionId);
     if (!record) throw new Error(`unknown connection: ${connectionId}`);
     return record;
+  }
+
+  private readonly retired = new Map<ShellId, { record: ConnectionRecord; row: SessionRow }>();
+
+  private rememberRetired(record: ConnectionRecord, shell: ShellBinding): void {
+    this.retired.set(shell.shellId, { record, row: shell.row });
+    while (this.retired.size > RETIRED_SHELL_MEMORY) {
+      const oldest = this.retired.keys().next().value as ShellId;
+      this.retired.delete(oldest);
+    }
+  }
+
+  /** The record now showing a retired id's session, after any in-flight attach of it. */
+  private async recordForRetiredShell(shellId: ShellId): Promise<ConnectionRecord | null> {
+    const entry = this.retired.get(shellId);
+    if (!entry || !this.records.has(entry.record.id)) return null;
+    const { record, row } = entry;
+    if (record.attaching && sameRow(record.attaching.row, row)) await record.attaching.done;
+    return record.shell && sameRow(record.shell.row, row) ? record : null;
   }
 
   private recordForShell(shellId: ShellId): ConnectionRecord | null {
