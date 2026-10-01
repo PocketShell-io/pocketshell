@@ -6,10 +6,14 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.graphics.Bitmap;
+import android.os.Build;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.InputDevice;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -18,6 +22,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.pocketshell.app.MainActivity;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
@@ -44,9 +49,11 @@ import java.util.concurrent.atomic.AtomicReference;
 @RunWith(AndroidJUnit4.class)
 public final class UsagePortsDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    private static final String PROMPT_LAUNCHER_SELECTOR = "[data-testid=prompt-composer-launcher]";
     private ActivityScenario<MainActivity> scenario;
     private String activeRunId;
     private File artifactDirectory;
+    private String activeSessionTag;
     private int httpRemotePort;
     private boolean fixtureHttpServerMayBeRunning;
 
@@ -59,26 +66,22 @@ public final class UsagePortsDockerJourneyTest {
     public void closeShell() {
         if (fixtureHttpServerMayBeRunning && scenario != null && activeRunId != null) {
             try {
-                if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
-                    click("[aria-label='PocketShell home']");
-                }
-                if ("live".equals(evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''"))) {
-                    String stem = serverStem(activeRunId);
-                    String cleanupMarker = marker(activeRunId, "HTTP_CLEANUP");
-                    sendCommandAndAwaitMarker(
-                            "pidfile=" + stem + ".pid; checkfile=" + stem + ".cleanup-check; "
-                                    + "if [ -r \"$pidfile\" ]; then pid=\"$(cat \"$pidfile\" 2>/dev/null || true)\"; "
-                                    + "case \"$pid\" in ''|*[!0-9]*) printf 'decision=cleanup-invalid-pid\\n' > \"$checkfile\";; "
-                                    + "*) if [ -r \"/proc/$pid/cmdline\" ]; then "
-                                    + "args=\"$(tr '\\000' ' ' < \"/proc/$pid/cmdline\" 2>/dev/null || true)\"; "
-                                    + "case \"$args\" in *'python3 -m http.server " + httpRemotePort
-                                    + " --bind 127.0.0.1'*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-kill\\n' \"$pid\" \"$args\" > \"$checkfile\"; "
-                                    + "kill \"$pid\" 2>/dev/null || true;; "
-                                    + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
-                                    + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
-                                    + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
-                            cleanupMarker, "cleanup test HTTP service");
-                }
+                String stem = serverStem(activeRunId);
+                String cleanupMarker = marker(activeRunId, "HTTP_CLEANUP");
+                sendComposerCommandAndAwaitMarker(
+                        "pidfile=" + stem + ".pid; checkfile=" + stem + ".cleanup-check; "
+                                + "if [ -r \"$pidfile\" ]; then pid=\"$(cat \"$pidfile\" 2>/dev/null || true)\"; "
+                                + "case \"$pid\" in ''|*[!0-9]*) printf 'decision=cleanup-invalid-pid\\n' > \"$checkfile\";; "
+                                + "*) if [ -r \"/proc/$pid/cmdline\" ]; then "
+                                + "args=\"$(tr '\\000' ' ' < \"/proc/$pid/cmdline\" 2>/dev/null || true)\"; "
+                                + "case \"$args\" in *'python3 -m http.server " + httpRemotePort
+                                + " --bind 127.0.0.1'*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-kill\\n' \"$pid\" \"$args\" > \"$checkfile\"; "
+                                + "kill \"$pid\" 2>/dev/null || true;; "
+                                + "*) printf 'pid=%s\\ncmdline=%s\\ndecision=cleanup-identity-mismatch\\n' \"$pid\" \"$args\" > \"$checkfile\";; esac; "
+                                + "else printf 'pid=%s\\ncmdline=<missing>\\ndecision=already-stopped\\n' \"$pid\" > \"$checkfile\"; fi;; esac; fi; "
+                                + "sleep 1; printf '%s\\n' '" + cleanupMarker + "'",
+                        cleanupMarker, "cleanup test HTTP service", activeSessionTag, "HTTP_CLEANUP",
+                        /* bestEffortAfterFailure= */ true);
             } catch (Exception | AssertionError cleanupFailure) {
                 Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " HTTP fixture cleanup failed: "
                         + cleanupFailure.getClass().getSimpleName());
@@ -123,6 +126,8 @@ public final class UsagePortsDockerJourneyTest {
         assertTrue("run ID must be a safe, unique fixture tag prefix",
                 runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
+        String sessionTag = runId + "-usage";
+        activeSessionTag = sessionTag;
 
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         installJsFailureProbe();
@@ -144,7 +149,6 @@ public final class UsagePortsDockerJourneyTest {
         String firstConnectionId = currentConnectionId();
         String firstGenerationId = currentGenerationId();
 
-        String sessionTag = runId + "-usage";
         setValue("[data-testid=new-session-name]", sessionTag);
         click("[data-testid=create-session]");
         awaitJsTrue("Array.from(document.querySelectorAll('[data-session-tag]')).some((node) => node.dataset.sessionTag === "
@@ -161,11 +165,12 @@ public final class UsagePortsDockerJourneyTest {
         String serverStartedMarker = marker(runId, "HTTP_STARTED");
         String serverStoppedMarker = marker(runId, "HTTP_STOPPED");
         fixtureHttpServerMayBeRunning = true;
-        sendCommandAndAwaitMarker(
+        sendComposerCommandAndAwaitMarker(
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
                         + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
                         + serverStartedMarker + "'",
-                serverStartedMarker, "start test HTTP service");
+                serverStartedMarker, "start test HTTP service", sessionTag, "HTTP_START",
+                /* bestEffortAfterFailure= */ false);
 
         click("[aria-label='Settings']");
         click("[data-testid=open-usage]");
@@ -226,12 +231,16 @@ public final class UsagePortsDockerJourneyTest {
         int scansBeforeStop = portScanCount();
         assertTrue("the in-range listener must have been discovered by a completed scan", scansBeforeStop > 0);
 
-        click("[aria-label='PocketShell home']");
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
-                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
-                + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'");
+        assertEquals("HTTP cleanup must start from the Ports screen", "ports",
+                evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"));
+        assertEquals("the live Composer must be absent from the visible Usage/Ports route", "false",
+                evalString(visibleComposerExpression()));
+        assertEquals("the selected session must still have a live PTY before cleanup", "live",
+                evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''"));
+        Log.i("UsagePortsDockerJourney", "RUN " + runId
+                + " HTTP_CLEANUP_START route=ports composerVisible=false sshPhase=live selectedTag=" + sessionTag);
         String stopCheckFile = stem + ".stop-check";
-        stopHttpServerStrictly(runId, stem, stopCheckFile, httpRemotePort);
+        stopHttpServerStrictly(runId, stem, stopCheckFile, httpRemotePort, sessionTag);
         fixtureHttpServerMayBeRunning = false;
 
         click("[aria-label='Settings']");
@@ -371,7 +380,8 @@ public final class UsagePortsDockerJourneyTest {
         return "REMOTE_OUTPUT_" + token + "_" + suffix;
     }
 
-    private void stopHttpServerStrictly(String runId, String stem, String checkFile, int remotePort) throws Exception {
+    private void stopHttpServerStrictly(String runId, String stem, String checkFile, int remotePort,
+                                        String sessionTag) throws Exception {
         String pidFile = stem + ".pid";
         String stoppedMarker = marker(runId, "HTTP_STOPPED");
         String command = "f=" + pidFile + "; c=" + checkFile + "; "
@@ -387,28 +397,36 @@ public final class UsagePortsDockerJourneyTest {
                 + "if [ -e /proc/$p ] && [ \"$s\" != Z ]; then echo exitDecision=still-running >>\"$c\"; exit 1; fi; "
                 + "echo exitDecision=process-exited >>\"$c\"; printf '%s\\n' '" + stoppedMarker + "'";
         // Send the long fixture-control command through the packaged composer; keyboard injection can reorder PTY bytes.
-        sendComposerCommandAndAwaitMarker(command, stoppedMarker, "stop test HTTP service");
+        sendComposerCommandAndAwaitMarker(
+                command, stoppedMarker, "stop test HTTP service", sessionTag, "HTTP_CLEANUP",
+                /* bestEffortAfterFailure= */ false);
     }
 
-    private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
-        JSONObject before = terminalInputStats();
-        assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
-        awaitTerminalReady();
-        InstrumentationRegistry.getInstrumentation().sendStringSync(command + "\n");
-        try {
-            awaitExactMarkerRow(marker, checkpoint);
-        } catch (AssertionError missingMarker) {
-            throw new AssertionError(missingMarker.getMessage()
-                    + "; terminalInputStats=" + terminalInputStats(), missingMarker);
-        }
-        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
-    }
-
-    private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
+    private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint,
+                                                   String sessionTag, String eventPrefix,
+                                                   boolean bestEffortAfterFailure) throws Exception {
+        String draftBeforeOpen = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        JSONObject inputBeforeOpen = terminalInputStats();
+        openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);
+        awaitJsTrue(visibleComposerExpression(), 15_000);
+        assertEquals("opening Home Composer must preserve the existing draft", draftBeforeOpen,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        JSONObject inputAfterOpen = terminalInputStats();
+        assertEquals("opening Home Composer must not write terminal input",
+                inputBeforeOpen.getInt("ackCount"), inputAfterOpen.getInt("ackCount"));
+        assertEquals("opening Home Composer must not add terminal input failures",
+                inputBeforeOpen.getInt("failureCount"), inputAfterOpen.getInt("failureCount"));
+        assertEquals("opening Home Composer must leave terminal input pending count unchanged",
+                inputBeforeOpen.getInt("pending"), inputAfterOpen.getInt("pending"));
         JSONObject before = terminalInputStats();
         assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
         assertEquals("terminal input failures must remain zero before " + checkpoint, 0, before.getInt("failureCount"));
-        openComposerIfClosedAndAwaitTransport();
+        awaitJsTrue(visibleComposerExpression()
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
+                15_000);
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " " + eventPrefix + "_COMPOSER_READY route=home homeSurface=live composerVisible=true "
+                + "transportState=connected selectedTag=" + sessionTag);
         setValue("[data-testid=prompt-draft]", command);
         awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(command));
         click(".composer-shared-controls .send");
@@ -423,13 +441,558 @@ public final class UsagePortsDockerJourneyTest {
                 before.getInt("failureCount"), after.getInt("failureCount"));
     }
 
-    private void openComposerIfClosedAndAwaitTransport() throws Exception {
-        if (!"true".equals(evalString("!!document.querySelector('[data-testid=prompt-composer]')"))) {
-            click("[data-testid=prompt-composer-launcher]");
+    private void openHomeLiveComposerAndAwaitConnectedTransport(String sessionTag, String eventPrefix,
+                                                                boolean bestEffortAfterFailure) throws Exception {
+        if (!"home".equals(evalString("document.querySelector('.app-shell')?.dataset.route ?? ''"))) {
+            click("[aria-label='PocketShell home']");
         }
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.getAttribute('role') === 'dialog'"
-                + " && document.querySelector('[data-testid=prompt-composer]')?.getAttribute('aria-modal') === 'true'");
-        awaitJsTrue("document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'", 10_000);
+
+        String phase = evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''");
+        if (!"live".equals(phase) && !"connected".equals(phase) && !"listing".equals(phase)) {
+            if (!"connection".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))
+                    && "true".equals(evalString("!!document.querySelector('[data-testid=open-connection]')"))) {
+                click("[data-testid=open-connection]");
+            }
+            awaitJsTrue("!!document.querySelector('[data-testid=ssh-connect]')", 10_000);
+            click("[data-testid=ssh-connect]");
+            awaitJsTrue("!!document.querySelector('[data-testid=host-key-decision]')"
+                    + " || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)",
+                    30_000);
+            if ("true".equals(evalString("!!document.querySelector('[data-testid=host-key-decision]')"))) {
+                click("[data-testid=trust-host-key]");
+            }
+            awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)",
+                    30_000);
+        }
+
+        if (!"live".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))
+                || !sessionTag.equals(evalString("document.querySelector('.app-shell')?.dataset.sshSelectedTag ?? ''"))) {
+            if (!"sessions".equals(evalString("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+                click("[data-testid=open-sessions]");
+            }
+            String matchingSession = "Array.from(document.querySelectorAll('[data-session-tag]')).find((node)=>node.dataset.sessionTag === "
+                    + JSONObject.quote(sessionTag) + ")";
+            awaitJsTrue(matchingSession + " !== undefined", 15_000);
+            click("[data-session-tag=\"" + sessionTag + "\"]");
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                    + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                    + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === "
+                    + JSONObject.quote(sessionTag), 30_000);
+        }
+
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshSelectedTag === "
+                + JSONObject.quote(sessionTag)
+                + " && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'", 30_000);
+
+        // Leaving Home closes the Android Prompt sheet, so the returned Home
+        // surface shows only the dock launcher. Both journey phases must find
+        // it closed and open it through the same Android touch path a user
+        // takes; nothing may open it first. Only the @After fallback, which
+        // runs after an arbitrary failure, may find the sheet already open.
+        boolean promptSheetOpenOnEntry = "true".equals(evalRaw(promptSheetOpenExpression()));
+        if (bestEffortAfterFailure && promptSheetOpenOnEntry) {
+            Log.w("UsagePortsDockerJourney", "RUN " + activeRunId + " " + eventPrefix
+                    + "_PROMPT_ALREADY_OPEN_AFTER_FAILURE sessionTag=" + sessionTag);
+        } else {
+            assertFalse("the Prompt sheet must be closed when " + eventPrefix
+                    + " starts; only a physical launcher tap may open it", promptSheetOpenOnEntry);
+            openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);
+        }
+
+        // Returning from Usage/Ports updates the route before the retained Home
+        // surface becomes visible again. Wait for the draft to be a real touch
+        // target before mapping its CSS coordinates into Android screen space.
+        String composerDraftTapReady = visibleComposerExpression()
+                + " && " + composerDraftTapTargetExpression();
+        awaitJsTrue(composerDraftTapReady, 15_000);
+
+        boolean composerVisible = "true".equals(evalRaw(visibleComposerExpression()));
+        boolean composerDraftFocused = "true".equals(evalRaw(
+                "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"));
+        if (!composerVisible || !composerDraftFocused) {
+            openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);
+        }
+        String composerReady = visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
+        awaitJsTrue(composerReady, 15_000);
+        // Read Composer transport readiness only after its visible UI is open
+        // and the draft has focus through the Android touch path.
+        awaitJsTrue(visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')"
+                + " && document.querySelector('[data-testid=prompt-composer]')?.dataset.transportState === 'connected'",
+                15_000);
+    }
+
+    private void openComposerWithPhysicalLauncherTap(String sessionTag, String eventPrefix) throws Exception {
+        String launcherIdle = "(() => {const shell=document.querySelector('.app-shell');"
+                + "const launcher=document.querySelector(" + JSONObject.quote(PROMPT_LAUNCHER_SELECTOR) + ");"
+                + "return shell?.dataset.route==='home'&&shell?.dataset.homeSurface==='live'"
+                + "&&shell?.dataset.sshPhase==='live'&&!!launcher&&launcher.disabled===false"
+                + "&&!document.querySelector('[data-testid=prompt-composer]');})()";
+        awaitJsTrue(launcherIdle, 15_000);
+        JSONObject before = readComposerOpenState("before-physical-launcher-tap");
+        installComposerOpenTapRecorder();
+        evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
+
+        JSONArray taps = new JSONArray();
+        boolean trustedLauncherClickSeen = false;
+        boolean promptSheetOpen = false;
+        int attempts = 0;
+        JSONObject after = before;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            attempts = attempt;
+            // Measure only once the dock has held still: an IME that is still
+            // animating moves the launcher between mapping and injection.
+            JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);
+            JSONObject tap;
+            try {
+                tap = tapPromptLauncherCenter();
+            } catch (AssertionError error) {
+                JSONObject rejected = readComposerOpenState("launcher-tap-target-rejected-attempt-" + attempt);
+                throw new AssertionError("Prompt could not be opened by a physical launcher tap; sessionTag="
+                        + sessionTag + "; attempt=" + attempt + "; before=" + before
+                        + "; targetFailure=" + error.getMessage() + "; after=" + rejected, error);
+            }
+            taps.put(tap.put("stableLayout", stableLayout));
+
+            long openDeadline = SystemClock.uptimeMillis() + 1_500;
+            boolean clickSeenDeadlineExtended = false;
+            while (SystemClock.uptimeMillis() < openDeadline) {
+                trustedLauncherClickSeen = "true".equals(evalRaw(
+                        "(window.__ps2908ComposerOpenPointerEvents||[]).some(event=>event.type==='click'"
+                                + "&&event.isTrusted===true&&event.targetIsLauncher===true)"));
+                promptSheetOpen = "true".equals(evalRaw(promptSheetOpenExpression()));
+                if (trustedLauncherClickSeen && promptSheetOpen) break;
+                if (trustedLauncherClickSeen && !clickSeenDeadlineExtended) {
+                    // The click landed; give the app a bounded window to react.
+                    openDeadline = Math.max(openDeadline, SystemClock.uptimeMillis() + 3_000);
+                    clickSeenDeadlineExtended = true;
+                }
+                Thread.sleep(30);
+            }
+            after = readComposerOpenState("after-physical-launcher-tap-attempt-" + attempt);
+            // An open sheet covers the dock; tapping again would hit its scrim.
+            if (promptSheetOpen) break;
+            // A trusted click reached the launcher and the sheet still did not
+            // open: that is an app defect, not a missed tap. Retrying would
+            // hide it, so fail now with the full trace. Only a tap that never
+            // produced a trusted launcher click is retried.
+            if (trustedLauncherClickSeen) {
+                String ignoredClickEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+                throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "
+                        + "not retried; attempt=" + attempt + "; before=" + before + "; taps=" + taps
+                        + "; events=" + ignoredClickEvents + "; after=" + after);
+            }
+        }
+        String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+        String evidence = "before=" + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after;
+
+        // Input modality: the sheet must have been opened by exactly one
+        // pointer-generated click (detail >= 1) that directly follows its own
+        // trusted touch pointerdown/pointerup, with no keyboard activation
+        // (a focused launcher + Enter/Space clicks with detail 0) and no
+        // scripted (untrusted) launcher event anywhere in the trace.
+        boolean trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));
+        JSONObject input = new JSONObject(evalString(launcherInputCountsExpression()));
+        int launcherClicks = input.getInt("launcherClicks");
+        int zeroDetailLauncherClicks = input.getInt("zeroDetailLauncherClicks");
+        int keyboardLauncherEvents = input.getInt("keyboardLauncherEvents");
+        int keyEvents = input.getInt("keyEvents");
+        int untrustedLauncherEvents = input.getInt("untrustedLauncherEvents");
+        assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "
+                + evidence, trustedLauncherTapComplete);
+        assertTrue("the completed physical launcher tap must open the Prompt sheet; " + evidence, promptSheetOpen);
+        assertEquals("exactly one trusted click may reach the Prompt launcher; " + evidence, 1, launcherClicks);
+        assertEquals("the Prompt launcher click must be pointer-generated (detail >= 1), never a keyboard "
+                + "or synthetic activation; " + evidence, 0, zeroDetailLauncherClicks);
+        assertEquals("no keyboard event may target the Prompt launcher; " + evidence, 0, keyboardLauncherEvents);
+        assertEquals("no keyboard input may occur while the Prompt launcher is being opened; " + evidence,
+                0, keyEvents);
+        assertEquals("the Prompt launcher must receive no scripted (untrusted) events; " + evidence,
+                0, untrustedLauncherEvents);
+        boolean sheetOpenOnEntry = "true".equals(before.optString("promptComposerOpen"));
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " " + eventPrefix + "_PROMPT_LAUNCHER_TAP sessionTag=" + sessionTag
+                + " sheetOpenOnEntry=" + sheetOpenOnEntry
+                + " attempts=" + attempts
+                + " trustedLauncherTapComplete=" + trustedLauncherTapComplete
+                + " launcherClicks=" + launcherClicks
+                + " zeroDetailLauncherClicks=" + zeroDetailLauncherClicks
+                + " keyboardLauncherEvents=" + keyboardLauncherEvents
+                + " keyEvents=" + keyEvents
+                + " untrustedLauncherEvents=" + untrustedLauncherEvents
+                + " promptSheetOpen=" + promptSheetOpen
+                + " before=" + before + " taps=" + taps + " events=" + tapEvents + " after=" + after);
+    }
+
+    private JSONObject awaitPromptLauncherTapLayout(JSONArray previousTaps) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        String previousLayout = "";
+        long stableSince = 0;
+        int stableSamples = 0;
+        JSONObject latest = new JSONObject();
+        while (SystemClock.uptimeMillis() < deadline) {
+            latest = readComposerOpenState("prompt-launcher-tap-layout-settling");
+            JSONObject nativeState = latest.optJSONObject("native");
+            JSONObject viewport = latest.optJSONObject("visualViewport");
+            JSONObject launcherRect = latest.optJSONObject("launcherRect");
+            boolean launcherTargetReady = latest.optBoolean("launcherCenterHitIsLauncher")
+                    && !latest.optBoolean("launcherDisabled", true);
+            String layout = (nativeState == null ? "" : nativeState.optInt("webViewHeightPx")) + ":"
+                    + (nativeState == null ? "" : nativeState.optBoolean("imeVisible")) + ":"
+                    + (viewport == null ? "" : viewport.optDouble("height")) + ":"
+                    + (launcherRect == null ? "" : launcherRect.toString());
+            long now = SystemClock.uptimeMillis();
+            if (launcherTargetReady && layout.equals(previousLayout)) {
+                stableSamples += 1;
+            } else {
+                stableSamples = 0;
+                stableSince = now;
+            }
+            if (stableSamples >= 5 && now - stableSince >= 400) {
+                return latest;
+            }
+            previousLayout = launcherTargetReady ? layout : "";
+            Thread.sleep(60);
+        }
+        throw new AssertionError("Prompt launcher layout did not hold still for a fresh physical tap; previousTaps="
+                + previousTaps + "; latest=" + latest);
+    }
+
+    private void openComposerWithPhysicalDraftTap(String sessionTag, String eventPrefix) throws Exception {
+        JSONObject before = readComposerOpenState("before-physical-draft-tap");
+        installComposerOpenTapRecorder();
+        evalString("window.__ps2908ComposerOpenPointerEvents.length=0");
+
+        JSONArray taps = new JSONArray();
+        boolean trustedDraftPointerDown = false;
+        boolean trustedDraftTapComplete = false;
+        boolean draftFocused = false;
+        JSONObject after = before;
+        String ready = visibleComposerExpression()
+                + " && document.activeElement === document.querySelector('[data-testid=prompt-draft]')";
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            JSONObject tap;
+            try {
+                tap = tapComposerDraftCenter();
+            } catch (AssertionError error) {
+                JSONObject rejected = readComposerOpenState("draft-tap-target-rejected-attempt-" + attempt);
+                throw new AssertionError("Composer could not be opened by a physical draft tap; sessionTag="
+                        + sessionTag + "; attempt=" + attempt + "; before=" + before
+                        + "; targetFailure=" + error.getMessage() + "; after=" + rejected, error);
+            }
+            taps.put(tap);
+
+            long pointerDeadline = SystemClock.uptimeMillis() + 1_500;
+            while (SystemClock.uptimeMillis() < pointerDeadline) {
+                trustedDraftPointerDown = "true".equals(evalRaw(
+                        "window.__ps2908ComposerOpenPointerEvents?.some(event=>event.type==='pointerdown'"
+                                + "&&event.isTrusted===true&&event.targetIsDraft===true)===true"));
+                trustedDraftTapComplete = "true".equals(evalRaw(completedTrustedDraftTapExpression()));
+                draftFocused = "true".equals(evalRaw(ready));
+                if (trustedDraftTapComplete && draftFocused) break;
+                Thread.sleep(30);
+            }
+            after = readComposerOpenState("after-physical-draft-tap-attempt-" + attempt);
+            if (trustedDraftTapComplete && draftFocused) break;
+            if (attempt < 3) {
+                after = awaitComposerDraftTapLayout(tap);
+            }
+        }
+        String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");
+
+        assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="
+                        + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after,
+                trustedDraftPointerDown);
+        assertTrue("opening the Composer must record a completed trusted pointerdown/pointerup/click on its draft; "
+                        + "before=" + before + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after,
+                trustedDraftTapComplete);
+        assertTrue("the completed physical draft tap must leave the Prompt draft focused; before=" + before
+                + "; taps=" + taps + "; events=" + tapEvents + "; after=" + after, draftFocused);
+        Log.i("UsagePortsDockerJourney", "RUN " + activeRunId
+                + " " + eventPrefix + "_COMPOSER_TAP sessionTag=" + sessionTag
+                + " trustedDraftPointerDown=" + trustedDraftPointerDown
+                + " trustedDraftTapComplete=" + trustedDraftTapComplete
+                + " draftFocused=" + draftFocused
+                + " before=" + before + " taps=" + taps + " events=" + tapEvents + " after=" + after);
+    }
+
+    private void installComposerOpenTapRecorder() throws Exception {
+        evalString("(() => {if(window.__ps2908ComposerOpenRecorderInstalled)return 'installed';"
+                + "window.__ps2908ComposerOpenPointerEvents=[];"
+                + "const record=(type,event)=>{const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "window.__ps2908ComposerOpenPointerEvents.push({type,isTrusted:event.isTrusted===true,"
+                + "targetIsDraft:event.target===draft,"
+                + "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]'),pointerType:event.pointerType||'',pointerId:event.pointerId??-1,"
+                + "detail:typeof event.detail==='number'?event.detail:-1,key:event.key||'',"
+                + "clientX:event.clientX,clientY:event.clientY});};"
+                + "for(const type of ['pointerdown','pointerup','click','keydown','keypress','keyup'])"
+                + "document.addEventListener(type,event=>record(type,event),true);"
+                + "window.__ps2908ComposerOpenRecorderInstalled=true;return 'installed';})()");
+    }
+
+    private String completedTrustedDraftTapExpression() {
+        return completedTrustedTapExpression("targetIsDraft");
+    }
+
+    private String completedTrustedLauncherTapExpression() {
+        // Exactly one trusted launcher click, generated by a pointer (detail >= 1),
+        // immediately preceded by its own trusted touch pointerup and pointerdown
+        // on the launcher. No walking back across other events: a later keyboard
+        // click cannot borrow an earlier, ignored tap's pointer pair.
+        return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
+                + "const clicks=events.map((event,index)=>({event,index})).filter(({event})=>event.type==='click'"
+                + "&&event.isTrusted===true&&event.targetIsLauncher===true);"
+                + "if(clicks.length!==1)return false;const clickIndex=clicks[0].index;const click=events[clickIndex];"
+                + "if(clickIndex<2||!(click.detail>=1)||click.pointerType!=='touch')return false;"
+                + "const up=events[clickIndex-1],down=events[clickIndex-2];"
+                + "return up.type==='pointerup'&&down.type==='pointerdown'"
+                + "&&[up,down].every(event=>event.isTrusted===true&&event.targetIsLauncher===true"
+                + "&&event.pointerType==='touch')&&down.pointerId===up.pointerId;})()";
+    }
+
+    private String launcherInputCountsExpression() {
+        return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
+                + "const launcher=event=>event.targetIsLauncher===true;const key=event=>event.type.startsWith('key');"
+                + "return JSON.stringify({"
+                + "launcherClicks:events.filter(event=>event.type==='click'&&event.isTrusted===true&&launcher(event)).length,"
+                + "zeroDetailLauncherClicks:events.filter(event=>event.type==='click'&&launcher(event)&&!(event.detail>=1)).length,"
+                + "keyboardLauncherEvents:events.filter(event=>key(event)&&launcher(event)).length,"
+                + "keyEvents:events.filter(key).length,"
+                + "untrustedLauncherEvents:events.filter(event=>launcher(event)&&event.isTrusted!==true).length});})()";
+    }
+
+    private String completedTrustedTapExpression(String targetFlag) {
+        return "(() => {const events=window.__ps2908ComposerOpenPointerEvents||[];"
+                + "return events.some((click,clickIndex)=>{if(click.type!=='click'||click.isTrusted!==true"
+                + "||click." + targetFlag + "!==true)return false;let upIndex=clickIndex-1;"
+                + "while(upIndex>=0&&events[upIndex].type!=='pointerup')upIndex--;if(upIndex<0)return false;"
+                + "const up=events[upIndex];let downIndex=upIndex-1;"
+                + "while(downIndex>=0&&events[downIndex].type!=='pointerdown')downIndex--;if(downIndex<0)return false;"
+                + "const down=events[downIndex];return up.isTrusted===true&&up." + targetFlag + "===true"
+                + "&&down.isTrusted===true&&down." + targetFlag + "===true"
+                + "&&down.pointerId===up.pointerId;});})()";
+    }
+
+    private JSONObject awaitComposerDraftTapLayout(JSONObject previousTap) throws Exception {
+        long startedAt = SystemClock.uptimeMillis();
+        long deadline = startedAt + 3_000;
+        String previousLayout = "";
+        int stableSamples = 0;
+        JSONObject latest = new JSONObject();
+        while (SystemClock.uptimeMillis() < deadline) {
+            latest = readComposerOpenState("composer-draft-tap-layout-settling");
+            JSONObject nativeState = latest.optJSONObject("native");
+            JSONObject viewport = latest.optJSONObject("visualViewport");
+            JSONObject draftRect = latest.optJSONObject("draftRect");
+            boolean imeVisible = nativeState != null && nativeState.optBoolean("imeVisible");
+            boolean draftTargetReady = "true".equals(evalRaw(composerDraftTapTargetExpression()));
+            String layout = (nativeState == null ? "" : nativeState.optInt("webViewHeightPx")) + ":"
+                    + (viewport == null ? "" : viewport.optDouble("height")) + ":"
+                    + (draftRect == null ? "" : draftRect.toString());
+            stableSamples = layout.equals(previousLayout) ? stableSamples + 1 : 0;
+            boolean layoutSettled = stableSamples >= 2
+                    && SystemClock.uptimeMillis() - startedAt >= 200
+                    && (imeVisible || stableSamples >= 4);
+            if (draftTargetReady && layoutSettled) {
+                return latest;
+            }
+            previousLayout = layout;
+            Thread.sleep(40);
+        }
+        throw new AssertionError("Composer draft layout did not stabilize for a fresh physical tap; previousTap="
+                + previousTap + "; latest=" + latest);
+    }
+
+    private JSONObject tapComposerDraftCenter() throws Exception {
+        return tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false);
+    }
+
+    private JSONObject tapPromptLauncherCenter() throws Exception {
+        // The launcher button paints an icon and label inside itself, so its
+        // center may hit one of those children; the pointer still belongs to it.
+        return tapElementCenter(PROMPT_LAUNCHER_SELECTOR, "Prompt launcher", true);
+    }
+
+    // A finger on the touchscreen, so WebView reports pointerType 'touch'.
+    private MotionEvent obtainFingerTouch(long downTime, long eventTime, int action, float[] screen) {
+        MotionEvent.PointerProperties[] properties = {new MotionEvent.PointerProperties()};
+        properties[0].id = 0;
+        properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
+        MotionEvent.PointerCoords[] coordinates = {new MotionEvent.PointerCoords()};
+        coordinates[0].x = screen[0];
+        coordinates[0].y = screen[1];
+        coordinates[0].pressure = 1f;
+        coordinates[0].size = 1f;
+        return MotionEvent.obtain(downTime, eventTime, action, 1, properties, coordinates, 0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0);
+    }
+
+    private JSONObject tapElementCenter(String selector, String label, boolean allowDescendantHit) throws Exception {
+        JSONObject point = new JSONObject(evalString("(() => {const target=document.querySelector("
+                + JSONObject.quote(selector) + ");"
+                + "if(!target)return JSON.stringify({missing:true});const rect=target.getBoundingClientRect();"
+                + "const x=rect.left+rect.width/2,y=rect.top+rect.height/2,hit=document.elementFromPoint(x,y);"
+                + "return JSON.stringify({missing:false,disabled:!!target.disabled,connected:target.isConnected,"
+                + "x,y,width:innerWidth,cssHeight:innerHeight,top:rect.top,bottom:rect.bottom,left:rect.left,right:rect.right,"
+                + "centerHitIsTarget:hit===target||(" + allowDescendantHit + "&&!!hit&&target.contains(hit)),"
+                + "centerHitTag:hit?.tagName||'',"
+                + "activeElementTag:document.activeElement?.tagName||'',activeElementTestId:document.activeElement?.getAttribute?.('data-testid')||''});})()"));
+        point.put("selector", selector);
+        assertTrue(label + " is missing at the Home touch target: " + point, !point.optBoolean("missing"));
+        assertTrue(label + " is detached from the rendered route: " + point, point.optBoolean("connected"));
+        assertTrue(label + " is disabled at the Home touch target: " + point, !point.optBoolean("disabled"));
+        assertTrue(label + " has no visible physical tap target: " + point,
+                point.optDouble("top", -1) >= 0 && point.optDouble("bottom", -1) <= point.optDouble("cssHeight") + 0.5
+                        && point.optDouble("left", -1) >= 0 && point.optDouble("right", -1) <= point.optDouble("width") + 0.5
+                        && point.optDouble("right") > point.optDouble("left")
+                        && point.optDouble("bottom") > point.optDouble("top"));
+        assertTrue(label + " center is intercepted by another DOM element: " + point,
+                point.optBoolean("centerHitIsTarget"));
+
+        AtomicReference<float[]> screenPoint = new AtomicReference<>();
+        AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            double cssWidth = point.optDouble("width");
+            double cssHeight = point.optDouble("cssHeight");
+            float scaleX = webView.getWidth() / (float) cssWidth;
+            float scaleY = webView.getHeight() / (float) cssHeight;
+            float screenX = location[0] + (float) point.optDouble("x") * scaleX;
+            float screenY = location[1] + (float) point.optDouble("y") * scaleY;
+            screenPoint.set(new float[]{screenX, screenY});
+            View decor = activity.getWindow().getDecorView();
+            WindowInsets insets = decor.getRootWindowInsets();
+            View focusedView = decor.findFocus();
+            try {
+                nativeMapping.set(new JSONObject()
+                        .put("webViewScreenX", location[0])
+                        .put("webViewScreenY", location[1])
+                        .put("webViewWidthPx", webView.getWidth())
+                        .put("webViewHeightPx", webView.getHeight())
+                        .put("cssWidth", cssWidth)
+                        .put("cssHeight", cssHeight)
+                        .put("scaleX", scaleX)
+                        .put("scaleY", scaleY)
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("webViewHasFocus", webView.hasFocus())
+                        .put("nativeFocusedView", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                                && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null || Build.VERSION.SDK_INT < 30 ? 0
+                                : insets.getInsets(WindowInsets.Type.ime()).bottom));
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+
+        float[] screen = screenPoint.get();
+        assertNotNull("native screen point for " + label + " was not mapped", screen);
+        long downTime = SystemClock.uptimeMillis();
+        var instrumentation = InstrumentationRegistry.getInstrumentation();
+        MotionEvent down = obtainFingerTouch(downTime, downTime, MotionEvent.ACTION_DOWN, screen);
+        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
+        down.recycle();
+        assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected);
+        SystemClock.sleep(16);
+        long upTime = SystemClock.uptimeMillis();
+        MotionEvent up = obtainFingerTouch(downTime, upTime, MotionEvent.ACTION_UP, screen);
+        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
+        up.recycle();
+        assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected);
+        return new JSONObject(point.toString())
+                .put("nativeMapping", nativeMapping.get())
+                .put("screenX", screen[0])
+                .put("screenY", screen[1])
+                .put("touchDownUptimeMs", downTime)
+                .put("touchUpUptimeMs", upTime)
+                .put("downInjected", downInjected)
+                .put("upInjected", upInjected);
+    }
+
+    private JSONObject readComposerOpenState(String stage) throws Exception {
+        JSONObject dom = new JSONObject(evalString("(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "const rect=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null};"
+                + "const style=composer?getComputedStyle(composer):null;const draftRect=rect(draft);"
+                + "const hit=draftRect?document.elementFromPoint(draftRect.left+draftRect.width/2,draftRect.top+draftRect.height/2):null;"
+                + "const label=node=>node?{tag:node.tagName||'',id:node.id||'',testid:node.getAttribute?.('data-testid')||''}:null;"
+                + "const launcher=document.querySelector('[data-testid=prompt-composer-launcher]');const launcherRect=rect(launcher);"
+                + "const launcherHit=launcherRect?document.elementFromPoint(launcherRect.left+launcherRect.width/2,launcherRect.top+launcherRect.height/2):null;"
+                + "return JSON.stringify({route:shell?.dataset.route||'',homeSurface:shell?.dataset.homeSurface||'',"
+                + "promptComposerOpen:shell?.dataset.promptComposerOpen||'',"
+                + "launcherPresent:!!launcher,launcherDisabled:!!launcher?.disabled,launcherRect,"
+                + "launcherCenterHit:label(launcherHit),launcherCenterHitIsLauncher:!!launcher&&!!launcherHit&&launcher.contains(launcherHit),"
+                + "sshPhase:shell?.dataset.sshPhase||'',selectedTag:shell?.dataset.sshSelectedTag||'',"
+                + "keyboardVisible:shell?.dataset.keyboardVisible==='true',keyboardComposerMode:shell?.dataset.keyboardComposerMode==='true',"
+                + "composerPresent:!!composer,composerConnected:!!composer?.isConnected,composerRect:rect(composer),"
+                + "composerDisplay:style?.display||'',composerVisibility:style?.visibility||'',composerOpacity:style?.opacity||'',"
+                + "composerInert:!!composer?.closest('[inert],[aria-hidden=true]'),"
+                + "draftPresent:!!draft,draftConnected:!!draft?.isConnected,draftDisabled:!!draft?.disabled,"
+                + "draftFocused:document.activeElement===draft,activeElement:label(document.activeElement),"
+                + "draftRect, draftCenterHit:label(hit),draftCenterHitIsDraft:hit===draft,"
+                + "visualViewport:{width:window.visualViewport?.width??innerWidth,height:window.visualViewport?.height??innerHeight,"
+                + "offsetLeft:window.visualViewport?.offsetLeft??0,offsetTop:window.visualViewport?.offsetTop??0},innerWidth,innerHeight});})()"));
+        AtomicReference<JSONObject> nativeState = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            View decor = activity.getWindow().getDecorView();
+            View focusedView = decor.findFocus();
+            WebView webView = findWebView(decor);
+            WindowInsets insets = decor.getRootWindowInsets();
+            try {
+                nativeState.set(new JSONObject()
+                        .put("androidApi", Build.VERSION.SDK_INT)
+                        .put("windowHasFocus", decor.hasWindowFocus())
+                        .put("decorHasFocus", decor.hasFocus())
+                        .put("focusedViewClass", focusedView == null ? "" : focusedView.getClass().getName())
+                        .put("webViewPresent", webView != null)
+                        .put("webViewHasFocus", webView != null && webView.hasFocus())
+                        .put("webViewHeightPx", webView == null ? 0 : webView.getHeight())
+                        .put("imeVisible", insets != null && Build.VERSION.SDK_INT >= 30
+                                && insets.isVisible(WindowInsets.Type.ime()))
+                        .put("imeBottomPx", insets == null || Build.VERSION.SDK_INT < 30 ? 0
+                                : insets.getInsets(WindowInsets.Type.ime()).bottom));
+            } catch (Exception error) {
+                throw new RuntimeException(error);
+            }
+        });
+        return dom.put("stage", stage)
+                .put("capturedAtUptimeMs", SystemClock.uptimeMillis())
+                .put("native", nativeState.get() == null ? new JSONObject() : nativeState.get());
+    }
+
+    private String promptSheetOpenExpression() {
+        return "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "return shell?.dataset.promptComposerOpen==='true'&&composer?.getAttribute('role')==='dialog'"
+                + "&&composer?.getAttribute('aria-modal')==='true';})()";
+    }
+
+    private String visibleComposerExpression() {
+        return "(() => {const shell=document.querySelector('.app-shell');"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "if(!shell||!composer)return false;const rect=composer.getBoundingClientRect();"
+                + "const style=getComputedStyle(composer);"
+                + "return shell.dataset.route==='home'&&shell.dataset.homeSurface==='live'"
+                + "&&shell.dataset.sshPhase==='live'&&rect.width>0&&rect.height>0"
+                + "&&rect.right>0&&rect.bottom>0&&rect.left<innerWidth&&rect.top<innerHeight"
+                + "&&style.display!=='none'&&style.visibility!=='hidden'&&style.opacity!=='0'"
+                + "&&!composer.closest('[inert],[aria-hidden=true]');})()";
+    }
+
+    private String composerDraftTapTargetExpression() {
+        return "(() => {const draft=document.querySelector('[data-testid=prompt-draft]');"
+                + "if(!draft||draft.disabled)return false;const rect=draft.getBoundingClientRect();"
+                + "return document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)===draft;})()";
     }
 
     private void awaitTerminalReady() throws Exception {
@@ -447,17 +1010,6 @@ public final class UsagePortsDockerJourneyTest {
                 "true".equals(evalString("Array.from(document.querySelectorAll('#terminal-viewport .xterm-rows > div'))"
                         + ".some((row)=>row.textContent.replaceAll(String.fromCharCode(160),' ').trim()==="
                         + JSONObject.quote(marker) + ")")));
-    }
-
-    private void waitForTerminalInputDrain(int ackBefore, int failureBefore, String checkpoint) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 20_000;
-        while (SystemClock.uptimeMillis() < deadline) {
-            JSONObject stats = terminalInputStats();
-            assertEquals("terminal input failed while sending " + checkpoint, failureBefore, stats.getInt("failureCount"));
-            if (stats.getInt("pending") == 0 && stats.getInt("ackCount") > ackBefore) return;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("terminal input did not drain for " + checkpoint + ": " + terminalInputStats());
     }
 
     private JSONObject terminalInputStats() throws Exception {

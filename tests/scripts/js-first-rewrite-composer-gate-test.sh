@@ -13,6 +13,13 @@ PACKAGED_LANES="$ROOT_DIR/scripts/ci-js-first-packaged-lanes.sh"
   exit 1
 }
 
+COMPOSER_ORDER_GATE="$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py"
+[[ -x "$COMPOSER_ORDER_GATE" ]] || {
+  printf 'FAIL: Usage/Ports Composer ordering gate is missing\n' >&2
+  exit 1
+}
+"$COMPOSER_ORDER_GATE" --self-test
+
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
 import ast
@@ -28,6 +35,10 @@ repository_root = workflow_path.parents[2]
 workflow = workflow_path.read_text()
 runner = runner_path.read_text()
 packaged_lanes = packaged_lanes_path.read_text()
+usage_ports_journey_path = workflow_path.parent.parent.parent / (
+    "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+)
+usage_ports_journey = usage_ports_journey_path.read_text()
 disk_cleanup = (toolcache_pruner_path.parent / "ci-emulator-free-disk.sh").read_text()
 ast.parse(extractor_path.read_text(), filename=str(extractor_path))
 subprocess.run(["bash", "-n", str(toolcache_pruner_path)], check=True)
@@ -717,6 +728,576 @@ except AssertionError:
 else:
     raise AssertionError("composer runner contract missed a removed AndroidTest Gradle output append")
 
+
+def journey_method(source: str, name: str) -> str:
+    declaration = re.search(
+        rf"(?m)^    (?:public|private|protected)\s+[^\n]*\b{re.escape(name)}\s*\(",
+        source,
+    )
+    if declaration is None:
+        raise AssertionError(f"Usage/Ports journey is missing {name}()")
+    following = re.search(
+        r"(?m)^    (?:public|private|protected)\s+|^    @(?:Before|After|Test)\b",
+        source[declaration.end():],
+    )
+    end = declaration.end() + following.start() if following is not None else len(source)
+    return source[declaration.start():end]
+
+
+def require_usage_ports_composer_contract(source: str) -> None:
+    primary = journey_method(source, "runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+    after = journey_method(source, "closeShell")
+    strict_stop = journey_method(source, "stopHttpServerStrictly")
+    send = journey_method(source, "sendComposerCommandAndAwaitMarker")
+    opener = journey_method(source, "openHomeLiveComposerAndAwaitConnectedTransport")
+    physical_open = journey_method(source, "openComposerWithPhysicalDraftTap")
+    draft_tap = journey_method(source, "tapComposerDraftCenter")
+    physical_tap = journey_method(source, "tapElementCenter")
+    physical_launcher_open = journey_method(source, "openComposerWithPhysicalLauncherTap")
+    tap_recorder = journey_method(source, "installComposerOpenTapRecorder")
+    completed_tap = journey_method(source, "completedTrustedTapExpression")
+    completed_draft_tap = journey_method(source, "completedTrustedDraftTapExpression")
+    completed_launcher_tap = journey_method(source, "completedTrustedLauncherTapExpression")
+    tap_layout_wait = journey_method(source, "awaitComposerDraftTapLayout")
+    draft_tap_target = journey_method(source, "composerDraftTapTargetExpression")
+    open_diagnostics = journey_method(source, "readComposerOpenState")
+    visible = journey_method(source, "visibleComposerExpression")
+
+    for label, open_method in (("Home route opener", opener), ("physical-tap opener", physical_open),
+                               ("physical launcher opener", physical_launcher_open)):
+        if re.search(r"(?i)\b(?:send[A-Za-z0-9_]*|write[A-Za-z0-9_]*|setValue|clear[A-Za-z0-9_]*)\s*\(", open_method) \
+           or re.search(r"(?i)\bclick\s*\([^;\n]*(?:send|submit)", open_method) \
+           or re.search(r"(?i)\.value\s*=", open_method):
+            raise AssertionError(f"{label} must not send, write terminal input, or mutate a draft")
+
+    route_guard = 'assertEquals("HTTP cleanup must start from the Ports screen", "ports"'
+    hidden_guard = 'assertEquals("the live Composer must be absent from the visible Usage/Ports route", "false"'
+    route_at = primary.find(route_guard)
+    hidden_at = primary.find(hidden_guard)
+    route_record_at = primary.find("HTTP_CLEANUP_START route=ports composerVisible=false")
+    stop_at = primary.find("stopHttpServerStrictly(")
+    if min(route_at, hidden_at, route_record_at, stop_at) < 0 or not route_at < hidden_at < route_record_at < stop_at:
+        raise AssertionError("primary cleanup must prove Ports + hidden Composer immediately before strict cleanup")
+    cleanup_window = primary[primary.find("int scansBeforeStop"):stop_at]
+    if "click(\"[aria-label='PocketShell home']\")" in cleanup_window:
+        raise AssertionError("primary journey opens Home before invoking cleanup from Usage/Ports")
+    if "document.querySelector('.app-shell')?.dataset.sshPhase ?? ''" not in primary[hidden_at:route_record_at]:
+        raise AssertionError("primary cleanup setup must keep a live selected PTY while the Composer is hidden")
+
+    start_marker_at = primary.find('String serverStartedMarker = marker(runId, "HTTP_STARTED")')
+    settings_at = primary.find('click("[aria-label=\'Settings\']")')
+    start_send_at = primary.find("sendComposerCommandAndAwaitMarker(", start_marker_at, settings_at)
+    if min(start_marker_at, settings_at, start_send_at) < 0 or not start_marker_at < start_send_at < settings_at:
+        raise AssertionError("HTTP fixture startup must use the packaged Composer before opening Settings")
+    start_send = primary[start_send_at:settings_at]
+    if "serverStartedMarker" not in start_send or '"start test HTTP service", sessionTag, "HTTP_START"' not in start_send:
+        raise AssertionError("HTTP fixture startup must use its start marker, selected session, and HTTP_START evidence phase")
+    if "sendCommandAndAwaitMarker(" in primary[start_marker_at:settings_at]:
+        raise AssertionError("HTTP fixture startup must not inject the command through native terminal input")
+
+    for label, needle, haystack in (
+        ("strict stop routes through the Composer sender", "sendComposerCommandAndAwaitMarker(", strict_stop),
+        ("Composer sender opens Home when closed", "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);", send),
+        ("Composer sender waits for visible state", "awaitJsTrue(visibleComposerExpression(), 15_000);", send),
+        ("Composer sender waits for connected transport", "dataset.transportState === 'connected'", send),
+        ("Composer sender drafts through the packaged Composer", 'setValue("[data-testid=prompt-draft]", command)', send),
+        ("Composer sender submits through the packaged Composer", 'click(".composer-shared-controls .send")', send),
+    ):
+        if needle not in haystack:
+            raise AssertionError(f"Usage/Ports cleanup is missing {label}")
+    sender_order = (
+        send.index("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);"),
+        send.index("awaitJsTrue(visibleComposerExpression(), 15_000);"),
+        send.index("dataset.transportState === 'connected'"),
+        send.index('setValue("[data-testid=prompt-draft]", command)'),
+        send.index('click(".composer-shared-controls .send")'),
+    )
+    if sender_order != tuple(sorted(sender_order)):
+        raise AssertionError("cleanup must open and show Home Composer, await its connected transport, then send")
+
+    for label, needle in (
+        ("Home route action", 'click("[aria-label=\'PocketShell home\']")'),
+        ("Home route readiness", "dataset.route === 'home'"),
+        ("session list for reattach", '[data-testid=open-sessions]'),
+        ("selected session lookup", "matchingSession"),
+        ("selected session reattach", "[data-session-tag=\\\""),
+        ("Prompt sheet state on entry", "boolean promptSheetOpenOnEntry = \"true\".equals(evalRaw(promptSheetOpenExpression()));"),
+        ("Prompt sheet required closed when a phase starts", 'assertFalse("the Prompt sheet must be closed when " + eventPrefix'),
+        ("physical launcher tap when the Prompt sheet is closed", "openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);"),
+        ("physical draft target readiness", "awaitJsTrue(composerDraftTapReady, 15_000);"),
+        ("Composer visibility and focus check", "boolean composerDraftFocused = "),
+        ("physical open only when closed or unfocused", "if (!composerVisible || !composerDraftFocused) {"),
+        ("native physical draft tap action", "openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);"),
+        ("visible and focused Composer wait", "awaitJsTrue(composerReady, 15_000);"),
+        ("focused Composer confirmation", "document.activeElement === document.querySelector('[data-testid=prompt-draft]')"),
+        ("connected Composer wait", "dataset.transportState === 'connected'"),
+    ):
+        if needle not in opener:
+            raise AssertionError(f"Usage/Ports closed-Composer opener is missing {label}")
+    for label, needle in (
+        ("draft snapshot before opening", "String draftBeforeOpen = evalString("),
+        ("input counters snapshot before opening", "JSONObject inputBeforeOpen = terminalInputStats();"),
+        ("draft unchanged after opening", "opening Home Composer must preserve the existing draft"),
+        ("terminal writes unchanged after opening", "opening Home Composer must not write terminal input"),
+        ("terminal failures unchanged after opening", "opening Home Composer must not add terminal input failures"),
+        ("pending writes unchanged after opening", "opening Home Composer must leave terminal input pending count unchanged"),
+    ):
+        if needle not in send:
+            raise AssertionError(f"Usage/Ports Composer sender is missing {label}")
+    opener_live_ready_at = opener.find("dataset.enabled === 'true'")
+    opener_launcher_at = opener.find("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);")
+    opener_tap_ready_at = opener.find("awaitJsTrue(composerDraftTapReady, 15_000);")
+    opener_action_at = opener.find("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);")
+    opener_visible_at = opener.find("awaitJsTrue(composerReady, 15_000);")
+    opener_focus_at = opener.find("String composerReady = visibleComposerExpression()", opener_action_at)
+    opener_connected_at = opener.find("dataset.transportState === 'connected'")
+    if min(opener_live_ready_at, opener_launcher_at, opener_tap_ready_at, opener_action_at, opener_visible_at,
+           opener_focus_at, opener_connected_at) < 0 \
+       or not opener_live_ready_at < opener_launcher_at < opener_tap_ready_at < opener_action_at < opener_focus_at < opener_visible_at < opener_connected_at:
+        raise AssertionError("Home Composer must become physically tappable, open, and focus before connected transport")
+    if "composerDraftTapTargetExpression()" not in opener or "elementFromPoint" not in draft_tap_target \
+       or "===draft" not in draft_tap_target:
+        raise AssertionError("Home Composer tap readiness must verify the draft itself receives the center hit")
+    composer_ready = opener[opener_focus_at:opener_visible_at]
+    if "document.activeElement === document.querySelector('[data-testid=prompt-draft]')" not in composer_ready:
+        raise AssertionError("mobile Composer readiness must require focus on the Prompt draft")
+    if not send.index("String draftBeforeOpen = evalString(") < send.index(
+        "openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);") < send.index(
+            "opening Home Composer must preserve the existing draft") < send.index(
+                "opening Home Composer must not write terminal input") < send.index(
+                    'setValue("[data-testid=prompt-draft]", command)'):
+        raise AssertionError("opener must preserve draft and terminal input state before cleanup drafts its command")
+    if "tapComposerDraftCenter();" not in physical_open \
+       or "event.isTrusted===true&&event.targetIsDraft===true" not in physical_open \
+       or 'assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="' not in physical_open:
+        raise AssertionError("mobile Composer must open through the physical draft tap and confirm its trusted pointer event")
+    retry_loop = "for (int attempt = 1; attempt <= 3; attempt++)"
+    retry_guard = "if (attempt < 3) {"
+    retry_wait = "after = awaitComposerDraftTapLayout(tap);"
+    retry_positions = (
+        physical_open.find("tap = tapComposerDraftCenter();"),
+        physical_open.find(retry_guard),
+        physical_open.find(retry_wait),
+    )
+    if (
+        retry_loop not in physical_open
+        or min(retry_positions) < 0
+        or retry_positions != tuple(sorted(retry_positions))
+    ):
+        raise AssertionError("mobile Composer tap must allow at most three attempts and stabilize fresh bounds before each retry")
+    if 'trustedDraftTapComplete = "true".equals(evalRaw(completedTrustedDraftTapExpression()));' not in physical_open \
+       or 'assertTrue("opening the Composer must record a completed trusted pointerdown/pointerup/click on its draft;' not in physical_open:
+        raise AssertionError("mobile Composer open must require its completed trusted click proof")
+    if 'assertTrue("the completed physical draft tap must leave the Prompt draft focused;' not in physical_open:
+        raise AssertionError("mobile Composer open must preserve its focused-draft assertion")
+    tap_event_trace = 'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");'
+    if (
+        tap_event_trace not in physical_open
+        or physical_open.find(tap_event_trace) > physical_open.find('assertTrue("opening the Composer must follow a trusted Android pointer-down')
+        or '"; events=" + tapEvents' not in physical_open
+    ):
+        raise AssertionError("mobile Composer tap failure and success evidence must retain its complete pointer event trace")
+    if "for(const type of ['pointerdown','pointerup','click','keydown','keypress','keyup'])" not in tap_recorder:
+        raise AssertionError("mobile Composer tap recorder must observe pointerdown, pointerup, and click")
+    for event in ("pointerdown", "pointerup", "click"):
+        if f"type!=='{event}'" not in completed_tap:
+            raise AssertionError(f"mobile Composer completed-tap proof must require {event}")
+    for proof in (
+        "event.isTrusted===true",
+        "event.target===draft",
+        "let upIndex=clickIndex-1",
+        "let downIndex=upIndex-1",
+        "down.pointerId===up.pointerId",
+        "click.isTrusted!==true",
+        '"||click." + targetFlag + "!==true)',
+        '"&&down.isTrusted===true&&down." + targetFlag + "===true"',
+    ):
+        if proof not in tap_recorder + completed_tap:
+            raise AssertionError(f"mobile Composer completed-tap proof is missing {proof}")
+    if 'return completedTrustedTapExpression("targetIsDraft");' not in completed_draft_tap \
+       or "if(clicks.length!==1)return false;" not in completed_launcher_tap \
+       or "!(click.detail>=1)" not in completed_launcher_tap \
+       or "targetIsLauncher:!!event.target?.closest?.('[data-testid=prompt-composer-launcher]')" not in tap_recorder:
+        raise AssertionError("mobile Composer completed-tap proofs must bind to the draft and the launcher respectively")
+    # The structural no-scripted-activation rule lives in the ordering gate;
+    # reuse it so this contract cannot drift back to a list of literals.
+    try:
+        composer_order_gate.validate_launcher(source)
+    except composer_order_gate.GateFailure as error:
+        raise AssertionError(f"Usage/Ports must open Prompt by a physical launcher tap only: {error}") from error
+    for needle in (
+        "JSONObject stableLayout = awaitPromptLauncherTapLayout(taps);",
+        "tap = tapPromptLauncherCenter();",
+        'trustedLauncherTapComplete = "true".equals(evalRaw(completedTrustedLauncherTapExpression()));',
+        'assertTrue("opening Prompt must record a completed trusted pointerdown/pointerup/click on its launcher; "',
+        'assertTrue("the completed physical launcher tap must open the Prompt sheet; " + evidence, promptSheetOpen);',
+        "if (trustedLauncherClickSeen) {",
+        'throw new AssertionError("a completed trusted launcher click did not open the Prompt sheet; "',
+        'assertEquals("exactly one trusted click may reach the Prompt launcher; " + evidence, 1, launcherClicks);',
+        'assertEquals("no keyboard event may target the Prompt launcher; " + evidence, 0, keyboardLauncherEvents);',
+        'assertEquals("the Prompt launcher must receive no scripted (untrusted) events; " + evidence,',
+    ):
+        if needle not in physical_launcher_open:
+            raise AssertionError(f"physical Prompt launcher open is missing {needle}")
+    if "SystemClock.sleep(16);" not in physical_tap or "SystemClock.sleep(60);" in physical_tap:
+        raise AssertionError("mobile Composer tap must not keep the stale 60 ms coordinate interval")
+    if "nativeState.optBoolean(\"imeVisible\")" not in tap_layout_wait \
+       or "stableSamples >= 2" not in tap_layout_wait \
+       or "SystemClock.uptimeMillis() - startedAt >= 200" not in tap_layout_wait \
+       or "composerDraftTapTargetExpression()" not in tap_layout_wait:
+        raise AssertionError("mobile Composer retry must wait for stable IME-visible draft bounds")
+    if "MotionEvent.ACTION_DOWN" not in physical_tap or "MotionEvent.ACTION_UP" not in physical_tap \
+       or "InputDevice.SOURCE_TOUCHSCREEN" not in journey_method(source, "obtainFingerTouch") \
+       or "MotionEvent.TOOL_TYPE_FINGER" not in journey_method(source, "obtainFingerTouch") \
+       or "injectInputEvent" not in physical_tap:
+        raise AssertionError("mobile Composer open action must inject Android touchscreen down and up events")
+    if 'assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected)' not in physical_tap \
+       or 'assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected)' not in physical_tap:
+        raise AssertionError("mobile Composer open action must require both touchscreen events to be injected")
+    if 'tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false)' not in draft_tap \
+       or "centerHitIsTarget:hit===target" not in physical_tap or "draftCenterHitIsDraft" not in open_diagnostics:
+        raise AssertionError("mobile Composer tap target must resolve to the Prompt draft")
+    if 'assertTrue(label + " center is intercepted by another DOM element: " + point' not in physical_tap:
+        raise AssertionError("mobile Composer touch point must not be intercepted by another DOM element")
+    for label, needle in (
+        ("Home live surface", "shell.dataset.homeSurface==='live'"),
+        ("live PTY", "shell.dataset.sshPhase==='live'"),
+        ("on-screen bounds", "composer.getBoundingClientRect()"),
+        ("visible CSS state", "style.visibility!=='hidden'"),
+        ("non-inert route", "composer.closest('[inert],[aria-hidden=true]')"),
+    ):
+        if needle not in visible:
+            raise AssertionError(f"Usage/Ports Composer visibility proof is missing {label}")
+
+    if "sendComposerCommandAndAwaitMarker(" not in after or "sendCommandAndAwaitMarker(" in after:
+        raise AssertionError("@After HTTP cleanup must use the Composer-backed sender and opener")
+    if 'activeSessionTag, "HTTP_CLEANUP",\n                        /* bestEffortAfterFailure= */ true)' not in after:
+        raise AssertionError("@After cleanup must retain its HTTP_CLEANUP evidence phase")
+    if "sendComposerCommandAndAwaitMarker(" not in strict_stop or "sendCommandAndAwaitMarker(" in strict_stop:
+        raise AssertionError("strict HTTP process stop must use the Composer-backed sender and opener")
+    if 'sessionTag, "HTTP_CLEANUP",\n                /* bestEffortAfterFailure= */ false)' not in strict_stop:
+        raise AssertionError("strict process stop must retain its HTTP_CLEANUP evidence phase")
+
+
+import importlib.util
+
+_order_gate_spec = importlib.util.spec_from_file_location(
+    "composer_order_gate", repository_root / "scripts/check-js-usage-ports-composer-order.py")
+composer_order_gate = importlib.util.module_from_spec(_order_gate_spec)
+_order_gate_spec.loader.exec_module(composer_order_gate)
+
+usage_ports_runner = (repository_root / "scripts/connected-js-usage-ports.sh").read_text()
+if '"$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR" \\\n' \
+   '  --launcher-logcat "$LIVE_ASSET_LOGCAT" --run-id "$RUN_ID"' not in usage_ports_runner:
+    raise AssertionError("the Usage/Ports runner must require same-run physical Prompt launcher evidence")
+print("PASS: Usage/Ports runner requires same-run physical Prompt launcher evidence")
+
+require_usage_ports_composer_contract(usage_ports_journey)
+
+
+def expect_usage_ports_contract_rejection(label: str, damaged: str) -> None:
+    try:
+        require_usage_ports_composer_contract(damaged)
+    except (AssertionError, ValueError):
+        print(f"PASS: {label} fails the closed-Composer route contract")
+    else:
+        raise AssertionError(f"closed-Composer route contract missed {label}")
+
+
+sender_source = journey_method(usage_ports_journey, "sendComposerCommandAndAwaitMarker")
+opener_source = journey_method(usage_ports_journey, "openHomeLiveComposerAndAwaitConnectedTransport")
+physical_open_source = journey_method(usage_ports_journey, "openComposerWithPhysicalDraftTap")
+after_source = journey_method(usage_ports_journey, "closeShell")
+primary_source = journey_method(usage_ports_journey, "runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+expect_usage_ports_contract_rejection(
+    "removing the Home/live Composer opener",
+    usage_ports_journey.replace(
+        sender_source,
+        sender_source.replace("openHomeLiveComposerAndAwaitConnectedTransport(sessionTag, eventPrefix, bestEffortAfterFailure);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the route-opening action",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace('click("[aria-label=\'PocketShell home\']");', "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the physical mobile Composer draft tap",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the physical Prompt launcher tap",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);", "", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "replacing the physical Prompt launcher tap with a DOM click",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("openComposerWithPhysicalLauncherTap(sessionTag, eventPrefix);",
+                              "click(PROMPT_LAUNCHER_SELECTOR);", 1),
+        1,
+    ),
+)
+launcher_open_source = journey_method(usage_ports_journey, "openComposerWithPhysicalLauncherTap")
+expect_usage_ports_contract_rejection(
+    "a scripted .click() on the Prompt launcher before the sheet check",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        boolean promptSheetOpenOnEntry",
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')?.click()\");\n"
+            "        boolean promptSheetOpenOnEntry",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "a scripted dispatchEvent on the Prompt launcher",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        boolean promptSheetOpenOnEntry",
+            "        evalString(\"document.querySelector('[data-testid=prompt-composer-launcher]')"
+            "?.dispatchEvent(new MouseEvent('click',{bubbles:true}))\");\n"
+            "        boolean promptSheetOpenOnEntry",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "reviewer mutant B: launcher .focus() plus an injected KeyEvent ENTER after the tap",
+    usage_ports_journey.replace(
+        '            taps.put(tap.put("stableLayout", stableLayout));\n',
+        '            taps.put(tap.put("stableLayout", stableLayout));\n            settleLauncherFocus();\n',
+        1,
+    ).replace(
+        "    private JSONObject awaitPromptLauncherTapLayout(",
+        "    private void settleLauncherFocus() throws Exception {\n"
+        "        evalString(\"document.querySelector(\" + JSONObject.quote(PROMPT_LAUNCHER_SELECTOR) + \")?.focus()\");\n"
+        "        var automation = InstrumentationRegistry.getInstrumentation().getUiAutomation();\n"
+        "        long now = SystemClock.uptimeMillis();\n"
+        "        automation.injectInputEvent(new android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN,\n"
+        "                android.view.KeyEvent.KEYCODE_ENTER, 0), true);\n"
+        "    }\n\n"
+        "    private JSONObject awaitPromptLauncherTapLayout(",
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "an injected KeyEvent ENTER without focusing the launcher",
+    usage_ports_journey.replace(
+        '            taps.put(tap.put("stableLayout", stableLayout));\n',
+        '            taps.put(tap.put("stableLayout", stableLayout));\n'
+        "            InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent("
+        "new android.view.KeyEvent(0, 66), true);\n",
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "retrying after a completed trusted launcher click left the sheet closed",
+    usage_ports_journey.replace(
+        launcher_open_source,
+        launcher_open_source.replace("            if (trustedLauncherClickSeen) {\n", "            if (false) {\n", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the visible physical draft target wait",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace(
+            "        String composerDraftTapReady = visibleComposerExpression()\n"
+            "                + \" && \" + composerDraftTapTargetExpression();\n"
+            "        awaitJsTrue(composerDraftTapReady, 15_000);\n",
+            "        // no wait for the Home draft touch target\n",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "bypassing the physical mobile Composer draft tap",
+    usage_ports_journey.replace(
+        opener_source,
+        opener_source.replace("if (!composerVisible || !composerDraftFocused) {", "if (false) {", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "dropping the trusted physical pointer-down assertion",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            'assertTrue("opening the Composer must follow a trusted Android pointer-down on its draft; before="',
+            'assertTrue("Composer pointer-down proof removed; before="',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "dropping completed trusted pointerup and click proof",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            'trustedDraftTapComplete = "true".equals(evalRaw(completedTrustedDraftTapExpression()));',
+            'draftFocused = "true".equals(evalRaw(ready));',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "removing the fresh physical tap retry after IME resize",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace("after = awaitComposerDraftTapLayout(tap);", "after = readComposerOpenState(\"after-tap\");", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "limiting the physical tap retry cap to two attempts",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            "for (int attempt = 1; attempt <= 3; attempt++)",
+            "for (int attempt = 1; attempt <= 2; attempt++)",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "allowing more than three physical draft tap attempts",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            "for (int attempt = 1; attempt <= 3; attempt++)",
+            "for (int attempt = 1; attempt <= 4; attempt++)",
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "omitting the recorded pointer event trace",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            'String tapEvents = evalString("JSON.stringify(window.__ps2908ComposerOpenPointerEvents||[])");',
+            'String tapEvents = "[]";',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "allowing completed click proof to combine separate taps",
+    usage_ports_journey.replace(
+        'let upIndex=clickIndex-1;',
+        'let upIndex=0;',
+        1,
+    ),
+)
+
+delayed_composer_open = opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1)
+connected_wait_end = delayed_composer_open.index("15_000);", delayed_composer_open.index("dataset.transportState === 'connected'")) + len("15_000);")
+delayed_composer_open = (
+    delayed_composer_open[:connected_wait_end]
+    + "\n            openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);"
+    + delayed_composer_open[connected_wait_end:]
+)
+expect_usage_ports_contract_rejection(
+    "physically opening the mobile Composer after its connected transport wait",
+    usage_ports_journey.replace(opener_source, delayed_composer_open, 1),
+)
+late_after_send = usage_ports_journey.replace(
+    opener_source,
+    opener_source.replace("openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);", "", 1),
+    1,
+)
+late_sender_source = journey_method(late_after_send, "sendComposerCommandAndAwaitMarker")
+late_after_send = late_after_send.replace(
+    late_sender_source,
+    late_sender_source.replace(
+        'click(".composer-shared-controls .send");',
+        'click(".composer-shared-controls .send");\n        openComposerWithPhysicalDraftTap(sessionTag, eventPrefix);',
+        1,
+    ),
+    1,
+)
+expect_usage_ports_contract_rejection(
+    "physically opening the mobile Composer after sending cleanup",
+    late_after_send,
+)
+expect_usage_ports_contract_rejection(
+    "sending cleanup while opening the mobile Composer",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            "tapComposerDraftCenter();",
+            'click(".composer-shared-controls .send");\n        tapComposerDraftCenter();',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "mutating the Prompt draft while opening the mobile Composer",
+    usage_ports_journey.replace(
+        physical_open_source,
+        physical_open_source.replace(
+            "tapComposerDraftCenter();",
+            'setValue("[data-testid=prompt-draft]", "unexpected command");\n        tapComposerDraftCenter();',
+            1,
+        ),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "falsifying the Ports hidden-Composer precondition",
+    usage_ports_journey.replace(
+        'assertEquals("HTTP cleanup must start from the Ports screen", "ports"',
+        'assertEquals("HTTP cleanup must start from the Ports screen", "home"',
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "routing @After through direct terminal input",
+    usage_ports_journey.replace(
+        after_source,
+        after_source.replace("sendComposerCommandAndAwaitMarker(", "sendCommandAndAwaitMarker(", 1),
+        1,
+    ),
+)
+expect_usage_ports_contract_rejection(
+    "routing HTTP fixture startup through direct terminal input",
+    usage_ports_journey.replace(
+        primary_source,
+        primary_source.replace(
+            'sendComposerCommandAndAwaitMarker(\n                "python3 -m http.server',
+            'sendCommandAndAwaitMarker(\n                "python3 -m http.server',
+            1,
+        ),
+        1,
+    ),
+)
+
 print("PASS: rewrite composer and Usage/Ports CI run on API 35, validate exact JUnit, and upload run-scoped evidence")
 print("PASS: packaged lanes execute fail-closed in one shell and preserve the captured Node/pnpm runtime")
+print("PASS: Usage/Ports regression opens and verifies the focused Home Composer before cleanup and @After fallback")
 PY
