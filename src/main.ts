@@ -5,6 +5,11 @@ import { recordShellBoot, selectShell } from './shellSelection';
  * shell; the shared PocketShell app (core packages/ui) is opt-in until each
  * legacy screen's shared replacement passes the same packaged journey and
  * the maintainer signs the shared app off (#2936 / #2941).
+ *
+ * Each shell is its own lazily loaded chunk so neither shell's global CSS
+ * reaches the other (legacy `styles.css` and the shared app both style
+ * `.status-dot`, for one). The mount therefore lands a chunk-load after the
+ * document starts: readiness probes wait for the shell's own root element.
  */
 async function boot(): Promise<void> {
   const shell = selectShell(window.location.search);

@@ -10,6 +10,8 @@ import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.CapConfig;
+import com.getcapacitor.WebViewListener;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -36,6 +38,13 @@ public class MainActivity extends BridgeActivity {
     static final String SHARED_SHELL_START_PATH = "/?shell=shared";
 
     private Runnable resumeWebViewLayoutRefresh;
+    /** Main-frame page loads of this activity's WebView; one per launch (#2936). */
+    private final AtomicInteger pageStarts = new AtomicInteger();
+
+    /** How many pages this activity's WebView has started loading. A launch loads exactly one. */
+    public int pageStartCount() {
+        return pageStarts.get();
+    }
     private int resumeWebViewLayoutAttempts;
 
     @Override
@@ -56,6 +65,12 @@ public class MainActivity extends BridgeActivity {
      */
     @Override
     protected void load() {
+        bridgeBuilder.addWebViewListener(new WebViewListener() {
+            @Override
+            public void onPageStarted(WebView webView) {
+                pageStarts.incrementAndGet();
+            }
+        });
         if (SHELL_SHARED.equals(getIntent().getStringExtra(EXTRA_SHELL))) {
             config = sharedShellConfig();
         }

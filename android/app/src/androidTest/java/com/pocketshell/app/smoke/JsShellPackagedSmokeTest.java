@@ -93,6 +93,9 @@ public final class JsShellPackagedSmokeTest {
         // The default launch boots the legacy shell exactly once: no other
         // shell first, no reload after (#2936 shell selection before load).
         assertEquals("[\"legacy\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
+        AtomicReference<Integer> pageStarts = new AtomicReference<>();
+        scenario.onActivity(activity -> pageStarts.set(activity.pageStartCount()));
+        assertEquals("the default launch must load exactly one page (no reload)", Integer.valueOf(1), pageStarts.get());
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
         assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
@@ -479,6 +482,9 @@ public final class JsShellPackagedSmokeTest {
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
 
         awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
+        // The native inset variable exists before the lazily loaded shell
+        // mounts; the probe below reads the shell's own elements (#2936).
+        awaitJsTrue("!!document.querySelector('.app-shell') && !!document.querySelector('.app-bar')");
         JSONObject beforeIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
                 + "const shell = document.querySelector('.app-shell');"

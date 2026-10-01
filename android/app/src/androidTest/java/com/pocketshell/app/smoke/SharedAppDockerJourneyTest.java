@@ -79,6 +79,7 @@ public class SharedAppDockerJourneyTest {
         // default shell first, no reload into the shared one.
         awaitJsTrue("!!document.querySelector('.host-list, .empty')");
         assertEquals("[\"shared\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
+        assertEquals("the opt-in launch must load exactly one page (no load-then-reload)", 1, pageStartCount());
 
         evalString("(() => {const b=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Add a host');"
                 + "if(!b) throw new Error('no Add a host action'); b.click(); return 'ok';})()");
@@ -113,6 +114,12 @@ public class SharedAppDockerJourneyTest {
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         typeLine("echo PS2936_$((6*7))_" + run + "_a2");
         awaitTerminalLine("PS2936_42_" + run + "_a2");
+    }
+
+    private int pageStartCount() {
+        AtomicReference<Integer> count = new AtomicReference<>();
+        scenario.onActivity(activity -> count.set(activity.pageStartCount()));
+        return count.get();
     }
 
     private void awaitFolder(String folder) throws Exception {
