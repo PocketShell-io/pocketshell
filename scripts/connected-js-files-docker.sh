@@ -140,16 +140,22 @@ ssh_remote "mkdir -m 700 '$REMOTE_ROOT' \
   && ln -s /etc/passwd '$REMOTE_ROOT/link.txt'"
 printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
 
-encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest'
 DOCUMENTSUI_UPLOAD_NAME="documentsui-upload-$RUN_ID.bin"
 DOCUMENTSUI_DOWNLOAD_NAME="documentsui-download-$RUN_ID.bin"
+APP_PACKAGE="com.pocketshell.app.$SUFFIX"
+DEVICE_KEY_PATH="/sdcard/Android/data/$APP_PACKAGE/files/ps2926-test-key.pem"
+APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+[[ -s "$APP_APK" ]] || fail "debug APK is missing: $APP_APK"
+"$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" >/dev/null
+"$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_PACKAGE/files"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$encoded_key" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.fileFixtureRoot=$REMOTE_ROOT" \
     "-Pandroid.testInstrumentationRunnerArguments.screenshotRunId=$RUN_ID" \
     --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"; then

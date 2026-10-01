@@ -137,9 +137,9 @@ pocketshell_android_input_preflight "$ADB" "$ANDROID_SERIAL" "$evidence_dir/inpu
   || fail "Android input preflight failed on $ANDROID_SERIAL; see $evidence_dir/input-preflight.txt"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-encoded_key="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
 test_class='com.pocketshell.app.smoke.JsComposerDockerJourneyTest'
 APP_PACKAGE="com.pocketshell.app.$SUFFIX"
+DEVICE_KEY_PATH="/sdcard/Android/data/$APP_PACKAGE/files/ps2926-test-key.pem"
 TEST_PACKAGE="$APP_PACKAGE.test"
 INSTRUMENTATION_COMPONENT="$TEST_PACKAGE/androidx.test.runner.AndroidJUnitRunner"
 APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
@@ -248,8 +248,10 @@ capture_phase_failure() {
 run_instrumentation_phase() {
   local phase="$1"
   local phase_dir="$evidence_dir/phase-$phase"
+  "$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_PACKAGE/files"
+  "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
   local phase_args=(-e class "$test_class" -e sshHost 10.0.2.2
-    -e sshPort "$PORT" -e sshPrivateKeyBase64 "$encoded_key"
+    -e sshPort "$PORT" -e sshPrivateKeyPath "$DEVICE_KEY_PATH"
     -e sshSessionName "$SESSION_BASE" -e artifactRunId "$ARTIFACT_RUN_ID"
     -e composerPhase "$phase")
   mkdir -p "$phase_dir"

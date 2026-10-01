@@ -32,6 +32,10 @@ import {
   type ImportedLegacyHost,
 } from './migration/installedDataMigration';
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
+import { createLegacySshKeyReferenceStore } from './migration/legacySshKeyReferences';
+import { CredentialKeyManager } from './credentials/keyManagement';
+import SshKeysScreen from './components/SshKeysScreen.vue';
+import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
@@ -86,6 +90,7 @@ type SnippetEvidenceWindow = Window & {
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
 const diagnostics = useDiagnosticsStore();
+const keyManager = new CredentialKeyManager(sshKeyVault, createLegacySshKeyReferenceStore());
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);
@@ -113,9 +118,12 @@ const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const promptComposerHasFocus = ref(false);
 const homeSurface = ref<HomeSurface>('connection');
-const hostDraft = ref({ hostname: '', port: '22', username: '', privateKeyPem: '' });
+const hostDraft = ref({ hostname: '', port: '22', username: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
 const selectedLegacyHostId = ref('');
+const sshKeys = ref<SshKeyMetadata[]>([]);
+const selectedKeyHandleId = ref('');
+const sshKeyLoadError = ref('');
 const legacyKeyPassphrase = ref('');
 const sessionName = ref('mobile-session');
 const connectionSnapshot = ref<ConnectionSnapshot | null>(null);
@@ -149,6 +157,7 @@ const terminalResizeFailure = ref<TerminalResizeRequest | null>(null);
 let terminalAttachEpoch = 0;
 
 let controller: ConnectionController | null = null;
+let pendingTrustPassphrase: string | undefined;
 let portForwardController: PortForwardController | null = null;
 let portForwardHostId: string | null = null;
 let portForwardConnectionKey: string | null = null;
@@ -207,6 +216,9 @@ const fileRootDirectory = computed(() => {
 });
 const selectedLegacyHost = computed(() => importedLegacyHosts.value.find(
   (host) => String(host.id) === selectedLegacyHostId.value,
+) ?? null);
+const selectedSshKey = computed(() => sshKeys.value.find(
+  (key) => key.handleId === selectedKeyHandleId.value,
 ) ?? null);
 const snippetHostId = computed(() => {
   if (connectionSnapshot.value?.hostId) return connectionSnapshot.value.hostId;
@@ -443,6 +455,7 @@ function setManualPortForwarding(remotePort: number, enabled: boolean): void {
 watch(() => navigation.route, (route) => {
   if (route === 'usage') void refreshUsage();
   if (route === 'ports') void refreshPorts();
+  if (route === 'keys') void refreshSshKeys();
 });
 
 function pinStoreKey(hostId: string): string {
@@ -542,21 +555,21 @@ function makeHostTarget(): SshHostTarget | null {
   const hostname = hostDraft.value.hostname.trim();
   const username = hostDraft.value.username.trim();
   const port = Number(hostDraft.value.port);
-  const privateKeyPem = hostDraft.value.privateKeyPem.trim();
   const legacyHost = selectedLegacyHost.value;
-  if (!hostname || !username || (!privateKeyPem && !legacyHost) || !Number.isInteger(port) || port < 1 || port > 65535) {
-    connectionMessage.value = 'Enter a host, port, user, and private key or choose a saved host.';
+  if (!hostname || !username || !selectedKeyHandleId.value || !Number.isInteger(port) || port < 1 || port > 65535) {
+    connectionMessage.value = 'Enter a host, port, user, and select an SSH key.';
     return null;
   }
-  if (legacyHost) {
-    return makeLegacySshHostTarget(legacyHost, legacyKeyPassphrase.value) as unknown as SshHostTarget;
+  const passphrase = selectedSshKey.value?.passphraseRequired ? legacyKeyPassphrase.value : undefined;
+  if (legacyHost && legacyHost.keyHandleId === selectedKeyHandleId.value) {
+    return makeLegacySshHostTarget(legacyHost, passphrase ?? '');
   }
   return {
-    hostId: `${username}@${hostname}:${port}`,
+    hostId: legacyHost ? String(legacyHost.id) : `${username}@${hostname}:${port}`,
     hostname,
     port,
     username,
-    credential: { kind: 'private-key', privateKeyPem },
+    credential: keyManager.keyCredential(selectedKeyHandleId.value, passphrase),
   };
 }
 
@@ -568,8 +581,11 @@ function selectLegacyHost(): void {
     hostname: host.hostname,
     port: String(host.port),
     username: host.username,
-    privateKeyPem: '',
   };
+  selectedKeyHandleId.value = host.keyHandleId ?? '';
+  if (!host.keyHandleId) {
+    connectionMessage.value = 'This saved host key is not available in Android secure storage. Open SSH keys to import it again.';
+  }
 }
 
 function clearLegacyHostSelection(): void {
@@ -577,10 +593,48 @@ function clearLegacyHostSelection(): void {
   legacyKeyPassphrase.value = '';
 }
 
+function selectSshKey(handleId: string): void {
+  selectedKeyHandleId.value = handleId;
+  if (selectedLegacyHost.value?.keyHandleId !== handleId) selectedLegacyHostId.value = '';
+  legacyKeyPassphrase.value = '';
+  connectionMessage.value = '';
+  if (navigation.route === 'keys') navigation.back();
+}
+
+function openKeyManagement(): void {
+  navigation.open('keys');
+}
+
+async function refreshSshKeys(): Promise<void> {
+  if (Capacitor.getPlatform() !== 'android') {
+    sshKeys.value = [];
+    sshKeyLoadError.value = 'SSH key storage is available in the Android app.';
+    return;
+  }
+  try {
+    sshKeys.value = await keyManager.list();
+    sshKeyLoadError.value = '';
+    importedLegacyHosts.value = await readImportedLegacyHosts();
+    if (selectedLegacyHostId.value) {
+      const host = importedLegacyHosts.value.find((candidate) => String(candidate.id) === selectedLegacyHostId.value);
+      selectedKeyHandleId.value = host?.keyHandleId ?? '';
+      if (!host?.keyHandleId) legacyKeyPassphrase.value = '';
+    }
+    if (selectedKeyHandleId.value && !sshKeys.value.some((key) => key.handleId === selectedKeyHandleId.value)) {
+      selectedKeyHandleId.value = '';
+    }
+  } catch (error) {
+    sshKeyLoadError.value = error instanceof Error ? error.message : 'SSH keys could not be loaded.';
+  }
+}
+
 async function connectHost() {
   if (migrationBlocksConnection.value) return;
   const host = makeHostTarget();
   if (!host) return;
+  const passphrase = host.credential.kind === 'key-handle' ? host.credential.passphrase ?? undefined : undefined;
+  pendingTrustPassphrase = passphrase;
+  legacyKeyPassphrase.value = '';
   await closeController();
   resourceSnapshot.value = null;
   resourceSnapshotStatus.value = 'unverified';
@@ -592,15 +646,18 @@ async function connectHost() {
   try {
     result = await next.connect(host);
   } catch (error) {
+    pendingTrustPassphrase = undefined;
     recordFailure('ssh-bridge-failed', 'connect', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
     return;
   }
   if (result.ok) {
+    pendingTrustPassphrase = undefined;
     await refreshSessions();
     navigateHomeSurface('connected');
   }
   else if (next.getSnapshot().phase !== 'awaiting-trust') {
+    pendingTrustPassphrase = undefined;
     recordOperationFailure('connect');
     connectionMessage.value = result.message;
   }
@@ -612,12 +669,14 @@ async function acceptHostKey() {
   connectionMessage.value = '';
   let result;
   try {
-    result = await active.acceptPresentedHostKey();
+    result = await active.acceptPresentedHostKey({ passphrase: pendingTrustPassphrase });
   } catch (error) {
+    pendingTrustPassphrase = undefined;
     recordFailure('ssh-bridge-failed', 'accept-host-key', error);
     connectionMessage.value = error instanceof Error ? error.message : String(error);
     return;
   }
+  pendingTrustPassphrase = undefined;
   if (result.ok) {
     await refreshSessions();
     navigateHomeSurface('connected');
@@ -800,6 +859,8 @@ async function disconnectHost() {
 }
 
 async function rejectHostKey() {
+  pendingTrustPassphrase = undefined;
+  legacyKeyPassphrase.value = '';
   connectionMessage.value = 'Host key was not trusted. No SSH connection remains open.';
   await disconnectHost();
 }
@@ -808,12 +869,14 @@ function retryDataImport() {
   void retryInstalledDataMigration().then((settingsWritten) => {
     reloadAfterSettingsImport(settingsWritten);
     void loadImportedLegacyHosts();
+    void refreshSshKeys();
   });
 }
 
 async function loadImportedLegacyHosts(): Promise<void> {
   try {
     importedLegacyHosts.value = await readImportedLegacyHosts();
+    await refreshSshKeys();
   } catch (error) {
     installedDataMigrationState.status = 'failed';
     installedDataMigrationState.error = error instanceof Error
@@ -1082,6 +1145,14 @@ onBeforeUnmount(() => {
           <button
             class="workspace-nav-button"
             type="button"
+            aria-label="SSH keys"
+            title="SSH keys"
+            data-testid="open-ssh-keys"
+            @click="openKeyManagement"
+          ><AppIcon name="file" /></button>
+          <button
+            class="workspace-nav-button"
+            type="button"
             aria-label="Settings"
             title="Settings"
             @click="openSettings"
@@ -1104,6 +1175,17 @@ onBeforeUnmount(() => {
             @click="openSettings"
           >
             <AppIcon name="settings" />
+          </button>
+          <button
+            v-if="navigation.route === 'home'"
+            class="icon-button"
+            type="button"
+            aria-label="SSH keys"
+            title="SSH keys"
+            data-testid="open-ssh-keys"
+            @click="openKeyManagement"
+          >
+            <AppIcon name="file" />
           </button>
           <button
             v-else
@@ -1189,24 +1271,28 @@ onBeforeUnmount(() => {
             <span>User</span>
             <input v-model="hostDraft.username" data-testid="ssh-username" autocomplete="username" autocapitalize="none" placeholder="alexey" @input="clearLegacyHostSelection" />
           </label>
-          <label v-if="selectedLegacyHost?.keyHasPassphrase" class="form-field host-field-key">
-            <span>Saved SSH key passphrase · kept in memory for this run</span>
-            <input v-model="legacyKeyPassphrase" data-testid="legacy-key-passphrase" type="password" autocomplete="off" />
+          <label class="form-field host-field-key">
+            <span>SSH key</span>
+            <select v-model="selectedKeyHandleId" data-testid="ssh-key-selection" :aria-describedby="selectedSshKey ? 'selected-ssh-key-details' : undefined" @change="clearLegacyHostSelection">
+              <option value="">Choose a stored SSH key</option>
+              <option v-for="key in sshKeys" :key="key.handleId" :value="key.handleId">
+                {{ key.label }} · {{ key.fingerprintSha256.slice(7, 15) }}
+              </option>
+            </select>
+            <span v-if="selectedSshKey" id="selected-ssh-key-details" class="host-key-details" data-testid="selected-ssh-key-details">
+              <span>{{ selectedSshKey.algorithm }}</span>
+              <code data-testid="selected-ssh-key-fingerprint">{{ selectedSshKey.fingerprintSha256 }}</code>
+            </span>
+            <span v-if="sshKeys.length === 0" class="host-field-help">Import or generate a key to connect.</span>
+            <span v-if="sshKeyLoadError" class="host-field-help" role="alert" data-testid="ssh-key-load-error">{{ sshKeyLoadError }}</span>
           </label>
-          <label v-if="!selectedLegacyHost" class="form-field host-field-key">
-            <span>Private key · kept in memory for this run</span>
-            <textarea
-              v-model="hostDraft.privateKeyPem"
-              data-testid="ssh-private-key"
-              rows="4"
-              autocomplete="off"
-              autocapitalize="none"
-              spellcheck="false"
-              placeholder="Paste an OpenSSH private key"
-            />
+          <label v-if="selectedSshKey?.passphraseRequired" class="form-field host-field-key">
+            <span>SSH key passphrase · used for this connection only</span>
+            <input v-model="legacyKeyPassphrase" data-testid="legacy-key-passphrase" type="password" autocomplete="off" />
           </label>
         </div>
         <div class="host-actions">
+          <button class="small-action" type="button" data-testid="manage-ssh-keys" @click="openKeyManagement">Manage keys</button>
           <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting || migrationBlocksConnection" @click="connectHost">
             {{ isConnecting ? 'Connecting…' : 'Connect' }}
           </button>
@@ -1384,6 +1470,15 @@ onBeforeUnmount(() => {
       @refresh="refreshPorts"
       @set-auto="setAutomaticPortForwarding"
       @set-port="setManualPortForwarding"
+    />
+    <SshKeysScreen
+      v-if="navigation.route === 'keys'"
+      :manager="keyManager"
+      :keys="sshKeys"
+      :selected-handle-id="selectedKeyHandleId"
+      :load-error="sshKeyLoadError"
+      @refresh="refreshSshKeys"
+      @select="selectSshKey"
     />
     <SettingsScreen
       v-if="navigation.route.startsWith('settings')"

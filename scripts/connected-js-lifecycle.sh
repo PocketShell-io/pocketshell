@@ -159,7 +159,12 @@ if results.exists():
     shutil.rmtree(results)
 PY
 
-ssh_key_base64="$(base64 -w0 "$ROOT_DIR/tests/docker/test_key")"
+APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+DEVICE_KEY_PATH="/sdcard/Android/data/$APP_ID/files/ps2926-test-key.pem"
+[[ -s "$APP_APK" ]] || fail "debug APK is missing: $APP_APK"
+"$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" >/dev/null
+"$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_ID/files"
+"$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged JS lifecycle journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"
 
@@ -271,7 +276,7 @@ capture_device_artifact_state before
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
-    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
+    "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
     --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"
 ) &
