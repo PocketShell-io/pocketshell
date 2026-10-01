@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Run the shared-app journey (#2936): a launch that opts into the shared
+# Run the shared-app journeys (#2936, #2952): a launch that opts into the shared
 # PocketShell app (the pocketshell.shell=shared extra; legacy screens stay the
-# default) must list, attach, re-attach and type into this run's own two
-# sessions on an isolated agents-pool lane (--port, never 2222), whose port
-# lock the run claims. Shares the machine-wide AVD and Android output-tree
+# default) must list, attach, re-attach and type — through a real, scripted
+# Android input method — into this run's own sessions on an isolated
+# agents-pool lane (--port, never 2222), whose port lock the run claims. A
+# raw-mode reader on the host records the exact bytes the IME journey typed;
+# the result checker compares the host's record, not just the screen. Shares the machine-wide AVD and Android output-tree
 # locks with the other packaged JS lanes.
 
 set -euo pipefail
@@ -134,21 +136,47 @@ ssh_opts=(-i "$ssh_key_copy" -p "$PORT" -o BatchMode=yes -o ConnectTimeout=5
   -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
 fixture() { ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"; }
 
-# This run's own two sessions, each in its own folder, so the journey never
-# depends on (or clicks) whatever earlier runs left on the lane.
+# This run's own three sessions, each in its own folder, so the journeys never
+# depend on (or click) whatever earlier runs left on the lane. Session c gets
+# the raw-mode byte reader the IME journey starts (#2952).
 SESSION_RUN="ps2936-$(date +%s)-$RANDOM"
-for side in a b; do
+SIDES=(a b c)
+for side in "${SIDES[@]}"; do
   fixture "mkdir -p ~/$SESSION_RUN-$side && pocketshell sessions create --json --cwd ~/$SESSION_RUN-$side -- $SESSION_RUN-$side >/dev/null" \
     || fail "could not create fixture session $SESSION_RUN-$side on lane $PORT"
 done
+fixture "cat > ~/$SESSION_RUN-c/ps2952-capture.py" <<'CAPTURE' \
+  || fail "could not stage the host byte reader on lane $PORT"
+# #2952 host oracle: put this PTY in raw mode (no echo, no line editing, no
+# CR/NL translation, no signals) and record every byte the terminal sends
+# until Ctrl+D, then print and store them as hex.
+import os, sys, termios, tty
+out = os.path.expanduser(sys.argv[1])
+fd = sys.stdin.fileno()
+saved = termios.tcgetattr(fd)
+tty.setraw(fd)
+received = bytearray()
+try:
+    os.write(1, b"PS2952_READY\r\n")
+    while True:
+        byte = os.read(fd, 1)
+        if not byte or byte == b"\x04":
+            break
+        received += byte
+finally:
+    termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+with open(out, "w") as record:
+    record.write(received.hex() + "\n")
+print("PS2952_HEX:" + received.hex() + ":END")
+CAPTURE
 cleanup_fixture_sessions() {
-  for side in a b; do
+  for side in "${SIDES[@]}"; do
     # `sessions create --cwd ~/X -- X` names the session `X:X` (folder:tag).
     fixture "pocketshell sessions kill -- $SESSION_RUN-$side:$SESSION_RUN-$side >/dev/null 2>&1; rm -rf ~/$SESSION_RUN-$side" || true
   done
 }
 trap cleanup_fixture_sessions EXIT
-printf 'Fixture lane %s: created sessions %s-a and %s-b\n' "$PORT" "$SESSION_RUN" "$SESSION_RUN"
+printf 'Fixture lane %s: created sessions %s-{a,b,c}\n' "$PORT" "$SESSION_RUN"
 
 export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
@@ -156,22 +184,30 @@ pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
-python3 - "$RESULTS_DIR" <<'PY'
+SHARED_APP_RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/js-shared-app-results"
+HOST_BYTES_FILE="$ROOT_DIR/android/app/build/outputs/js-shared-app-host-ime-bytes.hex"
+python3 - "$RESULTS_DIR" "$SHARED_APP_RESULTS_DIR" "$HOST_BYTES_FILE" <<'PY'
 from pathlib import Path
 import shutil
 import sys
 
-results = Path(sys.argv[1])
-if results.exists():
-    shutil.rmtree(results)
+for stale in map(Path, sys.argv[1:]):
+    if stale.is_dir():
+        shutil.rmtree(stale)
+    elif stale.exists():
+        stale.unlink()
 PY
+# The host's own record of the IME journey's bytes (the independent oracle).
+fetch_host_bytes() {
+  fixture "cat ~/$SESSION_RUN-c/ps2952-bytes.hex" > "$HOST_BYTES_FILE" 2>/dev/null || rm -f "$HOST_BYTES_FILE"
+}
 
 # The key reaches the app only through the key vault's content-URI import;
 # the raw copy sits outside every app package and the test deletes it.
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 
-printf 'Running shared-app journey on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
+printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SharedAppDockerJourneyTest \
@@ -182,8 +218,10 @@ if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroid
   :
 else
   test_exit_code=$?
-  printf 'Shared-app journey failed; capturing emulator diagnostics.\n' >&2
+  printf 'Shared-app journeys failed; capturing emulator diagnostics.\n' >&2
   mkdir -p "$RESULTS_DIR"
+  fetch_host_bytes
+  [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 4000 \
     > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" shell dumpsys input_method \
@@ -194,6 +232,11 @@ else
     > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
   exit "$test_exit_code"
 fi
-SHARED_APP_RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/js-shared-app-results"
+fetch_host_bytes
 "$ROOT_DIR/scripts/check-js-shared-app-results.py" --results-dir "$RESULTS_DIR" \
-  --evidence-dir "$SHARED_APP_RESULTS_DIR"
+  --host-bytes "$HOST_BYTES_FILE" --evidence-dir "$SHARED_APP_RESULTS_DIR"
+# Screenshots the journeys took of the typed terminal (evidence, not a gate).
+for shot in typed-after-reattach ime-bytes; do
+  "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/ps2952-$shot.png" "$SHARED_APP_RESULTS_DIR/$shot.png" >/dev/null 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/ps2952-$shot.png" >/dev/null 2>&1 || true
+done

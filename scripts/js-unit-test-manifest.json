@@ -345,6 +345,32 @@
         "reports a host saved through the shared app before deleting its key"
       ]
     },
+    "tests/unit/terminalImeInput.test.ts": {
+      "suite": "Android terminal IME input (#2952)",
+      "tests": [
+        "sends each letter of a Gboard-style composing word once, and the committing space",
+        "turns a backspace inside the composing word into one DEL",
+        "sends exactly the DELs and letters an autocorrect replacement needs",
+        "re-sends nothing when the keyboard re-opens a committed word as composing text",
+        "sends a committed newline as CR and starts the next line from an empty textarea",
+        "sends a multi-character commit (clipboard chip, voice) once",
+        "sends a printable key event itself, so typing never hands the line to the composer",
+        "sends a printable key event once even while a word is still composing",
+        "leaves Enter, Backspace, Tab, arrows and chords to xterm and absorbs their default edits",
+        "leaves paste to xterm and does not re-send the pasted text",
+        "deletes a character outside the BMP as one character",
+        "replays the shared-app IME journey script to exactly the bytes the host must receive",
+        "takes composition and input over from xterm in the capture phase, leaving real keys to it",
+        "forgets a held key when focus leaves the textarea before its keyup (blur while held)",
+        "forgets a held key when the app goes to the background before its keyup (background while held)",
+        "releases held keys on the textarea losing focus, a keyup anywhere, window blur and backgrounding",
+        "rewrites the line from the edit point when the keyboard edits after a cursor move",
+        "replaces a selection with exactly the new text",
+        "deletes inside a word away from the end",
+        "turns a predicted space the keyboard removes before punctuation into one DEL",
+        "sends one DEL per code point when a multi-code-point emoji is deleted"
+      ]
+    },
     "tests/unit/appLifecycle.test.ts": {
       "suite": "native app lifecycle transitions",
       "tests": [
