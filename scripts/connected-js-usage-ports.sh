@@ -215,10 +215,7 @@ release_usage_ports_locks() {
 }
 trap release_usage_ports_locks EXIT
 
-APP_PACKAGE="com.pocketshell.app.$SUFFIX"
-DEVICE_KEY_PATH="/sdcard/Android/data/$APP_PACKAGE/files/ps2926-test-key.pem"
-"$ADB" -s "$ANDROID_SERIAL" install -r "$APK" >/dev/null
-"$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_PACKAGE/files"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged usage/ports journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"

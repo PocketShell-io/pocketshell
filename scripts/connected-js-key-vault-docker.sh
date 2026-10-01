@@ -145,6 +145,13 @@ if [[ "$PREPARE_ONLY" == 1 ]]; then
   printf 'PASS: key-vault journey APKs and exact-result checker prepared for suffix %s\n' "$SUFFIX"
   exit 0
 fi
+if [[ "$TEST_ONLY" == 1 ]]; then
+  # Every suffixed lane writes the same apk/debug output path, so a prepared
+  # APK can be overwritten by a later lane's build before this lane runs.
+  # Re-package for this suffix (the synced web assets are reused).
+  "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:assembleDebug :app:assembleDebugAndroidTest \
+    "-PpocketshellAppIdSuffix=$SUFFIX" --stacktrace --console=plain
+fi
 
 APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
 TEST_APK="$ROOT_DIR/android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
@@ -214,7 +221,10 @@ PY
 
 "$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" > "$ARTIFACTS_DIR/install-app.txt"
 "$ADB" -s "$ANDROID_SERIAL" install -r "$TEST_APK" > "$ARTIFACTS_DIR/install-android-test.txt"
-"$ADB" -s "$ANDROID_SERIAL" shell pm clear "$APP_PACKAGE" > "$ARTIFACTS_DIR/clear-isolated-app-data.txt"
+"$ADB" -s "$ANDROID_SERIAL" shell pm path "$APP_PACKAGE" | tr -d '\r' | grep -q '^package:' \
+  || fail "installed APK is not $APP_PACKAGE; the packaged app output belongs to another lane suffix"
+"$ADB" -s "$ANDROID_SERIAL" shell pm clear "$APP_PACKAGE" > "$ARTIFACTS_DIR/clear-isolated-app-data.txt" \
+  || fail "could not clear isolated app data for $APP_PACKAGE"
 "$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "$DEVICE_FILES"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/key-vault-encrypted-test-key" "$DEVICE_KEY_PATH" \
   > "$ARTIFACTS_DIR/stage-encrypted-key.txt"

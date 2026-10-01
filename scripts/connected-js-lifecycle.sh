@@ -159,11 +159,10 @@ if results.exists():
     shutil.rmtree(results)
 PY
 
-APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
-DEVICE_KEY_PATH="/sdcard/Android/data/$APP_ID/files/ps2926-test-key.pem"
-[[ -s "$APP_APK" ]] || fail "debug APK is missing: $APP_APK"
-"$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" >/dev/null
-"$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_ID/files"
+# Stage the fixture key outside any app package: the instrumentation reads it
+# through UiAutomation's shell and deletes it, so it never depends on which
+# suffixed APK is currently installed.
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 printf 'Running packaged JS lifecycle journey on %s (API %s), fixture %s:%s, run %s\n' \
   "$ANDROID_SERIAL" "$device_api" "$CONTAINER" "$PORT" "$RUN_ID"

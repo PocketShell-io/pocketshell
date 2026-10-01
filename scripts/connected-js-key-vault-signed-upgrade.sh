@@ -93,16 +93,32 @@ TEST_APK="$ROOT_DIR/android/app/build/outputs/apk/androidTest/debug/app-debug-an
 pocketshell_run_without_avd_lock_fd scripts/assemble-debug.sh
 pocketshell_run_without_avd_lock_fd android/gradlew -p android :app:assembleDebugAndroidTest --stacktrace --console=plain
 [[ -s "$APP_APK" && -s "$TEST_APK" ]] || fail 'candidate APKs were not built'
-tools_dir="$(find "$ANDROID_SDK/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -V | tail -n1)"
-AAPT="$ANDROID_SDK/build-tools/$tools_dir/aapt"
-APKSIGNER="$ANDROID_SDK/build-tools/$tools_dir/apksigner"
+# Same resolution as scripts/check-apk-signing.sh: the newest build-tools that
+# ships BOTH tools (hosted runners carry partial/newer directories).
+AAPT="" APKSIGNER=""
+while IFS= read -r tools_dir; do
+  if [[ -x "$ANDROID_SDK/build-tools/$tools_dir/aapt" && -x "$ANDROID_SDK/build-tools/$tools_dir/apksigner" ]]; then
+    AAPT="$ANDROID_SDK/build-tools/$tools_dir/aapt"
+    APKSIGNER="$ANDROID_SDK/build-tools/$tools_dir/apksigner"
+    break
+  fi
+done < <(find "$ANDROID_SDK/build-tools" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -rV)
+[[ -n "$AAPT" ]] || fail "no build-tools version with both aapt and apksigner under $ANDROID_SDK/build-tools"
+# apksigner labels the signer "Signer #1" or, for v3/rotation-aware output,
+# "Signer (minSdkVersion=..)"; take the first SHA-256 digest either way.
+signer_sha256() {
+  local output
+  output="$("$APKSIGNER" verify --print-certs "$1" 2>&1)" || { printf '%s\n' "$output" >&2; return 1; }
+  printf '%s\n' "$output" | grep -m1 'certificate SHA-256 digest:' | sed 's/.*certificate SHA-256 digest:[[:space:]]*//' | tr -d ': ' | tr 'A-F' 'a-f'
+}
 legacy_meta="$("$AAPT" dump badging "$LEGACY_APK" | sed -n '1p')"
 candidate_meta="$("$AAPT" dump badging "$APP_APK" | sed -n '1p')"
 [[ "$legacy_meta" == *"name='$APP_PACKAGE'"* && "$candidate_meta" == *"name='$APP_PACKAGE'"* ]] || fail 'legacy/candidate APK package mismatch'
 [[ "$legacy_meta" == *"versionName='0.5.6'"* ]] || fail 'legacy APK must be version 0.5.6'
-legacy_cert="$("$APKSIGNER" verify --print-certs "$LEGACY_APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}')"
-candidate_cert="$("$APKSIGNER" verify --print-certs "$APP_APK" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ {print $2; exit}')"
-[[ -n "$legacy_cert" && "$legacy_cert" == "$candidate_cert" ]] || fail 'signed APK certificates differ'
+legacy_cert="$(signer_sha256 "$LEGACY_APK")" || fail "apksigner could not read the legacy APK signer ($APKSIGNER)"
+candidate_cert="$(signer_sha256 "$APP_APK")" || fail "apksigner could not read the candidate APK signer ($APKSIGNER)"
+[[ "$legacy_cert" =~ ^[0-9a-f]{64}$ && "$legacy_cert" == "$candidate_cert" ]] \
+  || fail "signed APK certificates differ: legacy=${legacy_cert:-<none>} candidate=${candidate_cert:-<none>} ($APKSIGNER)"
 candidate_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"$candidate_meta")"
 legacy_code="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<<"$legacy_meta")"
 [[ "$candidate_code" =~ ^[0-9]+$ && "$legacy_code" =~ ^[0-9]+$ ]] && (( candidate_code >= legacy_code )) || fail 'candidate APK versionCode must not be lower than signed v0.5.6'

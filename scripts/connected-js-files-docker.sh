@@ -143,12 +143,7 @@ printf 'Seeded Docker SFTP fixture: %s\n' "$REMOTE_ROOT"
 test_class='com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest'
 DOCUMENTSUI_UPLOAD_NAME="documentsui-upload-$RUN_ID.bin"
 DOCUMENTSUI_DOWNLOAD_NAME="documentsui-download-$RUN_ID.bin"
-APP_PACKAGE="com.pocketshell.app.$SUFFIX"
-DEVICE_KEY_PATH="/sdcard/Android/data/$APP_PACKAGE/files/ps2926-test-key.pem"
-APP_APK="$ROOT_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
-[[ -s "$APP_APK" ]] || fail "debug APK is missing: $APP_APK"
-"$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" >/dev/null
-"$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "/sdcard/Android/data/$APP_PACKAGE/files"
+DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-key.pem"
 "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/test_key" "$DEVICE_KEY_PATH" >/dev/null
 if pocketshell_run_without_avd_lock_fd_to_log \
     "$ARTIFACTS_DIR/gradle-connected.log" \

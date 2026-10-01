@@ -9,7 +9,6 @@ import androidx.core.content.FileProvider;
 import org.json.JSONObject;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 
@@ -20,33 +19,52 @@ final class SshKeyVaultTestSupport {
 
     private SshKeyVaultTestSupport() {}
 
-    /** Copies a runner-staged fixture from this app's external files into a private cache document. */
+    /** Runner-staged raw fixture keys live only here, outside every app package. */
+    private static final java.util.regex.Pattern STAGED_KEY_PATH =
+        java.util.regex.Pattern.compile("/data/local/tmp/pocketshell-[A-Za-z0-9._-]+\\.pem");
+
+    /**
+     * Moves a runner-staged fixture key into a private cache document. The raw
+     * copy sits in /data/local/tmp so it does not depend on which suffixed APK
+     * is installed when the runner stages it; only the shell can read it, so the
+     * bytes are read and then deleted through UiAutomation's shell.
+     */
     static File copyDockerKeyDocument(Context context, String sourcePath, String suffix) throws Exception {
-        if (sourcePath == null || sourcePath.isBlank()) {
-            throw new IllegalArgumentException("the test runner must stage the Docker fixture key");
+        if (sourcePath == null || !STAGED_KEY_PATH.matcher(sourcePath).matches()) {
+            throw new IllegalArgumentException("the test runner must stage the Docker fixture key under /data/local/tmp/pocketshell-*.pem");
         }
-        File externalFiles = context.getExternalFilesDir(null);
-        if (externalFiles == null) throw new IllegalStateException("app external files directory is unavailable");
-        File source = new File(sourcePath);
-        String allowedRoot = externalFiles.getCanonicalPath() + File.separator;
-        if (!source.getCanonicalPath().startsWith(allowedRoot) || !source.isFile()) {
-            throw new IllegalArgumentException("the staged fixture must be inside the target app external files directory");
+        byte[] key = shell("cat " + sourcePath);
+        shell("rm -f " + sourcePath);
+        String text = new String(key, java.nio.charset.StandardCharsets.UTF_8);
+        if (!text.startsWith("-----BEGIN ") || !text.contains("PRIVATE KEY-----")) {
+            throw new IllegalStateException("the runner-staged Docker fixture key is missing or unreadable");
         }
         File directory = new File(context.getCacheDir(), "ps2926-key-import");
         if (!directory.isDirectory() && !directory.mkdirs()) throw new IllegalStateException("key test cache directory is unavailable");
         File file = new File(directory, "docker-key-" + safe(suffix) + ".pem");
-        try (InputStream input = new FileInputStream(source); FileOutputStream output = new FileOutputStream(file)) {
-            byte[] buffer = new byte[8192];
-            int count;
-            while ((count = input.read(buffer)) >= 0) output.write(buffer, 0, count);
+        try (FileOutputStream output = new FileOutputStream(file)) {
+            output.write(key);
             output.getFD().sync();
+        } finally {
+            java.util.Arrays.fill(key, (byte) 0);
         }
         file.setReadable(false, false);
         file.setWritable(false, false);
         file.setReadable(true, true);
         file.setWritable(true, true);
-        if (!source.delete()) throw new IllegalStateException("could not remove the runner-staged raw fixture copy");
         return file;
+    }
+
+    private static byte[] shell(String command) throws Exception {
+        android.os.ParcelFileDescriptor output = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
+            .getUiAutomation().executeShellCommand(command);
+        try (InputStream input = new android.os.ParcelFileDescriptor.AutoCloseInputStream(output)) {
+            java.io.ByteArrayOutputStream bytes = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) >= 0) bytes.write(buffer, 0, count);
+            return bytes.toByteArray();
+        }
     }
 
     static Uri asContentUri(Context context, File document) {
