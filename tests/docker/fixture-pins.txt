@@ -22,5 +22,5 @@
 # Both Dockerfiles parse this file at build time (never a --build-arg
 # default, never a hardcoded literal — that is the drift a fixture must not
 # have), and scripts/test-agents-fixture-aplexer.sh asserts they still do.
-POCKETSHELL_PIN=0.5.5
+POCKETSHELL_PIN=0.5.8
 APLEXER_PIN=0.1.5

@@ -103,6 +103,51 @@ jobs:
       - name: Build Android debug APK
         run: pnpm build:android:debug
 
+      # Issue #2856: run after the debug APK step above has generated the
+      # ignored Capacitor Gradle inputs; validate fresh results from all four
+      # production close paths in this required JS-first check.
+      - name: Run native SSH close-accounting unit regression (issue #2856)
+        shell: bash
+        run: |
+          set -euo pipefail
+          touch "${RUNNER_TEMP}/ssh-close-unit-start"
+          set -o pipefail
+          android/gradlew -p android :app:testDebugUnitTest \
+            --tests com.pocketshell.app.SshCapabilityPluginCloseTest \
+            --rerun-tasks --no-build-cache --no-daemon --stacktrace --console=plain \
+            2>&1 | tee "${RUNNER_TEMP}/ssh-close-unit-gradle.log"
+          python3 - "${RUNNER_TEMP}/ssh-close-unit-start" <<'PY'
+          from pathlib import Path
+          import sys
+          import xml.etree.ElementTree as ET
+
+          report = Path("android/app/build/test-results/testDebugUnitTest/TEST-com.pocketshell.app.SshCapabilityPluginCloseTest.xml")
+          marker = Path(sys.argv[1])
+          if not report.is_file():
+              raise SystemExit(f"FAIL: missing close-accounting JUnit report: {report}")
+          if report.stat().st_mtime_ns <= marker.stat().st_mtime_ns:
+              raise SystemExit("FAIL: close-accounting JUnit report predates this run")
+          root = ET.parse(report).getroot()
+          cases = root.findall("testcase")
+          if not cases or int(root.attrib.get("tests", "0")) != len(cases):
+              raise SystemExit("FAIL: close-accounting report declares no tests or disagrees with testcase rows")
+          if int(root.attrib.get("skipped", "0")) != 0 or int(root.attrib.get("failures", "0")) != 0 or int(root.attrib.get("errors", "0")) != 0:
+              raise SystemExit("FAIL: close-accounting class has skipped, failed, or errored tests")
+          names = {case.attrib.get("name") for case in cases}
+          required = {
+              "actualConnectionCloseKeepsSnapshotEntryUntilNativeSocketCloses",
+              "productionPtyCloseKeepsSnapshotEntryUntilNativeChannelCloses",
+              "productionSftpCloseKeepsSnapshotEntryUntilNativeClientCloses",
+              "productionForwardCloseKeepsSnapshotEntryUntilNativeListenerCloses",
+          }
+          missing = sorted(required - names)
+          if missing:
+              raise SystemExit(f"FAIL: required production-path regressions did not execute: {missing}")
+          print(f"PASS: {len(cases)} close-accounting tests executed; connection, PTY, SFTP, and forward regressions present")
+          PY
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+
       - name: Validate packaged Android identity and derived version
         run: |
           scripts/check-js-apk-metadata.py --self-test

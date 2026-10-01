@@ -38,11 +38,13 @@ REQUIRED_UNCERTAIN_MUTATION_ASSERTIONS = {
 REQUIRED_ARTIFACTS = {
     "journey-summary.json",
     "abrupt-drop-server-proof.txt",
+    "abrupt-drop-phases.json",
     "abrupt-drop-recovered-visible-terminal.txt",
     "abrupt-drop-recovered-viewport.png",
     "abrupt-drop-recovered-full-screen.png",
     "uncertain-mutation-server-proof.txt",
     "uncertain-mutation-fixture-events.txt",
+    "uncertain-mutation-phases.json",
 }
 SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,38}$")
 SAFE_ASSET_NAME = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
@@ -377,6 +379,7 @@ def _validate_summary(summary: dict[str, Any], assets: dict[str, bytes], run_id:
         raise GateFailure("abrupt-drop evidence must contain exactly one native lost event")
     if drop.get("reconnectingPhaseCount") != 1 or drop.get("recoveredLivePhaseCount") != 1:
         raise GateFailure("abrupt-drop evidence must prove one JS reconnect and one live same-session attach")
+    _validate_abrupt_drop_phases(drop, assets, run_id)
     if drop.get("selectedTag") != session["tag"] or drop.get("selectedId") != session["id"]:
         raise GateFailure("abrupt-drop recovery did not preserve the same selected aplexer session")
     times = [drop.get(key) for key in ("dropRequestedAtEpochMs", "lossObservedAtEpochMs", "reconnectLiveAtEpochMs")]
@@ -471,6 +474,61 @@ def _device_to_host_epoch_offset(run_directory: Path) -> int:
     return round((offsets[0] + offsets[1]) / 2)
 
 
+def _load_phase_artifact(
+    evidence: dict[str, Any], assets: dict[str, bytes], run_id: str, file_name: str, start_key: str, label: str
+) -> list[dict[str, Any]]:
+    """Return the phases a journey step recorded at or after its trigger, from its own file (#2943)."""
+    if evidence.get("phasesFile") != file_name:
+        raise GateFailure(f"{label} phase list is not named in the same-run summary")
+    try:
+        record = json.loads(assets[file_name].decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise GateFailure(f"{label} phase list is missing or not valid JSON") from error
+    if not isinstance(record, dict) or record.get("schema") != 1 or record.get("runId") != run_id:
+        raise GateFailure(f"{label} phase list does not belong to this run")
+    started_at = record.get(start_key)
+    phases = record.get("phases")
+    if started_at != evidence.get(start_key) or not isinstance(phases, list):
+        raise GateFailure(f"{label} phase list does not match the summary's trigger time")
+    if any(not isinstance(phase, dict) or not isinstance(phase.get("at"), int) for phase in phases):
+        raise GateFailure(f"{label} phase list has a malformed entry")
+    # Keep only transitions: a repeated sample of the same phase and connection
+    # is the same phase, not a new reconnect or a new session list.
+    entered: list[dict[str, Any]] = []
+    previous: tuple[Any, Any] | None = None
+    for phase in phases:
+        key = (phase.get("phase"), phase.get("connectionId"))
+        if key != previous and phase["at"] >= started_at:
+            entered.append(phase)
+        previous = key
+    return entered
+
+
+def _validate_uncertain_mutation_phases(mutation: dict[str, Any], assets: dict[str, bytes], run_id: str) -> None:
+    """Recount the journey's phase artifact instead of trusting the summary's count (#2943)."""
+    phases = _load_phase_artifact(
+        mutation, assets, run_id, "uncertain-mutation-phases.json", "mutationRequestedAtEpochMs", "uncertain create"
+    )
+    new_connection = mutation.get("newConnectionId")
+    reconnecting = sum(1 for phase in phases if phase.get("phase") == "reconnecting")
+    listing = sum(
+        1 for phase in phases if phase.get("phase") == "listing" and phase.get("connectionId") == new_connection
+    )
+    if reconnecting != 1 or listing != 1:
+        raise GateFailure(
+            f"uncertain create phase list shows {reconnecting} reconnecting and {listing} fresh-list phases; expected 1 and 1"
+        )
+
+
+def _validate_abrupt_drop_phases(drop: dict[str, Any], assets: dict[str, bytes], run_id: str) -> None:
+    phases = _load_phase_artifact(
+        drop, assets, run_id, "abrupt-drop-phases.json", "dropRequestedAtEpochMs", "abrupt-drop"
+    )
+    reconnecting = sum(1 for phase in phases if phase.get("phase") == "reconnecting")
+    if reconnecting != 1:
+        raise GateFailure(f"abrupt-drop phase list shows {reconnecting} reconnecting phases; expected 1")
+
+
 def _validate_uncertain_mutation(
     summary: dict[str, Any], assets: dict[str, bytes], run_id: str, device_to_host_offset_ms: int
 ) -> dict[str, Any]:
@@ -525,6 +583,7 @@ def _validate_uncertain_mutation(
         raise GateFailure("uncertain create server-side proof is not named in the same-run summary")
     if mutation.get("fixtureEventsFile") != "uncertain-mutation-fixture-events.txt":
         raise GateFailure("uncertain create fixture event log is not named in the same-run summary")
+    _validate_uncertain_mutation_phases(mutation, assets, run_id)
 
     try:
         proof_text = assets["uncertain-mutation-server-proof.txt"].decode("utf-8")
@@ -825,7 +884,19 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
             "viewportPng": "abrupt-drop-recovered-viewport.png",
         },
         "fullScreenPng": "abrupt-drop-recovered-full-screen.png",
+        "phasesFile": "abrupt-drop-phases.json",
     }
+    drop_phase_entries = [
+        {"at": 90, "phase": "live", "connectionId": "old-connection"},
+        {"at": 105, "phase": "reconnecting", "connectionId": ""},
+        {"at": 112, "phase": "connecting", "connectionId": ""},
+        {"at": 120, "phase": "live", "connectionId": "new-connection"},
+    ]
+    if mutation == "double-reconnect-drop-phases":
+        drop_phase_entries[2:2] = [
+            {"at": 106, "phase": "connected", "connectionId": ""},
+            {"at": 107, "phase": "reconnecting", "connectionId": ""},
+        ]
     if mutation == "missing-assertion":
         drop["assertions"].remove("single-js-reconnect-and-session-reattach")
     if mutation == "wrong-host-count":
@@ -887,7 +958,24 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         },
         "serverProofFile": "uncertain-mutation-server-proof.txt",
         "fixtureEventsFile": "uncertain-mutation-fixture-events.txt",
+        "phasesFile": "uncertain-mutation-phases.json",
     }
+    phase_entries = [
+        {"at": 150, "phase": "live", "connectionId": "old-connection"},
+        {"at": 200, "phase": "reconnecting", "connectionId": ""},
+        {"at": 225, "phase": "connecting", "connectionId": ""},
+        {"at": 228, "phase": "listing", "connectionId": "fresh-connection"},
+        {"at": 255, "phase": "live", "connectionId": "fresh-connection"},
+    ]
+    if mutation == "repeated-phase-samples":
+        phase_entries[2:2] = [{"at": 202, "phase": "reconnecting", "connectionId": ""}]
+        phase_entries.append({"at": 229, "phase": "listing", "connectionId": "fresh-connection"})
+        phase_entries.sort(key=lambda entry: entry["at"])
+    if mutation == "double-reconnect-phases":
+        phase_entries[2:2] = [
+            {"at": 205, "phase": "error", "connectionId": ""},
+            {"at": 206, "phase": "reconnecting", "connectionId": ""},
+        ]
     if mutation == "missing-mutation-assertion":
         uncertain["assertions"].remove("no-automatic-create-replay")
     if mutation == "nonzero-timebase":
@@ -934,6 +1022,12 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
     assets = {
         "journey-summary.json": json.dumps(summary, sort_keys=True).encode("utf-8"),
         "abrupt-drop-server-proof.txt": proof.encode("utf-8"),
+        "abrupt-drop-phases.json": json.dumps({
+            "schema": 1,
+            "runId": run_id,
+            "dropRequestedAtEpochMs": drop["dropRequestedAtEpochMs"],
+            "phases": drop_phase_entries,
+        }).encode("utf-8"),
         "abrupt-drop-recovered-visible-terminal.txt": visible.encode("utf-8"),
         "abrupt-drop-recovered-viewport.png": png,
         "abrupt-drop-recovered-full-screen.png": png,
@@ -941,6 +1035,12 @@ def write_synthetic_evidence(directory: Path, run_id: str, mutation: str = "") -
         "switch-a-return-viewport.png": png,
         "uncertain-mutation-server-proof.txt": mutation_proof.encode("utf-8"),
         "uncertain-mutation-fixture-events.txt": mutation_events.encode("utf-8"),
+        "uncertain-mutation-phases.json": json.dumps({
+            "schema": 1,
+            "runId": run_id,
+            "mutationRequestedAtEpochMs": uncertain["mutationRequestedAtEpochMs"],
+            "phases": phase_entries,
+        }).encode("utf-8"),
     }
     if mutation == "missing-artifact":
         del assets["abrupt-drop-recovered-full-screen.png"]
@@ -1050,6 +1150,9 @@ def self_test() -> int:
         ("duplicate post-reconnect host marker blocks", "wrong-host-count", False),
         ("missing same-run native loss log blocks", "missing-log", False),
         ("missing uncertain-mutation proof blocks", "missing-mutation-proof", False),
+        ("second reconnecting entry in the phase artifact blocks", "double-reconnect-phases", False),
+        ("repeated samples of one reconnecting and one listing phase pass", "repeated-phase-samples", True),
+        ("second abrupt-drop reconnecting entry in its phase artifact blocks", "double-reconnect-drop-phases", False),
         ("missing same-run clock evidence blocks", "missing-timebase", False),
         ("device timestamps normalize with the same-run clock offset", "nonzero-timebase", True),
         ("unstable same-run clock evidence blocks", "unstable-timebase", False),

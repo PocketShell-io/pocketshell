@@ -202,6 +202,10 @@ case "${1:-}" in
     printf 'adb: error: remote object %s does not exist\n' "${2:-}" >&2
     exit 1
     ;;
+  uninstall)
+    # Lifecycle lane (#2943) removes its own APKs before and after the run.
+    printf 'Success\n'
+    ;;
   exec-out)
     [[ "${2:-}" == 'screencap' ]] || { printf 'unexpected adb exec-out command: %s\n' "$*" >&2; exit 90; }
     printf '\x89PNG\r\n\x1a\n'

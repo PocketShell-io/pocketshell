@@ -223,6 +223,14 @@ stop_host_socket_watcher() {
     LIVE_ASSET_LOGCAT_PID=""
   fi
 }
+# Gradle normally uninstalls the app right after instrumentation, which deletes
+# its external files before a failed run's artifacts can be pulled (#2943). The
+# lane keeps the APKs installed through the run and removes them itself, before
+# the run (fresh app data) and after its evidence is collected.
+uninstall_lane_apks() {
+  "$ADB" -s "$ANDROID_SERIAL" uninstall "$APP_ID" >/dev/null 2>&1 || true
+  "$ADB" -s "$ANDROID_SERIAL" uninstall "$APP_ID.test" >/dev/null 2>&1 || true
+}
 capture_device_artifact_state() {
   local phase="$1"
   "$ADB" -s "$ANDROID_SERIAL" shell pm list packages "$APP_ID" \
@@ -231,6 +239,7 @@ capture_device_artifact_state() {
     > "$ARTIFACTS_DIR/device-artifacts-$phase-gradle.txt" 2>&1 || true
 }
 pocketshell_install_js_lifecycle_cleanup_trap
+uninstall_lane_apks
 record_host_timebase before || fail 'could not capture the host/device clock offset before the packaged journey'
 LIVE_ASSET_LOGCAT="$ARTIFACTS_DIR/lifecycle-assets-live-logcat.txt"
 : > "$LIVE_ASSET_LOGCAT" || fail 'could not create the live artifact logcat file'
@@ -265,6 +274,7 @@ pocketshell_start_without_avd_lock_fd bash -o pipefail -c \
   pocketshell-js-lifecycle-instrumentation "$ARTIFACTS_DIR/gradle-connected.log" \
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
@@ -286,6 +296,7 @@ if wait "$INSTRUMENTATION_PID"; then
   wait "$ARTIFACT_PULL_WATCHER_PID" || fail "same-run lifecycle artifact pull failed; see $ARTIFACTS_DIR/artifact-pull-watcher.log"
   ARTIFACT_PULL_WATCHER_PID=""
   capture_device_artifact_state after
+  uninstall_lane_apks
   record_host_timebase after || fail 'could not capture the host/device clock offset after the packaged journey'
   stop_host_socket_watcher
 else
@@ -316,6 +327,12 @@ else
   "$ADB" -s "$ANDROID_SERIAL" pull "$EXPECTED_DEVICE_ARTIFACT_DIRECTORY" \
     "$ARTIFACTS_DIR/failure-diagnostics" \
     >> "$ARTIFACTS_DIR/failure-diagnostics/adb-pull.log" 2>&1 || true
+  for phase_file in uncertain-mutation-phases.json abrupt-drop-phases.json; do
+    if [[ -s "$ARTIFACTS_DIR/failure-diagnostics/$RUN_ID/$phase_file" ]]; then
+      printf 'Journey phase list: %s\n' "$ARTIFACTS_DIR/failure-diagnostics/$RUN_ID/$phase_file" >&2
+    fi
+  done
+  uninstall_lane_apks
   exit "$test_exit_code"
 fi
 
