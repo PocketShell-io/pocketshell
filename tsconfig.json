@@ -19,11 +19,9 @@
       "@pocketshell/core/shared/*": ["vendor/pocketshell-core/src/shared/*"],
       "@pocketshell/core/attachments/*": ["vendor/pocketshell-core/src/attachments/*"],
       "@pocketshell/core/preview/*": ["vendor/pocketshell-core/src/preview/*"],
-      "@pocketshell/ui": ["vendor/pocketshell-core/packages/ui/src/index.ts"],
-      "@pocketshell/ui/*": ["vendor/pocketshell-core/packages/ui/src/*"],
       "@ui/*": ["vendor/pocketshell-core/packages/ui/src/*"],
       "@/*": ["src/*"]
     }
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts", "vite.config.ts", "vendor/pocketshell-core/src/**/*.ts", "vendor/pocketshell-core/packages/ui/src/**/*.ts", "vendor/pocketshell-core/packages/ui/src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts", "vite.config.ts", "vendor/pocketshell-core/src/**/*.ts", "vendor/pocketshell-core/packages/ui/src/*.ts"]
 }

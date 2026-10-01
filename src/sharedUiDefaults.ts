@@ -1,4 +1,5 @@
-import { fontCssVariables, resolveTheme, THEME_CHOICE_DEFAULT } from '@pocketshell/ui';
+import { fontCssVariables } from '@ui/fonts';
+import { resolveTheme, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
 /** PocketShell's shared dark palette, applied from the pinned desktop source. */
 export const mobileTheme = resolveTheme(THEME_CHOICE_DEFAULT);

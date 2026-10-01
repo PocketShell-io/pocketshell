@@ -45,7 +45,7 @@ modules and root Gradle graph were removed.
 
 The JS-first `connected-test.sh` requires a lane name and an explicit package
 suffix. It dispatches only to the existing `android/` packaged runners; it does
-not accept raw Gradle tasks or old app2 module selectors.
+not accept raw Gradle tasks or the app2 module selectors of `release/0.5.x`.
 
 ```bash
 scripts/connected-test.sh smoke --suffix i2863
@@ -73,7 +73,7 @@ distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
 rewrite tree it verifies the five packaged contracts: smoke selects the exact
-six methods in `JsShellPackagedSmokeTest`; lifecycle selects
+seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
 `UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;
@@ -89,7 +89,7 @@ prepare. The guard checks that justification and rejects any other undispatched
 Run its synthetic contract checks with
 `scripts/check-test-validity.sh --j1-only --self-test`. This verifies the JS
 selectors and exact result-checker method sets, rejects missing/extra dispatch
-and unjustified journey classes, and retains a synthetic app2 whole-suite
+and unjustified journey classes, and retains a synthetic `release/0.5.x` app2 whole-suite
 regression case. The Files result contract is also self-tested by
 `scripts/check-js-files-results.py --self-test`. In hosted CI, an
 `if: always()` report step independently runs each lane's exact JUnit checker
@@ -110,6 +110,23 @@ scripts/test-agents-fixture-aplexer.sh --docker
 The first command statically checks the image, shims, and journey sources. The
 Docker mode builds the image, runs the bundled-aplexer lifecycle self-check, and
 probes create → list → attach → kill against an actual container.
+
+### Android input preflight (#2946)
+
+Every packaged lane runner calls `pocketshell_android_input_preflight`
+(`scripts/lib/android-input-preflight.sh`) before the device is used. It sets
+`hide_error_dialogs=1` and force-stops the owner of any "isn't responding" or
+crash dialog already on screen. A system-app ANR dialog on a starved emulator
+otherwise owns input focus, and every injected key and tap goes to it. The
+lane's `input-preflight.txt` records each dismissal. A dialog owned by a
+`com.pocketshell*` package is never dismissed: the lane fails with
+`POCKETSHELL_ERROR_DIALOG`, because that is a product ANR or crash. Inside the tests,
+`AndroidInputDeliveryProbe` injects a no-op Shift key before the first injected
+tap/key and fails with `ANDROID_INPUT_INJECTION_NOT_DELIVERED` plus the system
+focus owner when the page does not see it. On failure, the smoke and lifecycle
+runners write `dumpsys input`/`window`/`input_method`/`activity`, unfiltered
+`logcat -b all`, and a screenshot to their `failure-diagnostics`, checked by
+`scripts/check-android-input-diagnostics.py`.
 
 ## Disk preflight
 
@@ -226,7 +243,7 @@ Port 2222 belongs to the default `agents` fixture. It is reserved for the
 Docker `agents` target and must not be taken over by an unrelated container.
 Use `scripts/agents-pool.sh` for isolated ports when parallel lanes are needed.
 
-## Session journeys
+## Session journeys (legacy app2, `release/0.5.x`)
 
 The load-bearing app2 journeys use real aplexer records:
 
@@ -296,7 +313,8 @@ scripts/check-product-tmux-absent.sh --self-test
 scripts/check-product-tmux-absent.sh
 ```
 
-To inspect the same product surface manually after a session-runtime change:
+On `release/0.5.x` (legacy Kotlin tree), inspect the same product surface
+manually after a session-runtime change:
 
 ```bash
 rg -n -i 'tmux' \

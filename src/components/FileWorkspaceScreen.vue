@@ -13,7 +13,7 @@ import {
   type FileClassification,
   type SshConnectionRef,
 } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import {
   createFileWorkspaceService,
   FileWorkspaceError,

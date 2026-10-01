@@ -16,10 +16,11 @@ import {
   type SshResourceSnapshot,
   type UsageRow,
 } from '@pocketshell/core';
-import { AppIcon, fontCssVariables, resolveTheme } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
+import { fontCssVariables } from '@ui/fonts';
+import { resolveTheme } from '@ui/themes';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
-import { uiSourceRevision } from './uiSourceInfo';
 import {
   readImportedLegacyHosts,
   installedDataMigrationState,
@@ -88,7 +89,6 @@ const diagnostics = useDiagnosticsStore();
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
 const coreSample = formatBytes(1536);
 const coreShort = coreSourceRevision.slice(0, 12);
-const uiShort = uiSourceRevision.slice(0, 12);
 const buildStatus = computed(() => {
   if ('checking' in buildVerification.value) return 'Checking bundled assets';
   return buildVerification.value.ok ? 'Build verified' : 'Build verification failed';
@@ -970,7 +970,7 @@ onMounted(() => {
     });
   }
 
-  void verifyCurrentBuild(coreSourceRevision, uiSourceRevision).then((verification) => {
+  void verifyCurrentBuild(coreSourceRevision).then((verification) => {
     buildVerification.value = verification;
     diagnostics.record(verification.ok ? 'build-verified' : 'build-verification-failed', 'assets', verification.ok ? 'OK' : 'VERIFY_FAILED');
   }).catch((error: unknown) => {
@@ -1122,7 +1122,7 @@ onBeforeUnmount(() => {
     <div v-if="!connectionSnapshot" class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
       <AppIcon class="status-dot" name="dot" :size="12" />
       <span>{{ buildStatus }}</span>
-      <span class="build-strip__detail">core {{ coreShort }} · ui {{ uiShort }} · assets {{ bundleShort }}</span>
+      <span class="build-strip__detail">core {{ coreShort }} · assets {{ bundleShort }}</span>
     </div>
 
     <section
@@ -1260,8 +1260,7 @@ onBeforeUnmount(() => {
           </span>
         </div>
         <dl class="diagnostic-list">
-          <div><dt>pocketshell-core revision</dt><dd data-testid="core-revision">{{ coreSourceRevision }}</dd></div>
-          <div><dt>pocketshell-desktop shared UI revision</dt><dd data-testid="ui-revision">{{ uiSourceRevision }}</dd></div>
+          <div><dt>pocketshell-core revision (core + shared UI)</dt><dd data-testid="core-revision">{{ coreSourceRevision }}</dd></div>
           <div>
             <dt>Bundled asset SHA-256</dt>
             <dd data-testid="bundle-asset-hash">{{ !('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Pending verification' }}</dd>
@@ -1402,7 +1401,6 @@ onBeforeUnmount(() => {
       v-if="navigation.route === 'about' || navigation.route === 'about-update'"
       :build-verification="buildVerification"
       :core-revision="coreSourceRevision"
-      :ui-revision="uiSourceRevision"
       :bundle-hash="!('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Not verified'"
       :build-status="buildStatus"
     />

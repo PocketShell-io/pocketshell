@@ -24,10 +24,10 @@
       "suite": "packaged build diagnostics",
       "tests": [
         "imports and executes the real formatter from the pinned core source",
-        "imports theme and font policy from the pinned shared UI source",
-        "accepts a manifest only when both pinned source revisions and exact bundle bytes match",
+        "imports theme and font policy from the shared UI package inside the core pin",
+        "accepts a manifest only when the pinned core revision and exact bundle bytes match",
         "fails closed when the recorded core source revision differs",
-        "fails closed when the recorded shared UI source revision differs",
+        "rejects a schema-1 manifest that still records a separate shared UI source",
         "fails closed when the packaged asset bytes differ from the manifest",
         "fails closed when a bundle asset is missing"
       ]
@@ -225,6 +225,33 @@
         "rejects a mismatched source chunk and still releases its document ID",
         "writes exact binary bytes to the selected document and completes the byte count",
         "aborts a partial save when the document provider rejects a chunk"
+      ]
+    },
+    "tests/unit/designTokens.test.ts": {
+      "suite": "phone design tokens",
+      "tests": [
+        "reads the shared token source the @ui alias points at",
+        "takes every colour from a token rather than a literal",
+        "uses no CSS named colour in a colour declaration",
+        "reads only tokens that the shared set, the phone stylesheet or the runtime defines"
+      ]
+    },
+    "tests/unit/kotlinEraReferences.test.ts": {
+      "suite": "Kotlin-era references",
+      "tests": [
+        "scans the tracked live docs, prompts and app source",
+        "flags an unmarked reference and accepts a marked one",
+        "finds no unmarked app2, :shared:, Compose render or Kotlin design-kit reference"
+      ]
+    },
+    "tests/unit/jsSourceIntegrity.test.ts": {
+      "suite": "pinned shared source integrity",
+      "tests": [
+        "pins exactly one shared-source gitlink, pocketshell-core, and no desktop submodule",
+        "rejects a reintroduced desktop gitlink or a missing core gitlink",
+        "resolves the shared UI package from inside the clean core pin",
+        "fails closed unless the core pin equals the upstream main head",
+        "keeps no tracked app, test, config or script reference to the desktop checkout"
       ]
     },
     "tests/unit/androidPlatform.test.ts": {
