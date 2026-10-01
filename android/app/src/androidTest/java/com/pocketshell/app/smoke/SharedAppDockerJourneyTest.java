@@ -126,7 +126,9 @@ public class SharedAppDockerJourneyTest {
         // while it was away (the late line), not come up blank or stale. The
         // late line is also the sync point that the re-join has completed.
         openFolder(folderA);
-        awaitTerminalLine("PS2936_LATE_42_" + run);
+        // The background job prints after the prompt, so it shares the "$ " row.
+        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim().endsWith("
+                + JSONObject.quote("PS2936_LATE_42_" + run) + "))");
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         typeLine("echo PS2936_$((6*7))_" + run + "_a2");
         awaitTerminalLine("PS2936_42_" + run + "_a2");
