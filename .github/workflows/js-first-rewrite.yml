@@ -81,6 +81,9 @@ jobs:
           scripts/check-js-usage-ports-results.py --self-test
           scripts/check-js-usage-ports-host-evidence.py --self-test
 
+      - name: Check fail-closed packaged fast-key result guard
+        run: scripts/check-js-hotkeys-journey-results.py --self-test
+
       - name: Check fail-closed packaged Files result guard
         run: scripts/check-js-files-results.py --self-test
 
@@ -112,6 +115,7 @@ jobs:
           scripts/test-gradle-output-lock.sh
           tests/scripts/js-fixture-port-lock-test.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
+          tests/scripts/js-first-rewrite-hotkeys-gate-test.sh
           tests/scripts/shared-app-runner-cleanup-test.sh
 
       - name: Build Android debug APK
@@ -197,7 +201,7 @@ jobs:
       - name: Start isolated Docker agents lanes for Composer and key-vault journeys
         run: scripts/agents-pool.sh up 2244 2245
 
-      - name: Start isolated Docker agents lane for the shared-app journey
+      - name: Start isolated Docker agents lane for the mobile fast-key and shared-app journeys
         run: scripts/agents-pool.sh up 2243
 
       - name: Enable KVM
@@ -306,6 +310,22 @@ jobs:
             exit 1
           fi
 
+      - name: Assert the packaged JS mobile fast-key journey executed exactly once
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="android/app/build/outputs/js-hotkeys"
+          evidence_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          evidence_runs=("$evidence_root/$evidence_prefix"*)
+          if (( ${#evidence_runs[@]} != 1 )); then
+            printf 'FAIL: expected exactly one same-run fast-key evidence directory for %s; found %s\n' \
+              "$evidence_prefix" "${#evidence_runs[@]}" >&2
+            exit 1
+          fi
+          scripts/check-js-hotkeys-journey-results.py --results-dir "${evidence_runs[0]}"
+
       - name: Collect isolated composer fixture diagnostics
         if: always()
         run: |
@@ -314,6 +334,15 @@ jobs:
             > android/app/build/outputs/js-composer/ci-fixture/agents-inspect.json 2>&1 || true
           docker logs pocketshell-test-agents-2245 \
             > android/app/build/outputs/js-composer/ci-fixture/agents.log 2>&1 || true
+
+      - name: Collect isolated fast-key fixture diagnostics
+        if: always()
+        run: |
+          mkdir -p android/app/build/outputs/js-hotkeys/ci-fixture
+          docker inspect pocketshell-test-agents-2243 \
+            > android/app/build/outputs/js-hotkeys/ci-fixture/agents-inspect.json 2>&1 || true
+          docker logs pocketshell-test-agents-2243 \
+            > android/app/build/outputs/js-hotkeys/ci-fixture/agents.log 2>&1 || true
 
       - name: Upload packaged JS composer run evidence
         if: always()
@@ -325,11 +354,19 @@ jobs:
             android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
           if-no-files-found: error
 
+      - name: Upload packaged JS fast-key run evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-first-hotkeys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: android/app/build/outputs/js-hotkeys/
+          if-no-files-found: error
+
       - name: Stop isolated Composer and key-vault Docker agents lanes
         if: always()
         run: scripts/agents-pool.sh down 2244 2245
 
-      - name: Stop isolated shared-app Docker agents lane
+      - name: Stop isolated fast-key and shared-app Docker agents lane
         if: always()
         run: scripts/agents-pool.sh down 2243
 

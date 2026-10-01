@@ -76,7 +76,8 @@ function legacySnapshot(): NativeLegacySnapshot {
           terminal_text_size_px: { type: 'int', value: 32 },
           background_grace_millis: { type: 'long', value: '90000' },
           default_host_id: { type: 'long', value: '41' },
-          voice_language: { type: 'string', value: 'en-US' },
+          voice_language: { type: 'string', value: 'de' },
+          voice_silence_seconds: { type: 'float', value: 8 },
         },
       },
       app_settings: { present: false, entries: {} },
@@ -193,6 +194,8 @@ describe('installed Android data migration', () => {
       themeChoice: 'maintainer-choice',
       terminalFontSize: 24,
       backgroundGraceMs: 30_000,
+      voiceLanguage: 'fr',
+      voiceSilenceSeconds: 12,
       futureSetting: 'keep',
     }));
 
@@ -206,7 +209,11 @@ describe('installed Android data migration', () => {
 
     const empty = new MemoryStorage();
     const mapped = prepareLocalStorageWrites(snapshot, empty, 2);
-    expect(JSON.parse(mapped.settings ?? '{}')).toEqual({ terminalFontSize: 16 });
+    expect(JSON.parse(mapped.settings ?? '{}')).toEqual({
+      terminalFontSize: 16,
+      voiceLanguage: 'de',
+      voiceSilenceSeconds: 8,
+    });
     expect(JSON.parse(mapped.sharedSettings ?? '{}')).toEqual({ backgroundGraceMs: 90_000 });
   });
 
@@ -287,7 +294,11 @@ describe('installed Android data migration', () => {
       offset: 0,
       maxBytes: 3,
     });
-    expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({ terminalFontSize: 16 }));
+    expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({
+      terminalFontSize: 16,
+      voiceLanguage: 'de',
+      voiceSilenceSeconds: 8,
+    }));
     expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBe(JSON.stringify({ backgroundGraceMs: 90_000 }));
     expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
   });
@@ -322,7 +333,11 @@ describe('installed Android data migration', () => {
     expect(persistence.persistence.stage).not.toHaveBeenCalled();
     expect(persistence.persistence.markComplete).not.toHaveBeenCalled();
     expect(native.readLegacyInstalledData).not.toHaveBeenCalled();
-    expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({ terminalFontSize: 16 }));
+    expect(storage.getItem('pocketshell.js.settings.v1')).toBe(JSON.stringify({
+      terminalFontSize: 16,
+      voiceLanguage: 'de',
+      voiceSilenceSeconds: 8,
+    }));
     expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBe(JSON.stringify({ backgroundGraceMs: 90_000 }));
     expect(storage.getItem('pocketshell.ssh.host-key.41')).toContain(TRUST_FINGERPRINT);
   });
@@ -342,6 +357,8 @@ describe('installed Android data migration', () => {
       themeChoice: 'user-theme',
       terminalFontSize: 24,
       backgroundGraceMs: 30_000,
+      voiceLanguage: 'fr',
+      voiceSilenceSeconds: 12,
       futureField: 'keep',
     };
     storage.setItem('pocketshell.js.settings.v1', JSON.stringify(newerSettings));

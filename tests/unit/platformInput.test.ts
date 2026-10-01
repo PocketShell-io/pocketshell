@@ -38,15 +38,19 @@ function makeDocumentPlugin(files: Record<string, Uint8Array>) {
 
 function makeSpeechPlugin() {
   let dictationListener: ((event: NativeDictationEvent) => void) | undefined;
+  let lastDictationListener: ((event: NativeDictationEvent) => void) | undefined;
   const plugin = {
     getCapabilities: vi.fn(async () => ({ speechRecognitionAvailable: true, microphonePermissionGranted: false })),
     startDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, started: true })),
     stopDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, stopped: true })),
+    cancelDictation: vi.fn(async ({ requestId }: { requestId: string }) => ({ requestId, cancelled: true })),
     addListener: vi.fn(async (_name: string, listener: (event: NativeDictationEvent) => void) => {
       dictationListener = listener;
+      lastDictationListener = listener;
       return { remove: vi.fn(async () => { dictationListener = undefined; }) };
     }),
     emitDictation(event: NativeDictationEvent) { dictationListener?.(event); },
+    emitLateDictation(event: NativeDictationEvent) { lastDictationListener?.(event); },
   };
   return plugin;
 }
@@ -59,7 +63,7 @@ describe('Android platform input adapter', () => {
     const service = createPlatformInputService(
       documents as unknown as DocumentContentPlugin,
       makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
-      { nextRequestId: () => 'request-1', chunkBytes: 3, maxFileBytes: 40, maxBatchBytes: 80 },
+      { chunkBytes: 3, maxFileBytes: 40, maxBatchBytes: 80 },
     );
 
     const result = await service.pickAttachments();
@@ -103,7 +107,7 @@ describe('Android platform input adapter', () => {
     const service = createPlatformInputService(
       documents as unknown as DocumentContentPlugin,
       makeSpeechPlugin() as unknown as SpeechRecognitionPlugin,
-      { nextRequestId: () => 'request-3', maxFileBytes: 4, maxBatchBytes: 4 },
+      { maxFileBytes: 4, maxBatchBytes: 4 },
     );
 
     const result = await service.pickAttachments();
@@ -143,7 +147,7 @@ describe('Android platform input adapter', () => {
     expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'shareFile' });
   });
 
-  it('registers before starting speech, filters foreign events, and stops the matching request', async () => {
+  it('registers before starting one turn, filters foreign events, and stops the matching request', async () => {
     const documents = makeDocumentPlugin({});
     const speech = makeSpeechPlugin();
     const events: NativeDictationEvent[] = [];
@@ -155,15 +159,64 @@ describe('Android platform input adapter', () => {
     const service = createPlatformInputService(
       documents as unknown as DocumentContentPlugin,
       speech as unknown as SpeechRecognitionPlugin,
-      { nextRequestId: () => 'dictation-1' },
+      {},
     );
 
-    const session = await service.startDictation((event) => events.push(event), 'fr-FR');
-    await session.stop();
+    await service.startRecognition('dictation-1', (event) => events.push(event), { languageTag: 'fr-FR', silenceWindowMs: 7_000 });
+    await service.stopRecognition('dictation-1');
+    speech.emitDictation({ requestId: 'dictation-1', type: 'result', text: 'café' });
 
     expect(speech.addListener.mock.invocationCallOrder[0]).toBeLessThan(speech.startDictation.mock.invocationCallOrder[0]);
-    expect(events).toEqual([{ requestId: 'dictation-1', type: 'partial', text: 'café' }]);
-    expect(speech.startDictation).toHaveBeenCalledWith({ requestId: 'dictation-1', languageTag: 'fr-FR' });
+    expect(events).toEqual([
+      { requestId: 'dictation-1', type: 'partial', text: 'café' },
+      { requestId: 'dictation-1', type: 'result', text: 'café' },
+    ]);
+    expect(speech.startDictation).toHaveBeenCalledWith({ requestId: 'dictation-1', languageTag: 'fr-FR', silenceWindowMs: 7_000 });
     expect(speech.stopDictation).toHaveBeenCalledWith({ requestId: 'dictation-1' });
+  });
+
+  it('cancels a request and drops even a late queued partial or final event', async () => {
+    const documents = makeDocumentPlugin({});
+    const speech = makeSpeechPlugin();
+    const events: NativeDictationEvent[] = [];
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      speech as unknown as SpeechRecognitionPlugin,
+      {},
+    );
+
+    await service.startRecognition('dictation-cancel-1', (event) => events.push(event));
+    speech.emitDictation({ requestId: 'dictation-cancel-1', type: 'partial', text: 'draft preview' });
+    await service.cancelRecognition('dictation-cancel-1');
+    speech.emitLateDictation({ requestId: 'dictation-cancel-1', type: 'result', text: 'must be ignored' });
+
+    expect(events).toEqual([{ requestId: 'dictation-cancel-1', type: 'partial', text: 'draft preview' }]);
+    expect(speech.cancelDictation).toHaveBeenCalledWith({ requestId: 'dictation-cancel-1' });
+    expect(speech.stopDictation).not.toHaveBeenCalled();
+  });
+
+  it('cancels a pending native start without allowing its eventual turn or events through', async () => {
+    const documents = makeDocumentPlugin({});
+    const speech = makeSpeechPlugin();
+    let resolveNativeStart!: (response: { requestId: string; started: boolean }) => void;
+    speech.startDictation.mockImplementation(({ requestId }) => new Promise((resolve) => {
+      resolveNativeStart = resolve;
+    }));
+    const events: NativeDictationEvent[] = [];
+    const service = createPlatformInputService(
+      documents as unknown as DocumentContentPlugin,
+      speech as unknown as SpeechRecognitionPlugin,
+      {},
+    );
+    const pendingStart = service.startRecognition('dictation-pending-cancel', (event) => events.push(event));
+    await vi.waitFor(() => expect(speech.startDictation).toHaveBeenCalledTimes(1));
+
+    await service.cancelRecognition('dictation-pending-cancel');
+    resolveNativeStart({ requestId: 'dictation-pending-cancel', started: true });
+
+    await expect(pendingStart).rejects.toMatchObject({ code: 'dictation-cancelled' });
+    speech.emitLateDictation({ requestId: 'dictation-pending-cancel', type: 'partial', text: 'late' });
+    expect(events).toEqual([]);
+    expect(speech.cancelDictation).toHaveBeenCalledWith({ requestId: 'dictation-pending-cancel' });
   });
 });

@@ -23,6 +23,7 @@ vi.mock('@xterm/xterm', () => ({
     loadAddon() {}
     open() {}
     onRender() { return { dispose() {} }; }
+    onWriteParsed() { return { dispose() {} }; }
     onData() { return { dispose() {} }; }
     write(_bytes: Uint8Array, callback?: () => void) { callback?.(); }
     clear() {}

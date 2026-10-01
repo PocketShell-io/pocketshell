@@ -4,9 +4,12 @@
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists only the phone theme and terminal text size",
+        "reads and persists only the phone theme, terminal text size and Android dictation settings",
         "degrades malformed or unsupported saved values to safe defaults",
         "clamps terminal size using the pinned desktop font-size policy",
+        "persists a supported recognizer language and clamps the silence window to the 2–60 second range",
+        "ignores the unreleased branch-only dictation keys (D22) and maps a BCP-47 tag to its base language",
+        "uses the Kotlin-aligned automatic language and four-second silence defaults",
         "offers every 0.5.x grace window from the shared core policy, including 10 minutes",
         "keeps grace and reconnect-on-return in the one shared settings store (D42)"
       ]
@@ -19,7 +22,8 @@
         "keeps host setup and session selection reachable from the live terminal",
         "backs from the terminal to sessions, then to connection details",
         "returns to connection setup when disconnected",
-        "closes nested routes before stepping back through a connected workspace"
+        "closes nested routes before stepping back through a connected workspace",
+        "closes a route overlay without stepping away from the current connected surface"
       ]
     },
     "tests/unit/buildDiagnostics.test.ts": {
@@ -94,7 +98,9 @@
         "preserves valid files when one selection is over the shared native transfer limit",
         "rejects mismatched chunk identity and still releases the native document reference",
         "materializes incoming shared text and files before delivering the share callback",
-        "registers before starting speech, filters foreign events, and stops the matching request"
+        "registers before starting one turn, filters foreign events, and stops the matching request",
+        "cancels a request and drops even a late queued partial or final event",
+        "cancels a pending native start without allowing its eventual turn or events through"
       ]
     },
     "tests/unit/destinationInventory.test.ts": {
@@ -121,7 +127,7 @@
     "tests/unit/dictationStartCancellation.test.ts": {
       "suite": "pending dictation start cancellation",
       "tests": [
-        "stops a pending start once when the mounted composer backgrounds"
+        "cancels a pending recognition start once when the mounted composer backgrounds"
       ]
     },
     "tests/unit/keyboardInsetsState.test.ts": {
@@ -416,6 +422,98 @@
         "routes by the shared map plus exactly the Android host form",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
+    },
+    "tests/unit/appLifecycle.test.ts": {
+      "suite": "native app lifecycle transitions",
+      "tests": [
+        "returns to foreground when it arrives before background scheduling resolves"
+      ]
+    },
+    "tests/unit/composerDictationCancellation.test.ts": {
+      "suite": "composer dictation cancellation",
+      "tests": [
+        "labels the recording Discard action and restores the original draft",
+        "keeps Cancel distinct from Discard while transcription is finishing",
+        "keeps recording and transcribing preview regions present before speech arrives",
+        "places the mobile Dictate prompt microphone in the composer action row",
+        "keeps prompt dictation inside the composer instead of auto-starting from the terminal dock",
+        "cancels dictation when the mobile sheet composer is dismissed",
+        "cancels dictation when the mobile inline composer is dismissed",
+        "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
+        "cancels a pending start on background, restores the base draft, and rejects late partials",
+        "uses the latest persisted voice settings on the next composer start",
+        "keeps recording through a recoverable turn restart, then finalizes only on explicit Stop",
+        "blocks an unedited error dictation review from sending until deliberate text edits",
+        "blocks an unedited empty dictation review from sending until deliberate text edits",
+        "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
+        "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
+        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
+      ]
+    },
+    "tests/unit/dictationSettingsInteraction.test.ts": {
+      "suite": "mounted dictation settings controls",
+      "tests": [
+        "binds the production Voice and Advanced templates to accessible persisted settings"
+      ]
+    },
+    "tests/unit/inlineDictation.test.ts": {
+      "suite": "inline terminal dictation",
+      "tests": [
+        "cancels the active request and ignores a late final callback",
+        "does not insert when explicit Stop receives no final result",
+        "keeps the final transcript available when PTY insertion returns false",
+        "keeps the final transcript available when PTY insertion rejects",
+        "previews partials and inserts only sanitized final segments after explicit Stop",
+        "reports native errors and does not write speech",
+        "restarts after recoverable turns, isolates request IDs, and does not rearm after Stop",
+        "sanitizes terminal controls out of final text"
+      ]
+    },
+    "tests/unit/mobileHotkeys.test.ts": {
+      "suite": "mobile fast-key behavior",
+      "tests": [
+        "keeps icon actions in exact 48px slots and uses Kotlin-aligned mic state tints",
+        "uses one App-owned dictation status value for dock sizing and status-row visibility",
+        "keeps the controls inert off-live and resumes only after an explicit live state",
+        "emits core catalog bytes and keeps the palette open until toggled or closed",
+        "renders core key categories and keeps the full QWERTY Ctrl catalog reachable on its page",
+        "offers a labeled 48px Prompt launcher with an accessible route to the prompt draft",
+        "matches the mobile input row with a visible Dictate action and a separate Prompt entry",
+        "closes an open catalog when recording starts and shows a live elapsed clock",
+        "shows an idle status strip for errors and warnings, not successful insertion feedback",
+        "offers an explicit copy action for an unconfirmed terminal transcript",
+        "lets App force the same status-row visibility that it uses for terminal dock sizing",
+        "keeps active dictation status above the persistent controls on both catalog pages",
+        "resolves Ctrl+C and Ctrl+D tap, hold, keyboard, and cancel without a duplicate tap",
+        "closes and cancels a pending hold on live-session loss, then starts on the main page again",
+        "provides a direct close action for the app-level Back route",
+        "keeps the persistent status and control slot layout available on both catalog pages",
+        "wires the mounted fast-key controls to core bytes and live-state transitions"
+      ]
+    },
+    "tests/unit/speechRecognition.test.ts": {
+      "suite": "Android speech option boundary",
+      "tests": [
+        "uses the 4-second silence default and preserves the explicit auto sentinel",
+        "rounds and clamps the silence window to the supported 2-to-60-second range",
+        "keeps a trimmed BCP-47 hint and defaults malformed untyped values safely"
+      ]
+    },
+    "tests/unit/terminalDictationBarUnmount.test.ts": {
+      "suite": "terminal dictation bar lifecycle",
+      "tests": [
+        "keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint",
+        "cancels on unmount, clears parent state, and ignores late transcript events"
+      ]
+    },
+    "tests/unit/terminalFocus.test.ts": {
+      "suite": "terminal focus after attach",
+      "tests": [
+        "keeps a composer focus acquired while attach focus is waiting for its update",
+        "does not steal focus when a composer tap precedes WebView activeElement",
+        "scopes composer pointer intent to the pending focus request",
+        "still gives the terminal focus when no composer has claimed it"
       ]
     },
     "tests/unit/legacyHostKeyCard.test.ts": {

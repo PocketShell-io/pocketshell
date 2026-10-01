@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { useAppSettings } from '../stores/appSettings';
+import {
+  VOICE_LANGUAGE_OPTIONS,
+  VOICE_SILENCE_MAX_SECONDS,
+  VOICE_SILENCE_MIN_SECONDS,
+  useAppSettings,
+} from '../stores/appSettings';
 import { useNavigationStore } from '../stores/navigation';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import AppIcon from '@ui/components/AppIcon.vue';
@@ -20,6 +25,14 @@ function setTerminalFontSize(event: Event) {
 
 function setThemeChoice(event: Event) {
   settings.setThemeChoice((event.target as HTMLSelectElement).value);
+}
+
+function setVoiceLanguage(event: Event) {
+  settings.setVoiceLanguage((event.target as HTMLSelectElement).value);
+}
+
+function setVoiceSilence(event: Event) {
+  settings.setVoiceSilenceSeconds(Number((event.target as HTMLInputElement).value));
 }
 </script>
 
@@ -137,11 +150,13 @@ function setThemeChoice(event: Event) {
     <section class="panel settings-panel" aria-labelledby="voice-settings-title">
       <p class="eyebrow">SETTINGS · INPUT</p>
       <h1 id="voice-settings-title">Voice</h1>
-      <div class="settings-empty-state">
-        <AppIcon name="tool" :size="16" />
-        <div><strong>Dictation is not available in this build.</strong><p>Voice provider and language controls arrive with the JS composer work. This screen does not request microphone access.</p></div>
-      </div>
-      <p class="settings-note">Mapped from the previous Voice and Dictation language destinations.</p>
+      <label class="settings-control" data-testid="voice-language-control">
+        <span><strong>Dictation language</strong><small>Choose a language hint for Android's system speech recognizer.</small></span>
+        <select :value="settings.voiceLanguage" data-testid="setting-voice-language" @change="setVoiceLanguage">
+          <option v-for="option in VOICE_LANGUAGE_OPTIONS" :key="option.code" :value="option.code">{{ option.label }}</option>
+        </select>
+      </label>
+      <p class="settings-note">Microphone access is requested only when you start dictating. Dictation always stops into an editable draft for review.</p>
     </section>
   </main>
 
@@ -149,7 +164,25 @@ function setThemeChoice(event: Event) {
     <section class="panel settings-panel" aria-labelledby="advanced-settings-title">
       <p class="eyebrow">SETTINGS · COMPATIBILITY</p>
       <h1 id="advanced-settings-title">Advanced</h1>
-      <p class="settings-copy">Compatibility options will appear here only when their behavior is implemented and tested.</p>
+      <p class="settings-copy">Compatibility options appear here only when their behavior is implemented and tested.</p>
+      <label class="settings-control settings-control--stacked" data-testid="voice-silence-control">
+        <span><strong>Recognizer silence window</strong><small>How long Android's recognizer waits through a pause before treating speech as complete. Dictation stays open until you tap Stop.</small></span>
+        <span class="voice-silence-control__value">
+          <input
+            id="voice-silence-seconds"
+            data-testid="setting-voice-silence-seconds"
+            type="range"
+            :min="VOICE_SILENCE_MIN_SECONDS"
+            :max="VOICE_SILENCE_MAX_SECONDS"
+            step="1"
+            :value="settings.voiceSilenceSeconds"
+            aria-label="Recognizer silence window in seconds"
+            @input="setVoiceSilence"
+          />
+          <output for="voice-silence-seconds" data-testid="voice-silence-value">{{ settings.voiceSilenceSeconds }} s</output>
+        </span>
+      </label>
+      <p class="settings-note">This setting is saved on this device and applies the next time dictation starts. Android providers may treat silence timing as advisory.</p>
       <button class="settings-link" type="button" data-testid="open-account-sync" @click="navigation.open('settings-account')">
         <span class="settings-link__icon"><AppIcon name="folder" /></span>
         <span><strong>Account sync</strong><small>Not connected · sync work is pending</small></span>
@@ -170,3 +203,23 @@ function setThemeChoice(event: Event) {
     </section>
   </main>
 </template>
+
+<style scoped>
+.voice-silence-control__value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 12px;
+}
+
+.voice-silence-control__value input {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.voice-silence-control__value output {
+  color: var(--fg);
+  font: 600 var(--fs-300)/1.2 var(--font-mono);
+  text-align: right;
+}
+</style>
