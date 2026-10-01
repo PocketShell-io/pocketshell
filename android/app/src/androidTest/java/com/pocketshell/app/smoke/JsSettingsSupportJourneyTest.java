@@ -376,52 +376,6 @@ public final class JsSettingsSupportJourneyTest {
     }
 
     /**
-     * Regression for the dropped first native reply (#2861 round 5, #3000):
-     * after a page reload Capacitor can deliver the answer to the page's first
-     * plugin call to the previous document. The app makes a sacrificial,
-     * retried BridgeReady ping first, so after EVERY reload the durable
-     * storage open (#2993, the first real call) must answer, the app must
-     * mount, and App.getInfo must answer on its first attempt. Without the
-     * warm-up the lost reply lands on DurableStorage.open() (or getInfo), and
-     * one reload in this loop is enough to fail it.
-     */
-    @Test
-    public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
-        assertTrue("packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
-        awaitBuildVerified();
-        int retried = 0;
-        JSONArray reloads = new JSONArray();
-        for (int reload = 1; reload <= RELOADS; reload += 1) {
-            evalRaw("location.replace(location.origin + location.pathname + '?ps2861Probe=1&reload=" + reload + "'); 'reload'");
-            awaitJsTrue("new URLSearchParams(location.search).get('reload') === '" + reload + "'"
-                    + " && ['resolved','timeout','failed'].includes(window.__ps2861ProbeState?.infoState)", 30_000);
-            JSONObject state = new JSONObject(evalString("JSON.stringify({probe: window.__ps2861ProbeState,"
-                    + " durable: document.documentElement.dataset.durableStorage ?? null,"
-                    + " durableReason: document.documentElement.dataset.durableStorageReason ?? null,"
-                    + " mounted: !!document.querySelector('#app .app-shell')})"));
-            JSONObject probe = state.getJSONObject("probe");
-            reloads.put(new JSONObject().put("reload", reload).put("durable", state.opt("durable"))
-                    .put("infoAttempts", probe.opt("infoAttempts")).put("bridge", probe.opt("bridge")));
-            assertEquals("durable storage must open after reload " + reload + ": " + state,
-                    "native-durable", state.optString("durable"));
-            assertTrue("the app must mount after reload " + reload + ": " + state, state.getBoolean("mounted"));
-            assertEquals("App.getInfo must answer after reload " + reload + ": " + state, "resolved", probe.getString("infoState"));
-            assertEquals("App.getInfo must answer on its FIRST attempt after reload " + reload + ": " + state,
-                    1, probe.getInt("infoAttempts"));
-            JSONObject bridge = probe.optJSONObject("bridge");
-            if (bridge == null) {
-                awaitJsTrue("!!window.__ps2861ProbeState?.bridge");
-                bridge = new JSONObject(evalString("JSON.stringify(window.__ps2861ProbeState.bridge)"));
-            }
-            assertTrue("the bridge warm-up must be answered after reload " + reload + ": " + bridge, bridge.getBoolean("answered"));
-            if (bridge.getInt("attempts") > 1) retried += 1;
-        }
-        android.util.Log.i("PocketshellSettingsEvidence", "BRIDGE reloads=" + RELOADS + " warmUpRetried=" + retried + " " + reloads);
-    }
-
-    private static final int RELOADS = 100;
-
-    /**
      * The connection form takes a key from the native key vault (#2926). The
      * runner stages the Docker fixture key once under /data/local/tmp; the
      * first method that needs it moves it into the app's private cache and

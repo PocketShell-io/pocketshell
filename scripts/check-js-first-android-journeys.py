@@ -51,6 +51,7 @@ LANES = (
                 "settingsAndAndroidBackReturnHome",
                 "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
                 "composerInputStaysAboveImeWithinSafeArea",
+                "pageReloadsKeepFirstNativeCallAnswered",
             }
         ),
     ),
@@ -92,7 +93,6 @@ LANES = (
                 "j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport",
                 "j24SettingsDestinationsReachableWithAndroidBackAndPersist",
                 "reconnectWhenIReturnOffWaitsThenReconnectsSameSession",
-                "pageReloadsKeepFirstNativeCallAnswered",
             }
         ),
     ),

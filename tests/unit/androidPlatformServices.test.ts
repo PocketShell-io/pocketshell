@@ -12,6 +12,7 @@ import {
 } from '../../src/platform/androidDiagnostics';
 import { androidUpdateCapabilityFor, createAndroidUpdateCapability } from '../../src/platform/androidUpdate';
 import { installAndroidPlatformServices } from '../../src/platform/androidPlatformServices';
+import { readInstalledAppInfoOutcome } from '../../src/platform/androidAppInfo';
 import type { NativeCrashReportFile } from '../../src/native/nativeCrashReports';
 
 class MemoryStorage implements DiagnosticsStorage {
@@ -212,5 +213,20 @@ describe('Android platform services for the shared app', () => {
     expect(probe.__ps2861PlatformServices).toBe(services);
     expect(probe.__ps2861ProbeState).toMatchObject({ infoState: 'resolved' });
     expect(typeof probe.__ps2861ProbeState?.exposedAt).toBe('number');
+  });
+
+  it('asks App.getInfo again once when an answer is lost, and reports a timeout if both are', async () => {
+    let calls = 0;
+    const flaky = vi.fn(() => {
+      calls += 1;
+      return calls === 1 ? new Promise<never>(() => undefined) : Promise.resolve({ version: '0.6.0', build: '612', id: 'com.pocketshell.app.i2861' });
+    });
+    await expect(readInstalledAppInfoOutcome({ getInfo: flaky, waitForBridge: async () => undefined, native: true, timeoutMs: 10 }))
+      .resolves.toMatchObject({ state: 'resolved', attempts: 2, info: { versionName: '0.6.0', versionCode: 612, applicationId: 'com.pocketshell.app.i2861' } });
+
+    const hung = vi.fn(() => new Promise<never>(() => undefined));
+    await expect(readInstalledAppInfoOutcome({ getInfo: hung, waitForBridge: async () => undefined, native: true, timeoutMs: 5 }))
+      .resolves.toMatchObject({ state: 'timeout', attempts: 2, info: { applicationId: '' } });
+    expect(hung).toHaveBeenCalledTimes(2);
   });
 });

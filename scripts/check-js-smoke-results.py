@@ -35,6 +35,7 @@ REQUIRED_METHODS = frozenset(
         "settingsAndAndroidBackReturnHome",
         "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
         "composerInputStaysAboveImeWithinSafeArea",
+        "pageReloadsKeepFirstNativeCallAnswered",
     }
 )
 SELF_TEST_CASES = 8
