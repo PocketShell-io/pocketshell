@@ -503,22 +503,38 @@ public final class JsShellPackagedSmokeTest {
         // the device a real bottom inset through the same systemBars |
         // displayCutout path the native plugin reads: an emulated bottom
         // display cutout.
-        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
-        Insets systemInsets = readRootInsets(safeAreaTypes);
         float density = targetContext().getResources().getDisplayMetrics().density;
+        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
+        Insets loadBearingInsets = readRootInsets(safeAreaTypes);
+        float loadBearingSafeBottom = Math.round(loadBearingInsets.bottom / density);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BOTTOM_BRIDGE_DP bottom=" + loadBearingSafeBottom
+                + " source=" + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
+        assertTrue("the safe-area check needs a non-zero bottom inset to be load-bearing (bottom="
+                + loadBearingInsets.bottom + "px)", loadBearingSafeBottom > 0);
+        // The native KeyboardInsets bridge must carry the non-zero bottom inset
+        // into --safe-area-inset-bottom (a bridge that drops it fails here).
+        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                + ".getPropertyValue('--safe-area-inset-bottom')) - " + loadBearingSafeBottom + ") <= 1");
+        if (bottomCutoutEnabled) {
+            // Remove the emulated cutout and prove the bridge follows the inset
+            // back down, so every other check runs on the unmodified device.
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
+            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
+            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
+        }
+
+        Insets systemInsets = readRootInsets(safeAreaTypes);
         float expectedSafeTop = Math.round(systemInsets.top / density);
         final int safeAreaTypesForIme = safeAreaTypes;
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
         android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_TESTED_INSETS_DP top=" + expectedSafeTop
-                + " bottom=" + expectedSafeBottom + " source="
-                + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
-        assertTrue("the safe-area check needs a non-zero bottom inset to be load-bearing (bottom="
-                + systemInsets.bottom + "px)", expectedSafeBottom > 0);
+                + " bottom=" + expectedSafeBottom);
         // styles.css pads the Android shell by max(24px, safe-area inset).
         float expectedShellPaddingTop = Math.max(24f, expectedSafeTop);
         float expectedShellPaddingBottom = Math.max(24f, expectedSafeBottom);
-        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                + ".getPropertyValue('--safe-area-inset-bottom')) - " + expectedSafeBottom + ") <= 1");
 
         awaitJsTrue("parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')) >= 0");
         JSONObject beforeIme = evalJson("(() => {"
@@ -537,18 +553,6 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("safe bottom inset must reach CSS", expectedSafeBottom, beforeIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe bottom padding must be applied to the shell", expectedShellPaddingBottom, beforeIme.getDouble("paddingBottom"), 1.0);
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
-        if (bottomCutoutEnabled) {
-            // Remove the emulated cutout before the IME phase, and prove the
-            // bridge also follows the inset back down to the device's own
-            // value, so the IME checks below run on the unmodified device.
-            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
-            bottomCutoutEnabled = false;
-            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
-            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
-            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
-        }
-        expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
