@@ -1,91 +1,19 @@
 #!/usr/bin/env bash
-# check-serial-flock-reclaim-probe.sh — issue #2421
+# Guard the JS connected-lane serial ownership harness against one-shot flock
+# reclaim assertions (#2421).
 #
-# THE HAZARD THIS EXISTS FOR
-#
-# `tests/scripts/connected-test-serial-ownership-test.sh` proves that a
-# SIGKILLed `connected-test.sh` wrapper leaves no descendant holding the
-# per-serial flock. Every one of those proofs needs a *reclaim oracle*: "the
-# serial lock became free again".
-#
-# For a long time that oracle was written as a single instantaneous attempt:
-#
-#     flock -n "$serial_lock" true \
-#       || fail "SIGKILLed wrapper left its serial flock in a descendant"
-#
-# That is the wrong instrument for a steady-state property. `connected-test.sh`
-# re-asserts ownership every 50 ms by forking `( flock -n 9 ) {FD}>&- 9>"$lock"`,
-# so at the instant the wrapper is SIGKILLed an already-forked probe can
-# legitimately hold the just-released lock for a few scheduler turns. The
-# one-shot oracle reads that transient as an inherited-FD leak and reddens CI
-# (#2421). The fix is `wait_for_serial_flock_reclaim`, a *bounded* retry that
-# still fails closed — a genuinely inherited FD never frees the lock.
-#
-# WHY A GUARD AND NOT A COMMENT
-#
-# #2085 converted ONE of these sites and left five behind; those five became
-# #2421. Nothing mechanical stopped the next one from being written as a bare
-# one-shot again — only prose. This guard makes it mechanical: every
-# non-blocking flock probe in the reclaim-oracle harness must be positively
-# classified into an allowed category, and a bare one-shot probe is rejected by
-# file, line, enclosing function and source text.
-#
-# THE TWO LOOKALIKES THIS GUARD MUST NOT FLAG
-#
-#   1. `make_fake_flock`'s heredoc body. It writes a FAKE `flock` executable
-#      into the sandbox `PATH` (the #2085 controlled reproduction). Its
-#      `exec "$real_flock" -n "$lock_path" ...` is a fixture, not an assertion.
-#      Classified FIXTURE and count-pinned.
-#   2. `! "$REAL_FLOCK" -n "$serial_lock" true || fail ...` inside
-#      `controlled_inflight_probe_does_not_masquerade_as_inherited_flock`. That
-#      asserts the fixture-blocked probe HOLDS the serial at that instant. It is
-#      deliberately instantaneous and race-free (the fixture holds the lock
-#      until the harness releases it), and a retry there would invert its
-#      meaning. Carried in EXEMPT_ONE_SHOTS below, matched on exact enclosing
-#      function + exact source line so a new site cannot inherit the exemption,
-#      and required to still be present so the exemption cannot rot.
-#
-# FAIL-CLOSED CLASSIFICATION
-#
-# A guard that silently skips what it cannot parse is not a guard: it reports
-# "0 bare one-shot probe(s)" while the banned shape sits in the file. `flock`
-# has MANY spellings of the same non-blocking probe — `-n`, `--nonblock`,
-# `--nb`, `--nonblocking`, any unambiguous abbreviation of those (`--nonblo`),
-# the bundled short cluster `-nx`, and `-w 0` / `-w0` / `--timeout=0`, a
-# zero-second wait that returns immediately exactly like `-n`. Every one of
-# those was verified here to return instantly against a held lock. So the
-# option scanner below models util-linux flock's real grammar — bundled short
-# clusters, attached and separated option values, `--long=value`, and
-# getopt_long(3) abbreviation — and every invocation must land in a POSITIVE
-# bucket:
-#
-#   non-blocking (-n / --nonblock* / --nb / -w 0) -> categorised further below
-#   bounded wait (-w <n>, n > 0)                  -> BOUNDED_TIMEOUT, allowed
-#                                                    (house idiom, e.g.
-#                                                    scripts/disk-cleanup.sh)
-#   no non-blocking option at all                 -> BLOCKING / NO_FLAGS, allowed
-#   anything else (unknown or ambiguous option, a
-#   non-literal timeout it cannot prove non-zero) -> UNCLASSIFIED, REJECTED
-#
-# There is no "don't know, carry on" branch.
-#
-# Scope note on the non-literal timeout rule: this guard's domain is the
-# reclaim-oracle harness only (files under `tests/` that use the oracle), NOT
-# the repo's other flock users. `scripts/disk-cleanup.sh` and
-# `scripts/lib/gradle-output-lock.sh` spell the house bounded wait as
-# `flock -w "$VAR"` where VAR is env-overridable — genuinely unprovable, since
-# `POCKETSHELL_DISK_CLEANUP_LOCK_WAIT_SECONDS=0` turns it into the banned probe.
-# They are out of domain and unaffected; were the domain ever widened, the
-# right answer there is a literal, not a wider rule here.
+# The current harness drives the real JS dispatcher and smoke lane with fake
+# ADB/Gradle processes. Its cases pin same-serial exclusion, distinct-serial
+# concurrency, exact-JUnit failure release, and lock reclamation after wrapper
+# death. Every reclaim oracle must remain bounded and checked; the scanner also
+# fails closed on non-blocking flock option spellings it cannot classify.
 #
 #   scripts/check-serial-flock-reclaim-probe.sh             # check the real tree
 #   scripts/check-serial-flock-reclaim-probe.sh --list      # print the inventory
 #   scripts/check-serial-flock-reclaim-probe.sh --self-test # prove it goes red
 #
-# No JVM, no Gradle, no emulator, no network; a sub-second source scan. Wired
-# into `./gradlew test` through `AvdLockScriptTest`, one of the suites behind
-# the `Unit tests` required check (tests.yml is at its file-size-hygiene cap,
-# so it is not a separate workflow step).
+# No JVM, Gradle, emulator, or network; the source scan and mutation tests are
+# hermetic. The guard is wired into AvdLockScriptTest in the JVM test suite.
 
 set -euo pipefail
 
@@ -107,41 +35,24 @@ ORACLE = "wait_for_serial_flock_reclaim"
 # it means a new occurrence of a lookalike shape is a conscious, reviewed edit
 # rather than something that slides in next to the real thing.
 EXPECT_ORACLE_DEFINITIONS = 1
-EXPECT_FIXTURE_PROBES = 1
-MIN_BOUNDED_RETRIES = 1
-MIN_ORACLE_CALL_SITES = 9
+EXPECT_FIXTURE_PROBES = 0
+EXPECT_BOUNDED_RETRIES = 0
+EXPECT_ORACLE_CALL_SITES = 7
 
-# The one intentional instantaneous probe (see the header). Keyed by enclosing
-# function + exact source line so it cannot be inherited by a new call site.
-EXEMPT_ONE_SHOTS = {
-    (
-        "controlled_inflight_probe_does_not_masquerade_as_inherited_flock",
-        '! "$REAL_FLOCK" -n "$serial_lock" true \\',
-    ): (
-        "issue #2085: asserts the fixture-blocked in-flight probe HOLDS the exact "
-        "serial resource at that instant. Deliberately instantaneous and race-free "
-        "(the fake flock holds the lock until the harness releases it); a retry "
-        "would invert the assertion."
-    ),
-}
+# The replacement harness has no intentional instantaneous probes: every
+# reclaim check goes through the bounded oracle.
+EXEMPT_ONE_SHOTS = {}
 
 # Every case that owns a reclaim assertion must reach it through the oracle.
 # Naming them individually is what makes "revert one site to a bare probe"
 # produce a precise failure instead of only a count mismatch.
 REQUIRED_ORACLE_CASES = (
-    "holder_loss_at_gradle_boundary_fails_before_mutation",
-    "assert_holder_loss_at_cleanup_boundary_fails_closed",
-    "hard_killed_wrapper_leaves_no_descendant_flock",
-    "controlled_inflight_probe_does_not_masquerade_as_inherited_flock",
-    "hard_killed_pool_setup_leaves_no_descendant_flock",
-    "assert_hard_killed_docker_phase_reclaims_serial",
-    "hard_killed_toxiproxy_holder_leaves_no_descendant_flock",
-    "retained_descendant_flock_fails_the_reclaim_oracle",
+    "same_serial_lanes_serialize_across_worktrees",
+    "distinct_serial_lanes_run_concurrently",
+    "red_junit_fails_closed_and_releases_the_serial",
+    "killed_js_lane_wrapper_does_not_leave_gradle_holding_the_serial",
+    "lifecycle_lane_background_children_do_not_inherit_the_serial_lock",
 )
-
-# This case asserts stale-lock recovery from inside a sandboxed `bash -c` that
-# does not source the harness, so it carries its own inline bounded retry.
-REQUIRED_INLINE_RETRY_CASES = ("lost_holder_fails_closed_and_stale_lock_recovers",)
 
 HEREDOC_START = re.compile(r"<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 FUNC_START = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*\{\s*$")
@@ -549,16 +460,16 @@ if fixtures != EXPECT_FIXTURE_PROBES:
     )
 
 retries = count("BOUNDED_RETRY", canonical_sites)
-if retries < MIN_BOUNDED_RETRIES:
+if retries != EXPECT_BOUNDED_RETRIES:
     failures.append(
-        f"{CANONICAL}: expected at least {MIN_BOUNDED_RETRIES} inline bounded-retry probe(s), "
+        f"{CANONICAL}: expected exactly {EXPECT_BOUNDED_RETRIES} inline bounded-retry probe(s), "
         f"found {retries}"
     )
 
-if len(canonical_calls) < MIN_ORACLE_CALL_SITES:
+if len(canonical_calls) != EXPECT_ORACLE_CALL_SITES:
     failures.append(
-        f"{CANONICAL}: expected at least {MIN_ORACLE_CALL_SITES} {ORACLE} call site(s), found "
-        f"{len(canonical_calls)} — a reclaim assertion was deleted rather than converted"
+        f"{CANONICAL}: expected exactly {EXPECT_ORACLE_CALL_SITES} {ORACLE} call site(s), found "
+        f"{len(canonical_calls)} — the five current lane cases pin seven reclaim assertions"
     )
 
 # --- the exemption table cannot rot -----------------------------------------
@@ -596,21 +507,6 @@ for case in REQUIRED_ORACLE_CASES:
         failures.append(
             f"{CANONICAL}: `{case}` no longer asserts serial reclaim through {ORACLE} — "
             "every reclaim assertion goes through the bounded-retry oracle (issue #2421)"
-        )
-
-retries_by_function = {}
-for site in canonical_sites:
-    if site["category"] == "BOUNDED_RETRY":
-        retries_by_function.setdefault(site["function"], 0)
-        retries_by_function[site["function"]] += 1
-
-for case in REQUIRED_INLINE_RETRY_CASES:
-    if case not in canonical_spans:
-        failures.append(f"{CANONICAL}: required reclaim case `{case}` no longer exists")
-    elif not retries_by_function.get(case):
-        failures.append(
-            f"{CANONICAL}: `{case}` no longer polls its sandboxed stale-lock probe with a "
-            "bounded retry (issue #2421)"
         )
 
 if failures:
@@ -742,200 +638,134 @@ expect_fail() {
   done
 }
 
-# 0. Baseline. This is also the standing proof that the two lookalikes are
-#    positively CLASSIFIED as allowed rather than merely unnoticed: the pass
-#    line has to name one fixture probe and one exempted negative assertion.
+# 0. Baseline. The JS-lane harness uses only the bounded reclaim oracle.
 reset_fixture
-expect_pass "unmutated harness" \
-  "1 fixture probe(s)" \
-  "1 exempted negative held-lock assertion(s)" \
+expect_pass "unmutated JS-lane harness" \
+  "7 oracle call site(s)" \
+  "0 fixture probe(s)" \
+  "0 exempted negative held-lock assertion(s)" \
   "0 bare one-shot probe(s)"
 
-# 1. THE #2421 REGRESSION ITSELF: revert one converted site to a bare one-shot.
+# 1. THE #2421 REGRESSION: convert one current case back to an instant probe.
 reset_fixture
-mutate "toxiproxy site reverted to one-shot" \
-  '  wait_for_serial_flock_reclaim "$serial_lock" "$wrapper_pid" 3 \' \
-  '  flock -n "$serial_lock" true \' \
-  'left its serial flock in a descendant'
-expect_fail "toxiproxy site reverted to one-shot" \
+mutate "same-serial reclaim changed to one-shot" \
+  '  wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$second_pid" 3 \' \
+  '  flock -n "$SANDBOX/avd-locks/avd-lock-emulator-5554" true \' \
+  'same-serial lock remained held'
+expect_fail "same-serial reclaim changed to one-shot" \
   "probes a serial flock with a bare single-shot" \
-  "hard_killed_toxiproxy_holder_leaves_no_descendant_flock"
+  "same_serial_lanes_serialize_across_worktrees"
 
-# 2. Same regression at a different site, matched by name rather than by count.
-reset_fixture
-mutate "cleanup-boundary site reverted to one-shot" \
-  '  wait_for_serial_flock_reclaim "$sandbox/locks/avd-lock-emulator-5554" "$cleanup_pid" 3 \' \
-  '  flock -n "$sandbox/locks/avd-lock-emulator-5554" true \'
-expect_fail "cleanup-boundary site reverted to one-shot" \
-  "probes a serial flock with a bare single-shot" \
-  "assert_holder_loss_at_cleanup_boundary_fails_closed" \
-  "no longer asserts serial reclaim through wait_for_serial_flock_reclaim"
-
-# 3. A brand-new seventh case written with a bare probe — the exact shape the
-#    reviewer asked about. Appended, so no existing site changes.
+# 2. A brand-new lane case with a bare probe is rejected, not hidden by counts.
 reset_fixture
 cat >> "$fixture_root/$harness_rel" <<'NEWCASE'
 
-hard_killed_seventh_thing_leaves_no_descendant_flock() {
-  local sandbox="$1" serial_lock="$1/locks/avd-lock-emulator-5554"
-  flock -n "$serial_lock" true \
-    || fail "SIGKILLed seventh wrapper left its serial flock in a descendant"
+new_js_lane_one_shot_is_rejected() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
+  flock -n "$serial_lock" true || fail "new lane lost its serial flock"
 }
 NEWCASE
-expect_fail "new case with a bare one-shot probe" \
+expect_fail "new JS lane case with a bare one-shot" \
   "probes a serial flock with a bare single-shot" \
-  "hard_killed_seventh_thing_leaves_no_descendant_flock"
+  "new_js_lane_one_shot_is_rejected"
 
-# 4. The sandboxed inline retry degraded back to a single attempt.
+# 3. The reclaim oracle itself must remain bounded and fail closed.
 reset_fixture
-mutate "inline stale-lock retry reverted to one-shot" \
-  '      until flock -n "$lock_file" true; do' \
-  '      flock -n "$lock_file" true'
-expect_fail "inline stale-lock retry reverted to one-shot" \
-  "probes a serial flock with a bare single-shot" \
-  "no longer polls its sandboxed stale-lock probe with a bounded retry"
-
-# 5. "Retry" that never gives up: green by hanging, not by failing closed.
-reset_fixture
-mutate "unbounded inline retry" \
-  '        if (( waited++ >= 300 )); then' \
-  '        if false; then'
-expect_fail "unbounded inline retry" \
-  "retries a serial flock probe with no bound"
-
-# 6. The oracle itself degraded into an unbounded wait.
-reset_fixture
-mutate "unbounded oracle" \
+mutate "unbounded reclaim oracle" \
   '    if (( waited++ >= limit )); then' \
   '    if false; then'
-expect_fail "unbounded oracle" \
+expect_fail "unbounded reclaim oracle" \
   "wait_for_serial_flock_reclaim polls without a bound"
 
-# 7. A reclaim assertion deleted rather than converted.
+# 4. Deleting a checked reclaim assertion from a named case is rejected.
 reset_fixture
-mutate "reclaim assertion deleted" \
-  '  wait_for_serial_flock_reclaim "$serial_lock" "$wrapper_pid" 3 \' \
+mutate "same-serial reclaim assertion deleted" \
+  '  wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$second_pid" 3 \' \
   '  true \' \
-  'left its serial flock in a descendant'
-expect_fail "reclaim assertion deleted" \
-  "hard_killed_toxiproxy_holder_leaves_no_descendant_flock" \
-  "call site(s), found"
+  'same-serial lock remained held'
+expect_fail "same-serial reclaim assertion deleted" \
+  "expected exactly 7 wait_for_serial_flock_reclaim call site(s), found 6" \
+  "no longer asserts serial reclaim through wait_for_serial_flock_reclaim"
 
-# 8. A second instantaneous negative assertion cannot ride the pinned exemption.
+# 5. SPELLING EVASION A: bundled short options are still an immediate probe.
 reset_fixture
-mutate "second negative held-lock assertion" \
-  '  touch "$sandbox/device-state/probecrash.flock-probe-release"' \
-  '  ! "$REAL_FLOCK" -n "$serial_lock" true || fail "still held"'$'\n''  touch "$sandbox/device-state/probecrash.flock-probe-release"'
-expect_fail "second negative held-lock assertion" \
-  "probes a serial flock with a bare single-shot"
+cat >> "$fixture_root/$harness_rel" <<'BUNDLED'
 
-# 9. A new fixture probe smuggled into a fake-tool heredoc is reviewed, not
-#    absorbed by the FIXTURE category.
-reset_fixture
-mutate "extra fixture probe in the fake flock payload" \
-  'exec "$real_flock" "$@"' \
-  'flock -n "$1" true'$'\n''exec "$real_flock" "$@"'
-expect_fail "extra fixture probe in the fake flock payload" \
-  "expected exactly 1 fixture (heredoc) flock probe(s), found 2"
-
-# 10. SPELLING EVASION A: bundled short options. `-nx` is `-n -x` to
-#     getopt(3) — the identical banned bare probe, and it ran clean on this box
-#     against util-linux 2.39.3. A scanner that only string-matches `-n` reports
-#     "0 bare one-shot probe(s)" while the regression sits in the file.
-reset_fixture
-mutate "bundled -nx one-shot" \
-  '  wait_for_serial_flock_reclaim "$serial_lock" "$wrapper_pid" 3 \' \
-  '  flock -nx "$serial_lock" true \' \
-  'left its serial flock in a descendant'
+bundled_short_option_is_still_a_one_shot() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
+  flock -nx "$serial_lock" true || fail "left its serial flock in a descendant"
+}
+BUNDLED
 expect_fail "bundled -nx one-shot" \
   "probes a serial flock with a bare single-shot" \
-  "hard_killed_toxiproxy_holder_leaves_no_descendant_flock"
+  "bundled_short_option_is_still_a_one_shot"
 
-# 11. SPELLING EVASION B: `-w 0`. A zero-second wait returns immediately, so it
-#     is `-n` with extra steps and loses the same race (#2421).
+# 6. A zero-second wait is `-n` with extra steps and loses the same race.
 reset_fixture
-mutate "-w 0 one-shot" \
-  '  wait_for_serial_flock_reclaim "$serial_lock" "$wrapper_pid" 3 \' \
-  '  flock -w 0 "$serial_lock" true \' \
-  'left its serial flock in a descendant'
+cat >> "$fixture_root/$harness_rel" <<'ZERO'
+
+zero_timeout_is_still_a_one_shot() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
+  flock -w 0 "$serial_lock" true || fail "left its serial flock in a descendant"
+}
+ZERO
 expect_fail "-w 0 one-shot" \
   "probes a serial flock with a bare single-shot" \
-  "hard_killed_toxiproxy_holder_leaves_no_descendant_flock"
+  "zero_timeout_is_still_a_one_shot"
 
-# 12. The other side of check 11: `flock -w <n>` for n > 0 is the house
-#     bounded-wait idiom (scripts/disk-cleanup.sh, scripts/lib/gradle-output-lock.sh)
-#     and is a real bound, not a probe. Fail-closed must not swallow it — and it
-#     is classified POSITIVELY, so the pass line has to name it.
+# 7. A positive literal timeout remains positively classified as bounded.
 reset_fixture
 cat >> "$fixture_root/$harness_rel" <<'BOUNDEDWAIT'
 
 bounded_wait_is_not_a_one_shot_probe() {
-  local serial_lock="$1/locks/avd-lock-emulator-5554"
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
   flock -w 5 "$serial_lock" true || fail "bounded wait did not reclaim the serial"
 }
 BOUNDEDWAIT
 expect_pass "house-idiom bounded wait stays allowed" \
-  "1 bounded \`-w <n>\` wait(s)" \
+  "1 bounded" \
   "0 bare one-shot probe(s)"
 
-# 13. SPELLING EVASION C: an undocumented long alias plus getopt_long(3)
-#     abbreviation. `flock --help` prints only `--nonblock`, but flock(1) also
-#     registers `--nb` and `--nonblocking`, and getopt_long accepts any
-#     unambiguous abbreviation — `--nonblo` was verified here to return rc=1 in
-#     0.00s against a held lock. It is a working banned probe, so the guard must
-#     name it as one rather than shrug at an unfamiliar spelling.
+# 8. An undocumented long alias and getopt_long abbreviation remain detected.
 reset_fixture
 cat >> "$fixture_root/$harness_rel" <<'LONGALIAS'
 
-abbreviated_long_alias_probe_is_still_a_one_shot() {
-  local serial_lock="$1/locks/avd-lock-emulator-5554"
+abbreviated_long_alias_is_still_a_one_shot() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
   flock --nonblo "$serial_lock" true || fail "left its serial flock in a descendant"
 }
 LONGALIAS
 expect_fail "abbreviated --nonblock alias" \
   "probes a serial flock with a bare single-shot" \
-  "abbreviated_long_alias_probe_is_still_a_one_shot"
+  "abbreviated_long_alias_is_still_a_one_shot"
 
-# 14. FAIL CLOSED: an option outside flock(1)'s grammar. `--n` is genuinely
-#     ambiguous (`--nonblock` and `--no-fork`) and real flock rejects it; the
-#     guard must not decide "unrecognised, therefore harmless".
+# 9. Unknown and ambiguous options fail closed instead of being waved through.
 reset_fixture
 cat >> "$fixture_root/$harness_rel" <<'UNKNOWNOPT'
 
-unknown_option_probe_is_not_waved_through() {
-  local serial_lock="$1/locks/avd-lock-emulator-5554"
+unknown_option_is_not_waved_through() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554"
   flock --n "$serial_lock" true || fail "left its serial flock in a descendant"
 }
 UNKNOWNOPT
 expect_fail "unclassifiable flock option" \
   "cannot be classified against flock(1)'s grammar" \
-  "unknown_option_probe_is_not_waved_through"
+  "unknown_option_is_not_waved_through"
 
-# 15. FAIL CLOSED: a timeout the guard cannot prove is non-zero. `-w "$t"` is
-#     `-w 0` whenever the variable is 0, so it cannot be assumed bounded.
+# 10. A timeout the guard cannot prove is non-zero is not assumed safe.
 reset_fixture
 cat >> "$fixture_root/$harness_rel" <<'VARTIMEOUT'
 
-variable_timeout_probe_is_not_assumed_bounded() {
-  local serial_lock="$1/locks/avd-lock-emulator-5554" reclaim_timeout="$2"
-  flock -w "$reclaim_timeout" "$serial_lock" true || fail "left its serial flock in a descendant"
+variable_timeout_is_not_assumed_bounded() {
+  local serial_lock="$SANDBOX/avd-locks/avd-lock-emulator-5554" timeout="$2"
+  flock -w "$timeout" "$serial_lock" true || fail "left its serial flock in a descendant"
 }
 VARTIMEOUT
 expect_fail "non-literal flock timeout" \
   "the guard cannot prove is non-zero" \
-  "variable_timeout_probe_is_not_assumed_bounded"
+  "variable_timeout_is_not_assumed_bounded"
 
-# 16. The exemption is keyed by (function, exact line), so a COPY of the exempt
-#     line inside its own function would otherwise inherit it for free. One
-#     entry buys exactly one probe.
-reset_fixture
-mutate "duplicated exempt one-shot" \
-  '  ! "$REAL_FLOCK" -n "$serial_lock" true \' \
-  '  ! "$REAL_FLOCK" -n "$serial_lock" true \'$'\n''  ! "$REAL_FLOCK" -n "$serial_lock" true \'
-expect_fail "duplicated exempt one-shot" \
-  "exemption entry/entries cover 2 one-shot probe(s)"
-
-# 17. The guard must never report "nothing to check" as success.
+# 11. The guard must never report "nothing to check" as success.
 reset_fixture
 rm -- "$fixture_root/$harness_rel"
 expect_fail "harness deleted" "is missing"
@@ -954,11 +784,11 @@ expect_fail "oracle stripped from the harness" "no longer uses wait_for_serial_f
 
 # Restored fixture still passes: every red above came from the mutation.
 reset_fixture
-expect_pass "restored harness" "0 bare one-shot probe(s)"
+expect_pass "restored harness" "7 oracle call site(s)" "0 bare one-shot probe(s)"
 
 # Issue #2113 anti-vacuity: an early `exit 0` reads exactly like a full pass, so
 # pin the number of guard invocations this self-test actually made.
-EXPECTED_SELFTEST_CHECKS=20
+EXPECTED_SELFTEST_CHECKS=14
 if (( SELFTEST_CHECKS != EXPECTED_SELFTEST_CHECKS )); then
   echo "FAIL: guard self-test ran $SELFTEST_CHECKS check(s), expected $EXPECTED_SELFTEST_CHECKS"
   exit 1
