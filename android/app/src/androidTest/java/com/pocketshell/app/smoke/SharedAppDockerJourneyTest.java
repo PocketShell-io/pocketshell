@@ -76,7 +76,9 @@ import org.junit.runner.RunWith;
  * printed while B was in front reached A's pane live, no tab is re-attached
  * (exactly one native openPty per session, no closePty), and the Docker
  * host's own capture of each session holds exactly that session's bytes,
- * its full history included.
+ * its full history included. Then the transport is dropped with both tabs
+ * open: one ladder, one dial, each tab re-attached exactly once, and both
+ * tabs type again into their own host sessions.
  */
 @RunWith(AndroidJUnit4.class)
 public class SharedAppDockerJourneyTest {
@@ -589,6 +591,8 @@ public class SharedAppDockerJourneyTest {
         assertFalse("no byte of B reached host session A", hostA.contains("PS2955_B"));
         assertFalse("no byte of A reached host session B", hostB.contains("PS2955_A"));
 
+        JSONObject reconnect = dropWithBothTabsOpen(run, artifacts, tagA, tagB, idA, idB, liveTransport, liveGeneration);
+
         JSONObject summary = new JSONObject()
                 .put("run", run)
                 .put("sessionA", idA)
@@ -597,9 +601,100 @@ public class SharedAppDockerJourneyTest {
                 .put("nativeOpensB", opensB)
                 .put("nativeCloses", closes.length())
                 .put("paneListingRowsOnReturn", rowsBefore)
-                .put("hostMarkersExact", true);
+                .put("hostMarkersExact", true)
+                .put("reconnectWithTwoTabs", reconnect);
         writeText(new File(artifacts, "summary.json"), summary.toString(2));
         Log.i(TAG, "RUN " + run + " MULTI_SESSION_SWITCH_OK " + summary);
+    }
+
+    /**
+     * D28 with two PTYs open (#2955 review): an abrupt server-side drop (our
+     * sshd-session SIGKILLed, as in the single-tab drop test) must be
+     * recovered by ONE controller ladder — one native dial — that re-attaches
+     * each tab exactly once, after which both tabs type and the host holds
+     * each tab's new marker exactly once, in its own session only.
+     */
+    private JSONObject dropWithBothTabsOpen(String run, File artifacts, String tagA, String tagB, String idA,
+            String idB, String transport, String generation) throws Exception {
+        int opensAtDrop = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
+        int dialsAtDrop = nativeDialCount();
+        int journalAtDrop = journalLength();
+        String logicalId = latestLiveJournalEntry().getString("connectionId");
+        String trigger = "set -eu\n"
+                + "parent_pid=\"$PPID\"\n"
+                + "case \"$(ps -p \"$parent_pid\" -o args=)\" in *\"sshd-session: testuser\"*) ;; *) exit 97 ;; esac\n"
+                + "kill -KILL \"$parent_pid\"\n";
+        assertEquals("started", evalString(nativeExec("u2-drop-" + run, transport, generation, trigger, 12_000)));
+        awaitJsTrue("window.__ps2954.lost.filter((e)=>e.connectionId===" + JSONObject.quote(transport)
+                + ").length === 1", WAIT_TIMEOUT_MILLIS);
+        awaitJsTrue("(window.__pocketshellConnectionJournal ?? []).slice(" + journalAtDrop + ").some((e)=>"
+                + "e.phase==='live' && e.connectionId===" + JSONObject.quote(logicalId)
+                + " && e.transportId && e.transportId!==" + JSONObject.quote(transport) + ")", 90_000);
+        // Long enough for a second ladder or a duplicate re-attach to show.
+        Thread.sleep(6_000);
+
+        JSONArray journal = new JSONArray(evalString("JSON.stringify((window.__pocketshellConnectionJournal ?? [])"
+                + ".slice(" + journalAtDrop + "))"));
+        JSONArray opens = new JSONArray(evalString("JSON.stringify(window.__ps2954.opens.slice(" + opensAtDrop + "))"));
+        writeText(new File(artifacts, "two-tab-drop-journal.json"), journal.toString(2));
+        writeText(new File(artifacts, "two-tab-drop-opens.json"), opens.toString(2));
+        Log.i(TAG, "RUN " + run + " TWO_TAB_DROP_OPENS " + opens + " JOURNAL " + journal);
+        int ladders = 0;
+        java.util.Set<String> transports = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < journal.length(); i += 1) {
+            JSONObject entry = journal.getJSONObject(i);
+            assertEquals("one logical connection: " + journal, logicalId, entry.getString("connectionId"));
+            if ("reconnecting".equals(entry.getString("phase")) && entry.getInt("retryAttempt") == 0) ladders += 1;
+            String entryTransport = entry.optString("transportId", "");
+            if (!entryTransport.isEmpty() && !"null".equals(entryTransport) && !entryTransport.equals(transport)) {
+                transports.add(entryTransport);
+            }
+        }
+        int reopenedA = 0;
+        int reopenedB = 0;
+        for (int i = 0; i < opens.length(); i += 1) {
+            String command = opens.getJSONObject(i).getString("command");
+            if (command.contains(tagA)) reopenedA += 1;
+            if (command.contains(tagB)) reopenedB += 1;
+        }
+        assertEquals("one controller ladder for the drop: " + journal, 1, ladders);
+        assertEquals("one native dial for the drop", 1, nativeDialCount() - dialsAtDrop);
+        assertEquals("one new transport: " + transports, 1, transports.size());
+        assertEquals("tab A re-attached exactly once: " + opens, 1, reopenedA);
+        assertEquals("tab B re-attached exactly once: " + opens, 1, reopenedB);
+        assertEquals("no other attach after the drop: " + opens, 2, opens.length());
+        awaitJsTrue("!document.querySelector('.link-lost')", WAIT_TIMEOUT_MILLIS);
+
+        // Both tabs keep working: B is in front, then A.
+        typeLine("echo PS2955_B3_$((6*7))_" + run);
+        awaitTerminalLine("PS2955_B3_42_" + run);
+        selectTab(tagA);
+        typeLine("echo PS2955_A3_$((6*7))_" + run);
+        awaitTerminalLine("PS2955_A3_42_" + run);
+        assertFalse("A's pane never shows B's bytes", evalString(VISIBLE_TERMINAL).contains("PS2955_B"));
+        captureScreen(new File(artifacts, "two-tab-drop-a.png"));
+
+        JSONObject live = latestLiveJournalEntry();
+        String newTransport = live.getString("transportId");
+        String newGeneration = live.getString("generationId");
+        assertEquals("the live transport is the recovered one", transports.iterator().next(), newTransport);
+        String hostA = awaitNativeExec("u2-drop-capture-a-" + run, newTransport, newGeneration,
+                "/usr/bin/a capture --bytes 65536 " + shellQuote(idA)).getString("stdout");
+        String hostB = awaitNativeExec("u2-drop-capture-b-" + run, newTransport, newGeneration,
+                "/usr/bin/a capture --bytes 65536 " + shellQuote(idB)).getString("stdout");
+        writeText(new File(artifacts, "two-tab-drop-capture-a.txt"), hostA);
+        writeText(new File(artifacts, "two-tab-drop-capture-b.txt"), hostB);
+        assertEquals("A holds its post-drop line exactly once", 1, countExactLines(hostA, "PS2955_A3_42_" + run));
+        assertEquals("B holds its post-drop line exactly once", 1, countExactLines(hostB, "PS2955_B3_42_" + run));
+        assertFalse("no byte of B reached host session A", hostA.contains("PS2955_B"));
+        assertFalse("no byte of A reached host session B", hostB.contains("PS2955_A"));
+        return new JSONObject()
+                .put("ladders", ladders)
+                .put("nativeDials", 1)
+                .put("newTransports", transports.size())
+                .put("reattachedA", reopenedA)
+                .put("reattachedB", reopenedB)
+                .put("hostMarkersExact", true);
     }
 
     private static String tabExpression(String tag) {

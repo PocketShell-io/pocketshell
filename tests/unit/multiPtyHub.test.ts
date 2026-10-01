@@ -7,16 +7,24 @@
  * These run the REAL core ConnectionController over the physical-effects fake
  * native, so they fail on the single-PTY controller (attaching B closed A).
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConnectionController } from '@pocketshell/core';
+import { ConnectionController, PTY_CHANNEL_RESERVE } from '@pocketshell/core';
 import { AndroidConnectionHub } from '@/platform/android/connectionHub';
+import {
+  adaptSshCapabilityPlugin,
+  NATIVE_MAX_CHANNELS_PER_CONNECTION,
+  type NativeSshCapabilityPlugin,
+} from '@/native/sshCapability';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
-import { FakeNative, MemoryStorage, settle, target } from './support/androidFakeNative';
+import { FakeNative, MemoryStorage, sessionJson, settle, target } from './support/androidFakeNative';
 
 const WORKSPACE = '/home/u/git/demo';
 
-function harness() {
+function harness(options: { maxOpenPtys?: number } = {}) {
   const native = new FakeNative();
+  native.sessions.push(sessionJson('third', WORKSPACE));
   const trust = createLocalTrustStore(new MemoryStorage());
   let ids = 0;
   const controllers: ConnectionController[] = [];
@@ -27,6 +35,7 @@ function harness() {
         trustStore: trust,
         createId: () => `m-${++ids}`,
         retryDelaysMs: [0, 0],
+        ...options,
       });
       controllers.push(controller);
       return controller;
@@ -40,8 +49,8 @@ afterEach(async () => {
   await Promise.all(open.splice(0).map(({ hub, id }) => hub.close(id)));
 });
 
-async function connected() {
-  const h = harness();
+async function connected(options: { maxOpenPtys?: number } = {}) {
+  const h = harness(options);
   const { connectionId } = await h.hub.connect(target);
   open.push({ hub: h.hub, id: connectionId! });
   await h.hub.sessionsList(connectionId!);
@@ -49,7 +58,7 @@ async function connected() {
   h.hub.onData(({ shellId, data }) => received.push([shellId, new TextDecoder().decode(data)]));
   const exited: string[] = [];
   h.hub.onExited(({ shellId }) => exited.push(shellId));
-  const attach = async (name: 'main' | 'tests') => {
+  const attach = async (name: 'main' | 'tests' | 'third') => {
     const shell = await h.hub.attachSession({
       connectionId: connectionId!, sessionName: name, aplexerId: `${name}-id`, workspace: WORKSPACE, cols: 80, rows: 24,
     });
@@ -146,5 +155,64 @@ describe('Android hub keeps one PTY per attached session (#2955)', () => {
     expect(controllers.at(-1)!.getSnapshot().phase).toBe('live');
     expect(native.connects).toHaveLength(dials);
     expect(await hub.input(a.shellId, 'alive\r', 'main', WORKSPACE)).toBe(true);
+  });
+
+  it('retires the shell of a PTY whose read failed and re-attaches it on re-selection, leaving the other tab live', async () => {
+    const { native, hub, attach, exited, bytesOf } = await connected();
+    const a = await attach('main');
+    const b = await attach('tests');
+    const channelA = native.channelOf('main');
+    const channelB = native.channelOf('tests');
+    await settle(() => native.hasPendingReadOn(channelA) && native.hasPendingReadOn(channelB));
+    const opens = native.opened.length;
+
+    native.failReadOn(channelB, new Error('PTY output sequence gap: synthetic'));
+    await settle(() => exited.length === 1);
+    expect(exited).toEqual([b.shellId]);
+    expect(native.closedPtys).toContain(channelB);
+
+    // The pane re-joins: a fresh attach on a new PTY, under a new shell id.
+    const again = await attach('tests');
+    expect(again.switched).toBe(false);
+    expect(again.shellId).not.toBe(b.shellId);
+    expect(native.opened).toHaveLength(opens + 1);
+    const newB = native.channelOf('tests');
+    await settle(() => native.hasPendingReadOn(newB));
+    native.outputOn(newB, 'B-again');
+    native.outputOn(channelA, 'A-still');
+    await settle(() => bytesOf(again.shellId) === 'B-again' && bytesOf(a.shellId) === 'A-still');
+    expect(await hub.input(again.shellId, 'b\r', 'tests', WORKSPACE)).toBe(true);
+    expect(await hub.input(a.shellId, 'a\r', 'main', WORKSPACE)).toBe(true);
+    expect(native.channelWrites).toEqual([[newB, 'b\r'], [channelA, 'a\r']]);
+  });
+
+  it('evicts the least recently focused tab past the PTY bound; it re-attaches when looked at again', async () => {
+    const { native, hub, attach, exited } = await connected({ maxOpenPtys: 2 });
+    const a = await attach('main');
+    const b = await attach('tests');
+    await attach('main'); // main is focused again: tests is now the least recent
+    const c = await attach('third');
+    expect(exited).toEqual([b.shellId]);
+    expect(native.closedPtys).toEqual([native.channels.find((entry) => entry.command.includes(":tests'"))!.channelId]);
+    expect(await hub.input(a.shellId, 'a', 'main', WORKSPACE)).toBe(true);
+    expect(await hub.input(c.shellId, 'c', 'third', WORKSPACE)).toBe(true);
+    expect(await hub.input(b.shellId, 'b', 'tests', WORKSPACE)).toBe(false);
+
+    const opens = native.opened.length;
+    const b2 = await attach('tests');
+    expect(b2.switched).toBe(false);
+    expect(native.opened).toHaveLength(opens + 1);
+    expect(exited).toEqual([b.shellId, a.shellId]);
+    expect(await hub.input(b2.shellId, 'b', 'tests', WORKSPACE)).toBe(true);
+  });
+
+  it('states the native per-connection channel budget to core, so the controller keeps exec headroom', () => {
+    const plugin = readFileSync(path.join(process.cwd(), 'android/app/src/main/java/com/pocketshell/app/SshCapabilityPlugin.java'), 'utf8');
+    expect(plugin).toMatch(new RegExp(`MAX_CHANNELS_PER_CONNECTION = ${NATIVE_MAX_CHANNELS_PER_CONNECTION};`));
+    // Capacitor's plugin proxy answers ANY property with a native method; the adapter must not reach it.
+    const capacitorLike = new Proxy({}, { get: () => () => Promise.reject(new Error('native call')) });
+    const capability = adaptSshCapabilityPlugin(capacitorLike as unknown as NativeSshCapabilityPlugin);
+    expect(capability.maxChannelsPerConnection).toBe(NATIVE_MAX_CHANNELS_PER_CONNECTION);
+    expect(NATIVE_MAX_CHANNELS_PER_CONNECTION - PTY_CHANNEL_RESERVE).toBeGreaterThanOrEqual(1);
   });
 });

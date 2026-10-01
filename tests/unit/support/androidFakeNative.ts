@@ -64,6 +64,7 @@ export class FakeNative {
   private listeners = new Set<(event: SshConnectionStateEvent) => void>();
   private live = new Map<string, string>();
   private pendingReads = new Map<string, (result: SshPtyReadResult) => void>();
+  private pendingReadFailures = new Map<string, (error: unknown) => void>();
   private readOptions = new Map<string, SshPtyReadOptions>();
   private ordinal = 0;
 
@@ -112,7 +113,7 @@ export class FakeNative {
         return { requestId: options.requestId, connectionId: options.connectionId, generationId: options.generationId, channelId };
       },
       readPty: (options: SshPtyReadOptions) =>
-        new Promise<SshPtyReadResult>((resolve) => {
+        new Promise<SshPtyReadResult>((resolve, reject) => {
           if (this.attachSnapshot !== null && !this.snapshotServed.has(options.channelId)) {
             this.snapshotServed.add(options.channelId);
             resolve({
@@ -127,6 +128,7 @@ export class FakeNative {
             return;
           }
           this.pendingReads.set(options.channelId, resolve);
+          this.pendingReadFailures.set(options.channelId, reject);
           this.readOptions.set(options.channelId, options);
         }),
       writePty: async (options: SshPtyWriteOptions) => {
@@ -173,6 +175,15 @@ export class FakeNative {
   outputOn(channel: string, text: string, eof = false): void {
     if (!this.pendingReads.has(channel)) throw new Error(`no pending PTY read on ${channel}`);
     this.resolveRead(channel, text, eof);
+  }
+
+  /** Reject the pending read on one channel (a PTY failing on a healthy transport). */
+  failReadOn(channel: string, error: unknown): void {
+    const reject = this.pendingReadFailures.get(channel);
+    if (!reject) throw new Error(`no pending PTY read on ${channel}`);
+    this.pendingReads.delete(channel);
+    this.pendingReadFailures.delete(channel);
+    reject(error);
   }
 
   hasPendingReadOn(channel: string): boolean {

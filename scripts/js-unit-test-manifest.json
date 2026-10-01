@@ -419,7 +419,10 @@
         "keeps every attached session live, routing each one's bytes and keystrokes to its own shell id",
         "closes only the PTY of the shell the pane gave up",
         "re-attaches every open session exactly once after a drop, under the same shell ids",
-        "retires only the shell whose session ended"
+        "retires only the shell whose session ended",
+        "retires the shell of a PTY whose read failed and re-attaches it on re-selection, leaving the other tab live",
+        "evicts the least recently focused tab past the PTY bound; it re-attaches when looked at again",
+        "states the native per-connection channel budget to core, so the controller keeps exec headroom"
       ]
     }
   }
