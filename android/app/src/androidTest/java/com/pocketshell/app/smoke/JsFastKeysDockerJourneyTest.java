@@ -1084,11 +1084,25 @@ public final class JsFastKeysDockerJourneyTest {
     private void exerciseInlineDictationPromptGuard() throws Exception {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
                 + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === false");
-        if (!isImeVisible()) tapDomCenter(".terminal-viewport");
-        awaitImeVisible(true);
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
+        // After the re-attach the IME can still be up while focus has left the
+        // terminal (keyboardComposerMode=false), so an IME-only check skipped
+        // the tap (hosted runs 36881616227 and 36895957308). Tap the terminal
+        // physically until the keyboard-up terminal state holds, at most twice.
+        String keyboardTerminalReady = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
-                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150", 10_000);
+                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150";
+        for (int attempt = 1; attempt <= 2 && !(isImeVisible()
+                && "true".equals(evalRaw("(" + keyboardTerminalReady + ")"))); attempt++) {
+            awaitRenderedFrame();
+            tapDomCenter(".terminal-viewport");
+            long deadline = SystemClock.uptimeMillis() + 5_000;
+            while (SystemClock.uptimeMillis() < deadline && !(isImeVisible()
+                    && "true".equals(evalRaw("(" + keyboardTerminalReady + ")")))) {
+                SystemClock.sleep(100);
+            }
+        }
+        awaitImeVisible(true);
+        awaitJsTrue(keyboardTerminalReady, 10_000);
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
         int writesBefore = terminalInputAcknowledgements();
