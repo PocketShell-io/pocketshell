@@ -201,7 +201,7 @@ make_dispatch_fixture() {
   cp "$WRAPPER" "$path/scripts/connected-test.sh"
   init_repo "$path"
   local lane
-  for lane in smoke lifecycle composer-docker key-vault-docker; do
+  for lane in smoke lifecycle composer-docker key-vault-docker durable-storage; do
     cat > "$path/scripts/connected-js-$lane.sh" <<'LANE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -257,6 +257,7 @@ no_lane_and_unknown_lane_fail_closed() {
   (( RUN_RC == 0 )) || fail "top-level help exited $RUN_RC"
   grep -q 'composer-docker' "$RUN_OUT" || fail 'top-level help omitted the composer Docker lane'
   grep -q 'key-vault-docker' "$RUN_OUT" || fail 'top-level help omitted the key-vault Docker lane'
+  grep -q 'durable-storage' "$RUN_OUT" || fail 'top-level help omitted the durable-storage lane'
   assert_no_dispatch
   run_dispatch "$SANDBOX/script-root" ''
   (( RUN_RC == 2 )) || fail "missing lane exited $RUN_RC, expected 2"
@@ -330,6 +331,19 @@ key_vault_dispatch_preserves_fixture_identity() {
   )
   diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
     || fail 'key-vault lane lost its suffix, Docker port/container, or run ID'
+}
+
+durable_storage_dispatch_preserves_suffix_run_id_and_kill_delay() {
+  make_dispatch_fixture
+  run_dispatch "$SANDBOX/script-root" '' durable-storage --suffix i2993 \
+    --run-id js2993-local --kill-delay-ms 0
+  (( RUN_RC == 0 )) || fail "durable-storage lane exited $RUN_RC: $(cat "$RUN_ERR")"
+  local -a expected=(
+    "$SANDBOX/script-root/scripts/connected-js-durable-storage.sh"
+    --suffix i2993 --run-id js2993-local --kill-delay-ms 0
+  )
+  diff -u <(printf '%s\n' "${expected[@]}") "$RUN_CAPTURE" \
+    || fail 'durable-storage lane lost its suffix, run ID, or kill delay'
 }
 
 foreign_checkout_is_refused_before_lane_dispatch() {
@@ -420,6 +434,16 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
   "$ROOT_DIR/scripts/check-js-composer-journey-results.py" --self-test
   "$ROOT_DIR/scripts/extract-js-composer-artifacts.py" --self-test
   "$ROOT_DIR/scripts/check-js-key-vault-results.py" --self-test
+
+  local durable_script="$ROOT_DIR/scripts/connected-js-durable-storage.sh"
+  [[ -x "$durable_script" ]] || fail 'durable-storage lane runner is missing'
+  grep -Fq 'check-js-durable-storage-results.py" --results-dir "$phase_dir"' "$durable_script" \
+    || fail 'durable-storage runner does not validate each phase report from its own run'
+  grep -Fq 'check-js-durable-storage-results.py" --run-dir "$evidence_dir"' "$durable_script" \
+    || fail 'durable-storage runner does not validate the kill gap and both passing phases'
+  grep -Fq "grep -q 'Process crashed'" "$durable_script" \
+    || fail 'durable-storage runner does not require the mutate phase to end in its own kill'
+  "$ROOT_DIR/scripts/check-js-durable-storage-results.py" --self-test
 }
 
 same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
@@ -477,13 +501,14 @@ CASES=(
   lifecycle_dispatch_preserves_fixture_identity
   composer_dispatch_preserves_pool_port_and_session_prefix
   key_vault_dispatch_preserves_fixture_identity
+  durable_storage_dispatch_preserves_suffix_run_id_and_kill_delay
   foreign_checkout_is_refused_before_lane_dispatch
   old_gradle_selectors_are_not_forwarded
   real_js_lanes_keep_exact_same_run_guards_and_host_oracles
   same_emulator_is_serialized_across_worktrees_and_reports_are_run_local
   failure_artifacts_are_preserved_after_gradle_failure
 )
-EXPECTED_FULL_CASES=11
+EXPECTED_FULL_CASES=12
 (( ${#CASES[@]} == EXPECTED_FULL_CASES )) \
   || fail "expected $EXPECTED_FULL_CASES cases; found ${#CASES[@]}"
 

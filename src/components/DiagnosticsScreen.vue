@@ -22,6 +22,7 @@ function eventTitle(event: DiagnosticEvent): string {
     'ssh-operation-failed': 'SSH operation failed',
     'ssh-bridge-failed': 'SSH bridge failed',
     'resource-snapshot-failed': 'Native resource snapshot failed',
+    'storage-durability-failed': 'Saved data is not crash-safe this launch',
   };
   return titles[event.kind];
 }
