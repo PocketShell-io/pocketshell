@@ -96,7 +96,7 @@ results="$repo/android/app/build/outputs/androidTest-results/connected/debug"
 mkdir -p "$results"
 cat > "$results/TEST-smoke.xml" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="smoke" tests="7" failures="0" errors="0" skipped="0">
+<testsuite name="smoke" tests="8" failures="0" errors="0" skipped="0">
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="launchShowsVerifiedSourcesAndAssetIdentity" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="singleOpenDocumentDataUriIsIncludedAndDeduplicated" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="packagedAndroidAdaptersDeliverSharedTextAndExactFileBytes" />
@@ -104,6 +104,7 @@ cat > "$results/TEST-smoke.xml" <<'XML'
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="settingsAndAndroidBackReturnHome" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus" />
   <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="composerInputStaysAboveImeWithinSafeArea" />
+  <testcase classname="com.pocketshell.app.smoke.JsShellPackagedSmokeTest" name="pageReloadsKeepFirstNativeCallAnswered" />
 </testsuite>
 XML
 GRADLEW
@@ -414,7 +415,7 @@ real_js_lanes_keep_exact_same_run_guards_and_host_oracles() {
     || fail 'key-vault runner lost its independent host session-list oracle for imported and generated keys'
   grep -Fq 'secret-nonleak-oracle.txt' "$ROOT_DIR/scripts/connected-js-key-vault-docker.sh" \
     || fail 'key-vault runner lost its secret non-leak evidence'
-  grep -Fq 'Exact packaged-shell smoke suite (7 JUnit methods)' "$WRAPPER" \
+  grep -Fq 'Exact packaged-shell smoke suite (8 JUnit methods)' "$WRAPPER" \
     || fail 'connected-test help does not describe the seven-method packaged smoke contract'
   grep -Fq 'scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");' "$smoke_test_source" \
     || fail 'About navigation does not scroll its target into the WebView viewport first'
@@ -480,10 +481,10 @@ same_emulator_is_serialized_across_worktrees_and_reports_are_run_local() {
     || fail 'first worktree did not pass its unique package suffix to Gradle'
   grep -Fq -- '-PpocketshellAppIdSuffix=i2863b' "$SANDBOX/device-state/args-i2863b" \
     || fail 'second worktree did not pass its unique package suffix to Gradle'
-  grep -Fq 'PASS: packaged JS smoke results contain 7 executed tests, 7 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 8 executed tests, 8 passed' \
     "$SANDBOX/i2863a.out" \
     || fail 'first run did not validate its own exact JUnit report'
-  grep -Fq 'PASS: packaged JS smoke results contain 7 executed tests, 7 passed' \
+  grep -Fq 'PASS: packaged JS smoke results contain 8 executed tests, 8 passed' \
     "$SANDBOX/i2863b.out" \
     || fail 'second run did not validate its own exact JUnit report'
   [[ ! -e "$SANDBOX/device-state/overlap" ]] \

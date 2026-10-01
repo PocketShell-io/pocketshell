@@ -51,6 +51,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -59,6 +61,9 @@ import java.util.function.Consumer;
 public final class JsShellPackagedSmokeTest {
     private static final long JS_TIMEOUT_SECONDS = 15;
     private static final long WAIT_TIMEOUT_MILLIS = 12_000;
+    private static final long RELOAD_SETTLE_TIMEOUT_MILLIS = 30_000;
+    private static final int BRIDGE_RELOADS = 300;
+    private static final int LOAD_THREADS_PER_CORE = 2;
 
     private ActivityScenario<MainActivity> scenario;
     private MainActivity directActivity;
@@ -613,8 +618,73 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    /**
+     * Regression for #3000: after an in-place page reload Capacitor 8.1.0 can
+     * deliver the reply to the page's FIRST native call to the previous
+     * document. Startup's first real call is DurableStorage.open(), so a lost
+     * reply used to leave the app unmounted on a blank screen. The page now
+     * sends a sacrificial, retried BridgeReady ping first. Every reload must
+     * mount the app with native-durable storage from one, unretried
+     * DurableStorage.open() call; without the warm-up a lost reply surfaces
+     * as the bounded open's localStorage fallback ("failed").
+     */
+    @Test
+    public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
+        assertTrue("the packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        // A busy device: CPU-bound threads in the app process make the main
+        // thread lose its core between Capacitor's dispatch and its storing of
+        // the new page's reply channel, which is when the reply gets lost.
+        AtomicBoolean loading = new AtomicBoolean(true);
+        List<Thread> load = new ArrayList<>();
+        for (int index = 0; index < Runtime.getRuntime().availableProcessors() * LOAD_THREADS_PER_CORE; index += 1) {
+            Thread thread = new Thread(() -> {
+                while (loading.get()) Thread.onSpinWait();
+            }, "ps3000-load-" + index);
+            thread.setDaemon(true);
+            thread.start();
+            load.add(thread);
+        }
+        try {
+            int warmUpRetried = reloadAndRequireAnsweredFirstCall();
+            android.util.Log.i("PocketshellBridgeEvidence", "BRIDGE reloads=" + BRIDGE_RELOADS + " warmUpRetried=" + warmUpRetried
+                    + " loadThreads=" + load.size());
+        } finally {
+            loading.set(false);
+            for (Thread thread : load) thread.join(1_000);
+        }
+    }
+
+    private int reloadAndRequireAnsweredFirstCall() throws Exception {
+        int warmUpRetried = 0;
+        for (int reload = 1; reload <= BRIDGE_RELOADS; reload += 1) {
+            evalRaw("location.replace(location.origin + location.pathname + '?ps3000Reload=" + reload + "'); 'reload'");
+            // Warm-up (<= 4 x 1.5 s) plus the bounded open (8 s) always settle well inside this.
+            awaitJsTrue("new URLSearchParams(location.search).get('ps3000Reload') === '" + reload + "'"
+                    + " && !!document.documentElement.dataset.durableStorage"
+                    + " && !!document.querySelector('.app-shell')", RELOAD_SETTLE_TIMEOUT_MILLIS);
+            JSONObject state = evalJson("(() => {const data = document.documentElement.dataset;"
+                    + "return JSON.stringify({storage: data.durableStorage ?? null, reason: data.durableStorageReason ?? null,"
+                    + "openCalls: data.durableStorageOpenCalls ?? null,"
+                    + "bridge: JSON.parse(data.bridgeWarmUp ?? 'null')});})()");
+            assertEquals("DurableStorage.open() must answer after reload " + reload + ": " + state,
+                    "native-durable", state.getString("storage"));
+            assertEquals("DurableStorage.open() must succeed on its single attempt after reload " + reload + ": " + state,
+                    "1", state.getString("openCalls"));
+            JSONObject bridge = state.optJSONObject("bridge");
+            assertNotNull("the bridge warm-up must run on every page load (reload " + reload + "): " + state, bridge);
+            assertTrue("the bridge warm-up must be answered after reload " + reload + ": " + state, bridge.getBoolean("answered"));
+            if (bridge.getInt("attempts") > 1) warmUpRetried += 1;
+        }
+        return warmUpRetried;
+    }
+
     private void awaitJsTrue(String expression) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
+    }
+
+    private void awaitJsTrue(String expression, long timeoutMillis) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
         String last = "<not evaluated>";
         while (SystemClock.uptimeMillis() < deadline) {
             last = evalRaw(expression);

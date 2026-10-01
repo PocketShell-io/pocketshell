@@ -194,6 +194,45 @@ describe('Android durable storage seam', () => {
     expect(readDiagnosticEvents(diagnostics)).toHaveLength(1);
   });
 
+  it('falls back to plain localStorage with a Diagnostics entry when native open never answers, ignoring a late answer', async () => {
+    const lost = harness({ initialized: true, entries: { saved: 'durable' } });
+    let answerLate: (value: DurableStorageOpenResult) => void = () => undefined;
+    const pending = new Promise<DurableStorageOpenResult>((resolve) => { answerLate = resolve; });
+    const status = await installDurableStorage({ ...lost.dependencies, open: () => pending, openTimeoutMs: 20 });
+    expect(status).toEqual({ state: 'failed', reason: 'The native durable storage did not answer within 20 ms.' });
+
+    // The reply that arrives after startup moved on must not hydrate or patch storage.
+    answerLate({ token: 'late-token', initialized: true, entries: { saved: 'durable' } });
+    await pending;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    lost.local.setItem('plain', 'write');
+    expect(lost.local.getItem('saved')).toBeNull();
+    expect(lost.local.getItem('plain')).toBe('write');
+    expect(lost.writer.calls).toEqual([]);
+
+    const root = { dataset: {} as Record<string, string> } as unknown as HTMLElement;
+    const diagnostics = new (storageClass())();
+    recordDurableStorageStatus(root, status, diagnostics);
+    expect(root.dataset.durableStorage).toBe('failed');
+    expect(root.dataset.durableStorageReason).toMatch(/did not answer/);
+    expect(readDiagnosticEvents(diagnostics).map((event) => [event.kind, event.operation])).toEqual([
+      ['storage-durability-failed', 'storage'],
+    ]);
+  });
+
+  it('warms up the native bridge as the first native call, before durable storage opens', () => {
+    const main = readFileSync(new URL('../../src/main.ts', import.meta.url), 'utf8');
+    const warmUp = main.indexOf('await bridgeWarmUp()');
+    const install = main.indexOf('await installAndroidDurableStorage()');
+    expect(warmUp).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(warmUp);
+    // Nothing in boot() before the warm-up may talk to native.
+    const bootStart = main.indexOf('async function boot()');
+    expect(bootStart).toBeGreaterThan(-1);
+    const codeBeforeWarmUp = main.slice(bootStart, warmUp).replace(/^\s*\/\/.*$/gm, '');
+    expect(codeBeforeWarmUp).not.toMatch(/\.(open|ping|getInfo)\(|installAndroid|await /);
+  });
+
   it('makes the real snippet and settings stores durable, and refuses to acknowledge a delete that did not commit', async () => {
     const { local, writer, dependencies } = harness({ initialized: true, entries: {} });
     await installDurableStorage(dependencies);
