@@ -34,7 +34,7 @@ git -C .worktrees/issue-<N> submodule update --init --recursive
 ```
 
 Since #2934, `main` is the JS-first 0.6.0 development line and needs its
-pinned `vendor/pocketshell-core` and `vendor/pocketshell-desktop` submodules
+pinned `vendor/pocketshell-core` submodule (core plus the shared UI package)
 before any build. A 0.5.x hotfix branches from `origin/release/0.5.x`
 instead and merges back into `release/0.5.x`, never `main`:
 

@@ -27,7 +27,7 @@ with no detected agent is a valid session.
 
 The JS session list and selected app bar use only the current host
 `HostCliCore` row: `agent` for identity and `agentState` for recent state. The
-identity is shown only for a kind the pinned desktop badge mapping recognizes;
+identity is shown only for a kind the pinned core badge mapping (`@pocketshell/core/shared/agentBadge`) recognizes;
 the client does not fall back to `engine`, the session name, workspace, or
 terminal output. State is shown only when `agentStateSource` is `reported` and
 the state is `working`, `waiting`, or `idle`. Missing and unrecognized fields,

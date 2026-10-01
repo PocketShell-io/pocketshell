@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { isValidTcpPort, type RemotePort } from '@pocketshell/core';
-import { AppIcon } from '@pocketshell/ui';
+import AppIcon from '@ui/components/AppIcon.vue';
 import type { PortForwardControllerSnapshot } from '../policy/portForwardController';
 
 const props = defineProps<{

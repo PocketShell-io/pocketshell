@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig, type Plugin } from 'vite';
-import { readPinnedCore, readPinnedDesktop } from './scripts/js-source-integrity.mjs';
+import { readPinnedCore } from './scripts/js-source-integrity.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -27,7 +27,7 @@ function assertBrowserOnlyUi(bundle: Record<string, { type: string; code?: strin
   }
 }
 
-function bundledAssetManifest(coreRevision: string, uiRevision: string): Plugin {
+function bundledAssetManifest(coreRevision: string): Plugin {
   return {
     name: 'pocketshell-bundled-asset-manifest',
     apply: 'build',
@@ -51,9 +51,8 @@ function bundledAssetManifest(coreRevision: string, uiRevision: string): Plugin 
         path.join(outputDirectory, 'build-manifest.json'),
         JSON.stringify(
           {
-            schema: 1,
+            schema: 2,
             coreSourceRevision: coreRevision,
-            uiSourceRevision: uiRevision,
             bundleAssetHash: aggregate.digest('hex'),
             assets: assets.map(({ file, hash }) => ({ file, sha256: hash })),
           },
@@ -67,26 +66,29 @@ function bundledAssetManifest(coreRevision: string, uiRevision: string): Plugin 
 
 export default defineConfig(() => {
   const core = readPinnedCore(repoRoot);
-  const desktop = readPinnedDesktop(repoRoot);
 
   return {
     base: './',
-    plugins: [vue(), bundledAssetManifest(core.revision, desktop.revision)],
+    plugins: [vue(), bundledAssetManifest(core.revision)],
     esbuild: {
-      // Do not inherit the desktop package's authoring tsconfig, which extends
+      // Do not inherit the shared UI package's authoring tsconfig, which extends
       // @vue/tsconfig for its own workspace. This shell supplies its own
       // compiler settings and consumes the shared source without that package.
       tsconfigRaw: { compilerOptions: { target: 'ES2022', module: 'ESNext' } },
     },
     define: {
       __POCKETSHELL_CORE_REVISION__: JSON.stringify(core.revision),
-      __POCKETSHELL_UI_REVISION__: JSON.stringify(desktop.revision),
     },
     resolve: {
       alias: {
+        // Same alias set as pocketshell-desktop and pocketshell-web: the shared
+        // UI package rides inside the core pin. Subpath aliases come first so
+        // they win over the bare '@pocketshell/core' entry alias.
+        '@ui': core.uiRoot,
+        '@pocketshell/core/shared': path.join(core.sourceRoot, 'shared'),
+        '@pocketshell/core/attachments': path.join(core.sourceRoot, 'attachments'),
+        '@pocketshell/core/preview': path.join(core.sourceRoot, 'preview'),
         '@pocketshell/core': core.sourceEntry,
-        '@pocketshell/ui/styles.css': desktop.stylesEntry,
-        '@pocketshell/ui': desktop.sourceEntry,
         '@': path.join(repoRoot, 'src'),
       },
     },

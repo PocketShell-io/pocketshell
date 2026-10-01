@@ -4,7 +4,7 @@ This is the pre-deletion map for the 0.6.0 rewrite branch. Baseline: `a6c7e8dab5
 
 ## Old Android destinations → replacement work
 
-Every route in `app2/src/main/java/com/pocketshell/next/nav/Destinations.kt` is represented below. Shared TypeScript presentation work is tracked by [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3); shell bootstrap and the explicit empty-state screen are this issue, #2855.
+Every route in `app2/src/main/java/com/pocketshell/next/nav/Destinations.kt` is represented below. Shared TypeScript presentation work lives in `pocketshell-core/packages/ui` (continuing [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3)); shell bootstrap and the explicit empty-state screen are this issue, #2855.
 
 The executable old-to-new route map, including the current available, partial, information-only, and planned status for each destination, is maintained in [src/destinationInventory.ts](../src/destinationInventory.ts). Its unit test checks the map against the complete pre-rewrite destination list, including the deprecated Tree and CrashReports aliases.
 
@@ -88,7 +88,7 @@ Room schema exports `16.json` through `22.json` are retained exactly at [`migrat
 
 ## Desktop design extraction contract
 
-The desktop reference at the pinned review baseline is `pocketshell-desktop`'s `src/renderer/themes.ts`, `fonts.ts`, `App.vue`, and `components/`. Desktop extraction is tracked in [pocketshell-desktop#3](https://github.com/PocketShell-io/pocketshell-desktop/issues/3). Prioritize shared tokens/type/icon semantics and prop/event based presentation components: `AppIcon`, host/session rows, session tree, terminal theme and terminal view, composer/attachment controls, workspace tabs, buttons/menus/overlays, and warning/update banners. Desktop `views/HostPickerView.vue`, `HostWorkspaceView.vue`, `FolderWorkspaceView.vue`, `FilesView.vue`, `SettingsView.vue`, `UsageView.vue`, and `PortPanelView.vue` contain Electron stores/IPC assumptions and must be decomposed before reuse. Font files need explicit licensing and Android-compatible packaging.
+The shared UI now lives in `pocketshell-core/packages/ui/src` (`themes.ts`, `fonts.ts`, `components/`, and the desktop/web app tree under `app/`), consumed through the pinned core submodule. Prioritize shared tokens/type/icon semantics and prop/event based presentation components: `AppIcon`, host/session rows, session tree, terminal theme and terminal view, composer/attachment controls, workspace tabs, buttons/menus/overlays, and warning/update banners. Shared `app/views/HostPickerView.vue`, `HostWorkspaceView.vue`, `FolderWorkspaceView.vue`, `FilesView.vue`, `SettingsView.vue`, `UsageView.vue`, and `PortPanelView.vue` contain Electron stores/IPC assumptions and must be decomposed before reuse. Font files need explicit licensing and Android-compatible packaging.
 
 The phone shell keeps desktop colors, wording, icon family, type hierarchy, spacing rhythm, selected/disabled/warning states, and terminal palette as its starting point. It adapts navigation to a host/session drawer, uses touch-sized controls, applies safe areas, handles Android Back, and keeps the composer above the IME. #2855 only supplies an unfinished host/workspace/terminal-shaped empty mock shell; it does not claim any old journey above is implemented.
 
