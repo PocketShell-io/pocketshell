@@ -872,6 +872,12 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks ?? 0) > "
                 + resizeAcksBeforeBackgroundResume
                 + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim().endsWith('accepted by SSH') === true");
+        // The first post-resume ACK can still carry the keyboard-up grid; the
+        // IME-hidden layout then sends one more resize. Settle on the accepted
+        // IME-hidden grid before recording the resume checkpoint.
+        awaitImeVisible(false);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible !== 'true'", 15_000);
+        awaitStableAcknowledgedTerminalGrid();
         evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result', "
                 + JSONObject.quote(backgroundRequest) + "); 'late result emitted'");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
@@ -3014,6 +3020,25 @@ public final class JsFastKeysDockerJourneyTest {
                 + "return !!grid && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizePending)===0"
                 + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()"
                 + " === grid.cols+' × '+grid.rows+' accepted by SSH';})()");
+    }
+
+    /**
+     * An acknowledged grid whose ACK count does not move across a settle window:
+     * a layout change still in flight (IME hide, inset animation) would send
+     * another resize within it.
+     */
+    private void awaitStableAcknowledgedTerminalGrid() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        while (true) {
+            awaitAcknowledgedTerminalGrid();
+            int acks = terminalResizeAcks();
+            SystemClock.sleep(750);
+            awaitAcknowledgedTerminalGrid();
+            if (terminalResizeAcks() == acks) return;
+            if (SystemClock.uptimeMillis() > deadline) {
+                throw new AssertionError("terminal resize ACKs did not settle; last count " + terminalResizeAcks());
+            }
+        }
     }
 
     private JSONArray hotkeyWrites() throws Exception {
