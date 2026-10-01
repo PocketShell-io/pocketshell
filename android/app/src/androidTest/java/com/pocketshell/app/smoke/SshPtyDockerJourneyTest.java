@@ -120,7 +120,7 @@ public final class SshPtyDockerJourneyTest {
         click("[data-testid=open-connection-settings]");
         setValue("[data-testid=setting-background-grace]", Long.toString(BACKGROUND_GRACE_MILLIS));
         awaitJsTrue("document.querySelector('[data-testid=setting-background-grace]')?.value === '" + BACKGROUND_GRACE_MILLIS + "'");
-        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1') || '{}').backgroundGraceMs === "
+        awaitJsTrue("JSON.parse(localStorage.getItem('pocketshell.settings.v1') || '{}').backgroundGraceMs === "
                 + BACKGROUND_GRACE_MILLIS);
         click("[aria-label='PocketShell home']");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
@@ -1401,7 +1401,7 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private int currentGraceSettingMs() throws Exception {
-        String raw = evalString("localStorage.getItem('pocketshell.js.settings.v1') ?? ''");
+        String raw = evalString("localStorage.getItem('pocketshell.settings.v1') ?? ''");
         assertTrue("persisted application settings must be readable", raw != null && !raw.isEmpty());
         return new JSONObject(raw).getInt("backgroundGraceMs");
     }

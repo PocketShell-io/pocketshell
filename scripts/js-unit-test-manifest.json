@@ -4,9 +4,11 @@
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists only shared theme/font policy and supported background grace values",
+        "reads and persists only the phone theme and terminal text size",
         "degrades malformed or unsupported saved values to safe defaults",
-        "clamps terminal size using the pinned desktop font-size policy"
+        "clamps terminal size using the pinned desktop font-size policy",
+        "offers every 0.5.x grace window from the shared core policy, including 10 minutes",
+        "keeps grace and reconnect-on-return in the one shared settings store (D42)"
       ]
     },
     "tests/unit/homeSurface.test.ts": {
@@ -141,6 +143,7 @@
       "suite": "installed Android data migration",
       "tests": [
         "maps legacy settings only when the JS settings are absent and preserves existing fields",
+        "imports every 0.5.x background-grace option, reconnect choice and Advanced values instead of failing the import",
         "stages complete history, trust and asset bytes before marking the import complete",
         "repairs missing JS settings and trust pins from a completed import without rereading native data",
         "preserves newer JS settings and skips the startup reload when no setting was written",
@@ -258,6 +261,20 @@
         "core exports the shared controllers and sync round",
         "Android src holds no local definition of them",
         "the app binds usage, forwarding and the sync probe from @pocketshell/core"
+      ]
+    },
+    "tests/unit/androidPlatformServices.test.ts": {
+      "suite": "Android platform services for the shared app",
+      "tests": [
+        "asks App.getInfo again once when an answer is lost, and reports a timeout if both are",
+        "checks GitHub releases for this install flavour and hands only release links to the browser",
+        "omits the update capability for per-worktree test installs",
+        "lists runtime errors, native crashes and imported 0.5.x reports newest first, all redacted",
+        "deletes one report per source, hides imported sources without touching them, and clears all",
+        "ignores tampered stored reports and survives a failing native bridge",
+        "captures Vue, unhandled-rejection and window errors from app startup",
+        "blanks remembered host names and seeded secrets in every report source",
+        "exposes the journey probe only for a page loaded with the probe query, and records its lifecycle"
       ]
     },
     "tests/unit/sshKeyVault.test.ts": {

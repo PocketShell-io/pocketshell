@@ -163,7 +163,9 @@ public final class InstalledDataMigrationJourneyTest {
         JSONObject settings = evalJson("localStorage.getItem('pocketshell.js.settings.v1') || '{}'");
         assertTrue("legacy terminal size must be mapped into JS settings: " + settings + " / import=" + imported,
             settings.optInt("terminalFontSize", -1) >= 8 && settings.optInt("terminalFontSize", -1) <= 32);
-        assertEquals(90_000, settings.getInt("backgroundGraceMs"));
+        JSONObject shared = evalJson("localStorage.getItem('pocketshell.settings.v1') || '{}'");
+        assertEquals("grace lives only in the shared settings store (D42): " + shared, 90_000, shared.getInt("backgroundGraceMs"));
+        assertTrue("the phone blob no longer owns grace", !settings.has("backgroundGraceMs"));
 
         JSONObject pin = evalJson("localStorage.getItem('pocketshell.ssh.host-key.41') || '{}'");
         String expectedHostKey = InstrumentationRegistry.getArguments()

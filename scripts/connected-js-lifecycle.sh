@@ -101,6 +101,7 @@ command -v convert >/dev/null 2>&1 || fail 'ImageMagick convert is required to c
 source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
+source "$ROOT_DIR/scripts/lib/js-fixture-port-lock.sh"
 source "$ROOT_DIR/scripts/lib/js-lifecycle-cleanup.sh"
 source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-lifecycle.sh' || exit $?
@@ -137,6 +138,9 @@ export POCKETSHELL_AVD_LOCK_CONTINUOUS=1
 export POCKETSHELL_AVD_LOCK_FILE="$(pocketshell_avd_lock_file_for_serial "$ROOT_DIR" "$ANDROID_SERIAL")"
 pocketshell_acquire_avd_lock "$ROOT_DIR"
 pocketshell_assert_avd_lock_owned "$POCKETSHELL_AVD_LOCK_FILE"
+# Own the Docker fixture for the whole run: a sibling lane on the same port
+# would open a second SSH socket that the host oracle attributes to this app.
+pocketshell_acquire_js_fixture_port_lock "$PORT" || fail "agents fixture port $PORT is busy"
 
 RESULTS_DIR="$ROOT_DIR/android/app/build/outputs/androidTest-results/connected/debug"
 ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-lifecycle/$RUN_ID"
