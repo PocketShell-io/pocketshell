@@ -163,6 +163,7 @@ case "${1:-}" in
       'getprop ro.build.version.sdk') printf '35\n' ;;
       'settings put global hide_error_dialogs 1')
         printf '1\n' > "$state/$serial.hide-error-dialogs" ;;
+      'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1') ;;
       'settings get global hide_error_dialogs')
         if [[ -f "$state/$serial.hide-error-dialogs" ]]; then
           cat "$state/$serial.hide-error-dialogs"

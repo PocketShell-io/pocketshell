@@ -73,7 +73,7 @@ distinct package IDs.
 
 The J1 dispatch guard is `scripts/check-test-validity.sh --j1-only`. On this
 rewrite tree it verifies the seven packaged contracts: smoke selects the exact
-seven methods in `JsShellPackagedSmokeTest`; lifecycle selects
+eight methods in `JsShellPackagedSmokeTest`; lifecycle selects
 `SshPtyDockerJourneyTest#sshSessionSwitchingGraceAndAbruptServerDropReconnectAgainstDockerFixture`;
 Usage and Ports selects
 `UsagePortsDockerJourneyTest#usageAndPortForwardingPoliciesUseDockerAndNativePlugin`;
@@ -158,11 +158,18 @@ Every packaged lane runner calls `pocketshell_android_input_preflight`
   and the emulator start path (`start-local-avd.sh`, `avd-pool.sh start`, only
   when no lane holds the lock) re-enable it first and log
   `RECOVERED_STALE_DISABLED_LAUNCHER`.
-- Where the launcher draws the navigation bar, the bottom inset is 0 while it
-  is disabled. The smoke safe-area test logs the natural insets and then
-  enables Android's emulated bottom display cutout
-  (`com.android.internal.display.cutout.emulation.double`), so its CSS ==
-  native bottom-inset check still runs against a non-zero inset.
+- Before that it sets `device_provisioned=1` and `user_setup_complete=1`,
+  because the hosted SDK setup app can still be the provisioning HOME right
+  after boot, and SystemUI keeps the notification shade locked until setup
+  is complete.
+- Where the launcher draws the navigation bar (the hosted Pixel image and the
+  local Launcher3 image), the bottom inset is 0 while it is disabled. The
+  smoke test `safeAreaBottomInsetBridgeCarriesANonZeroInset` logs the natural
+  insets, enables Android's emulated bottom display cutout
+  (`com.android.internal.display.cutout.emulation.double`), and requires the
+  KeyboardInsets bridge to carry that non-zero inset into
+  `--safe-area-inset-bottom` and back. The other safe-area checks run on the
+  device's own insets.
 - It sets `hide_error_dialogs=1` (best effort: hosted run 36792962871 showed a
   launcher ANR dialog despite it) and force-stops the owner of any other
   "isn't responding" or crash dialog already on screen.

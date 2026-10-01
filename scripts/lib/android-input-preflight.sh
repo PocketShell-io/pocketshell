@@ -255,6 +255,12 @@ pocketshell_android_input_preflight() {
   mkdir -p "$(dirname -- "$evidence")"
   : > "$evidence" || return 1
   pocketshell_android_recover_stale_launchers "$adb" "$serial" "$evidence" || return 1
+  # On the hosted image the SDK setup app (com.google.android.googlesdksetup)
+  # can still be the provisioning HOME right after boot. Mark setup complete
+  # before disabling HOME providers: SystemUI keeps the notification shade
+  # and other system UI locked while the device is unprovisioned.
+  "$adb" -s "$serial" shell settings put global device_provisioned 1 >> "$evidence" 2>&1 || true
+  "$adb" -s "$serial" shell settings put secure user_setup_complete 1 >> "$evidence" 2>&1 || true
   pocketshell_android_disable_launchers "$adb" "$serial" "$evidence" || return 1
   {
     printf 'android input preflight (#2946) on %s at %s\n' "$serial" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -56,6 +56,8 @@ case "$*" in
   'settings get global hide_error_dialogs')
     cat "$state/hide" 2>/dev/null || printf 'null\n'
     ;;
+  'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1')
+    ;;
   'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
     [[ -e "$state/query-fails" ]] && { printf 'error: closed\n'; exit 1; }
     printf 'activities found:\n'
@@ -139,6 +141,11 @@ grep -Fxq 'hide_error_dialogs=1' "$evidence" || fail 'evidence does not record h
 grep -Fq 'mCurrentFocus=Window{74237e0' "$evidence" || fail 'evidence does not record the focus owner'
 first_disable="$(grep -n "pm disable-user --user 0 $LAUNCHER" "$FAKE_ADB_STATE/commands" | head -1 | cut -d: -f1)"
 [[ -n "$first_disable" ]] || fail 'launcher was never disabled'
+provisioned_line="$(grep -n 'settings put secure user_setup_complete 1' "$FAKE_ADB_STATE/commands" | head -1 | cut -d: -f1)"
+[[ -n "$provisioned_line" ]] && (( provisioned_line < first_disable )) \
+  || fail 'preflight must mark setup complete before disabling HOME providers'
+grep -Fxq 'settings put global device_provisioned 1' "$FAKE_ADB_STATE/commands" \
+  || fail 'preflight did not mark the device provisioned'
 pocketshell_android_restore_launchers 2> "$SANDBOX/launcher-restore.err"
 [[ ! -e "$FAKE_ADB_STATE/disabled-$LAUNCHER" ]] || fail 'launcher stayed disabled after the lane'
 [[ ! -e "$RECORD" ]] || fail 'record survived a successful restore'

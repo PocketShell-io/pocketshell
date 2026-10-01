@@ -50,6 +50,7 @@ LANES = (
                 "packagedMultipleShareReadsStandardStreamListWithoutClipData",
                 "settingsAndAndroidBackReturnHome",
                 "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
+                "safeAreaBottomInsetBridgeCarriesANonZeroInset",
                 "composerInputStaysAboveImeWithinSafeArea",
             }
         ),

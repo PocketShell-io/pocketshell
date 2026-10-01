@@ -488,6 +488,44 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === " + JSONObject.quote(route));
     }
 
+    /**
+     * Issue #2946: the lanes disable the HOME launcher, and on images where the
+     * launcher draws the navigation bar (the hosted Pixel image and the local
+     * Launcher3 image both report a 0 bottom inset then) CSS == native would
+     * pass as 0 == 0 even with a broken bridge. Give the device a real bottom
+     * inset through the same systemBars | displayCutout path the native
+     * KeyboardInsets plugin reads (an emulated bottom display cutout) and
+     * require the plugin to carry it into --safe-area-inset-bottom, then follow
+     * it back down. A bridge that drops the bottom inset fails here.
+     */
+    @Test
+    public void safeAreaBottomInsetBridgeCarriesANonZeroInset() throws Exception {
+        int safeAreaTypes = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        float density = targetContext().getResources().getDisplayMetrics().density;
+        awaitJsTrue("document.querySelector('.app-shell') !== null");
+        Insets naturalInsets = readRootInsets(safeAreaTypes);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_NATURAL_INSETS_PX top=" + naturalInsets.top
+                + " bottom=" + naturalInsets.bottom + " navigationBarsBottom="
+                + readRootInsets(WindowInsets.Type.navigationBars()).bottom);
+        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
+        Insets loadBearingInsets = readRootInsets(safeAreaTypes);
+        float loadBearingSafeBottom = Math.round(loadBearingInsets.bottom / density);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BOTTOM_BRIDGE_DP bottom=" + loadBearingSafeBottom
+                + " source=" + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
+        assertTrue("the bottom-inset bridge check needs a non-zero bottom inset (bottom="
+                + loadBearingInsets.bottom + "px)", loadBearingSafeBottom > 0);
+        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                + ".getPropertyValue('--safe-area-inset-bottom')) - " + loadBearingSafeBottom + ") <= 1");
+        if (bottomCutoutEnabled) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
+            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
+            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
+                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
+        }
+    }
+
     @Test
     public void composerInputStaysAboveImeWithinSafeArea() throws Exception {
         assertTrue("safe-area CSS injection is supported by the API 35+ smoke device", Build.VERSION.SDK_INT >= 35);
@@ -497,34 +535,10 @@ public final class JsShellPackagedSmokeTest {
         android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_NATURAL_INSETS_PX top=" + naturalInsets.top
                 + " bottom=" + naturalInsets.bottom + " navigationBarsBottom="
                 + readRootInsets(WindowInsets.Type.navigationBars()).bottom);
-        // The lanes disable the HOME launcher (#2946). On images where the
-        // launcher draws the navigation bar, the bottom inset is then 0, and
-        // CSS == native would pass as 0 == 0 even with a broken bridge. Give
-        // the device a real bottom inset through the same systemBars |
-        // displayCutout path the native plugin reads: an emulated bottom
-        // display cutout.
+        // The non-zero bottom-inset bridge check lives in
+        // safeAreaBottomInsetBridgeCarriesANonZeroInset (#2946): this test runs
+        // on the device's own insets, with no emulated cutout toggled under it.
         float density = targetContext().getResources().getDisplayMetrics().density;
-        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
-        Insets loadBearingInsets = readRootInsets(safeAreaTypes);
-        float loadBearingSafeBottom = Math.round(loadBearingInsets.bottom / density);
-        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BOTTOM_BRIDGE_DP bottom=" + loadBearingSafeBottom
-                + " source=" + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
-        assertTrue("the safe-area check needs a non-zero bottom inset to be load-bearing (bottom="
-                + loadBearingInsets.bottom + "px)", loadBearingSafeBottom > 0);
-        // The native KeyboardInsets bridge must carry the non-zero bottom inset
-        // into --safe-area-inset-bottom (a bridge that drops it fails here).
-        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                + ".getPropertyValue('--safe-area-inset-bottom')) - " + loadBearingSafeBottom + ") <= 1");
-        if (bottomCutoutEnabled) {
-            // Remove the emulated cutout and prove the bridge follows the inset
-            // back down, so every other check runs on the unmodified device.
-            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
-            bottomCutoutEnabled = false;
-            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
-            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
-            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
-        }
 
         Insets systemInsets = readRootInsets(safeAreaTypes);
         float expectedSafeTop = Math.round(systemInsets.top / density);
