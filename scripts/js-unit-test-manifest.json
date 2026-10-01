@@ -100,7 +100,20 @@
       "tests": [
         "maps each shipped destination to a replacement route, owning issue, and implementation status",
         "states which prior settings/support surfaces have working routes in this slice",
-        "maps the implemented file workspace as partial while Android DocumentsUI chooser interaction remains unverified"
+        "maps the implemented file workspace as partial while Android DocumentsUI chooser interaction remains unverified",
+        "hands the workspace, host, and session-verb rows to their open follow-ups, not the closed HostCliCore contract issue"
+      ]
+    },
+    "tests/unit/hostCliContract.test.ts": {
+      "suite": "Android host CLI path runs the shared 0.5.8 contract vectors",
+      "tests": [
+        "lists the captured sessions through `pocketshell sessions list --json`",
+        "keeps the host errors[] in the snapshot instead of reading as an empty host",
+        "shows the real CLI errors listing (exit 127) as a visible failure, not an empty host",
+        "treats the captured create-existing answer as success (idempotent create)",
+        "surfaces the captured structured create error from a non-zero exit",
+        "quotes an adversarial session name after `--`",
+        "refuses a too-old listing schema visibly"
       ]
     },
     "tests/unit/dictationStartCancellation.test.ts": {

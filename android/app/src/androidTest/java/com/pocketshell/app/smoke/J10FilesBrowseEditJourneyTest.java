@@ -6,13 +6,16 @@ import static org.junit.Assert.assertTrue;
 import android.graphics.Bitmap;
 import android.app.Activity;
 import android.app.Instrumentation;
+import android.content.ContentUris;
 import android.content.ContentValues;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 
 import androidx.test.core.app.ActivityScenario;
@@ -23,6 +26,7 @@ import androidx.test.platform.app.InstrumentationRegistry;
 
 import androidx.core.content.FileProvider;
 
+import org.hamcrest.Matchers;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONException;
@@ -41,6 +45,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -50,10 +55,19 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class J10FilesBrowseEditJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+    /**
+     * The platform's system document picker. AOSP images ship it as com.android.documentsui;
+     * Google APIs images (the hosted CI emulator) ship the same DocumentsUI as
+     * com.google.android.documentsui. Nothing else is accepted as the chooser.
+     */
+    private static final List<String> SYSTEM_DOCUMENTS_UI_PACKAGES =
+            Arrays.asList("com.android.documentsui", "com.google.android.documentsui");
     private ActivityScenario<MainActivity> scenario;
     private File downloadedFixture;
     private File uploadFixture;
     private String screenshotRunId;
+    private Uri documentsUiSourceUri;
+    private String documentsUiPackage;
 
     @Before
     public void launchPackagedShell() {
@@ -67,6 +81,7 @@ public final class J10FilesBrowseEditJourneyTest {
         Intents.release();
         if (downloadedFixture != null) downloadedFixture.delete();
         if (uploadFixture != null) uploadFixture.delete();
+        if (documentsUiSourceUri != null) targetContext().getContentResolver().delete(documentsUiSourceUri, null, null);
     }
 
     @Test
@@ -95,6 +110,11 @@ public final class J10FilesBrowseEditJourneyTest {
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
         setValue("[data-testid=ssh-private-key]", privateKey);
+        // A cold first launch keeps Connect disabled while the installed-data migration check
+        // runs (and Vue re-renders `disabled` a tick after the input events), so wait for the
+        // real enabled state instead of clicking into a disabled button.
+        awaitJsTrue("(() => {const node=document.querySelector('[data-testid=ssh-connect]');"
+                + "return !!node && !node.disabled;})()");
         click("[data-testid=ssh-connect]");
         awaitTrustOrConnected();
         awaitJsTrue("['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
@@ -143,6 +163,57 @@ public final class J10FilesBrowseEditJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Saved') === true");
         captureScreenshot(artifacts, "files-saved.png");
 
+        documentsUiPackage = resolveSystemDocumentsUiPackage();
+        System.out.println("J10_DOCUMENTSUI_PACKAGE resolved=" + documentsUiPackage);
+        String documentsUiUploadName = "documentsui-upload-" + screenshotRunId + ".bin";
+        byte[] documentsUiUploadBytes = new byte[] {
+                'D', 'O', 'C', 'S', 0, 'F', 'R', 'O', 'M', ' ', 'D', 'O', 'C', 'S', (byte) 0xff
+        };
+        documentsUiSourceUri = createDownloadsDocument(documentsUiUploadName, documentsUiUploadBytes);
+        int openDocumentCountBefore = intentCountForAction(Intent.ACTION_OPEN_DOCUMENT);
+        click("[data-testid=file-upload]");
+        String openChooserPackage = awaitDocumentsUiForeground();
+        assertEquals("the real ACTION_OPEN_DOCUMENT chooser must be the installed system DocumentsUI",
+                documentsUiPackage, openChooserPackage);
+        captureForegroundScreenshot(artifacts, "documentsui-open-picker.png");
+        browseDocumentsUiDownloads();
+        awaitDocumentsUiText(documentsUiUploadName);
+        selectDocumentsUiOpenFile(documentsUiUploadName, artifacts);
+        awaitPocketShellForeground();
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-file-name]')).some(node => node.dataset.fileName === "
+                + JSONObject.quote(documentsUiUploadName) + ")");
+        awaitJsTrue("document.querySelector('[data-testid=file-status]')?.textContent.includes('Uploaded ' + "
+                + JSONObject.quote(documentsUiUploadName) + ") === true");
+        assertEquals("selecting a real Downloads document must dispatch one ACTION_OPEN_DOCUMENT",
+                openDocumentCountBefore + 1, intentCountForAction(Intent.ACTION_OPEN_DOCUMENT));
+        captureScreenshot(artifacts, "documentsui-uploaded.png");
+        System.out.println("J10_DOCUMENTSUI_OPEN chooser=" + openChooserPackage
+                + " action=ACTION_OPEN_DOCUMENT selected=" + documentsUiUploadName
+                + " returned=true uploadedBytes=" + documentsUiUploadBytes.length);
+
+        String documentsUiDownloadName = "documentsui-download-" + screenshotRunId + ".bin";
+        click("[data-file-name='" + documentsUiDownloadName + "'] .files-row-open");
+        awaitJsTrue("document.querySelector('[data-testid=file-open-name]')?.textContent.trim() === "
+                + JSONObject.quote(documentsUiDownloadName));
+        awaitFileDownloadReady(documentsUiDownloadName);
+        int createDocumentCountBefore = intentCountForAction(Intent.ACTION_CREATE_DOCUMENT);
+        click("[data-testid=file-download]");
+        String createChooserPackage = awaitDocumentsUiForeground();
+        assertEquals("the real ACTION_CREATE_DOCUMENT chooser must be the installed system DocumentsUI",
+                documentsUiPackage, createChooserPackage);
+        assertTrue("the save chooser must show the Downloads destination: " + documentUiSnapshot(),
+                documentUiHasText("Downloads"));
+        captureForegroundScreenshot(artifacts, "documentsui-create-picker.png");
+        clickDocumentsUiText("SAVE");
+        awaitPocketShellForeground();
+        awaitFileDownloadSaved(documentsUiDownloadName);
+        assertEquals("saving a real destination must dispatch one ACTION_CREATE_DOCUMENT",
+                createDocumentCountBefore + 1, intentCountForAction(Intent.ACTION_CREATE_DOCUMENT));
+        captureScreenshot(artifacts, "documentsui-downloaded.png");
+        System.out.println("J10_DOCUMENTSUI_CREATE chooser=" + createChooserPackage
+                + " action=ACTION_CREATE_DOCUMENT selected=Downloads/" + documentsUiDownloadName
+                + " returned=true savedStatus=true expectedBytes=7");
+
         click("[data-file-name='link.txt'] .files-row-open");
         awaitJsTrue("document.querySelector('[data-testid=file-open-error]')?.textContent.includes('Symbolic links cannot be opened safely') === true");
         click("[data-file-name='large.bin'] .files-row-open");
@@ -169,16 +240,19 @@ public final class J10FilesBrowseEditJourneyTest {
                 .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, createResult));
         click("[data-testid=file-download]");
         awaitFileDownloadSaved(downloadedFile.getName());
-        Intents.intended(IntentMatchers.hasAction(Intent.ACTION_CREATE_DOCUMENT));
-        int createDocumentCount = 0;
+        Intents.intended(Matchers.allOf(
+                IntentMatchers.hasAction(Intent.ACTION_CREATE_DOCUMENT),
+                IntentMatchers.hasExtra(Intent.EXTRA_TITLE, "binary.bin")));
+        int binaryCreateDocumentCount = 0;
         Intent dispatchedCreateDocument = null;
         for (Intent intent : Intents.getIntents()) {
-            if (Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())) {
-                createDocumentCount++;
+            if (Intent.ACTION_CREATE_DOCUMENT.equals(intent.getAction())
+                    && "binary.bin".equals(intent.getStringExtra(Intent.EXTRA_TITLE))) {
+                binaryCreateDocumentCount++;
                 dispatchedCreateDocument = intent;
             }
         }
-        assertEquals("downloading binary.bin must dispatch exactly one ACTION_CREATE_DOCUMENT", 1, createDocumentCount);
+        assertEquals("downloading binary.bin must dispatch exactly one ACTION_CREATE_DOCUMENT", 1, binaryCreateDocumentCount);
         assertTrue("the ACTION_CREATE_DOCUMENT request must name binary.bin: " + dispatchedCreateDocument,
                 dispatchedCreateDocument != null
                         && "binary.bin".equals(dispatchedCreateDocument.getStringExtra(Intent.EXTRA_TITLE)));
@@ -247,6 +321,270 @@ public final class J10FilesBrowseEditJourneyTest {
                 outcome.contains("bytesWritten"));
     }
 
+    private Uri createDownloadsDocument(String name, byte[] bytes) throws Exception {
+        ContentValues values = new ContentValues();
+        values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+        values.put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+        values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/");
+        values.put(MediaStore.Downloads.IS_PENDING, 1);
+        Uri uri = targetContext().getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+        assertTrue("the Android DocumentsUI source fixture must be created in Downloads", uri != null);
+        OutputStream output = targetContext().getContentResolver().openOutputStream(uri);
+        assertTrue("the Android DocumentsUI source fixture must be writable", output != null);
+        try (OutputStream stream = output) {
+            stream.write(bytes);
+        }
+        values.clear();
+        values.put(MediaStore.Downloads.IS_PENDING, 0);
+        assertEquals("the DocumentsUI source fixture must be visible to the picker", 1,
+                targetContext().getContentResolver().update(uri, values, null, null));
+        return uri;
+    }
+
+    private int intentCountForAction(String action) {
+        int count = 0;
+        for (Intent intent : Intents.getIntents()) {
+            if (action.equals(intent.getAction())) count++;
+        }
+        return count;
+    }
+
+    /**
+     * Resolve which system DocumentsUI package this image ships, verified through the shell's
+     * unrestricted package list (no package-visibility filtering) to be a system package.
+     */
+    private String resolveSystemDocumentsUiPackage() throws Exception {
+        String systemPackages = shell("pm list packages -s");
+        String found = null;
+        for (String candidate : SYSTEM_DOCUMENTS_UI_PACKAGES) {
+            if (systemPackages.contains("package:" + candidate + "\n")
+                    || systemPackages.endsWith("package:" + candidate)) {
+                if (found != null) {
+                    throw new AssertionError("both " + found + " and " + candidate
+                            + " are installed system DocumentsUI packages; the chooser is ambiguous");
+                }
+                found = candidate;
+            }
+        }
+        if (found == null) {
+            throw new AssertionError("no system DocumentsUI package " + SYSTEM_DOCUMENTS_UI_PACKAGES
+                    + " is installed on this image");
+        }
+        return found;
+    }
+
+    private String shell(String command) throws Exception {
+        android.os.ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().executeShellCommand(command);
+        try (java.io.InputStream input = new android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor)) {
+            return new String(readAllBytes(input), StandardCharsets.UTF_8);
+        }
+    }
+
+    private String awaitDocumentsUiForeground() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String last = "<no active window>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                last = root.getPackageName() + "\n" + documentUiSnapshot(root);
+                String packageName = String.valueOf(root.getPackageName());
+                if (documentsUiPackage.equals(packageName)) return packageName;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Android DocumentsUI did not become the foreground chooser: " + last);
+    }
+
+    private void awaitPocketShellForeground() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String targetPackage = targetContext().getPackageName();
+        String last = "<no active window>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                last = String.valueOf(root.getPackageName());
+                if (targetPackage.equals(last)) return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("the selected DocumentsUI result did not return to the packaged app "
+                + targetPackage + "; active window=" + last + "\n" + documentUiSnapshot());
+    }
+
+    private void selectDocumentsUiOpenFile(String name, File artifacts) throws Exception {
+        longClickDocumentsUiText(name);
+        awaitDocumentsUiText("Select");
+        captureForegroundScreenshot(artifacts, "documentsui-open-selected.png");
+        clickDocumentsUiText("Select");
+    }
+
+    private void longClickDocumentsUiText(String text) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        String last = "<no active window>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                last = documentUiSnapshot(root);
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
+                        && longClickDocumentsUiNode(root, text)) {
+                    Thread.sleep(300);
+                    return;
+                }
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("could not long-press '" + text + "' in Android DocumentsUI: " + last);
+    }
+
+    private boolean longClickDocumentsUiNode(AccessibilityNodeInfo root, String text) {
+        AccessibilityNodeInfo match = findDocumentsUiNode(root, text);
+        AccessibilityNodeInfo candidate = match;
+        while (candidate != null) {
+            if (candidate.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)) return true;
+            candidate = candidate.getParent();
+        }
+        return false;
+    }
+
+    private AccessibilityNodeInfo findDocumentsUiNode(AccessibilityNodeInfo node, String text) {
+        CharSequence label = node.getText();
+        CharSequence description = node.getContentDescription();
+        if ((label != null && label.toString().contains(text))
+                || (description != null && description.toString().contains(text))) return node;
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child != null) {
+                AccessibilityNodeInfo match = findDocumentsUiNode(child, text);
+                if (match != null) return match;
+            }
+        }
+        return null;
+    }
+
+    private void browseDocumentsUiDownloads() throws Exception {
+        if (!clickAnyDocumentsUiText("Browse", "Show roots", "Show navigation drawer", "Open navigation drawer")) {
+            throw new AssertionError("DocumentsUI did not expose its Browse locations: " + documentUiSnapshot());
+        }
+        awaitDocumentsUiText("Downloads");
+        clickDocumentsUiText("Downloads");
+    }
+
+    private void awaitDocumentsUiText(String text) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        String last = "<no active window>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                last = documentUiSnapshot(root);
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
+                        && documentUiHasText(root, text)) return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("DocumentsUI did not show '" + text + "': " + last);
+    }
+
+    private void clickDocumentsUiText(String text) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        String last = "<no active window>";
+        while (SystemClock.uptimeMillis() < deadline) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null) {
+                last = documentUiSnapshot(root);
+                if (documentsUiPackage.equals(String.valueOf(root.getPackageName()))
+                        && clickDocumentsUiNode(root, text)) {
+                    Thread.sleep(300);
+                    return;
+                }
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("could not tap '" + text + "' in Android DocumentsUI: " + last);
+    }
+
+    private boolean clickAnyDocumentsUiText(String... labels) throws Exception {
+        for (String label : labels) {
+            AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                    .getUiAutomation().getRootInActiveWindow();
+            if (root != null && documentsUiPackage.equals(String.valueOf(root.getPackageName()))
+                    && clickDocumentsUiNode(root, label)) {
+                Thread.sleep(300);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean documentUiHasText(String text) {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().getRootInActiveWindow();
+        return root != null && documentUiHasText(root, text);
+    }
+
+    private boolean documentUiHasText(AccessibilityNodeInfo node, String text) {
+        CharSequence label = node.getText();
+        CharSequence description = node.getContentDescription();
+        if ((label != null && label.toString().contains(text))
+                || (description != null && description.toString().contains(text))) return true;
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child != null && documentUiHasText(child, text)) return true;
+        }
+        return false;
+    }
+
+    private boolean clickDocumentsUiNode(AccessibilityNodeInfo root, String text) {
+        CharSequence label = root.getText();
+        CharSequence description = root.getContentDescription();
+        if ((label != null && label.toString().contains(text))
+                || (description != null && description.toString().contains(text))) {
+            AccessibilityNodeInfo clickable = root;
+            while (clickable != null) {
+                if (clickable.isClickable() && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+                clickable = clickable.getParent();
+            }
+            if (root.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true;
+        }
+        for (int index = 0; index < root.getChildCount(); index++) {
+            AccessibilityNodeInfo child = root.getChild(index);
+            if (child != null && clickDocumentsUiNode(child, text)) return true;
+        }
+        return false;
+    }
+
+    private String documentUiSnapshot() {
+        AccessibilityNodeInfo root = InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation().getRootInActiveWindow();
+        return root == null ? "<no active window>" : documentUiSnapshot(root);
+    }
+
+    private String documentUiSnapshot(AccessibilityNodeInfo root) {
+        StringBuilder output = new StringBuilder();
+        appendDocumentsUiNode(root, output, 0);
+        return output.toString();
+    }
+
+    private void appendDocumentsUiNode(AccessibilityNodeInfo node, StringBuilder output, int depth) {
+        if (depth > 12) return;
+        for (int index = 0; index < depth; index++) output.append("  ");
+        output.append(node.getClassName());
+        if (node.getText() != null) output.append(" text=").append(node.getText());
+        if (node.getContentDescription() != null) output.append(" desc=").append(node.getContentDescription());
+        if (node.getViewIdResourceName() != null) output.append(" id=").append(node.getViewIdResourceName());
+        if (node.isClickable()) output.append(" clickable");
+        output.append('\n');
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child != null) appendDocumentsUiNode(child, output, depth + 1);
+        }
+    }
+
     private File createFile(File file, byte[] bytes) throws Exception {
         try (FileOutputStream output = new FileOutputStream(file)) {
             output.write(bytes);
@@ -255,7 +593,13 @@ public final class J10FilesBrowseEditJourneyTest {
     }
 
     private byte[] readAllBytes(File file) throws Exception {
-        try (FileInputStream input = new FileInputStream(file); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+        try (FileInputStream input = new FileInputStream(file)) {
+            return readAllBytes(input);
+        }
+    }
+
+    private byte[] readAllBytes(java.io.InputStream input) throws Exception {
+        try (ByteArrayOutputStream output = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192];
             int read;
             while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
@@ -352,7 +696,21 @@ public final class J10FilesBrowseEditJourneyTest {
             screenshot.recycle();
         });
         byte[] bytes = png.get();
-        assertTrue("packaged Android screenshot must contain rendered file UI: " + name, bytes != null && bytes.length > 1024);
+        writeScreenshotArtifactAndPublish(directory, name, bytes);
+    }
+
+    private void captureForegroundScreenshot(File directory, String name) throws Exception {
+        Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+        assertTrue("Android system chooser screenshot must be available: " + name, screenshot != null);
+        ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+        assertTrue("Android system chooser screenshot must encode as PNG: " + name,
+                screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded));
+        screenshot.recycle();
+        writeScreenshotArtifactAndPublish(directory, name, encoded.toByteArray());
+    }
+
+    private void writeScreenshotArtifactAndPublish(File directory, String name, byte[] bytes) throws Exception {
+        assertTrue("Android screenshot must contain a rendered screen: " + name, bytes != null && bytes.length > 1024);
         try (FileOutputStream output = new FileOutputStream(new File(directory, name))) {
             output.write(bytes);
         }
@@ -389,20 +747,26 @@ public final class J10FilesBrowseEditJourneyTest {
     }
 
     private void click(String selector) throws Exception {
-        evalString("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+        // evaluateJavascript reports a thrown script as null, so return the reason as a value.
+        String outcome = evalString("(() => {try {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "if(!node)throw new Error('missing ' + " + JSONObject.quote(selector) + ");"
                 + "if('disabled' in node && node.disabled)throw new Error('disabled ' + " + JSONObject.quote(selector)
                 + " + '; loading=' + (document.querySelector('[data-testid=file-loading]')?.textContent.trim() ?? 'none')"
                 + " + '; status=' + (document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? 'none')"
                 + " + '; error=' + (document.querySelector('[data-testid=file-error]')?.textContent.trim() ?? 'none'));"
-                + "node.click();return 'clicked';})()");
+                + "node.click();return 'clicked';} catch (error) {return 'click failed: ' + error.message;}})()");
+        assertEquals("packaged file UI click on " + selector, "clicked", outcome);
     }
 
     private void awaitFileDownloadReady() throws Exception {
+        awaitFileDownloadReady("binary.bin");
+    }
+
+    private void awaitFileDownloadReady(String name) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         JSONObject state = readFileDownloadUiState();
         while (SystemClock.uptimeMillis() < deadline) {
-            if ("binary.bin".equals(state.optString("openedName"))
+            if (name.equals(state.optString("openedName"))
                     && state.optBoolean("downloadButtonEnabled")
                     && state.isNull("loading")) {
                 return;

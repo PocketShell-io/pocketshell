@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the exact packaged Files journey to execute and pass once."""
+"""Require the exact packaged Files journey to execute and pass once, with its logcat."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from pathlib import Path
 
 REQUIRED_CLASS = "com.pocketshell.app.smoke.J10FilesBrowseEditJourneyTest"
 REQUIRED_METHOD = "browseEditConflictAndTransferFilesWithinTheConfiguredRoot"
+LOGCAT_GLOB = f"logcat-{REQUIRED_CLASS}-*.txt"
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")
 
 
@@ -85,7 +86,18 @@ def validate_results(results: Path) -> list[Path]:
         raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed")
     if list(case.iter("skipped")):
         raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped")
-    return reports
+    logcats = sorted(results.rglob(LOGCAT_GLOB))
+    if len(logcats) != 1:
+        raise GateFailure(
+            f"expected exactly one {LOGCAT_GLOB} logcat artifact under {results}; found {len(logcats)}"
+        )
+    return reports + logcats
+
+
+def _write_logcat(results: Path, name: str = "0") -> None:
+    path = results / "logcat" / f"logcat-{REQUIRED_CLASS}-{REQUIRED_METHOD}-{name}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("fixture logcat\n")
 
 
 def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
@@ -109,23 +121,29 @@ def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
 
 
 def self_test() -> int:
+    passing = [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")]
+    # (label, identities, logcat artifact count, expected pass)
     cases = [
-        ("one exact passing Files journey passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")], True),
-        ("zero tests block", [], False),
-        ("missing Files method blocks", [(REQUIRED_CLASS, "otherMethod", "passed")], False),
-        ("unexpected class blocks", [("example.OtherJourney", REQUIRED_METHOD, "passed")], False),
-        ("extra test blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False),
-        ("duplicate test blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, REQUIRED_METHOD, "passed")], False),
-        ("failed journey blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], False),
-        ("skipped journey blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False),
+        ("one exact passing Files journey passes", passing, 1, True),
+        ("missing J10 logcat artifact blocks", passing, 0, False),
+        ("duplicate J10 logcat artifacts block", passing, 2, False),
+        ("zero tests block", [], 1, False),
+        ("missing Files method blocks", [(REQUIRED_CLASS, "otherMethod", "passed")], 1, False),
+        ("unexpected class blocks", [("example.OtherJourney", REQUIRED_METHOD, "passed")], 1, False),
+        ("extra test blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], 1, False),
+        ("duplicate test blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, REQUIRED_METHOD, "passed")], 1, False),
+        ("failed journey blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], 1, False),
+        ("skipped journey blocks", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], 1, False),
     ]
     failures = 0
     with tempfile.TemporaryDirectory(prefix="pocketshell-js-files-results-") as temporary:
         root = Path(temporary)
-        for index, (label, identities, expected_pass) in enumerate(cases):
+        for index, (label, identities, logcat_count, expected_pass) in enumerate(cases):
             results = root / str(index)
             if identities:
                 _write_report(results / "TEST-files.xml", identities)
+            for logcat_index in range(logcat_count):
+                _write_logcat(results, str(logcat_index))
             try:
                 validate_results(results)
                 passed = True
@@ -152,12 +170,12 @@ def main(argv: list[str] | None = None) -> int:
         reports = validate_results(args.results_dir)
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
-            for report in reports:
-                shutil.copy2(report, args.evidence_dir / report.name)
+            for artifact in reports:
+                shutil.copy2(artifact, args.evidence_dir / artifact.name)
     except GateFailure as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
-    print(f"PASS: {REQUIRED_CLASS}#{REQUIRED_METHOD} executed exactly once")
+    print(f"PASS: {REQUIRED_CLASS}#{REQUIRED_METHOD} executed exactly once with one logcat artifact")
     return 0
 
 
