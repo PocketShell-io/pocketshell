@@ -1116,7 +1116,7 @@ public final class JsFastKeysDockerJourneyTest {
                     + "active:document.activeElement?.className??document.activeElement?.tagName??null})");
             Log.w("PS2884Geometry", "RUN " + artifactRunId + " prompt-guard-ime-recovery nativeIme=" + isImeVisible()
                     + " webViewHeightPx=" + runOnUiThread("read WebView height", () -> packagedWebView.getHeight())
-                    + " " + state);
+                    + " " + state + " windowTargets=" + AndroidInputDeliveryProbe.imeWindowTargets());
             runOnUiThread("hide the stale IME", () -> {
                 InputMethodManager imm = (InputMethodManager) packagedActivity.getSystemService(Context.INPUT_METHOD_SERVICE);
                 return imm.hideSoftInputFromWindow(packagedWebView.getWindowToken(), 0);
@@ -1126,7 +1126,12 @@ public final class JsFastKeysDockerJourneyTest {
             tapDomCenter(".terminal-viewport");
         }
         awaitImeVisible(true);
-        awaitJsTrue(keyboardTerminalReady, 10_000);
+        try {
+            awaitJsTrue(keyboardTerminalReady, 10_000);
+        } catch (AssertionError stale) {
+            throw new AssertionError(stale.getMessage() + "; windowTargets=" + AndroidInputDeliveryProbe.imeWindowTargets()
+                    + "; webViewHeightPx=" + runOnUiThread("read WebView height", () -> packagedWebView.getHeight()), stale);
+        }
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
         int writesBefore = terminalInputAcknowledgements();

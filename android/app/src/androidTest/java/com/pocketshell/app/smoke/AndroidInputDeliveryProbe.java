@@ -170,6 +170,19 @@ final class AndroidInputDeliveryProbe {
         return null;
     }
 
+    /** Which windows own focus and the IME layering/input/control targets right now. */
+    static String imeWindowTargets() {
+        StringBuilder out = new StringBuilder();
+        for (String line : runShell("dumpsys window displays").split("\n")) {
+            String t = line.trim();
+            if (t.startsWith("mCurrentFocus=") || t.startsWith("mFocusedApp=") || t.startsWith("imeLayeringTarget")
+                    || t.startsWith("imeInputTarget") || t.startsWith("imeControlTarget")) {
+                out.append(t).append("; ");
+            }
+        }
+        return out.toString();
+    }
+
     static String runShell(String command) {
         try {
             ParcelFileDescriptor descriptor = InstrumentationRegistry.getInstrumentation().getUiAutomation()

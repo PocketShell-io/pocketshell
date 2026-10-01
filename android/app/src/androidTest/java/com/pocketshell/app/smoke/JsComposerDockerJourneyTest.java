@@ -1958,7 +1958,8 @@ public final class JsComposerDockerJourneyTest {
             }
             Thread.sleep(100);
         }
-        throw new AssertionError("Android IME visibility did not become " + visible);
+        throw new AssertionError("Android IME visibility did not become " + visible
+                + "; window targets: " + AndroidInputDeliveryProbe.imeWindowTargets());
     }
 
     private void requestImeHide() {
