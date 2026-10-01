@@ -39,6 +39,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -65,16 +66,32 @@ public final class JsShellPackagedSmokeTest {
     private static final int BRIDGE_RELOADS = 300;
     private static final int LOAD_THREADS_PER_CORE = 2;
 
+    /** #2946: per-test dismiss-and-probe before each test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
+
     private ActivityScenario<MainActivity> scenario;
     private MainActivity directActivity;
 
+    /** Emulated bottom display cutout used to keep a non-zero bottom inset (#2946). */
+    private static final String BOTTOM_CUTOUT_OVERLAY = "com.android.internal.display.cutout.emulation.double";
+    private boolean bottomCutoutEnabled;
+
     @Before
     public void launchPackagedShell() {
+        // A run killed mid-test must not leave the emulated cutout for later tests.
+        if (AndroidInputDeliveryProbe.runShell("cmd overlay list").contains("[x] " + BOTTOM_CUTOUT_OVERLAY)) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+        }
         scenario = ActivityScenario.launch(MainActivity.class);
     }
 
     @After
     public void closeShell() {
+        if (bottomCutoutEnabled) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+        }
         if (directActivity != null) {
             MainActivity activity = directActivity;
             InstrumentationRegistry.getInstrumentation().runOnMainSync(activity::finish);
@@ -165,7 +182,7 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("typeof window.__ps2857SpeechCapabilities?.speechRecognitionAvailable === 'boolean'"
                 + " && typeof window.__ps2857SpeechCapabilities?.microphonePermissionGranted === 'boolean'");
 
-        assertInjectedInputReachesPage("before the picker Back key");
+        beforeFirstInjectedInput("before the picker Back key");
         evalRaw("window.__ps2857PickerResult=null; window.Capacitor.Plugins.DocumentContent.pickFiles({mimeType:'*/*',multiple:true})"
                 + ".then((value)=>window.__ps2857PickerResult=value)");
         // Back must reach the system picker, not the app: wait until the
@@ -225,7 +242,7 @@ public final class JsShellPackagedSmokeTest {
     public void settingsAndAndroidBackReturnHome() throws Exception {
         awaitJsTrue("document.querySelector('[aria-label=Settings]') !== null");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
-        assertInjectedInputReachesPage("before the first Settings tap");
+        beforeFirstInjectedInput("before the first Settings tap");
         tapDomCenter("[aria-label=Settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings' && !!document.querySelector('#settings-title')");
         awaitJsTrue("document.querySelector('[data-testid=setting-theme]') !== null");
@@ -421,7 +438,7 @@ public final class JsShellPackagedSmokeTest {
     @Test
     public void injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus() throws Exception {
         awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
-        assertInjectedInputReachesPage("self-test baseline");
+        beforeFirstInjectedInput("self-test baseline");
 
         AndroidInputDeliveryProbe.runShell("cmd statusbar expand-notifications");
         try {
@@ -468,6 +485,11 @@ public final class JsShellPackagedSmokeTest {
                 + ": " + focus);
     }
 
+    private void beforeFirstInjectedInput(String context) throws Exception {
+        inputGuard.beforeFirstInjectedInput(context, this::evalRaw,
+                action -> runOnCurrentActivity(action::accept));
+    }
+
     private void assertInjectedInputReachesPage(String context) throws Exception {
         AndroidInputDeliveryProbe.assertInjectedKeyReachesPage(context, this::evalRaw,
                 action -> runOnCurrentActivity(action::accept));
@@ -477,14 +499,118 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === " + JSONObject.quote(route));
     }
 
+    /**
+     * Issue #2946: the lanes disable the HOME launcher, and on images where the
+     * launcher draws the navigation bar (the hosted Pixel image and the local
+     * Launcher3 image both report a 0 bottom inset then) CSS == native would
+     * pass as 0 == 0 even with a broken bridge. Give the device a real bottom
+     * inset through the same systemBars | displayCutout path the native
+     * KeyboardInsets plugin reads (an emulated bottom display cutout) and
+     * require the plugin to carry it into --safe-area-inset-bottom, then follow
+     * it back down. A bridge that drops the bottom inset fails here.
+     */
+    @Test
+    public void safeAreaBottomInsetBridgeCarriesANonZeroInset() throws Exception {
+        int safeAreaTypes = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        float density = targetContext().getResources().getDisplayMetrics().density;
+        awaitJsTrue("document.querySelector('.app-shell') !== null");
+        Insets naturalInsets = readRootInsets(safeAreaTypes);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_NATURAL_INSETS_PX top=" + naturalInsets.top
+                + " bottom=" + naturalInsets.bottom + " navigationBarsBottom="
+                + readRootInsets(WindowInsets.Type.navigationBars()).bottom);
+        if (naturalInsets.bottom == 0) enableEmulatedBottomCutout(safeAreaTypes);
+        Insets loadBearingInsets = readRootInsets(safeAreaTypes);
+        float loadBearingSafeBottom = Math.round(loadBearingInsets.bottom / density);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BOTTOM_BRIDGE_DP bottom=" + loadBearingSafeBottom
+                + " source=" + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
+        assertTrue("the bottom-inset bridge check needs a non-zero bottom inset (bottom="
+                + loadBearingInsets.bottom + "px)", loadBearingSafeBottom > 0);
+        awaitKeyboardInsetsBridgeBottom((int) loadBearingSafeBottom, "with a non-zero bottom inset");
+        if (bottomCutoutEnabled) {
+            AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+            bottomCutoutEnabled = false;
+            awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
+            awaitKeyboardInsetsBridgeBottom(Math.round(naturalInsets.bottom / density),
+                    "after the emulated cutout is removed");
+        }
+    }
+
+    /**
+     * Capacitor SystemBars also writes --safe-area-inset-bottom, so a CSS match
+     * alone cannot prove the KeyboardInsets plugin. Require the plugin's own
+     * getState().safeBottomDp to equal the native bottom inset, and the CSS
+     * value (which App.vue rewrites from the plugin) to hold that value, for
+     * STABLE_BRIDGE_SAMPLES consecutive samples.
+     */
+    private void awaitKeyboardInsetsBridgeBottom(int expectedDp, String context) throws Exception {
+        final int stableBridgeSamples = 10;
+        try {
+            evalRaw("delete window.__ps2946KeyboardInsets; true");
+        } catch (Exception | AssertionError pageReloading) {
+            // A reloaded page has no stale sample to clear.
+        }
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject last = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            try {
+                last = evalJson("(() => {const plugin = window.Capacitor?.Plugins?.KeyboardInsets;"
+                        + "if (!plugin?.getState) return JSON.stringify({pluginMissing: true});"
+                        + "plugin.getState().then((value) => { window.__ps2946KeyboardInsets = value; });"
+                        + "const state = window.__ps2946KeyboardInsets ?? null;"
+                        + "return JSON.stringify({pluginSafeBottomDp: state ? state.safeBottomDp : null,"
+                        + "pluginSupported: state ? state.supported : null, pluginImeVisible: state ? state.imeVisible : null,"
+                        + "cssSafeBottom: parseFloat(getComputedStyle(document.documentElement)"
+                        + ".getPropertyValue('--safe-area-inset-bottom'))});})()");
+            } catch (Exception | AssertionError pageReloading) {
+                // An overlay change can recreate MainActivity and reload the page.
+                stable = 0;
+                Thread.sleep(100);
+                continue;
+            }
+            if (last.optBoolean("pluginMissing")) {
+                stable = 0;
+                Thread.sleep(100);
+                continue;
+            }
+            boolean pluginMatches = !last.isNull("pluginSafeBottomDp") && last.optInt("pluginSafeBottomDp", -1) == expectedDp;
+            boolean cssMatches = closeTo(last.optDouble("cssSafeBottom"), expectedDp, 1.0);
+            stable = pluginMatches && cssMatches ? stable + 1 : 0;
+            if (stable >= stableBridgeSamples) {
+                android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BRIDGE_OK " + context + " expectedDp=" + expectedDp
+                        + " last=" + last);
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("KeyboardInsets bridge did not report and hold the native bottom inset " + context
+                + ": expected safeBottomDp=" + expectedDp + " for " + stableBridgeSamples
+                + " consecutive samples; last=" + last);
+    }
+
     @Test
     public void composerInputStaysAboveImeWithinSafeArea() throws Exception {
         assertTrue("safe-area CSS injection is supported by the API 35+ smoke device", Build.VERSION.SDK_INT >= 35);
 
-        Insets systemInsets = readRootInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+        int safeAreaTypes = WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout();
+        Insets naturalInsets = readRootInsets(safeAreaTypes);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_NATURAL_INSETS_PX top=" + naturalInsets.top
+                + " bottom=" + naturalInsets.bottom + " navigationBarsBottom="
+                + readRootInsets(WindowInsets.Type.navigationBars()).bottom);
+        // The non-zero bottom-inset bridge check lives in
+        // safeAreaBottomInsetBridgeCarriesANonZeroInset (#2946): this test runs
+        // on the device's own insets, with no emulated cutout toggled under it.
         float density = targetContext().getResources().getDisplayMetrics().density;
+
+        Insets systemInsets = readRootInsets(safeAreaTypes);
         float expectedSafeTop = Math.round(systemInsets.top / density);
+        final int safeAreaTypesForIme = safeAreaTypes;
         float expectedSafeBottom = Math.round(systemInsets.bottom / density);
+        android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_TESTED_INSETS_DP top=" + expectedSafeTop
+                + " bottom=" + expectedSafeBottom);
+        // styles.css pads the Android shell by max(24px, safe-area inset).
+        float expectedShellPaddingTop = Math.max(24f, expectedSafeTop);
+        float expectedShellPaddingBottom = Math.max(24f, expectedSafeBottom);
 
         // The shell mounts once durable storage is hydrated (#2993), so wait for
         // the mounted app bar rather than assume it exists at first evaluation.
@@ -502,18 +628,19 @@ public final class JsShellPackagedSmokeTest {
                 + "appBarTop: document.querySelector('.app-bar').getBoundingClientRect().top"
                 + "});})()");
         assertEquals("status bar inset must reach CSS", expectedSafeTop, beforeIme.getDouble("safeTop"), 1.0);
-        assertEquals("safe top padding must be applied to the shell", expectedSafeTop, beforeIme.getDouble("paddingTop"), 1.0);
+        assertEquals("safe top padding must be applied to the shell", expectedShellPaddingTop, beforeIme.getDouble("paddingTop"), 1.0);
         assertEquals("safe bottom inset must reach CSS", expectedSafeBottom, beforeIme.getDouble("safeBottom"), 1.0);
-        assertEquals("safe bottom padding must be applied to the shell", expectedSafeBottom, beforeIme.getDouble("paddingBottom"), 1.0);
+        assertEquals("safe bottom padding must be applied to the shell", expectedShellPaddingBottom, beforeIme.getDouble("paddingBottom"), 1.0);
         assertEquals("app content must begin below the status bar", expectedSafeTop, beforeIme.getDouble("appBarTop"), 1.0);
 
         evalString("(() => { const input = document.querySelector('[data-testid=ssh-host]'); input.scrollIntoView({block: 'center', behavior: 'instant'}); return 'ready'; })()");
         awaitComposerInputSettled();
-        assertInjectedInputReachesPage("before the SSH host input tap");
+        beforeFirstInjectedInput("before the SSH host input tap");
         tapDomCenter("[data-testid=ssh-host]");
         awaitComposerFocused();
         awaitImeVisible(true);
-        awaitImeSafeAreaSettled(expectedSafeTop);
+        awaitImeSafeAreaSettled(safeAreaTypesForIme, density);
+        float liveSafeTopDuringIme = Math.round(readRootInsets(safeAreaTypesForIme).top / density);
 
         JSONObject duringIme = evalJson("(() => {"
                 + "const root = getComputedStyle(document.documentElement);"
@@ -538,7 +665,8 @@ public final class JsShellPackagedSmokeTest {
                 + "viewportScale: window.visualViewport ? window.visualViewport.scale : 1"
                 + "});})()");
         android.util.Log.i("JsShellPackagedSmokeTest", "IME_SAFE_AREA dom=" + duringIme + "; android=" + nativeImeState());
-        assertEquals("top system bar clearance must persist while the IME is open", expectedSafeTop, duringIme.getDouble("safeTop"), 1.0);
+        assertEquals("top system bar clearance must persist while the IME is open (native top while the IME is open)",
+                liveSafeTopDuringIme, duringIme.getDouble("safeTop"), 1.0);
         assertEquals("IME inset must replace the navigation safe-area padding", 0.0, duringIme.getDouble("safeBottom"), 1.0);
         assertEquals("safe-area padding must remain clear of the IME", 0.0, duringIme.getDouble("paddingBottom"), 1.0);
         assertTrue("JS keyboard mode must follow native IME visibility", duringIme.getBoolean("keyboardVisible"));
@@ -557,6 +685,32 @@ public final class JsShellPackagedSmokeTest {
 
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitImeVisible(false);
+    }
+
+    private void awaitRootBottomInsetPx(int safeAreaTypes, int expectedPx) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int bottom = -1;
+        while (SystemClock.uptimeMillis() < deadline) {
+            bottom = rootBottomInsetPxOrMissing(safeAreaTypes);
+            if (bottom == expectedPx) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("bottom inset did not return to " + expectedPx + "px after removing the emulated cutout (bottom="
+                + bottom + "px)");
+    }
+
+    private void enableEmulatedBottomCutout(int safeAreaTypes) throws Exception {
+        String result = AndroidInputDeliveryProbe.runShell("cmd overlay enable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
+        bottomCutoutEnabled = true;
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int bottom = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            bottom = rootBottomInsetPxOrMissing(safeAreaTypes);
+            if (bottom > 0) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("emulated bottom display cutout did not produce a bottom inset (overlay result="
+                + result.trim() + ", bottom=" + bottom + "px)");
     }
 
     private Context targetContext() {
@@ -950,12 +1104,15 @@ public final class JsShellPackagedSmokeTest {
      * root CSS value, keyboard state, and actual shell padding to settle;
      * assertions still fail if navigation-bar padding remains under the IME.
      */
-    private void awaitImeSafeAreaSettled(float expectedSafeTop) throws Exception {
+    private void awaitImeSafeAreaSettled(int safeAreaTypes, float density) throws Exception {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         JSONObject previous = null;
         JSONObject latest = imeSafeAreaDomState();
         int stableSamples = 0;
+        float expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
         while (SystemClock.uptimeMillis() < deadline) {
+            // CSS must track the device's live top inset while the IME is open.
+            expectedSafeTop = Math.round(readRootInsets(safeAreaTypes).top / density);
             boolean correctInsets = closeTo(latest.optDouble("safeTop"), expectedSafeTop, 1.0)
                     && closeTo(latest.optDouble("safeBottom"), 0.0, 0.5)
                     && closeTo(latest.optDouble("paddingBottom"), 0.0, 0.5)
@@ -976,7 +1133,7 @@ public final class JsShellPackagedSmokeTest {
             latest = imeSafeAreaDomState();
         }
         throw new AssertionError("Capacitor safe-area CSS did not settle after the IME opened: DOM=" + latest
-                + "; Android=" + nativeImeState());
+                + "; nativeSafeTopDp=" + expectedSafeTop + "; Android=" + nativeImeState());
     }
 
     private JSONObject imeSafeAreaDomState() throws Exception {
@@ -1006,6 +1163,23 @@ public final class JsShellPackagedSmokeTest {
             assertNotNull("window insets must be available", windowInsets);
             result.set(windowInsets.getInsets(typeMask));
         });
+        return result.get();
+    }
+
+    /**
+     * Root bottom inset in px, or -1 while the activity has no attached window
+     * (an overlay change can recreate MainActivity).
+     */
+    private int rootBottomInsetPxOrMissing(int typeMask) {
+        AtomicReference<Integer> result = new AtomicReference<>(-1);
+        try {
+            scenario.onActivity(activity -> {
+                WindowInsets windowInsets = activity.getWindow().getDecorView().getRootWindowInsets();
+                if (windowInsets != null) result.set(windowInsets.getInsets(typeMask).bottom);
+            });
+        } catch (RuntimeException activityNotReady) {
+            return -1;
+        }
         return result.get();
     }
 

@@ -34,6 +34,7 @@ REQUIRED_METHODS = frozenset(
         "packagedMultipleShareReadsStandardStreamListWithoutClipData",
         "settingsAndAndroidBackReturnHome",
         "injectedInputProbeFailsClosedWhileAnotherWindowOwnsFocus",
+        "safeAreaBottomInsetBridgeCarriesANonZeroInset",
         "composerInputStaysAboveImeWithinSafeArea",
         "pageReloadsKeepFirstNativeCallAnswered",
     }

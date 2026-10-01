@@ -66,7 +66,7 @@ public final class UsagePortsDockerJourneyTest {
                 if ("live".equals(evalString("document.querySelector('.app-shell')?.dataset.sshPhase ?? ''"))) {
                     String stem = serverStem(activeRunId);
                     String cleanupMarker = marker(activeRunId, "HTTP_CLEANUP");
-                    sendCommandAndAwaitMarker(
+                    sendComposerCommandAndAwaitMarker(
                             "pidfile=" + stem + ".pid; checkfile=" + stem + ".cleanup-check; "
                                     + "if [ -r \"$pidfile\" ]; then pid=\"$(cat \"$pidfile\" 2>/dev/null || true)\"; "
                                     + "case \"$pid\" in ''|*[!0-9]*) printf 'decision=cleanup-invalid-pid\\n' > \"$checkfile\";; "
@@ -172,7 +172,11 @@ public final class UsagePortsDockerJourneyTest {
         String serverStartedMarker = marker(runId, "HTTP_STARTED");
         String serverStoppedMarker = marker(runId, "HTTP_STOPPED");
         fixtureHttpServerMayBeRunning = true;
-        sendCommandAndAwaitMarker(
+        // #2946: hosted runs garbled this command when it was typed with
+        // Instrumentation.sendStringSync (per-character key injection through
+        // the IME reordered and repeated bytes, e.g. "pytthn3 ..."), so it goes
+        // through the packaged composer like the stop command below.
+        sendComposerCommandAndAwaitMarker(
                 "python3 -m http.server " + httpRemotePort + " --bind 127.0.0.1 >" + stem
                         + ".log 2>&1 & echo $! > " + stem + ".pid; sleep 0.5; printf '%s\\n' '"
                         + serverStartedMarker + "'",
@@ -401,20 +405,6 @@ public final class UsagePortsDockerJourneyTest {
         sendComposerCommandAndAwaitMarker(command, stoppedMarker, "stop test HTTP service");
     }
 
-    private void sendCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
-        JSONObject before = terminalInputStats();
-        assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
-        awaitTerminalReady();
-        InstrumentationRegistry.getInstrumentation().sendStringSync(command + "\n");
-        try {
-            awaitExactMarkerRow(marker, checkpoint);
-        } catch (AssertionError missingMarker) {
-            throw new AssertionError(missingMarker.getMessage()
-                    + "; terminalInputStats=" + terminalInputStats(), missingMarker);
-        }
-        waitForTerminalInputDrain(before.getInt("ackCount"), before.getInt("failureCount"), checkpoint);
-    }
-
     private void sendComposerCommandAndAwaitMarker(String command, String marker, String checkpoint) throws Exception {
         JSONObject before = terminalInputStats();
         assertEquals("terminal input must be drained before " + checkpoint, 0, before.getInt("pending"));
@@ -449,17 +439,6 @@ public final class UsagePortsDockerJourneyTest {
                 "true".equals(evalString("Array.from(document.querySelectorAll('#terminal-viewport .xterm-rows > div'))"
                         + ".some((row)=>row.textContent.replaceAll(String.fromCharCode(160),' ').trim()==="
                         + JSONObject.quote(marker) + ")")));
-    }
-
-    private void waitForTerminalInputDrain(int ackBefore, int failureBefore, String checkpoint) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 20_000;
-        while (SystemClock.uptimeMillis() < deadline) {
-            JSONObject stats = terminalInputStats();
-            assertEquals("terminal input failed while sending " + checkpoint, failureBefore, stats.getInt("failureCount"));
-            if (stats.getInt("pending") == 0 && stats.getInt("ackCount") > ackBefore) return;
-            Thread.sleep(100);
-        }
-        throw new AssertionError("terminal input did not drain for " + checkpoint + ": " + terminalInputStats());
     }
 
     private JSONObject terminalInputStats() throws Exception {

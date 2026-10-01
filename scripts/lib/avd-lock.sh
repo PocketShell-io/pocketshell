@@ -328,6 +328,11 @@ pocketshell_start_without_avd_lock_fd() {
 # release (issue #2007) are invoked defensively only when their helper has been
 # sourced into the shell.
 pocketshell_release_all() {
+  # Issue #2946: re-enable a HOME launcher the input preflight disabled for
+  # this lane, while this process still owns the emulator.
+  if declare -F pocketshell_android_restore_launchers >/dev/null 2>&1; then
+    pocketshell_android_restore_launchers
+  fi
   pocketshell_release_pool_serial
   if declare -F pocketshell_release_agents_port >/dev/null 2>&1; then
     pocketshell_release_agents_port

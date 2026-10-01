@@ -32,6 +32,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -68,6 +69,9 @@ public final class SshPtyDockerJourneyTest {
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
     private int nativePluginCallSequence;
+    /** #2946: per-test dismiss-and-probe before the test's first injected input. */
+    @Rule
+    public final AndroidInputGuardRule inputGuard = new AndroidInputGuardRule();
     private boolean injectedInputVerified;
 
     @Before
@@ -1037,7 +1041,7 @@ public final class SshPtyDockerJourneyTest {
     private void ensureInjectedInputDelivered(String checkpoint) throws Exception {
         if (injectedInputVerified) return;
         JSONObject before = terminalInputStats();
-        AndroidInputDeliveryProbe.assertInjectedKeyReachesPage("lifecycle " + checkpoint + " before the first injected Enter",
+        inputGuard.beforeFirstInjectedInput("lifecycle " + checkpoint + " before the first injected Enter",
                 this::evalRaw, action -> scenario.onActivity(action::accept));
         JSONObject stats = terminalInputStats();
         assertEquals("the no-op probe key must not leave terminal input pending at " + checkpoint, 0, stats.getInt("pending"));
