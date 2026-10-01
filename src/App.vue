@@ -1401,7 +1401,10 @@ watchEffect(() => {
 
 watch(() => navigation.route, (route) => {
   if (route !== 'home') {
+    // Leaving Home closes Prompt in both forms; the draft stays in its per-PTY
+    // store and the returned Home shows the dock's Prompt launcher (#2908).
     mobilePromptComposerOpen.value = false;
+    mobilePromptComposerInline.value = false;
   }
 });
 
