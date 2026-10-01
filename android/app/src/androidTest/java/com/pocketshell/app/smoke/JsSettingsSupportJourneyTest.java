@@ -315,7 +315,7 @@ public final class JsSettingsSupportJourneyTest {
         tapDomCenter("[data-testid=open-connection-settings]");
         awaitRoute("settings-connections");
         setSelect("[data-testid=setting-background-grace]", "30000");
-        awaitJsTrue("document.querySelector('[data-testid=setting-reconnect-on-return]')?.checked === true");
+        awaitJsTrue("document.querySelector('[data-testid=setting-reconnect-on-return]')?.getAttribute('aria-checked') === 'true'");
         tapDomCenter("[data-testid=setting-reconnect-on-return]");
         awaitJsTrue("(() => {const s = JSON.parse(localStorage.getItem(" + JSONObject.quote(SHARED_SETTINGS_KEY)
                 + ") || '{}'); return s.backgroundGraceMs === 30000 && s.reconnectOnReturn === false;})()");
@@ -379,6 +379,36 @@ public final class JsSettingsSupportJourneyTest {
                 + "node.click();return 'clicked';})()");
     }
 
+    /**
+     * Regression for the dropped first native reply (#2861 round 5): after a
+     * page reload Capacitor can deliver the answer to the page's first plugin
+     * call to the previous document. The app makes a sacrificial, retried
+     * BridgeReady ping first, so App.getInfo must answer after every reload.
+     */
+    @Test
+    public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
+        assertTrue("packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
+        awaitBuildVerified();
+        int retried = 0;
+        JSONArray reloads = new JSONArray();
+        for (int reload = 1; reload <= 15; reload += 1) {
+            evalRaw("location.replace(location.origin + location.pathname + '?ps2861Probe=1&reload=" + reload + "'); 'reload'");
+            awaitJsTrue("new URLSearchParams(location.search).get('reload') === '" + reload + "'"
+                    + " && ['resolved','timeout','failed'].includes(window.__ps2861ProbeState?.infoState)", 20_000);
+            JSONObject state = new JSONObject(evalString("JSON.stringify(window.__ps2861ProbeState)"));
+            reloads.put(state);
+            assertEquals("App.getInfo must answer after reload " + reload + ": " + state, "resolved", state.getString("infoState"));
+            JSONObject bridge = state.optJSONObject("bridge");
+            if (bridge == null) {
+                awaitJsTrue("!!window.__ps2861ProbeState?.bridge");
+                bridge = new JSONObject(evalString("JSON.stringify(window.__ps2861ProbeState.bridge)"));
+            }
+            assertTrue("the bridge warm-up must be answered after reload " + reload + ": " + bridge, bridge.getBoolean("answered"));
+            if (bridge.getInt("attempts") > 1) retried += 1;
+        }
+        android.util.Log.i("PocketshellSettingsEvidence", "BRIDGE reloads=15 warmUpRetried=" + retried + " " + reloads);
+    }
+
     private void exerciseGraceChoices() throws Exception {
         JSONArray values = new JSONArray(evalString("JSON.stringify([...document.querySelectorAll("
                 + "'[data-testid=setting-background-grace] option')].map((option) => option.value))"));
@@ -387,7 +417,7 @@ public final class JsSettingsSupportJourneyTest {
         awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SHARED_SETTINGS_KEY) + ") || '{}').backgroundGraceMs === 600000");
         captureScreenshot("j24-connections-ten-minutes.png", "#connection-settings-title");
         // Reconnect-when-I-return lives in the same shared store the lifecycle reads.
-        awaitJsTrue("document.querySelector('[data-testid=setting-reconnect-on-return]')?.checked === true");
+        awaitJsTrue("document.querySelector('[data-testid=setting-reconnect-on-return]')?.getAttribute('aria-checked') === 'true'");
         tapDomCenter("[data-testid=setting-reconnect-on-return]");
         awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SHARED_SETTINGS_KEY) + ") || '{}').reconnectOnReturn === false");
         captureScreenshot("j24-connections-reconnect-off.png", "#connection-settings-title");

@@ -251,8 +251,8 @@
         "resolves the shared UI package from inside the clean core pin",
         "fails closed unless the core pin equals the upstream main head",
         "keeps no tracked app, test, config or script reference to the desktop checkout"
-        ]
-      },
+      ]
+    },
     "tests/unit/sharedControllersSource.test.ts": {
       "suite": "shared controllers are bound from core, never copied",
       "tests": [
@@ -272,6 +272,15 @@
         "captures Vue, unhandled-rejection and window errors from app startup",
         "blanks remembered host names and seeded secrets in every report source",
         "exposes the journey probe only for a page loaded with the probe query, and records its lifecycle"
+      ]
+    },
+    "tests/unit/bridgeReady.test.ts": {
+      "suite": "bridge warm-up and bounded app info",
+      "tests": [
+        "retries the sacrificial ping when the first reply is lost, as after a page reload",
+        "reports an unanswered bridge instead of waiting forever",
+        "asks App.getInfo again once when an answer is lost, and reports a timeout if both are",
+        "settles a slow promise as undefined after the bound and passes through answers and errors"
       ]
     }
   }

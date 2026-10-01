@@ -1,5 +1,6 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
+import { bridgeWarmUp, withTimeout } from '../native/bridgeReady';
 
 /** Installed package identity, read from Android's PackageManager through @capacitor/app. */
 export interface InstalledAppInfo {
@@ -28,19 +29,51 @@ export function isReleaseInstall(applicationId: string): boolean {
   return applicationId.endsWith('.release');
 }
 
-export async function readInstalledAppInfo(): Promise<InstalledAppInfo> {
-  if (!Capacitor.isNativePlatform()) return { ...UNKNOWN_APP_INFO };
-  try {
-    const info = await CapacitorApp.getInfo();
-    const code = Number(info.build);
-    return {
-      versionName: info.version?.trim() || 'unknown',
-      versionCode: Number.isSafeInteger(code) && code > 0 ? code : null,
-      applicationId: info.id ?? '',
-    };
-  } catch {
-    return { ...UNKNOWN_APP_INFO };
+export type AppInfoOutcome =
+  | { state: 'resolved'; info: InstalledAppInfo; attempts: number }
+  | { state: 'timeout'; info: InstalledAppInfo; attempts: number };
+
+type GetInfo = () => Promise<{ version?: string; build?: string; id?: string }>;
+
+/**
+ * Read the installed identity after the page's bridge warm-up, bounded: each
+ * `App.getInfo()` gets `timeoutMs`, and a lost answer is asked again once. A
+ * hang reports `timeout` (with unknown identity) instead of pending forever.
+ */
+export async function readInstalledAppInfoOutcome(options: {
+  getInfo?: GetInfo;
+  waitForBridge?: () => Promise<unknown>;
+  native?: boolean;
+  timeoutMs?: number;
+  attempts?: number;
+} = {}): Promise<AppInfoOutcome> {
+  if (!(options.native ?? Capacitor.isNativePlatform())) return { state: 'resolved', info: { ...UNKNOWN_APP_INFO }, attempts: 0 };
+  await (options.waitForBridge ?? bridgeWarmUp)();
+  const getInfo: GetInfo = options.getInfo ?? (() => CapacitorApp.getInfo());
+  const maxAttempts = options.attempts ?? 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const info = await withTimeout(getInfo(), options.timeoutMs ?? 5_000);
+      if (info === undefined) continue;
+      const code = Number(info.build);
+      return {
+        state: 'resolved',
+        attempts: attempt,
+        info: {
+          versionName: info.version?.trim() || 'unknown',
+          versionCode: Number.isSafeInteger(code) && code > 0 ? code : null,
+          applicationId: info.id ?? '',
+        },
+      };
+    } catch {
+      return { state: 'resolved', info: { ...UNKNOWN_APP_INFO }, attempts: attempt };
+    }
   }
+  return { state: 'timeout', info: { ...UNKNOWN_APP_INFO }, attempts: maxAttempts };
+}
+
+export async function readInstalledAppInfo(): Promise<InstalledAppInfo> {
+  return (await readInstalledAppInfoOutcome()).info;
 }
 
 /**

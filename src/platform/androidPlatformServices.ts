@@ -1,7 +1,8 @@
 import type { App } from 'vue';
 import { createAndroidDiagnostics, type AndroidDiagnosticsCapability } from './androidDiagnostics';
 import { androidUpdateCapabilityFor, type UpdateCapability } from './androidUpdate';
-import { isCanonicalInstall, readInstalledAppInfo, type InstalledAppInfo } from './androidAppInfo';
+import { isCanonicalInstall, readInstalledAppInfoOutcome, type AppInfoOutcome, type InstalledAppInfo } from './androidAppInfo';
+import { bridgeWarmUp, type BridgeWarmUp } from '../native/bridgeReady';
 
 /**
  * The Android implementations of the shared app's optional platform seams
@@ -21,7 +22,9 @@ export const PROBE_QUERY_PARAMETER = 'ps2861Probe';
 
 interface ProbeState {
   installedAt: number;
-  infoState: 'pending' | 'resolved' | 'failed';
+  infoState: 'pending' | 'resolved' | 'timeout' | 'failed';
+  infoAttempts?: number;
+  bridge?: BridgeWarmUp;
   infoAt?: number;
   applicationId?: string;
   exposedAt?: number;
@@ -42,8 +45,12 @@ export function androidPlatformServices(): AndroidPlatformServices | null {
  * errors that carry an Error) into the diagnostics sink.
  */
 export function installAndroidPlatformServices(app: App, target: Window): AndroidPlatformServices {
-  let info: Promise<InstalledAppInfo> | null = null;
-  const appInfo = () => (info ??= readInstalledAppInfo());
+  // The page's first native call must be the sacrificial bridge ping (see
+  // BridgeReadyPlugin.java); start it before anything else talks to native.
+  const warmUp = bridgeWarmUp();
+  let outcome: Promise<AppInfoOutcome> | null = null;
+  const appInfoOutcome = () => (outcome ??= readInstalledAppInfoOutcome());
+  const appInfo = async () => (await appInfoOutcome()).info;
   let version = 'unknown';
   void appInfo().then((resolved) => { version = resolved.versionName; });
   const diagnostics = createAndroidDiagnostics({ appVersion: () => version });
@@ -94,11 +101,13 @@ export function installAndroidPlatformServices(app: App, target: Window): Androi
     // step it stopped at instead of only timing out (#2861 round-3 review).
     const state: ProbeState = { installedAt: Date.now(), infoState: 'pending' };
     (target as ProbeWindow).__ps2861ProbeState = state;
-    void appInfo().then((resolved) => {
-      state.infoState = 'resolved';
+    void warmUp.then((bridge) => { state.bridge = bridge; });
+    void appInfoOutcome().then(({ state: infoState, info: resolved, attempts }) => {
+      state.infoState = infoState;
+      state.infoAttempts = attempts;
       state.infoAt = Date.now();
       state.applicationId = resolved.applicationId;
-      if (!isCanonicalInstall(resolved.applicationId)) {
+      if (infoState === 'resolved' && !isCanonicalInstall(resolved.applicationId)) {
         (target as ProbeWindow).__ps2861PlatformServices = services;
         state.exposedAt = Date.now();
       }

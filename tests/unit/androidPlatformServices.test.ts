@@ -214,4 +214,3 @@ describe('Android platform services for the shared app', () => {
     expect(typeof probe.__ps2861ProbeState?.exposedAt).toBe('number');
   });
 });
-

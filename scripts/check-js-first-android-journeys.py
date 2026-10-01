@@ -92,6 +92,7 @@ LANES = (
                 "j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport",
                 "j24SettingsDestinationsReachableWithAndroidBackAndPersist",
                 "reconnectWhenIReturnOffWaitsThenReconnectsSameSession",
+                "pageReloadsKeepFirstNativeCallAnswered",
             }
         ),
     ),

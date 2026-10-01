@@ -33,6 +33,7 @@ REQUIRED_METHODS = frozenset(
         "j16SupportReportsCaptureNativeRuntimeAndSshFailuresAndExport",
         "j24SettingsDestinationsReachableWithAndroidBackAndPersist",
         "reconnectWhenIReturnOffWaitsThenReconnectsSameSession",
+        "pageReloadsKeepFirstNativeCallAnswered",
     }
 )
 REQUIRED_SCREENSHOTS = frozenset(
