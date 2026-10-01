@@ -30,7 +30,6 @@ import androidx.test.platform.app.InstrumentationRegistry;
 import androidx.core.content.FileProvider;
 
 import com.pocketshell.app.DocumentContentIntentTest;
-import com.pocketshell.app.LegacyShellLaunch;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONArray;
@@ -65,7 +64,7 @@ public final class JsShellPackagedSmokeTest {
 
     @Before
     public void launchPackagedShell() {
-        scenario = ActivityScenario.launch(LegacyShellLaunch.intent());
+        scenario = ActivityScenario.launch(MainActivity.class);
     }
 
     @After
@@ -90,6 +89,9 @@ public final class JsShellPackagedSmokeTest {
         assertTrue("manifest shared UI revision must be a full git revision", expectedUiRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        // The default launch boots the legacy shell exactly once: no other
+        // shell first, no reload after (#2936 shell selection before load).
+        assertEquals("[\"legacy\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
 
         String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
         assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
@@ -490,7 +492,6 @@ public final class JsShellPackagedSmokeTest {
         Intent launch = targetContext().getPackageManager().getLaunchIntentForPackage(targetContext().getPackageName());
         assertNotNull("the packaged app must have a launcher intent", launch);
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        LegacyShellLaunch.withLegacyShell(launch);
         Activity launched = InstrumentationRegistry.getInstrumentation().startActivitySync(launch);
         assertTrue("the packaged launch should create MainActivity", launched instanceof MainActivity);
         directActivity = (MainActivity) launched;

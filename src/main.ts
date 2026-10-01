@@ -1,19 +1,21 @@
-import { selectShell } from './shellSelection';
+import { recordShellBoot, selectShell } from './shellSelection';
 
 /**
- * The Android entry. The shared PocketShell app (core packages/ui) is the
- * app; the phone screens under `App.vue` stay reachable as the `legacy`
- * shell only until each one's shared replacement passes the same packaged
- * journey (#2936 / #2941), then they are deleted (D22).
+ * The Android entry. The pre-#2936 phone screens (`App.vue`) are the default
+ * shell; the shared PocketShell app (core packages/ui) is opt-in until each
+ * legacy screen's shared replacement passes the same packaged journey and
+ * the maintainer signs the shared app off (#2936 / #2941).
  */
 async function boot(): Promise<void> {
-  if (selectShell(window.location.search) === 'legacy') {
-    const { mountLegacyApp } = await import('./legacyMain');
-    mountLegacyApp('#app');
+  const shell = selectShell(window.location.search);
+  recordShellBoot(shell, window.sessionStorage);
+  if (shell === 'shared') {
+    const { mountSharedApp } = await import('./sharedApp/main');
+    mountSharedApp('#app');
     return;
   }
-  const { mountSharedApp } = await import('./sharedApp/main');
-  mountSharedApp('#app');
+  const { mountLegacyApp } = await import('./legacyMain');
+  mountLegacyApp('#app');
 }
 
 void boot();

@@ -232,6 +232,9 @@
       "tests": [
         "dials through the controller, pins a first-contact key, and never accepts a changed one",
         "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
+        "never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane",
+        "re-attaches and repaints the same session after its pane closed the shell",
+        "delivers held output after a fallback when the pane never calls on its new shell id",
         "retires the superseded shell id when another session is attached",
         "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
         "maps controller phases onto the shared connection states",
@@ -239,7 +242,8 @@
         "refuses unimplemented work by name instead of pretending",
         "reports a saved host whose key did not survive the app session as a dial failure",
         "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
-        "mounts the shared app unless the launch asked for the legacy screens"
+        "mounts the legacy screens unless the launch opted into the shared app",
+        "records each boot so a load-then-reload launch is visible as two entries"
       ]
     }
   }

@@ -71,10 +71,11 @@ else
   composer_status=$?
 fi
 
-# The shared PocketShell app (#2936): list, attach and type on the fixture.
+# The shared PocketShell app (#2936): list, attach, re-attach and type, on
+# its own isolated agents lane (the workflow starts 2244 for it).
 if scripts/connected-js-shared-app.sh \
   --suffix i2855ci \
-  --port 2222 \
+  --port 2244 \
   --test-only; then
   shared_app_status=0
 else

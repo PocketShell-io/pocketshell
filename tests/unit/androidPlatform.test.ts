@@ -12,11 +12,11 @@ import {
   type SshPtyWriteOptions,
   type SshPtyResizeOptions,
 } from '@pocketshell/core';
-import { AndroidConnectionHub, connectionStateFor } from '@/platform/android/connectionHub';
+import { AndroidConnectionHub, connectionStateFor, SHELL_CLAIM_FALLBACK_MS } from '@/platform/android/connectionHub';
 import { createAndroidPlatform, UnsupportedCapability } from '@/platform/android/androidApi';
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
 import { createLocalTrustStore, pinStorageKey } from '@/platform/android/trustStore';
-import { selectShell } from '@/shellSelection';
+import { recordShellBoot, selectShell, SHELL_BOOT_LOG_KEY } from '@/shellSelection';
 
 const HOST_KEY = { keyType: 'ssh-ed25519', keyB64: 'AQIDBA==', fingerprintSha256: 'SHA256:abc123' };
 
@@ -55,6 +55,9 @@ class FakeNative {
   readonly resizes: Array<[number, number]> = [];
   readonly closedPtys: string[] = [];
   sessions = [sessionJson('main', '/home/u/git/demo'), sessionJson('tests', '/home/u/git/demo')];
+  /** aplexer's attach snapshot: the first read of a new channel answers at once with it. */
+  attachSnapshot: string | null = null;
+  private snapshotServed = new Set<string>();
   private listeners = new Set<(event: SshConnectionStateEvent) => void>();
   private live = new Map<string, string>();
   private pendingReads = new Map<string, (result: SshPtyReadResult) => void>();
@@ -102,6 +105,19 @@ class FakeNative {
       },
       readPty: (options: SshPtyReadOptions) =>
         new Promise<SshPtyReadResult>((resolve) => {
+          if (this.attachSnapshot !== null && !this.snapshotServed.has(options.channelId)) {
+            this.snapshotServed.add(options.channelId);
+            resolve({
+              requestId: options.requestId,
+              connectionId: options.connectionId,
+              generationId: options.generationId,
+              channelId: options.channelId,
+              sequence: options.sequence + 1,
+              dataBase64: base64(this.attachSnapshot),
+              eof: false,
+            });
+            return;
+          }
           this.pendingReads.set(options.channelId, resolve);
           this.readOptions.set(options.channelId, options);
         }),
@@ -234,11 +250,18 @@ describe('Android PocketShellApi platform', () => {
     });
     expect(attached.switched).toBe(false);
     expect(native.opened[0]!.command).toContain("sessions attach -- '/home/u/git/demo:main'");
-    expect(native.resizes).toContainEqual([50, 30]);
+    // Geometry-first: the PTY opens at the pane's size; no follow-up resize.
+    expect(native.opened[0]).toMatchObject({ cols: 50, rows: 30 });
+    expect(native.resizes).toEqual([]);
 
     await settle(() => native.hasPendingRead());
     native.output('$ ');
-    await settle(() => received.join('') === '$ ');
+    // Held until the pane claims the new id (its first geometry push)...
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(received).toEqual([]);
+    expect(await hub.resize(attached.shellId, 50, 30)).toBe(true);
+    // ...then delivered under that id, in order.
+    expect(received.join('')).toBe('$ ');
 
     expect(await hub.input(attached.shellId, 'echo hi\r', 'main', '/home/u/git/demo')).toBe(true);
     expect(native.writes).toEqual(['echo hi\r']);
@@ -249,6 +272,61 @@ describe('Android PocketShellApi platform', () => {
     const again = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
     expect(again).toEqual({ shellId: attached.shellId, switched: true });
     expect(native.opened).toHaveLength(1);
+  });
+
+  it('never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane', async () => {
+    const { native, hub } = harness();
+    native.attachSnapshot = '$ echo MARK\r\nMARK\r\n$ ';
+    const { connectionId } = await hub.connect(target);
+    open.push({ hub, id: connectionId! });
+    await hub.sessionsList(connectionId!);
+    const received: Array<[string, string]> = [];
+    hub.onData(({ shellId, data }) => received.push([shellId, new TextDecoder().decode(data)]));
+
+    for (const [name, id] of [['main', 'main-id'], ['tests', 'tests-id'], ['main', 'main-id']] as const) {
+      const attached = await hub.attachSession({ connectionId: connectionId!, sessionName: name, aplexerId: id, cols: 40, rows: 12 });
+      // The snapshot was read inside switchSession, before this id existed.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(received.filter(([shellId]) => shellId === attached.shellId)).toEqual([]);
+      await hub.resize(attached.shellId, 40, 12);
+      expect(received.filter(([shellId]) => shellId === attached.shellId).map(([, text]) => text))
+        .toEqual(['$ echo MARK\r\nMARK\r\n$ ']);
+    }
+    expect(native.opened).toHaveLength(3);
+  });
+
+  it('re-attaches and repaints the same session after its pane closed the shell', async () => {
+    const { native, hub } = harness();
+    native.attachSnapshot = 'repaint';
+    const { connectionId } = await hub.connect(target);
+    open.push({ hub, id: connectionId! });
+    await hub.sessionsList(connectionId!);
+    const received: Array<[string, string]> = [];
+    hub.onData(({ shellId, data }) => received.push([shellId, new TextDecoder().decode(data)]));
+
+    const first = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    expect(await hub.closeShell(first.shellId)).toBe(true);
+    expect(native.closedPtys).toHaveLength(1);
+    const again = await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    expect(again.switched).toBe(false);
+    expect(native.opened).toHaveLength(2);
+    await hub.redraw(again.shellId);
+    expect(received.filter(([id]) => id === again.shellId).map(([, text]) => text)).toEqual(['repaint']);
+  });
+
+  it('delivers held output after a fallback when the pane never calls on its new shell id', async () => {
+    const { native, hub } = harness();
+    native.attachSnapshot = 'snap';
+    const { connectionId } = await hub.connect(target);
+    open.push({ hub, id: connectionId! });
+    await hub.sessionsList(connectionId!);
+    const received: string[] = [];
+    hub.onData(({ data }) => received.push(new TextDecoder().decode(data)));
+    await hub.attachSession({ connectionId: connectionId!, sessionName: 'main', aplexerId: 'main-id' });
+    await new Promise((resolve) => setTimeout(resolve, SHELL_CLAIM_FALLBACK_MS / 2));
+    expect(received).toEqual([]);
+    await new Promise((resolve) => setTimeout(resolve, SHELL_CLAIM_FALLBACK_MS));
+    expect(received.join('')).toBe('snap');
   });
 
   it('retires the superseded shell id when another session is attached', async () => {
@@ -282,6 +360,7 @@ describe('Android PocketShellApi platform', () => {
       if (shellId === attached.shellId) received.push(new TextDecoder().decode(data));
     });
 
+    expect(await hub.redraw(attached.shellId)).toBe(true); // the pane claims its id
     const dialsBefore = native.connects.length;
     native.dropTransport();
     await settle(() => native.connects.length === dialsBefore + 1 && native.opened.length === 2
@@ -381,10 +460,19 @@ describe('Android PocketShellApi platform', () => {
     expect(resumed).toBe(0);
   });
 
-  it('mounts the shared app unless the launch asked for the legacy screens', () => {
-    expect(selectShell('')).toBe('shared');
-    expect(selectShell('?shell=shared')).toBe('shared');
+  it('mounts the legacy screens unless the launch opted into the shared app', () => {
+    expect(selectShell('')).toBe('legacy');
     expect(selectShell('?shell=legacy')).toBe('legacy');
+    expect(selectShell('?shell=other')).toBe('legacy');
+    expect(selectShell('?shell=shared')).toBe('shared');
+  });
+
+  it('records each boot so a load-then-reload launch is visible as two entries', () => {
+    const storage = new MemoryStorage();
+    recordShellBoot('legacy', storage);
+    expect(JSON.parse(storage.getItem(SHELL_BOOT_LOG_KEY)!)).toEqual(['legacy']);
+    recordShellBoot('shared', storage);
+    expect(JSON.parse(storage.getItem(SHELL_BOOT_LOG_KEY)!)).toEqual(['legacy', 'shared']);
   });
 });
 

@@ -59,6 +59,18 @@ export interface AttachRequest {
 interface ShellBinding {
   shellId: ShellId;
   row: SessionRow;
+  /**
+   * Output held for a shell id the shared pane does not know yet; null once
+   * the pane has claimed it. See {@link AndroidConnectionHub.claim}.
+   */
+  held: Uint8Array[] | null;
+  claimTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** An attach in flight: its session's output is captured from the first byte. */
+interface PendingAttach {
+  row: SessionRow;
+  buffer: Uint8Array[];
 }
 
 interface ConnectionRecord {
@@ -67,8 +79,16 @@ interface ConnectionRecord {
   lastState: ConnectionState | null;
   lastPhase: ConnectionSnapshot['phase'] | null;
   shell: ShellBinding | null;
+  attaching: PendingAttach | null;
   unsubscribe: Array<() => void>;
 }
+
+/**
+ * How long held output waits for the pane's first call on a new shell id
+ * before it is delivered anyway (the pane adopts the id synchronously after
+ * `attachSession` resolves, so this only covers a pane that never calls).
+ */
+export const SHELL_CLAIM_FALLBACK_MS = 1_000;
 
 export interface ConnectionHubOptions {
   /** A fresh controller per logical connection (bound to the native capability). */
@@ -136,15 +156,30 @@ export class AndroidConnectionHub {
       lastState: null,
       lastPhase: null,
       shell: null,
+      attaching: null,
       unsubscribe: [],
     };
     this.records.set(id, record);
     record.unsubscribe.push(controller.subscribe((snapshot) => this.onSnapshot(record, snapshot)));
     record.unsubscribe.push(
       controller.subscribeTerminalOutput((session, bytes) => {
+        // aplexer answers an attach with a snapshot of the session's screen —
+        // the only repaint a quiet session will ever send. It can arrive
+        // before `switchSession` resolves (the pump starts inside it) and
+        // before the pane has adopted the new shell id, so it is captured,
+        // never dropped (#2936 review).
+        const attaching = record.attaching;
+        if (attaching && sameRow(attaching.row, session)) {
+          attaching.buffer.push(bytes);
+          return;
+        }
         const shell = record.shell;
         if (!shell || !sameRow(shell.row, session)) return;
-        for (const listener of this.dataListeners) listener({ shellId: shell.shellId, data: bytes });
+        if (shell.held) {
+          shell.held.push(bytes);
+          return;
+        }
+        this.emitData(shell.shellId, bytes);
       }),
     );
     return { ok: true, connectionId: id };
@@ -213,14 +248,23 @@ export class AndroidConnectionHub {
       return { shellId: current.shellId, switched: true };
     }
 
-    const attached = await controller.switchSession(row);
+    const pending: PendingAttach = { row, buffer: [] };
+    record.attaching = pending;
+    let attached;
+    try {
+      // Geometry-first: the PTY opens at the pane's size, so the attach
+      // snapshot is drawn for the screen the user has.
+      const geometry = request.cols && request.rows ? { cols: request.cols, rows: request.rows } : undefined;
+      attached = await controller.switchSession(row, geometry);
+    } finally {
+      if (record.attaching === pending) record.attaching = null;
+    }
     if (!attached.ok) throw new Error(attached.message);
     this.retireShell(record);
     const shellId = `${record.id}:shell-${this.nextShell++}`;
-    record.shell = { shellId, row: attached.value };
-    if (request.cols && request.rows) {
-      await controller.resizeTerminal(request.cols, request.rows).catch(() => undefined);
-    }
+    const binding: ShellBinding = { shellId, row: attached.value, held: pending.buffer, claimTimer: null };
+    binding.claimTimer = setTimeout(() => this.claim(binding), SHELL_CLAIM_FALLBACK_MS);
+    record.shell = binding;
     return { shellId, switched: false };
   }
 
@@ -232,6 +276,7 @@ export class AndroidConnectionHub {
   async input(shellId: ShellId, data: string, sessionName?: string, workspace?: string): Promise<boolean> {
     const record = this.recordForShell(shellId);
     if (!record?.shell) return false;
+    this.claim(record.shell);
     const row = record.shell.row;
     // The shared pane's fence: a caller still holding a superseded tab's
     // shell gets an honest `false` instead of typing into another session.
@@ -243,24 +288,39 @@ export class AndroidConnectionHub {
 
   async resize(shellId: ShellId, cols: number, rows: number): Promise<boolean> {
     const record = this.recordForShell(shellId);
-    if (!record) return false;
+    if (!record?.shell) return false;
+    this.claim(record.shell);
     return (await record.controller.resizeTerminal(cols, rows)).ok;
   }
 
-  /** Aplexer repaints on every attach; there is nothing to redraw on demand. */
+  /**
+   * aplexer repaints the session's screen on every attach (its attach
+   * snapshot, verified against the fixture's `a` for first and repeated
+   * attaches) and follows the PTY size through SIGWINCH, so there is no
+   * stale band to refresh — desktop's TmuxClientPool answers an aplexer
+   * redraw the same way. What a repaint DOES need is for that snapshot to
+   * reach the pane, which the claim below guarantees.
+   */
   async redraw(shellId: ShellId): Promise<boolean> {
-    return this.recordForShell(shellId) !== null;
+    const record = this.recordForShell(shellId);
+    if (!record?.shell) return false;
+    this.claim(record.shell);
+    return true;
   }
 
   /**
-   * Forget a shell id. The controller's one PTY stays attached (closing it
-   * would need a controller "detach" that does not exist yet, stage S2); the
-   * next attach of the same session reuses it.
+   * The pane is done with this shell (tab closed, workspace left): detach the
+   * controller's PTY so the next attach of the session — the same one
+   * included — is a fresh aplexer attach that repaints. While another attach
+   * is already in flight the pane's close is only bookkeeping: that attach
+   * replaces the PTY itself, and detaching would supersede it.
    */
   async closeShell(shellId: ShellId): Promise<boolean> {
     const record = this.recordForShell(shellId);
-    if (!record) return false;
+    if (!record?.shell) return false;
+    this.dropBinding(record.shell);
     record.shell = null;
+    if (!record.attaching) await record.controller.detachSession().catch(() => undefined);
     return true;
   }
 
@@ -329,7 +389,35 @@ export class AndroidConnectionHub {
     const shell = record.shell;
     record.shell = null;
     if (!shell) return;
+    this.dropBinding(shell);
     for (const listener of this.exitListeners) listener({ shellId: shell.shellId, exitCode: 0 });
+  }
+
+  /**
+   * The pane has adopted `binding`'s shell id — its first resize, redraw or
+   * input on it proves that, since the shared pane binds its byte stream
+   * synchronously when `attachSession` resolves and only then pushes
+   * geometry — so release the output held since the attach began.
+   */
+  private claim(binding: ShellBinding): void {
+    if (binding.claimTimer) {
+      clearTimeout(binding.claimTimer);
+      binding.claimTimer = null;
+    }
+    const held = binding.held;
+    if (!held) return;
+    binding.held = null;
+    for (const bytes of held) this.emitData(binding.shellId, bytes);
+  }
+
+  private dropBinding(binding: ShellBinding): void {
+    if (binding.claimTimer) clearTimeout(binding.claimTimer);
+    binding.claimTimer = null;
+    binding.held = null;
+  }
+
+  private emitData(shellId: ShellId, data: Uint8Array): void {
+    for (const listener of this.dataListeners) listener({ shellId, data });
   }
 
   private emitState(connectionId: string, state: ConnectionState): void {

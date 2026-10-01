@@ -1,14 +1,17 @@
 package com.pocketshell.app.smoke;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.os.SystemClock;
+import android.view.KeyEvent;
 import android.webkit.WebView;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import com.pocketshell.app.MainActivity;
+import com.pocketshell.app.SharedShellLaunch;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.concurrent.CountDownLatch;
@@ -23,24 +26,33 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 /**
- * #2936 stage 1 acceptance: the default launch mounts the SHARED PocketShell
- * app (core packages/ui) over Android's PocketShellApi, and its host picker,
- * session tree and terminal drive a real SSH/aplexer session on the Docker
- * agents fixture through core's ConnectionController and the native plugin.
+ * #2936 stage 1 acceptance: a launch that opts into the shared PocketShell
+ * app (core packages/ui) boots it exactly once, and its host picker, session
+ * tree and terminal drive real aplexer sessions on a Docker agents lane
+ * through Android's PocketShellApi, core's ConnectionController and the
+ * native plugin.
  *
- * The load-bearing assertion is host-evaluated output: the typed command
- * contains an arithmetic expansion, so the expected line ("PS2936_42_<run>")
- * appears only if the keystrokes reached the remote shell and its output
- * came back through the PTY — local echo alone cannot produce it.
+ * The runner (scripts/connected-js-shared-app.sh) creates two sessions of
+ * this run's own, each in its own folder ({@code sessionRun}-a / -b), so the
+ * journey never depends on what earlier lanes left on the fixture.
+ *
+ * Load-bearing assertions are host-evaluated output: the typed command holds
+ * an arithmetic expansion, so the expected line ("PS2936_42_<marker>")
+ * exists only if the keystrokes reached the remote shell and its output came
+ * back through the PTY. Re-opening session A after B must show A's marker
+ * again (aplexer's attach snapshot reaching the pane), then accept input.
  */
 @RunWith(AndroidJUnit4.class)
 public class SharedAppDockerJourneyTest {
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
+    /** The visible terminal's text: hidden panes keep their own rows. */
+    private static final String VISIBLE_TERMINAL =
+            "([...document.querySelectorAll('.xterm-rows')].find((n)=>n.offsetParent!==null)?.innerText ?? '')";
     private ActivityScenario<MainActivity> scenario;
 
     @Before
     public void launchSharedApp() {
-        scenario = ActivityScenario.launch(MainActivity.class);
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
     }
 
     @After
@@ -54,13 +66,20 @@ public class SharedAppDockerJourneyTest {
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
         String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String run = arguments.getString("sessionRun");
         assertNotNull("pass the Docker fixture port with sshPort", port);
         assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
+        assertNotNull("pass the runner-created session run id with sessionRun", run);
+        assertTrue("sessionRun must be a safe folder token", run.matches("[a-z0-9-]{6,40}"));
         String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
-        String run = Long.toString(System.currentTimeMillis(), 36);
+        String folderA = run + "-a";
+        String folderB = run + "-b";
 
-        // The shared picker (not the legacy phone screen) is the launch surface.
-        awaitJsTrue("!!document.querySelector('.host-list, .empty') && !document.querySelector('.app-shell')");
+        // Exactly one shell booted, chosen before the WebView loaded: no
+        // default shell first, no reload into the shared one.
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        assertEquals("[\"shared\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
+
         evalString("(() => {const b=[...document.querySelectorAll('button')].find((n)=>n.textContent.trim()==='Add a host');"
                 + "if(!b) throw new Error('no Add a host action'); b.click(); return 'ok';})()");
         awaitJsTrue("!!document.querySelector('[data-testid=android-add-host]')");
@@ -75,22 +94,47 @@ public class SharedAppDockerJourneyTest {
         evalString("(() => {[...document.querySelectorAll('.host-row')].find((n)=>n.textContent.includes('fixture-" + run
                 + "')).click(); return 'ok';})()");
 
-        // Listing: the session tree renders folders from `pocketshell sessions list`.
-        awaitJsTrue("document.querySelectorAll('.dir-header').length > 0");
-        click(".dir-header");
+        // Listing: this run's two folders, from `pocketshell sessions list`.
+        awaitFolder(folderA);
+        awaitFolder(folderB);
 
-        // Attach: the folder workspace mounts the shared TerminalView and the
-        // controller's PTY paints a prompt into it.
-        awaitJsTrue("(document.querySelector('.xterm-rows')?.innerText ?? '').includes('$')");
-        evalString("(() => {document.querySelector('.xterm-helper-textarea').focus(); return 'ok';})()");
+        // First attach of A: aplexer's attach snapshot paints the prompt.
+        openFolder(folderA);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
+        typeLine("echo PS2936_$((6*7))_" + run + "_a1");
+        awaitTerminalLine("PS2936_42_" + run + "_a1");
+
+        // Switch to B (a fresh attach on the controller's one PTY).
+        openFolder(folderB);
+        awaitJsTrue(VISIBLE_TERMINAL + ".includes('$') && !" + VISIBLE_TERMINAL + ".includes('PS2936_42_" + run + "_a1')");
+
+        // Re-open A: an already-used session must repaint, not come up blank.
+        openFolder(folderA);
+        awaitTerminalLine("PS2936_42_" + run + "_a1");
+        typeLine("echo PS2936_$((6*7))_" + run + "_a2");
+        awaitTerminalLine("PS2936_42_" + run + "_a2");
+    }
+
+    private void awaitFolder(String folder) throws Exception {
+        awaitJsTrue("[...document.querySelectorAll('.dir-header')].some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))");
+    }
+
+    private void openFolder(String folder) throws Exception {
+        evalString("(() => {const row=[...document.querySelectorAll('.dir-header')].find((n)=>n.textContent.includes("
+                + JSONObject.quote(folder) + ")); if(!row) throw new Error('no folder row'); row.click(); return 'ok';})()");
+    }
+
+    /** Real key events through the WebView into the visible xterm. */
+    private void typeLine(String text) throws Exception {
+        evalString("(() => {const t=[...document.querySelectorAll('.xterm')].find((n)=>n.offsetParent!==null)"
+                + "?.querySelector('.xterm-helper-textarea'); if(!t) throw new Error('no visible terminal'); t.focus(); return 'ok';})()");
         awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea') === true");
+        InstrumentationRegistry.getInstrumentation().sendStringSync(text);
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
+    }
 
-        // Type with real key events through the WebView into xterm.
-        InstrumentationRegistry.getInstrumentation().sendStringSync("echo PS2936_$((6*7))_" + run);
-        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_ENTER);
-
-        awaitJsTrue("(document.querySelector('.xterm-rows')?.innerText ?? '').split('\\n')"
-                + ".some((line)=>line.trim()==='PS2936_42_" + run + "')");
+    private void awaitTerminalLine(String line) throws Exception {
+        awaitJsTrue(VISIBLE_TERMINAL + ".split('\\n').some((l)=>l.trim()===" + JSONObject.quote(line) + ")");
     }
 
     private void setValue(String selector, String value) throws Exception {
@@ -115,7 +159,7 @@ public class SharedAppDockerJourneyTest {
             Thread.sleep(150);
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; page=" + evalString("document.body.innerText") + ")");
+                + "; terminal=" + evalString(VISIBLE_TERMINAL) + "; page=" + evalString("document.body.innerText") + ")");
     }
 
     private String evalString(String expression) throws Exception {
