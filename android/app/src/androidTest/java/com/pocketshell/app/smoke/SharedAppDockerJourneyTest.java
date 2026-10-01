@@ -39,8 +39,9 @@ import org.junit.runner.RunWith;
  * Load-bearing assertions are host-evaluated output: the typed command holds
  * an arithmetic expansion, so the expected line ("PS2936_42_<marker>")
  * exists only if the keystrokes reached the remote shell and its output came
- * back through the PTY. Re-opening session A after B must show A's marker
- * again (aplexer's attach snapshot reaching the pane), then accept input.
+ * back through the PTY. Re-opening session A after B must show a line A
+ * printed while it was detached (only aplexer's re-attach snapshot can carry
+ * it to the pane), then accept input.
  */
 @RunWith(AndroidJUnit4.class)
 public class SharedAppDockerJourneyTest {
@@ -104,13 +105,23 @@ public class SharedAppDockerJourneyTest {
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$')");
         typeLine("echo PS2936_$((6*7))_" + run + "_a1");
         awaitTerminalLine("PS2936_42_" + run + "_a1");
+        // Output A will produce while it is NOT attached: only aplexer's
+        // re-attach snapshot can bring it to the pane.
+        typeLine("(sleep 3; echo PS2936_LATE_$((6*7))_" + run + ") &");
 
-        // Switch to B (a fresh attach on the controller's one PTY).
+        // Switch to B (a fresh attach on the controller's one PTY) and stay
+        // there until A's late line has been written on the host.
+        long leftA = SystemClock.uptimeMillis();
         openFolder(folderB);
         awaitJsTrue(VISIBLE_TERMINAL + ".includes('$') && !" + VISIBLE_TERMINAL + ".includes('PS2936_42_" + run + "_a1')");
+        long stayOnB = 5_000 - (SystemClock.uptimeMillis() - leftA);
+        if (stayOnB > 0) Thread.sleep(stayOnB);
 
-        // Re-open A: an already-used session must repaint, not come up blank.
+        // Re-open A: an already-used session must repaint with what happened
+        // while it was away (the late line), not come up blank or stale. The
+        // late line is also the sync point that the re-join has completed.
         openFolder(folderA);
+        awaitTerminalLine("PS2936_LATE_42_" + run);
         awaitTerminalLine("PS2936_42_" + run + "_a1");
         typeLine("echo PS2936_$((6*7))_" + run + "_a2");
         awaitTerminalLine("PS2936_42_" + run + "_a2");
