@@ -1121,7 +1121,7 @@ onBeforeUnmount(() => {
     :data-ssh-terminal-resize-failures="terminalResizeFailureCount"
     @focusin="recordFocusedElement"
     @focusout="recordFocusAfterBlur"
-    :data-migration-status="installedDataMigrationState.status"
+    :data-migration-status="settingsReloading ? 'reloading' : installedDataMigrationState.status"
   >
     <header class="app-bar" :class="{ 'app-bar--workspace': !!connectionSnapshot }">
       <template v-if="navigation.route === 'home' && connectionSnapshot">
@@ -1232,7 +1232,7 @@ onBeforeUnmount(() => {
     </div>
 
     <section
-      v-if="installedDataMigrationState.status === 'failed' || installedDataMigrationState.status === 'partial'"
+      v-if="!settingsReloading && (installedDataMigrationState.status === 'failed' || installedDataMigrationState.status === 'partial')"
       class="migration-error"
       role="alert"
       data-testid="installed-data-migration-error"
