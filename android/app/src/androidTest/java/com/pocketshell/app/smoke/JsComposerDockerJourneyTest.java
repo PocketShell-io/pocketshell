@@ -1206,7 +1206,14 @@ public final class JsComposerDockerJourneyTest {
                 awaitWebViewVisualState();
                 boolean injectMiss = forceFirstPostAttachTapMiss
                         && mustPhysicallyTapAfterAttach && attemptIndex == 0;
-                String targetSelector = injectMiss ? ".terminal-viewport" : "[data-testid=prompt-draft]";
+                // The forced miss must land off the draft without dismissing
+                // Prompt: over the modal sheet, the terminal sits under the
+                // scrim, whose tap closes the sheet by design. Miss onto the
+                // sheet's own title there; inline, miss onto the terminal.
+                String missSelector = "true".equals(evalRaw(
+                        "!!document.querySelector('[data-testid=prompt-composer-scrim]')"))
+                        ? "#composer-title" : ".terminal-viewport";
+                String targetSelector = injectMiss ? missSelector : "[data-testid=prompt-draft]";
                 clearFocusTapEvents(targetSelector);
                 JSONObject before = readFocusDomState();
                 boolean imeBefore = isImeVisible();
