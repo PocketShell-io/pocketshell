@@ -8,7 +8,7 @@
         "degrades malformed or unsupported saved values to safe defaults",
         "clamps terminal size using the pinned desktop font-size policy",
         "persists a supported recognizer language and clamps the silence window to the 2–60 second range",
-        "preserves language and silence settings written by the earlier JS rewrite",
+        "ignores the unreleased branch-only dictation keys (D22) and maps a BCP-47 tag to its base language",
         "uses the Kotlin-aligned automatic language and four-second silence defaults",
         "offers every 0.5.x grace window from the shared core policy, including 10 minutes",
         "keeps grace and reconnect-on-return in the one shared settings store (D42)"
@@ -387,6 +387,17 @@
         "deletes inside a word away from the end",
         "turns a predicted space the keyboard removes before punctuation into one DEL",
         "sends one DEL per code point when a multi-code-point emoji is deleted"
+      ]
+    },
+    "tests/unit/terminalLogicalLines.test.ts": {
+      "suite": "terminal logical-line matcher",
+      "tests": [
+        "matches an exactly full-width line that is not wrapped (4-digit run id, RANDOM=8)",
+        "matches a soft-wrapped line (5-digit run id) and a wrapped line sharing the prompt row",
+        "matches a short line on a terminal whose widest row is not a wrap",
+        "stays red for a line that is not there: wrong token, prefix only, or only the echoed command",
+        "does not join a row shorter than the widest row (a hard newline) to the next",
+        "does not glue a full-width row to the prompt after it"
       ]
     },
     "tests/unit/appLifecycle.test.ts": {

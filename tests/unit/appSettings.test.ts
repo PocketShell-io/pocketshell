@@ -63,14 +63,15 @@ describe('mobile app settings', () => {
     });
   });
 
-  it('preserves language and silence settings written by the earlier JS rewrite', () => {
+  it('ignores the unreleased branch-only dictation keys (D22) and maps a BCP-47 tag to its base language', () => {
     expect(parseAppSettings({
       dictationLanguageTag: 'de-DE',
       dictationSilenceWindowMs: 9_000,
     })).toMatchObject({
-      voiceLanguage: 'de',
-      voiceSilenceSeconds: 9,
+      voiceLanguage: 'auto',
+      voiceSilenceSeconds: 4,
     });
+    expect(parseAppSettings({ voiceLanguage: 'de-DE' }).voiceLanguage).toBe('de');
   });
 
   it('uses the Kotlin-aligned automatic language and four-second silence defaults', () => {

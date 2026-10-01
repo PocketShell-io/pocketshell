@@ -59,8 +59,8 @@ export function normalizeVoiceLanguage(value: unknown): VoiceLanguageCode {
   const language = value.trim().toLowerCase();
   const direct = VOICE_LANGUAGE_OPTIONS.find((option) => option.code === language)?.code;
   if (direct) return direct;
-  // Preserve supported BCP-47 settings saved by the earlier JS rewrite when
-  // moving to the compact language picker (for example, de-DE becomes de).
+  // A BCP-47 tag (for example a 0.5.x import's de-DE) maps to its base
+  // language in the compact picker.
   const baseLanguage = language.split('-', 1)[0];
   return VOICE_LANGUAGE_OPTIONS.find((option) => option.code === baseLanguage)?.code ?? VOICE_LANGUAGE_AUTO;
 }
@@ -77,11 +77,8 @@ export function parseAppSettings(raw: unknown): AppSettings {
   return {
     themeChoice: parseThemeChoice(input.themeChoice) ?? DEFAULT_APP_SETTINGS.themeChoice,
     terminalFontSize: parseFontSize(input.terminalFontSize) ?? DEFAULT_APP_SETTINGS.terminalFontSize,
-    voiceLanguage: normalizeVoiceLanguage(input.voiceLanguage ?? input.dictationLanguageTag),
-    voiceSilenceSeconds: normalizeVoiceSilenceSeconds(
-      input.voiceSilenceSeconds
-        ?? (typeof input.dictationSilenceWindowMs === 'number' ? input.dictationSilenceWindowMs / 1_000 : undefined),
-    ),
+    voiceLanguage: normalizeVoiceLanguage(input.voiceLanguage),
+    voiceSilenceSeconds: normalizeVoiceSilenceSeconds(input.voiceSilenceSeconds),
   };
 }
 
