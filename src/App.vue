@@ -148,6 +148,7 @@ const backButtonReady = ref(!Capacitor.isNativePlatform());
 const backButtonEvents = ref(0);
 const keyboardVisible = ref(false);
 const mobilePromptComposerOpen = ref(false);
+const mobilePromptComposerInline = ref(false);
 const promptComposerHasFocus = ref(false);
 const mobileHotkeysHasFocus = ref(false);
 const terminalViewportHasFocus = ref(false);
@@ -244,6 +245,11 @@ const composerTargetKey = computed(() => {
   const username = hostDraft.value.username.trim();
   if (!session || !hostname || !username) return '';
   return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
+});
+watch(composerTargetKey, (targetKey, previousTargetKey) => {
+  if (targetKey === previousTargetKey) return;
+  mobilePromptComposerInline.value = false;
+  mobilePromptComposerOpen.value = false;
 });
 const inlineDictationTargetKey = computed(() => composerTargetKey.value
   ? `${composerTargetKey.value}/attach-${terminalAttachEpoch.value}`
@@ -565,17 +571,27 @@ watch(() => navigation.route, (route) => {
 function openPromptComposer() {
   // Inline terminal recognition owns the dock until it reaches idle. Leaving
   // Prompt closed keeps its Stop/Cancel action physically reachable.
-  if (inlineDictationState.value.phase !== 'idle') return;
+  if (inlineDictationState.value.phase !== 'idle' || mobilePromptComposerInline.value) return;
   mobileHotkeys.value?.closePalette();
   mobilePromptComposerOpen.value = true;
 }
 
+function showInlinePromptComposerAfterSend() {
+  if (Capacitor.getPlatform() !== 'android') return;
+  // Keep the connected workspace's terminal-first layout after an acknowledged
+  // Send. The existing normal-flow composer leaves the fresh PTY output above
+  // the input surface instead of dimming it behind the mobile sheet.
+  setMobilePromptComposerOpen(false);
+  mobilePromptComposerInline.value = true;
+}
+
 async function openTerminalKeysFromComposer() {
-  if (!mobilePromptComposerOpen.value || !isLive.value) return;
+  if ((!mobilePromptComposerOpen.value && !mobilePromptComposerInline.value) || !isLive.value) return;
   // The composer and catalog are alternate input surfaces. Keep the draft in
   // its per-PTY store, close the modal, then transfer focus to xterm so the
   // palette can stay open above Android's keyboard without a second composer.
   mobilePromptComposerOpen.value = false;
+  mobilePromptComposerInline.value = false;
   await nextTick();
   mobileHotkeys.value?.openPalette();
   await nextTick();
@@ -583,6 +599,7 @@ async function openTerminalKeysFromComposer() {
 }
 
 function setMobilePromptComposerOpen(open: boolean) {
+  if (!open) mobilePromptComposerInline.value = false;
   if (!open && Capacitor.getPlatform() === 'android') {
     // Blurring a WebView editor does not reliably dismiss Android's IME on
     // API 35. Request the native inset transition while the Prompt sheet is
@@ -1251,7 +1268,7 @@ onMounted(() => {
         (activeElement as HTMLElement).blur();
         return;
       }
-      if (mobilePromptComposerOpen.value) {
+      if (mobilePromptComposerOpen.value || mobilePromptComposerInline.value) {
         setMobilePromptComposerOpen(false);
         return;
       }
@@ -1344,6 +1361,7 @@ onBeforeUnmount(() => {
     :data-keyboard-visible="keyboardVisible"
     :data-keyboard-composer-mode="keyboardComposerMode"
     :data-prompt-composer-open="mobilePromptComposerOpen"
+    :data-prompt-composer-inline="mobilePromptComposerInline"
     :data-terminal-viewport-focused="terminalViewportHasFocus"
     :data-fast-keys-ctrl="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'ctrl'"
     :data-fast-keys-main="mobileHotkeysPaletteOpen && mobileHotkeysPage === 'main'"
@@ -1717,7 +1735,7 @@ onBeforeUnmount(() => {
             :keyboard-visible="keyboardVisible"
             :dictation-available="Capacitor.getPlatform() === 'android'"
             :show-inline-dictation-status="inlineDictationStatusVisible"
-            :prompt-composer-available="Capacitor.getPlatform() === 'android'"
+            :prompt-composer-available="Capacitor.getPlatform() === 'android' && !mobilePromptComposerInline"
             :prompt-composer-enabled="inlineDictationState.phase === 'idle'"
             :dictation-state="inlineDictationState"
             :dictation-target-key="inlineDictationTargetKey"
@@ -1750,9 +1768,11 @@ onBeforeUnmount(() => {
           :keyboard-visible="keyboardVisible"
           :transport-state="composerTransportState"
           :write-pty="writeComposerPty"
-          :mobile-sheet="Capacitor.getPlatform() === 'android'"
+          :mobile-sheet="Capacitor.getPlatform() === 'android' && !mobilePromptComposerInline"
+          :mobile-inline="Capacitor.getPlatform() === 'android' && mobilePromptComposerInline"
           :open="mobilePromptComposerOpen"
           @open-change="setMobilePromptComposerOpen"
+          @submit-delivered="showInlinePromptComposerAfterSend"
           @open-keys="openTerminalKeysFromComposer"
           @manage="openSnippetSettings"
         />

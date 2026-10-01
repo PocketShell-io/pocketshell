@@ -487,6 +487,61 @@ describe('composer dictation cancellation', () => {
     composerTeleportTarget = null;
   });
 
+  it.each(['sheet', 'inline'] as const)('cancels dictation when the mobile %s composer is dismissed', async (mode) => {
+    let dictationEvent: ((event: { requestId: string; type: string; text?: string }) => void) | undefined;
+    mocks.cancelDictation.mockImplementation(async () => {});
+    mocks.startDictation.mockImplementation(async (
+      onEvent: typeof dictationEvent,
+      _options: object,
+      onRequestId: (id: string) => void,
+    ) => {
+      dictationEvent = onEvent;
+      onRequestId('dismissed-mobile-dictation');
+      return { requestId: 'dismissed-mobile-dictation', stop: vi.fn(async () => {}), cancel: vi.fn(async () => {}) };
+    });
+
+    const targetKey = 'host/dismissed-' + mode;
+    const shown = ref(true);
+    const writePty = vi.fn(async () => ({ ok: true }));
+    const pinia = createPinia();
+    const root = node('root');
+    const portal = node('portal');
+    composerTeleportTarget = portal;
+    const app = renderer.createApp({
+      setup: () => () => h(PromptComposer, {
+        targetKey,
+        transportState: 'connected',
+        writePty,
+        mobileSheet: mode === 'sheet' || !shown.value,
+        mobileInline: mode === 'inline' && shown.value,
+        open: mode === 'sheet' && shown.value,
+      }),
+    });
+    app.use(pinia);
+    app.mount(root);
+    await flushPromises();
+    const drafts = useComposerDrafts(pinia);
+    drafts.setDraft(targetKey, 'keep this draft');
+    await nextTick();
+    const visibleRoot = mode === 'sheet' ? portal : root;
+    (findByTestId(visibleRoot, 'composer-dictate')?.props.onClick as () => void)();
+    await flushPromises();
+    expect(composerState(visibleRoot)).toBe('recording');
+    dictationEvent?.({ requestId: 'dismissed-mobile-dictation', type: 'partial', text: 'unsubmitted words' });
+
+    shown.value = false;
+    await flushPromises();
+    expect(findByTestId(root, 'prompt-composer')).toBeUndefined();
+    expect(findByTestId(portal, 'prompt-composer')).toBeUndefined();
+    expect(mocks.cancelDictation).toHaveBeenCalledWith('dismissed-mobile-dictation');
+    expect(mocks.cancelDictation).toHaveBeenCalledTimes(1);
+    dictationEvent?.({ requestId: 'dismissed-mobile-dictation', type: 'result', text: 'late transcript' });
+    await flushPromises();
+    expect(drafts.draftFor(targetKey)).toBe('keep this draft');
+    expect(writePty).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
   it('pins the production composer mic and shared dictation action styles to the Kotlin hierarchy', () => {
     const composerStyles = styleSource(promptComposerSource, 'PromptComposer');
     const mic = cssRule(composerStyles, '.composer-dictate--mic');

@@ -57,6 +57,11 @@ public final class JsComposerDockerJourneyTest {
     private static final int MAX_SELECTED_SCREENSHOT_ATTEMPTS = 4;
     private static final int MIN_DRAFT_PIXEL_CHANGES = 256;
     private static final int MIN_SELECTED_CHIP_PIXEL_CHANGES = 256;
+    /** The selected snippet's echo is the wrapped command visible above the keyboard-up composer. */
+    private static final String KEYBOARD_UP_WRAPPED_COMMAND_START = "$ printf 'alpha";
+    private static final String POST_SEND_WRAPPED_COMMAND_START = "$ printf '%s' 'caf";
+    private static final String POST_SEND_BYTE_OUTPUT = "636166c3a920f09fa7aa";
+    private JSONObject keyboardUpGridFidelity;
 
     private static final class SnippetScreenshotCapture {
         final byte[] png;
@@ -235,6 +240,19 @@ public final class JsComposerDockerJourneyTest {
         awaitDeliveredAndCleared();
         savePostSendArtifacts(artifactRunId, sentMarker, unicodeCommand, sendToVisibleOutputLatencyMs);
 
+        // Exercise the inline composer's handoff only after the untouched
+        // post-Send viewport and screenshot have passed their visibility oracle.
+        String followUpDraft = "draft retained after Send " + nameBase;
+        setComposerDraft(followUpDraft);
+        tapComposerAction("[data-testid=composer-open-keys]", "post-send-open-keys");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')"
+                + " && !!document.querySelector('[data-testid=mobile-hotkeys-sheet]')"
+                + " && document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.paletteOpen === 'true'");
+        openPromptComposerAndAssertDraftFocus();
+        awaitJsTrue("!document.querySelector('[data-testid=mobile-hotkeys-sheet]')");
+        assertEquals("More keys and Prompt must retain the inline follow-up draft", followUpDraft,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+
         String multilineFile = "/tmp/" + bytesSession + "-multiline.raw";
         setComposerDraft("cat > " + multilineFile);
         tapComposerAction(".composer-shared-controls .send");
@@ -339,6 +357,10 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'");
         click("[data-testid=open-terminal-settings]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-terminal'");
+        // This checkpoint tests route navigation. A late composer IME would
+        // correctly consume the first Android Back as a keyboard dismissal.
+        hideImeUntilStableWithoutEditableFocus();
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
         int before = Integer.parseInt(evalString("document.querySelector('.app-shell')?.dataset.backButtonEvents ?? '0'"));
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
@@ -769,8 +791,7 @@ public final class JsComposerDockerJourneyTest {
                             .put("screenshotSha256", hex(MessageDigest.getInstance("SHA-256").digest(png)));
 
                     if (selectedCapture) {
-                        assertTrue("selected chip capture must not reuse the keyboard-down PNG bytes",
-                                !Arrays.equals(baseline.png, png));
+                        boolean screenshotChanged = !Arrays.equals(baseline.png, png);
                         assertEquals("selected screenshot width must match its keyboard-down baseline",
                                 baselineBitmap.getWidth(), screenshot.getWidth());
                         assertEquals("selected screenshot height must match its keyboard-down baseline",
@@ -789,6 +810,7 @@ public final class JsComposerDockerJourneyTest {
                         boolean selectedChipPixelsChanged = targetChangedPixels >= MIN_SELECTED_CHIP_PIXEL_CHANGES;
                         lastAttempt = new JSONObject()
                                 .put("attempt", attempt)
+                                .put("screenshotChanged", screenshotChanged)
                                 .put("draftChangedPixels", draftChangedPixels)
                                 .put("draftComparedPixels", draftRegionPixels)
                                 .put("minimumDraftChangedPixels", MIN_DRAFT_PIXEL_CHANGES)
@@ -801,7 +823,7 @@ public final class JsComposerDockerJourneyTest {
                                 .put("selectedTargetChipRect", pixelRectEvidence(targetRegion))
                                 .put("draftPixelsChanged", draftPixelsChanged)
                                 .put("selectedChipPixelsChanged", selectedChipPixelsChanged);
-                        if (draftPixelsChanged && selectedChipPixelsChanged) {
+                        if (screenshotChanged && draftPixelsChanged && selectedChipPixelsChanged) {
                             evidence.put("selectedVisualStateVerified", true)
                                     .put("baselinePngSha256", baseline.evidence.getString("screenshotSha256"))
                                     .put("draftRegion", new JSONObject()
@@ -818,6 +840,7 @@ public final class JsComposerDockerJourneyTest {
                                             .put("selectedRect", pixelRectEvidence(targetRegion)));
                             return persistSnippetScreenshot(runId, name, png, geometry, evidence);
                         }
+                        Log.w("PS2932Snippet", "PRE_CAPTURE_FRAME_RETRY|" + runId + "|" + lastAttempt);
                     } else {
                         evidence.put("selectedVisualStateVerified", false);
                         return persistSnippetScreenshot(runId, name, png, geometry, evidence);
@@ -972,6 +995,16 @@ public final class JsComposerDockerJourneyTest {
                 throw new AssertionError("Prompt launcher did not reach its enabled idle state: "
                         + promptLauncherState(), error);
             }
+            // Session attach can focus xterm after the dock first appears. Let
+            // that focus settle and dismiss its IME before measuring the
+            // launcher, then wait for the measured frame to reach WebView's
+            // compositor. This only establishes the pre-Send starting state;
+            // the post-Send capture never hides the IME or scrolls the terminal.
+            hideImeUntilStableWithoutEditableFocus();
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+            awaitWebViewVisualState();
+            assertTrue("Prompt launcher starts with a settled hidden native IME", !isImeVisible());
+            Log.i("PS2932Prompt", "LAUNCHER_PRECONDITION|" + artifactRunId + "|" + promptLauncherState());
             String launcherSelector = "[data-testid=prompt-composer-launcher]";
             StalePhysicalTapGeometryException lastGeometryChange = null;
             boolean tapInjected = false;
@@ -1092,12 +1125,17 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'");
         SystemClock.sleep(350);
         assertTrue("Android IME must still be open for the keyboard-up capture", isImeVisible());
+        keyboardUpGridFidelity = readTerminalGridFidelity(KEYBOARD_UP_WRAPPED_COMMAND_START, null);
         assertTrue("capture the real keyboard-up composer before checking its visible bounds", saveKeyboardScreenshot(runId));
         String geometry = saveKeyboardGeometry(runId);
         try {
             awaitJsTrue("(() => {const shell=document.querySelector('.app-shell');"
                     + "const appBar=document.querySelector('.app-bar')?.getBoundingClientRect();"
                     + "const terminal=document.querySelector('.terminal-viewport')?.getBoundingClientRect();"
+                    + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                    + "const dock=document.querySelector('.mobile-hotkeys__bar')?.getBoundingClientRect();"
+                    + "const inlineDockVisible=!composer?.closest('.live-workspace') || (!!dock && dock.height>=47.9"
+                    + " && dock.top>=terminal.bottom && dock.bottom<=composer.getBoundingClientRect().top+0.5);"
                     + "const height=window.visualViewport?.height ?? innerHeight;"
                     + "const safeTop=parseFloat(getComputedStyle(shell).paddingTop)||0;"
                     + "const selectors=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
@@ -1112,7 +1150,7 @@ public final class JsComposerDockerJourneyTest {
                     + "return shell?.dataset.keyboardVisible === 'true' && !!appBar && !!terminal && terminal.height >= 48"
                     + " && appBar.top >= safeTop - 0.5 && appBar.bottom <= height + 0.5"
                     + " && terminal.top >= appBar.bottom && terminal.bottom <= height + 0.5 && terminal.right <= innerWidth + 0.5"
-                    + " && navVisible && visible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
+                    + " && navVisible && visible && inlineDockVisible && screen?.scrollTop === 0 && document.scrollingElement?.scrollTop === 0;})()");
         } catch (AssertionError error) {
             throw new AssertionError(error.getMessage() + "; captured keyboard screenshot precedes geometry=" + geometry, error);
         }
@@ -1129,6 +1167,7 @@ public final class JsComposerDockerJourneyTest {
                     bounds.getDouble("bottom") - bounds.getDouble("top") >= 47.9);
         }
         assertTrue("a real Android keyboard must still be open when the composer is captured", isImeVisible());
+        assertTerminalGridFidelity("keyboard-up composer", keyboardGeometry.getJSONObject("terminalGridFidelity"), false);
     }
 
     private void ensureImeVisible(String stage) throws Exception {
@@ -1229,12 +1268,18 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void awaitStableComposerActionTarget(String selector) throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 5_000;
+        // Each sample is a WebView evaluation plus a main-thread native read.
+        // On a starved emulator one sample has taken over 7s (two samples in
+        // 15s), so use the file's standard wait budget; the three-stable-sample
+        // condition itself is unchanged.
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         JSONObject previous = null;
         JSONObject last = null;
         int stableSamples = 0;
+        int samples = 0;
         while (SystemClock.uptimeMillis() < deadline) {
             last = readComposerActionTapLayout(selector);
+            samples += 1;
             boolean valid = !last.optBoolean("missing")
                     && !last.optBoolean("disabled")
                     && last.optBoolean("centerHitMatchesTarget")
@@ -1255,7 +1300,7 @@ public final class JsComposerDockerJourneyTest {
             Thread.sleep(75);
         }
         throw new AssertionError("Composer action target did not reach three stable visible layout samples before its physical tap: "
-                + selector + " (last=" + last + ")");
+                + selector + " (samples=" + samples + ", stable=" + stableSamples + ", previous=" + previous + ", last=" + last + ")");
     }
 
     private JSONObject readComposerActionTapLayout(String selector) throws Exception {
@@ -1603,6 +1648,9 @@ public final class JsComposerDockerJourneyTest {
                 + "const rect=viewport?.getBoundingClientRect();"
                 + "const appBarRect=document.querySelector('.app-bar')?.getBoundingClientRect();"
                 + "const composerRect=document.querySelector('[data-testid=prompt-composer]')?.getBoundingClientRect();"
+                + "const composer=document.querySelector('[data-testid=prompt-composer]');"
+                + "const composerScrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
+                + "const shell=document.querySelector('.app-shell');"
                 + "const terminalScreenRect=viewport?.querySelector('.xterm-screen')?.getBoundingClientRect();"
                 + "const terminalScroller=viewport?.querySelector('.xterm-viewport');"
                 + "const markerRow=Array.from(viewport?.querySelectorAll('.xterm-rows > div') ?? [])"
@@ -1628,6 +1676,11 @@ public final class JsComposerDockerJourneyTest {
                 + "const screenScrollTop=document.querySelector('.screen-content')?.scrollTop??null;"
                 + "const documentScrollTop=document.scrollingElement?.scrollTop??null;"
                 + "const capturedBeforeScroll=screenScrollTop===0&&documentScrollTop===0;"
+                + "const composerControlBounds=['[data-testid=prompt-draft]','[data-testid=composer-status]',"
+                + "'[data-testid=composer-open-keys]','[data-testid=composer-close]','[data-testid=composer-dictate]',"
+                + "'[data-testid=composer-insert]','.composer-shared-controls .send'].map(selector=>{"
+                + "const bounds=document.querySelector(selector)?.getBoundingClientRect();"
+                + "return {selector,top:bounds?.top,bottom:bounds?.bottom,left:bounds?.left,right:bounds?.right};});"
                 + "return JSON.stringify({stage:'after-send',capturedBeforeScroll,expectedMarker:" + JSONObject.quote(expectedMarker)
                 + ",sendToVisibleOutputLatencyMs:" + sendToVisibleOutputLatencyMs
                 + ",sendToVisibleOutputTiming:'Android uptime from Send touch-up to the first 60ms WebView poll with both executed rows rendered inside the visible xterm screen',"
@@ -1641,6 +1694,11 @@ public final class JsComposerDockerJourneyTest {
                 + "terminalScreen:terminalScreenRect?{top:terminalScreenRect.top,bottom:terminalScreenRect.bottom,left:terminalScreenRect.left,right:terminalScreenRect.right}:null,"
                 + "appBar:appBarRect?{top:appBarRect.top,bottom:appBarRect.bottom,left:appBarRect.left,right:appBarRect.right}:null,"
                 + "composer:composerRect?{top:composerRect.top,bottom:composerRect.bottom,left:composerRect.left,right:composerRect.right}:null,"
+                + "composerInline:!!composer&&!composer.classList.contains('composer-panel--sheet')&&!!composer.closest('.live-workspace'),"
+                + "composerModal:composer?.getAttribute('aria-modal')==='true',"
+                + "composerScrimVisible:!!composerScrim&&getComputedStyle(composerScrim).display!=='none',"
+                + "promptComposerOpen:shell?.dataset.promptComposerOpen==='true',"
+                + "composerControlBounds,"
                 + "markerRow:markerRect?{top:markerRect.top,bottom:markerRect.bottom,left:markerRect.left,right:markerRect.right}:null,"
                 + "byteOutputRow:byteOutputRect?{top:byteOutputRect.top,bottom:byteOutputRect.bottom,left:byteOutputRect.left,right:byteOutputRect.right}:null,"
                 + "terminalScroller:{scrollTop:terminalScroller?.scrollTop??null,scrollHeight:terminalScroller?.scrollHeight??null,clientHeight:terminalScroller?.clientHeight??null},"
@@ -1653,6 +1711,10 @@ public final class JsComposerDockerJourneyTest {
                 + "deliveryStatus:document.querySelector('[data-testid=composer-status]')?.textContent.trim() ?? ''});})() ");
         JSONObject measured = new JSONObject(report);
         measured.put("nativeImeVisible", isImeVisible());
+        measured.put("terminalGridFidelity",
+                readTerminalGridFidelity(POST_SEND_WRAPPED_COMMAND_START, POST_SEND_BYTE_OUTPUT));
+        measured.put("keyboardUpGridCols", keyboardUpGridFidelity == null ? JSONObject.NULL
+                : keyboardUpGridFidelity.opt("cols"));
         byte[] reportBytes = measured.toString().getBytes(StandardCharsets.UTF_8);
         awaitWebViewVisualState();
         AtomicReference<byte[]> screenshotArtifact = new AtomicReference<>();
@@ -1697,17 +1759,41 @@ public final class JsComposerDockerJourneyTest {
                 && viewport.getDouble("height") >= 48);
         JSONObject appBar = measured.getJSONObject("appBar");
         JSONObject composer = measured.getJSONObject("composer");
+        JSONObject terminalScreen = measured.getJSONObject("terminalScreen");
+        assertTrue("the complete post-send xterm screen must fit inside the visible terminal viewport",
+                terminalScreen.getDouble("top") >= viewport.getDouble("top") - 0.5
+                        && terminalScreen.getDouble("bottom") <= viewport.getDouble("bottom") + 0.5
+                        && terminalScreen.getDouble("left") >= viewport.getDouble("left") - 0.5
+                        && terminalScreen.getDouble("right") <= viewport.getDouble("right") + 0.5);
         assertTrue("post-send app bar must remain inside the viewport",
                 appBar.getDouble("top") >= 0
                         && appBar.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
                         && appBar.getDouble("left") >= 0
                         && appBar.getDouble("right") <= visualViewport.getDouble("width") + 0.5);
-        assertTrue("post-send composer must remain inside the viewport while it overlays the terminal",
+        assertTrue("post-send inline composer must remain inside the viewport",
                 composer.getDouble("top") >= 0
                         && composer.getDouble("bottom") <= visualViewport.getDouble("height") + 0.5
                         && composer.getDouble("left") >= 0
                         && composer.getDouble("right") <= visualViewport.getDouble("width") + 0.5
                         && composer.getDouble("bottom") > composer.getDouble("top"));
+        assertTrue("a delivered mobile Send must return to the inline composer without a modal or backdrop",
+                measured.getBoolean("composerInline")
+                        && !measured.getBoolean("composerModal")
+                        && !measured.getBoolean("composerScrimVisible")
+                        && !measured.getBoolean("promptComposerOpen")
+                        && viewport.getDouble("bottom") <= composer.getDouble("top") + 0.5);
+        JSONArray controls = measured.getJSONArray("composerControlBounds");
+        assertEquals("capture every post-send draft and action control", 7, controls.length());
+        for (int index = 0; index < controls.length(); index += 1) {
+            JSONObject control = controls.getJSONObject(index);
+            assertTrue("post-send control must fit inside the composer: " + control.getString("selector"),
+                    control.getDouble("top") >= composer.getDouble("top") - 0.5
+                            && control.getDouble("bottom") <= composer.getDouble("bottom") + 0.5
+                            && control.getDouble("left") >= composer.getDouble("left") - 0.5
+                            && control.getDouble("right") <= composer.getDouble("right") + 0.5
+                            && control.getDouble("bottom") > control.getDouble("top")
+                            && control.getDouble("right") > control.getDouble("left"));
+        }
         assertTrue("immediate post-send chrome, terminal and composer must remain visible without scrolling or IME",
                 !measured.getBoolean("keyboardVisible")
                         && appBar.getDouble("bottom") <= viewport.getDouble("top")
@@ -1718,11 +1804,15 @@ public final class JsComposerDockerJourneyTest {
         assertTrue("the app terminal subscription must deliver PTY bytes to its mounted Xterm component",
                 measured.getInt("appTerminalDeliveryCount") > 0 && measured.getInt("appTerminalMissingRefCount") == 0
                         && measured.getInt("terminalWriteCount") > 0);
-        assertTrue("the sent output rows must already be rendered visibly above the overlaid composer without test scrolling",
+        assertTrue("the sent output rows must already be rendered visibly above the inline composer without test scrolling",
                 measured.getBoolean("terminalOutputRowVisible")
                         && measured.getBoolean("terminalOutputRowsAboveComposer")
                         && visibleText.contains(expectedMarker)
                         && measured.getString("terminalDomText").contains(expectedMarker));
+        JSONObject fidelity = measured.getJSONObject("terminalGridFidelity");
+        assertTerminalGridFidelity("post-send inline composer", fidelity, true);
+        assertEquals("Send must not change the xterm column count it was tapped at; post-send=" + fidelity,
+                measured.get("keyboardUpGridCols"), fidelity.get("cols"));
     }
 
     private void awaitWebViewVisualState() throws Exception {
@@ -1765,6 +1855,7 @@ public final class JsComposerDockerJourneyTest {
                 + "height:document.querySelector('.screen-content')?.scrollHeight}});})() ");
         JSONObject measured = new JSONObject(geometry);
         measured.put("androidImeVisible", isImeVisible());
+        measured.put("terminalGridFidelity", keyboardUpGridFidelity);
         AtomicReference<JSONObject> nativeInsets = new AtomicReference<>();
         scenario.onActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
@@ -1892,7 +1983,9 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void awaitStableFocusTarget() throws Exception {
-        long deadline = SystemClock.uptimeMillis() + 5_000;
+        // Same load allowance as awaitStableComposerActionTarget: the 500ms
+        // stability window is unchanged, only the wall-clock budget grows.
+        long deadline = SystemClock.uptimeMillis() + 15_000;
         String current = evalString("(() => {const node=document.activeElement;return JSON.stringify({"
                 + "tag:node?.tagName||'',id:node?.id||'',className:node?.className||''});})()");
         long stableSince = SystemClock.uptimeMillis();
@@ -2031,7 +2124,12 @@ public final class JsComposerDockerJourneyTest {
         var instrumentation = InstrumentationRegistry.getInstrumentation();
         MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, screen[0], screen[1], 0);
         down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
+        // Queue ACTION_DOWN without waiting for its dispatch. A synchronous
+        // down on a heavily loaded host can take ~700ms to return, which turns
+        // the tap into a long press and suppresses the click (seen as
+        // pointerdown/pointerup 700-850ms apart with no click). ACTION_UP below
+        // stays synchronous, so the gesture is fully delivered on return.
+        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, false);
         down.recycle();
         assertTrue("Android touchscreen ACTION_DOWN must be injected", downInjected);
         SystemClock.sleep(60);
@@ -2175,6 +2273,104 @@ public final class JsComposerDockerJourneyTest {
         }
         throw new AssertionError("WebView condition did not become true: " + expression + " (last=" + last
                 + "; page=" + evalString("document.body.innerText") + ")");
+    }
+
+    /**
+     * Terminal grid fidelity (#2932): every rendered xterm row must fit the
+     * visible grid that SSH accepted. A row whose rendered text extends past
+     * the xterm screen, or a screen that extends past the terminal viewport,
+     * drops characters at every wrap even though the row DOM and the buffer
+     * text still contain them. The wrapped command rows prove the check ran on
+     * full-width rows, not only on short marker rows.
+     */
+    private static String terminalGridFidelityExpression(String startNeedle, String stopNeedle) {
+        return "((startNeedle, stopNeedle) => {"
+                + "const v=document.querySelector('.terminal-slot > .terminal-viewport');"
+                + "const screen=v?.querySelector('.xterm-screen');"
+                + "let state=null;try{state=JSON.parse(window.__ps2857TerminalBufferState||'null');}catch(error){state=null;}"
+                + "const box=node=>{const r=node?.getBoundingClientRect();return r?{top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height}:null;};"
+                + "const viewport=box(v),screenBox=box(screen),style=v?getComputedStyle(v):null;"
+                + "const clip=viewport&&style?{top:viewport.top+parseFloat(style.borderTopWidth),bottom:viewport.bottom-parseFloat(style.borderBottomWidth),"
+                + "left:viewport.left+parseFloat(style.borderLeftWidth),right:viewport.right-parseFloat(style.borderRightWidth)}:null;"
+                + "const cols=typeof state?.cols==='number'?state.cols:null,gridRows=typeof state?.rows==='number'?state.rows:null;"
+                + "const cellWidth=cols&&screenBox?screenBox.width/cols:null;"
+                + "const rows=Array.from(v?.querySelectorAll('.xterm-rows > div')??[]).map((row,index)=>{"
+                + "const range=document.createRange();range.selectNodeContents(row);"
+                + "const rects=Array.from(range.getClientRects()).filter(rect=>rect.width>0);"
+                + "const right=rects.length?Math.max(...rects.map(rect=>rect.right)):null;"
+                + "const cells=right===null||!cellWidth||!screenBox?0:Math.round((right-screenBox.left)/cellWidth*100)/100;"
+                + "return {index,text:(row.textContent||'').replace(/\\u00a0/g,' ').replace(/\\s+$/,''),right,cells};});"
+                + "const rendered=rows.filter(row=>row.right!==null);"
+                + "const maxRowRight=rendered.length?Math.max(...rendered.map(row=>row.right)):null;"
+                + "const maxRowCells=rendered.length?Math.max(...rendered.map(row=>row.cells)):0;"
+                + "const overflowingRows=screenBox?rendered.filter(row=>row.right>screenBox.right+0.5).map(row=>({index:row.index,text:row.text,cells:row.cells})):[];"
+                + "const stopIndex=stopNeedle?rows.findIndex(row=>row.text.includes(stopNeedle)):-1;"
+                + "let startIndex=rows.findIndex(row=>row.text.includes(startNeedle));"
+                + "if(startIndex<0&&stopIndex>0)startIndex=0;"
+                + "const wrappedCommandRows=[];"
+                + "if(startIndex>=0){wrappedCommandRows.push(rows[startIndex]);"
+                + "for(let index=startIndex+1;index<rows.length;index+=1){const row=rows[index];"
+                + "if(stopIndex>=0?index>=stopIndex:(!row.text||row.text.startsWith('$')))break;wrappedCommandRows.push(row);}}"
+                + "const resizeStatus=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()??'';"
+                + "const accepted=/^(\\d+) \\u00d7 (\\d+) accepted by SSH$/.exec(resizeStatus);"
+                + "return JSON.stringify({cols,rows:gridRows,bufferType:state?.bufferType??null,cellWidth,viewport,clip,screen:screenBox,"
+                + "domRowCount:rows.length,maxRowRight,maxRowCells,overflowingRows,"
+                + "wrappedCommandRows:wrappedCommandRows.map(row=>({index:row.index,text:row.text,cells:row.cells,right:row.right})),"
+                + "resizeStatus,acceptedCols:accepted?Number(accepted[1]):null,acceptedRows:accepted?Number(accepted[2]):null,"
+                + "startNeedle,stopNeedle});})(" + JSONObject.quote(startNeedle) + ","
+                + (stopNeedle == null ? "null" : JSONObject.quote(stopNeedle)) + ")";
+    }
+
+    private JSONObject readTerminalGridFidelity(String startNeedle, String stopNeedle) throws Exception {
+        String expression = terminalGridFidelityExpression(startNeedle, stopNeedle);
+        // Wait (without failing) for the fitted grid to be the one SSH accepted,
+        // so a pending resize acknowledgement is not mistaken for a mismatch.
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject fidelity = new JSONObject(evalString(expression));
+        while (SystemClock.uptimeMillis() < deadline
+                && (fidelity.isNull("acceptedCols") || fidelity.isNull("cols")
+                        || fidelity.getInt("acceptedCols") != fidelity.getInt("cols")
+                        || fidelity.getInt("acceptedRows") != fidelity.getInt("rows"))) {
+            Thread.sleep(60);
+            fidelity = new JSONObject(evalString(expression));
+        }
+        return fidelity;
+    }
+
+    private static void assertTerminalGridFidelity(String stage, JSONObject fidelity, boolean requireFullGridHeight)
+            throws JSONException {
+        assertTrue(stage + " must record the fitted xterm grid: " + fidelity,
+                !fidelity.isNull("cols") && fidelity.getInt("cols") > 0 && !fidelity.isNull("cellWidth"));
+        int cols = fidelity.getInt("cols");
+        assertTrue(stage + " xterm grid must be the grid SSH accepted: " + fidelity,
+                !fidelity.isNull("acceptedCols") && fidelity.getInt("acceptedCols") == cols
+                        && fidelity.getInt("acceptedRows") == fidelity.getInt("rows"));
+        JSONObject clip = fidelity.getJSONObject("clip");
+        JSONObject screen = fidelity.getJSONObject("screen");
+        assertTrue(stage + " xterm screen must fit the visible terminal viewport width: " + fidelity,
+                screen.getDouble("left") >= clip.getDouble("left") - 0.5
+                        && screen.getDouble("right") <= clip.getDouble("right") + 0.5);
+        // The keyboard-up dock keeps #2884's accepted 38x6 PTY inside a 144px
+        // cap with at least five fully visible rows (checked by the Fast Keys
+        // lane), so only the keyboard-down grid must fit its full height here.
+        if (requireFullGridHeight) {
+            assertTrue(stage + " xterm screen must fit the visible terminal viewport height: " + fidelity,
+                    screen.getDouble("top") >= clip.getDouble("top") - 0.5
+                            && screen.getDouble("bottom") <= clip.getDouble("bottom") + 0.5);
+        }
+        assertEquals(stage + " every rendered row must fit the xterm screen; clipped rows lose characters at each wrap: "
+                + fidelity, 0, fidelity.getJSONArray("overflowingRows").length());
+        assertTrue(stage + " no rendered row may be wider than the accepted column count: " + fidelity,
+                fidelity.getDouble("maxRowCells") <= cols + 0.05
+                        && fidelity.getDouble("maxRowRight") <= screen.getDouble("right") + 0.5);
+        JSONArray wrapped = fidelity.getJSONArray("wrappedCommandRows");
+        assertTrue(stage + " must measure a wrapped long command, not only short rows: " + fidelity,
+                wrapped.length() >= 2);
+        for (int index = 0; index < wrapped.length() - 1; index += 1) {
+            double cells = wrapped.getJSONObject(index).getDouble("cells");
+            assertTrue(stage + " wrapped command row " + index + " must fill the accepted width without exceeding it: "
+                    + fidelity, cells >= cols - 1 - 0.05 && cells <= cols + 0.05);
+        }
     }
 
     private String evalString(String expression) throws Exception {

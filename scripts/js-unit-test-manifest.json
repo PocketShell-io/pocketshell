@@ -46,6 +46,8 @@
         "keeps recording and transcribing preview regions present before speech arrives",
         "places the mobile Dictate prompt microphone in the composer action row",
         "keeps prompt dictation inside the composer instead of auto-starting from the terminal dock",
+        "cancels dictation when the mobile sheet composer is dismissed",
+        "cancels dictation when the mobile inline composer is dismissed",
         "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
         "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",

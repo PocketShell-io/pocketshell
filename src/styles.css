@@ -25,6 +25,12 @@ button { color: inherit; }
   padding-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   padding-left: max(0px, var(--safe-area-inset-left, env(safe-area-inset-left, 0px)));
   background: var(--bg);
+  /* Compact mobile live-terminal gutters. The keyboard-up workspace and the
+     inline composer after Send both use these, so they measure one xterm
+     width and keep one column count (#2932). */
+  --live-terminal-compact-shell-inline: var(--sp-2);
+  --live-terminal-compact-panel-inline: 6px;
+  --live-terminal-compact-grid-inline: var(--sp-1);
 }
 
 .app-shell[data-native-platform="android"] {
@@ -572,7 +578,7 @@ button { color: inherit; }
     display: flex;
     flex-direction: column;
     gap: 0;
-    padding: 4px 8px 0;
+    padding: 4px var(--live-terminal-compact-shell-inline) 0;
   }
   .app-shell[data-keyboard-composer-mode="true"] .home-screen > .host-panel,
   .app-shell[data-keyboard-composer-mode="true"] .home-screen > .workspace-panel,
@@ -605,9 +611,9 @@ button { color: inherit; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet {
     padding-inline: 16px;
   }
-  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading { justify-content: flex-end; }
-  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading__copy,
-  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--sheet .composer-heading > .state-tag { display: none; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading { justify-content: flex-end; }
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading__copy,
+  .app-shell[data-keyboard-composer-mode="true"] .composer-panel--mobile .composer-heading > .state-tag { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading .eyebrow { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .composer-heading h3 {
@@ -662,14 +668,14 @@ button { color: inherit; }
        the terminal panel instead of leaving a gap that clips the dock. */
     gap: 0;
   }
-  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px; }
+  .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-panel { gap: 5px; padding: 6px var(--live-terminal-compact-panel-inline); }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-heading--terminal { min-height: 24px; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .terminal-viewport {
     height: auto;
     min-height: var(--terminal-min-grid-height, 110px);
     max-height: none;
     flex: 1 1 auto;
-    padding: 4px;
+    padding: 4px var(--live-terminal-compact-grid-inline);
   }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace .panel-footnote { display: none; }
   .app-shell[data-keyboard-composer-mode="true"] .live-workspace > .composer-panel {
@@ -816,5 +822,38 @@ button { color: inherit; }
   }
   .app-shell .live-workspace .terminal-slot.terminal-slot--preserve-grid > .mobile-hotkeys {
     margin-top: 0;
+  }
+}
+
+@media (max-width: 719px) {
+  /* A delivered Android Send keeps the Prompt composer inline (#2932). Send
+     is tapped from the keyboard-up workspace, and the host multiplexer does
+     not re-wrap rows it already drew when its PTY gets narrower, so a column
+     loss here would clip the just-sent command at every wrap. Share the
+     compact horizontal gutters with the keyboard-up workspace so both states
+     measure the same xterm width and Send does not change the column count. */
+  .app-shell[data-prompt-composer-inline="true"] .screen-content.home-screen--workspace {
+    padding-inline: var(--live-terminal-compact-shell-inline);
+  }
+  .app-shell[data-prompt-composer-inline="true"] .live-workspace .terminal-panel {
+    padding-inline: var(--live-terminal-compact-panel-inline);
+  }
+  .app-shell[data-prompt-composer-inline="true"] .live-workspace .terminal-slot > .terminal-viewport {
+    padding-inline: var(--live-terminal-compact-grid-inline);
+  }
+  /* FitAddon measures its parent's border box and subtracts only xterm's own
+     padding. With the keyboard down, keep the vertical gutter on .xterm so the
+     last grid row stays inside the terminal above the inline composer. */
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport {
+    border-block-width: 0;
+    padding-block: 0;
+  }
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport > .xterm {
+    padding-block: var(--sp-2);
+  }
+  /* xterm's scroll layer spans that padding; keep the gutter on the terminal
+     background instead of xterm.css's #000 strips above and below the grid. */
+  .app-shell[data-prompt-composer-inline="true"]:not([data-keyboard-composer-mode="true"]) .live-workspace .terminal-slot > .terminal-viewport .xterm-viewport {
+    background-color: var(--term-bg);
   }
 }

@@ -661,9 +661,14 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
         markResizeFitPhase("dictation-receiver-after-prompt-retap");
         awaitTerminalResizeIdle();
-        awaitRenderedFrame();
+        // Rendering the post-Send/IME transition can start the final fit after
+        // the first idle check. Freeze the no-resize baseline only once SSH has
+        // acknowledged that grid, before opening the catalog or dictation.
+        awaitAcknowledgedTerminalGrid();
 
         JSONObject readyGeometry = captureGeometry("dictation-ready-ime-open");
+        assertEquals("the receiver setup baseline must include the final SSH resize acknowledgement", 0,
+                readyGeometry.getInt("resizePending"));
         assertDictationMicReachable(readyGeometry);
         assertUnchangedTerminalGrid("preparing the host-side dictation receiver", stableGrid, runtimeGrid(readyGeometry));
         assertEquals("host-side receiver setup must settle back to the initial terminal viewport height",
@@ -694,6 +699,19 @@ public final class JsFastKeysDockerJourneyTest {
                 + JSONObject.quote(dictatedText));
         int writesAfterPartial = terminalInputAcknowledgements();
         JSONObject listening = captureGeometry("dictation-listening-ime-open");
+        // Keep the resize evidence ahead of logcat's per-line truncation limit.
+        for (JSONObject checkpoint : new JSONObject[] {readyGeometry, catalogBeforeListening, listening}) {
+            String stage = checkpoint.getString("stage");
+            Log.i("PS2932Resize", stage + "|acks=" + checkpoint.getInt("resizeAcks")
+                    + "|pending=" + checkpoint.getInt("resizePending")
+                    + "|grid=" + checkpoint.getJSONObject("runtimeGeometry"));
+            for (String events : new String[] {"resizeFitEvents", "resizeAckEvents"}) {
+                JSONArray entries = checkpoint.getJSONArray(events);
+                for (int index = 0; index < entries.length(); index += 1) {
+                    Log.i("PS2932Resize", stage + "|" + events + "|" + entries.getJSONObject(index));
+                }
+            }
+        }
         assertEquals("recording starts after the catalog closes and does not open the prompt composer", 0,
                 listening.getInt("expandedInputSurfaceCount"));
         assertTerminalViewportCap("showing a dictation partial", idle, listening);
@@ -1036,7 +1054,11 @@ public final class JsFastKeysDockerJourneyTest {
 
         tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'");
+        awaitAcknowledgedTerminalGrid();
         JSONObject changedSessionGeometry = captureGeometry("dictation-reattached-ime-open");
+        assertEquals("reattach evidence must include the current keyboard-up SSH resize acknowledgement", 0,
+                changedSessionGeometry.getInt("resizePending"));
         assertUnchangedTerminalGrid("changed-session dictation reattach", stableGrid,
                 runtimeGrid(changedSessionGeometry));
         assertAcceptedKeyboardUpViewport("changed-session dictation reattach", changedSessionGeometry);
@@ -2955,6 +2977,16 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeFailures ?? 0) === 0");
     }
 
+    private void awaitAcknowledgedTerminalGrid() throws Exception {
+        awaitRenderedFrame();
+        awaitTerminalResizeIdle();
+        awaitJsTrue("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
+                + "const grid=window.__ps2875TerminalRuntimeGeometry;"
+                + "return !!grid && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizePending)===0"
+                + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()"
+                + " === grid.cols+' × '+grid.rows+' accepted by SSH';})()");
+    }
+
     private JSONArray hotkeyWrites() throws Exception {
         return new JSONArray(evalString("JSON.stringify(window.__ps2884HotkeyWrites ?? [])"));
     }
@@ -3516,7 +3548,10 @@ public final class JsFastKeysDockerJourneyTest {
         assertTrue("fast-key target must be visible inside the Android viewport: " + point, point.getBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
         long downTime = SystemClock.uptimeMillis();
-        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime);
+        // Queue ACTION_DOWN without waiting for dispatch: a synchronous down on
+        // a starved emulator has taken 12s to return, turning the tap into a
+        // long press with no click. ACTION_UP stays synchronous.
+        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime, false);
         SystemClock.sleep(60);
         injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
         SystemClock.sleep(100);
@@ -3531,7 +3566,10 @@ public final class JsFastKeysDockerJourneyTest {
                 !point.optBoolean("missing") && point.optBoolean("disabled") && point.optBoolean("visible"));
         float[] screen = screenPoint((float) point.getDouble("x"), (float) point.getDouble("y"));
         long downTime = SystemClock.uptimeMillis();
-        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime);
+        // Queue ACTION_DOWN without waiting for dispatch: a synchronous down on
+        // a starved emulator has taken 12s to return, turning the tap into a
+        // long press with no click. ACTION_UP stays synchronous.
+        injectTouch(MotionEvent.ACTION_DOWN, screen[0], screen[1], downTime, downTime, false);
         SystemClock.sleep(60);
         injectTouch(MotionEvent.ACTION_UP, screen[0], screen[1], downTime, SystemClock.uptimeMillis());
         SystemClock.sleep(100);
@@ -3579,9 +3617,13 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private void injectTouch(int action, float x, float y, long downTime, long eventTime) {
+        injectTouch(action, x, y, downTime, eventTime, true);
+    }
+
+    private void injectTouch(int action, float x, float y, long downTime, long eventTime, boolean sync) {
         MotionEvent event = MotionEvent.obtain(downTime, eventTime, action, x, y, 0);
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        boolean injected = InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(event, true);
+        boolean injected = InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(event, sync);
         event.recycle();
         assertTrue("Android touchscreen event must be injected", injected);
     }

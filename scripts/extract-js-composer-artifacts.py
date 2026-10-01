@@ -265,6 +265,53 @@ def _validate_snippet_geometry(decoded: dict[str, bytes], name: str, *, selected
     _validate_snippet_screenshot_evidence(decoded, name, geometry, selected=selected)
 
 
+def _validate_terminal_grid_fidelity(fidelity: object, stage: str, *, require_full_height: bool) -> int:
+    """Reject a terminal whose rendered rows do not fit the grid SSH accepted.
+
+    A row wider than the xterm screen is clipped at the right edge and loses
+    characters at every wrap while its DOM text and buffer text stay intact,
+    so only the rendered extent proves the terminal is readable (#2932).
+    """
+    if not isinstance(fidelity, dict):
+        raise ExtractionFailure(f"{stage} terminal grid fidelity record is missing")
+    try:
+        cols = fidelity["cols"]
+        rows = fidelity["rows"]
+        if isinstance(cols, bool) or not isinstance(cols, int) or cols <= 0:
+            raise ValueError("cols")
+        if fidelity.get("acceptedCols") != cols or fidelity.get("acceptedRows") != rows:
+            raise ExtractionFailure(
+                f"{stage} xterm grid {cols}x{rows} is not the grid SSH accepted: {fidelity.get('resizeStatus')!r}")
+        clip = fidelity["clip"]
+        screen = fidelity["screen"]
+        if float(screen["left"]) < float(clip["left"]) - 0.5 or float(screen["right"]) > float(clip["right"]) + 0.5:
+            raise ExtractionFailure(f"{stage} xterm screen extends past the visible terminal viewport width")
+        # Keyboard-up keeps #2884's 38x6 PTY in a 144px cap with five fully
+        # visible rows (Fast Keys lane); only keyboard-down must fit fully.
+        if require_full_height and (float(screen["top"]) < float(clip["top"]) - 0.5
+                                    or float(screen["bottom"]) > float(clip["bottom"]) + 0.5):
+            raise ExtractionFailure(f"{stage} xterm screen extends past the visible terminal viewport height")
+        overflowing = fidelity["overflowingRows"]
+        if not isinstance(overflowing, list) or overflowing:
+            raise ExtractionFailure(f"{stage} rendered terminal rows are clipped by the xterm screen: {overflowing}")
+        max_cells = float(fidelity["maxRowCells"])
+        max_right = fidelity["maxRowRight"]
+        if max_cells > cols + 0.05 or max_right is None or float(max_right) > float(screen["right"]) + 0.5:
+            raise ExtractionFailure(f"{stage} a rendered row is wider than the accepted {cols} columns")
+        wrapped = fidelity["wrappedCommandRows"]
+        if not isinstance(wrapped, list) or len(wrapped) < 2:
+            raise ExtractionFailure(f"{stage} did not measure a wrapped long command row")
+        for row in wrapped[:-1]:
+            cells = float(row["cells"])
+            if cells < cols - 1 - 0.05 or cells > cols + 0.05:
+                raise ExtractionFailure(f"{stage} wrapped command row does not fill the accepted {cols} columns: {row}")
+    except ExtractionFailure:
+        raise
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExtractionFailure(f"{stage} terminal grid fidelity record is invalid: {error}") from error
+    return cols
+
+
 def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                  expected_terminal_marker: str | None = None) -> dict[str, bytes]:
     assets: dict[str, dict[str, object]] = {}
@@ -415,6 +462,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("keyboard layout hides the terminal context instead of preserving a useful viewport")
         if float(actions["top"]) < float(draft["bottom"]):
             raise ExtractionFailure("composer action container overlaps the draft")
+        keyboard_cols = _validate_terminal_grid_fidelity(
+            geometry.get("terminalGridFidelity"), "keyboard-up", require_full_height=False)
 
         post_send_bytes = decoded.get("composer-post-send-terminal.json")
         if post_send_bytes is None or "composer-post-send.png" not in decoded:
@@ -460,6 +509,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send PTY output did not reach the mounted terminal component")
         if not isinstance(post_send.get("deliveryStatus"), str) or "Sent to the terminal" not in post_send["deliveryStatus"]:
             raise ExtractionFailure("post-send terminal record does not prove successful Send status")
+        if (post_send.get("composerInline") is not True
+                or post_send.get("composerModal") is not False
+                or post_send.get("composerScrimVisible") is not False
+                or post_send.get("promptComposerOpen") is not False):
+            raise ExtractionFailure("post-send composer is still modal or has a visible backdrop")
         terminal_rect = post_send.get("terminalViewport")
         post_viewport = post_send.get("visualViewport")
         if not isinstance(post_viewport, dict):
@@ -505,6 +559,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure("post-send xterm screen is outside the terminal viewport")
         if app_bar_bounds[3] > terminal_bounds[2] + 0.5:
             raise ExtractionFailure("post-send app bar overlaps the terminal viewport")
+        if terminal_bounds[3] > composer_bounds[2] + 0.5:
+            raise ExtractionFailure("post-send inline composer overlaps the terminal viewport")
         if not contained(marker_row_bounds, terminal_bounds) or not contained(marker_row_bounds, screen_bounds):
             raise ExtractionFailure("post-send marker row is clipped or obscured outside the visible terminal screen")
         if not contained(byte_output_bounds, terminal_bounds) or not contained(byte_output_bounds, screen_bounds):
@@ -522,6 +578,11 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 or isinstance(post_send.get("screenScrollTop"), bool) or post_send.get("screenScrollTop") != 0
                 or isinstance(post_send.get("documentScrollTop"), bool) or post_send.get("documentScrollTop") != 0):
             raise ExtractionFailure("post-send terminal evidence required page scrolling")
+        post_send_cols = _validate_terminal_grid_fidelity(
+            post_send.get("terminalGridFidelity"), "post-send", require_full_height=True)
+        if post_send.get("keyboardUpGridCols") != keyboard_cols or post_send_cols != keyboard_cols:
+            raise ExtractionFailure(
+                f"Send changed the xterm column count from {keyboard_cols} to {post_send_cols}")
 
         _validate_snippet_geometry(decoded, "snippet-keyboard-down-geometry.json", selected=False)
         _validate_snippet_geometry(decoded, "snippet-selected-chip-geometry.json", selected=True)
@@ -608,6 +669,30 @@ def self_test() -> None:
         return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
                 + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
+    def grid_fidelity(*, cols: int = 38, accepted_cols: int = 38, row_cells: float = 38.0,
+                      screen_right: float = 383.6, clip_right: float = 391.2) -> dict[str, object]:
+        cell = 9.62
+        left = 18.0
+        rows = [
+            {"index": 0, "text": "$ printf '%s' 'cafe' | od", "cells": row_cells, "right": left + row_cells * cell},
+            {"index": 1, "text": "| tr -d '[:space:]'", "cells": cols, "right": left + cols * cell},
+            {"index": 2, "text": "s-sent-output.marker", "cells": 20.0, "right": left + 20 * cell},
+        ]
+        overflowing = [row for row in rows if row["right"] > screen_right + 0.5]
+        return {
+            "cols": cols, "rows": 9, "bufferType": "alternate", "cellWidth": cell,
+            "viewport": {"top": 170.0, "bottom": 404.0, "left": 13.0, "right": 397.2},
+            "clip": {"top": 170.0, "bottom": 404.0, "left": 14.0, "right": clip_right},
+            "screen": {"top": 178.0, "bottom": 390.0, "left": left, "right": screen_right},
+            "domRowCount": 9,
+            "maxRowRight": max(row["right"] for row in rows),
+            "maxRowCells": max(row["cells"] for row in rows),
+            "overflowingRows": overflowing,
+            "wrappedCommandRows": rows,
+            "resizeStatus": f"{accepted_cols} \u00d7 9 accepted by SSH",
+            "acceptedCols": accepted_cols, "acceptedRows": 9,
+        }
+
     png = png_fixture((24, 32, 40))
     selected_png = png_fixture((90, 48, 24))
     post_send = json.dumps({
@@ -623,10 +708,14 @@ def self_test() -> None:
         "appTerminalDeliveryCount": 1,
         "appTerminalMissingRefCount": 0,
         "terminalWriteCount": 1,
-        "terminalViewport": {"top": 172.21, "bottom": 776.1, "left": 0.0, "right": 412.19, "height": 603.89},
-        "terminalScreen": {"top": 181.0, "bottom": 771.0, "left": 0.0, "right": 412.19},
-        "appBar": {"top": 0.0, "bottom": 172.0, "left": 0.0, "right": 412.19},
-        "composer": {"top": 434.72, "bottom": 867.05, "left": 0.0, "right": 412.19},
+        "terminalViewport": {"top": 172.21, "bottom": 464.63, "left": 0.0, "right": 412.19, "height": 292.42},
+        "terminalScreen": {"top": 181.0, "bottom": 462.74, "left": 0.0, "right": 412.19},
+        "appBar": {"top": 51.0, "bottom": 103.76, "left": 0.0, "right": 412.19},
+        "composer": {"top": 507.33, "bottom": 859.05, "left": 10.0, "right": 402.19},
+        "composerInline": True,
+        "composerModal": False,
+        "composerScrimVisible": False,
+        "promptComposerOpen": False,
         "markerRow": {"top": 370.0, "bottom": 393.0, "left": 12.0, "right": 390.0},
         "byteOutputRow": {"top": 346.0, "bottom": 369.0, "left": 12.0, "right": 390.0},
         "terminalScroller": {"scrollTop": 0, "scrollHeight": 604, "clientHeight": 604},
@@ -639,6 +728,8 @@ def self_test() -> None:
         "keyboardVisible": False,
         "nativeImeVisible": False,
         "deliveryStatus": "Sent to the terminal.",
+        "keyboardUpGridCols": 38,
+        "terminalGridFidelity": grid_fidelity(),
     }).encode()
     focus_trace = json.dumps({
         "runId": run_id,
@@ -677,6 +768,15 @@ def self_test() -> None:
     obscured_output_post_send_value["composer"]["top"] = 350.0
     obscured_output_post_send_value["terminalOutputRowsAboveComposer"] = False
     obscured_output_post_send = json.dumps(obscured_output_post_send_value).encode()
+    modal_post_send_value = json.loads(post_send)
+    modal_post_send_value["composerInline"] = False
+    modal_post_send_value["composerModal"] = True
+    modal_post_send_value["composerScrimVisible"] = True
+    modal_post_send_value["promptComposerOpen"] = True
+    modal_post_send = json.dumps(modal_post_send_value).encode()
+    backdrop_post_send_value = json.loads(post_send)
+    backdrop_post_send_value["composerScrimVisible"] = True
+    backdrop_post_send = json.dumps(backdrop_post_send_value).encode()
     clipped_composer_post_send_value = json.loads(post_send)
     clipped_composer_post_send_value["composer"]["bottom"] = 930.0
     clipped_composer_post_send = json.dumps(clipped_composer_post_send_value).encode()
@@ -693,8 +793,32 @@ def self_test() -> None:
     missing_latency_value = json.loads(post_send)
     del missing_latency_value["sendToVisibleOutputLatencyMs"]
     missing_latency_post_send = json.dumps(missing_latency_value).encode()
+
+    def post_send_with(**changes: object) -> bytes:
+        value = json.loads(post_send)
+        value.update(changes)
+        return json.dumps(value).encode()
+
+    # #2932: the reviewer's clipped run rendered 37-cell rows in a 35-column
+    # screen after Send resized the grid; each case must fail closed.
+    clipped_rows_post_send = post_send_with(
+        keyboardUpGridCols=37, terminalGridFidelity=grid_fidelity(cols=35, accepted_cols=35, row_cells=37.0, screen_right=354.7))
+    resized_by_send_post_send = post_send_with(
+        keyboardUpGridCols=38, terminalGridFidelity=grid_fidelity(cols=35, accepted_cols=35, row_cells=35.0, screen_right=354.7))
+    unaccepted_grid_post_send = post_send_with(terminalGridFidelity=grid_fidelity(accepted_cols=37))
+    screen_past_viewport_post_send = post_send_with(terminalGridFidelity=grid_fidelity(clip_right=380.0))
+    short_viewport_value = grid_fidelity()
+    short_viewport_value["clip"]["bottom"] = 386.0
+    screen_below_viewport_post_send = post_send_with(terminalGridFidelity=short_viewport_value)
+    short_rows_only_value = grid_fidelity()
+    short_rows_only_value["wrappedCommandRows"] = short_rows_only_value["wrappedCommandRows"][2:]
+    short_rows_only_post_send = post_send_with(terminalGridFidelity=short_rows_only_value)
+    missing_fidelity_value = json.loads(post_send)
+    del missing_fidelity_value["terminalGridFidelity"]
+    missing_fidelity_post_send = json.dumps(missing_fidelity_value).encode()
     def geometry_payload(*, ime_visible: bool = True, app_bar_top: float = 24.0,
-                         send_bottom: float = 218.0, terminal_height: float = 60.0) -> bytes:
+                         send_bottom: float = 218.0, terminal_height: float = 60.0,
+                         keyboard_fidelity: dict[str, object] | None = None) -> bytes:
         return json.dumps({
             "androidImeVisible": ime_visible,
             "visualViewport": {"height": 240.0, "width": 400.0},
@@ -710,6 +834,7 @@ def self_test() -> None:
             },
             "safeArea": {"topCss": 24.0, "bottomCss": 0.0, "shellTopPadding": 24.0, "shellBottomPadding": 0.0, "keyboardVisible": True},
             "nativeInsets": {"statusBarTopDp": 24.0, "imeBottomDp": 300.0},
+            "terminalGridFidelity": keyboard_fidelity if keyboard_fidelity is not None else grid_fidelity(),
         }).encode()
 
     geometry = geometry_payload()
@@ -847,7 +972,7 @@ def self_test() -> None:
 
     lines = make_lines()
     assert parse_assets("\n".join(lines), run_id, expected_terminal_marker=marker)["composer-keyboard.png"] == png
-    print("PASS: keyboard and post-send overlay artifacts extract with complete chunks and matching SHA-256")
+    print("PASS: keyboard and post-send inline artifacts extract with complete chunks and matching SHA-256")
 
     for label, altered in (
         ("missing artifact", lines[:-1]),
@@ -869,9 +994,20 @@ def self_test() -> None:
         ("post-send screenshot captured with native IME open", make_lines(post_send_bytes=native_ime_up_post_send)),
         ("post-send page scrolled to expose output", make_lines(post_send_bytes=scrolled_post_send)),
         ("post-send output obscured by composer", make_lines(post_send_bytes=obscured_output_post_send)),
+        ("post-send modal composer and backdrop", make_lines(post_send_bytes=modal_post_send)),
+        ("post-send visible backdrop", make_lines(post_send_bytes=backdrop_post_send)),
         ("post-send composer clipped by viewport", make_lines(post_send_bytes=clipped_composer_post_send)),
         ("post-send output row clipped by xterm screen", make_lines(post_send_bytes=clipped_output_post_send)),
         ("post-send output latency missing", make_lines(post_send_bytes=missing_latency_post_send)),
+        ("post-send rendered rows wider than the xterm screen", make_lines(post_send_bytes=clipped_rows_post_send)),
+        ("post-send Send changed the column count", make_lines(post_send_bytes=resized_by_send_post_send)),
+        ("post-send xterm grid differs from the SSH-accepted grid", make_lines(post_send_bytes=unaccepted_grid_post_send)),
+        ("post-send xterm screen extends past the terminal viewport", make_lines(post_send_bytes=screen_past_viewport_post_send)),
+        ("post-send grid check measured only short rows", make_lines(post_send_bytes=short_rows_only_post_send)),
+        ("post-send xterm screen extends below the terminal viewport", make_lines(post_send_bytes=screen_below_viewport_post_send)),
+        ("post-send grid fidelity record missing", make_lines(post_send_bytes=missing_fidelity_post_send)),
+        ("keyboard-up rendered rows wider than the xterm screen", make_lines(geometry_payload(
+            keyboard_fidelity=grid_fidelity(row_cells=39.0)))),
         ("post-send output latency negative", make_lines(post_send_bytes=negative_latency_post_send)),
         ("post-send output latency exceeds the observation timeout", make_lines(post_send_bytes=invalid_latency_post_send)),
         ("snippet chips captured with keyboard open", make_lines(chip_down_bytes=snippet_geometry(selected=False, keyboard_visible=True))),
@@ -895,8 +1031,8 @@ def self_test() -> None:
     ):
         try:
             parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)
-        except ExtractionFailure:
-            print(f"PASS: {label} fails closed")
+        except ExtractionFailure as error:
+            print(f"PASS: {label} fails closed ({error})")
         else:
             raise AssertionError(f"{label} unexpectedly passed")
     focus_failure_lines = list(lines)
