@@ -172,9 +172,11 @@ Every packaged lane runner calls `pocketshell_android_input_preflight`
   disabled. `pocketshell_release_all` re-enables exactly those packages on
   every lane exit and drops a record entry only after `pm enable` succeeded.
   A lane killed with SIGKILL leaves the record, so the next lane's preflight
-  and the emulator start path (`start-local-avd.sh`, `avd-pool.sh start`, only
-  when no lane holds the lock) re-enable it first and log
-  `RECOVERED_STALE_DISABLED_LAUNCHER`.
+  and the emulator start path re-enable it first and log
+  `RECOVERED_STALE_DISABLED_LAUNCHER`. `start-local-avd.sh` checks
+  `ANDROID_SERIAL`, or every booted emulator when it is unset; it and
+  `avd-pool.sh start` skip only a serial whose AVD lock another process holds
+  (`STALE_LAUNCHER_RECOVERY` lines record each decision).
 - Before that it sets `device_provisioned=1` and `user_setup_complete=1`,
   because the hosted SDK setup app can still be the provisioning HOME right
   after boot, and SystemUI keeps the notification shade locked until setup
@@ -184,8 +186,10 @@ Every packaged lane runner calls `pocketshell_android_input_preflight`
   smoke test `safeAreaBottomInsetBridgeCarriesANonZeroInset` logs the natural
   insets, enables Android's emulated bottom display cutout
   (`com.android.internal.display.cutout.emulation.double`), and requires the
-  KeyboardInsets bridge to carry that non-zero inset into
-  `--safe-area-inset-bottom` and back. The other safe-area checks run on the
+  KeyboardInsets plugin's own `getState().safeBottomDp` to equal the native
+  bottom inset, with `--safe-area-inset-bottom` holding it for 10 consecutive
+  samples (Capacitor SystemBars also writes that CSS variable, so the CSS
+  value alone is not proof), then the same on the way back down. The other safe-area checks run on the
   device's own insets.
 - It sets `hide_error_dialogs=1` (best effort: hosted run 36792962871 showed a
   launcher ANR dialog despite it) and force-stops the owner of any other

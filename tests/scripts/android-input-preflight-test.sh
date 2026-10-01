@@ -211,10 +211,8 @@ exec 7>&-
 pocketshell_android_recover_stale_launchers_if_idle "$ADB" "$SERIAL" 2> /dev/null
 [[ ! -e "$FAKE_ADB_STATE/disabled-$LAUNCHER" ]] || fail 'start path did not recover the stale launcher'
 [[ ! -e "$RECORD" ]] || fail 'start path left the record after a successful re-enable'
-grep -Fq 'pocketshell_android_recover_stale_launchers_if_idle' "$ROOT_DIR/scripts/start-local-avd.sh" \
-  || fail 'start-local-avd.sh does not recover stale launchers'
-grep -Fq 'pocketshell_android_recover_stale_launchers_if_idle' "$ROOT_DIR/scripts/avd-pool.sh" \
-  || fail 'avd-pool.sh start does not recover stale launchers'
+# start-local-avd.sh itself is executed end to end by
+# tests/scripts/start-local-avd-launcher-recovery-test.sh.
 pass 'emulator start path recovers stale launchers only when no lane holds the lock'
 
 # 5. An unrecorded known launcher left disabled is recovered too.

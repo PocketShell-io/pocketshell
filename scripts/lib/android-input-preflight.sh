@@ -227,25 +227,67 @@ pocketshell_android_restore_launchers() {
   POCKETSHELL_DISABLED_LAUNCHERS=()
 }
 
+# True when this shell itself holds SERIAL's AVD lock (start-local-avd.sh and
+# the lane runners take it before calling us). A fresh `flock -n` probe would
+# fail against our own lock, so ownership is read from the lock helper's state.
+_pocketshell_caller_owns_avd_lock() {
+  local lock_file="$1"
+  [[ -n "${POCKETSHELL_AVD_LOCK_ACQUIRED:-}" \
+     && "${POCKETSHELL_AVD_LOCK_OWNER_PID:-}" == "$$" \
+     && -n "${POCKETSHELL_AVD_LOCK_FILE:-}" \
+     && -e "$lock_file" \
+     && "$POCKETSHELL_AVD_LOCK_FILE" -ef "$lock_file" ]]
+}
+
 # Emulator start path (start-local-avd.sh, avd-pool.sh start): recover stale
-# launchers only when no lane holds SERIAL's AVD lock, so a live lane's
-# deliberately disabled launcher is never re-enabled underneath it.
+# launchers on SERIAL unless ANOTHER process holds its AVD lock, so a live
+# lane's deliberately disabled launcher is never re-enabled underneath it.
+# Every decision is logged on stderr as STALE_LAUNCHER_RECOVERY.
 pocketshell_android_recover_stale_launchers_if_idle() {
   local adb="$1" serial="$2" lock_file
-  [[ -n "$serial" && "$serial" != unknown ]] || return 0
-  if declare -F pocketshell_avd_lock_file_for_serial > /dev/null 2>&1; then
-    lock_file="$(pocketshell_avd_lock_file_for_serial "" "$serial")"
-  else
+  if [[ -z "$serial" || "$serial" == unknown ]]; then
+    printf 'STALE_LAUNCHER_RECOVERY: skipped, no emulator serial\n' >&2
     return 0
+  fi
+  if ! declare -F pocketshell_avd_lock_file_for_serial > /dev/null 2>&1; then
+    printf 'STALE_LAUNCHER_RECOVERY: %s skipped, AVD lock helpers are not loaded\n' "$serial" >&2
+    return 0
+  fi
+  lock_file="$(pocketshell_avd_lock_file_for_serial "" "$serial")"
+  if _pocketshell_caller_owns_avd_lock "$lock_file"; then
+    printf 'STALE_LAUNCHER_RECOVERY: %s checked under this process'"'"'s own AVD lock\n' "$serial" >&2
+    pocketshell_android_recover_stale_launchers "$adb" "$serial" /dev/null
+    return
   fi
   (
     exec 9> "$lock_file"
     if flock -n 9; then
+      printf 'STALE_LAUNCHER_RECOVERY: %s checked (AVD lock idle)\n' "$serial" >&2
       pocketshell_android_recover_stale_launchers "$adb" "$serial" /dev/null
     else
-      printf 'Skipping stale-launcher recovery on %s: a lane holds its AVD lock.\n' "$serial" >&2
+      printf 'STALE_LAUNCHER_RECOVERY: %s skipped, its AVD lock is held by another process\n' "$serial" >&2
     fi
   )
+}
+
+# Recover stale launchers on SERIAL, or on every booted emulator adb lists
+# when SERIAL is empty (several emulators, no ANDROID_SERIAL).
+pocketshell_android_recover_stale_launchers_on_devices() {
+  local adb="$1" serial="${2:-}" status=0
+  local -a serials
+  if [[ -n "$serial" ]]; then
+    serials=("$serial")
+  else
+    mapfile -t serials < <("$adb" devices 2> /dev/null | tr -d '\r' | awk 'NR > 1 && $2 == "device" { print $1 }')
+  fi
+  if (( ${#serials[@]} == 0 )); then
+    printf 'STALE_LAUNCHER_RECOVERY: skipped, no booted device\n' >&2
+    return 0
+  fi
+  for serial in "${serials[@]}"; do
+    pocketshell_android_recover_stale_launchers_if_idle "$adb" "$serial" || status=1
+  done
+  return "$status"
 }
 
 # Usage: pocketshell_android_input_preflight ADB SERIAL EVIDENCE_FILE

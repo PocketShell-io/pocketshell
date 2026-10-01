@@ -230,9 +230,8 @@ grep -Fxq "$AVD_NAME" "$RUN_DIR/available-avds.txt" ||
 # Issue #2946: a lane killed before its restore can leave the HOME launcher
 # disabled. Re-enable it here unless a live lane owns this emulator.
 recover_stale_launchers() {
-  local serial
-  serial="$("$ADB" get-serialno 2>/dev/null | tr -d '\r' || true)"
-  pocketshell_android_recover_stale_launchers_if_idle "$ADB" "$serial" || true
+  # ANDROID_SERIAL pins one emulator; otherwise check every booted one.
+  pocketshell_android_recover_stale_launchers_on_devices "$ADB" "${ANDROID_SERIAL:-}" || true
 }
 
 if has_adb_device && boot_completed; then

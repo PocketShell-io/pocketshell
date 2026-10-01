@@ -519,16 +519,67 @@ public final class JsShellPackagedSmokeTest {
                 + " source=" + (bottomCutoutEnabled ? "emulated-bottom-cutout" : "system-bars"));
         assertTrue("the bottom-inset bridge check needs a non-zero bottom inset (bottom="
                 + loadBearingInsets.bottom + "px)", loadBearingSafeBottom > 0);
-        awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                + ".getPropertyValue('--safe-area-inset-bottom')) - " + loadBearingSafeBottom + ") <= 1");
+        awaitKeyboardInsetsBridgeBottom((int) loadBearingSafeBottom, "with a non-zero bottom inset");
         if (bottomCutoutEnabled) {
             AndroidInputDeliveryProbe.runShell("cmd overlay disable --user 0 " + BOTTOM_CUTOUT_OVERLAY);
             bottomCutoutEnabled = false;
             awaitRootBottomInsetPx(safeAreaTypes, naturalInsets.bottom);
-            float naturalSafeBottom = Math.round(naturalInsets.bottom / density);
-            awaitJsTrue("Math.abs(parseFloat(getComputedStyle(document.documentElement)"
-                    + ".getPropertyValue('--safe-area-inset-bottom')) - " + naturalSafeBottom + ") <= 1");
+            awaitKeyboardInsetsBridgeBottom(Math.round(naturalInsets.bottom / density),
+                    "after the emulated cutout is removed");
         }
+    }
+
+    /**
+     * Capacitor SystemBars also writes --safe-area-inset-bottom, so a CSS match
+     * alone cannot prove the KeyboardInsets plugin. Require the plugin's own
+     * getState().safeBottomDp to equal the native bottom inset, and the CSS
+     * value (which App.vue rewrites from the plugin) to hold that value, for
+     * STABLE_BRIDGE_SAMPLES consecutive samples.
+     */
+    private void awaitKeyboardInsetsBridgeBottom(int expectedDp, String context) throws Exception {
+        final int stableBridgeSamples = 10;
+        try {
+            evalRaw("delete window.__ps2946KeyboardInsets; true");
+        } catch (Exception | AssertionError pageReloading) {
+            // A reloaded page has no stale sample to clear.
+        }
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        JSONObject last = null;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            try {
+                last = evalJson("(() => {const plugin = window.Capacitor?.Plugins?.KeyboardInsets;"
+                        + "if (!plugin?.getState) return JSON.stringify({pluginMissing: true});"
+                        + "plugin.getState().then((value) => { window.__ps2946KeyboardInsets = value; });"
+                        + "const state = window.__ps2946KeyboardInsets ?? null;"
+                        + "return JSON.stringify({pluginSafeBottomDp: state ? state.safeBottomDp : null,"
+                        + "pluginSupported: state ? state.supported : null, pluginImeVisible: state ? state.imeVisible : null,"
+                        + "cssSafeBottom: parseFloat(getComputedStyle(document.documentElement)"
+                        + ".getPropertyValue('--safe-area-inset-bottom'))});})()");
+            } catch (Exception | AssertionError pageReloading) {
+                // An overlay change can recreate MainActivity and reload the page.
+                stable = 0;
+                Thread.sleep(100);
+                continue;
+            }
+            if (last.optBoolean("pluginMissing")) {
+                stable = 0;
+                Thread.sleep(100);
+                continue;
+            }
+            boolean pluginMatches = !last.isNull("pluginSafeBottomDp") && last.optInt("pluginSafeBottomDp", -1) == expectedDp;
+            boolean cssMatches = closeTo(last.optDouble("cssSafeBottom"), expectedDp, 1.0);
+            stable = pluginMatches && cssMatches ? stable + 1 : 0;
+            if (stable >= stableBridgeSamples) {
+                android.util.Log.i("JsShellPackagedSmokeTest", "SAFE_AREA_BRIDGE_OK " + context + " expectedDp=" + expectedDp
+                        + " last=" + last);
+                return;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("KeyboardInsets bridge did not report and hold the native bottom inset " + context
+                + ": expected safeBottomDp=" + expectedDp + " for " + stableBridgeSamples
+                + " consecutive samples; last=" + last);
     }
 
     @Test
@@ -634,7 +685,7 @@ public final class JsShellPackagedSmokeTest {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         int bottom = -1;
         while (SystemClock.uptimeMillis() < deadline) {
-            bottom = readRootInsets(safeAreaTypes).bottom;
+            bottom = rootBottomInsetPxOrMissing(safeAreaTypes);
             if (bottom == expectedPx) return;
             Thread.sleep(100);
         }
@@ -648,7 +699,7 @@ public final class JsShellPackagedSmokeTest {
         long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
         int bottom = 0;
         while (SystemClock.uptimeMillis() < deadline) {
-            bottom = readRootInsets(safeAreaTypes).bottom;
+            bottom = rootBottomInsetPxOrMissing(safeAreaTypes);
             if (bottom > 0) return;
             Thread.sleep(100);
         }
@@ -1106,6 +1157,23 @@ public final class JsShellPackagedSmokeTest {
             assertNotNull("window insets must be available", windowInsets);
             result.set(windowInsets.getInsets(typeMask));
         });
+        return result.get();
+    }
+
+    /**
+     * Root bottom inset in px, or -1 while the activity has no attached window
+     * (an overlay change can recreate MainActivity).
+     */
+    private int rootBottomInsetPxOrMissing(int typeMask) {
+        AtomicReference<Integer> result = new AtomicReference<>(-1);
+        try {
+            scenario.onActivity(activity -> {
+                WindowInsets windowInsets = activity.getWindow().getDecorView().getRootWindowInsets();
+                if (windowInsets != null) result.set(windowInsets.getInsets(typeMask).bottom);
+            });
+        } catch (RuntimeException activityNotReady) {
+            return -1;
+        }
         return result.get();
     }
 
