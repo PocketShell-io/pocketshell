@@ -4,7 +4,7 @@
     "tests/unit/appSettings.test.ts": {
       "suite": "mobile app settings",
       "tests": [
-        "reads and persists only shared theme/font policy and supported background grace values",
+        "reads and persists only the phone theme and terminal text size",
         "degrades malformed or unsupported saved values to safe defaults",
         "clamps terminal size using the pinned desktop font-size policy",
         "offers every 0.5.x grace window from the shared core policy, including 10 minutes",
@@ -298,6 +298,21 @@
         "detaches imported-host references by CAS and clears handles absent from the vault",
         "tombstones deleted migrated keys even when no saved host currently references them",
         "reconciles a fresh signed snapshot without a hosts table"
+      ]
+    },
+    "tests/unit/durableStorage.test.ts": {
+      "suite": "Android durable storage seam",
+      "tests": [
+        "imports existing localStorage once and makes the native store authoritative",
+        "restores writes and removals the WebView lost to a kill from the committed entries",
+        "commits every localStorage write, removal and clear natively before returning",
+        "leaves sessionStorage and other storage areas non-durable",
+        "rolls back and throws when the native commit fails, so no write is acknowledged without being durable",
+        "keeps plain localStorage and records a Diagnostics event when the native writer or snapshot is unavailable",
+        "records a failure instead of hanging startup when the native open never answers",
+        "makes the real snippet and settings stores durable, and refuses to acknowledge a delete that did not commit",
+        "boots the app only after durable storage is installed, because stores read saved data at import time",
+        "finds no property-style localStorage writes that would bypass the durable path in this app or the shared core/ui"
       ]
     }
   }

@@ -376,10 +376,14 @@ public final class JsSettingsSupportJourneyTest {
     }
 
     /**
-     * Regression for the dropped first native reply (#2861 round 5): after a
-     * page reload Capacitor can deliver the answer to the page's first plugin
-     * call to the previous document. The app makes a sacrificial, retried
-     * BridgeReady ping first, so App.getInfo must answer after every reload.
+     * Regression for the dropped first native reply (#2861 round 5, #3000):
+     * after a page reload Capacitor can deliver the answer to the page's first
+     * plugin call to the previous document. The app makes a sacrificial,
+     * retried BridgeReady ping first, so after EVERY reload the durable
+     * storage open (#2993, the first real call) must answer, the app must
+     * mount, and App.getInfo must answer on its first attempt. Without the
+     * warm-up the lost reply lands on DurableStorage.open() (or getInfo), and
+     * one reload in this loop is enough to fail it.
      */
     @Test
     public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
@@ -387,14 +391,24 @@ public final class JsSettingsSupportJourneyTest {
         awaitBuildVerified();
         int retried = 0;
         JSONArray reloads = new JSONArray();
-        for (int reload = 1; reload <= 15; reload += 1) {
+        for (int reload = 1; reload <= RELOADS; reload += 1) {
             evalRaw("location.replace(location.origin + location.pathname + '?ps2861Probe=1&reload=" + reload + "'); 'reload'");
             awaitJsTrue("new URLSearchParams(location.search).get('reload') === '" + reload + "'"
-                    + " && ['resolved','timeout','failed'].includes(window.__ps2861ProbeState?.infoState)", 20_000);
-            JSONObject state = new JSONObject(evalString("JSON.stringify(window.__ps2861ProbeState)"));
-            reloads.put(state);
-            assertEquals("App.getInfo must answer after reload " + reload + ": " + state, "resolved", state.getString("infoState"));
-            JSONObject bridge = state.optJSONObject("bridge");
+                    + " && ['resolved','timeout','failed'].includes(window.__ps2861ProbeState?.infoState)", 30_000);
+            JSONObject state = new JSONObject(evalString("JSON.stringify({probe: window.__ps2861ProbeState,"
+                    + " durable: document.documentElement.dataset.durableStorage ?? null,"
+                    + " durableReason: document.documentElement.dataset.durableStorageReason ?? null,"
+                    + " mounted: !!document.querySelector('#app .app-shell')})"));
+            JSONObject probe = state.getJSONObject("probe");
+            reloads.put(new JSONObject().put("reload", reload).put("durable", state.opt("durable"))
+                    .put("infoAttempts", probe.opt("infoAttempts")).put("bridge", probe.opt("bridge")));
+            assertEquals("durable storage must open after reload " + reload + ": " + state,
+                    "native-durable", state.optString("durable"));
+            assertTrue("the app must mount after reload " + reload + ": " + state, state.getBoolean("mounted"));
+            assertEquals("App.getInfo must answer after reload " + reload + ": " + state, "resolved", probe.getString("infoState"));
+            assertEquals("App.getInfo must answer on its FIRST attempt after reload " + reload + ": " + state,
+                    1, probe.getInt("infoAttempts"));
+            JSONObject bridge = probe.optJSONObject("bridge");
             if (bridge == null) {
                 awaitJsTrue("!!window.__ps2861ProbeState?.bridge");
                 bridge = new JSONObject(evalString("JSON.stringify(window.__ps2861ProbeState.bridge)"));
@@ -402,8 +416,10 @@ public final class JsSettingsSupportJourneyTest {
             assertTrue("the bridge warm-up must be answered after reload " + reload + ": " + bridge, bridge.getBoolean("answered"));
             if (bridge.getInt("attempts") > 1) retried += 1;
         }
-        android.util.Log.i("PocketshellSettingsEvidence", "BRIDGE reloads=15 warmUpRetried=" + retried + " " + reloads);
+        android.util.Log.i("PocketshellSettingsEvidence", "BRIDGE reloads=" + RELOADS + " warmUpRetried=" + retried + " " + reloads);
     }
+
+    private static final int RELOADS = 100;
 
     /**
      * The connection form takes a key from the native key vault (#2926). The
@@ -439,6 +455,9 @@ public final class JsSettingsSupportJourneyTest {
         JSONArray values = new JSONArray(evalString("JSON.stringify([...document.querySelectorAll("
                 + "'[data-testid=setting-background-grace] option')].map((option) => option.value))"));
         assertEquals("[\"30000\",\"60000\",\"90000\",\"300000\",\"600000\"]", values.toString());
+        // The phone route renders core's shared Connections group (D42), not a local copy.
+        awaitJsTrue("!!document.querySelector('[data-testid=settings-group-connections] [data-testid=setting-background-grace]')"
+                + " && !!document.querySelector('[data-testid=settings-group-connections] button.switch[role=switch][data-testid=setting-reconnect-on-return]')");
         setSelect("[data-testid=setting-background-grace]", "600000");
         awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(SHARED_SETTINGS_KEY) + ") || '{}').backgroundGraceMs === 600000");
         captureScreenshot("j24-connections-ten-minutes.png", "#connection-settings-title");

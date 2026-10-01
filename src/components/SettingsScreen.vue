@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { BACKGROUND_GRACE_OPTIONS, useAppSettings } from '../stores/appSettings';
+import { useAppSettings } from '../stores/appSettings';
 import { useNavigationStore } from '../stores/navigation';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import AppIcon from '@ui/components/AppIcon.vue';
+import SettingsConnectionsGroup from '@ui/app/components/settings/SettingsConnectionsGroup.vue';
 import HostSnippetsScreen from './HostSnippetsScreen.vue';
 
 defineProps<{
@@ -19,10 +20,6 @@ function setTerminalFontSize(event: Event) {
 
 function setThemeChoice(event: Event) {
   settings.setThemeChoice((event.target as HTMLSelectElement).value);
-}
-
-function setGracePeriod(event: Event) {
-  settings.setBackgroundGraceMs(Number((event.target as HTMLSelectElement).value));
 }
 </script>
 
@@ -128,30 +125,10 @@ function setGracePeriod(event: Event) {
     <section class="panel settings-panel" aria-labelledby="connection-settings-title">
       <p class="eyebrow">SETTINGS · LIFECYCLE</p>
       <h1 id="connection-settings-title">Connections</h1>
-      <p class="settings-copy">A live SSH terminal can stay connected briefly while you switch apps. When the grace period ends, PocketShell closes the phone connection; the remote session continues on the host.</p>
-      <label class="settings-control settings-control--stacked">
-        <span><strong>Keep connection for</strong><small>Applied the next time a live terminal moves to the background.</small></span>
-        <select :value="settings.backgroundGraceMs" data-testid="setting-background-grace" @change="setGracePeriod">
-          <option v-for="option in BACKGROUND_GRACE_OPTIONS" :key="option.milliseconds" :value="option.milliseconds">{{ option.label }}</option>
-        </select>
-      </label>
-      <div class="settings-control">
-        <span><strong>Reconnect when I return</strong><small>Off leaves a closed connection waiting until you tap Reconnect.</small></span>
-        <!-- The shared Settings switch: a toggle icon plus an On/Off word, accent when on. -->
-        <button
-          type="button"
-          role="switch"
-          class="settings-switch"
-          :class="{ 'settings-switch--on': settings.reconnectOnReturn }"
-          data-testid="setting-reconnect-on-return"
-          :aria-checked="settings.reconnectOnReturn"
-          aria-label="Reconnect when I return"
-          @click="settings.setReconnectOnReturn(!settings.reconnectOnReturn)"
-        >
-          <AppIcon :name="settings.reconnectOnReturn ? 'toggle-right' : 'toggle-left'" />
-          <span>{{ settings.reconnectOnReturn ? 'On' : 'Off' }}</span>
-        </button>
-      </div>
+      <!-- The shared Settings → Connections group (pocketshell-core, D42): grace
+           window and the Reconnect-when-I-return switch, backed by the shared
+           settings store the Android lifecycle reads. -->
+      <SettingsConnectionsGroup :show-title="false" />
       <p class="settings-note">PocketShell does not keep the phone connection open indefinitely in the background.</p>
     </section>
   </main>

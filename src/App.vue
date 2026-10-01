@@ -42,6 +42,7 @@ import SshKeysScreen from './components/SshKeysScreen.vue';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
+import { useSettingsStore } from '@ui/app/stores/settings';
 import { useDiagnosticsStore, type DiagnosticKind } from './diagnostics';
 import { rememberDiagnosticTerms } from './platform/androidDiagnostics';
 import { ConnectionController } from './session/connectionController';
@@ -91,6 +92,8 @@ type SnippetEvidenceWindow = Window & {
 
 const navigation = useNavigationStore();
 const appSettings = useAppSettings();
+// Background grace and reconnect-on-return live in the shared settings store (D42).
+const sharedSettings = useSettingsStore();
 const diagnostics = useDiagnosticsStore();
 const keyManager = new CredentialKeyManager(sshKeyVault, createLegacySshKeyReferenceStore());
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
@@ -1039,11 +1042,11 @@ onMounted(() => {
       const active = controller;
       if (!active) return;
       const phase = active.getSnapshot().phase;
-      if (isActive && phase === 'background') void active.returnToForeground({ reconnect: appSettings.reconnectOnReturn }).catch((error: unknown) => {
+      if (isActive && phase === 'background') void active.returnToForeground({ reconnect: sharedSettings.reconnectOnReturn }).catch((error: unknown) => {
         recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
       });
-      else if (!isActive && phase === 'live') void active.enterBackground(appSettings.backgroundGraceMs).catch((error: unknown) => {
+      else if (!isActive && phase === 'live') void active.enterBackground(sharedSettings.backgroundGraceMs).catch((error: unknown) => {
         recordFailure('ssh-bridge-failed', 'lifecycle', error);
         connectionMessage.value = error instanceof Error ? error.message : String(error);
       });

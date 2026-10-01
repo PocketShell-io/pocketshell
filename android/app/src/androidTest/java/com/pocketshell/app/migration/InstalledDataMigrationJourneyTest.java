@@ -15,6 +15,8 @@ import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.pocketshell.app.DurableKeyValueStore;
+import com.pocketshell.app.DurableStoragePlugin;
 import com.pocketshell.app.MainActivity;
 
 import org.json.JSONObject;
@@ -169,6 +171,21 @@ public final class InstalledDataMigrationJourneyTest {
         String expectedHostKey = InstrumentationRegistry.getArguments()
             .getString(EXPECTED_HOST_KEY_ARGUMENT, DEFAULT_EXPECTED_HOST_KEY);
         assertEquals(expectedHostKey, pin.getString("fingerprintSha256"));
+
+        // #2993: on the real signed-upgrade path the native durable store was
+        // hydrated before the app booted, so the migration's settings and
+        // trust-pin writes were committed natively, not only to the WebView.
+        assertEquals("the upgraded app must run with native durable storage", "native-durable",
+            evalString("document.documentElement.dataset.durableStorage ?? ''"));
+        DurableKeyValueStore durable = new DurableKeyValueStore(new File(
+            InstrumentationRegistry.getInstrumentation().getTargetContext().getFilesDir(),
+            DurableStoragePlugin.DIRECTORY_NAME));
+        assertTrue("the first launch after the upgrade must initialize the durable store", durable.isInitialized());
+        Map<String, String> committed = durable.readAll();
+        assertEquals("migrated settings must be committed to the durable store",
+            evalString("localStorage.getItem('pocketshell.js.settings.v1')"), committed.get("pocketshell.js.settings.v1"));
+        assertEquals("the migrated SSH trust pin must be committed to the durable store",
+            evalString("localStorage.getItem('pocketshell.ssh.host-key.41')"), committed.get("pocketshell.ssh.host-key.41"));
 
         if ("true".equals(InstrumentationRegistry.getArguments().getString(CONNECT_OPT_IN))) {
             String handle = evalString("document.querySelector('[data-testid=ssh-key-selection]')?.value ?? ''");

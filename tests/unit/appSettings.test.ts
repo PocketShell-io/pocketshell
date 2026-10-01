@@ -1,14 +1,17 @@
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createPinia, setActivePinia } from 'pinia';
+import { BACKGROUND_GRACE_OPTIONS, DEFAULT_RECONNECT_ON_RETURN } from '@pocketshell/core';
 import {
-  BACKGROUND_GRACE_OPTIONS,
   DEFAULT_APP_SETTINGS,
   SETTINGS_STORAGE_KEY,
-  SHARED_SETTINGS_STORAGE_KEY,
   parseAppSettings,
   persistAppSettings,
   readAppSettings,
   type SettingsStorage,
 } from '../../src/stores/appSettings';
+
+const SHARED_SETTINGS_STORAGE_KEY = 'pocketshell.settings.v1';
 
 class MemoryStorage implements SettingsStorage {
   values = new Map<string, string>();
@@ -16,21 +19,17 @@ class MemoryStorage implements SettingsStorage {
   setItem(key: string, value: string) { this.values.set(key, value); }
 }
 
+const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8');
+
 describe('mobile app settings', () => {
-  it('reads and persists only shared theme/font policy and supported background grace values', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('reads and persists only the phone theme and terminal text size', () => {
     const storage = new MemoryStorage();
-    const settings = {
-      themeChoice: 'nord',
-      terminalFontSize: 19,
-      backgroundGraceMs: BACKGROUND_GRACE_OPTIONS[0]!.milliseconds,
-      reconnectOnReturn: false,
-    };
-
-    persistAppSettings(settings, storage);
-
+    persistAppSettings({ themeChoice: 'nord', terminalFontSize: 19 }, storage);
     expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toEqual({ themeChoice: 'nord', terminalFontSize: 19 });
-    expect(JSON.parse(storage.getItem(SHARED_SETTINGS_STORAGE_KEY) ?? '{}')).toEqual({ backgroundGraceMs: 30_000, reconnectOnReturn: false });
-    expect(readAppSettings(storage)).toEqual(settings);
+    expect(storage.getItem(SHARED_SETTINGS_STORAGE_KEY)).toBeNull();
+    expect(readAppSettings(storage)).toEqual({ themeChoice: 'nord', terminalFontSize: 19 });
   });
 
   it('degrades malformed or unsupported saved values to safe defaults', () => {
@@ -50,29 +49,39 @@ describe('mobile app settings', () => {
 
   it('offers every 0.5.x grace window from the shared core policy, including 10 minutes', () => {
     expect(BACKGROUND_GRACE_OPTIONS.map((option) => option.milliseconds)).toEqual([30_000, 60_000, 90_000, 300_000, 600_000]);
-    expect(parseAppSettings({ backgroundGraceMs: 600_000 }).backgroundGraceMs).toBe(600_000);
-    expect(parseAppSettings({ backgroundGraceMs: 60_000 }).backgroundGraceMs).toBe(60_000);
-    expect(parseAppSettings({ backgroundGraceMs: 45_000 }).backgroundGraceMs).toBe(DEFAULT_APP_SETTINGS.backgroundGraceMs);
-    expect(DEFAULT_APP_SETTINGS.reconnectOnReturn).toBe(true);
-    expect(parseAppSettings({ reconnectOnReturn: false }).reconnectOnReturn).toBe(false);
-    expect(parseAppSettings({ reconnectOnReturn: 'no' }).reconnectOnReturn).toBe(true);
+    expect(DEFAULT_RECONNECT_ON_RETURN).toBe(true);
   });
 
-  it('keeps grace and reconnect-on-return in the one shared settings store (D42)', () => {
+  it('keeps grace and reconnect-on-return in the one shared settings store (D42)', async () => {
     const storage = new MemoryStorage();
-    storage.setItem(SHARED_SETTINGS_STORAGE_KEY, JSON.stringify({ theme: 'nord', usageWarnPercent: 70, backgroundGraceMs: 600_000, reconnectOnReturn: false }));
-    storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ terminalFontSize: 18, backgroundGraceMs: 30_000, reconnectOnReturn: true }));
-    const read = readAppSettings(storage);
-    expect(read).toMatchObject({ terminalFontSize: 18, backgroundGraceMs: 600_000, reconnectOnReturn: false });
+    storage.setItem(SHARED_SETTINGS_STORAGE_KEY, JSON.stringify({ usageWarnPercent: 70, backgroundGraceMs: 600_000, reconnectOnReturn: false }));
+    storage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ terminalFontSize: 18 }));
+    vi.stubGlobal('localStorage', storage);
+    setActivePinia(createPinia());
+    const { useSettingsStore } = await import('@ui/app/stores/settings');
+    const shared = useSettingsStore();
+    expect(shared.backgroundGraceMs).toBe(600_000);
+    expect(shared.reconnectOnReturn).toBe(false);
 
-    persistAppSettings({ ...read, backgroundGraceMs: 60_000 }, storage);
-    expect(JSON.parse(storage.getItem(SHARED_SETTINGS_STORAGE_KEY) ?? '{}')).toEqual({
-      theme: 'nord', usageWarnPercent: 70, backgroundGraceMs: 60_000, reconnectOnReturn: false,
+    // What the shared Connections switch and grace select do on a tap.
+    shared.set('reconnectOnReturn', true);
+    shared.set('backgroundGraceMs', 60_000);
+    expect(JSON.parse(storage.getItem(SHARED_SETTINGS_STORAGE_KEY) ?? '{}')).toMatchObject({
+      usageWarnPercent: 70, backgroundGraceMs: 60_000, reconnectOnReturn: true,
     });
-    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).not.toHaveProperty('backgroundGraceMs');
+    expect(JSON.parse(storage.getItem(SETTINGS_STORAGE_KEY) ?? '{}')).toEqual({ terminalFontSize: 18 });
+    expect(readAppSettings(storage)).not.toHaveProperty('backgroundGraceMs');
+    expect(readAppSettings(storage)).not.toHaveProperty('reconnectOnReturn');
 
-    const legacy = new MemoryStorage();
-    legacy.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ backgroundGraceMs: 300_000, reconnectOnReturn: false }));
-    expect(readAppSettings(legacy)).toMatchObject({ backgroundGraceMs: 300_000, reconnectOnReturn: false });
+    // The phone Connections route renders core's group, not a local copy, and
+    // the Android lifecycle reads the same store.
+    const screen = source('../../src/components/SettingsScreen.vue');
+    expect(screen).toContain("import SettingsConnectionsGroup from '@ui/app/components/settings/SettingsConnectionsGroup.vue';");
+    expect(screen).toContain('<SettingsConnectionsGroup :show-title="false" />');
+    expect(screen).not.toMatch(/setting-reconnect-on-return|setting-background-grace|role="switch"/);
+    expect(source('../../src/styles.css')).not.toContain('settings-switch');
+    const app = source('../../src/App.vue');
+    expect(app).toContain('returnToForeground({ reconnect: sharedSettings.reconnectOnReturn })');
+    expect(app).toContain('enterBackground(sharedSettings.backgroundGraceMs)');
   });
 });
