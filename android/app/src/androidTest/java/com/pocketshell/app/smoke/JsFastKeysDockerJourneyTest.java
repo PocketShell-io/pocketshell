@@ -540,12 +540,14 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         try {
             awaitImeVisible(true);
-            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                    + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150", 10_000);
+            // keyboardVisible is the app's native-IME-insets state; whether Android
+            // also shrinks the WebView (adjustResize) varies by hosted image and
+            // is not what the dock layout relies on (#2884 run 36938038761).
+            awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'", 10_000);
         } catch (AssertionError error) {
             JSONObject failureGeometry = captureGeometry("reattach-ime-wait-failure");
             captureScreenshot("fastkeys-reconnected-ime-open.png");
-            throw new AssertionError("reattached terminal did not settle into the real keyboard-resized WebView; geometry="
+            throw new AssertionError("reattached terminal did not settle into the keyboard-up state; geometry="
                     + failureGeometry, error);
         }
         JSONObject afterReconnectGeometry = captureGeometry("after-reconnect");
@@ -578,8 +580,7 @@ public final class JsFastKeysDockerJourneyTest {
         tapDomCenter(".terminal-viewport");
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
-                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150", 10_000);
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'", 10_000);
         awaitTerminalResizeIdle();
         awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.enabled === 'true'");
@@ -1090,9 +1091,12 @@ public final class JsFastKeysDockerJourneyTest {
         // terminal (keyboardComposerMode=false), so an IME-only check skipped
         // the tap (hosted runs 36881616227 and 36895957308). Tap the terminal
         // physically until the keyboard-up terminal state holds, at most twice.
+        // The app's keyboard state comes from native IME insets; Android may or
+        // may not also shrink the WebView on a given hosted image (run
+        // 36938038761 kept it at 2274 px with the IME up and every dock
+        // geometry check passing), so the WebView height is not a precondition.
         String keyboardTerminalReady = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
-                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'"
-                + " && (window.visualViewport?.height ?? innerHeight) <= window.screen.height - 150";
+                + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'";
         for (int attempt = 1; attempt <= 2 && !(isImeVisible()
                 && "true".equals(evalRaw("(" + keyboardTerminalReady + ")"))); attempt++) {
             awaitRenderedFrame();
@@ -1102,28 +1106,6 @@ public final class JsFastKeysDockerJourneyTest {
                     && "true".equals(evalRaw("(" + keyboardTerminalReady + ")")))) {
                 SystemClock.sleep(100);
             }
-        }
-        if (!(isImeVisible() && "true".equals(evalRaw("(" + keyboardTerminalReady + ")")))) {
-            // Hosted run 36930240893: after the re-attach hid and re-showed the
-            // IME within one inset animation, the keyboard stayed up while the
-            // WebView window kept its keyboard-down height, so the app never
-            // entered keyboard-up terminal mode. Record the state, dismiss the
-            // IME and bring it back with one more physical terminal tap.
-            String state = evalString("JSON.stringify({keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
-                    + "keyboardComposerMode:document.querySelector('.app-shell')?.dataset.keyboardComposerMode??null,"
-                    + "terminalViewportFocused:document.querySelector('.app-shell')?.dataset.terminalViewportFocused??null,"
-                    + "visualViewportHeight:window.visualViewport?.height??innerHeight,screenHeight:window.screen.height,"
-                    + "active:document.activeElement?.className??document.activeElement?.tagName??null})");
-            Log.w("PS2884Geometry", "RUN " + artifactRunId + " prompt-guard-ime-recovery nativeIme=" + isImeVisible()
-                    + " webViewHeightPx=" + runOnUiThread("read WebView height", () -> packagedWebView.getHeight())
-                    + " " + state + " windowTargets=" + AndroidInputDeliveryProbe.imeWindowTargets());
-            runOnUiThread("hide the stale IME", () -> {
-                InputMethodManager imm = (InputMethodManager) packagedActivity.getSystemService(Context.INPUT_METHOD_SERVICE);
-                return imm.hideSoftInputFromWindow(packagedWebView.getWindowToken(), 0);
-            });
-            awaitImeVisible(false);
-            awaitRenderedFrame();
-            tapDomCenter(".terminal-viewport");
         }
         awaitImeVisible(true);
         try {
