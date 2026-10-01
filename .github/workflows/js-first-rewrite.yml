@@ -339,6 +339,7 @@ jobs:
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**
             android/app/build/outputs/js-durable-storage/**
+            android/app/build/outputs/js-shared-app-results/**
           if-no-files-found: warn
 
       - name: Stop Docker agents fixture

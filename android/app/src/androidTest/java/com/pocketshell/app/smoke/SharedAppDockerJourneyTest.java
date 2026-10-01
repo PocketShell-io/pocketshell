@@ -400,10 +400,20 @@ public class SharedAppDockerJourneyTest {
         Log.i(TAG, "RUN " + run + " SESSION_KILL " + killed);
         assertEquals("the host must end the session: " + killed, 0, killed.getInt("exitCode"));
 
+        // Two legitimate orders: the PTY's EOF reaches the controller first
+        // ("Session … ended", the pane prints [process exited]), or the shared
+        // tree's poll drops the killed session's folder first and its pane
+        // detaches (connected, nothing selected). Either way the connection
+        // stays up and nothing reconnects — asserted below.
+        String folder = "ps-shared-" + run;
         awaitJsTrue("(window.__pocketshellConnectionJournal ?? []).slice(" + journalAtEnd + ").some((e)=>"
                 + "e.connectionId===" + JSONObject.quote(logicalId) + " && e.phase==='connected'"
-                + " && (e.error ?? '').includes('ended'))", WAIT_TIMEOUT_MILLIS);
-        awaitJsTrue("window.__ps2954.sawExited === true", WAIT_TIMEOUT_MILLIS);
+                + " && ((e.error ?? '').includes('ended') || e.selectedId === null))", WAIT_TIMEOUT_MILLIS);
+        awaitJsTrue("window.__ps2954.sawExited === true || ![...document.querySelectorAll('.dir-header')]"
+                + ".some((n)=>n.textContent.includes(" + JSONObject.quote(folder) + "))", WAIT_TIMEOUT_MILLIS);
+        Log.i(TAG, "RUN " + run + " SESSION_END_SIGNAL " + evalString("JSON.stringify({sawExited:window.__ps2954.sawExited,"
+                + "ended:(window.__pocketshellConnectionJournal ?? []).slice(" + journalAtEnd
+                + ").some((e)=>(e.error ?? '').includes('ended'))})"));
         // Long enough for any reconnect (controller ladder or store) to show.
         Thread.sleep(8_000);
 
@@ -942,6 +952,25 @@ public class SharedAppDockerJourneyTest {
                 + "node.click(); return 'clicked';})()");
     }
 
+    /**
+     * What the connection layer was doing when a wait failed: the controller
+     * journal's tail, the recorder's native events, dials and execs, and the
+     * lost-link banner. Logged and put in the failure message, so a CI red is
+     * diagnosable from its artifacts alone (#2954).
+     */
+    private String connectionDiagnostics() {
+        try {
+            return evalString("JSON.stringify({"
+                    + "journal:(window.__pocketshellConnectionJournal ?? []).slice(-40),"
+                    + "recorder:window.__ps2954 ? {dials:window.__ps2954.dials.length,lost:window.__ps2954.lost,"
+                    + "events:window.__ps2954.events,banners:window.__ps2954.banners,sawExited:window.__ps2954.sawExited,"
+                    + "execs:window.__ps2954.execs} : null,"
+                    + "banner:document.querySelector('.link-lost-text')?.textContent?.trim() ?? null})");
+        } catch (Exception error) {
+            return "<diagnostics unavailable: " + error + ">";
+        }
+    }
+
     private void awaitJsTrue(String expression) throws Exception {
         awaitJsTrue(expression, WAIT_TIMEOUT_MILLIS);
     }
@@ -954,8 +983,11 @@ public class SharedAppDockerJourneyTest {
             if ("true".equals(last)) return;
             Thread.sleep(150);
         }
+        String diagnostics = connectionDiagnostics();
+        Log.e(TAG, "WAIT_FAILED " + expression + " DIAGNOSTICS " + diagnostics);
         throw new AssertionError("WebView condition did not become true: " + expression + " (last result: " + last
-                + "; terminal=" + evalString(VISIBLE_TERMINAL) + "; page=" + evalString("document.body.innerText") + ")");
+                + "; terminal=" + evalString(VISIBLE_TERMINAL) + "; page=" + evalString("document.body.innerText")
+                + "; diagnostics=" + diagnostics + ")");
     }
 
     private String evalString(String expression) throws Exception {

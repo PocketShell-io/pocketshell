@@ -230,6 +230,12 @@ else
     > "$RESULTS_DIR/diagnostics-window.txt" 2>&1 || true
   "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p \
     > "$RESULTS_DIR/diagnostics-screen.png" 2>&1 || true
+  # Later packaged lanes clear the shared connected-results directory, so the
+  # failed run's JUnit XML, per-method logcats and diagnostics are kept in
+  # this lane's own output (uploaded by the workflow) — never only where the
+  # next lane deletes them (#2954: a CI red with no evidence left).
+  mkdir -p "$SHARED_APP_RESULTS_DIR/failed-run"
+  cp -R "$RESULTS_DIR/." "$SHARED_APP_RESULTS_DIR/failed-run/" 2>/dev/null || true
   exit "$test_exit_code"
 fi
 fetch_host_bytes
