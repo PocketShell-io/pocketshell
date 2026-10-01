@@ -35,7 +35,7 @@ export const DESTINATION_INVENTORY: readonly DestinationMapping[] = [
   { oldDestination: 'TunnelDetail', newRoute: 'ports', status: 'available', owner: '#2859', note: 'Active tunnel endpoints and per-port status are shown in the port table.' },
   { oldDestination: 'AddTunnel', newRoute: 'ports', status: 'available', owner: '#2859', note: 'Discovered remote ports can be manually forwarded through the typed SSH capability.' },
   { oldDestination: 'HostForm', newRoute: 'home', status: 'partial', owner: '#2924/#2860', note: 'Current connection fields are in memory; saved host add/edit and migration remain pending.' },
-  { oldDestination: 'SshKeys', newRoute: 'home', status: 'partial', owner: '#2926/#2860', note: 'The current form accepts a temporary private key; key vault management remains pending.' },
+  { oldDestination: 'SshKeys', newRoute: 'keys', status: 'available', owner: '#2926', note: 'JS-owned key management imports or generates keys in the Android encrypted vault and exposes only opaque handles and public metadata.' },
   { oldDestination: 'WorkspaceRoots', newRoute: 'pending-workspaces', status: 'planned', owner: '#2925', note: 'Workspace root management is not part of this slice.' },
   { oldDestination: 'AddWorkspaceRoot', newRoute: 'pending-workspaces', status: 'planned', owner: '#2925', note: 'Workspace root registration is not part of this slice.' },
   { oldDestination: 'ClearReports', newRoute: 'diagnostics-clear', status: 'available', owner: '#2861', note: 'Local diagnostics have an explicit confirm-and-clear route.' },

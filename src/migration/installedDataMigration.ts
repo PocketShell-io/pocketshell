@@ -7,6 +7,12 @@ import {
   type NativeLegacyAsset,
   type NativeLegacySnapshot,
 } from '../native/installedDataMigration';
+import {
+  parseSshKeyMetadata,
+  sshKeyVault,
+  type NativeSshKeyVaultPlugin,
+  type SshKeyMetadata,
+} from '../native/sshKeyVault';
 
 export const SETTINGS_STORAGE_KEY = 'pocketshell.js.settings.v1';
 export const IMPORT_DATABASE_NAME = 'pocketshell-installed-data-v1';
@@ -47,16 +53,28 @@ export interface ImportRecord {
   importedAt: number;
   snapshot: NativeLegacySnapshot;
   warnings: string[];
+  /** Legacy database key id to opaque Android vault id; null means unavailable or detached. */
+  credentialHandles?: Record<string, string | null>;
+  /** Legacy key IDs explicitly removed by the user; startup repair must not resurrect them. */
+  credentialHandleTombstones?: number[];
 }
 
 export interface ImportPersistence {
   readRecord(): Promise<ImportRecord | undefined>;
   stage(record: ImportRecord, assets: ImportedAsset[]): Promise<void>;
+  updateRecord(record: ImportRecord): Promise<void>;
+  compareAndSetCredentialHandles(
+    expected: Record<string, string | null>,
+    next: Record<string, string | null>,
+    /** Optional second CAS value used when user deletion must persist a tombstone atomically. */
+    tombstones?: { expected: number[]; next: number[] },
+  ): Promise<boolean>;
   markComplete(status?: 'complete' | 'partial'): Promise<void>;
 }
 
 export interface MigrationDependencies {
   native: NativeInstalledDataMigrationPlugin;
+  keyVault: NativeSshKeyVaultPlugin;
   persistence: ImportPersistence;
   storage: StringStorage;
   nativePlatform: boolean;
@@ -75,6 +93,7 @@ export interface ImportedLegacyHost {
   keyName: string;
   keyHasPassphrase: boolean;
   keySha256: string;
+  keyHandleId: string | null;
 }
 
 export const installedDataMigrationState = reactive({
@@ -451,9 +470,94 @@ export async function readImportedLegacyHosts(
       keyName: key.name,
       keyHasPassphrase: key.hasPassphrase,
       keySha256,
+      keyHandleId: typeof record.credentialHandles?.[String(candidate.keyId)] === 'string'
+        ? record.credentialHandles[String(candidate.keyId)] as string
+        : null,
     });
   }
   return result;
+}
+
+interface LegacyKeyHandleImport {
+  handles: Record<string, string | null>;
+  tombstones: number[];
+  warnings: string[];
+}
+
+/** Move each old credential into the native encrypted vault without exposing key bytes to JS. */
+async function importLegacyKeyHandles(
+  snapshot: NativeLegacySnapshot,
+  vault: NativeSshKeyVaultPlugin,
+  previous: Record<string, string | null> = {},
+  previousTombstones: number[] = [],
+): Promise<LegacyKeyHandleImport> {
+  const filesByKeyId = new Map<number, string>();
+  for (const file of snapshot.nativeFiles) {
+    if (file.category === 'ssh-private-key' && Number.isSafeInteger(file.keyId) && typeof file.sha256 === 'string') {
+      filesByKeyId.set(file.keyId as number, file.sha256);
+    }
+  }
+  const allCandidates: Array<{ legacyKeyId: number; sha256: string; label: string; passphraseRequired: boolean }> = [];
+  const labels = new Map<number, string>();
+  for (const value of snapshot.database.tables.ssh_keys ?? []) {
+    if (!isRecord(value) || typeof value.id !== 'number' || typeof value.name !== 'string' ||
+      typeof value.hasPassphrase !== 'boolean') continue;
+    const sha256 = filesByKeyId.get(value.id);
+    if (!sha256) continue;
+    allCandidates.push({
+      legacyKeyId: value.id,
+      sha256,
+      label: value.name,
+      passphraseRequired: value.hasPassphrase,
+    });
+    labels.set(value.id, value.name);
+  }
+  const handles: Record<string, string | null> = {};
+  const tombstones = [...new Set(previousTombstones.filter((id) => Number.isSafeInteger(id) && id > 0))].sort((a, b) => a - b);
+  const deleted = new Set(tombstones);
+  for (const candidate of allCandidates) {
+    if (deleted.has(candidate.legacyKeyId)) handles[String(candidate.legacyKeyId)] = null;
+  }
+  const candidates = allCandidates.filter((candidate) => !deleted.has(candidate.legacyKeyId));
+  if (candidates.length === 0) return { handles, tombstones, warnings: [] };
+
+  let result: Awaited<ReturnType<NativeSshKeyVaultPlugin['importLegacyKeys']>>;
+  try {
+    result = await vault.importLegacyKeys({ keys: candidates });
+  } catch {
+    for (const key of candidates) handles[String(key.legacyKeyId)] = previous[String(key.legacyKeyId)] ?? null;
+    return {
+      handles,
+      tombstones,
+      warnings: candidates.map((key) => `Saved SSH key “${key.label}” could not be copied into Android secure storage; the original file remains in place.`),
+    };
+  }
+
+  const knownIds = new Set(candidates.map((key) => key.legacyKeyId));
+  const seenIds = new Set<number>();
+  for (const key of result.keys) {
+    if (!knownIds.has(key.legacyKeyId) || seenIds.has(key.legacyKeyId)) {
+      throw new InstalledDataMigrationError('The Android key vault returned an invalid legacy-key mapping.');
+    }
+    const metadata: SshKeyMetadata = parseSshKeyMetadata(key.key);
+    handles[String(key.legacyKeyId)] = metadata.handleId;
+    seenIds.add(key.legacyKeyId);
+  }
+  const failedIds = new Set<number>();
+  for (const failure of result.failures) {
+    if (!knownIds.has(failure.legacyKeyId) || seenIds.has(failure.legacyKeyId) || failedIds.has(failure.legacyKeyId)) {
+      throw new InstalledDataMigrationError('The Android key vault returned an invalid legacy-key failure list.');
+    }
+    handles[String(failure.legacyKeyId)] = previous[String(failure.legacyKeyId)] ?? null;
+    failedIds.add(failure.legacyKeyId);
+  }
+  if (seenIds.size + failedIds.size !== candidates.length) {
+    throw new InstalledDataMigrationError('The Android key vault did not finish every saved SSH-key import.');
+  }
+  const warnings = [...failedIds].map((id) =>
+    `Saved SSH key “${labels.get(id) ?? `#${id}`}” could not be copied into Android secure storage; the original file remains in place.`,
+  );
+  return { handles, tombstones, warnings };
 }
 
 function encryptedCredentialWarnings(snapshot: NativeLegacySnapshot): string[] {
@@ -586,6 +690,47 @@ export function createImportPersistence(factory: IDBFactory = indexedDB): Import
         database.close();
       }
     },
+    async updateRecord(record) {
+      const database = await open();
+      try {
+        const transaction = database.transaction(IMPORT_STATUS_KEY, 'readwrite');
+        transaction.objectStore(IMPORT_STATUS_KEY).put(record);
+        await transactionDone(transaction);
+      } finally {
+        database.close();
+      }
+    },
+    async compareAndSetCredentialHandles(expected, next, tombstones) {
+      const database = await open();
+      try {
+        const transaction = database.transaction(IMPORT_STATUS_KEY, 'readwrite');
+        const done = transactionDone(transaction);
+        const store = transaction.objectStore(IMPORT_STATUS_KEY);
+        const record = await requestResult(store.get(IMPORT_RECORD_ID)) as ImportRecord | undefined;
+        if (!record) {
+          transaction.abort();
+          await done.catch(() => undefined);
+          return false;
+        }
+        const current = record.credentialHandles ?? {};
+        const currentTombstones = record.credentialHandleTombstones ?? [];
+        if (JSON.stringify(current) !== JSON.stringify(expected) ||
+          (tombstones && JSON.stringify(currentTombstones) !== JSON.stringify(tombstones.expected))) {
+          transaction.abort();
+          await done.catch(() => undefined);
+          return false;
+        }
+        store.put({
+          ...record,
+          credentialHandles: { ...next },
+          ...(tombstones ? { credentialHandleTombstones: [...tombstones.next] } : {}),
+        });
+        await done;
+        return true;
+      } finally {
+        database.close();
+      }
+    },
     async markComplete(requestedStatus = 'complete') {
       const database = await open();
       try {
@@ -636,6 +781,7 @@ export async function runInstalledDataMigration(
   }
   const dependencies: MigrationDependencies = {
     native: overrides.native ?? installedDataMigrationNative,
+    keyVault: overrides.keyVault ?? sshKeyVault,
     persistence: overrides.persistence ?? createImportPersistence(),
     storage: overrides.storage ?? globalThis.localStorage,
     nativePlatform,
@@ -653,14 +799,42 @@ export async function runInstalledDataMigration(
       } else {
         validateSnapshot(priorRecord.snapshot);
         const writes = applyLocalStorageWrites(priorRecord.snapshot, dependencies.storage, dependencies.pixelRatio());
-        installedDataMigrationState.status = priorRecord.warnings.length > 0 ? 'partial' : 'complete';
-        installedDataMigrationState.error = priorRecord.warnings.join(' ');
+        const imported = await importLegacyKeyHandles(
+          priorRecord.snapshot,
+          dependencies.keyVault,
+          priorRecord.credentialHandles ?? {},
+          priorRecord.credentialHandleTombstones ?? [],
+        );
+        const warnings = [
+          ...priorRecord.warnings.filter((warning) => !warning.startsWith('Saved SSH key “')),
+          ...imported.warnings,
+        ];
+        const status = warnings.length > 0 ? 'partial' : priorRecord.status === 'empty' ? 'empty' : 'complete';
+        const updated: ImportRecord = {
+          ...priorRecord,
+          status,
+          warnings,
+          credentialHandles: imported.handles,
+          credentialHandleTombstones: imported.tombstones,
+        };
+        if (JSON.stringify(priorRecord.credentialHandles ?? {}) !== JSON.stringify(imported.handles) ||
+          JSON.stringify(priorRecord.warnings) !== JSON.stringify(warnings) || priorRecord.status !== status) {
+          await dependencies.persistence.updateRecord(updated);
+        }
+        installedDataMigrationState.status = warnings.length > 0 ? 'partial' : 'complete';
+        installedDataMigrationState.error = warnings.join(' ');
         return writes.settings !== undefined;
       }
     }
     const snapshot = await dependencies.native.readLegacyInstalledData();
     validateSnapshot(snapshot);
     let writes = prepareLocalStorageWrites(snapshot, dependencies.storage, dependencies.pixelRatio());
+    const imported = await importLegacyKeyHandles(
+      snapshot,
+      dependencies.keyVault,
+      priorRecord?.credentialHandles ?? {},
+      priorRecord?.credentialHandleTombstones ?? [],
+    );
     const assets: ImportedAsset[] = [];
     for (const asset of snapshot.assets) assets.push(await copyAsset(dependencies.native, asset));
     const record: ImportRecord = {
@@ -668,9 +842,12 @@ export async function runInstalledDataMigration(
       status: 'staged',
       importedAt: dependencies.now(),
       snapshot,
+      credentialHandles: imported.handles,
+      credentialHandleTombstones: imported.tombstones,
       warnings: [
         ...writes.warnings,
         ...unresolvedCredentialWarnings(snapshot),
+        ...imported.warnings,
       ],
     };
     await dependencies.persistence.stage(record, assets);

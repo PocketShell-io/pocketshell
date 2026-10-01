@@ -80,7 +80,7 @@
 #       `*E2eTest` / `*DockerTest` classes must be under the wholesale
 #       `ci-app2-journey-suite.sh` root or carry a local justification. On the
 #       JS-first tree, `scripts/check-js-first-android-journeys.py` verifies the
-#       smoke/lifecycle/usage-ports/files/composer selectors against dispatcher, child
+#       smoke/lifecycle/usage-ports/files/composer/key-vault selectors against dispatcher, child
 #       runners, source `@Test` methods, and exact result-checker contracts.
 #       Other `*E2eTest`, `*DockerTest`, or `*JourneyTest` classes need a
 #       nearby issue-backed `// CI_JOURNEY_SUITE_JUSTIFIED:` reason. A zero-class

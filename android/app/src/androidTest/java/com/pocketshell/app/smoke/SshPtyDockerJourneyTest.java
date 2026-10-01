@@ -65,6 +65,7 @@ public final class SshPtyDockerJourneyTest {
     private static final int SCREENSHOT_MARKER_ACCENT_MIN_PIXELS = 4_096;
     private static final int SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12;
     private ActivityScenario<MainActivity> scenario;
+    private File stagedKeyDocument;
     private String activeRunId;
     private JSONObject graceTiming = new JSONObject();
     private int nativePluginCallSequence;
@@ -81,6 +82,7 @@ public final class SshPtyDockerJourneyTest {
     @After
     public void closeShell() {
         if (scenario != null) scenario.close();
+        if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
     @Test
@@ -88,10 +90,9 @@ public final class SshPtyDockerJourneyTest {
         var arguments = InstrumentationRegistry.getArguments();
         String host = arguments.getString("sshHost", "10.0.2.2");
         String port = arguments.getString("sshPort");
-        String encodedKey = arguments.getString("sshPrivateKeyBase64");
+        String keyPath = arguments.getString("sshPrivateKeyPath");
         assertNotNull("pass the Docker fixture port with sshPort", port);
-        assertNotNull("pass the test-only key with sshPrivateKeyBase64", encodedKey);
-        String privateKey = new String(Base64.getDecoder().decode(encodedKey), StandardCharsets.UTF_8);
+        assertNotNull("pass the app-private staged fixture path with sshPrivateKeyPath", keyPath);
         String runId = arguments.getString("sshSessionName", "js2861-" + System.currentTimeMillis());
         assertTrue("run ID must be a safe, unique fixture tag prefix", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
         activeRunId = runId;
@@ -127,7 +128,17 @@ public final class SshPtyDockerJourneyTest {
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
-        setValue("[data-testid=ssh-private-key]", privateKey);
+        stagedKeyDocument = SshKeyVaultTestSupport.copyDockerKeyDocument(
+                InstrumentationRegistry.getInstrumentation().getTargetContext(), keyPath, activeRunId);
+        evalString(SshKeyVaultTestSupport.beginImport(
+                SshKeyVaultTestSupport.asContentUri(InstrumentationRegistry.getInstrumentation().getTargetContext(), stagedKeyDocument),
+                "Docker fixture key"));
+        awaitJsTrue("window.__ps2926ImportedKey?.state === 'ready'");
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid^=select-ssh-key-]')");
+        String handle = evalString("window.__ps2926ImportedKey.handleId");
+        click("[data-testid=select-ssh-key-" + handle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.value === '" + handle + "'");
         graceTiming.put("sshConnectRequestedEpochMs", System.currentTimeMillis())
                 .put("sshConnectRequestedElapsedMs", SystemClock.elapsedRealtime());
         click("[data-testid=ssh-connect]");

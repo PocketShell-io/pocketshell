@@ -149,6 +149,7 @@
         "imports unrelated data as partial and visibly retains an unavailable encrypted store",
         "shows an unmappable legacy terminal size on first import and completed-record startup",
         "marks decrypted native-only credentials partial and offers only opaque legacy host key references",
+        "does not resurrect a legacy key after its persistent deletion tombstone is set",
         "connects a saved host through an opaque native key reference and keeps passphrases transient",
         "does not mark complete or write settings when an imported asset hash differs",
         "refuses conflicting JS trust pins without replacing either fingerprint"
@@ -256,6 +257,22 @@
         "core exports the shared controllers and sync round",
         "Android src holds no local definition of them",
         "the app binds usage, forwarding and the sync probe from @pocketshell/core"
+      ]
+    },
+    "tests/unit/sshKeyVault.test.ts": {
+      "suite": "opaque SSH key handles",
+      "tests": [
+        "accepts only public metadata and rejects any key bytes or secret fields",
+        "rejects duplicate handles or fingerprints returned by the native list boundary",
+        "asks before detaching saved-host references and deletes only after confirmation",
+        "shows affected hosts in the delete dialog and waits for the explicit delete action",
+        "restores host references when native deletion fails before commit",
+        "requires a fresh confirmation when host references change while the dialog is open",
+        "runs reference retirement for a legacy key with no saved host associations",
+        "does not cache a selected handle or passphrase in key metadata",
+        "detaches imported-host references by CAS and clears handles absent from the vault",
+        "tombstones deleted migrated keys even when no saved host currently references them",
+        "reconciles a fresh signed snapshot without a hosts table"
       ]
     }
   }
