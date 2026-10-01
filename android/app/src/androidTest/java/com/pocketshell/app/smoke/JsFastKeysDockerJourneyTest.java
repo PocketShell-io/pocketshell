@@ -7,6 +7,8 @@ import static org.junit.Assert.assertTrue;
 import android.graphics.Bitmap;
 import android.graphics.Insets;
 import android.os.Build;
+import android.content.Context;
+import android.view.inputmethod.InputMethodManager;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
@@ -1100,6 +1102,28 @@ public final class JsFastKeysDockerJourneyTest {
                     && "true".equals(evalRaw("(" + keyboardTerminalReady + ")")))) {
                 SystemClock.sleep(100);
             }
+        }
+        if (!(isImeVisible() && "true".equals(evalRaw("(" + keyboardTerminalReady + ")")))) {
+            // Hosted run 36930240893: after the re-attach hid and re-showed the
+            // IME within one inset animation, the keyboard stayed up while the
+            // WebView window kept its keyboard-down height, so the app never
+            // entered keyboard-up terminal mode. Record the state, dismiss the
+            // IME and bring it back with one more physical terminal tap.
+            String state = evalString("JSON.stringify({keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??null,"
+                    + "keyboardComposerMode:document.querySelector('.app-shell')?.dataset.keyboardComposerMode??null,"
+                    + "terminalViewportFocused:document.querySelector('.app-shell')?.dataset.terminalViewportFocused??null,"
+                    + "visualViewportHeight:window.visualViewport?.height??innerHeight,screenHeight:window.screen.height,"
+                    + "active:document.activeElement?.className??document.activeElement?.tagName??null})");
+            Log.w("PS2884Geometry", "RUN " + artifactRunId + " prompt-guard-ime-recovery nativeIme=" + isImeVisible()
+                    + " webViewHeightPx=" + runOnUiThread("read WebView height", () -> packagedWebView.getHeight())
+                    + " " + state);
+            runOnUiThread("hide the stale IME", () -> {
+                InputMethodManager imm = (InputMethodManager) packagedActivity.getSystemService(Context.INPUT_METHOD_SERVICE);
+                return imm.hideSoftInputFromWindow(packagedWebView.getWindowToken(), 0);
+            });
+            awaitImeVisible(false);
+            awaitRenderedFrame();
+            tapDomCenter(".terminal-viewport");
         }
         awaitImeVisible(true);
         awaitJsTrue(keyboardTerminalReady, 10_000);
