@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { parseFontSize, parseThemeChoice, THEME_CHOICE_DEFAULT } from '@pocketshell/ui';
+import { parseFontSize } from '@ui/fonts';
+import { parseThemeChoice, THEME_CHOICE_DEFAULT } from '@ui/themes';
 
 export const SETTINGS_STORAGE_KEY = 'pocketshell.js.settings.v1';
 

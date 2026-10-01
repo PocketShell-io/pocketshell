@@ -1,5 +1,5 @@
 import { agentKindFromEngine, type AgentState, type SessionRow } from '@pocketshell/core';
-import { agentMark, type AgentMark } from '../../vendor/pocketshell-desktop/src/shared/agentBadge';
+import { agentMark, type AgentMark } from '@pocketshell/core/shared/agentBadge';
 
 export interface SessionAgentPresentation {
   identity: AgentMark | null;

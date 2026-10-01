@@ -37,7 +37,7 @@ ORACLE = "wait_for_serial_flock_reclaim"
 EXPECT_ORACLE_DEFINITIONS = 1
 EXPECT_FIXTURE_PROBES = 0
 EXPECT_BOUNDED_RETRIES = 0
-EXPECT_ORACLE_CALL_SITES = 6
+EXPECT_ORACLE_CALL_SITES = 7
 
 # The replacement harness has no intentional instantaneous probes: every
 # reclaim check goes through the bounded oracle.
@@ -51,6 +51,7 @@ REQUIRED_ORACLE_CASES = (
     "distinct_serial_lanes_run_concurrently",
     "red_junit_fails_closed_and_releases_the_serial",
     "killed_js_lane_wrapper_does_not_leave_gradle_holding_the_serial",
+    "lifecycle_lane_background_children_do_not_inherit_the_serial_lock",
 )
 
 HEREDOC_START = re.compile(r"<<(?!<)-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -468,7 +469,7 @@ if retries != EXPECT_BOUNDED_RETRIES:
 if len(canonical_calls) != EXPECT_ORACLE_CALL_SITES:
     failures.append(
         f"{CANONICAL}: expected exactly {EXPECT_ORACLE_CALL_SITES} {ORACLE} call site(s), found "
-        f"{len(canonical_calls)} — the four current lane cases pin six reclaim assertions"
+        f"{len(canonical_calls)} — the five current lane cases pin seven reclaim assertions"
     )
 
 # --- the exemption table cannot rot -----------------------------------------
@@ -640,7 +641,7 @@ expect_fail() {
 # 0. Baseline. The JS-lane harness uses only the bounded reclaim oracle.
 reset_fixture
 expect_pass "unmutated JS-lane harness" \
-  "6 oracle call site(s)" \
+  "7 oracle call site(s)" \
   "0 fixture probe(s)" \
   "0 exempted negative held-lock assertion(s)" \
   "0 bare one-shot probe(s)"
@@ -683,7 +684,7 @@ mutate "same-serial reclaim assertion deleted" \
   '  true \' \
   'same-serial lock remained held'
 expect_fail "same-serial reclaim assertion deleted" \
-  "expected exactly 6 wait_for_serial_flock_reclaim call site(s), found 5" \
+  "expected exactly 7 wait_for_serial_flock_reclaim call site(s), found 6" \
   "no longer asserts serial reclaim through wait_for_serial_flock_reclaim"
 
 # 5. SPELLING EVASION A: bundled short options are still an immediate probe.
@@ -783,7 +784,7 @@ expect_fail "oracle stripped from the harness" "no longer uses wait_for_serial_f
 
 # Restored fixture still passes: every red above came from the mutation.
 reset_fixture
-expect_pass "restored harness" "6 oracle call site(s)" "0 bare one-shot probe(s)"
+expect_pass "restored harness" "7 oracle call site(s)" "0 bare one-shot probe(s)"
 
 # Issue #2113 anti-vacuity: an early `exit 0` reads exactly like a full pass, so
 # pin the number of guard invocations this self-test actually made.

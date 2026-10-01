@@ -12,8 +12,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@ui': path.join(repoRoot, 'vendor/pocketshell-core/packages/ui/src'),
+      '@pocketshell/core/shared': path.join(repoRoot, 'vendor/pocketshell-core/src/shared'),
+      '@pocketshell/core/attachments': path.join(repoRoot, 'vendor/pocketshell-core/src/attachments'),
+      '@pocketshell/core/preview': path.join(repoRoot, 'vendor/pocketshell-core/src/preview'),
       '@pocketshell/core': path.join(repoRoot, 'vendor/pocketshell-core/src/index.ts'),
-      '@pocketshell/ui': path.join(repoRoot, 'vendor/pocketshell-desktop/packages/ui/src/index.ts'),
       '@': path.join(repoRoot, 'src'),
     },
   },

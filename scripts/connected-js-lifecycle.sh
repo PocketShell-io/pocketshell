@@ -199,7 +199,14 @@ PY
 HOST_SOCKET_WATCHER_PID=""
 LIVE_ASSET_LOGCAT_PID=""
 ARTIFACT_PULL_WATCHER_PID=""
+INSTRUMENTATION_PID=""
 stop_host_socket_watcher() {
+  if [[ -n "$INSTRUMENTATION_PID" ]]; then
+    pkill -TERM -P "$INSTRUMENTATION_PID" 2>/dev/null || true
+    kill "$INSTRUMENTATION_PID" 2>/dev/null || true
+    wait "$INSTRUMENTATION_PID" 2>/dev/null || true
+    INSTRUMENTATION_PID=""
+  fi
   if [[ -n "$ARTIFACT_PULL_WATCHER_PID" ]]; then
     kill "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || true
     wait "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || true
@@ -242,15 +249,20 @@ HOST_SOCKET_WATCHER_PID="$POCKETSHELL_AVD_CHILD_PID"
 sleep 1
 kill -0 "$HOST_SOCKET_WATCHER_PID" 2>/dev/null || fail 'Docker SSH socket watcher exited before the packaged journey'
 capture_device_artifact_state before
-pocketshell_start_without_avd_lock_fd python3 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" \
-  --adb "$ADB" --serial "$ANDROID_SERIAL" --logcat "$LIVE_ASSET_LOGCAT" \
-  --run-id "$RUN_ID" --expected-package "$APP_ID" --output-directory "$ARTIFACTS_DIR" \
-  > "$ARTIFACTS_DIR/artifact-pull-watcher.log" 2>&1
-ARTIFACT_PULL_WATCHER_PID="$POCKETSHELL_AVD_CHILD_PID"
-sleep 0.2
-kill -0 "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || fail 'same-run artifact pull watcher exited before the packaged journey'
-if pocketshell_run_without_avd_lock_fd_to_log \
-  "$ARTIFACTS_DIR/gradle-connected.log" \
+# The instrumentation run goes to the background so the artifact-pull watcher can
+# key its deadlines to the journey lifecycle (issue #2975): a pre-start budget
+# until the journey logs DIRECTORY, a separate journey budget until MANIFEST, and
+# an immediate failure if this Gradle/instrumentation process exits first. A
+# single launch-relative budget counted Gradle + install time against the journey
+# and gave up 21-90 s early on a loaded box.
+#
+# Both background processes are started with the wrapper-owned continuous AVD
+# lock FD closed at process creation (issue #2863): a backgrounded `( ... ) &`
+# subshell or bare `&` child would inherit it and could keep the serial locked
+# after a killed wrapper. The wrapper itself stays the lock owner while it waits.
+pocketshell_start_without_avd_lock_fd bash -o pipefail -c \
+  'log_file=$1; shift; "$@" 2>&1 | tee "$log_file"' \
+  pocketshell-js-lifecycle-instrumentation "$ARTIFACTS_DIR/gradle-connected.log" \
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
     -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshPtyDockerJourneyTest \
@@ -258,7 +270,19 @@ if pocketshell_run_without_avd_lock_fd_to_log \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyBase64=$ssh_key_base64" \
     "-Pandroid.testInstrumentationRunnerArguments.sshSessionName=$RUN_ID" \
-    --stacktrace --console=plain; then
+    --stacktrace --console=plain
+INSTRUMENTATION_PID="$POCKETSHELL_AVD_CHILD_PID"
+pocketshell_start_without_avd_lock_fd python3 "$ROOT_DIR/scripts/pull-js-lifecycle-artifacts.py" \
+  --adb "$ADB" --serial "$ANDROID_SERIAL" --logcat "$LIVE_ASSET_LOGCAT" \
+  --run-id "$RUN_ID" --expected-package "$APP_ID" --output-directory "$ARTIFACTS_DIR" \
+  --instrumentation-pid "$INSTRUMENTATION_PID" \
+  > "$ARTIFACTS_DIR/artifact-pull-watcher.log" 2>&1
+ARTIFACT_PULL_WATCHER_PID="$POCKETSHELL_AVD_CHILD_PID"
+sleep 0.2
+kill -0 "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null \
+  || { cat "$ARTIFACTS_DIR/artifact-pull-watcher.log" >&2 || true; fail 'same-run artifact pull watcher exited before the packaged journey'; }
+if wait "$INSTRUMENTATION_PID"; then
+  INSTRUMENTATION_PID=""
   wait "$ARTIFACT_PULL_WATCHER_PID" || fail "same-run lifecycle artifact pull failed; see $ARTIFACTS_DIR/artifact-pull-watcher.log"
   ARTIFACT_PULL_WATCHER_PID=""
   capture_device_artifact_state after
@@ -266,6 +290,13 @@ if pocketshell_run_without_avd_lock_fd_to_log \
   stop_host_socket_watcher
 else
   test_exit_code=$?
+  INSTRUMENTATION_PID=""
+  printf 'Same-run artifact pull watcher output:\n' >&2
+  if [[ -n "$ARTIFACT_PULL_WATCHER_PID" ]]; then
+    # The watcher fails fast once instrumentation has exited; give it a moment to say why.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$ARTIFACT_PULL_WATCHER_PID" 2>/dev/null || break; sleep 0.2; done
+  fi
+  cat "$ARTIFACTS_DIR/artifact-pull-watcher.log" >&2 || true
   capture_device_artifact_state after
   record_host_timebase after || true
   stop_host_socket_watcher

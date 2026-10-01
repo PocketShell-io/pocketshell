@@ -257,6 +257,8 @@ LOCK_HARNESS_STEP = "Check JS-first connected-test dispatch and lock contracts"
 LOCK_HARNESSES = (
     "scripts/test-gradle-output-lock.sh",
     "tests/scripts/connected-test-serial-ownership-test.sh",
+    "tests/scripts/avd-lock-test.sh",
+    "tests/scripts/avd-lock-sharing-test.sh",
 )
 
 
@@ -333,7 +335,7 @@ for label, damaged in (
         print(f"PASS: a {label} lock-contract step fails the rewrite blocking-job lock contract")
     else:
         raise AssertionError(f"rewrite lock contract missed a {label} step")
-print("PASS: the rewrite blocking job executes the Gradle output-lock and JS serial-ownership harnesses")
+print("PASS: the rewrite blocking job executes the Gradle output-lock, JS serial-ownership, and AVD-lock harnesses")
 
 
 # Model the reviewer's dormant Files call: its wrapper status can be zero while

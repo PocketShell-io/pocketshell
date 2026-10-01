@@ -9,6 +9,7 @@ import hashlib
 import ipaddress
 import io
 import json
+import os
 import re
 import struct
 import subprocess
@@ -41,6 +42,15 @@ MIN_HOST_ZERO_SOCKET_STABILITY_MS = 1_000
 MIN_SCREENSHOT_OCR_CONFIDENCE = 75.0
 MIN_SCREENSHOT_MARKER_ACCENT_PIXELS = 4_096
 SCREENSHOT_MARKER_ACCENT_TOLERANCE = 12
+# Tesseract's OpenMP pool oversubscribes a loaded host: at load average ~74 on 12
+# cores a one-line marker crop took up to 52 s with default threading and under
+# 1 s single-threaded (issue #2975). Pin OCR to one thread; keep a bounded timeout
+# so a genuinely hung OCR/crop still fails.
+OCR_SUBPROCESS_TIMEOUT_SECONDS = 120
+
+
+def _ocr_environment() -> dict[str, str]:
+    return {**os.environ, "OMP_THREAD_LIMIT": "1"}
 ANSI_ESCAPE_RE = re.compile(
     r"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\)|[@-_])"
 )
@@ -252,7 +262,8 @@ def _screenshot_marker_ocr(
         try:
             subprocess.run(
                 [convert, str(path), "-crop", f"{crop_width}x{crop_height}+{crop_left}+{crop_top}", "+repage", str(crop_path)],
-                check=True, text=True, capture_output=True, timeout=20,
+                check=True, text=True, capture_output=True, timeout=OCR_SUBPROCESS_TIMEOUT_SECONDS,
+                env=_ocr_environment(),
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise EvidenceFailure(f"could not crop measured marker text from screenshot {path}: {error}") from error
@@ -267,7 +278,8 @@ def _screenshot_marker_ocr(
                 check=True,
                 text=True,
                 capture_output=True,
-                timeout=20,
+                timeout=OCR_SUBPROCESS_TIMEOUT_SECONDS,
+                env=_ocr_environment(),
             )
         except (OSError, subprocess.SubprocessError) as error:
             raise EvidenceFailure(f"could not OCR screenshot {path}: {error}") from error
@@ -942,6 +954,36 @@ def _self_test() -> int:
             print(f"FAIL: native grace timestamp mutation probe {index}: {label}", file=sys.stderr)
             return 1
     print("PASS: exact output/history, native resize, physical socket close timing, and host transport timeline guards (32/32)")
+    ocr_calls: list[tuple[list[str], dict[str, Any]]] = []
+    real_subprocess_run, real_which = subprocess.run, shutil.which
+
+    def recording_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        ocr_calls.append((command, kwargs))
+        if command[0].endswith("convert"):
+            Path(command[-1]).write_bytes(b"crop")
+        return subprocess.CompletedProcess(command, 0, "level\tleft\ttop\twidth\theight\tconf\ttext\n", "")
+
+    with tempfile.TemporaryDirectory(prefix="pocketshell-ocr-env-self-test-") as temporary:
+        screenshot = Path(temporary) / "viewport.png"
+        screenshot.write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 1080, 2400)
+                               + b"\x08\x02\x00\x00\x00" + bytes(64))
+        subprocess.run, shutil.which = recording_run, (lambda name: f"/usr/bin/{name}")  # type: ignore[assignment]
+        try:
+            _screenshot_marker_ocr(screenshot, "MARKER", (10, 10, 200, 40), "#000000", 1, 0, "ocr-env-self-test")
+        except EvidenceFailure:
+            pass
+        finally:
+            subprocess.run, shutil.which = real_subprocess_run, real_which  # type: ignore[assignment]
+    ocr_commands = [(command[0].rsplit("/", 1)[-1], kwargs) for command, kwargs in ocr_calls]
+    if [name for name, _ in ocr_commands] != ["convert", "tesseract"] or any(
+        kwargs.get("env", {}).get("OMP_THREAD_LIMIT") != "1"
+        or not 60 <= kwargs.get("timeout", 0) <= OCR_SUBPROCESS_TIMEOUT_SECONDS
+        for _, kwargs in ocr_commands
+    ):
+        print(f"FAIL: screenshot OCR must run single-threaded with a bounded load-tolerant timeout: {ocr_commands}",
+              file=sys.stderr)
+        return 1
+    print("ok [ocr under load] marker crop and Tesseract run with OMP_THREAD_LIMIT=1 and a bounded timeout")
     tag_a, tag_b, tag_c = "metadata-a", "metadata-b", "metadata-c"
     rows = {
         tag: {"tag": tag, "id": f"00000000-0000-4000-8000-00000000000{index}"}

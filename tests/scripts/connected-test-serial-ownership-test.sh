@@ -182,11 +182,25 @@ case "${1:-}" in
       'dumpsys window lastanr') printf 'WINDOW MANAGER LAST ANR (dumpsys window lastanr)\n' ;;
       'dumpsys input_method') printf '  mCurTokenDisplayId=0\n' ;;
       'dumpsys activity activities') printf 'ACTIVITY MANAGER ACTIVITIES (dumpsys activity activities)\n' ;;
+      # Lifecycle lane only: host/device timebase and artifact-state probes.
+      'date +%s%3N') date +%s%3N ;;
+      'pm list packages '*) printf 'package:%s\n' "${*##* }" ;;
+      'ls -la '*) printf 'ls: %s: No such file or directory\n' "${*##* }" ;;
       *) printf 'unexpected adb shell command: %s\n' "$*" >&2; exit 90 ;;
     esac
     ;;
   logcat)
-    printf -- '--------- beginning of main\n'
+    case "${2:-}" in
+      -c) ;;
+      -d) printf -- '--------- beginning of main\n' ;;
+      # The lifecycle lane's live collector streams until the lane stops it.
+      -v) exec sleep 600 ;;
+      *) printf 'unexpected adb logcat command: %s\n' "$*" >&2; exit 90 ;;
+    esac
+    ;;
+  pull)
+    printf 'adb: error: remote object %s does not exist\n' "${2:-}" >&2
+    exit 1
     ;;
   exec-out)
     [[ "${2:-}" == 'screencap' ]] || { printf 'unexpected adb exec-out command: %s\n' "$*" >&2; exit 90; }
@@ -493,13 +507,170 @@ killed_js_lane_wrapper_does_not_leave_gradle_holding_the_serial() {
     || fail 'serial lock remained held after crash-recovery contender exited'
 }
 
+# ---------------------------------------------------------------------------
+# Lifecycle lane (issue #2975 x #2863): the lane backgrounds its Gradle
+# instrumentation and a same-run artifact-pull watcher keyed to that
+# instrumentation PID. Neither background process (nor the tee/logcat/socket
+# watcher children) may inherit the wrapper-owned continuous AVD lock FD;
+# only the lane shell itself may hold it.
+# ---------------------------------------------------------------------------
+
+make_lifecycle_stub_bin() {
+  local bindir="$1"
+  mkdir -p "$bindir"
+  cat > "$bindir/tesseract" <<'STUB'
+#!/usr/bin/env bash
+printf 'tesseract 5.3.0 (serial-ownership harness stub)\n'
+STUB
+  cat > "$bindir/convert" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  cat > "$bindir/docker" <<'STUB'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  'inspect --format') printf 'healthy\n' ;;
+  'inspect '*) printf '[{}]\n' ;;
+  'logs '*) printf 'fixture log\n' ;;
+  *) printf 'unexpected docker command: %s\n' "$*" >&2; exit 90 ;;
+esac
+STUB
+  chmod +x "$bindir/tesseract" "$bindir/convert" "$bindir/docker"
+}
+
+make_lifecycle_checkout() {
+  local root="$1" file
+  mkdir -p "$root/scripts/lib" "$root/android/app/build" "$root/tests/docker"
+  for file in connected-test.sh connected-js-lifecycle.sh test-js-lifecycle-cleanup.sh \
+      check-js-lifecycle-results.py check-js-lifecycle-host-evidence.py \
+      check-android-input-diagnostics.py; do
+    cp "$ROOT_DIR/scripts/$file" "$root/scripts/$file"
+    chmod +x "$root/scripts/$file"
+  done
+  for file in avd-lock.sh disk-preflight.sh gradle-output-lock.sh js-lifecycle-cleanup.sh \
+      android-input-preflight.sh; do
+    cp "$ROOT_DIR/scripts/lib/$file" "$root/scripts/lib/$file"
+  done
+  cp "$ROOT_DIR/tests/docker/test_key" "$root/tests/docker/test_key"
+
+  # Background helpers are replaced by probes that record which lock FDs they
+  # inherited. The lane's spawn shape -- not the helpers' logic -- is under test.
+  cat > "$root/scripts/watch-js-lifecycle-host-connections.py" <<'PY'
+#!/usr/bin/env python3
+import os, signal, sys, time
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+while True:
+    time.sleep(0.05)
+PY
+  cat > "$root/scripts/pull-js-lifecycle-artifacts.py" <<'PY'
+#!/usr/bin/env python3
+import os, sys, time
+from pathlib import Path
+if "--self-test" in sys.argv:
+    print("PASS: serial-ownership harness pull-watcher probe self-test")
+    sys.exit(0)
+pid = int(sys.argv[sys.argv.index("--instrumentation-pid") + 1])
+state = Path(os.environ["FAKE_DEVICE_STATE"])
+run_id = os.environ["FAKE_RUN_ID"]
+(state / f"{run_id}.watcher-pid").write_text(f"{os.getpid()}\n")
+(state / f"{run_id}.watcher-instrumentation-pid").write_text(f"{pid}\n")
+(state / f"{run_id}.watcher-started").touch()
+while Path(f"/proc/{pid}").exists():
+    time.sleep(0.05)
+print("FAIL: instrumentation exited before the journey MANIFEST", file=sys.stderr)
+sys.exit(1)
+PY
+  chmod +x "$root/scripts/watch-js-lifecycle-host-connections.py" \
+    "$root/scripts/pull-js-lifecycle-artifacts.py"
+
+  cat > "$root/android/gradlew" <<'GRADLEW'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${FAKE_DEVICE_STATE:?}"
+run_id="${FAKE_RUN_ID:?}"
+[[ "$*" == *":app:connectedDebugAndroidTest"* && "$*" == *"SshPtyDockerJourneyTest"* ]] \
+  || { printf 'unexpected lifecycle Gradle invocation: %s\n' "$*" >&2; exit 91; }
+printf '%s\n' "$BASHPID" > "$state/$run_id.gradle-pid"
+printf '%s\n' "$PPID" > "$state/$run_id.instrumentation-parent-pid"
+cat "$state/${ANDROID_SERIAL:?}.hide-error-dialogs" > "$state/$run_id.preflight" 2>/dev/null || true
+trap 'exit 143' TERM INT
+touch "$state/$run_id.gradle-started"
+while [[ ! -e "$state/$run_id.release" ]]; do sleep 0.02; done
+# Fail the instrumentation so the lane exercises its failure-evidence path
+# without needing a real lifecycle report.
+printf 'fake lifecycle instrumentation failed\n' >&2
+exit 3
+GRADLEW
+  chmod +x "$root/android/gradlew"
+}
+
+lifecycle_lane_background_children_do_not_inherit_the_serial_lock() {
+  new_sandbox
+  make_lifecycle_stub_bin "$SANDBOX/bin"
+  local root="$SANDBOX/worktree-lifecycle" run_id=lifecycle-a rc=0
+  make_lifecycle_checkout "$root"
+  setsid env \
+    TMPDIR="$SANDBOX/tmp" \
+    PATH="$SANDBOX/bin:$PATH" \
+    ADB="$SANDBOX/bin/adb" \
+    ANDROID_SDK="$SANDBOX" \
+    ANDROID_SERIAL=emulator-5554 \
+    POCKETSHELL_AVD_LOCK_DIR="$SANDBOX/avd-locks" \
+    POCKETSHELL_GRADLE_OUTPUT_LOCK_DIR="$SANDBOX/output-locks" \
+    POCKETSHELL_GRADLE_OUTPUT_LOCK_WAIT_SECONDS=15 \
+    POCKETSHELL_DISK_MIN_FREE_MB=0 \
+    POCKETSHELL_DISK_WARN_FREE_MB=0 \
+    FAKE_ONLINE_SERIALS=emulator-5554 \
+    FAKE_DEVICE_STATE="$SANDBOX/device-state" \
+    FAKE_RUN_ID="$run_id" \
+    bash -c 'cd -- "$1"; exec bash "$1/scripts/connected-test.sh" lifecycle --suffix i2863l \
+      --port 2222 --container pocketshell-test-agents --run-id js2863serial --test-only' \
+    runner "$root" > "$SANDBOX/$run_id.out" 2> "$SANDBOX/$run_id.err" &
+  local lane_pid="$!"
+  ACTIVE_GROUPS+=("$lane_pid")
+
+  wait_for_file "$SANDBOX/device-state/$run_id.gradle-started" 20 \
+    || { cat "$SANDBOX/$run_id.err" >&2; fail 'lifecycle lane never reached its fake background instrumentation'; }
+  wait_for_file "$SANDBOX/device-state/$run_id.watcher-started" 10 \
+    || { cat "$SANDBOX/$run_id.err" >&2; fail 'lifecycle lane never started its artifact-pull watcher'; }
+  [[ "$(<"$SANDBOX/device-state/$run_id.preflight")" == 1 ]] \
+    || fail 'lifecycle lane reached instrumentation without the #2946 Android input preflight'
+
+  local instrumentation_pid watcher_pid watcher_target gradle_pid
+  instrumentation_pid="$(<"$SANDBOX/device-state/$run_id.instrumentation-parent-pid")"
+  watcher_pid="$(<"$SANDBOX/device-state/$run_id.watcher-pid")"
+  watcher_target="$(<"$SANDBOX/device-state/$run_id.watcher-instrumentation-pid")"
+  gradle_pid="$(<"$SANDBOX/device-state/$run_id.gradle-pid")"
+  [[ "$watcher_target" == "$instrumentation_pid" ]] \
+    || fail "artifact-pull watcher tracks pid $watcher_target, not the instrumentation process $instrumentation_pid"
+  [[ "$(ps -o ppid= -p "$instrumentation_pid" | tr -d ' ')" == "$lane_pid" ]] \
+    || fail "background instrumentation $instrumentation_pid is not a direct child of the lane $lane_pid"
+
+  local holders holder_pids
+  holders="$(serial_lock_fds_in_group "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$lane_pid")"
+  holder_pids="$(sed -n 's/.* pid=\([0-9]*\) .*/\1/p' <<< "$holders" | sort -u | tr '\n' ' ')"
+  [[ "$holder_pids" == "$lane_pid " ]] || {
+    printf 'evidence: lane=%s instrumentation=%s gradle=%s watcher=%s\n%s\n' \
+      "$lane_pid" "$instrumentation_pid" "$gradle_pid" "$watcher_pid" "$holders" >&2
+    fail "only the lifecycle lane shell may hold the serial lock; holders: ${holder_pids:-<none>}"
+  }
+
+  touch "$SANDBOX/device-state/$run_id.release"
+  if wait "$lane_pid"; then rc=0; else rc=$?; fi
+  forget_group "$lane_pid"
+  [[ "$rc" == 3 ]] || { cat "$SANDBOX/$run_id.err" >&2; fail "lifecycle lane should return the instrumentation exit 3, got $rc"; }
+  wait_for_serial_flock_reclaim "$SANDBOX/avd-locks/avd-lock-emulator-5554" "$lane_pid" 3 \
+    || fail 'serial lock remained held after the failed lifecycle lane exited'
+}
+
 ALL_CASES=(
   same_serial_lanes_serialize_across_worktrees
   distinct_serial_lanes_run_concurrently
   red_junit_fails_closed_and_releases_the_serial
   killed_js_lane_wrapper_does_not_leave_gradle_holding_the_serial
+  lifecycle_lane_background_children_do_not_inherit_the_serial_lock
 )
-EXPECTED_FULL_CASES=4
+EXPECTED_FULL_CASES=5
 CASES=("${ALL_CASES[@]}")
 if [[ $# -gt 0 ]]; then
   CASES=("$@")

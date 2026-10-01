@@ -95,6 +95,8 @@ jobs:
           tests/scripts/android-input-preflight-test.sh
           tests/scripts/connected-test-root-guard-test.sh
           tests/scripts/connected-test-serial-ownership-test.sh
+          tests/scripts/avd-lock-test.sh
+          tests/scripts/avd-lock-sharing-test.sh
           scripts/test-gradle-output-lock.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
 
