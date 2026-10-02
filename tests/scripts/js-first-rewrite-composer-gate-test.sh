@@ -1167,20 +1167,20 @@ def require_usage_ports_composer_contract(source: str) -> None:
     ):
         if needle not in physical_launcher_open:
             raise AssertionError(f"physical Prompt launcher open is missing {needle}")
-    if "SystemClock.sleep(16);" not in physical_tap or "SystemClock.sleep(60);" in physical_tap:
-        raise AssertionError("mobile Composer tap must not keep the stale 60 ms coordinate interval")
+    if "SystemClock.sleep(" in physical_tap:
+        raise AssertionError("mobile Composer tap must not sleep between measuring and tapping")
     if "nativeState.optBoolean(\"imeVisible\")" not in tap_layout_wait \
        or "stableSamples >= 2" not in tap_layout_wait \
        or "SystemClock.uptimeMillis() - startedAt >= 200" not in tap_layout_wait \
        or "composerDraftTapTargetExpression()" not in tap_layout_wait:
         raise AssertionError("mobile Composer retry must wait for stable IME-visible draft bounds")
-    if "MotionEvent.ACTION_DOWN" not in physical_tap or "MotionEvent.ACTION_UP" not in physical_tap \
-       or "InputDevice.SOURCE_TOUCHSCREEN" not in journey_method(source, "obtainFingerTouch") \
-       or "MotionEvent.TOOL_TYPE_FINGER" not in journey_method(source, "obtainFingerTouch") \
-       or "injectInputEvent" not in physical_tap:
+    shared_tap = (repository_root / "android/app/src/androidTest/java/com/pocketshell/app/smoke/PhysicalTap.java").read_text()
+    if "PhysicalTap.tap(screen[0], screen[1])" not in physical_tap \
+       or "InputDevice.SOURCE_TOUCHSCREEN" not in shared_tap \
+       or "MotionEvent.TOOL_TYPE_FINGER" not in shared_tap \
+       or "MotionEvent.ACTION_DOWN" not in shared_tap or "MotionEvent.ACTION_UP" not in shared_tap:
         raise AssertionError("mobile Composer open action must inject Android touchscreen down and up events")
-    if 'assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected)' not in physical_tap \
-       or 'assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected)' not in physical_tap:
+    if 'throw new AssertionError("Android touchscreen tap must be injected: down="' not in shared_tap:
         raise AssertionError("mobile Composer open action must require both touchscreen events to be injected")
     if 'tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false)' not in draft_tap \
        or "centerHitIsTarget:hit===target" not in physical_tap or "draftCenterHitIsDraft" not in open_diagnostics:

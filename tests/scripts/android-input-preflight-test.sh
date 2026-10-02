@@ -35,6 +35,8 @@ LAUNCHER=com.google.android.apps.nexuslauncher
 SETUP=com.google.android.googlesdksetup
 SERIAL=emulator-5554
 RECORD="$POCKETSHELL_AVD_LOCK_DIR/avd-lock-$SERIAL.disabled-launchers"
+LONG_PRESS_RECORD="$POCKETSHELL_AVD_LOCK_DIR/avd-lock-$SERIAL.setting-long_press_timeout"
+SHOW_IME_RECORD="$POCKETSHELL_AVD_LOCK_DIR/avd-lock-$SERIAL.setting-show_ime_with_hard_keyboard"
 
 cat > "$SANDBOX/adb" <<'ADB'
 #!/usr/bin/env bash
@@ -57,6 +59,27 @@ case "$*" in
     cat "$state/hide" 2>/dev/null || printf 'null\n'
     ;;
   'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1')
+    ;;
+  'settings put secure long_press_timeout 3000')
+    [[ -e "$state/long-press-ignored" ]] || printf '3000\n' > "$state/long-press"
+    ;;
+  'settings put secure long_press_timeout '*)
+    printf '%s\n' "$last" > "$state/long-press"
+    ;;
+  'settings delete secure long_press_timeout')
+    rm -f "$state/long-press"
+    ;;
+  'settings get secure long_press_timeout')
+    cat "$state/long-press" 2>/dev/null || printf '400\n'
+    ;;
+  'settings put secure show_ime_with_hard_keyboard '*)
+    [[ -e "$state/hard-keyboard-ignored" ]] || printf '%s\n' "$last" > "$state/show-ime"
+    ;;
+  'settings delete secure show_ime_with_hard_keyboard')
+    rm -f "$state/show-ime"
+    ;;
+  'settings get secure show_ime_with_hard_keyboard')
+    cat "$state/show-ime" 2>/dev/null || printf 'null\n'
     ;;
   'cmd package query-activities --brief -a android.intent.action.MAIN -c android.intent.category.HOME')
     [[ -e "$state/query-fails" ]] && { printf 'error: closed\n'; exit 1; }
@@ -113,7 +136,8 @@ CASES=0
 reset_state() {
   export FAKE_ADB_STATE="$SANDBOX/state-$1"
   mkdir -p "$FAKE_ADB_STATE"
-  rm -f "$RECORD"
+  rm -f "$RECORD" "$LONG_PRESS_RECORD" "$SHOW_IME_RECORD"
+  pocketshell_android_restore_settings 2> /dev/null || true
   POCKETSHELL_DISABLED_LAUNCHERS=()
 }
 pass() {
@@ -138,6 +162,7 @@ grep -Fxq "$LAUNCHER" "$RECORD" || fail 'disabled launcher is not recorded next 
 grep -Fq "DISABLED_LAUNCHER_FOR_LANE: $LAUNCHER" "$evidence" || fail 'evidence does not record the disabled launcher'
 grep -Fq 'HOME during lane: com.android.settings FallbackHome only' "$evidence" || fail 'evidence does not record FallbackHome as the only HOME'
 grep -Fxq 'hide_error_dialogs=1' "$evidence" || fail 'evidence does not record hide_error_dialogs=1'
+grep -Fxq 'long_press_timeout=3000' "$evidence" || fail 'evidence does not record long_press_timeout=3000'
 grep -Fq 'mCurrentFocus=Window{74237e0' "$evidence" || fail 'evidence does not record the focus owner'
 first_disable="$(grep -n "pm disable-user --user 0 $LAUNCHER" "$FAKE_ADB_STATE/commands" | head -1 | cut -d: -f1)"
 [[ -n "$first_disable" ]] || fail 'launcher was never disabled'
@@ -279,6 +304,17 @@ grep -Fq 'could not disable system error dialogs' "$SANDBOX/ignored.out" \
   || fail 'ignored setting failure lacks its precise message'
 pass 'unset hide_error_dialogs fails closed'
 
+# 9b. A device that keeps the stock long-press timeout fails (#2884, #2946).
+reset_state longpress
+touch "$FAKE_ADB_STATE/long-press-ignored"
+if preflight "$SANDBOX/longpress/input-preflight.txt" > "$SANDBOX/longpress.out" 2>&1; then
+  fail 'preflight passed although injected taps could still turn into long presses'
+fi
+pocketshell_android_restore_launchers 2> /dev/null
+grep -Fq 'could not set long_press_timeout=3000' "$SANDBOX/longpress.out" \
+  || fail 'ignored long-press timeout lacks its precise message'
+pass 'stock long-press timeout fails closed'
+
 # 10. PocketShell's own ANR dialog is a product failure: fail loudly, never
 #     force-stop it into a green lane.
 reset_state own
@@ -320,5 +356,48 @@ grep -Fq 'pocketshell_android_restore_launchers' "$ROOT_DIR/scripts/lib/avd-lock
   || fail 'pocketshell_release_all does not restore launchers'
 pass 'pocketshell_release_all restores disabled launchers'
 
-(( CASES == 13 )) || fail "ran $CASES/13 cases"
-printf 'PASS: Android input preflight contract (%s/13 cases)\n' "$CASES"
+# 13. The lane puts the stock long-press timeout back on exit (#2884).
+reset_state longpress-restore
+printf '400\n' > "$FAKE_ADB_STATE/long-press"
+preflight "$SANDBOX/lp-restore/input-preflight.txt" > /dev/null 2>&1 || fail 'preflight failed before the long-press restore check'
+[[ "$(cat "$FAKE_ADB_STATE/long-press")" == 3000 ]] || fail 'preflight did not raise the long-press timeout'
+[[ "$(cat "$LONG_PRESS_RECORD")" == 400 ]] || fail 'the original long-press timeout was not recorded before raising it'
+grep -Fq 'pocketshell_android_restore_settings' "$ROOT_DIR/scripts/lib/avd-lock.sh" \
+  || fail 'pocketshell_release_all does not restore the lane settings'
+[[ "$(cat "$FAKE_ADB_STATE/show-ime")" == 1 ]] || fail 'preflight did not force the on-screen keyboard with a hard keyboard'
+[[ "$(cat "$SHOW_IME_RECORD")" == null ]] || fail 'the unset show_ime_with_hard_keyboard original was not recorded'
+pocketshell_android_restore_settings 2> /dev/null
+[[ "$(cat "$FAKE_ADB_STATE/long-press")" == 400 ]] || fail 'lane exit did not restore the original long-press timeout'
+[[ ! -e "$LONG_PRESS_RECORD" ]] || fail 'the long-press record survived a successful restore'
+[[ ! -e "$FAKE_ADB_STATE/show-ime" ]] || fail 'lane exit did not unset show_ime_with_hard_keyboard'
+[[ ! -e "$SHOW_IME_RECORD" ]] || fail 'the show_ime record survived a successful restore'
+pass 'lane exit restores the original long-press timeout and hard-keyboard IME setting'
+
+# 14. A killed lane's raised timeout is recovered by the next lane, and an
+#     unset original is restored as unset.
+reset_state longpress-stale
+printf '3000\n' > "$FAKE_ADB_STATE/long-press"
+printf 'null\n' > "$LONG_PRESS_RECORD"
+printf '1\n' > "$FAKE_ADB_STATE/show-ime"
+printf '0\n' > "$SHOW_IME_RECORD"
+pocketshell_android_recover_stale_launchers "$ADB" "$SERIAL" "$SANDBOX/lp-stale.txt" 2> /dev/null \
+  || fail 'stale lane-setting recovery failed'
+[[ ! -e "$FAKE_ADB_STATE/long-press" ]] || fail 'stale long-press recovery did not unset the timeout'
+[[ ! -e "$LONG_PRESS_RECORD" ]] || fail 'stale long-press record was not cleared'
+[[ "$(cat "$FAKE_ADB_STATE/show-ime")" == 0 ]] || fail 'stale show_ime_with_hard_keyboard was not restored to 0'
+[[ ! -e "$SHOW_IME_RECORD" ]] || fail 'stale show_ime record was not cleared'
+pass 'stale lane settings are recovered'
+
+# 15. A device that ignores show_ime_with_hard_keyboard fails closed.
+reset_state hard-keyboard
+touch "$FAKE_ADB_STATE/hard-keyboard-ignored"
+if preflight "$SANDBOX/hard-keyboard/input-preflight.txt" > "$SANDBOX/hard-keyboard.out" 2>&1; then
+  fail 'preflight passed although the on-screen keyboard could not be forced'
+fi
+pocketshell_android_restore_launchers 2> /dev/null
+grep -Fq 'could not set show_ime_with_hard_keyboard=1' "$SANDBOX/hard-keyboard.out" \
+  || fail 'ignored hard-keyboard setting lacks its precise message'
+pass 'unforced on-screen keyboard fails closed'
+
+(( CASES == 17 )) || fail "ran $CASES/17 cases"
+printf 'PASS: Android input preflight contract (%s/17 cases)\n' "$CASES"

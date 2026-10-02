@@ -1076,6 +1076,10 @@ public class SharedAppDockerJourneyTest {
             shown.countDown();
         });
         assertTrue(shown.await(10, TimeUnit.SECONDS));
+        // Selection and binding are deterministic and bounded: the system must
+        // report the scripted IME as the current method bound to this app's
+        // process before any op is sent (#2952, starved hosted emulators).
+        ime.awaitBoundTo(android.os.Process.myPid(), 20_000);
         // The IME is bound to the textarea once it reports a text editor
         // (a non-editable focus is TYPE_NULL) while the textarea holds DOM focus.
         String app = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
@@ -1100,7 +1104,8 @@ public class SharedAppDockerJourneyTest {
             Thread.sleep(250);
         }
         logInputTrace("focus failed");
-        throw new AssertionError("the scripted IME never bound to the focused terminal textarea: " + last);
+        throw new AssertionError("the scripted IME never bound to the focused terminal textarea: " + last
+                + "\n" + ScriptedIme.inputMethodState());
     }
 
     private Bundle runIme(ScriptedIme.Script script) throws Exception {

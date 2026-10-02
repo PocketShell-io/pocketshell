@@ -10,6 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/UsagePortsDockerJourneyTest.java"
+# The one physical-tap injector every packaged journey shares (#2884, #2946).
+PHYSICAL_TAP_SOURCE = ROOT / "android/app/src/androidTest/java/com/pocketshell/app/smoke/PhysicalTap.java"
 
 
 class GateFailure(ValueError):
@@ -65,7 +67,32 @@ def method_body(source: str, method_name: str) -> str:
     raise GateFailure(f"method {method_name} has an unterminated body")
 
 
-def validate(source: str) -> None:
+def validate_physical_tap(tap_source: str) -> None:
+    """The shared tap stamps a finger DOWN/UP pair up front and injects them back to back."""
+    for text in (tap_source,):
+        found = NON_POINTER_INPUT.search(text)
+        if found:
+            raise GateFailure(f"the shared physical tap may inject only a finger touch, not {found.group(0)}")
+    tap = method_body(tap_source.replace("public static Result tap(", "public Result tap(", 1), "tap")
+    touch = method_body(tap_source.replace("static MotionEvent touch(", "private MotionEvent touch(", 1), "touch")
+    if tap.count("injectInputEvent(") != 2 or "automation.injectInputEvent(down, false)" not in tap \
+       or "automation.injectInputEvent(up, true)" not in tap:
+        raise GateFailure("the shared tap must queue ACTION_DOWN and inject ACTION_UP synchronously right after it")
+    if "long upTime = downTime + TAP_DURATION_MS;" not in tap \
+       or "touch(downTime, downTime, MotionEvent.ACTION_DOWN, x, y)" not in tap \
+       or "touch(downTime, upTime, MotionEvent.ACTION_UP, x, y)" not in tap:
+        raise GateFailure("the shared tap must stamp both events before injecting either")
+    if tap.index("touch(downTime, upTime, MotionEvent.ACTION_UP, x, y)") > tap.index("injectInputEvent(down, false)"):
+        raise GateFailure("the ACTION_UP must be built before ACTION_DOWN is injected")
+    if "sleep" in tap:
+        raise GateFailure("the shared tap must not sleep between ACTION_DOWN and ACTION_UP")
+    if touch.count("MotionEvent.obtain(") != 1 or "InputDevice.SOURCE_TOUCHSCREEN" not in touch \
+       or "properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;" not in touch:
+        raise GateFailure("the shared tap must be a single-finger touchscreen MotionEvent")
+
+
+def validate(source: str, tap_source: str | None = None) -> None:
+    validate_physical_tap(PHYSICAL_TAP_SOURCE.read_text(encoding="utf-8") if tap_source is None else tap_source)
     primary = method_body(source, "runUsageAndPortForwardingPoliciesUseDockerAndNativePlugin")
     start_marker_at = primary.find('String serverStartedMarker = marker(runId, "HTTP_STARTED")')
     settings_at = primary.find('click("[aria-label=\'Settings\']")')
@@ -139,8 +166,8 @@ def validate(source: str) -> None:
     if 'tapElementCenter("[data-testid=prompt-draft]", "Composer draft", false)' not in draft_tap:
         raise GateFailure("draft-center tap must hit the draft itself through the shared native tap path")
     tap_method = method_body(source, "tapElementCenter")
-    if "injectInputEvent" not in tap_method:
-        raise GateFailure("draft-center tap must be delivered through Android touchscreen input")
+    if tap_method.count("PhysicalTap.tap(screen[0], screen[1])") != 1:
+        raise GateFailure("draft-center tap must be delivered through the shared Android touchscreen tap")
     if "event.isTrusted===true&&event.targetIsDraft===true" not in tap_helper:
         raise GateFailure("Composer opening must prove a trusted pointer-down on the draft")
     retry_loop = "for (int attempt = 1; attempt <= 3; attempt++)"
@@ -186,8 +213,8 @@ def validate(source: str) -> None:
     ):
         if proof not in recorder + completed_tap:
             raise GateFailure(f"completed trusted tap proof is missing {proof}")
-    if "SystemClock.sleep(16);" not in tap_method or "SystemClock.sleep(60);" in tap_method:
-        raise GateFailure("draft tap must not keep the 60 ms stale-coordinate interval")
+    if "SystemClock.sleep(" in tap_method:
+        raise GateFailure("draft tap must not sleep between measuring and tapping (stale coordinates)")
     layout_wait = method_body(source, "awaitComposerDraftTapLayout")
     if "nativeState.optBoolean(\"imeVisible\")" not in layout_wait \
        or "stableSamples >= 2" not in layout_wait \
@@ -399,20 +426,11 @@ def reject_non_pointer_input(source: str) -> None:
         if found:
             raise GateFailure(f"the journey may inject only the physical finger tap, not {found.group(0)}")
     tap = method_body(source, "tapElementCenter")
-    finger = method_body(source, "obtainFingerTouch")
-    elsewhere = source.replace(tap, "", 1).replace(finger, "", 1)
-    for token in ("injectInputEvent", "MotionEvent.obtain", "obtainFingerTouch(", "getUiAutomation().inject"):
-        allowed = {"injectInputEvent": 0, "MotionEvent.obtain": 0, "obtainFingerTouch(": 1,
-                   "getUiAutomation().inject": 0}[token]
-        if elsewhere.count(token) > allowed:
-            raise GateFailure(f"{token} may only be used by the physical finger tap helper")
-    if tap.count("injectInputEvent(") != 2 or "injectInputEvent(down, true)" not in tap \
-       or "injectInputEvent(up, true)" not in tap \
-       or "obtainFingerTouch(downTime, downTime, MotionEvent.ACTION_DOWN, screen)" not in tap \
-       or "obtainFingerTouch(downTime, upTime, MotionEvent.ACTION_UP, screen)" not in tap:
-        raise GateFailure("the physical tap must inject exactly one finger ACTION_DOWN and one ACTION_UP")
-    if finger.count("MotionEvent.obtain(") != 1 or "InputDevice.SOURCE_TOUCHSCREEN" not in finger:
-        raise GateFailure("the finger tap must be a single touchscreen MotionEvent")
+    for token in ("injectInputEvent", "MotionEvent.obtain", "getUiAutomation().inject"):
+        if token in source:
+            raise GateFailure(f"{token} may only be used by the shared PhysicalTap helper")
+    if source.count("PhysicalTap.tap(") != 1 or tap.count("PhysicalTap.tap(screen[0], screen[1])") != 1:
+        raise GateFailure("the journey must inject exactly one tap shape: the shared PhysicalTap from tapElementCenter")
 
 
 def validate_launcher(source: str) -> None:
@@ -508,8 +526,6 @@ def validate_launcher(source: str) -> None:
     ):
         if proof not in counts:
             raise GateFailure(f"launcher input-modality counts are missing {proof}")
-    if "properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;" not in method_body(source, "obtainFingerTouch"):
-        raise GateFailure("the physical tap must be a finger on the touchscreen")
     if '"; events=" + tapEvents' not in launcher:
         raise GateFailure("launcher tap evidence must retain the complete pointer event trace")
     if "tapElementCenter(PROMPT_LAUNCHER_SELECTOR, \"Prompt launcher\", true)" not in method_body(source, "tapPromptLauncherCenter"):
@@ -594,8 +610,8 @@ def self_test() -> int:
         ),
         (
             "stale 60 ms coordinate interval restored",
-            "SystemClock.sleep(16);",
-            "SystemClock.sleep(60);",
+            "PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);",
+            "SystemClock.sleep(60);\n        PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);",
         ),
         (
             "completed click no longer paired with the preceding pointer events",
@@ -811,10 +827,10 @@ def self_test() -> int:
             "        MotionEvent down = MotionEvent.obtain(0, 0, MotionEvent.ACTION_DOWN, 46, 800, 0);\n"
             "        InstrumentationRegistry.getInstrumentation().getUiAutomation().injectInputEvent(down, true);\n"
             "    }\n"),
-        ("native: a third finger injection inside the tap helper",
-         "        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);\n",
-         "        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);\n"
-         "        instrumentation.getUiAutomation().injectInputEvent(up, true);\n"),
+        ("native: a second shared tap inside the tap helper",
+         "        PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);\n",
+         "        PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);\n"
+         "        PhysicalTap.tap(screen[0], screen[1]);\n"),
         ("programmatic: Vue setupState.openPromptComposer()",) + after_launcher_tap(
             "            evalString(\"document.querySelector('#app')._vnode.component.setupState.openPromptComposer()\");\n"),
         ("programmatic: split '__v'+'ue_app__' access",) + after_launcher_tap(
@@ -828,8 +844,6 @@ def self_test() -> int:
          "if(clicks.length!==1)return false;", "if(clicks.length<1)return false;"),
         ("proof: touch pointer type no longer required",
          "&&event.pointerType==='touch')&&down.pointerId===up.pointerId;", ")&&down.pointerId===up.pointerId;"),
-        ("proof: finger tool type dropped from the injected tap",
-         "        properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;\n", ""),
         ("proof: keyboard events no longer recorded",
          "for(const type of ['pointerdown','pointerup','click','keydown','keypress','keyup'])",
          "for(const type of ['pointerdown','pointerup','click'])"),
@@ -851,7 +865,29 @@ def self_test() -> int:
     for label, *edits in modality_mutants:
         pairs = list(zip(edits[0::2], edits[1::2]))
         mutants += ((label, pairs),)
-    total = len(mutants) + 1
+    tap_source = PHYSICAL_TAP_SOURCE.read_text(encoding="utf-8")
+    tap_mutants = (
+        ("shared tap: finger tool type dropped",
+         "        properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;\n", ""),
+        ("shared tap: up stamped when injected instead of up front",
+         "long upTime = downTime + TAP_DURATION_MS;", "long upTime = SystemClock.uptimeMillis();"),
+        ("shared tap: sleep restored between down and up",
+         "            downInjected = automation.injectInputEvent(down, false);\n",
+         "            downInjected = automation.injectInputEvent(down, false);\n            SystemClock.sleep(60);\n"),
+        ("shared tap: synchronous ACTION_DOWN restored",
+         "automation.injectInputEvent(down, false)", "automation.injectInputEvent(down, true)"),
+    )
+    total = len(mutants) + len(tap_mutants) + 1
+    for index, (label, old, new) in enumerate(tap_mutants, start=len(mutants) + 2):
+        # Mutate the first occurrence: tap() precedes the delayed-delivery probe.
+        if old not in tap_source:
+            raise GateFailure(f"self-test setup drifted for mutant: {label}")
+        try:
+            validate(source, tap_source.replace(old, new, 1))
+        except GateFailure:
+            print(f"ok [{index}/{total}] {label} is rejected")
+        else:
+            raise GateFailure(f"source gate accepted invalid mutant: {label}")
     print(f"ok [1/{total}] startup and cleanup commands use the visible packaged Composer")
     for index, (label, *edit) in enumerate(mutants, start=2):
         pairs = edit[0] if len(edit) == 1 else [(edit[0], edit[1])]

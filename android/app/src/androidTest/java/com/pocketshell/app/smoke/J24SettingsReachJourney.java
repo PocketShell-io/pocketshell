@@ -511,10 +511,7 @@ public final class J24SettingsReachJourney {
         assertTrue("real WebView target must exist: " + selector, !point.optBoolean("missing"));
         float[] screen = webCssPointsToScreen((float) point.getDouble("x"), (float) point.getDouble("x"),
                 (float) point.getDouble("y"), point.getDouble("viewportWidth"));
-        long downTime = SystemClock.uptimeMillis();
-        injectTouch(MotionEvent.ACTION_DOWN, downTime, downTime, screen[0], screen[1]);
-        SystemClock.sleep(60);
-        injectTouch(MotionEvent.ACTION_UP, downTime, SystemClock.uptimeMillis(), screen[0], screen[1]);
+        PhysicalTap.tap(screen[0], screen[1]);
     }
 
     private void awaitBuildVerified() throws Exception {

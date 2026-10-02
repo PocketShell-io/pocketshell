@@ -53,6 +53,7 @@ LANES = (
                 "safeAreaBottomInsetBridgeCarriesANonZeroInset",
                 "composerInputStaysAboveImeWithinSafeArea",
                 "pageReloadsKeepFirstNativeCallAnswered",
+                "injectedTapStaysATapWhenItsUpArrivesLate",
             }
         ),
     ),

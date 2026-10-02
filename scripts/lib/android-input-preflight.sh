@@ -115,6 +115,7 @@ _pocketshell_enable_package() {
 pocketshell_android_recover_stale_launchers() {
   local adb="$1" serial="$2" evidence="$3"
   local record package disabled
+  pocketshell_android_recover_stale_settings "$adb" "$serial" "$evidence" || return 1
   record="$(pocketshell_android_launcher_record "$serial")"
   if [[ -s "$record" ]]; then
     while IFS= read -r package; do
@@ -290,6 +291,113 @@ pocketshell_android_recover_stale_launchers_on_devices() {
   return "$status"
 }
 
+# Lane-scoped secure-setting overrides (#2884, #2946). Each lane records the
+# original value next to the serial's AVD lock BEFORE changing it, restores it
+# from pocketshell_release_all, and a killed lane's value is recovered by the
+# next lane (or the emulator start path) exactly like a disabled launcher.
+#
+# - long_press_timeout=3000: Android and the WebView start the long-press timer
+#   in real time when ACTION_DOWN is dispatched. On a starved hosted emulator
+#   the ACTION_UP can reach the app most of a second later, which at the stock
+#   400 ms timeout turns a tap into a long press (no click, a text selection,
+#   Select-to-Speak taking focus). Event timestamps do not help; journeys that
+#   hold a key hold it past this value on purpose.
+# - show_ime_with_hard_keyboard=1: hosted images can boot with a hardware
+#   keyboard reported, so Gboard shows only its ~48 dp strip and "keyboard up"
+#   journeys would run without an on-screen keyboard (run 36938038761).
+POCKETSHELL_LANE_SECURE_SETTINGS=(long_press_timeout show_ime_with_hard_keyboard)
+POCKETSHELL_OVERRIDDEN_SETTINGS=()
+POCKETSHELL_SETTINGS_ADB=""
+POCKETSHELL_SETTINGS_SERIAL=""
+
+_pocketshell_lane_setting_value() {
+  case "$1" in
+    long_press_timeout) printf '%s\n' "${POCKETSHELL_LANE_LONG_PRESS_TIMEOUT_MS:-3000}" ;;
+    show_ime_with_hard_keyboard) printf '1\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Host-side record of SERIAL's original value of secure setting NAME.
+pocketshell_android_setting_record() {
+  local launcher_record
+  launcher_record="$(pocketshell_android_launcher_record "$1")"
+  printf '%s\n' "${launcher_record%.disabled-launchers}.setting-$2"
+}
+
+# Put secure setting NAME back to RECORD's value ("null" = unset), then drop the record.
+_pocketshell_apply_setting_record() {
+  local adb="$1" serial="$2" name="$3" record="$4" original
+  original="$(head -n 1 -- "$record" 2> /dev/null | tr -d '\r')"
+  if [[ -z "$original" || "$original" == null ]]; then
+    "$adb" -s "$serial" shell settings delete secure "$name" > /dev/null 2>&1 || return 1
+  elif [[ "$original" =~ ^[0-9]+$ ]]; then
+    "$adb" -s "$serial" shell settings put secure "$name" "$original" > /dev/null 2>&1 || return 1
+  else
+    return 1
+  fi
+  rm -f -- "$record"
+}
+
+# Restore every setting a killed lane left overridden. Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_recover_stale_settings() {
+  local adb="$1" serial="$2" evidence="$3" name record
+  for name in "${POCKETSHELL_LANE_SECURE_SETTINGS[@]}"; do
+    record="$(pocketshell_android_setting_record "$serial" "$name")"
+    [[ -s "$record" ]] || continue
+    if _pocketshell_apply_setting_record "$adb" "$serial" "$name" "$record"; then
+      printf 'RECOVERED_STALE_SETTING: %s on %s (recorded in %s)\n' "$name" "$serial" "$record" | tee -a "$evidence" >&2
+    else
+      printf 'FAIL: could not restore stale setting %s on %s (record kept: %s)\n' "$name" "$serial" "$record" | tee -a "$evidence" >&2
+      return 1
+    fi
+  done
+}
+
+# Called from pocketshell_release_all: put back what this process overrode, last first.
+pocketshell_android_restore_settings() {
+  local index name record
+  (( ${#POCKETSHELL_OVERRIDDEN_SETTINGS[@]} > 0 )) || return 0
+  for (( index = ${#POCKETSHELL_OVERRIDDEN_SETTINGS[@]} - 1; index >= 0; index-- )); do
+    name="${POCKETSHELL_OVERRIDDEN_SETTINGS[$index]}"
+    record="$(pocketshell_android_setting_record "$POCKETSHELL_SETTINGS_SERIAL" "$name")"
+    if _pocketshell_apply_setting_record "$POCKETSHELL_SETTINGS_ADB" "$POCKETSHELL_SETTINGS_SERIAL" "$name" "$record"; then
+      printf 'RESTORED_SETTING: %s on %s\n' "$name" "$POCKETSHELL_SETTINGS_SERIAL" >&2
+    else
+      printf 'WARNING: could not restore %s on %s; kept in %s for the next lane to recover\n' \
+        "$name" "$POCKETSHELL_SETTINGS_SERIAL" "$record" >&2
+    fi
+  done
+  POCKETSHELL_OVERRIDDEN_SETTINGS=()
+}
+
+# Override every lane setting on SERIAL; fails closed if one does not stick.
+# Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_apply_lane_settings() {
+  local adb="$1" serial="$2" evidence="$3" name wanted record original value
+  mkdir -p "$(dirname -- "$evidence")"
+  pocketshell_android_recover_stale_settings "$adb" "$serial" "$evidence" || return 1
+  POCKETSHELL_SETTINGS_ADB="$adb"
+  POCKETSHELL_SETTINGS_SERIAL="$serial"
+  for name in "${POCKETSHELL_LANE_SECURE_SETTINGS[@]}"; do
+    wanted="$(_pocketshell_lane_setting_value "$name")"
+    record="$(pocketshell_android_setting_record "$serial" "$name")"
+    original="$("$adb" -s "$serial" shell settings get secure "$name" 2> /dev/null | tr -d '\r')"
+    printf '%s\n' "${original:-null}" > "$record" || return 1
+    POCKETSHELL_OVERRIDDEN_SETTINGS+=("$name")
+    printf '%s_original=%s\n' "$name" "${original:-null}" >> "$evidence"
+    {
+      "$adb" -s "$serial" shell settings put secure "$name" "$wanted"
+      value="$("$adb" -s "$serial" shell settings get secure "$name" | tr -d '\r')"
+      printf '%s=%s\n' "$name" "$value"
+    } >> "$evidence" 2>&1
+    if [[ "$value" != "$wanted" ]]; then
+      printf 'FAIL: could not set %s=%s on %s (read back %s)\n' "$name" "$wanted" "$serial" "$value" | tee -a "$evidence" >&2
+      return 1
+    fi
+  done
+}
+
 # Usage: pocketshell_android_input_preflight ADB SERIAL EVIDENCE_FILE
 pocketshell_android_input_preflight() {
   local adb="$1" serial="$2" evidence="$3"
@@ -314,6 +422,7 @@ pocketshell_android_input_preflight() {
     printf 'FAIL: could not disable system error dialogs on %s (hide_error_dialogs=%s)\n' "$serial" "$value" | tee -a "$evidence" >&2
     return 1
   fi
+  pocketshell_android_apply_lane_settings "$adb" "$serial" "$evidence" || return 1
 
   deadline=$((SECONDS + ${POCKETSHELL_INPUT_PREFLIGHT_DISMISS_SECONDS:-30}))
   while :; do
@@ -348,7 +457,7 @@ pocketshell_android_input_preflight() {
     printf 'system error dialogs: none\n'
     "$adb" -s "$serial" shell dumpsys window displays | tr -d '\r' | grep -E 'mCurrentFocus=|mFocusedApp=' || true
   } >> "$evidence" 2>&1
-  printf 'PASS: Android input preflight on %s (no system error dialog; hide_error_dialogs=1)\n' "$serial"
+  printf 'PASS: Android input preflight on %s (no system error dialog; hide_error_dialogs=1; long_press_timeout=%s; show_ime_with_hard_keyboard=1)\n' "$serial" "${POCKETSHELL_LANE_LONG_PRESS_TIMEOUT_MS:-3000}"
 }
 
 # Usage: pocketshell_android_capture_input_diagnostics ADB SERIAL OUTPUT_DIR

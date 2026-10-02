@@ -526,6 +526,12 @@
         "scopes composer pointer intent to the pending focus request",
         "still gives the terminal focus when no composer has claimed it"
       ]
+    },
+    "tests/unit/mobileControlSelection.test.ts": {
+      "suite": "mobile control long-press hardening",
+      "tests": [
+        "keeps dock, launcher, dictation and Composer buttons out of text selection and the touch callout"
+      ]
     }
   }
 }
