@@ -37,6 +37,19 @@ every registered test file and title ran (`pnpm test:unit` is the unchecked
 quick loop). `assemble-debug.sh` builds the JS app,
 syncs Capacitor, and assembles a debug APK; it does not build connected tests.
 
+For UI iteration without Android, `pnpm dev:mock` / `pnpm dev:live` run the
+app in a desktop browser with HMR ([browser-dev-mode.md](browser-dev-mode.md)).
+Their headless smokes are part of the JS-first CI job:
+
+```bash
+node scripts/dev-browser-smoke.mjs mock
+node scripts/dev-browser-smoke.mjs live --host testuser@127.0.0.1:2222=fixture --identity tests/docker/test_key
+python3 scripts/check-no-dev-shims.py --dist dist --apk android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+The last command proves the dev shims are absent from the built APK. Browser
+runs are fast evidence only; the packaged emulator lanes below stay the gate.
+
 The remaining legacy app2 Gradle commands and journey inventory describe
 `release/0.5.x`. They are not available on `main`, where the Kotlin product
 modules and root Gradle graph were removed.

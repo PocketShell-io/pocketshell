@@ -544,6 +544,62 @@
         "asks on first contact with the three shared answers",
         "refuses a changed key: both fingerprints, no first-contact wording, no trust action"
       ]
+    },
+    "tests/unit/devBrowserCapacitor.test.ts": {
+      "suite": "browser dev mode through Capacitor",
+      "tests": [
+        "selects the android platform and answers the bridge warm-up and key vault through the plugin proxy",
+        "connects, asks for host-key trust, lists sessions, attaches and echoes typed input via the shared controller"
+      ]
+    },
+    "tests/unit/devBrowserMockHost.test.ts": {
+      "suite": "browser dev mock host",
+      "tests": [
+        "answers the pocketshell CLI verbs in the shapes pocketshell-core parses",
+        "creates and kills sessions through the real HostCliCore contract",
+        "passes the shared host bootstrap probe and the listener scan with process directories",
+        "refuses an untrusted host key with the presented key, like the Android plugin",
+        "runs an echoing line-editing shell behind each session PTY with Android sequence rules",
+        "keeps an in-memory SFTP tree with root containment and write-if-unchanged conflicts",
+        "splits shell words and peels the path-aware command wrapper"
+      ]
+    },
+    "tests/unit/devBrowserShims.test.ts": {
+      "suite": "browser dev mode shims",
+      "tests": [
+        "routes Capacitor native promises, callbacks and listener removal through the fake bridge",
+        "serves bridge ping, durable storage, crash reports and an empty 0.5.x migration snapshot",
+        "simulates the soft keyboard from focus and the Android back button from the toolbar",
+        "runs the stub recognizer once per dictation session and supports injected test events",
+        "picks files into opaque IDs, reads them in chunks and saves created documents as downloads",
+        "keeps an in-memory key vault whose metadata passes the app validator and matches ssh-keygen fingerprints",
+        "seeds dev hosts into the Android host store without overwriting saved ones",
+        "traces SSH calls by method and command but never PTY bytes",
+        "reports a dropped bridge socket as lost connections and rejects its pending calls",
+        "takes the live bridge token from the URL fragment, keeps it per tab and clears it from the address bar",
+        "injects the shim only into the mock/live dev server and refuses to build in those modes",
+        "parses the dev launcher options, including pnpm's forwarded separator"
+      ]
+    },
+    "tests/unit/devSshBridge.test.ts": {
+      "suite": "browser dev mode live SSH bridge",
+      "tests": [
+        "listens on 127.0.0.1 only and refuses a WebSocket without the session token",
+        "refuses a WebSocket with the right token from a foreign or missing Origin",
+        "refuses a WebSocket whose Host header is not the loopback bridge address",
+        "verifies the host key before authenticating and presents it for the app trust prompt",
+        "authenticates with vault keys and passwords and runs exec and an echoing PTY",
+        "imports, generates and deletes in-memory vault keys over the socket",
+        "never logs credentials, key material, commands or PTY bytes"
+      ]
+    },
+    "tests/unit/devBrowserServer.test.ts": {
+      "suite": "browser dev mode live dev server",
+      "tests": [
+        "prints the page URL with the bridge token in its fragment to the launching terminal",
+        "serves the page to loopback Host headers only, and the page carries no bridge token",
+        "refuses the bridge WebSocket from a foreign Host or a foreign Origin even with the right token"
+      ]
     }
   }
 }

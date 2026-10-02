@@ -35,6 +35,7 @@ Kotlin `app2` line and takes 0.5.x hotfixes only. Docs that describe `app2`,
 | [decisions.md](decisions.md) | Log of what's locked, what's still open |
 | [release.md](release.md) | `main` vs `release/0.5.x` branch layout, why 0.6.0 is not releasable yet, the 0.5.x hotfix path and its gaps, and the release procedure (release-owner agent) |
 | [testing.md](testing.md) | JS-first checks and packaged lanes on `main`, legacy app2 emulator + Docker gates on `release/0.5.x` |
+| [browser-dev-mode.md](browser-dev-mode.md) | Run the Android JS app in a desktop browser with HMR: `pnpm dev:mock` (fake host) and `pnpm dev:live` (real SSH via a local bridge) |
 | [docker-emulator-runbook.md](docker-emulator-runbook.md) | Docker fixture targets, ports, emulator commands, connected-test runbook |
 | [screenshots/](screenshots/) | Curated README screenshot assets captured from the visual-audit workflow |
 | [tmux-socket-recovery.md](tmux-socket-recovery.md) | Operational runner-only tmux socket recovery and namespace guardrails |
