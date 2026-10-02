@@ -516,12 +516,6 @@
       "tests": [
         "keeps dock, launcher, dictation and Composer buttons out of text selection and the touch callout"
       ]
-    },
-    "tests/unit/shellBottomInsets.test.ts": {
-      "suite": "shell bottom insets for the native IME state",
-      "tests": [
-        "reserves the native IME overlap so the dock stays above a keyboard Android did not resize under"
-      ]
     }
   }
 }

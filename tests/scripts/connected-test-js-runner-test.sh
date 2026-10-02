@@ -61,6 +61,8 @@ case "${1:-}" in
       'settings get global hide_error_dialogs') printf '1\n' ;;
       'settings put secure long_press_timeout 3000') ;;
       'settings get secure long_press_timeout') printf '3000\n' ;;
+      'settings put secure show_ime_with_hard_keyboard 1') ;;
+      'settings get secure show_ime_with_hard_keyboard') printf '1\n' ;;
       'settings put global device_provisioned 1'|'settings put secure user_setup_complete 1') ;;
       'dumpsys window windows') printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n' ;;
       'dumpsys window displays') printf '  mCurrentFocus=Window{1 u0 fixture}\n' ;;

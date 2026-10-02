@@ -21,8 +21,6 @@ const RUNTIME_TOKENS = new Set([
   // App.vue writes the font-size-derived minimum terminal grid height onto
   // the document root with style.setProperty (#2884).
   '--terminal-min-grid-height',
-  // App.vue writes how far the WebView still reaches under the IME (#2884).
-  '--ime-overlap-bottom',
 ]);
 
 const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/;

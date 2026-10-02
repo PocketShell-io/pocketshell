@@ -116,8 +116,8 @@ ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-settings/$RUN_ID"
 rm -rf -- "$RESULTS_DIR"
 mkdir -p "$ARTIFACTS_DIR/instrumentation-results" "$ARTIFACTS_DIR/device-screenshots"
 # Injected taps must stay taps on a starved emulator (#2884, #2946).
-pocketshell_android_raise_long_press_timeout "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/long-press-timeout.txt" \
-  || fail "could not raise the long-press timeout on $ANDROID_SERIAL"
+pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
+  || fail "could not apply the lane input settings on $ANDROID_SERIAL"
 
 # The connection form imports keys through the native key vault (#2926): stage
 # the fixture key outside every app package; the journey moves it into the

@@ -56,6 +56,8 @@ public final class JsFastKeysDockerJourneyTest {
     private static final String ASSET_TAG = "PS2884Asset";
     private static final long WAIT_TIMEOUT_MILLIS = 45_000;
     private static final long JS_TIMEOUT_SECONDS = 15;
+    /** A real on-screen keyboard; the hard-keyboard candidate strip is ~48 dp. */
+    private static final double MIN_SOFT_KEYBOARD_DP = 200;
     private static final long UI_CALLBACK_TIMEOUT_MILLIS = 8_000;
     private static final int ASSET_CHUNK_SIZE = 2_800;
     private static final int MAX_CATALOG_SWIPE_ATTEMPTS = 8;
@@ -2382,12 +2384,10 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     /**
-     * The dock's bottom edge against the real IME top, both in screen pixels.
-     * The visual viewport alone cannot show the dock under the keyboard when
-     * Android leaves the WebView unresized (#2884 run 36938038761), so this is
-     * measured from the native side: WebView screen origin plus the dock's CSS
+     * The dock's bottom edge against the real IME top, both in screen pixels,
+     * measured from the native side (WebView screen origin plus the dock's CSS
      * bottom scaled to device pixels, against the window bottom minus the IME
-     * inset.
+     * inset) so it does not depend on how the WebView itself was laid out.
      */
     private static JSONObject dockScreenContainment(JSONObject dom, JSONObject nativeIme) throws JSONException {
         JSONObject dock = dom.optJSONObject("mobileHotkeys");
@@ -2416,6 +2416,12 @@ public final class JsFastKeysDockerJourneyTest {
                         + label + "): " + geometry.getJSONObject("dockScreenContainment") + " ime="
                         + geometry.getJSONObject("androidIme"),
                 geometry.getJSONObject("dockScreenContainment").optBoolean("dockAboveIme"));
+        // A collapsed hardware-keyboard strip (Gboard's ~48 dp bar, seen on hosted
+        // images in physical-keyboard mode) is not an on-screen keyboard; the lane
+        // forces show_ime_with_hard_keyboard, so a keyboard-up stage must have a full IME.
+        assertTrue("keyboard-up stage " + label + " must have a full on-screen keyboard (imeBottomDp >= "
+                        + MIN_SOFT_KEYBOARD_DP + "): " + geometry.getJSONObject("androidIme"),
+                geometry.getJSONObject("androidIme").getDouble("imeBottomDp") >= MIN_SOFT_KEYBOARD_DP);
     }
 
     private JSONObject readNativeImeState() throws Exception {

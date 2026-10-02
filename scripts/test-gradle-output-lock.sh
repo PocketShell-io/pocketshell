@@ -291,6 +291,10 @@ if [[ "$*" == 'shell settings get secure long_press_timeout' ]]; then
   printf '3000\n'
   exit 0
 fi
+if [[ "$*" == 'shell settings get secure show_ime_with_hard_keyboard' ]]; then
+  printf '1\n'
+  exit 0
+fi
 if [[ "$*" == 'shell dumpsys window windows' ]]; then
   printf 'WINDOW MANAGER WINDOWS (dumpsys window windows)\n'
   exit 0

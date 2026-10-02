@@ -764,6 +764,11 @@ def validate_dock_above_ime(geometry_trace: object) -> None:
             continue
         containment = item.get("dockScreenContainment")
         stage = item.get("stage")
+        ime_height = ime.get("imeBottomDp")
+        if not isinstance(ime_height, (int, float)) or isinstance(ime_height, bool) or ime_height < 200:
+            raise ExtractionFailure(
+                f"keyboard-up stage {stage} has no full on-screen keyboard (imeBottomDp={ime_height}); "
+                "a hardware-keyboard strip is not an IME-up state")
         if not isinstance(containment, dict) or containment.get("measured") is not True:
             raise ExtractionFailure(f"keyboard-up stage {stage} lacks the native dock-vs-IME screen measurement")
         dock_bottom = containment.get("dockBottomScreenPx")
@@ -1729,8 +1734,10 @@ def self_test() -> int:
          {**sample_journey(), "dockKeyLongPress": {**sample_dock_key_long_press(), "holdMillis": 700}}, False),
         ("dock key long press that wrote twice rejected",
          {**sample_journey(), "dockKeyLongPress": {**sample_dock_key_long_press(), "writes": 2}}, False),
-        ("unresized WebView with the dock under the IME rejected",
-         with_dock_under_unresized_webview(sample_journey()), False),
+        ("dock under the IME in screen pixels rejected",
+         with_dock_under_ime(sample_journey()), False),
+        ("collapsed 48dp hardware-keyboard strip as the keyboard-up IME rejected",
+         with_collapsed_keyboard_strip(sample_journey()), False),
         ("keyboard-up stage without the native dock measurement rejected",
          with_missing_dock_measurement(sample_journey()), False),
         ("nested rounded terminal panel rejected",
@@ -3127,8 +3134,8 @@ def with_dictation_resize_after_baseline(journey: dict[str, object]) -> dict[str
     return copied
 
 
-def with_dock_under_unresized_webview(journey: dict[str, object]) -> dict[str, object]:
-    """Run 36938038761's state: IME up, WebView kept at 2274 px, dock at the bottom of the screen."""
+def with_dock_under_ime(journey: dict[str, object]) -> dict[str, object]:
+    """Synthetic: a full keyboard is up but the dock's bottom edge is below the IME top on screen."""
     copied = json.loads(json.dumps(journey))
     for item in copied["geometryTrace"]:
         if item["stage"] == "after-reconnect":
@@ -3137,6 +3144,15 @@ def with_dock_under_unresized_webview(journey: dict[str, object]) -> dict[str, o
                                   "webViewHeightPx": 2274}
             item["dockScreenContainment"] = {"measured": True, "dockBottomScreenPx": 2259.0,
                                              "imeTopScreenPx": 1517.0, "dockAboveIme": False}
+    return copied
+
+
+def with_collapsed_keyboard_strip(journey: dict[str, object]) -> dict[str, object]:
+    """Hosted run 36938038761: Gboard in physical-keyboard mode showed only its 48 dp strip."""
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "after-reconnect":
+            item["androidIme"] = {**item["androidIme"], "visible": True, "imeBottomDp": 48}
     return copied
 
 

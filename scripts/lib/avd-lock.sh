@@ -333,9 +333,9 @@ pocketshell_release_all() {
   if declare -F pocketshell_android_restore_launchers >/dev/null 2>&1; then
     pocketshell_android_restore_launchers
   fi
-  # Issue #2884: put back the system long-press timeout the lane raised.
-  if declare -F pocketshell_android_restore_long_press_timeout >/dev/null 2>&1; then
-    pocketshell_android_restore_long_press_timeout
+  # Issue #2884: put back the secure settings the lane overrode.
+  if declare -F pocketshell_android_restore_settings >/dev/null 2>&1; then
+    pocketshell_android_restore_settings
   fi
   pocketshell_release_pool_serial
   if declare -F pocketshell_release_agents_port >/dev/null 2>&1; then
