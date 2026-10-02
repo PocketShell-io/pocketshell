@@ -64,6 +64,13 @@ jobs:
           scripts/check-js-unit-results.py --self-test
           scripts/run-js-unit-gate.sh
 
+      # Issue #3022: the browser dev mode (pnpm dev:mock) must keep booting
+      # both shells with no Android, and its shim guard must stay sharp.
+      - name: Check browser dev-mode shim guard and run the dev:mock smoke
+        run: |
+          python3 scripts/check-no-dev-shims.py --self-test
+          node scripts/dev-browser-smoke.mjs mock --artifacts build/dev-browser-smoke/mock
+
       - name: Check CI watcher required-check defaults
         run: python3 scripts/watch-ci.py --self-test
 
@@ -123,6 +130,9 @@ jobs:
 
       - name: Build Android debug APK
         run: pnpm build:android:debug
+
+      - name: Prove browser dev-mode shims are absent from the built APK (issue #3022)
+        run: python3 scripts/check-no-dev-shims.py --dist dist --apk android/app/build/outputs/apk/debug/app-debug.apk
 
       # Issue #2856: run after the debug APK step above has generated the
       # ignored Capacitor Gradle inputs; validate fresh results from all four
@@ -200,6 +210,19 @@ jobs:
           source tests/docker/lib/wait-for-healthy.sh
           wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-lifecycle-agents-health.log 60
           cat /tmp/js-lifecycle-agents-health.log
+
+      # Issue #3022: dev:live through the local ssh2 bridge into a real PTY on
+      # the fixture, checked by an independent SSH read of what it wrote.
+      - name: Run the browser dev:live smoke against the Docker agents fixture
+        run: node scripts/dev-browser-smoke.mjs live --host testuser@127.0.0.1:2222=fixture --identity tests/docker/test_key --artifacts build/dev-browser-smoke/live
+
+      - name: Upload browser dev-mode smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-browser-dev-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/dev-browser-smoke/
+          if-no-files-found: warn
 
       - name: Start isolated Docker agents lanes for Composer and key-vault journeys
         run: scripts/agents-pool.sh up 2244 2245

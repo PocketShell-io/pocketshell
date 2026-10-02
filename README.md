@@ -38,6 +38,24 @@ isolated package name:
 scripts/assemble-debug.sh --suffix local --install
 ```
 
+### Run it in a browser (no Android)
+
+For UI work, run the app in a desktop browser with Vite hot reload — no
+emulator, phone or adb:
+
+```sh
+pnpm dev:mock   # fake host with sessions, a scripted terminal, files, usage and ports
+pnpm dev:live -- --host testuser@127.0.0.1:2222=fixture --identity tests/docker/test_key
+```
+
+Open <http://localhost:5173/> (legacy shell) or
+<http://localhost:5173/?shell=shared> (shared app), then switch Chrome DevTools
+to a phone viewport (Ctrl+Shift+M, e.g. "Pixel 7"). `dev:live` reaches real
+hosts through a local ssh2 bridge bound to 127.0.0.1; open the URL it prints
+(it carries the bridge token in its `#` fragment). Details, security notes
+and the simulated plugins: [docs/browser-dev-mode.md](docs/browser-dev-mode.md).
+None of this ships in the APK.
+
 The preserved Docker agents fixture can be checked with:
 
 ```sh
