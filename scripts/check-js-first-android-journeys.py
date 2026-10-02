@@ -128,7 +128,14 @@ LANES = (
         class_name="com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest",
         child_runner="scripts/connected-js-key-vault-docker.sh",
         result_checker="scripts/check-js-key-vault-results.py",
-        methods=frozenset({"importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState"}),
+        # One exact method per cycle, selected as `class=...#$method` from
+        # literal run_cycle calls: #2926 document import, #3021 paste/install.
+        methods=frozenset(
+            {
+                "importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState",
+                "pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost",
+            }
+        ),
     ),
     LaneContract(
         name="durable-storage",

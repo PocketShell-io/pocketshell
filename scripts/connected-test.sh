@@ -22,7 +22,7 @@ JS-first packaged Android lanes:
                     independent Docker host/screenshot evidence
   composer-docker   Packaged composer journey plus Docker PTY byte oracles
   hotkeys-docker    Packaged mobile fast-key journey plus Docker PTY byte oracles
-  key-vault-docker  Encrypted SSH key import, auth, and secret-leak journey
+  key-vault-docker  SSH key import (file + paste), public-key share, install-on-host, auth and secret-leak journeys
   durable-storage   User data survives a kill right after acknowledgement
                     (seed / mutate+SIGKILL / verify; no Docker, issue #2993)
 

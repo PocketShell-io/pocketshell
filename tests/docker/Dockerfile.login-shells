@@ -1,0 +1,16 @@
+# Issue #3021: every login shell sshd may hand an exec command to.
+#
+# sshd runs an exec request as `<login shell> -c <command>`, so a remote
+# command PocketShell builds is parsed by whatever shell the user picked
+# before anything else runs. tests/scripts/authorized-key-install-login-shells-test.sh
+# runs the real authorized_keys install command under each of these, as an
+# unprivileged user, through `docker exec <shell> -c <command>` (argv, no
+# extra quoting layer), exactly the way sshd would.
+FROM alpine:latest
+
+RUN apk add --no-cache bash dash zsh fish tcsh mksh \
+    && adduser -D -s /bin/sh testuser
+
+USER testuser
+WORKDIR /home/testuser
+CMD ["sleep", "infinity"]

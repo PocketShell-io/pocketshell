@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Import an encrypted SSH document through the packaged picker, authenticate to
 # the real agents fixture using its opaque handle, and preserve same-run proof.
+# A second exact-method cycle (#3021) pastes the key text, copies/shares a
+# generated key's public line, installs it on the fixture over the live
+# connection, and reconnects with it; the host oracles below verify both.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -246,17 +249,22 @@ printf '%s\n' "$docker_log_start_time" > "$ARTIFACTS_DIR/docker-log-started-at.t
 # Do not copy credentials from an earlier journey on this shared API 35 AVD.
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 
+# One exact method per instrumentation cycle: $1 = method, $2 = Gradle log.
 run_key_vault_instrumentation() {
+  local method="$1" log="$2"
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    '-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest#importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState' \
+    "-Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SshKeyVaultDockerJourneyTest#$method" \
     -Pandroid.testInstrumentationRunnerArguments.sshHost=10.0.2.2 \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.keyFixtureName=$DEVICE_KEY_NAME" \
     "-Pandroid.testInstrumentationRunnerArguments.keyVaultRunId=$RUN_ID" \
-    --stacktrace --console=plain 2>&1 | tee "$ARTIFACTS_DIR/gradle-connected.log"
+    --stacktrace --console=plain 2>&1 | tee "$log"
 }
-pocketshell_start_without_avd_lock_fd run_key_vault_instrumentation
+
+run_document_cycle() {
+local method="$1"
+pocketshell_start_without_avd_lock_fd run_key_vault_instrumentation "$method" "$ARTIFACTS_DIR/gradle-connected.log"
 gradle_pid="$POCKETSHELL_AVD_CHILD_PID"
 screenshots="$ARTIFACTS_DIR/device-screenshots"
 mkdir -p "$screenshots"
@@ -406,6 +414,7 @@ if (( gradle_status != 0 )); then
 fi
 
 "$ROOT_DIR/scripts/check-js-key-vault-results.py" --results-dir "$RESULTS_DIR" \
+  --method "$method" --evidence-subdir document \
   --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
 (( generated_authorization_status == 0 )) || fail 'Android instrumentation passed but generated-key authorization did not complete'
 (( screenshots_captured == 5 )) || fail "instrumentation passed but only $screenshots_captured Android screenshots were retrieved before the test package was removed"
@@ -475,12 +484,178 @@ print("imported_and_generated_docker_fingerprints=PASS")
 print("independent_session_list_for_both_credentials=PASS")
 PY
 
-python3 - "$ARTIFACTS_DIR" <<'PY'
+}
+
+reset_device_for_cycle() {
+  local label="$1"
+  "$ADB" -s "$ANDROID_SERIAL" install -r "$APP_APK" > "$ARTIFACTS_DIR/install-app-$label.txt"
+  "$ADB" -s "$ANDROID_SERIAL" install -r "$TEST_APK" > "$ARTIFACTS_DIR/install-android-test-$label.txt"
+  "$ADB" -s "$ANDROID_SERIAL" shell pm clear "$APP_PACKAGE" > "$ARTIFACTS_DIR/clear-isolated-app-data-$label.txt" \
+    || fail "could not clear isolated app data for $APP_PACKAGE before the $label cycle"
+  "$ADB" -s "$ANDROID_SERIAL" shell mkdir -p "$DEVICE_FILES"
+  "$ADB" -s "$ANDROID_SERIAL" push "$ROOT_DIR/tests/docker/key-vault-encrypted-test-key" "$DEVICE_KEY_PATH" \
+    > "$ARTIFACTS_DIR/stage-encrypted-key-$label.txt"
+}
+
+restore_authorized_keys_now() {
+  docker exec -i -u root "$CONTAINER" sh -c \
+    'cat > /home/testuser/.ssh/authorized_keys && chown testuser:testuser /home/testuser/.ssh/authorized_keys && chmod 600 /home/testuser/.ssh/authorized_keys' \
+    < "$ORIGINAL_AUTHORIZED_KEYS" || fail 'could not restore Docker fixture authorized_keys between cycles'
+}
+
+# #3021: paste the fixture key as text, connect, generate a key, copy/share
+# its public line, install it on the fixture through the app, reconnect with
+# it. Only the app may authorize the generated key in this cycle.
+run_setup_cycle() {
+  local method="$1"
+  local setup_dir="$ARTIFACTS_DIR/setup"
+  local device_setup_dir="$DEVICE_RUN_DIR/setup"
+  mkdir -p "$setup_dir"
+  restore_authorized_keys_now
+  reset_device_for_cycle setup
+  "$ADB" -s "$ANDROID_SERIAL" logcat -c
+  local setup_log_start
+  setup_log_start="$(date -u +'%Y-%m-%dT%H:%M:%S.%NZ')"
+  printf '%s\n' "$setup_log_start" > "$setup_dir/docker-log-started-at.txt"
+  python3 - "$RESULTS_DIR" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+results = Path(sys.argv[1])
+if results.exists():
+    shutil.rmtree(results)
+PY
+  AUTHORIZED_KEYS_MODIFIED=1
+  pocketshell_start_without_avd_lock_fd run_key_vault_instrumentation "$method" "$setup_dir/gradle-connected.log"
+  local setup_pid="$POCKETSHELL_AVD_CHILD_PID"
+  local capture_status=1
+  local deadline=$((SECONDS + 600))
+  while (( SECONDS < deadline )); do
+    if "$ADB" -s "$ANDROID_SERIAL" shell test -f "$device_setup_dir/evidence-ready" 2>/dev/null; then
+      if "$ADB" -s "$ANDROID_SERIAL" pull "$device_setup_dir/." "$setup_dir/device" >/dev/null; then
+        "$ADB" -s "$ANDROID_SERIAL" shell touch "$device_setup_dir/artifacts-captured" && capture_status=0
+      fi
+      break
+    fi
+    kill -0 "$setup_pid" 2>/dev/null || break
+    sleep 0.5
+  done
+  local setup_status=0
+  wait "$setup_pid" || setup_status=$?
+  if (( setup_status != 0 )); then
+    mkdir -p "$setup_dir/failure-diagnostics"
+    capture_sanitized_logcat "$setup_dir/failure-diagnostics/logcat.txt" || true
+    "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$setup_dir/failure-diagnostics/screen.png" 2>&1 || true
+    docker logs --since "$setup_log_start" --timestamps "$CONTAINER" > "$setup_dir/failure-diagnostics/docker-agents.log" 2>&1 || true
+    docker exec -u root "$CONTAINER" cat /home/testuser/.ssh/authorized_keys > "$setup_dir/failure-diagnostics/authorized_keys" 2>&1 || true
+    exit "$setup_status"
+  fi
+  "$ROOT_DIR/scripts/check-js-key-vault-results.py" --results-dir "$RESULTS_DIR" \
+    --method "$method" --evidence-subdir setup \
+    --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
+  (( capture_status == 0 )) || fail 'setup cycle passed but its same-run device evidence was not captured'
+  local screenshot
+  for screenshot in host-form-add-key.png settings-ssh-keys.png ssh-key-paste.png ssh-key-paste-ime.png ssh-key-paste-error.png \
+      ssh-key-generated-public.png ssh-key-install-confirmation.png ssh-key-installed.png; do
+    [[ -s "$setup_dir/device/$screenshot" ]] || fail "missing setup-cycle Android screenshot: $screenshot"
+    validate_png "$setup_dir/device/$screenshot" || fail "setup-cycle screenshot is truncated or invalid: $screenshot"
+    cp "$setup_dir/device/$screenshot" "$screenshots/setup-$screenshot"
+  done
+  capture_sanitized_logcat "$setup_dir/android-logcat.txt" \
+    || fail 'Android logcat contained credential fields during the setup cycle'
+  docker exec -u root "$CONTAINER" cat /home/testuser/.ssh/authorized_keys > "$setup_dir/authorized_keys.after"
+  docker logs --since "$setup_log_start" --timestamps "$CONTAINER" > "$setup_dir/docker-agents.log" 2>&1
+  ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 \
+    '/usr/local/bin/pocketshell-real sessions list --json' > "$setup_dir/host-session-list.json"
+  python3 - "$setup_dir" "$ORIGINAL_AUTHORIZED_KEYS" "$fingerprint" "keysetup-$RUN_ID" > "$setup_dir/setup-oracle.txt" <<'PY'
+import base64
+import hashlib
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+setup_dir, original_path, pasted_fingerprint, session_tag = sys.argv[1:]
+root = Path(setup_dir)
+device = root / "device"
+public_line = (device / "generated-public-key.pub").read_text(encoding="ascii").strip()
+match = re.fullmatch(r"(ssh-ed25519) ([A-Za-z0-9+/]+=*) (.+)", public_line)
+if not match:
+    raise SystemExit(f"FAIL: app public key is not one OpenSSH Ed25519 line: {public_line!r}")
+blob = base64.b64decode(match.group(2))
+generated_fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+recorded = (device / "generated-key-fingerprint.txt").read_text(encoding="ascii").strip()
+if recorded != generated_fingerprint:
+    raise SystemExit(f"FAIL: UI fingerprint {recorded} differs from the shown public line {generated_fingerprint}")
+
+share = json.loads((device / "public-key-share.json").read_text(encoding="utf-8"))
+if share.get("clipboard") != public_line or share.get("sharedText") != public_line or share.get("sharedType") != "text/plain":
+    raise SystemExit("FAIL: clipboard or Android share sheet did not carry the exact public line")
+
+installs = json.loads((device / "install-results.json").read_text(encoding="utf-8"))
+if [item.get("outcome") for item in installs] != ["installed", "already-present"]:
+    raise SystemExit(f"FAIL: install outcomes were {installs}")
+
+original = Path(original_path).read_text(encoding="utf-8").splitlines()
+after = (root / "authorized_keys.after").read_text(encoding="utf-8").splitlines()
+added = [line for line in after if line not in original]
+if after[: len(original)] != original or added != [public_line]:
+    raise SystemExit(f"FAIL: authorized_keys must gain exactly the app's public line once; added={added}")
+if sum(1 for line in after if match.group(2) in line) != 1:
+    raise SystemExit("FAIL: the installed key appears more than once in authorized_keys")
+
+start = datetime.fromisoformat((root / "docker-log-started-at.txt").read_text(encoding="ascii").strip().replace("Z", "+00:00"))
+accepted = {pasted_fingerprint: [], generated_fingerprint: []}
+for line in (root / "docker-agents.log").read_text(encoding="utf-8", errors="replace").splitlines():
+    found = re.search(r"Accepted publickey for testuser from (\S+) port \d+ ssh2: ED25519 (\S+)", line)
+    if not found or found.group(2) not in accepted or found.group(1) in {"::1", "127.0.0.1", "localhost"}:
+        continue
+    if datetime.fromisoformat(line.split()[0].replace("Z", "+00:00")) < start:
+        continue
+    accepted[found.group(2)].append(line)
+for label, value in (("pasted-key", pasted_fingerprint), ("installed-generated-key", generated_fingerprint)):
+    if not accepted[value]:
+        raise SystemExit(f"FAIL: no post-start external Docker authentication accepted the {label} {value}")
+    print(f"{label}_accepted_line={accepted[value][0]}")
+    print(f"{label}_fingerprint={value}")
+
+sessions = json.loads((root / "host-session-list.json").read_text(encoding="utf-8")).get("sessions", [])
+if sum(1 for row in sessions if isinstance(row, dict) and row.get("tag") == session_tag) != 1:
+    raise SystemExit(f"FAIL: independent host lookup did not find session {session_tag}")
+print(f"session_tag={session_tag}")
+print("pasted_key_docker_authentication=PASS")
+print("public_key_clipboard_and_share_sheet=PASS")
+print("install_on_host_appended_exactly_once=PASS")
+print("installed_generated_key_reconnect_authentication=PASS")
+PY
+  cat "$setup_dir/setup-oracle.txt"
+}
+
+run_cycle() {
+  local name="$1" method="$2"
+  case "$name" in
+    document) run_document_cycle "$method" ;;
+    setup) run_setup_cycle "$method" ;;
+    *) fail "unknown key-vault cycle: $name" ;;
+  esac
+}
+
+run_cycle document importsEncryptedDocumentConnectsAndKeepsSecretsOutOfWebViewState
+run_cycle setup pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost
+"$ROOT_DIR/scripts/check-js-key-vault-results.py" --results-dir "$ARTIFACTS_DIR/instrumentation-results"
+
+python3 - "$ARTIFACTS_DIR" "$ROOT_DIR/tests/docker/key-vault-encrypted-test-key" <<'PY'
 from pathlib import Path
 import sys
 
 root = Path(sys.argv[1])
-markers = (
+# The fixture's own base64 body lines: the pasted text must never reach a log.
+fixture_body = [line.strip() for line in Path(sys.argv[2]).read_text(encoding="ascii").splitlines()
+                if len(line.strip()) >= 40 and not line.startswith("-----")]
+if len(fixture_body) < 3:
+    raise SystemExit("FAIL: could not derive the fixture private-key body markers")
+markers = tuple(fixture_body) + (
     "pocketshell-vault-test-passphrase",
     "-----BEGIN OPENSSH PRIVATE KEY-----",
     "-----BEGIN PRIVATE KEY-----",
@@ -504,7 +679,8 @@ if leaks:
     raise SystemExit("FAIL: key secret material leaked to logs or diagnostics:\n" + "\n".join(leaks))
 (root / "secret-nonleak-oracle.txt").write_text(
     "passphrase_absent_from_gradle_log_logcat_docker_log_and_host_reports=PASS\n"
-    "private_key_pem_marker_absent_from_gradle_log_logcat_docker_log_and_host_reports=PASS\n",
+    "private_key_pem_marker_absent_from_gradle_log_logcat_docker_log_and_host_reports=PASS\n"
+    f"pasted_fixture_body_lines_absent_from_text_artifacts=PASS ({len(fixture_body)} lines checked)\n",
     encoding="utf-8",
 )
 PY

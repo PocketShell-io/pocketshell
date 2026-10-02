@@ -8,6 +8,7 @@ import {
 import { useNavigationStore } from '../stores/navigation';
 import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import AppIcon from '@ui/components/AppIcon.vue';
+import KeyIcon from './KeyIcon.vue';
 import SettingsConnectionsGroup from '@ui/app/components/settings/SettingsConnectionsGroup.vue';
 import HostSnippetsScreen from './HostSnippetsScreen.vue';
 
@@ -54,6 +55,11 @@ function setVoiceSilence(event: Event) {
       <button class="settings-link" type="button" data-testid="open-terminal-settings" @click="navigation.open('settings-terminal')">
         <span class="settings-link__icon"><AppIcon name="terminal" /></span>
         <span><strong>Terminal</strong><small>Text size and display options</small></span>
+        <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
+      </button>
+      <button class="settings-link" type="button" data-testid="open-ssh-keys-settings" @click="navigation.open('keys')">
+        <span class="settings-link__icon"><KeyIcon /></span>
+        <span><strong>SSH keys</strong><small>Paste, import or generate keys; copy or share public keys</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
       <button class="settings-link" type="button" data-testid="open-connection-settings" @click="navigation.open('settings-connections')">
