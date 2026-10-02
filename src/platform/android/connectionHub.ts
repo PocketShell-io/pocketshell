@@ -36,6 +36,9 @@ import {
   type ConnectionState,
   type ExecResult,
   type HostCliExecOutcome,
+  type HostKeyTrustChoice,
+  type HostKeyTrustRequest,
+  type PendingHostKeyDecision,
   type SessionRow,
   type SessionSummary,
   type ShellId,
@@ -49,7 +52,13 @@ export type ConnectionStateListener = (payload: ConnectionStateEvent) => void;
 export type ShellDataListener = (payload: { shellId: ShellId; data: Uint8Array }) => void;
 export type ShellExitListener = (payload: { shellId: ShellId; exitCode: number }) => void;
 
-export type TofuDecision = 'accept-always' | 'accept-once' | 'reject';
+export type TofuDecision = HostKeyTrustChoice;
+
+/**
+ * Asks the user about a first-contact host key (the shared app's
+ * `ssh.onTrustDecision` decider). Resolves with the user's answer.
+ */
+export type TrustDecider = (request: HostKeyTrustRequest) => Promise<HostKeyTrustChoice>;
 
 export interface AttachRequest {
   connectionId: string;
@@ -182,6 +191,7 @@ export class AndroidConnectionHub {
   private readonly dataListeners = new Set<ShellDataListener>();
   private readonly exitListeners = new Set<ShellExitListener>();
   private nextConnection = 1;
+  private trustDecider: TrustDecider | null = null;
   private nextShell = 1;
   private readonly encoder = new TextEncoder();
 
@@ -189,14 +199,51 @@ export class AndroidConnectionHub {
 
   // --- ssh ------------------------------------------------------------------
 
-  async connect(target: SshHostTarget, tofuDecision: TofuDecision = 'accept-always'): Promise<ConnectResult> {
+  /**
+   * Register the shared app's host-key decider (`ssh.onTrustDecision`). One
+   * decider at a time; the returned closure unregisters it.
+   */
+  setTrustDecider(decider: TrustDecider): () => void {
+    this.trustDecider = decider;
+    return () => {
+      if (this.trustDecider === decider) this.trustDecider = null;
+    };
+  }
+
+  /**
+   * Dial `target` on a fresh controller.
+   *
+   * Host keys, in the controller's terms:
+   *  - pinned and matching: connects;
+   *  - first contact (`trust-required`): an explicit `tofuDecision` answers it;
+   *    without one the registered decider asks the user, and with no decider
+   *    the key is refused (fail closed — never a silent pin). `accept-always`
+   *    records the pin, `accept-once` trusts it for this controller only;
+   *  - CHANGED (`trust-mismatch`): refused outright with a visible message. It
+   *    never reaches the prompt and no decision can override it here.
+   */
+  async connect(
+    target: SshHostTarget,
+    tofuDecision?: TofuDecision,
+    hostLabel: string = target.hostname,
+  ): Promise<ConnectResult> {
     const controller = this.options.createController();
     let result = await controller.connect(target);
-    if (!result.ok && result.reason === 'trust-required' && tofuDecision !== 'reject') {
-      // First contact (no pin yet): the shared store dials with the desktop's
-      // trust-on-first-use decision, and the controller records the pin. A
-      // CHANGED key is never accepted here — see the mismatch branch below.
-      result = await controller.acceptPresentedHostKey();
+    if (!result.ok && result.reason === 'trust-required') {
+      const pending = controller.getSnapshot().trustDecision;
+      const decision = tofuDecision ?? (pending ? await this.askTrust(target, hostLabel, pending) : 'reject');
+      if (decision === 'reject') {
+        await controller.close().catch(() => undefined);
+        return {
+          ok: false,
+          error: `Host key for ${hostLabel} was not trusted. No connection was opened.`,
+        };
+      }
+      result = await controller.acceptPresentedHostKey({ persist: decision === 'accept-always' });
+    } else if (!result.ok && result.reason === 'trust-mismatch') {
+      const pending = controller.getSnapshot().trustDecision;
+      await controller.close().catch(() => undefined);
+      return { ok: false, error: hostKeyChangedMessage(hostLabel, pending) };
     }
     if (!result.ok) {
       await controller.close().catch(() => undefined);
@@ -467,6 +514,27 @@ export class AndroidConnectionHub {
 
   // --- internals --------------------------------------------------------------
 
+  private async askTrust(
+    target: SshHostTarget,
+    hostLabel: string,
+    pending: PendingHostKeyDecision,
+  ): Promise<HostKeyTrustChoice> {
+    const decider = this.trustDecider;
+    if (!decider) return 'reject';
+    try {
+      return await decider({
+        hostLabel,
+        hostname: target.hostname,
+        port: target.port,
+        user: target.username,
+        keyType: pending.presented.keyType,
+        fingerprintSha256: pending.presented.fingerprintSha256,
+      });
+    } catch {
+      return 'reject';
+    }
+  }
+
   private onSnapshot(record: ConnectionRecord, snapshot: ConnectionSnapshot): void {
     this.options.observe?.({
       at: Date.now(),
@@ -584,6 +652,17 @@ export class AndroidConnectionHub {
     }
     return null;
   }
+}
+
+/** The refusal a changed host key gets: what changed, and that nothing connected. */
+export function hostKeyChangedMessage(hostLabel: string, pending: PendingHostKeyDecision | null): string {
+  const presented = pending?.presented.fingerprintSha256;
+  const trusted = pending?.previouslyTrusted?.fingerprintSha256;
+  const detail = presented
+    ? ` It now presents ${presented}${trusted ? ` instead of the trusted ${trusted}` : ''}.`
+    : '';
+  return `Host key for ${hostLabel} has changed — connection refused.${detail} `
+    + 'This can mean the server was reinstalled or that someone is intercepting the connection.';
 }
 
 /** Normalize a native bridge failure into the message the shared app shows. */

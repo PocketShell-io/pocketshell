@@ -117,6 +117,9 @@ LANES = (
                 "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
                 "sharedAppReportsARealSessionEndWithoutReconnecting",
                 "sharedAppSwitchesSessionTabsKeepingEachTerminal",
+                # #2953: the shared host-key prompt, and a changed key refused.
+                "firstContactHostKeyAsksAndHonoursRejectOnceAndAlways",
+                "changedHostKeyIsRefusedWithVisibleMessage",
             }
         ),
     ),

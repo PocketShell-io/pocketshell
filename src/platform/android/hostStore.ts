@@ -169,6 +169,18 @@ export class AndroidHostStore {
     throw new Error(`No saved host for ${request.user ? `${request.user}@` : ''}${request.host}:${port}.`);
   }
 
+  /**
+   * The name the user knows a connect request's host by (the saved or
+   * imported host's name, matched like {@link resolve}), for prompts such as
+   * the host-key decision. Falls back to the hostname.
+   */
+  labelFor(request: { host: string; port?: number; hostAlias?: string }): string {
+    if (request.hostAlias) return request.hostAlias;
+    const port = request.port ?? 22;
+    const match = (host: { hostname: string; port: number }) => host.hostname === request.host && host.port === port;
+    return this.readSaved().find(match)?.name ?? this.legacy.find(match)?.name ?? request.host;
+  }
+
   private readSaved(): SavedHost[] {
     const raw = this.options.storage.getItem(ANDROID_HOSTS_STORAGE_KEY);
     if (!raw) return [];

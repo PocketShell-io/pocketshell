@@ -116,6 +116,7 @@ jobs:
           tests/scripts/js-fixture-port-lock-test.sh
           tests/scripts/js-first-rewrite-composer-gate-test.sh
           tests/scripts/js-first-rewrite-hotkeys-gate-test.sh
+          tests/scripts/shared-app-runner-cleanup-test.sh
 
       - name: Build Android debug APK
         run: pnpm build:android:debug

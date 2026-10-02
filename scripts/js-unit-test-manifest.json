@@ -326,7 +326,6 @@
     "tests/unit/androidPlatform.test.ts": {
       "suite": "Android PocketShellApi platform",
       "tests": [
-        "dials through the controller, pins a first-contact key, and never accepts a changed one",
         "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
         "never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane",
         "re-attaches and repaints the same session after its pane closed the shell",
@@ -342,7 +341,13 @@
         "reports a saved host with no key-vault handle as a dial failure",
         "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
         "mounts the legacy screens unless the launch opted into the shared app",
-        "records each boot so a load-then-reload launch is visible as two entries"
+        "records each boot so a load-then-reload launch is visible as two entries",
+        "never pins a first-contact key without a decision: no decider means refused",
+        "asks the registered decider with host, key type and fingerprint, and honours each answer",
+        "refuses a changed host key with a visible message and never asks about it",
+        "the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always",
+        "abandons a waiting host-key question when the user disconnects",
+        "ignores a caller-supplied standing accept: only the user's answer on the prompt trusts a key"
       ]
     },
     "tests/unit/androidHostKeys.test.ts": {
@@ -531,6 +536,13 @@
       "suite": "mobile control long-press hardening",
       "tests": [
         "keeps dock, launcher, dictation and Composer buttons out of text selection and the touch callout"
+      ]
+    },
+    "tests/unit/legacyHostKeyCard.test.ts": {
+      "suite": "legacy screen host-key card",
+      "tests": [
+        "asks on first contact with the three shared answers",
+        "refuses a changed key: both fingerprints, no first-contact wording, no trust action"
       ]
     }
   }

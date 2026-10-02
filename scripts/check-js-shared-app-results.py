@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require the exact packaged shared-app journeys (#2936, #2952, #2954, #2955) to execute and pass once each.
+"""Require the exact packaged shared-app journeys (#2936, #2952, #2953, #2954, #2955) to execute and pass once each.
 
 Also the host half of #2952's byte oracle: the raw-mode reader on the Docker
 fixture writes the bytes it received as hex, the runner copies that file next
@@ -28,6 +28,9 @@ REQUIRED_METHODS = frozenset(
         "sharedAppReportsARealSessionEndWithoutReconnecting",
         # #2955: the D28 multi-session switch oracle (A -> B -> A -> B tabs).
         "sharedAppSwitchesSessionTabsKeepingEachTerminal",
+        # #2953: the shared host-key prompt on first contact, and a changed key refused.
+        "firstContactHostKeyAsksAndHonoursRejectOnceAndAlways",
+        "changedHostKeyIsRefusedWithVisibleMessage",
     }
 )
 HOST_BYTES_NAME = "host-ime-bytes.hex"
