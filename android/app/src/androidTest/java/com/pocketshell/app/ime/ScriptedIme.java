@@ -46,19 +46,49 @@ public final class ScriptedIme implements AutoCloseable {
         String testPackage = InstrumentationRegistry.getInstrumentation().getContext().getPackageName();
         String id = testPackage + "/" + ScriptedTestIme.class.getName();
         String previous = shell("settings get secure default_input_method").trim();
-        String enabled = shell("ime enable " + id);
-        String set = shell("ime set " + id);
-        long deadline = SystemClock.uptimeMillis() + 10_000;
+        return select(id, previous, new SelectionEnvironment() {
+            public String shell(String command) { return ScriptedIme.shell(command); }
+            public long uptimeMillis() { return SystemClock.uptimeMillis(); }
+            public void sleep(long millis) { SystemClock.sleep(millis); }
+        });
+    }
+
+    /** Injectable system boundary for deterministic hosted-selection drift tests. */
+    interface SelectionEnvironment {
+        String shell(String command);
+        long uptimeMillis();
+        void sleep(long millis);
+    }
+
+    static ScriptedIme select(String id, String previous, SelectionEnvironment system) {
+        String enabled = system.shell("ime enable " + id);
+        String set = system.shell("ime set " + id);
+        long deadline = system.uptimeMillis() + 10_000;
         String current = "";
-        while (SystemClock.uptimeMillis() < deadline) {
-            current = shell("settings get secure default_input_method").trim();
-            if (id.equals(current) && id.equals(currentMethodId(shell("dumpsys input_method")))) {
+        String dump = "";
+        boolean rebound = false;
+        while (system.uptimeMillis() < deadline) {
+            current = system.shell("settings get secure default_input_method").trim();
+            dump = system.shell("dumpsys input_method");
+            if (id.equals(current) && id.equals(currentMethodId(dump))) {
                 return new ScriptedIme(id, previous);
             }
-            SystemClock.sleep(100);
+            // #3017: hosted Android can revert a successful enable/set to
+            // the stock keyboard before the first app editor is launched.
+            // Recover once only when both system observations agree on a
+            // different method; a partial transition is not proof of drift.
+            String method = currentMethodId(dump);
+            if (!rebound && !current.isEmpty() && !"null".equals(current)
+                    && !id.equals(current) && current.equals(method)) {
+                rebound = true;
+                enabled = system.shell("ime enable " + id);
+                set = system.shell("ime set " + id);
+            }
+            system.sleep(100);
         }
         throw new AssertionError("could not select the scripted test IME " + id + " (enable: " + enabled.trim()
-                + "; set: " + set.trim() + "; current: " + current + ")\n" + inputMethodState());
+                + "; set: " + set.trim() + "; current: " + current
+                + "; re-bind attempted: " + rebound + ")\n" + excerpt(dump));
     }
 
     /**
