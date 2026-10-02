@@ -17,6 +17,7 @@ import android.os.Build;
 import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Base64;
+import android.util.Log;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -773,6 +774,53 @@ public final class JsShellPackagedSmokeTest {
     }
 
     /**
+     * Issue #2884/#2946 regression: on a starved hosted emulator an injected
+     * ACTION_UP can reach the WebView most of a second after ACTION_DOWN. The
+     * long-press timer runs in real time, so at the stock 400 ms timeout the
+     * tap became a long press (contextmenu, no click) and selected text that
+     * Select-to-Speak then grabbed. The packaged lanes raise the system
+     * long-press timeout in their input preflight; this proves a 900 ms late
+     * ACTION_UP is still exactly one click with no long press.
+     */
+    @Test
+    public void injectedTapStaysATapWhenItsUpArrivesLate() throws Exception {
+        awaitJsTrue("document.querySelector('[data-testid=build-status]') !== null");
+        assertTrue("the lane must raise the system long-press timeout above a starved ACTION_UP delay (timeout="
+                        + android.view.ViewConfiguration.getLongPressTimeout() + " ms)",
+                android.view.ViewConfiguration.getLongPressTimeout() >= 1_500);
+        evalString("(() => {const b=document.createElement('button');b.id='ps2884-late-up-probe';b.textContent='probe';"
+                + "b.style.cssText='position:fixed;left:100px;top:300px;width:200px;height:120px;z-index:2147483647';"
+                + "window.__ps2884LateUp={click:0,contextmenu:0,pointerdown:0,pointerup:0,pointercancel:0};"
+                + "for(const type of Object.keys(window.__ps2884LateUp))b.addEventListener(type,()=>window.__ps2884LateUp[type]++);"
+                + "document.body.appendChild(b);return 'probe ready';})()");
+        AtomicReference<float[]> center = new AtomicReference<>();
+        JSONObject rect = evalJson("(() => {const r=document.getElementById('ps2884-late-up-probe').getBoundingClientRect();"
+                + "return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2,width:innerWidth});})()");
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            float scale = webView.getWidth() / (float) rect.optDouble("width");
+            center.set(new float[] {location[0] + (float) rect.optDouble("x") * scale,
+                    location[1] + (float) rect.optDouble("y") * scale});
+        });
+        float[] xy = center.get();
+        for (int attempt = 0; attempt < 3; attempt++) {
+            evalString("(() => {for(const k of Object.keys(window.__ps2884LateUp))window.__ps2884LateUp[k]=0;return 'reset';})()");
+            PhysicalTap.Result tap = PhysicalTap.tapWithDeliveryDelay(xy[0], xy[1], 900);
+            assertTrue("both late-tap events must be injected", tap.downInjected && tap.upInjected);
+            assertTrue("the ACTION_UP must really arrive late", tap.upReturnedAtUptime - tap.injectedAtUptime >= 900);
+            awaitJsTrue("window.__ps2884LateUp.pointerup + window.__ps2884LateUp.pointercancel >= 1");
+            SystemClock.sleep(300);
+            JSONObject counts = evalJson("JSON.stringify(window.__ps2884LateUp)");
+            Log.i("PS2884Tap", "late-up attempt " + attempt + " " + counts);
+            assertEquals("a late ACTION_UP must still produce exactly one click: " + counts, 1, counts.getInt("click"));
+            assertEquals("a late ACTION_UP must not become a long press: " + counts, 0, counts.getInt("contextmenu"));
+            assertEquals("a late ACTION_UP must not cancel the pointer: " + counts, 0, counts.getInt("pointercancel"));
+        }
+    }
+
+    /**
      * Regression for #3000: after an in-place page reload Capacitor 8.1.0 can
      * deliver the reply to the page's FIRST native call to the previous
      * document. Startup's first real call is DurableStorage.open(), so a lost
@@ -1041,18 +1089,7 @@ public final class JsShellPackagedSmokeTest {
 
         float[] pointOnScreen = screenPoint.get();
         assertNotNull("WebView tap position must be captured", pointOnScreen);
-        long downTime = SystemClock.uptimeMillis();
-        android.app.Instrumentation instrumentation = InstrumentationRegistry.getInstrumentation();
-        MotionEvent down = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, pointOnScreen[0], pointOnScreen[1], 0);
-        down.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        instrumentation.getUiAutomation().injectInputEvent(down, true);
-        down.recycle();
-        SystemClock.sleep(60);
-        long upTime = SystemClock.uptimeMillis();
-        MotionEvent up = MotionEvent.obtain(downTime, upTime, MotionEvent.ACTION_UP, pointOnScreen[0], pointOnScreen[1], 0);
-        up.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        instrumentation.getUiAutomation().injectInputEvent(up, true);
-        up.recycle();
+        PhysicalTap.tap(pointOnScreen[0], pointOnScreen[1]);
     }
 
     private int[] domRectOnScreen(String selector) throws Exception {

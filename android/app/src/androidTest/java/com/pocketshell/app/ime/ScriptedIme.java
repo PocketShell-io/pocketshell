@@ -52,11 +52,80 @@ public final class ScriptedIme implements AutoCloseable {
         String current = "";
         while (SystemClock.uptimeMillis() < deadline) {
             current = shell("settings get secure default_input_method").trim();
-            if (id.equals(current)) return new ScriptedIme(id, previous);
+            if (id.equals(current) && id.equals(currentMethodId(shell("dumpsys input_method")))) {
+                return new ScriptedIme(id, previous);
+            }
             SystemClock.sleep(100);
         }
         throw new AssertionError("could not select the scripted test IME " + id + " (enable: " + enabled.trim()
-                + "; set: " + set.trim() + "; current: " + current + ")");
+                + "; set: " + set.trim() + "; current: " + current + ")\n" + inputMethodState());
+    }
+
+    /**
+     * Waits until the system reports this IME as the current method with a
+     * live connection, bound to the editor of the client process {@code pid}
+     * (the app under test, whose focused WebView asked for the keyboard).
+     * Starved hosted emulators have reverted the selection to the stock
+     * keyboard after {@link #select()} returned (#2952 run 36924162427), so a
+     * drifted selection gets exactly one re-bind (enable + set); anything
+     * else fails loudly with the input-method dump instead of typing blind.
+     */
+    public void awaitBoundTo(int pid, long timeoutMillis) {
+        long deadline = SystemClock.uptimeMillis() + timeoutMillis;
+        boolean rebound = false;
+        String dump = "";
+        while (SystemClock.uptimeMillis() < deadline) {
+            dump = shell("dumpsys input_method");
+            String method = currentMethodId(dump);
+            if (imeId.equals(method) && dump.contains("mHaveConnection=true mBoundToMethod=true")
+                    && boundClientPid(dump) == pid) {
+                return;
+            }
+            if (!rebound && method != null && !imeId.equals(method)) {
+                rebound = true;
+                shell("ime enable " + imeId);
+                shell("ime set " + imeId);
+            }
+            SystemClock.sleep(150);
+        }
+        throw new AssertionError("the scripted test IME " + imeId + " was not the bound input method of pid " + pid
+                + " within " + timeoutMillis + " ms (re-bind attempted: " + rebound + ")\n" + excerpt(dump));
+    }
+
+    /** The relevant lines of {@code dumpsys input_method}, for failure messages. */
+    public static String inputMethodState() {
+        return excerpt(shell("dumpsys input_method"));
+    }
+
+    private static String excerpt(String dump) {
+        StringBuilder out = new StringBuilder("dumpsys input_method:");
+        for (String line : dump.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("mCurMethodId=") || trimmed.startsWith("mCurClient=") || trimmed.startsWith("mCurId=")
+                    || trimmed.startsWith("mCurIntent=") || trimmed.startsWith("mCurFocusedWindow")
+                    || trimmed.startsWith("mServedView=") || trimmed.startsWith("mIsInputViewShown=")) {
+                out.append("\n  ").append(trimmed);
+            }
+        }
+        return out.toString();
+    }
+
+    /** {@code mCurMethodId}, with the short {@code pkg/.Class} form expanded. */
+    static String currentMethodId(String dump) {
+        for (String line : dump.split("\n")) {
+            String trimmed = line.trim();
+            if (!trimmed.startsWith("mCurMethodId=")) continue;
+            String id = trimmed.substring("mCurMethodId=".length()).trim();
+            int slash = id.indexOf('/');
+            if (slash > 0 && id.startsWith(".", slash + 1)) id = id.substring(0, slash + 1) + id.substring(0, slash) + id.substring(slash + 1);
+            return id;
+        }
+        return null;
+    }
+
+    private static int boundClientPid(String dump) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("mCurClient=ClientState\\{[^}]*mPid=(\\d+)").matcher(dump);
+        return matcher.find() ? Integer.parseInt(matcher.group(1)) : -1;
     }
 
     public String id() {
@@ -106,7 +175,7 @@ public final class ScriptedIme implements AutoCloseable {
             if (!done.await(RUN_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
                 throw new AssertionError("the scripted IME did not report back within " + RUN_TIMEOUT_MILLIS
                         + " ms (is it bound? current IME: "
-                        + shell("settings get secure default_input_method").trim() + ")");
+                        + shell("settings get secure default_input_method").trim() + ")\n" + inputMethodState());
             }
         } finally {
             context.unregisterReceiver(receiver);

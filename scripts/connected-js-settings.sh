@@ -69,6 +69,7 @@ source "$ROOT_DIR/scripts/lib/disk-preflight.sh"
 source "$ROOT_DIR/scripts/lib/gradle-output-lock.sh"
 source "$ROOT_DIR/scripts/lib/avd-lock.sh"
 source "$ROOT_DIR/scripts/lib/js-fixture-port-lock.sh"
+source "$ROOT_DIR/scripts/lib/android-input-preflight.sh"
 
 pocketshell_disk_preflight "$ROOT_DIR/android" 'connected-js-settings.sh' || exit $?
 pocketshell_acquire_gradle_output_lock "$ROOT_DIR/android" '' "connected-js-settings.sh suffix=$SUFFIX run=$RUN_ID"
@@ -114,6 +115,9 @@ ARTIFACTS_DIR="$ROOT_DIR/android/app/build/outputs/js-settings/$RUN_ID"
 [[ ! -e "$ARTIFACTS_DIR" ]] || fail "refusing to overwrite existing run artifacts: $ARTIFACTS_DIR"
 rm -rf -- "$RESULTS_DIR"
 mkdir -p "$ARTIFACTS_DIR/instrumentation-results" "$ARTIFACTS_DIR/device-screenshots"
+# Injected taps must stay taps on a starved emulator (#2884, #2946).
+pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
+  || fail "could not apply the lane input settings on $ANDROID_SERIAL"
 
 # The connection form imports keys through the native key vault (#2926): stage
 # the fixture key outside every app package; the journey moves it into the

@@ -834,20 +834,6 @@ public final class UsagePortsDockerJourneyTest {
         return tapElementCenter(PROMPT_LAUNCHER_SELECTOR, "Prompt launcher", true);
     }
 
-    // A finger on the touchscreen, so WebView reports pointerType 'touch'.
-    private MotionEvent obtainFingerTouch(long downTime, long eventTime, int action, float[] screen) {
-        MotionEvent.PointerProperties[] properties = {new MotionEvent.PointerProperties()};
-        properties[0].id = 0;
-        properties[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
-        MotionEvent.PointerCoords[] coordinates = {new MotionEvent.PointerCoords()};
-        coordinates[0].x = screen[0];
-        coordinates[0].y = screen[1];
-        coordinates[0].pressure = 1f;
-        coordinates[0].size = 1f;
-        return MotionEvent.obtain(downTime, eventTime, action, 1, properties, coordinates, 0, 0, 1f, 1f, 0, 0,
-                InputDevice.SOURCE_TOUCHSCREEN, 0);
-    }
-
     private JSONObject tapElementCenter(String selector, String label, boolean allowDescendantHit) throws Exception {
         JSONObject point = new JSONObject(evalString("(() => {const target=document.querySelector("
                 + JSONObject.quote(selector) + ");"
@@ -911,18 +897,11 @@ public final class UsagePortsDockerJourneyTest {
 
         float[] screen = screenPoint.get();
         assertNotNull("native screen point for " + label + " was not mapped", screen);
-        long downTime = SystemClock.uptimeMillis();
-        var instrumentation = InstrumentationRegistry.getInstrumentation();
-        MotionEvent down = obtainFingerTouch(downTime, downTime, MotionEvent.ACTION_DOWN, screen);
-        boolean downInjected = instrumentation.getUiAutomation().injectInputEvent(down, true);
-        down.recycle();
-        assertTrue("Android touchscreen ACTION_DOWN for the " + label + " must be injected", downInjected);
-        SystemClock.sleep(16);
-        long upTime = SystemClock.uptimeMillis();
-        MotionEvent up = obtainFingerTouch(downTime, upTime, MotionEvent.ACTION_UP, screen);
-        boolean upInjected = instrumentation.getUiAutomation().injectInputEvent(up, true);
-        up.recycle();
-        assertTrue("Android touchscreen ACTION_UP for the " + label + " must be injected", upInjected);
+        PhysicalTap.Result tapResult = PhysicalTap.tap(screen[0], screen[1]);
+        long downTime = tapResult.downTime;
+        long upTime = tapResult.upEventTime;
+        boolean downInjected = tapResult.downInjected;
+        boolean upInjected = tapResult.upInjected;
         return new JSONObject(point.toString())
                 .put("nativeMapping", nativeMapping.get())
                 .put("screenX", screen[0])
