@@ -71,6 +71,9 @@ jobs:
           python3 scripts/check-no-dev-shims.py --self-test
           node scripts/dev-browser-smoke.mjs mock --artifacts build/dev-browser-smoke/mock
 
+      - name: Check authorized_keys install under every login shell (Docker, issue 3021)
+        run: tests/scripts/authorized-key-install-login-shells-test.sh
+
       - name: Check CI watcher required-check defaults
         run: python3 scripts/watch-ci.py --self-test
 

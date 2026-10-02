@@ -83,6 +83,20 @@ button { color: inherit; }
 .workspace-nav-button[aria-current="page"] { background: var(--state-selected); color: var(--accent); }
 .workspace-nav-button:disabled { opacity: var(--disabled-opacity); }
 .workspace-nav-button--disconnect { color: var(--error); }
+/* #3021: the key destination carries a visible word, not just a glyph. */
+.workspace-nav-button--labelled { width: auto; flex-direction: column; gap: 1px; padding: 0 6px; }
+.workspace-nav-button--labelled svg { width: 18px; height: 18px; }
+.nav-button-label { font-size: 11px; font-weight: 600; line-height: 1.1; }
+.icon-button.labelled-icon-button { width: auto; flex: 0 0 auto; gap: 4px; padding: 0 8px; color: var(--fg); white-space: nowrap; }
+.labelled-icon-button .nav-button-label { font-size: var(--fs-200); }
+.icon-button.labelled-icon-button svg, .workspace-nav-button--labelled svg { flex: 0 0 auto; width: 18px; height: 18px; min-width: 18px; }
+.host-key-cta { display: grid; gap: 12px; margin-top: 14px; border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--accent-soft); padding: 14px; }
+.host-key-cta__copy { display: flex; align-items: flex-start; gap: 10px; color: var(--accent); }
+.host-key-cta__copy svg { flex: 0 0 auto; margin-top: 1px; }
+.host-key-cta__copy > span { display: grid; gap: 3px; }
+.host-key-cta__copy strong { color: var(--fg); font-size: var(--fs-300); font-weight: 600; }
+.host-key-cta__copy small { color: var(--fg-secondary); font-size: var(--fs-200); line-height: 1.45; }
+.host-key-cta .action-button { min-height: 48px; gap: 8px; }
 
 .brand-button, .icon-button {
   display: inline-flex;

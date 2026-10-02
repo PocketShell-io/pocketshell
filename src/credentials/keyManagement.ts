@@ -2,6 +2,7 @@ import type { SshKeyHandleCredential } from '@pocketshell/core';
 import {
   listSshKeys,
   parseSshKeyMetadata,
+  parseSshPublicKeyLine,
   sshKeyVault,
   type NativeSshKeyVaultPlugin,
   type SshKeyMetadata,
@@ -51,6 +52,40 @@ export class CredentialKeyManager {
       ...(options.passphrase ? { passphrase: options.passphrase } : {}),
     }));
     return key;
+  }
+
+  /**
+   * Import pasted private-key text (#3021). The text goes straight to the
+   * native vault, which validates and seals it; only public metadata returns.
+   * The caller owns clearing its input field whatever the outcome.
+   */
+  async importText(options: { text: string; label: string; passphrase?: string }): Promise<SshKeyMetadata> {
+    if (!options.text.trim()) throw new Error('Paste a private key first.');
+    return parseSshKeyMetadata(await this.vault.importKeyText({
+      text: options.text,
+      label: options.label.trim() || 'Pasted SSH key',
+      ...(options.passphrase ? { passphrase: options.passphrase } : {}),
+    }));
+  }
+
+  /** The OpenSSH public line (`ssh-ed25519 AAAA… label`) for a stored key. */
+  async publicKey(key: Pick<SshKeyMetadata, 'handleId' | 'algorithm'>, passphrase?: string): Promise<string> {
+    return parseSshPublicKeyLine(await this.vault.publicKey({
+      handleId: key.handleId,
+      ...(passphrase ? { passphrase } : {}),
+    }), key.algorithm);
+  }
+
+  /** Copy the public line to the Android clipboard natively. */
+  async copyPublicKey(handleId: string, passphrase?: string): Promise<void> {
+    const result = await this.vault.copyPublicKey({ handleId, ...(passphrase ? { passphrase } : {}) });
+    if (result.copied !== true) throw new Error('The public key could not be copied.');
+  }
+
+  /** Open the Android share sheet with the public line. */
+  async sharePublicKey(handleId: string, passphrase?: string): Promise<void> {
+    const result = await this.vault.sharePublicKey({ handleId, ...(passphrase ? { passphrase } : {}) });
+    if (result.shared !== true) throw new Error('The public key could not be shared.');
   }
 
   async generate(options: { label: string; algorithm: 'Ed25519' | 'RSA-3072' }): Promise<SshKeyMetadata> {

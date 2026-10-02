@@ -88,6 +88,9 @@ public final class SshKeyVaultDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
         click("[data-testid=open-ssh-keys]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid=ssh-key-import-tab]')");
+        // #3021 made Paste the default way to add a key; this cycle imports a file.
+        click("[data-testid=ssh-key-import-tab]");
+        awaitJsTrue("!!document.querySelector('[data-testid=import-ssh-key]')");
         setValue("[data-testid=ssh-key-label]", "Docker fixture key");
         setValue("[data-testid=ssh-key-import-passphrase]", TEST_PASSPHRASE);
         Intents.intending(IntentMatchers.hasAction(Intent.ACTION_OPEN_DOCUMENT))
@@ -219,6 +222,11 @@ public final class SshKeyVaultDockerJourneyTest {
         click("[data-testid=ssh-key-generate-tab]");
         setValue("[data-testid=ssh-key-label]", "Generated Docker key");
         click("[data-testid=generate-ssh-key]");
+        // #3021: a generated key stays on the key screen with its public key shown.
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'"
+            + " && !!document.querySelector('[data-testid^=ssh-public-key-panel-] code[data-testid^=ssh-public-key-]')");
+        String generatedPanel = evalString("document.querySelector('[data-testid^=ssh-public-key-panel-]').dataset.testid");
+        click("[data-testid=select-ssh-key-" + generatedPanel.substring("ssh-public-key-panel-".length()) + "]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && document.querySelector('[data-testid=ssh-key-selection]')?.selectedOptions[0]?.textContent.includes('Generated Docker key')");
         String generatedKeyHandle = evalString("document.querySelector('[data-testid=ssh-key-selection]')?.value ?? ''");
         String generatedFingerprint = evalString("document.querySelector('[data-testid=selected-ssh-key-fingerprint]')?.textContent.trim() ?? ''");
@@ -254,6 +262,320 @@ public final class SshKeyVaultDockerJourneyTest {
             .toString(2));
         awaitFile(new File(screenshotDirectory, "artifacts-captured"), 30_000);
         assertNoWebViewSecrets();
+    }
+
+    /**
+     * #3021: set up a key on a phone without files. Paste the fixture key as
+     * text (a public key first, which must be refused), connect with it, then
+     * generate a key, copy and share its public line, install it on the
+     * connected fixture host from the app, and reconnect with it. The runner
+     * verifies authorized_keys gained exactly that line once and that sshd
+     * accepted both keys after this cycle started.
+     */
+    @Test public void pastesKeySharesPublicKeyAndInstallsGeneratedKeyOnHost() throws Exception {
+        Context context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        String host = requiredArgument("sshHost");
+        String port = requiredArgument("sshPort");
+        String keyFixtureName = requiredArgument("keyFixtureName");
+        String runId = requiredArgument("keyVaultRunId");
+        assertTrue("the pasted key must come from the staged app-private file", keyFixtureName.matches("key-[A-Za-z0-9_-]+\\.pem"));
+        assertTrue("run ID must be path-safe", runId.matches("[A-Za-z0-9][A-Za-z0-9_-]{2,38}"));
+        File externalFiles = context.getExternalFilesDir(null);
+        assertNotNull("target app external files directory must be available", externalFiles);
+        stagedEncryptedKey = new File(externalFiles, keyFixtureName);
+        assertTrue("the runner must stage the encrypted test key on the device", stagedEncryptedKey.isFile());
+        String pastedKey = new String(java.nio.file.Files.readAllBytes(stagedEncryptedKey.toPath()), StandardCharsets.US_ASCII);
+        String fixtureBodyLine = pastedKey.split("\n")[1].trim();
+        assertTrue("the fixture body marker must be a real base64 line", fixtureBodyLine.length() >= 40);
+        screenshotDirectory = new File(externalFiles, "pocketshell-key-vault/" + runId + "/setup");
+        assertTrue("run-scoped setup evidence directory must be new", screenshotDirectory.mkdirs());
+
+        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        // Discoverability: with no stored key the host form leads with an
+        // "Add a key" action and the top bar names the Keys destination.
+        awaitJsTrue("!!document.querySelector('[data-testid=ssh-key-cta]') && !!document.querySelector('[data-testid=add-ssh-key]')");
+        assertEquals("the top-bar key destination must carry a visible label", "Keys",
+            evalString("document.querySelector('[data-testid=open-ssh-keys] .nav-button-label')?.textContent.trim() ?? ''"));
+        assertEquals("the Add a key action must be a 48dp phone target", "true",
+            evalString("String(document.querySelector('[data-testid=add-ssh-key]').getBoundingClientRect().height >= 47.5"
+                + " && document.querySelector('[data-testid=open-ssh-keys]').getBoundingClientRect().height >= 43.5)"));
+        assertEquals("the Keys label and icon must fit inside the top-bar button", "true",
+            evalString("(() => {const button=document.querySelector('[data-testid=open-ssh-keys]').getBoundingClientRect();"
+                + "return String(Array.from(document.querySelectorAll('[data-testid=open-ssh-keys] > *')).every(child => {"
+                + "const box=child.getBoundingClientRect();return box.width>0&&box.left>=button.left-0.5&&box.right<=button.right+0.5;})"
+                + " && button.right <= innerWidth);})()"));
+        evalRaw("document.querySelector('[data-testid=ssh-key-cta]').scrollIntoView({block:'center'}); 'scrolled'");
+        captureScreenshot("host-form-add-key.png");
+
+        click("button[aria-label=\"Settings\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=settings-screen]') && !!document.querySelector('[data-testid=open-ssh-keys-settings]')");
+        evalRaw("document.querySelector('[data-testid=open-ssh-keys-settings]').scrollIntoView({block:'center'}); 'scrolled'");
+        captureScreenshot("settings-ssh-keys.png");
+        click("[data-testid=open-ssh-keys-settings]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid=ssh-key-paste-text]')");
+        click("button[aria-label=\"Back\"]");
+        awaitJsTrue("!!document.querySelector('[data-testid=settings-screen]')");
+        click("button[aria-label=\"Back\"]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && !!document.querySelector('[data-testid=add-ssh-key]')");
+
+        click("[data-testid=add-ssh-key]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'"
+            + " && document.querySelector('[data-testid=ssh-key-paste-tab]')?.getAttribute('aria-selected') === 'true'"
+            + " && !!document.querySelector('[data-testid=ssh-key-paste-text]')");
+        setValue("[data-testid=ssh-key-label]", "Pasted fixture key");
+        captureScreenshot("ssh-key-paste.png");
+
+        // IME-safe: a real tap opens the keyboard and the paste field stays
+        // visible above it (its focus handler recentres after the resize).
+        evalRaw("document.querySelector('[data-testid=ssh-key-paste-text]').scrollIntoView({block:'center'}); 'centred'");
+        waitForWebViewVisualState();
+        tapDomCenterOnScreen("[data-testid=ssh-key-paste-text]");
+        awaitImeVisible();
+        SystemClock.sleep(1_000);
+        waitForWebViewVisualState();
+        assertEquals("the tap must focus the paste field", "ssh-key-paste-text",
+            evalString("document.activeElement?.dataset?.testid ?? ''"));
+        int[] pasteField = domRectOnScreen("[data-testid=ssh-key-paste-text]");
+        int imeTop = imeTopOnScreen();
+        assertTrue("the paste field must stay above the keyboard: field=" + java.util.Arrays.toString(pasteField)
+            + " imeTop=" + imeTop, pasteField[1] >= 0 && pasteField[3] <= imeTop);
+        captureScreenshot("ssh-key-paste-ime.png");
+        evalRaw("document.activeElement?.blur(); 'blurred'");
+
+        // Invalid input: a public key is refused with a clear message and cleared.
+        setValue("[data-testid=ssh-key-paste-text]", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN7osVCLDIy5aFOk8IaZk040AFw1V+YDXgr8L+zQE/5k pocketshell-test");
+        awaitJsTrue("!document.querySelector('[data-testid=import-pasted-ssh-key]').disabled");
+        click("[data-testid=import-pasted-ssh-key]");
+        awaitJsTrue("!!document.querySelector('[data-testid=ssh-key-error]')");
+        String pasteError = evalString("document.querySelector('[data-testid=ssh-key-error]').textContent");
+        assertTrue("a pasted public key must be explained: " + pasteError, pasteError.contains("This is a public key"));
+        assertEquals("refused paste text must be cleared", "", evalString("document.querySelector('[data-testid=ssh-key-paste-text]').value"));
+        assertEquals("refused paste must not store a key", "0", evalString("document.querySelector('[data-testid=ssh-key-count]').textContent.trim()"));
+        captureScreenshot("ssh-key-paste-error.png");
+
+        setValue("[data-testid=ssh-key-label]", "Pasted fixture key");
+        setValue("[data-testid=ssh-key-import-passphrase]", TEST_PASSPHRASE);
+        setValue("[data-testid=ssh-key-paste-text]", pastedKey);
+        awaitJsTrue("!document.querySelector('[data-testid=import-pasted-ssh-key]').disabled");
+        assertEquals("the pasted private key must leave the field as Import is pressed", "",
+            evalString("(() => {document.querySelector('[data-testid=import-pasted-ssh-key]').click();"
+                + "return document.querySelector('[data-testid=ssh-key-paste-text]')?.value ?? '';})()"));
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home' && !!document.querySelector('[data-testid=ssh-key-selection]')?.value");
+        String pastedHandle = evalString("document.querySelector('[data-testid=ssh-key-selection]').value");
+        assertTrue("the pasted key is an opaque UUID handle", pastedHandle.matches("[0-9a-fA-F-]{36}"));
+        assertEquals("the pasted key must be the Docker-authorized fixture key", KEY_FINGERPRINT,
+            evalString("document.querySelector('[data-testid=selected-ssh-key-fingerprint]')?.textContent.trim() ?? ''"));
+        assertVaultCiphertextOnly(context, pastedHandle);
+        assertNoWebViewSecrets(fixtureBodyLine);
+
+        setValue("[data-testid=ssh-host]", host);
+        setValue("[data-testid=ssh-port]", port);
+        setValue("[data-testid=ssh-username]", "testuser");
+        setValue("[data-testid=legacy-key-passphrase]", TEST_PASSPHRASE);
+        awaitJsTrue("!document.querySelector('[data-testid=ssh-connect]').disabled");
+        click("[data-testid=ssh-connect]");
+        awaitConnectedTrustingHostKey();
+        assertNoWebViewSecrets(fixtureBodyLine);
+
+        // #3021 review: the host form stays editable while connected. Point it
+        // at another host; "Install on …" must still name, and write to, the
+        // live connection.
+        String liveHost = "testuser@" + host + ":" + port;
+        click("[data-testid=open-connection]");
+        awaitJsTrue("!!document.querySelector('[data-testid=ssh-host]')");
+        setValue("[data-testid=ssh-host]", "other-host.invalid");
+        setValue("[data-testid=ssh-port]", "2299");
+        setValue("[data-testid=ssh-username]", "intruder");
+
+        // Generate on the phone while connected, then hand its public half out.
+        // The label carries an apostrophe: it must reach authorized_keys as data.
+        click("[data-testid=open-ssh-keys]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'");
+        click("[data-testid=ssh-key-generate-tab]");
+        setValue("[data-testid=ssh-key-label]", "Alexey's phone key");
+        click("[data-testid=generate-ssh-key]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys'"
+            + " && !!document.querySelector('[data-testid^=ssh-public-key-panel-] code[data-testid^=ssh-public-key-]')");
+        String panel = evalString("document.querySelector('[data-testid^=ssh-public-key-panel-]').dataset.testid");
+        String generatedHandle = panel.substring("ssh-public-key-panel-".length());
+        assertTrue("the generated key is an opaque UUID handle", generatedHandle.matches("[0-9a-fA-F-]{36}"));
+        String publicLine = evalString("document.querySelector('[data-testid=ssh-public-key-" + generatedHandle + "]').textContent.trim()");
+        String generatedFingerprint = evalString("document.querySelector('[data-testid=ssh-key-" + generatedHandle + "] .key-row__copy code').textContent.trim()");
+        assertTrue("the public line must be one OpenSSH Ed25519 key: " + publicLine,
+            publicLine.matches("ssh-ed25519 AAAA[A-Za-z0-9+/]+=* Alexey's phone key"));
+        assertEquals("the shown public line must hash to the stored fingerprint", generatedFingerprint, fingerprintOf(publicLine));
+        String installLabel = evalString("document.querySelector('[data-testid=install-ssh-public-key-" + generatedHandle + "]').textContent");
+        assertTrue("the install action must name the live connection, not the edited form: " + installLabel,
+            installLabel.contains(liveHost) && !installLabel.contains("other-host") && !installLabel.contains("intruder"));
+        assertVaultCiphertextOnly(context, generatedHandle);
+        captureScreenshot("ssh-key-generated-public.png");
+
+        click("[data-testid=copy-ssh-public-key-" + generatedHandle + "]");
+        awaitJsTrue("(document.querySelector('[data-testid=ssh-public-key-message]')?.textContent ?? '').includes('copied')");
+        String clipboard = readClipboard();
+        assertEquals("Copy must put exactly the public line on the Android clipboard", publicLine, clipboard);
+
+        Intents.intending(IntentMatchers.hasAction(Intent.ACTION_CHOOSER))
+            .respondWith(new Instrumentation.ActivityResult(Activity.RESULT_OK, null));
+        click("[data-testid=share-ssh-public-key-" + generatedHandle + "]");
+        Intent shared = awaitSharedPublicKeyIntent();
+        assertEquals("the share sheet carries plain text", "text/plain", shared.getType());
+        assertEquals("the share sheet carries exactly the public line", publicLine, shared.getStringExtra(Intent.EXTRA_TEXT));
+
+        JSONArray installs = new JSONArray();
+        click("[data-testid=install-ssh-public-key-" + generatedHandle + "]");
+        awaitJsTrue("!!document.querySelector('[data-testid=ssh-key-install-confirmation]')");
+        String confirmation = evalString("document.querySelector('[data-testid=ssh-key-install-confirmation]').textContent");
+        assertTrue("the confirmation must say what changes on the host", confirmation.contains("authorized_keys"));
+        assertTrue("the confirmation must name the live connection, not the edited form: " + confirmation,
+            confirmation.contains(liveHost) && !confirmation.contains("other-host") && !confirmation.contains("intruder"));
+        // Let Android's transient "copied" clipboard overlay clear before the sign-off capture.
+        SystemClock.sleep(3_000);
+        evalRaw("document.querySelector('[data-testid=ssh-key-install-confirmation]').scrollIntoView({block:'center'}); 'centred'");
+        captureScreenshot("ssh-key-install-confirmation.png");
+        click("[data-testid=confirm-install-ssh-key]");
+        awaitJsTrue("(document.querySelector('[data-testid=ssh-public-key-message]')?.textContent ?? '').includes('Installed on')"
+            + " || !!document.querySelector('[data-testid=ssh-public-key-error]')");
+        assertEquals("install on host must succeed", "",
+            evalString("document.querySelector('[data-testid=ssh-public-key-error]')?.textContent ?? ''"));
+        installs.put(new JSONObject().put("outcome", "installed"));
+        evalRaw("document.querySelector('[data-testid=ssh-public-key-message]').scrollIntoView({block:'center'}); 'centred'");
+        captureScreenshot("ssh-key-installed.png");
+        click("[data-testid=install-ssh-public-key-" + generatedHandle + "]");
+        awaitJsTrue("!!document.querySelector('[data-testid=ssh-key-install-confirmation]')");
+        click("[data-testid=confirm-install-ssh-key]");
+        awaitJsTrue("(document.querySelector('[data-testid=ssh-public-key-message]')?.textContent ?? '').includes('already in')"
+            + " || !!document.querySelector('[data-testid=ssh-public-key-error]')");
+        assertEquals("a second install must be a no-op, not an error", "",
+            evalString("document.querySelector('[data-testid=ssh-public-key-error]')?.textContent ?? ''"));
+        installs.put(new JSONObject().put("outcome", "already-present"));
+
+        // Reconnect with the key the app just installed.
+        click("[data-testid=select-ssh-key-" + generatedHandle + "]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'");
+        click("[data-testid=ssh-disconnect]");
+        awaitJsTrue("!['connected','listing','live'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)"
+            + " && !!document.querySelector('[data-testid=ssh-connect]')");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-key-selection]')?.value === " + JSONObject.quote(generatedHandle));
+        setValue("[data-testid=ssh-host]", host);
+        setValue("[data-testid=ssh-port]", port);
+        setValue("[data-testid=ssh-username]", "testuser");
+        awaitJsTrue("document.querySelector('[data-testid=ssh-key-selection]')?.value === " + JSONObject.quote(generatedHandle));
+        click("[data-testid=ssh-connect]");
+        awaitConnectedTrustingHostKey();
+        click("[data-testid=open-sessions]");
+        String sessionName = "keysetup-" + runId;
+        setValue("[data-testid=new-session-name]", sessionName);
+        click("[data-testid=create-session]");
+        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=session-list] .session-row')).some(row => row.dataset.sessionTag === " + JSONObject.quote(sessionName) + ")");
+        click("[data-testid=session-list] .session-row[data-session-tag=\"" + sessionName + "\"]");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.homeSurface === 'live' && document.querySelector('#terminal-viewport')?.dataset.enabled === 'true'");
+        assertNoWebViewSecrets(fixtureBodyLine);
+
+        writeEvidence("generated-public-key.pub", publicLine + "\n");
+        writeEvidence("generated-key-fingerprint.txt", generatedFingerprint + "\n");
+        writeEvidence("public-key-share.json", new JSONObject()
+            .put("clipboard", clipboard)
+            .put("sharedText", shared.getStringExtra(Intent.EXTRA_TEXT))
+            .put("sharedType", shared.getType())
+            .toString(2));
+        writeEvidence("install-results.json", installs.toString(2));
+        writeEvidence("evidence-ready", "ready\n");
+        awaitFile(new File(screenshotDirectory, "artifacts-captured"), 120_000);
+    }
+
+    private void tapDomCenterOnScreen(String selector) throws Exception {
+        int[] bounds = domRectOnScreen(selector);
+        assertTrue("tap target must have on-screen bounds: " + java.util.Arrays.toString(bounds),
+            bounds[2] > bounds[0] && bounds[3] > bounds[1] && bounds[1] >= 0);
+        PhysicalTap.tap((bounds[0] + bounds[2]) / 2f, (bounds[1] + bounds[3]) / 2f);
+    }
+
+    private int[] domRectOnScreen(String selector) throws Exception {
+        JSONObject rect = new JSONObject(evalString("(() => {const box = document.querySelector(" + JSONObject.quote(selector)
+            + ").getBoundingClientRect();return JSON.stringify({left: box.left, top: box.top, right: box.right,"
+            + " bottom: box.bottom, width: innerWidth});})()"));
+        AtomicReference<int[]> bounds = new AtomicReference<>();
+        scenario.onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            float scale = webView.getWidth() / (float) rect.optDouble("width");
+            bounds.set(new int[] {
+                Math.round(location[0] + (float) rect.optDouble("left") * scale),
+                Math.round(location[1] + (float) rect.optDouble("top") * scale),
+                Math.round(location[0] + (float) rect.optDouble("right") * scale),
+                Math.round(location[1] + (float) rect.optDouble("bottom") * scale),
+            });
+        });
+        return bounds.get();
+    }
+
+    private int imeTopOnScreen() {
+        AtomicReference<Integer> top = new AtomicReference<>(0);
+        scenario.onActivity(activity -> {
+            android.view.View decor = activity.getWindow().getDecorView();
+            android.view.WindowInsets insets = decor.getRootWindowInsets();
+            int[] location = new int[2];
+            decor.getLocationOnScreen(location);
+            int imeBottom = insets == null ? 0 : insets.getInsets(android.view.WindowInsets.Type.ime()).bottom;
+            top.set(location[1] + decor.getHeight() - imeBottom);
+        });
+        return top.get();
+    }
+
+    private void awaitImeVisible() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int stable = 0;
+        while (SystemClock.uptimeMillis() < deadline) {
+            AtomicReference<Boolean> visible = new AtomicReference<>(false);
+            scenario.onActivity(activity -> {
+                android.view.WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
+                visible.set(insets != null && insets.isVisible(android.view.WindowInsets.Type.ime()));
+            });
+            stable = visible.get() ? stable + 1 : 0;
+            if (stable >= 3) return;
+            Thread.sleep(100);
+        }
+        throw new AssertionError("tapping the paste field did not open the keyboard");
+    }
+
+    private void awaitConnectedTrustingHostKey() throws Exception {
+        awaitJsTrue("!!document.querySelector('[data-testid=trust-host-key]') || ['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase) || !!document.querySelector('[data-testid=ssh-message]')");
+        if ("true".equals(evalString("String(!!document.querySelector('[data-testid=trust-host-key]'))"))) click("[data-testid=trust-host-key]");
+        awaitJsTrue("['connected','listing'].includes(document.querySelector('.app-shell')?.dataset.sshPhase)");
+    }
+
+    private static String fingerprintOf(String publicLine) throws Exception {
+        byte[] blob = java.util.Base64.getDecoder().decode(publicLine.split(" ")[1]);
+        return "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(
+            java.security.MessageDigest.getInstance("SHA-256").digest(blob));
+    }
+
+    private String readClipboard() throws Exception {
+        AtomicReference<String> value = new AtomicReference<>("");
+        scenario.onActivity(activity -> {
+            android.content.ClipboardManager clipboard = activity.getSystemService(android.content.ClipboardManager.class);
+            android.content.ClipData clip = clipboard == null ? null : clipboard.getPrimaryClip();
+            if (clip != null && clip.getItemCount() > 0 && clip.getItemAt(0).getText() != null) {
+                value.set(clip.getItemAt(0).getText().toString());
+            }
+        });
+        return value.get();
+    }
+
+    @SuppressWarnings("deprecation")
+    private static Intent awaitSharedPublicKeyIntent() throws Exception {
+        long deadline = SystemClock.elapsedRealtime() + 15_000;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            for (Intent intent : Intents.getIntents()) {
+                if (!Intent.ACTION_CHOOSER.equals(intent.getAction())) continue;
+                Intent target = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                if (target != null && Intent.ACTION_SEND.equals(target.getAction())) return target;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("Share did not open the Android share sheet");
     }
 
     private void assertLockedStoredKeyReconnectStopsAfterOneAttempt(String runId) throws Exception {
@@ -396,7 +718,7 @@ public final class SshKeyVaultDockerJourneyTest {
         throw new AssertionError("timed out waiting for the runner to authorize the generated key");
     }
 
-    private void assertNoWebViewSecrets() throws Exception {
+    private void assertNoWebViewSecrets(String... extraSecrets) throws Exception {
         evalString("window.__ps2926StorageAudit={state:'pending',content:''};"
             + "(async()=>{try{const names=await indexedDB.databases();const content=[];"
             + "for(const item of names){if(!item.name)continue;const db=await new Promise((resolve,reject)=>{"
@@ -411,6 +733,9 @@ public final class SshKeyVaultDockerJourneyTest {
             + "session:JSON.stringify(sessionStorage),indexedDb:window.__ps2926StorageAudit.content})");
         assertFalse("private key PEM must never enter WebView DOM or browser storage", evidence.contains("PRIVATE KEY"));
         assertFalse("the transient passphrase must never enter WebView DOM or browser storage", evidence.contains(TEST_PASSPHRASE));
+        for (String secret : extraSecrets) {
+            assertFalse("pasted private-key text must never remain in WebView DOM or browser storage", evidence.contains(secret));
+        }
     }
 
     private static void assertVaultCiphertextOnly(Context context, String handleId) throws Exception {

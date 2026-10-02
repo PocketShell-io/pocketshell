@@ -203,6 +203,136 @@ public final class CredentialHandleVaultTest {
         }
     }
 
+    // #3021: paste import and OpenSSH public-line derivation.
+
+    @Test public void pastedOpenSshKeyWithCollapsedBodyImportsAndDerivesItsPublicLine() throws Exception {
+        String pem = new String(resource("/docker_test_key"), StandardCharsets.UTF_8);
+        // A chat or notes app can turn the PEM body's newlines into spaces.
+        String collapsed = pem.replace("\n", " ").replace("-----END", "\r\n-----END");
+        byte[] normalized = CredentialHandleVault.normalizePastedKey("  " + collapsed + "\n\n");
+        CredentialHandleVault.KeyMetadata imported = vault.importBytes(normalized, "Pasted\nfixture key", new char[0], null, false);
+        assertEquals("SHA256:geJoGi64Up5pm2TGC6bdVNrvlIA1vuPIOtNKo2tLsuQ", imported.fingerprintSha256);
+        assertEquals("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN7osVCLDIy5aFOk8IaZk040AFw1V+YDXgr8L+zQE/5k Pasted fixture key",
+            vault.publicKeyLine(imported.handleId, new char[0]));
+    }
+
+    @Test public void pastedEncryptedOpenSshKeyNeedsPassphraseButItsPublicLineDoesNot() throws Exception {
+        String pem = new String(resource("/encrypted_ed25519"), StandardCharsets.UTF_8).replace("\n", "\r\n");
+        byte[] normalized = CredentialHandleVault.normalizePastedKey(pem);
+        try {
+            vault.importBytes(normalized, "encrypted paste", "wrong".toCharArray(), null, false);
+            fail("A wrong passphrase must reject the paste.");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().toLowerCase().contains("passphrase"));
+        }
+        try {
+            vault.importBytes(normalized, "encrypted paste", new char[0], null, false);
+            fail("A missing passphrase must reject the paste.");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().toLowerCase().contains("passphrase"));
+        }
+        assertTrue(metadata.records.isEmpty());
+        CredentialHandleVault.KeyMetadata imported = vault.importBytes(
+            normalized, "encrypted paste", "pocketshell-vault-test-passphrase".toCharArray(), null, false);
+        assertTrue(imported.passphraseRequired);
+        // Drop the cache so the record looks like one stored before #3021.
+        metadata.records.set(0, stripPublicBlob(metadata.records.get(0)));
+        assertEquals("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICOvqDO4DOoI9EDsD+upeyONJ40vO/z7oiZTFYZJU26S encrypted paste",
+            vault.publicKeyLine(imported.handleId, new char[0]));
+        assertNotNull("the derived public blob is cached for the next request", metadata.records.get(0).publicKeyBlob);
+    }
+
+    @Test public void pastedPkcs8RsaKeyImportsAndItsPublicLineMatchesTheFingerprint() throws Exception {
+        java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        java.security.KeyPair pair = generator.generateKeyPair();
+        String body = java.util.Base64.getEncoder().encodeToString(pair.getPrivate().getEncoded());
+        String pasted = "-----BEGIN PRIVATE KEY----- " + body + " -----END PRIVATE KEY-----";
+        CredentialHandleVault.KeyMetadata imported = vault.importBytes(
+            CredentialHandleVault.normalizePastedKey(pasted), "rsa paste", new char[0], null, false);
+        assertEquals("ssh-rsa", imported.algorithm);
+        assertFalse(imported.passphraseRequired);
+        metadata.records.set(0, stripPublicBlob(metadata.records.get(0)));
+        String line = vault.publicKeyLine(imported.handleId, new char[0]);
+        String[] fields = line.split(" ", 3);
+        assertEquals("ssh-rsa", fields[0]);
+        assertEquals("rsa paste", fields[2]);
+        String fingerprint = "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(
+            java.security.MessageDigest.getInstance("SHA-256").digest(java.util.Base64.getDecoder().decode(fields[1])));
+        assertEquals(imported.fingerprintSha256, fingerprint);
+    }
+
+    @Test public void encryptedLegacyPemKeyAsksForItsPassphraseBeforeShowingThePublicLine() throws Exception {
+        java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        java.security.KeyPair pair = generator.generateKeyPair();
+        java.io.StringWriter writer = new java.io.StringWriter();
+        try (org.bouncycastle.openssl.jcajce.JcaPEMWriter pemWriter = new org.bouncycastle.openssl.jcajce.JcaPEMWriter(writer)) {
+            pemWriter.writeObject(pair.getPrivate(), new org.bouncycastle.openssl.jcajce.JcePEMEncryptorBuilder("AES-128-CBC")
+                .setProvider(new org.bouncycastle.jce.provider.BouncyCastleProvider())
+                .build("legacy-pem-pass".toCharArray()));
+        }
+        CredentialHandleVault.KeyMetadata imported = vault.importBytes(
+            CredentialHandleVault.normalizePastedKey(writer.toString()), "legacy pem", "legacy-pem-pass".toCharArray(), null, false);
+        assertTrue(imported.passphraseRequired);
+        metadata.records.set(0, stripPublicBlob(metadata.records.get(0)));
+        try {
+            vault.publicKeyLine(imported.handleId, new char[0]);
+            fail("An encrypted non-OpenSSH key must ask for its passphrase.");
+        } catch (CredentialHandleVault.PassphraseRequiredException expected) {
+            assertTrue(expected.getMessage().toLowerCase().contains("passphrase"));
+        }
+        assertTrue(vault.publicKeyLine(imported.handleId, "legacy-pem-pass".toCharArray()).startsWith("ssh-rsa AAAA"));
+    }
+
+    @Test public void rejectsPublicKeyEmptyAndTruncatedPastesWithClearMessages() throws Exception {
+        assertPasteRejected("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIN7osVCLDIy5aFOk8IaZk040AFw1V+YDXgr8L+zQE/5k me", "public key");
+        assertPasteRejected("   \n", "paste a private key");
+        assertPasteRejected("b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ", "begin and end");
+        assertPasteRejected("-----BEGIN OPENSSH PRIVATE KEY-----\nnot*base64!\n-----END OPENSSH PRIVATE KEY-----", "damaged");
+        byte[] truncated = CredentialHandleVault.normalizePastedKey(
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQ==\n-----END OPENSSH PRIVATE KEY-----");
+        try {
+            vault.importBytes(truncated, "truncated", new char[0], null, false);
+            fail("A truncated key must not import.");
+        } catch (IOException expected) {
+            assertFalse(expected.getMessage().contains("b3BlbnNzaC1"));
+        }
+        assertTrue(metadata.records.isEmpty());
+        assertEquals("one line label", CredentialHandleVault.publicKeyComment("one\r\nline\u0000 label"));
+        assertEquals("pocketshell", CredentialHandleVault.publicKeyComment("\n"));
+    }
+
+    @Test public void aCachedPublicBlobThatDisagreesWithTheFingerprintIsRefused() throws Exception {
+        CredentialHandleVault.KeyMetadata imported = vault.importBytes(resource("/docker_test_key"), "fixture", new char[0], null, false);
+        CredentialHandleVault.StoredKey stored = metadata.records.get(0);
+        // (org.json is an unmocked Android stub on the JVM, so serialisation of
+        // the cache is covered by the packaged journey's reload instead.)
+        // A cached blob that disagrees with the fingerprint is refused, not shown.
+        String otherBlob = "AAAAC3NzaC1lZDI1NTE5AAAAICOvqDO4DOoI9EDsD+upeyONJ40vO/z7oiZTFYZJU26S";
+        metadata.records.set(0, stored.withPublicKeyBlob(otherBlob));
+        try {
+            vault.publicKeyLine(imported.handleId, new char[0]);
+            fail("A mismatched public blob must not be returned.");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("fingerprint"));
+        }
+    }
+
+    private static void assertPasteRejected(String text, String expectedMessage) {
+        try {
+            CredentialHandleVault.normalizePastedKey(text);
+            fail("Paste must be rejected: " + expectedMessage);
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().toLowerCase().contains(expectedMessage));
+        }
+    }
+
+    private static CredentialHandleVault.StoredKey stripPublicBlob(CredentialHandleVault.StoredKey record) {
+        assertNotNull("new imports cache their public blob", record.publicKeyBlob);
+        return record.withPublicKeyBlob(null);
+    }
+
     private File[] visibleVaultFiles() {
         File[] files = directory.listFiles((dir, name) -> name.endsWith(".vault") || name.endsWith(".pending"));
         return files == null ? new File[0] : files;
