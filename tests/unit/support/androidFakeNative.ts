@@ -58,6 +58,11 @@ export class FakeNative {
   sessions = [sessionJson('main', '/home/u/git/demo'), sessionJson('tests', '/home/u/git/demo')];
   /** While true every dial fails the way an unreachable host does (retryable). */
   refuseDials = false;
+  /**
+   * One-shot failures for the next `sessions list` execs, oldest first: the
+   * transport already dead under a listing before its native `lost` lands.
+   */
+  readonly sessionListFailures: unknown[] = [];
   /** aplexer's attach snapshot: the first read of a new channel answers at once with it. */
   attachSnapshot: string | null = null;
   private snapshotServed = new Set<string>();
@@ -98,6 +103,7 @@ export class FakeNative {
         this.execs.push(options.command);
         const base = { requestId: options.requestId, connectionId: options.connectionId, generationId: options.generationId, stderr: '', timedOut: false };
         if (options.command.includes('sessions list')) {
+          if (this.sessionListFailures.length > 0) throw this.sessionListFailures.shift();
           return { ...base, exitCode: 0, stdout: JSON.stringify({ schema: 3, sessions: this.sessions }) };
         }
         if (options.command === 'printf %s "$HOME"') return { ...base, exitCode: 0, stdout: '/home/u' };

@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Require the exact packaged shared-app journeys (#2936, #2952, #2953, #2954, #2955) to execute and pass once each.
+"""Require the exact packaged shared-app journeys (#2936, #2952, #2953, #2954, #2955, #3039) to execute and pass once each.
 
 Also the host half of #2952's byte oracle: the raw-mode reader on the Docker
 fixture writes the bytes it received as hex, the runner copies that file next
 to the results (HOST_BYTES_NAME), and it must equal EXPECTED_IME_BYTES_HEX —
 independently of what the journey read back from the terminal.
+
+#3039: the session-end and client-drop journeys' phase traces (the Android
+connection journal after the event) are kept for passing runs too, so a red
+run always has a green one to compare against. Each must be present, a
+non-empty JSON array on one logical connection, and free of `reconnecting` and
+`lost` — the same verdict the journeys assert, re-read from the kept file.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import sys
 import tempfile
@@ -26,6 +33,8 @@ REQUIRED_METHODS = frozenset(
         # #2954: the D28 reconnect/EOF oracle on the shared shell.
         "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
         "sharedAppReportsARealSessionEndWithoutReconnecting",
+        # #3039: only the attach client dies; the pane silently re-joins.
+        "sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies",
         # #2955: the D28 multi-session switch oracle (A -> B -> A -> B tabs).
         "sharedAppSwitchesSessionTabsKeepingEachTerminal",
         # #2953: the shared host-key prompt on first contact, and a changed key refused.
@@ -45,6 +54,9 @@ REGRESSION_METHODS = frozenset({
     "slowRebindCommandsCannotCreateANewDeadline",
 })
 HOST_BYTES_NAME = "host-ime-bytes.hex"
+# #3039: kept by the journeys, pulled by scripts/connected-js-shared-app.sh.
+PHASE_TRACE_NAMES = ("ps3039-journal-session-end.json", "ps3039-journal-client-drop.json")
+FORBIDDEN_PHASES = frozenset({"reconnecting", "lost"})
 # SharedAppDockerJourneyTest.EXPECTED_IME_BYTES, as the host must have received it.
 EXPECTED_IME_BYTES = (
     "echo "
@@ -151,6 +163,28 @@ def validate_host_bytes(path: Path) -> None:
         )
 
 
+def validate_phase_traces(results: Path) -> list[Path]:
+    traces = []
+    for name in PHASE_TRACE_NAMES:
+        path = results / name
+        if not path.is_file():
+            raise GateFailure(f"the #3039 phase trace is missing: {path}")
+        try:
+            entries = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise GateFailure(f"{path}: not readable JSON: {error}") from error
+        if not isinstance(entries, list) or not entries or not all(isinstance(e, dict) for e in entries):
+            raise GateFailure(f"{path}: expected a non-empty JSON array of journal entries")
+        connections = {entry.get("connectionId") for entry in entries}
+        if len(connections) != 1 or None in connections:
+            raise GateFailure(f"{path}: expected one logical connection, found {sorted(map(str, connections))}")
+        bad = [entry for entry in entries if entry.get("phase") in FORBIDDEN_PHASES]
+        if bad:
+            raise GateFailure(f"{path}: the trace reconnects: {bad[0]}")
+        traces.append(path)
+    return traces
+
+
 def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
     failures = sum(status == "failed" for _class_name, _method, status in identities)
     skipped = sum(status == "skipped" for _class_name, _method, status in identities)
@@ -177,6 +211,23 @@ def self_test() -> int:
     every += regressions
     good_bytes = EXPECTED_IME_BYTES_HEX
     duplicated = ("echo PS2 PS936".encode() + EXPECTED_IME_BYTES.encode()).hex()
+    good_trace = [{"connectionId": "android-1", "phase": "connected", "transportId": "t-1"}]
+    reconnecting_trace = good_trace + [{"connectionId": "android-1", "phase": "reconnecting", "transportId": None}]
+    two_connections = good_trace + [{"connectionId": "android-2", "phase": "connected", "transportId": "t-2"}]
+    trace_cases = [
+        ("every phase trace present and clean passes", {}, True),
+        *(
+            (f"a missing {name} blocks", {name: None}, False)
+            for name in PHASE_TRACE_NAMES
+        ),
+        *(
+            (f"a reconnecting {name} blocks", {name: reconnecting_trace}, False)
+            for name in PHASE_TRACE_NAMES
+        ),
+        ("an empty phase trace blocks", {PHASE_TRACE_NAMES[0]: []}, False),
+        ("a trace across two logical connections blocks", {PHASE_TRACE_NAMES[1]: two_connections}, False),
+        ("an unreadable phase trace blocks", {PHASE_TRACE_NAMES[0]: "{not json"}, False),
+    ]
     cases = [
         ("every exact passing shared-app journey passes", every, good_bytes, True),
         ("zero tests block", [], good_bytes, False),
@@ -232,7 +283,27 @@ def self_test() -> int:
                 print(f"FAIL: {label}", file=sys.stderr)
             else:
                 print(f"ok: {label}")
-    print(f"Shared-app result guard self-test: {len(cases) - failures}/{len(cases)} checks passed")
+        for index, (label, overrides, expected_pass) in enumerate(trace_cases):
+            results = root / f"trace-{index}"
+            results.mkdir(parents=True)
+            for name in PHASE_TRACE_NAMES:
+                content = overrides.get(name, good_trace)
+                if content is None:
+                    continue
+                text = content if isinstance(content, str) else json.dumps(content)
+                (results / name).write_text(text, encoding="utf-8")
+            try:
+                validate_phase_traces(results)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected_pass:
+                failures += 1
+                print(f"FAIL: {label}", file=sys.stderr)
+            else:
+                print(f"ok: {label}")
+    total = len(cases) + len(trace_cases)
+    print(f"Shared-app result guard self-test: {total - failures}/{total} checks passed")
     return 1 if failures else 0
 
 
@@ -253,10 +324,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reports = validate_results(args.results_dir)
         validate_host_bytes(host_bytes)
+        traces = validate_phase_traces(args.results_dir)
         if args.evidence_dir:
             args.evidence_dir.mkdir(parents=True, exist_ok=True)
             for report in reports:
                 shutil.copy2(report, args.evidence_dir / report.name)
+            for trace in traces:
+                if trace.resolve() != (args.evidence_dir / trace.name).resolve():
+                    shutil.copy2(trace, args.evidence_dir / trace.name)
             if host_bytes.resolve() != (args.evidence_dir / HOST_BYTES_NAME).resolve():
                 shutil.copy2(host_bytes, args.evidence_dir / HOST_BYTES_NAME)
     except GateFailure as error:
@@ -265,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"PASS: {REQUIRED_CLASS}#{{{', '.join(sorted(REQUIRED_METHODS))}}} each executed exactly once")
     print(f"PASS: {REGRESSION_CLASS}#{{{', '.join(sorted(REGRESSION_METHODS))}}} each executed exactly once")
     print(f"PASS: the host received exactly the scripted IME bytes ({EXPECTED_IME_BYTES_HEX})")
+    print(f"PASS: #3039 phase traces kept and free of reconnects: {', '.join(PHASE_TRACE_NAMES)}")
     return 0
 
 

@@ -140,6 +140,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     helper: {
       bootstrap: (connectionId) => runHostBootstrap((command) => exec(connectionId, command)),
       sessionsList: (connectionId) => hub.sessionsList(connectionId),
+      sessionsProbe: (connectionId) => hub.sessionsProbe(connectionId),
       sessionsCreate: unsupported('helper.sessionsCreate'),
       // Core's usage source (#2937). Its exec goes through the controller,
       // which owns the transport generation; the controller has already

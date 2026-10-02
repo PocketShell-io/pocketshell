@@ -75,7 +75,11 @@ import org.junit.runner.RunWith;
  *    aplexer session under the same logical id; then a refused-login give-up
  *    where nothing re-dials until the banner's Reconnect;
  *  - a real session end on a healthy transport reads as ended, with no
- *    reconnect, no new connection and no new dial.
+ *    reconnect, no new connection, no new dial — and (#3039) no attach at all:
+ *    the dead session is never "silently re-joined";
+ *  - (#3039) when only the attach CLIENT dies under a running session, the
+ *    pane re-joins it silently on the same transport. Both journeys keep
+ *    their phase trace for the runner, passing or failing.
  * Native dials are counted at the Capacitor bridge, so a failed dial counts.
  *
  * #2955 (U2) adds the D28 multi-session switch oracle: two sessions in ONE
@@ -127,6 +131,10 @@ public class SharedAppDockerJourneyTest {
             + "ok"                     // composition finished without a commit
             + "\t\r"                   // hardware Tab and Enter
             + "PASTE1";                // a real clipboard paste on the textarea
+
+    /** #3039 phase traces the runner keeps for passing runs too (see keepForRunner). */
+    static final String SESSION_END_JOURNAL = "ps3039-journal-session-end.json";
+    static final String CLIENT_DROP_JOURNAL = "ps3039-journal-client-drop.json";
 
     /** Both tests run in one instrumentation process; the first adds the run's host. */
     private static boolean fixtureHostAdded;
@@ -432,6 +440,7 @@ public class SharedAppDockerJourneyTest {
         int journalAtEnd = journalLength();
         int transportsBefore = nativeConnectionCount();
         int dialsBefore = nativeDialCount();
+        int opensBefore = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
 
         // End the session on the host; our SSH connection stays up.
         JSONObject killed = awaitNativeExec("u1-end-" + run, transport, generation,
@@ -459,7 +468,16 @@ public class SharedAppDockerJourneyTest {
         JSONArray after = new JSONArray(evalString("JSON.stringify((window.__pocketshellConnectionJournal ?? [])"
                 + ".slice(" + journalAtEnd + "))"));
         writeText(new File(artifacts, "journal-session-end.json"), after.toString(2));
+        keepForRunner(new File(artifacts, "journal-session-end.json"), SESSION_END_JOURNAL);
         Log.i(TAG, "RUN " + run + " JOURNAL_SESSION_END " + after);
+        // #3039: the ended session is never re-attached. 781c52d's silent
+        // re-join took this exit for a dropped client and opened an attach
+        // against the dead session — whose racing resize then dropped the
+        // whole connection about half the time.
+        assertEquals("nothing may attach to a session that ended: " + evalString("JSON.stringify(window.__ps2954.opens)"),
+                opensBefore, Integer.parseInt(evalString("String(window.__ps2954.opens.length)")));
+        assertFalse("a real session end must not read as a dropped client",
+                "true".equals(evalRaw("window.__ps2954.sawReattached")));
         for (int i = 0; i < after.length(); i += 1) {
             JSONObject entry = after.getJSONObject(i);
             assertEquals("one logical connection: " + after, logicalId, entry.getString("connectionId"));
@@ -487,6 +505,90 @@ public class SharedAppDockerJourneyTest {
                 .put("entriesAfterEnd", after.length())
                 .put("nativeDials", 0)
                 .put("nativeConnections", transportsBefore));
+    }
+
+    /**
+     * #3039: the other half of the client-exit verdict. An aplexer pane's PTY
+     * runs an attach CLIENT; when only that client dies (the session's
+     * workload carries on), the pane re-joins silently (781c52d) — on the same
+     * transport, with no reconnect, no dial and no "[process exited]" — and the
+     * same host session keeps answering. Paired with
+     * {@link #sharedAppReportsARealSessionEndWithoutReconnecting}, where the
+     * session itself ends and NOTHING may re-attach: the two exits look the
+     * same on the transport, and only the host's fresh listing tells them apart.
+     */
+    @Test
+    public void sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies() throws Exception {
+        String run = Long.toString(System.currentTimeMillis(), 36);
+        File artifacts = artifactDirectory(run);
+        awaitJsTrue("!!document.querySelector('.host-list, .empty')");
+        installRecoveryRecorder();
+        connectFixtureAndAttach(run);
+        typeLine("echo PS3039_BEFORE_$((6*7))_" + run);
+        awaitTerminalLine("PS3039_BEFORE_42_" + run);
+
+        JSONObject before = latestLiveJournalEntry();
+        String logicalId = before.getString("connectionId");
+        String transport = before.getString("transportId");
+        String generation = before.getString("generationId");
+        String sessionId = before.getString("selectedId");
+        int journalAtDrop = journalLength();
+        int transportsBefore = nativeConnectionCount();
+        int dialsBefore = nativeDialCount();
+        int opensBefore = Integer.parseInt(evalString("String(window.__ps2954.opens.length)"));
+
+        // Kill ONLY the viewer: the `a attach` relay this pane's PTY runs
+        // (the CLI exec'd into it). The bracket keeps pkill off its own shell.
+        JSONObject dropped = awaitNativeExec("u1-drop-" + run, transport, generation,
+                "pkill -KILL -f -- " + shellQuote("[a]ttach --no-status " + sessionId));
+        Log.i(TAG, "RUN " + run + " CLIENT_KILL " + dropped);
+        assertEquals("the host must kill the session's attach client: " + dropped, 0, dropped.getInt("exitCode"));
+
+        awaitJsTrue("window.__ps2954.sawReattached === true", WAIT_TIMEOUT_MILLIS);
+        // The same workload answers through the re-joined pane.
+        typeLine("echo PS3039_AFTER_$((6*7))_" + run);
+        awaitTerminalLine("PS3039_AFTER_42_" + run);
+        // Long enough for any late reconnect to show.
+        Thread.sleep(5_000);
+
+        JSONArray after = new JSONArray(evalString("JSON.stringify((window.__pocketshellConnectionJournal ?? [])"
+                + ".slice(" + journalAtDrop + "))"));
+        writeText(new File(artifacts, "journal-client-drop.json"), after.toString(2));
+        keepForRunner(new File(artifacts, "journal-client-drop.json"), CLIENT_DROP_JOURNAL);
+        Log.i(TAG, "RUN " + run + " JOURNAL_CLIENT_DROP " + after);
+        for (int i = 0; i < after.length(); i += 1) {
+            JSONObject entry = after.getJSONObject(i);
+            assertEquals("one logical connection: " + after, logicalId, entry.getString("connectionId"));
+            assertFalse("a dropped client must not reconnect: " + after,
+                    "reconnecting".equals(entry.getString("phase")) || "lost".equals(entry.getString("phase")));
+            String entryTransport = entry.optString("transportId", "");
+            assertTrue("a dropped client must not open a new connection: " + after,
+                    entryTransport.isEmpty() || "null".equals(entryTransport) || entryTransport.equals(transport));
+        }
+        assertEquals("no native dial after a dropped client", 0, nativeDialCount() - dialsBefore);
+        assertEquals("the native connection count is unchanged", transportsBefore, nativeConnectionCount());
+        assertEquals("no native lost event", 0, Integer.parseInt(evalString("String(window.__ps2954.lost.length)")));
+        assertEquals("exactly one fresh attach re-joined the session", opensBefore + 1,
+                Integer.parseInt(evalString("String(window.__ps2954.opens.length)")));
+        assertFalse("a dropped client is not a session end", "true".equals(evalRaw("window.__ps2954.sawExited")));
+        assertFalse("no lost-link banner for a dropped client",
+                "true".equals(evalRaw("!!document.querySelector('.link-lost')")));
+        captureScreen(new File(artifacts, "client-dropped-rejoined.png"));
+
+        // The host's own view: the very same session is still running.
+        JSONObject listed = awaitNativeExec("u1-drop-list-" + run, transport, generation,
+                "PATH=\"$HOME/.local/bin:$PATH\" pocketshell sessions list --json");
+        JSONArray rows = new JSONObject(listed.getString("stdout")).getJSONArray("sessions");
+        String phase = null;
+        for (int i = 0; i < rows.length(); i += 1) {
+            if (sessionId.equals(rows.getJSONObject(i).optString("id"))) phase = rows.getJSONObject(i).optString("phase");
+        }
+        assertEquals("the host still runs the session whose client died: " + rows, "running", phase);
+        Log.i(TAG, "RUN " + run + " CLIENT_DROP_OK " + new JSONObject()
+                .put("logicalConnectionId", logicalId)
+                .put("transportId", transport)
+                .put("sessionId", sessionId)
+                .put("entriesAfterDrop", after.length()));
     }
 
     @Test
@@ -1111,7 +1213,7 @@ public class SharedAppDockerJourneyTest {
      */
     private void installRecoveryRecorder() throws Exception {
         String script = "(() => {window.__ps2954={lost:[],events:[],banners:[],dials:[],opens:[],closes:[],"
-                + "sawExited:false,execs:{},ready:false};"
+                + "sawExited:false,sawReattached:false,execs:{},ready:false};"
                 + "const plugin=window.Capacitor?.Plugins?.SshCapability;"
                 // Every native dial, failed ones included: the plugin proxy
                 // resolves Capacitor.nativePromise on each call.
@@ -1127,7 +1229,11 @@ public class SharedAppDockerJourneyTest {
                 + "const sample=()=>{const t=document.querySelector('.link-lost-text')?.textContent?.trim();"
                 + "if(t && window.__ps2954.banners.at(-1)!==t) window.__ps2954.banners.push(t);"
                 + "if([...document.querySelectorAll('.xterm-rows')].some((n)=>n.textContent.includes('[process exited]')))"
-                + " window.__ps2954.sawExited=true;};"
+                + " window.__ps2954.sawExited=true;"
+                // #3039: the pane's own word for a silent re-join, latched
+                // because the attach repaint may draw over it.
+                + "if([...document.querySelectorAll('.xterm-rows')].some((n)=>n.textContent.includes('client dropped')))"
+                + " window.__ps2954.sawReattached=true;};"
                 + "new MutationObserver(sample).observe(document.body,{subtree:true,childList:true,characterData:true});"
                 + "plugin.addListener('connectionState',(e)=>{window.__ps2954.events.push({...e,at:Date.now()});"
                 + "if(e.state==='lost') window.__ps2954.lost.push({...e,at:Date.now()});})"
@@ -1222,6 +1328,15 @@ public class SharedAppDockerJourneyTest {
         assertTrue("run artifact directory must be new", directory.mkdirs());
         Log.i(TAG, "ARTIFACTS " + directory.getAbsolutePath());
         return directory;
+    }
+
+    /**
+     * #3039: the app's external files go with the app when Gradle uninstalls it
+     * after the run, so a passing run used to leave no phase trace to compare
+     * a red one against. Copy it where the runner pulls evidence from.
+     */
+    private static void keepForRunner(File file, String name) {
+        ScriptedIme.shell("cp " + file.getAbsolutePath() + " /data/local/tmp/" + name);
     }
 
     private static void writeText(File file, String text) throws Exception {
