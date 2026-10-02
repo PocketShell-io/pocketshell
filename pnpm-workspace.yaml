@@ -1,3 +1,9 @@
 allowBuilds:
+  cpu-features: false
   esbuild: true
+  ssh2: false
   vue-demi: true
+overrides:
+  # @types/ssh2 (browser dev mode, #3022) asks for @types/node 18; a second
+  # @types/node beside the toolchain's breaks Node typings in tests.
+  '@types/ssh2>@types/node': 26.6.2

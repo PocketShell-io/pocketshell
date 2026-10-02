@@ -3,8 +3,11 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vue from '@vitejs/plugin-vue';
-import { defineConfig, type Plugin } from 'vite';
+import type { IncomingMessage, Server as HttpServer } from 'node:http';
+import type { Duplex } from 'node:stream';
+import { defineConfig, type Connect, type Plugin } from 'vite';
 import { readPinnedCore } from './scripts/js-source-integrity.mjs';
+import { isLoopbackHost, refusal } from './scripts/dev-ssh-bridge/loopback.mjs';
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 
@@ -76,12 +79,119 @@ export const SHARED_APP_DEDUPE = [
   '@lezer/highlight', '@lezer/common', '@lezer/lr', 'marked',
 ];
 
-export default defineConfig(() => {
+/** Vite modes that run the Android app in a plain browser (#3022). Dev server only. */
+export const DEV_BROWSER_MODES = ['mock', 'live'] as const;
+export type DevBrowserMode = (typeof DEV_BROWSER_MODES)[number];
+
+export function isDevBrowserMode(mode: string): mode is DevBrowserMode {
+  return (DEV_BROWSER_MODES as readonly string[]).includes(mode);
+}
+
+/** Same-origin path the dev server proxies to the live SSH bridge. */
+export const DEV_BRIDGE_PATH = '/__pocketshell-dev-bridge';
+
+/**
+ * Live mode's loopback gate (#3022): the page and every WebSocket upgrade
+ * (the bridge proxy and HMR) answer only `127.0.0.1:<port>`/`localhost:<port>`
+ * Host headers, so a DNS-rebinding page cannot read the dev server or open
+ * its bridge proxy. Explicit on purpose, independent of Vite's allowedHosts.
+ */
+export function guardLoopbackHost(httpServer: HttpServer, middlewares: { use(fn: Connect.NextHandleFunction): unknown }): void {
+  const listeningPort = () => {
+    const address = httpServer.address();
+    return typeof address === 'object' && address ? address.port : 0;
+  };
+  middlewares.use((request, response, next) => {
+    if (isLoopbackHost(request.headers.host, listeningPort())) return next();
+    response.statusCode = 403;
+    response.setHeader('Content-Type', 'text/plain');
+    response.end('Browser dev mode (live) answers loopback Host headers only.\n');
+  });
+  // Vite's HMR socket and its bridge proxy each listen for `upgrade`; gate the
+  // event itself so no listener, whenever it was added, sees a foreign Host.
+  const emit = httpServer.emit;
+  httpServer.emit = function gatedEmit(this: HttpServer, event: string | symbol, ...args: unknown[]): boolean {
+    if (event === 'upgrade') {
+      const [request, socket] = args as [IncomingMessage, Duplex];
+      if (!isLoopbackHost(request.headers.host, listeningPort())) {
+        socket.end(refusal(403, 'Forbidden'));
+        return true;
+      }
+    }
+    return emit.call(this, event, ...args);
+  } as HttpServer['emit'];
+}
+
+/**
+ * Browser dev mode (#3022): in the `mock`/`live` dev-server modes, inject
+ * the fake Android bridge (src/dev/browser/install.ts) ahead of src/main.ts.
+ * `apply: 'serve'` keeps it out of every build; the config below also refuses
+ * to build in these modes, and scripts/check-no-dev-shims.py checks the APK.
+ * The live bridge token is never served: the launcher prints it in the page
+ * URL's fragment, which the browser never sends.
+ */
+export function devBrowserShell(mode: DevBrowserMode, env: NodeJS.ProcessEnv): Plugin {
+  const config = {
+    mode,
+    ...(mode === 'live'
+      ? {
+          bridgePath: DEV_BRIDGE_PATH,
+          seedHosts: JSON.parse(env.POCKETSHELL_DEV_SEED_HOSTS ?? '[]') as unknown[],
+        }
+      : {}),
+  };
+  return {
+    name: 'pocketshell-dev-browser-shell',
+    apply: 'serve',
+    configureServer(server) {
+      if (mode === 'live' && server.httpServer) guardLoopbackHost(server.httpServer as HttpServer, server.middlewares);
+    },
+    transformIndexHtml: {
+      order: 'pre',
+      handler: () => [
+        {
+          tag: 'script',
+          attrs: { type: 'application/json', id: 'pocketshell-dev-config' },
+          children: JSON.stringify(config).replace(/</gu, '\\u003c'),
+          injectTo: 'head',
+        },
+        { tag: 'script', attrs: { type: 'module', src: '/src/dev/browser/install.ts' }, injectTo: 'head' },
+      ],
+    },
+  };
+}
+
+export default defineConfig(({ command, mode }) => {
   const core = readPinnedCore(repoRoot);
+  const devBrowser = isDevBrowserMode(mode) ? mode : null;
+  if (devBrowser && command === 'build') {
+    throw new Error(`Vite mode "${mode}" is the browser dev server only (#3022); it must never produce a build.`);
+  }
+  const bridgePort = process.env.POCKETSHELL_DEV_BRIDGE_PORT;
+  if (devBrowser === 'live' && !bridgePort) {
+    throw new Error('Vite mode "live" needs the dev SSH bridge; start it with `pnpm dev:live`.');
+  }
 
   return {
     base: './',
-    plugins: [vue(), bundledAssetManifest(core.revision)],
+    plugins: [
+      vue(),
+      bundledAssetManifest(core.revision),
+      ...(devBrowser ? [devBrowserShell(devBrowser, process.env)] : []),
+    ],
+    ...(devBrowser === 'live'
+      ? {
+          server: {
+            // The bridge carries live SSH sessions: keep the page and its
+            // proxy on loopback too (use an SSH tunnel to reach it remotely).
+            host: '127.0.0.1',
+            strictPort: true,
+            proxy: {
+              [DEV_BRIDGE_PATH]: { target: `ws://127.0.0.1:${bridgePort}`, ws: true, changeOrigin: true },
+            },
+          },
+        }
+      : {}),
     esbuild: {
       // Do not inherit the shared UI package's authoring tsconfig, which extends
       // @vue/tsconfig for its own workspace. This shell supplies its own
