@@ -112,7 +112,7 @@ public final class JsShellPackagedSmokeTest {
 
         assertTrue("manifest core revision must be a full git revision", expectedCoreRevision.matches("[a-f0-9]{40}"));
         assertTrue("manifest aggregate asset hash must be SHA-256", expectedAssetHash.matches("[a-f0-9]{64}"));
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         // The default launch boots the legacy shell exactly once: no other
         // shell first, no reload after (#2936 shell selection before load).
         assertEquals("[\"legacy\"]", evalString("sessionStorage.getItem('pocketshell.shell-boot-log')"));
@@ -120,18 +120,22 @@ public final class JsShellPackagedSmokeTest {
         scenario.onActivity(activity -> pageStarts.set(activity.pageStartCount()));
         assertEquals("the default launch must load exactly one page (no reload)", Integer.valueOf(1), pageStarts.get());
 
-        String visibleIdentity = evalString("document.querySelector('.build-strip__detail')?.textContent.trim()");
-        assertTrue("the visible build strip must identify the pinned core", visibleIdentity.contains(expectedCoreRevision.substring(0, 12)));
-        assertFalse("the visible build strip must not name a separate UI source", visibleIdentity.contains(" ui "));
-        assertTrue("the visible build strip must identify the packaged assets", visibleIdentity.contains(expectedAssetHash.substring(0, 12)));
-        assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=core-revision]')?.textContent.trim()"));
+        // #3023: the build identity is a hidden hook on home (and read in plain
+        // language in Settings -> About), never visible debug chrome.
+        assertEquals(expectedCoreRevision, evalString("document.querySelector('[data-testid=build-status]')?.dataset.coreRevision"));
         assertEquals("false", evalRaw("document.querySelector('[data-testid=ui-revision]') !== null"));
-        assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=bundle-asset-hash]')?.textContent.trim()"));
-        JSONObject statusBounds = evalJson("(() => {const node = document.querySelector('[data-testid=build-status]');"
-                + "const rect = node.getBoundingClientRect();"
-                + "return JSON.stringify({top: rect.top, bottom: rect.bottom, height: innerHeight});})()");
-        assertTrue("verified status and short build identity must be on screen",
-                statusBounds.getDouble("top") >= 0 && statusBounds.getDouble("bottom") <= statusBounds.getDouble("height"));
+        assertEquals(expectedAssetHash, evalString("document.querySelector('[data-testid=build-status]')?.dataset.bundleHash"));
+        JSONObject homeChrome = evalJson("(() => {const text=document.body.innerText;"
+                + "const hook=document.querySelector('[data-testid=build-status]');"
+                + "return JSON.stringify({hookHidden: !!hook && hook.hidden && hook.getClientRects().length === 0,"
+                + "core: text.includes(" + JSONObject.quote(expectedCoreRevision.substring(0, 12)) + "),"
+                + "assets: text.includes(" + JSONObject.quote(expectedAssetHash.substring(0, 12)) + "),"
+                + "debug: ['Build verified', 'rewrite preview', 'SSH resource status', 'Source and asset', 'PTY channels', 'TRANSPORT']"
+                + ".filter(word => text.includes(word))});})()");
+        assertTrue("the build identity hook must not render on home", homeChrome.getBoolean("hookHidden"));
+        assertFalse("home must not show the core revision", homeChrome.getBoolean("core"));
+        assertFalse("home must not show the asset hash", homeChrome.getBoolean("assets"));
+        assertEquals("home must not show developer chrome", "[]", homeChrome.getJSONArray("debug").toString());
     }
 
     @Test
@@ -296,7 +300,12 @@ public final class JsShellPackagedSmokeTest {
         scrollDomTargetIntoWebViewViewport("[data-testid=open-about]");
         tapDomCenter("[data-testid=open-about]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about' && !!document.querySelector('#about-title')");
-        awaitJsTrue("document.querySelector('[data-testid=about-core-revision]')?.textContent.trim().length === 40");
+        awaitJsTrue("document.querySelector('[data-testid=about-build-identity]')?.dataset.coreRevision.length === 40"
+                + " && document.querySelector('[data-testid=about-build-identity]')?.dataset.buildState === 'verified'");
+        assertTrue("About names the build in plain language", evalString(
+                "(() => {const node=document.querySelector('[data-testid=about-build-identity]');"
+                + "return String(node.textContent.includes(node.dataset.coreRevision.slice(0, 12)) && node.getClientRects().length > 0);})()")
+                .equals("true"));
         tapDomCenter("[data-testid=open-update-status]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'about-update' && !!document.querySelector('#update-title')");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK);
@@ -310,7 +319,7 @@ public final class JsShellPackagedSmokeTest {
     }
 
     private void runSettingsSyncPackagedSmokeChecks() throws Exception {
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         evalRaw("window.__ps2852NetworkRequestCount = 0;"
                 + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
                 + "return Promise.reject(new Error('unexpected sync network request'));};"
@@ -321,6 +330,9 @@ public final class JsShellPackagedSmokeTest {
         assertEquals("production exposes no test sync entry point", "undefined",
                 evalString("typeof window.__ps2852RunSettingsSync"));
 
+        // The SSH keys entry (#3021) pushes Advanced below the fold on a
+        // 412x915 phone, so bring it into view before the coordinate tap.
+        scrollDomTargetIntoWebViewViewport("[data-testid=open-advanced-settings]");
         tapDomCenter("[data-testid=open-advanced-settings]");
         awaitJsTrue("document.querySelector('[data-testid=open-account-sync]') !== null");
         tapDomCenter("[data-testid=open-account-sync]");
@@ -337,7 +349,7 @@ public final class JsShellPackagedSmokeTest {
             evalRaw("localStorage.setItem(" + JSONObject.quote(probeStorageKey) + ", 'enabled');"
                     + "window.location.reload(); 'reload-requested'");
             awaitJsTrue("typeof window.__ps2852RunSettingsSync === 'function'");
-            awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+            awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
             evalRaw("window.__ps2852NetworkRequestCount = 0;"
                     + "window.fetch = (...args) => {window.__ps2852NetworkRequestCount += 1;"
                     + "return Promise.reject(new Error('unexpected sync network request'));};"
@@ -836,7 +848,7 @@ public final class JsShellPackagedSmokeTest {
     @Test
     public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
         assertTrue("the packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         // A busy device: CPU-bound threads in the app process make the main
         // thread lose its core between Capacitor's dispatch and its storing of
         // the new page's reply channel, which is when the reply gets lost.

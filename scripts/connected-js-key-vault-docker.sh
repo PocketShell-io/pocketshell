@@ -298,7 +298,7 @@ capture_live_screenshot() {
   validate_png "$output" || fail "Android screenshot is truncated or invalid: $screenshot"
 }
 screenshots_captured=0
-for screenshot in ssh-keys.png ssh-host-form.png ssh-resources.png ssh-key-delete-confirmation.png diagnostics-export-preview.png; do
+for screenshot in ssh-keys.png ssh-host-form.png ssh-key-delete-confirmation.png diagnostics-export-preview.png; do
   if capture_live_screenshot "$screenshot"; then
     screenshots_captured=$((screenshots_captured + 1))
   else
@@ -417,7 +417,7 @@ fi
   --method "$method" --evidence-subdir document \
   --evidence-dir "$ARTIFACTS_DIR/instrumentation-results"
 (( generated_authorization_status == 0 )) || fail 'Android instrumentation passed but generated-key authorization did not complete'
-(( screenshots_captured == 5 )) || fail "instrumentation passed but only $screenshots_captured Android screenshots were retrieved before the test package was removed"
+(( screenshots_captured == 4 )) || fail "instrumentation passed but only $screenshots_captured Android screenshots were retrieved before the test package was removed"
 for evidence in diagnostics-export-preview.json connect-to-session-timing.json locked-key-reconnect-phases.json locked-key-reconnect-native-codes.txt; do
   [[ -s "$ARTIFACTS_DIR/$evidence" ]] || fail "missing same-run Android evidence: $evidence"
 done

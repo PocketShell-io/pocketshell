@@ -235,7 +235,7 @@ describe('Android settings sync adapter', () => {
     const leaked = parseGoogleSyncStatus({ signedIn: true, email: 'a@b.c', packageName: 'p', idToken: 'eyJ.secret.sig' });
     expect(leaked).toEqual({ signedIn: true, email: 'a@b.c', packageName: 'p' });
     expect(JSON.stringify(leaked)).not.toContain('secret');
-    expect(() => parseGoogleSyncStatus({ signedIn: 'yes', packageName: 'p' })).toThrow('invalid status');
+    expect(() => parseGoogleSyncStatus({ signedIn: 'yes', packageName: 'p' })).toThrow('Google sign-in returned an unexpected status.');
     const native = createGoogleSyncNative({
       status: async () => ({ signedIn: false, email: 'stale@example.com', packageName: 'p' }),
       signIn: async () => ({}),
@@ -245,7 +245,7 @@ describe('Android settings sync adapter', () => {
       removeAllListeners: async () => undefined,
     } as never);
     expect(await native.status()).toEqual({ signedIn: false, email: null, packageName: 'p' });
-    await expect(native.signIn()).rejects.toThrow('invalid status');
+    await expect(native.signIn()).rejects.toThrow('Google sign-in returned an unexpected status.');
     await expect(native.request({ method: 'GET', slot: 'main' })).rejects.toThrow('invalid response');
   });
 });

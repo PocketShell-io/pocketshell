@@ -198,7 +198,7 @@ export function validateLegacyPreferences(snapshot: NativeLegacySnapshot): void 
     try {
       decoded = JSON.parse(rawSelection) as unknown;
     } catch {
-      throw new InstalledDataMigrationError('The selected-host sync preference is malformed JSON.');
+      throw new InstalledDataMigrationError('The saved list of hosts to sync could not be read.');
     }
     if (!Array.isArray(decoded) || decoded.some((alias) => typeof alias !== 'string')) {
       throw new InstalledDataMigrationError('The selected-host sync preference must be an ordered list of aliases.');
@@ -268,7 +268,7 @@ export function prepareLocalStorageWrites(
       if (!isRecord(parsed)) throw new Error('Expected a settings object.');
       settings = { ...parsed };
     } catch {
-      throw new InstalledDataMigrationError('Existing JavaScript settings are unreadable; they were left unchanged.');
+      throw new InstalledDataMigrationError('This version\'s existing settings could not be read; they were left unchanged.');
     }
   }
   const originalSettings = { ...settings };
@@ -342,7 +342,7 @@ export function prepareLocalStorageWrites(
     if (existing !== null) {
       const existingFingerprint = readStoredFingerprint(existing);
       if (existingFingerprint !== fingerprint) {
-        throw new InstalledDataMigrationError(`A JavaScript trust pin conflicts with the saved host ${hostId}; neither value was overwritten.`);
+        throw new InstalledDataMigrationError(`A trusted host key saved by this version conflicts with the saved host ${hostId}; neither key was overwritten.`);
       }
       continue;
     }
@@ -433,7 +433,7 @@ function validateSnapshot(snapshot: NativeLegacySnapshot): void {
   }
   if (!isRecord(snapshot.preferences) || !isRecord(snapshot.encryptedPreferences) ||
     !Array.isArray(snapshot.assets) || !Array.isArray(snapshot.nativeFiles) || !isRecord(snapshot.database.tables)) {
-    throw new InstalledDataMigrationError('The installed-data reader returned an incomplete snapshot.');
+    throw new InstalledDataMigrationError('The saved app data could not be read completely.');
   }
   const assetIds = new Set<string>();
   for (const asset of snapshot.assets) {
@@ -491,19 +491,19 @@ function validateLegacyKeyReferences(snapshot: NativeLegacySnapshot): void {
     if (!isRecord(value) || typeof value.category !== 'string' || typeof value.relativePath !== 'string' ||
       !Number.isSafeInteger(value.byteLength) || (value.byteLength as number) < 0 ||
       !Number.isSafeInteger(value.lastModified)) {
-      throw new InstalledDataMigrationError('A native private-file reference is malformed.');
+      throw new InstalledDataMigrationError('A saved app file could not be located.');
     }
     if (value.category === 'ssh-private-key') {
       if (typeof value.keyId !== 'number' || !Number.isSafeInteger(value.keyId) ||
         !keyIds.has(value.keyId) || indexedFiles.has(value.keyId) ||
         typeof value.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.sha256)) {
-        throw new InstalledDataMigrationError('A saved SSH key file has an invalid or duplicate native reference.');
+        throw new InstalledDataMigrationError('A saved SSH key file could not be located, or is listed twice.');
       }
       indexedFiles.add(value.keyId);
     }
   }
   if (indexedFiles.size !== keyIds.size) {
-    throw new InstalledDataMigrationError('A saved SSH key file is missing its native reference.');
+    throw new InstalledDataMigrationError('A saved SSH key file could not be found.');
   }
 
   const hostIds = new Set<number>();
@@ -648,8 +648,8 @@ function encryptedCredentialWarnings(snapshot: NativeLegacySnapshot): string[] {
   return Object.entries(snapshot.encryptedPreferences)
     .filter(([, store]) => store.present)
     .map(([name, store]) => store.status === 'unavailable'
-      ? `Encrypted credential store ${name} remains unchanged but could not be opened: ${store.error ?? 'the native reader reported unavailable.'}`
-      : `Encrypted credential store ${name} remains in Android secure storage and is not available to the JS app yet.`);
+      ? `Encrypted credential store ${name} remains unchanged but could not be opened: ${store.error ?? 'Android reported it as unavailable.'}`
+      : `Encrypted credential store ${name} remains in Android secure storage and is not available to this version yet.`);
 }
 
 function unresolvedCredentialWarnings(snapshot: NativeLegacySnapshot): string[] {
@@ -673,7 +673,7 @@ function decodeBase64(value: string): Uint8Array {
   try {
     decoded = atob(value);
   } catch {
-    throw new InstalledDataMigrationError('A private data file chunk is not valid base64.');
+    throw new InstalledDataMigrationError('Part of a saved app file could not be read.');
   }
   return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
 }
@@ -697,7 +697,7 @@ async function copyAsset(
     const chunkBytes = decodeBase64(chunk.base64);
     if (chunk.assetId !== asset.assetId || chunk.offset !== offset ||
       chunk.byteLength !== chunkBytes.length || chunkBytes.length !== maxBytes) {
-      throw new InstalledDataMigrationError(`Private file ${asset.relativePath} returned an incomplete chunk.`);
+      throw new InstalledDataMigrationError(`The saved app file ${asset.relativePath} could not be read completely.`);
     }
     bytes.set(chunkBytes, offset);
     offset += chunkBytes.length;

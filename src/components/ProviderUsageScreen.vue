@@ -69,7 +69,6 @@ function capturedLabel(): string {
     <section class="panel settings-panel feature-panel" aria-labelledby="usage-title">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">CONNECTED HOST</p>
           <h1 id="usage-title">Provider usage</h1>
         </div>
         <button

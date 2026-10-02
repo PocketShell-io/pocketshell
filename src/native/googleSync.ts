@@ -54,7 +54,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function parseGoogleSyncStatus(value: unknown): GoogleSyncStatus {
   if (!isRecord(value) || typeof value.signedIn !== 'boolean' || typeof value.packageName !== 'string') {
-    throw new Error('The Android sign-in plugin returned an invalid status.');
+    throw new Error('Google sign-in returned an unexpected status.');
   }
   const email = typeof value.email === 'string' && value.email.length > 0 ? value.email : null;
   return { signedIn: value.signedIn, email: value.signedIn ? email : null, packageName: value.packageName };

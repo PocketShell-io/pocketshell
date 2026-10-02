@@ -70,7 +70,7 @@ describe('settings-sync envelope encryption', () => {
       [JSON.stringify({ ...good, salt: btoa('short') }), 'salt has the wrong length'],
       [JSON.stringify({ ...good, iv: btoa('short') }), 'IV has the wrong length'],
       [JSON.stringify({ ...good, ct: btoa('tiny') }), 'ciphertext is truncated'],
-      [JSON.stringify({ ...good, salt: 'not base64 !!!' }), 'not valid base64'],
+      [JSON.stringify({ ...good, salt: 'not base64 !!!' }), 'sync data is damaged (salt could not be read)'],
     ];
     for (const [envelope, text] of cases) await rejects(decryptEnvelope(envelope, 'pw'), text);
   });

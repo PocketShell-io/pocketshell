@@ -43,7 +43,7 @@ describe('Capacitor SSH resource snapshot bridge', () => {
     const { capability } = nativePlugin(result);
 
     await expect(capability.resourceSnapshot(requestId)).rejects.toThrow(
-      'Native resourceSnapshot returned an invalid request ID or resource count.',
+      'The connection status reply could not be read.',
     );
   });
 

@@ -13,6 +13,9 @@ Usage: scripts/run-js-unit-gate.sh [--report <path>]
 
 Run every Vitest unit test, write its JSON result, and check the exact
 registered file and test-title set in scripts/js-unit-test-manifest.json.
+
+CI runs this gate on the Node major in .nvmrc. A different local major prints
+a warning; set JS_UNIT_GATE_STRICT_NODE=1 to make it fail instead.
 USAGE
 }
 
@@ -44,6 +47,37 @@ command -v "$PNPM" >/dev/null 2>&1 || {
   printf 'FAIL: Vitest dependencies are missing; run pnpm install --frozen-lockfile\n' >&2
   exit 1
 }
+
+# CI runs the gate on the Node major pinned in .nvmrc (#3023: a regex that
+# Node 24 accepts failed to load on CI's Node 22). Keep .nvmrc and the
+# workflow in step, and say loudly when the local Node differs.
+NVMRC="$ROOT_DIR/.nvmrc"
+WORKFLOW="$ROOT_DIR/.github/workflows/js-first-rewrite.yml"
+[[ -f "$NVMRC" ]] || { printf 'FAIL: %s is missing\n' "$NVMRC" >&2; exit 1; }
+PINNED_NODE="$(tr -d '[:space:]v' < "$NVMRC")"
+PINNED_NODE="${PINNED_NODE%%.*}"
+[[ "$PINNED_NODE" =~ ^[0-9]+$ ]] || { printf 'FAIL: .nvmrc must hold a Node major version, found %q\n' "$PINNED_NODE" >&2; exit 1; }
+if [[ -f "$WORKFLOW" ]]; then
+  WORKFLOW_NODE="$(sed -nE 's/^[[:space:]]*node-version:[[:space:]]*["'"'"']?v?([0-9]+).*/\1/p' "$WORKFLOW" | sort -u)"
+  [[ "$WORKFLOW_NODE" == "$PINNED_NODE" ]] || {
+    printf 'FAIL: .nvmrc pins Node %s but %s uses node-version %s; keep them equal\n' \
+      "$PINNED_NODE" ".github/workflows/js-first-rewrite.yml" "${WORKFLOW_NODE:-<none>}" >&2
+    exit 1
+  }
+fi
+command -v node >/dev/null 2>&1 || { printf 'FAIL: node is required\n' >&2; exit 1; }
+LOCAL_NODE="$(node -p 'process.versions.node.split(".")[0]')"
+if [[ "$LOCAL_NODE" != "$PINNED_NODE" ]]; then
+  {
+    printf 'WARNING: this gate is running on Node %s, but CI runs Node %s (.nvmrc).\n' "$LOCAL_NODE" "$PINNED_NODE"
+    printf 'WARNING: a green result here does not prove CI is green; syntax or APIs newer than Node %s pass locally and fail in CI.\n' "$PINNED_NODE"
+    printf 'WARNING: rerun on Node %s, for example in a node:%s-bookworm container, before reporting.\n' "$PINNED_NODE" "$PINNED_NODE"
+  } >&2
+  if [[ "${JS_UNIT_GATE_STRICT_NODE:-0}" == 1 ]]; then
+    printf 'FAIL: JS_UNIT_GATE_STRICT_NODE=1 requires Node %s\n' "$PINNED_NODE" >&2
+    exit 1
+  fi
+fi
 
 mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"

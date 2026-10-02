@@ -137,7 +137,7 @@ public final class JsComposerDockerJourneyTest {
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         String testTag = nameBase.substring(Math.max(0, nameBase.length() - 5));
         String chipLabel = "PS2885-M-" + testTag;
         String chipOutputPath = "/tmp/" + bytesSession + "-snippet-lines.txt";
@@ -357,6 +357,7 @@ public final class JsComposerDockerJourneyTest {
         createSession(uncertainSession);
         attachSession(bytesSession);
         verifyNestedAndroidBackKeepsLiveSession();
+        verifyTerminalGroundHasNoBlackStrip();
         deletePriorTestChips();
         createHostSnippet(chipLabel, chipBody);
         createHostSnippet(uncertainChipLabel, uncertainCommand);
@@ -394,6 +395,116 @@ public final class JsComposerDockerJourneyTest {
                 + " && !document.querySelector('[data-testid=prompt-composer]')"
                 + " && !!document.querySelector('[data-testid=prompt-composer-launcher]')");
         openPromptComposerAndAssertDraftFocus();
+    }
+
+    /**
+     * #3023: FitAddon floors the grid to whole rows, so the last few px of the
+     * terminal are xterm's scroll layer, which xterm.css paints #000. Unless the
+     * app paints that layer the terminal ground, a black strip shows under the
+     * last row (stark on Light). Checked on the live terminal for Dark and Light:
+     * the scroll layer's computed ground must equal the terminal's, and the
+     * on-screen remainder strip must be that colour, not black.
+     */
+    private void verifyTerminalGroundHasNoBlackStrip() throws Exception {
+        String originalTheme = evalString("JSON.parse(localStorage.getItem('pocketshell.js.settings.v1')||'{}').themeChoice ?? 'dark'");
+        JSONArray evidence = new JSONArray();
+        for (String theme : new String[]{"dark", "light"}) {
+            chooseThemeFromLiveSession(theme);
+            evidence.put(measureTerminalGround(theme));
+        }
+        chooseThemeFromLiveSession(originalTheme);
+        Log.i("PS3023", "TERMINAL_GROUND|" + evidence);
+        // Both themes are measured before any verdict so a failure reports each one.
+        for (int index = 0; index < evidence.length(); index++) {
+            JSONObject measured = evidence.getJSONObject(index);
+            String theme = measured.getString("theme");
+            assertEquals("xterm's scroll layer must paint the terminal ground on " + theme
+                    + " (xterm.css's #000 shows as a strip under the last row): " + evidence,
+                    measured.getString("terminalGround"), measured.getString("scrollLayerGround"));
+            JSONObject pixels = measured.getJSONObject("stripPixels");
+            assertEquals("the strip under the last terminal row must be the terminal ground on " + theme
+                    + ", not xterm's black: " + evidence, 0, pixels.getInt("differing"));
+        }
+        openPromptComposerAndAssertDraftFocus();
+    }
+
+    private void chooseThemeFromLiveSession(String theme) throws Exception {
+        hideImeUntilStableWithoutEditableFocus();
+        click("button[aria-label='Settings']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings'"
+                + " && !!document.querySelector('[data-testid=setting-theme]')");
+        setValue("[data-testid=setting-theme]", theme);
+        awaitJsTrue("document.documentElement.dataset.theme === " + JSONObject.quote(theme)
+                + " && JSON.parse(localStorage.getItem('pocketshell.js.settings.v1')||'{}').themeChoice === "
+                + JSONObject.quote(theme));
+        click("button[aria-label='Back']");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && document.querySelector('.app-shell')?.dataset.homeSurface === 'live'"
+                + " && document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && !!document.querySelector('.terminal-viewport .xterm-screen')");
+        hideImeUntilStableWithoutEditableFocus();
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'false'");
+        awaitSnippetVisualState();
+    }
+
+    private JSONObject measureTerminalGround(String theme) throws Exception {
+        JSONObject geometry = evalJson("(() => {const host=document.querySelector('.terminal-viewport');"
+                + "const scroller=host?.querySelector('.xterm-viewport');const screen=host?.querySelector('.xterm-screen');"
+                + "if(!host||!scroller||!screen)return JSON.stringify({missing:true});"
+                + "const rect=n=>{const r=n.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom};};"
+                + "const v=visualViewport;const s=rect(screen),sc=rect(scroller);"
+                + "return JSON.stringify({theme:document.documentElement.dataset.theme,"
+                + "termBg:getComputedStyle(document.documentElement).getPropertyValue('--term-bg').trim(),"
+                + "terminalGround:getComputedStyle(host).backgroundColor,scrollLayerGround:getComputedStyle(scroller).backgroundColor,"
+                + "screen:s,scroller:sc,remainderCss:sc.bottom-s.bottom,"
+                + "strip:{left:s.left+2,right:s.right-2,top:s.bottom,bottom:sc.bottom},"
+                + "viewport:{width:v?.width??innerWidth,height:v?.height??innerHeight,offsetLeft:v?.offsetLeft??0,offsetTop:v?.offsetTop??0}});})()");
+        assertTrue("the live terminal must render xterm's scroll layer and grid on " + theme + ": " + geometry,
+                !geometry.optBoolean("missing", false));
+        assertEquals("theme must be applied before measuring", theme, geometry.getString("theme"));
+        String terminalGround = geometry.getString("terminalGround");
+        int[] expected = parseRgb(terminalGround);
+        if (theme.equals("light")) {
+            assertTrue("Light's terminal ground must be light for the black-strip check to mean anything: " + terminalGround,
+                    expected[0] > 200 && expected[1] > 200 && expected[2] > 200);
+        }
+
+        // The on-screen remainder strip below the last row must show that ground, not black.
+        JSONObject mapping = readSnippetScreenshotMapping(geometry);
+        int[] strip = mappedRect(geometry, mapping, "strip");
+        int stripTop = strip[1] + 1;
+        int stripBottom = strip[3] - 1;
+        AtomicReference<int[]> counts = new AtomicReference<>(new int[]{0, 0});
+        if (stripBottom > stripTop && strip[2] > strip[0]) {
+            Bitmap screenshot = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            assertNotNull("capture the live terminal to check its remainder strip", screenshot);
+            try {
+                int sampled = 0;
+                int wrong = 0;
+                for (int y = Math.max(0, stripTop); y < Math.min(screenshot.getHeight(), stripBottom); y++) {
+                    for (int x = Math.max(0, strip[0]); x < Math.min(screenshot.getWidth(), strip[2]); x++) {
+                        int pixel = screenshot.getPixel(x, y);
+                        int r = (pixel >> 16) & 0xff, g = (pixel >> 8) & 0xff, b = pixel & 0xff;
+                        sampled++;
+                        if (Math.abs(r - expected[0]) > 6 || Math.abs(g - expected[1]) > 6 || Math.abs(b - expected[2]) > 6) wrong++;
+                    }
+                }
+                counts.set(new int[]{sampled, wrong});
+            } finally {
+                screenshot.recycle();
+            }
+            assertTrue("sample the remainder strip under the last terminal row on " + theme, counts.get()[0] > 0);
+        }
+        return geometry.put("stripPixels", new JSONObject()
+                .put("deviceRect", pixelRectEvidence(new int[]{strip[0], stripTop, strip[2], stripBottom}))
+                .put("sampled", counts.get()[0]).put("differing", counts.get()[1]));
+    }
+
+    private static int[] parseRgb(String css) {
+        java.util.regex.Matcher match = java.util.regex.Pattern
+                .compile("rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)").matcher(css);
+        assertTrue("expected an rgb() colour, got " + css, match.find());
+        return new int[]{Integer.parseInt(match.group(1)), Integer.parseInt(match.group(2)), Integer.parseInt(match.group(3))};
     }
 
     private void createHostSnippet(String label, String body) throws Exception {
@@ -2332,7 +2443,7 @@ public final class JsComposerDockerJourneyTest {
                 + "if(startIndex>=0){wrappedCommandRows.push(rows[startIndex]);"
                 + "for(let index=startIndex+1;index<rows.length;index+=1){const row=rows[index];"
                 + "if(stopIndex>=0?index>=stopIndex:(!row.text||row.text.startsWith('$')))break;wrappedCommandRows.push(row);}}"
-                + "const resizeStatus=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()??'';"
+                + "const resizeStatus=document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status??'';"
                 + "const accepted=/^(\\d+) \\u00d7 (\\d+) accepted by SSH$/.exec(resizeStatus);"
                 + "return JSON.stringify({cols,rows:gridRows,bufferType:state?.bufferType??null,cellWidth,viewport,clip,screen:screenBox,"
                 + "domRowCount:rows.length,maxRowRight,maxRowCells,overflowingRows,"
