@@ -482,7 +482,7 @@ describe('installed Android data migration', () => {
     });
 
     expect(installedDataMigrationState.status).toBe('failed');
-    expect(installedDataMigrationState.error).toContain('malformed JSON');
+    expect(installedDataMigrationState.error).toContain('The saved list of hosts to sync could not be read.');
     expect(persistence.persistence.stage).not.toHaveBeenCalled();
     expect(persistence.persistence.markComplete).not.toHaveBeenCalled();
     expect(storage.values.size).toBe(0);
@@ -592,7 +592,7 @@ describe('installed Android data migration', () => {
     });
 
     expect(installedDataMigrationState.status).toBe('partial');
-    expect(installedDataMigrationState.error).toContain('not available to the JS app yet');
+    expect(installedDataMigrationState.error).toContain('not available to this version yet');
     expect(persistence.persistence.markComplete).toHaveBeenCalledWith('partial');
     const importedHosts = await readImportedLegacyHosts(persistence.persistence);
     expect(importedHosts).toEqual([{

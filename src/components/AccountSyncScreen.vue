@@ -159,7 +159,6 @@ onMounted(() => {
 <template>
   <main class="screen-content settings-screen" data-testid="account-settings-screen" :data-sync-busy="busy || 'idle'">
     <section class="panel settings-panel" aria-labelledby="account-settings-title">
-      <p class="eyebrow">SETTINGS · ACCOUNT</p>
       <h1 id="account-settings-title">Account &amp; sync</h1>
       <p class="settings-copy">Sign in with Google to sync your host list with PocketShell on your laptop and the web. Hosts are encrypted on this phone with your sync passphrase before they are uploaded.</p>
 
@@ -199,7 +198,7 @@ onMounted(() => {
         </label>
 
         <div class="account-hosts" data-testid="account-sync-hosts">
-          <p class="eyebrow">HOSTS TO SYNC</p>
+          <h2 class="account-hosts__title">Hosts to sync</h2>
           <p v-if="rows.length === 0" class="settings-note">No hosts yet. Sync once to bring in the hosts saved in your account.</p>
           <label v-for="row in rows" :key="row.name" class="account-host-row" :data-testid="`account-sync-host-${row.name}`" :data-where="row.where">
             <input
@@ -263,6 +262,13 @@ onMounted(() => {
   display: grid;
   gap: 8px;
   margin: 12px 0 16px;
+}
+
+.account-hosts__title {
+  margin: 0;
+  color: var(--fg);
+  font-size: var(--fs-300);
+  font-weight: 600;
 }
 
 .account-host-row {

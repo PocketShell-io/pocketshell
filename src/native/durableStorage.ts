@@ -78,7 +78,7 @@ export const DURABLE_STORAGE_OPEN_TIMEOUT_MS = 8_000;
 
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`The native durable storage did not answer within ${ms} ms.`)), ms);
+    const timer = setTimeout(() => reject(new Error(`The phone's app storage did not answer within ${ms} ms.`)), ms);
     promise.then(
       (value) => { clearTimeout(timer); resolve(value); },
       (error: unknown) => { clearTimeout(timer); reject(error); },
@@ -117,7 +117,7 @@ function isEntries(value: unknown): value is Record<string, string> {
  */
 export async function installDurableStorage(dependencies: DurableStorageDependencies): Promise<DurableStorageStatus> {
   const { storage, prototype, writer } = dependencies;
-  if (!writer) return { state: 'failed', reason: 'The native durable storage writer is missing.' };
+  if (!writer) return { state: 'failed', reason: 'The phone\'s app storage cannot save changes.' };
 
   let opened: DurableStorageOpenResult;
   try {
@@ -126,7 +126,7 @@ export async function installDurableStorage(dependencies: DurableStorageDependen
     return { state: 'failed', reason: error instanceof Error ? error.message : String(error) };
   }
   if (typeof opened?.token !== 'string' || opened.token.length === 0 || !isEntries(opened.entries)) {
-    return { state: 'failed', reason: 'The native durable storage returned an invalid snapshot.' };
+    return { state: 'failed', reason: 'The phone\'s app storage returned unreadable data.' };
   }
   const token = opened.token;
   const original: StoragePrototype = {

@@ -515,7 +515,7 @@ public final class J24SettingsReachJourney {
     }
 
     private void awaitBuildVerified() throws Exception {
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
     }
 
     private void awaitJsTrue(String expression) throws Exception {

@@ -102,7 +102,7 @@ const composerTitle = computed(() => dictationPhase.value === 'review'
   ? 'Review dictation'
   : dictationBusy.value ? 'Prompt dictation' : 'Prompt Composer');
 const composerModeStatus = computed(() => {
-  if (transportStateIsOffline()) return props.transportState === 'lost' ? 'RECONNECTING' : 'NO PTY';
+  if (transportStateIsOffline()) return props.transportState === 'lost' ? 'RECONNECTING' : 'OFFLINE';
   switch (dictationPhase.value) {
     case 'starting': return 'STARTING';
     case 'recording': return 'LISTENING';

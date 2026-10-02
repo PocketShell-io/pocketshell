@@ -118,7 +118,6 @@ function cancelDelete() {
 <template>
   <main class="screen-content key-screen" data-testid="ssh-keys-screen">
     <section class="key-screen__intro">
-      <p class="eyebrow">CREDENTIALS</p>
       <h1>SSH keys</h1>
       <p>Private key files stay encrypted in Android storage. PocketShell keeps only their labels and public fingerprints in the interface.</p>
     </section>
@@ -126,7 +125,6 @@ function cancelDelete() {
     <section class="key-panel panel" aria-labelledby="ssh-key-list-title">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">KEY VAULT</p>
           <h2 id="ssh-key-list-title">Stored keys</h2>
         </div>
         <span class="state-tag state-tag--muted" data-testid="ssh-key-count">{{ keys.length }}</span>
@@ -185,7 +183,6 @@ function cancelDelete() {
     <section class="key-panel panel" aria-labelledby="ssh-key-add-title">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">ADD KEY</p>
           <h2 id="ssh-key-add-title">Import or generate</h2>
         </div>
       </div>

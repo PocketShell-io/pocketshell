@@ -130,7 +130,7 @@ public final class UsagePortsDockerJourneyTest {
         String sessionTag = runId + "-usage";
         activeSessionTag = sessionTag;
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         installJsFailureProbe();
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);

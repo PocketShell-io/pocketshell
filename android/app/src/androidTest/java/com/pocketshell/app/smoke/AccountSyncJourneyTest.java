@@ -279,11 +279,11 @@ public final class AccountSyncJourneyTest {
 
     private void launchWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(MainActivity.class);
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true", 45_000);
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
         evalRaw("localStorage.removeItem('" + ACCOUNT_HOSTS_KEY + "'); localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
                 + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + ");"
                 + "location.reload(); 'reload'");
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true"
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'"
                 + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null", 45_000);
     }
 
