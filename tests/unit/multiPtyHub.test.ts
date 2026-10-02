@@ -18,7 +18,7 @@ import {
   type NativeSshCapabilityPlugin,
 } from '@/native/sshCapability';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
-import { FakeNative, MemoryStorage, sessionJson, settle, target } from './support/androidFakeNative';
+import { FakeNative, HOST_KEY, MemoryStorage, sessionJson, settle, target } from './support/androidFakeNative';
 
 const WORKSPACE = '/home/u/git/demo';
 
@@ -26,6 +26,9 @@ function harness(options: { maxOpenPtys?: number } = {}) {
   const native = new FakeNative();
   native.sessions.push(sessionJson('third', WORKSPACE));
   const trust = createLocalTrustStore(new MemoryStorage());
+  // The fixture's key is already trusted: these tests are about PTYs, not the
+  // first-contact prompt, which refuses an unknown key with no decider (#2953).
+  void trust.record(target.hostId, { kind: 'wire-key', ...HOST_KEY });
   let ids = 0;
   const controllers: ConnectionController[] = [];
   const hub = new AndroidConnectionHub({
