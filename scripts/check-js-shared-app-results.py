@@ -33,6 +33,17 @@ REQUIRED_METHODS = frozenset(
         "changedHostKeyIsRefusedWithVisibleMessage",
     }
 )
+# #3017: selection regressions supplement, never replace, the seven real journeys.
+REGRESSION_CLASS = "com.pocketshell.app.ime.ScriptedImeSelectionTest"
+REGRESSION_METHODS = frozenset({
+    "cleanSelectionNeedsNoRebind",
+    "observedStockSelectionGetsExactlyOneRebind",
+    "delayedDriftRecoversBeforeOriginalDeadline",
+    "persistentDriftFailsWithinOriginalDeadline",
+    "conflictingSettingsAndMethodNeverPass",
+    "driftAfterDeadlineCannotExtendSelectionBudget",
+    "slowRebindCommandsCannotCreateANewDeadline",
+})
 HOST_BYTES_NAME = "host-ime-bytes.hex"
 # SharedAppDockerJourneyTest.EXPECTED_IME_BYTES, as the host must have received it.
 EXPECTED_IME_BYTES = (
@@ -111,13 +122,14 @@ def validate_results(results: Path) -> list[Path]:
 
     actual = Counter((case.attrib.get("classname", ""), case.attrib.get("name", "")) for case in cases)
     expected = Counter({(REQUIRED_CLASS, method): 1 for method in REQUIRED_METHODS})
+    expected.update({(REGRESSION_CLASS, method): 1 for method in REGRESSION_METHODS})
     if actual != expected:
         raise GateFailure(
-            f"expected exactly {REQUIRED_CLASS}#{{{', '.join(sorted(REQUIRED_METHODS))}}}; found {sorted(actual.elements())}"
+            f"expected exactly {sorted(expected.elements())}; found {sorted(actual.elements())}"
         )
 
     for case in cases:
-        name = f"{REQUIRED_CLASS}#{case.attrib.get('name', '')}"
+        name = f"{case.attrib.get('classname', '')}#{case.attrib.get('name', '')}"
         if list(case.iter("failure")) or list(case.iter("error")):
             raise GateFailure(f"{name} failed")
         if list(case.iter("skipped")):
@@ -161,6 +173,8 @@ def _write_report(path: Path, identities: list[tuple[str, str, str]]) -> None:
 
 def self_test() -> int:
     every = [(REQUIRED_CLASS, method, "passed") for method in sorted(REQUIRED_METHODS)]
+    regressions = [(REGRESSION_CLASS, method, "passed") for method in sorted(REGRESSION_METHODS)]
+    every += regressions
     good_bytes = EXPECTED_IME_BYTES_HEX
     duplicated = ("echo PS2 PS936".encode() + EXPECTED_IME_BYTES.encode()).hex()
     cases = [
@@ -174,6 +188,21 @@ def self_test() -> int:
             (f"a failed {method} blocks", [(c, m, "failed" if m == method else s) for c, m, s in every], good_bytes, False)
             for method in sorted(REQUIRED_METHODS)
         ),
+        *(
+            (f"a missing selection regression {method} blocks",
+             [row for row in every if row[1] != method], good_bytes, False)
+            for method in sorted(REGRESSION_METHODS)
+        ),
+        *(
+            (f"a failed selection regression {method} blocks",
+             [(c, m, "failed" if m == method else s) for c, m, s in every], good_bytes, False)
+            for method in sorted(REGRESSION_METHODS)
+        ),
+        ("selection regressions alone cannot replace real journeys", regressions, good_bytes, False),
+        ("real journeys alone cannot replace selection regressions",
+         [row for row in every if row[0] == REQUIRED_CLASS], good_bytes, False),
+        ("skipped selection regression blocks",
+         [(c, m, "skipped" if m == regressions[0][1] else s) for c, m, s in every], good_bytes, False),
         ("unexpected class blocks", [("example.OtherJourney", every[0][1], "passed"), *every[1:]], good_bytes, False),
         ("extra test blocks", every + [(REQUIRED_CLASS, "extra", "passed")], good_bytes, False),
         ("duplicate test blocks", every + [every[0]], good_bytes, False),
@@ -234,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
     print(f"PASS: {REQUIRED_CLASS}#{{{', '.join(sorted(REQUIRED_METHODS))}}} each executed exactly once")
+    print(f"PASS: {REGRESSION_CLASS}#{{{', '.join(sorted(REGRESSION_METHODS))}}} each executed exactly once")
     print(f"PASS: the host received exactly the scripted IME bytes ({EXPECTED_IME_BYTES_HEX})")
     return 0
 

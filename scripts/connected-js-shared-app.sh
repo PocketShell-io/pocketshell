@@ -280,7 +280,7 @@ DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
 printf 'Running shared-app journeys on %s (API %s), suffix %s\n' "$ANDROID_SERIAL" "$device_api" "$SUFFIX"
 if "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
     "-PpocketshellAppIdSuffix=$SUFFIX" \
-    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SharedAppDockerJourneyTest \
+    -Pandroid.testInstrumentationRunnerArguments.class=com.pocketshell.app.smoke.SharedAppDockerJourneyTest,com.pocketshell.app.ime.ScriptedImeSelectionTest \
     "-Pandroid.testInstrumentationRunnerArguments.sshPort=$PORT" \
     "-Pandroid.testInstrumentationRunnerArguments.sessionRun=$SESSION_RUN" \
     "-Pandroid.testInstrumentationRunnerArguments.sshPrivateKeyPath=$DEVICE_KEY_PATH" \

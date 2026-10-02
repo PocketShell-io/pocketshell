@@ -194,10 +194,24 @@ def _script_invokes(source: str, script: str) -> bool:
     return re.search(rf"(?m)^\s*(?:if\s+)?{quoted}(?:\s|$)", active) is not None
 
 
+SHARED_APP_SELECTION_REGRESSION_CLASS = "com.pocketshell.app.ime.ScriptedImeSelectionTest"
+
+
 def _class_selector_matches(source: str, contract: LaneContract) -> bool:
     active = _strip_shell_comments(source)
     active = re.sub(r"\\\s*\n", " ", active)
     selector = "-Pandroid.testInstrumentationRunnerArguments.class="
+    if contract.name == "shared-app":
+        # The selection regressions supplement the seven exact product
+        # journeys. Accept only that explicit pair, without per-method
+        # filtering, duplicates, unknown classes, or overriding selectors.
+        values = re.findall(re.escape(selector) + r"([^\s'\"\\]+)", active)
+        if len(values) != 1:
+            return False
+        selected = values[0].split(",")
+        return len(selected) == 2 and set(selected) == {
+            contract.class_name, SHARED_APP_SELECTION_REGRESSION_CLASS,
+        }
     # Most lanes select their class through Gradle. The composer lane directly
     # invokes Android instrumentation and forwards its selector via an array.
     direct = re.search(
@@ -643,6 +657,8 @@ def _write_fixture(
         selector += "".join(f'run_cycle cycle{index} {method} "$RUN_ID-{index}" none\n' for index, method in enumerate(cycle_methods))
     else:
         target = "wrong.Class" if (omit_selector or wrong_selector) else lane.class_name
+        if lane.name == "shared-app":
+            target += "," + SHARED_APP_SELECTION_REGRESSION_CLASS
         selector = f"./gradlew -Pandroid.testInstrumentationRunnerArguments.class={target}\n"
     selector += f'"$ROOT_DIR/{lane.result_checker}" --results-dir "$RESULTS_DIR"\n'
     child.write_text(selector, encoding="utf-8")
@@ -680,6 +696,29 @@ def self_test() -> int:
             _write_fixture(root, lane)
         result = check(root, "auto")
         probe("all eleven exact packaged lane classes and methods dispatch", result == 0, True)
+
+        shared = next(lane for lane in LANES if lane.name == "shared-app")
+        shared_runner = root / shared.child_runner
+        complete_shared = shared_runner.read_text(encoding="utf-8")
+        pair = shared.class_name + "," + SHARED_APP_SELECTION_REGRESSION_CLASS
+        invalid_selectors = {
+            "missing selection regression": shared.class_name,
+            "missing real shared-app journeys": SHARED_APP_SELECTION_REGRESSION_CLASS,
+            "unknown supplementary class": shared.class_name + ",example.Unknown",
+            "duplicate real journey class": pair + "," + shared.class_name,
+            "filtered real journey method": shared.class_name + "#" + sorted(shared.methods)[0]
+                + "," + SHARED_APP_SELECTION_REGRESSION_CLASS,
+        }
+        for label, invalid in invalid_selectors.items():
+            shared_runner.write_text(complete_shared.replace(pair, invalid), encoding="utf-8")
+            probe("shared-app " + label + " fails closed", check(root, "js") != 0, True)
+        shared_runner.write_text(complete_shared + "./gradlew -Pandroid.testInstrumentationRunnerArguments.class="
+                                 + pair + "\n", encoding="utf-8")
+        probe("shared-app overriding class selector fails closed", check(root, "js") != 0, True)
+        shared_runner.write_text(complete_shared.replace(pair,
+            SHARED_APP_SELECTION_REGRESSION_CLASS + "," + shared.class_name), encoding="utf-8")
+        probe("shared-app explicit pair permits either order", check(root, "js") == 0, True)
+        shared_runner.write_text(complete_shared, encoding="utf-8")
 
         dispatcher = root / "scripts/ci-js-first-packaged-lanes.sh"
         full_dispatcher = dispatcher.read_text(encoding="utf-8")
