@@ -42,7 +42,9 @@ import {
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { androidKeyManager } from './platform/android/hosts';
 import { androidSync } from './platform/android/sync';
-import SshKeysScreen from './components/SshKeysScreen.vue';
+import SshKeysScreen, { type SshKeyHostInstallTarget } from './components/SshKeysScreen.vue';
+import KeyIcon from './components/KeyIcon.vue';
+import { installPublicKeyOnHost, liveAuthorizedKeyInstallHost, type DialedHost } from './credentials/authorizedKeys';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
@@ -840,13 +842,33 @@ function selectSyncedHost(): void {
   connectionMessage.value = selectedKeyHandleId.value ? '' : `Choose an SSH key on this phone to connect to ${host.name}.`;
 }
 
-function selectSshKey(handleId: string): void {
+function selectSshKey(handleId: string, stay = false): void {
   selectedKeyHandleId.value = handleId;
   if (selectedLegacyHost.value?.keyHandleId !== handleId) selectedLegacyHostId.value = '';
   legacyKeyPassphrase.value = '';
   connectionMessage.value = '';
-  if (navigation.route === 'keys') navigation.back();
+  if (navigation.route === 'keys' && !stay) navigation.back();
 }
+
+let authorizedKeyRequestSequence = 0;
+// #3021: install a stored key's public line on the live host over the
+// already-authenticated connection's exec channel.
+// The host the live controller dialed, so the confirmation names the
+// connection the write goes to, not the editable host form.
+const dialedHost = ref<DialedHost | null>(null);
+const sshKeyHostInstall = computed<SshKeyHostInstallTarget | null>(() => {
+  if (!hasActiveConnection.value) return null;
+  const live = liveAuthorizedKeyInstallHost(connectionSnapshot.value, dialedHost.value);
+  if (!live) return null;
+  return {
+    hostLabel: live.hostLabel,
+    install: (publicKey: string) => {
+      authorizedKeyRequestSequence += 1;
+      return installPublicKeyOnHost(sshCapability, live.connection, publicKey,
+        `authorized-key-${Date.now()}-${authorizedKeyRequestSequence}`);
+    },
+  };
+});
 
 function openKeyManagement(): void {
   navigation.open('keys');
@@ -891,6 +913,7 @@ async function connectHost() {
   terminal.value?.clear();
   const next = new ConnectionController({ trustStore });
   bindController(next);
+  dialedHost.value = { hostId: host.hostId, username: host.username, hostname: host.hostname, port: host.port };
   let result;
   try {
     result = await next.connect(host);
@@ -1605,13 +1628,13 @@ onBeforeUnmount(() => {
             @click="disconnectHost"
           ><AppIcon name="close" /></button>
           <button
-            class="workspace-nav-button"
+            class="workspace-nav-button workspace-nav-button--labelled"
             type="button"
             aria-label="SSH keys"
             title="SSH keys"
             data-testid="open-ssh-keys"
             @click="openKeyManagement"
-          ><AppIcon name="file" /></button>
+          ><KeyIcon /><span class="nav-button-label" aria-hidden="true">Keys</span></button>
           <button
             class="workspace-nav-button"
             type="button"
@@ -1640,14 +1663,15 @@ onBeforeUnmount(() => {
           </button>
           <button
             v-if="navigation.route === 'home'"
-            class="icon-button"
+            class="icon-button labelled-icon-button"
             type="button"
             aria-label="SSH keys"
             title="SSH keys"
             data-testid="open-ssh-keys"
             @click="openKeyManagement"
           >
-            <AppIcon name="file" />
+            <KeyIcon />
+            <span class="nav-button-label" aria-hidden="true">Keys</span>
           </button>
           <button
             v-else
@@ -1769,13 +1793,24 @@ onBeforeUnmount(() => {
               <span>{{ selectedSshKey.algorithm }}</span>
               <code data-testid="selected-ssh-key-fingerprint">{{ selectedSshKey.fingerprintSha256 }}</code>
             </span>
-            <span v-if="sshKeys.length === 0" class="host-field-help">Import or generate a key to connect.</span>
+
             <span v-if="sshKeyLoadError" class="host-field-help" role="alert" data-testid="ssh-key-load-error">{{ sshKeyLoadError }}</span>
           </label>
           <label v-if="selectedSshKey?.passphraseRequired" class="form-field host-field-key">
             <span>SSH key passphrase · used for this connection only</span>
             <input v-model="legacyKeyPassphrase" data-testid="legacy-key-passphrase" type="password" autocomplete="off" />
           </label>
+        </div>
+        <!-- #3021: with no stored key the form cannot connect, so adding one is
+             the primary action here rather than a small text hint. -->
+        <div v-if="sshKeys.length === 0 && !sshKeyLoadError" class="host-key-cta" data-testid="ssh-key-cta">
+          <div class="host-key-cta__copy">
+            <KeyIcon :size="22" />
+            <span><strong>Add an SSH key to connect</strong><small>Paste a private key, import a key file, or generate a new key.</small></span>
+          </div>
+          <button class="action-button" type="button" data-testid="add-ssh-key" @click="openKeyManagement">
+            <KeyIcon :size="18" /><span>Add a key</span>
+          </button>
         </div>
         <div class="host-actions">
           <button class="small-action" type="button" data-testid="manage-ssh-keys" @click="openKeyManagement">Manage keys</button>
@@ -2018,6 +2053,7 @@ onBeforeUnmount(() => {
       :keys="sshKeys"
       :selected-handle-id="selectedKeyHandleId"
       :load-error="sshKeyLoadError"
+      :host-install="sshKeyHostInstall"
       @refresh="refreshSshKeys"
       @select="selectSshKey"
     />

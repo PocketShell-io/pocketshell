@@ -1,7 +1,10 @@
 package com.pocketshell.app;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.database.Cursor;
@@ -105,6 +108,110 @@ public final class SshKeyVaultPlugin extends Plugin {
             return;
         }
         importUri(call, uri, label, passphrase, null);
+    }
+
+    /**
+     * Pasted private-key text (#3021). The text crosses the bridge once, is
+     * validated and sealed here, and is never echoed back, logged, or stored
+     * outside the encrypted vault. The WebView clears its field afterwards.
+     */
+    @PluginMethod
+    public void importKeyText(PluginCall call) {
+        JSObject request = call.getData();
+        String text = request.getString("text");
+        String label = request.getString("label", "Pasted SSH key");
+        String rawPassphrase = request.getString("passphrase", "");
+        request.remove("text");
+        request.remove("passphrase");
+        char[] passphrase = rawPassphrase == null ? new char[0] : rawPassphrase.toCharArray();
+        byte[] bytes = null;
+        try {
+            bytes = CredentialHandleVault.normalizePastedKey(text);
+            if (label == null || label.trim().isEmpty()) label = "Pasted SSH key";
+            CredentialHandleVault.KeyMetadata key = vault().importBytes(bytes, label, passphrase, null, false);
+            call.resolve(publicMetadata(key));
+        } catch (CredentialHandleVault.DuplicateKeyException error) {
+            reject(call, "KEY_DUPLICATE", error.getMessage());
+        } catch (Exception error) {
+            reject(call, "KEY_IMPORT_FAILED", safeMessage(error));
+        } finally {
+            java.util.Arrays.fill(passphrase, '\0');
+            if (bytes != null) java.util.Arrays.fill(bytes, (byte) 0);
+        }
+    }
+
+    /** The OpenSSH public line for a stored key; public data only. */
+    @PluginMethod
+    public void publicKey(PluginCall call) {
+        try {
+            String handleId = requiredString(call, "handleId");
+            String publicKey = publicKeyLine(call);
+            call.resolve(new JSObject().put("handleId", handleId).put("publicKey", publicKey));
+        } catch (CredentialHandleVault.PassphraseRequiredException error) {
+            reject(call, "KEY_PASSPHRASE_REQUIRED", error.getMessage());
+        } catch (Exception error) {
+            reject(call, "KEY_PUBLIC_FAILED", safeMessage(error));
+        }
+    }
+
+    /** Copies the public line to the Android clipboard natively. */
+    @PluginMethod
+    public void copyPublicKey(PluginCall call) {
+        try {
+            String publicKey = publicKeyLine(call);
+            getActivity().runOnUiThread(() -> {
+                try {
+                    ClipboardManager clipboard = (ClipboardManager) getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (clipboard == null) throw new IllegalStateException("clipboard unavailable");
+                    clipboard.setPrimaryClip(ClipData.newPlainText("SSH public key", publicKey));
+                    call.resolve(new JSObject().put("copied", true));
+                } catch (Exception error) {
+                    reject(call, "KEY_COPY_FAILED", "The public key could not be copied.");
+                }
+            });
+        } catch (CredentialHandleVault.PassphraseRequiredException error) {
+            reject(call, "KEY_PASSPHRASE_REQUIRED", error.getMessage());
+        } catch (Exception error) {
+            reject(call, "KEY_COPY_FAILED", safeMessage(error));
+        }
+    }
+
+    /** Opens the Android share sheet with the public line as plain text. */
+    @PluginMethod
+    public void sharePublicKey(PluginCall call) {
+        try {
+            String publicKey = publicKeyLine(call);
+            Intent send = new Intent(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, publicKey)
+                .putExtra(Intent.EXTRA_SUBJECT, "SSH public key");
+            Intent chooser = Intent.createChooser(send, "Share SSH public key");
+            getActivity().runOnUiThread(() -> {
+                try {
+                    getActivity().startActivity(chooser);
+                    call.resolve(new JSObject().put("shared", true));
+                } catch (Exception error) {
+                    reject(call, "KEY_SHARE_FAILED", "No app is available to share the public key.");
+                }
+            });
+        } catch (CredentialHandleVault.PassphraseRequiredException error) {
+            reject(call, "KEY_PASSPHRASE_REQUIRED", error.getMessage());
+        } catch (Exception error) {
+            reject(call, "KEY_SHARE_FAILED", safeMessage(error));
+        }
+    }
+
+    private String publicKeyLine(PluginCall call) throws Exception {
+        JSObject request = call.getData();
+        String handleId = requiredString(call, "handleId");
+        String rawPassphrase = request.getString("passphrase", "");
+        request.remove("passphrase");
+        char[] passphrase = rawPassphrase == null ? new char[0] : rawPassphrase.toCharArray();
+        try {
+            return vault().publicKeyLine(handleId, passphrase);
+        } finally {
+            java.util.Arrays.fill(passphrase, '\0');
+        }
     }
 
     @PluginMethod
@@ -240,7 +347,8 @@ public final class SshKeyVaultPlugin extends Plugin {
         if (message == null || message.trim().isEmpty()) return "The SSH key operation failed safely.";
         // Provider exception text can contain parser fragments. Keep only our
         // curated messages; callers never receive private-key input or URI data.
-        if (message.contains("-----BEGIN") || message.contains("content://") || message.length() > 180) {
+        if (message.contains("-----BEGIN") || message.contains("PRIVATE KEY-----") || message.contains("content://")
+            || message.length() > 180) {
             return "SSH key operation failed. Check the selected key and try again.";
         }
         return message;

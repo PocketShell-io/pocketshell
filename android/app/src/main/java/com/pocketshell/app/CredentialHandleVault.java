@@ -184,7 +184,8 @@ public final class CredentialHandleVault {
                 parsed.passphraseRequired,
                 System.currentTimeMillis(),
                 fileName,
-                legacyIds
+                legacyIds,
+                parsed.publicKeyBlob
             );
             existing.add(stored);
             try {
@@ -252,6 +253,112 @@ public final class CredentialHandleVault {
         }
     }
 
+    /**
+     * The OpenSSH public line ({@code ssh-ed25519 AAAA… label}) for a stored
+     * key. Public data only: it is what a user pastes into authorized_keys.
+     * OpenSSH keys expose their public blob without the passphrase; other
+     * encrypted formats need it once, after which the blob is cached.
+     */
+    public synchronized String publicKeyLine(String handleId, char[] passphrase) throws IOException {
+        List<StoredKey> records = metadata.read();
+        StoredKey record = null;
+        int index = -1;
+        for (int candidate = 0; candidate < records.size(); candidate++) {
+            if (records.get(candidate).handleId.equals(handleId)) { record = records.get(candidate); index = candidate; }
+        }
+        if (handleId == null || !handleId.matches("[0-9a-fA-F-]{36}") || record == null) {
+            throw new IOException("The selected SSH key is no longer available.");
+        }
+        String blob = record.publicKeyBlob;
+        if (blob == null) {
+            blob = derivePublicKeyBlob(record, passphrase == null ? new char[0] : passphrase);
+            records.set(index, record.withPublicKeyBlob(blob));
+            // A failed cache write only means the next request derives again.
+            try { metadata.write(records); } catch (IOException ignored) { }
+        }
+        byte[] decoded = java.util.Base64.getDecoder().decode(blob);
+        try {
+            String fingerprint = "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(
+                MessageDigest.getInstance("SHA-256").digest(decoded));
+            if (!fingerprint.equals(record.fingerprintSha256)) {
+                throw new IOException("The stored SSH public key does not match its fingerprint.");
+            }
+            String algorithm = new Buffer<>(decoded).readString();
+            if (!algorithm.equals(record.algorithm)) throw new IOException("The stored SSH public key type is inconsistent.");
+        } catch (IOException error) {
+            throw error;
+        } catch (Exception error) {
+            throw new IOException("The stored SSH public key could not be read safely.");
+        }
+        return record.algorithm + " " + blob + " " + publicKeyComment(record.label);
+    }
+
+    /** authorized_keys comment: the label on one line, never control characters. */
+    static String publicKeyComment(String label) {
+        String comment = label == null ? "" : label.replaceAll("\\p{Cntrl}", " ").replaceAll("\\s+", " ").trim();
+        return comment.isEmpty() ? "pocketshell" : comment;
+    }
+
+    private String derivePublicKeyBlob(StoredKey record, char[] passphrase) throws IOException {
+        byte[] privateBytes = resolvePrivateKey(record.handleId);
+        char[] secret = passphrase.clone();
+        try {
+            String pem = new String(privateBytes, StandardCharsets.UTF_8);
+            if (pem.contains("BEGIN OPENSSH PRIVATE KEY")) {
+                return parseEncryptedLegacyMetadata(privateBytes).publicKeyBlob;
+            }
+            if (record.passphraseRequired && secret.length == 0) {
+                throw new PassphraseRequiredException("Enter this key's passphrase to show its public key.");
+            }
+            try {
+                return parseKey(privateBytes, secret).publicKeyBlob;
+            } catch (IOException error) {
+                if (record.passphraseRequired) {
+                    throw new PassphraseRequiredException("Could not unlock this SSH key. Check the passphrase and try again.");
+                }
+                throw error;
+            } catch (Exception error) {
+                throw new IOException("The SSH public key could not be derived safely.");
+            }
+        } finally {
+            java.util.Arrays.fill(privateBytes, (byte) 0);
+            java.util.Arrays.fill(secret, '\0');
+        }
+    }
+
+    /**
+     * Normalise pasted private-key text: unify line endings and, when a phone
+     * app collapsed the PEM body onto one line, rewrap it. Header-bearing
+     * legacy PEM (Proc-Type) is left as pasted. Returns fresh bytes the caller wipes.
+     */
+    static byte[] normalizePastedKey(String text) throws IOException {
+        if (text == null) throw new IOException("Paste a private key first.");
+        String trimmed = text.replace("\r\n", "\n").replace('\r', '\n').trim();
+        if (trimmed.isEmpty()) throw new IOException("Paste a private key first.");
+        if (trimmed.length() > MAX_KEY_BYTES) throw new IOException("The pasted SSH private key exceeds the 1 MiB limit.");
+        if (trimmed.matches("(?s)^(ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-[a-z0-9]+|sk-[a-z0-9@.-]+) .*")
+            && !trimmed.contains("PRIVATE KEY")) {
+            throw new IOException("This is a public key. Paste the private key instead; it starts with a BEGIN line.");
+        }
+        java.util.regex.Matcher pem = java.util.regex.Pattern
+            .compile("(?s)^-----BEGIN ([A-Z0-9 ]+)-----\\s*(.*?)\\s*-----END \\1-----$")
+            .matcher(trimmed);
+        if (pem.matches() && !pem.group(2).contains(":")) {
+            String body = pem.group(2).replaceAll("\\s", "");
+            if (!body.matches("[A-Za-z0-9+/=]+")) throw new IOException("The pasted SSH private key is damaged. Copy it again.");
+            StringBuilder rebuilt = new StringBuilder("-----BEGIN ").append(pem.group(1)).append("-----\n");
+            for (int offset = 0; offset < body.length(); offset += 70) {
+                rebuilt.append(body, offset, Math.min(body.length(), offset + 70)).append('\n');
+            }
+            rebuilt.append("-----END ").append(pem.group(1)).append("-----\n");
+            return rebuilt.toString().getBytes(StandardCharsets.UTF_8);
+        }
+        if (!trimmed.contains("PRIVATE KEY") && !trimmed.startsWith("PuTTY-User-Key-File-")) {
+            throw new IOException("Paste the whole private key, including its BEGIN and END lines.");
+        }
+        return (trimmed + "\n").getBytes(StandardCharsets.UTF_8);
+    }
+
     public synchronized boolean delete(String handleId, String expectedFingerprint) throws IOException {
         List<StoredKey> records = metadata.read();
         StoredKey record = null;
@@ -307,7 +414,8 @@ public final class CredentialHandleVault {
             true,
             System.currentTimeMillis(),
             fileName,
-            new ArrayList<>(Collections.singletonList(sourceIdentity))
+            new ArrayList<>(Collections.singletonList(sourceIdentity)),
+            parsed.publicKeyBlob
         );
         records.add(stored);
         if (!metadata.write(records)) {
@@ -351,7 +459,7 @@ public final class CredentialHandleVault {
             String fingerprint = "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(
                 MessageDigest.getInstance("SHA-256").digest(publicBlob)
             );
-            return new ParsedKey(algorithm, fingerprint, true);
+            return new ParsedKey(algorithm, fingerprint, true, java.util.Base64.getEncoder().encodeToString(publicBlob));
         } catch (IOException error) {
             throw error;
         } catch (Exception error) {
@@ -389,8 +497,9 @@ public final class CredentialHandleVault {
             String fingerprint = "SHA256:" + java.util.Base64.getEncoder().withoutPadding().encodeToString(
                 MessageDigest.getInstance("SHA-256").digest(publicBlob)
             );
+            String publicKeyBlob = java.util.Base64.getEncoder().encodeToString(publicBlob);
             java.util.Arrays.fill(publicBlob, (byte) 0);
-            return new ParsedKey(algorithm, fingerprint, encryptedKey(bytes));
+            return new ParsedKey(algorithm, fingerprint, encryptedKey(bytes), publicKeyBlob);
         } catch (IOException error) {
             throw error;
         } catch (Exception error) {
@@ -613,9 +722,18 @@ public final class CredentialHandleVault {
         final long createdAt;
         final String fileName;
         final List<String> legacySourceIdentities;
+        /** Cached base64 public blob (public data); null for records stored before #3021. */
+        final String publicKeyBlob;
 
         StoredKey(String handleId, String label, String algorithm, String fingerprintSha256,
                   boolean passphraseRequired, long createdAt, String fileName, List<String> legacySourceIdentities) {
+            this(handleId, label, algorithm, fingerprintSha256, passphraseRequired, createdAt, fileName,
+                legacySourceIdentities, null);
+        }
+
+        StoredKey(String handleId, String label, String algorithm, String fingerprintSha256,
+                  boolean passphraseRequired, long createdAt, String fileName, List<String> legacySourceIdentities,
+                  String publicKeyBlob) {
             this.handleId = handleId;
             this.label = label;
             this.algorithm = algorithm;
@@ -624,6 +742,12 @@ public final class CredentialHandleVault {
             this.createdAt = createdAt;
             this.fileName = fileName;
             this.legacySourceIdentities = new ArrayList<>(legacySourceIdentities);
+            this.publicKeyBlob = publicKeyBlob;
+        }
+
+        StoredKey withPublicKeyBlob(String blob) {
+            return new StoredKey(handleId, label, algorithm, fingerprintSha256, passphraseRequired, createdAt,
+                fileName, legacySourceIdentities, blob);
         }
 
         KeyMetadata publicMetadata() {
@@ -643,6 +767,7 @@ public final class CredentialHandleVault {
                 json.put("createdAt", createdAt);
                 json.put("fileName", fileName);
                 json.put("legacySourceIdentities", legacy);
+                if (publicKeyBlob != null) json.put("publicKeyBlob", publicKeyBlob);
                 return json;
             } catch (JSONException error) {
                 throw new IllegalStateException("Could not serialize SSH key metadata.", error);
@@ -666,7 +791,9 @@ public final class CredentialHandleVault {
                 JSONArray legacy = value.optJSONArray("legacySourceIdentities");
                 List<String> identities = new ArrayList<>();
                 if (legacy != null) for (int index = 0; index < legacy.length(); index++) identities.add(legacy.getString(index));
-                return new StoredKey(handleId, label, algorithm, fingerprint, passphrase, created, fileName, identities);
+                String publicKeyBlob = value.optString("publicKeyBlob", "");
+                if (!publicKeyBlob.matches("[A-Za-z0-9+/]+={0,2}") || publicKeyBlob.length() > 4096) publicKeyBlob = null;
+                return new StoredKey(handleId, label, algorithm, fingerprint, passphrase, created, fileName, identities, publicKeyBlob);
             } catch (JSONException error) {
                 throw new IOException("Saved SSH key metadata is malformed.");
             }
@@ -677,11 +804,19 @@ public final class CredentialHandleVault {
         final String algorithm;
         final String fingerprintSha256;
         final boolean passphraseRequired;
-        ParsedKey(String algorithm, String fingerprintSha256, boolean passphraseRequired) {
+        /** Base64 SSH wire-format public key blob; public data, never secret. */
+        final String publicKeyBlob;
+        ParsedKey(String algorithm, String fingerprintSha256, boolean passphraseRequired, String publicKeyBlob) {
             this.algorithm = algorithm;
             this.fingerprintSha256 = fingerprintSha256;
             this.passphraseRequired = passphraseRequired;
+            this.publicKeyBlob = publicKeyBlob;
         }
+    }
+
+    /** The stored key needs its passphrase before its public half can be derived. */
+    static final class PassphraseRequiredException extends IOException {
+        PassphraseRequiredException(String message) { super(message); }
     }
 
     private static final class SharedPreferenceMetadata implements MetadataRepository {

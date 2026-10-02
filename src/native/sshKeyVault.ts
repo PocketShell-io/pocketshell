@@ -32,6 +32,12 @@ export type NativeSshKeyVaultPlugin = Plugin & {
   pickKeyDocument(): Promise<PickedSshKeyDocument>;
   importPickedKey(options: { documentId: string; label: string; passphrase?: string }): Promise<unknown>;
   importDocumentUri(options: { uri: string; label: string; passphrase?: string }): Promise<unknown>;
+  /** Pasted private-key text (#3021): validated and sealed natively, never echoed back. */
+  importKeyText(options: { text: string; label: string; passphrase?: string }): Promise<unknown>;
+  /** The OpenSSH public line for a stored key (public data only). */
+  publicKey(options: { handleId: string; passphrase?: string }): Promise<unknown>;
+  copyPublicKey(options: { handleId: string; passphrase?: string }): Promise<{ copied?: unknown }>;
+  sharePublicKey(options: { handleId: string; passphrase?: string }): Promise<{ shared?: unknown }>;
   generateKey(options: { label: string; algorithm: 'Ed25519' | 'RSA-3072' }): Promise<unknown>;
   deleteKey(options: { handleId: string; fingerprintSha256: string }): Promise<{ deleted: boolean }>;
   importLegacyKeys(options: { keys: LegacySshKeyCandidate[] }): Promise<LegacySshKeyImportResult>;
@@ -59,6 +65,25 @@ export function isSshKeyMetadata(value: unknown): value is SshKeyMetadata {
 export function parseSshKeyMetadata(value: unknown): SshKeyMetadata {
   if (!isSshKeyMetadata(value)) throw new Error('The Android key vault returned invalid public metadata.');
   return { ...value };
+}
+
+const PUBLIC_KEY_LINE = /^(ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]{16,4096}={0,2}) ([^\u0000-\u001f\u007f]{1,80})$/;
+
+/**
+ * Accept only a single-line OpenSSH public key of a supported type. Anything
+ * else — a private-key marker, a second line, an unknown algorithm — is a
+ * broken native contract and never reaches the screen or a host command.
+ */
+export function parseSshPublicKeyLine(value: unknown, expectedAlgorithm?: SshKeyMetadata['algorithm']): string {
+  const line = isRecord(value) ? value.publicKey : undefined;
+  if (typeof line !== 'string' || line.length > 4300 || /PRIVATE KEY/.test(line)) {
+    throw new Error('The Android key vault returned an invalid public key.');
+  }
+  const match = PUBLIC_KEY_LINE.exec(line);
+  if (!match || (expectedAlgorithm && match[1] !== expectedAlgorithm)) {
+    throw new Error('The Android key vault returned an invalid public key.');
+  }
+  return line;
 }
 
 /** Validate each native record before any metadata reaches UI or host policy. */

@@ -624,6 +624,25 @@
         "serves the page to loopback Host headers only, and the page carries no bridge token",
         "refuses the bridge WebSocket from a foreign Host or a foreign Origin even with the right token"
       ]
+    },
+    "tests/unit/sshKeySetup.test.ts": {
+      "suite": "mobile SSH key setup (#3021)",
+      "tests": [
+        "sends pasted key text straight to the native vault and returns only public metadata",
+        "accepts only one-line Ed25519/RSA public keys from the native boundary",
+        "clears the pasted private key from the field after a successful import",
+        "clears the pasted text and explains the error when native validation rejects it",
+        "keeps a generated key on screen with its public key, copy and share",
+        "shows the public key of an imported key from its row",
+        "asks for the passphrase when the native vault needs it to read a public key",
+        "installs on the connected host only after confirmation and reports an existing key",
+        "names the live connection, not the edited host form, in the install button and confirmation",
+        "creates ~/.ssh/authorized_keys with private permissions and never duplicates the key",
+        "treats the same key with options or another comment as present and keeps the last line intact",
+        "keeps hostile key labels out of the login shell parser and installs them as data",
+        "surfaces timeouts and host failures instead of claiming success",
+        "runs over the checked exec of the live connection and refuses a mismatched reply"
+      ]
     }
   }
 }
