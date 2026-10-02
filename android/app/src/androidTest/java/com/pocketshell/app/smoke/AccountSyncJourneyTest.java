@@ -279,9 +279,9 @@ public final class AccountSyncJourneyTest {
 
     private void launchWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(MainActivity.class);
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true", 45_000);
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'", 45_000);
         // location.reload() only schedules the navigation: the old document
-        // keeps answering evaluateJavascript (Build verified, Back ready,
+        // keeps answering evaluateJavascript (build check verified, Back ready,
         // Settings button present) until the new one commits, which on a
         // starved emulator takes seconds. Tag the old document so the wait
         // below can only pass on the reloaded one (#3034): without it the
@@ -295,7 +295,7 @@ public final class AccountSyncJourneyTest {
                 + evalRaw("window.__pocketshellStaleDocument === " + JSONObject.quote(staleDocument)));
         awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
                 + " && document.readyState === 'complete'"
-                + " && document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true"
+                + " && document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'"
                 + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null", 45_000);
     }
 

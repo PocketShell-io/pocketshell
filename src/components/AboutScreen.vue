@@ -1,34 +1,50 @@
 <script setup lang="ts">
-import type { BuildVerification } from '../buildDiagnostics';
+import { computed, onMounted, ref } from 'vue';
 import AppIcon from '@ui/components/AppIcon.vue';
+import { readInstalledAppInfo } from '../platform/androidAppInfo';
+import { aboutBuildLine, type BuildCheckState } from '../session/releaseLabels';
 import { useNavigationStore } from '../stores/navigation';
 
-defineProps<{
-  buildVerification: BuildVerification | { checking: true };
+const props = defineProps<{
+  buildState: BuildCheckState;
   coreRevision: string;
   bundleHash: string;
-  buildStatus: string;
+  /** Why the file check failed; empty unless `buildState` is `error`. */
+  failureReason?: string;
 }>();
 
 const navigation = useNavigationStore();
+const versionName = ref('');
+
+onMounted(() => {
+  void readInstalledAppInfo().then((info) => {
+    versionName.value = info.versionName;
+  });
+});
+
+/** The single plain-language build line (#3023): version, build, and its check. */
+const buildLine = computed(() => aboutBuildLine(props.buildState, props.coreRevision, versionName.value));
 </script>
 
 <template>
   <main v-if="navigation.route === 'about'" class="screen-content settings-screen" data-testid="about-screen">
     <section class="panel settings-panel" aria-labelledby="about-title">
-      <p class="eyebrow">POCKETSHELL · REWRITE PREVIEW</p>
       <h1 id="about-title">About PocketShell</h1>
-      <p class="settings-copy">Build identity for this installed JS-first preview.</p>
-      <dl class="diagnostic-list about-identity">
-        <div><dt>App version</dt><dd>0.6.0 rewrite preview</dd></div>
-        <div><dt>Build status</dt><dd data-testid="about-build-status">{{ buildStatus }}</dd></div>
-        <div><dt>pocketshell-core revision (core + shared UI)</dt><dd data-testid="about-core-revision">{{ coreRevision }}</dd></div>
-        <div><dt>Bundled asset SHA-256</dt><dd data-testid="about-bundle-hash">{{ bundleHash }}</dd></div>
-      </dl>
-      <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">{{ buildVerification.reason }}</p>
+      <p class="settings-copy">A voice-first SSH client for working on your own machines from a phone.</p>
+      <p
+        class="settings-note"
+        data-testid="about-build-identity"
+        :data-build-state="buildState"
+        :data-core-revision="coreRevision"
+        :data-bundle-hash="bundleHash"
+      >{{ buildLine }}</p>
+      <div v-if="buildState === 'error'" class="integrity-error" role="alert" data-testid="about-integrity-error">
+        <p>This copy of PocketShell failed its integrity check. Reinstall the app to fix this.</p>
+        <small v-if="failureReason" data-testid="about-integrity-reason">Details for support: {{ failureReason }}</small>
+      </div>
       <button class="settings-link" type="button" data-testid="open-update-status" @click="navigation.open('about-update')">
         <span class="settings-link__icon"><AppIcon name="download" /></span>
-        <span><strong>Updates</strong><small>Current update support status</small></span>
+        <span><strong>Updates</strong><small>Check how to update PocketShell</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
     </section>
@@ -36,11 +52,10 @@ const navigation = useNavigationStore();
 
   <main v-else class="screen-content settings-screen" data-testid="update-screen">
     <section class="panel settings-panel" aria-labelledby="update-title">
-      <p class="eyebrow">ABOUT · UPDATES</p>
       <h1 id="update-title">Updates</h1>
       <div class="settings-empty-state">
         <AppIcon name="download" :size="16" />
-        <div><strong>Update check is unavailable in this preview.</strong><p>This screen does not contact a release service or install an APK. Use the validated release process for updates.</p></div>
+        <div><strong>Automatic updates are not available yet.</strong><p>Install new versions of PocketShell from the official release page.</p></div>
       </div>
     </section>
   </main>

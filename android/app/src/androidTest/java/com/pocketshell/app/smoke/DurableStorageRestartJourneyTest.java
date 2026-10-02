@@ -99,7 +99,7 @@ public final class DurableStorageRestartJourneyTest {
         String rawSeedValue = "seed-" + tag;
         String rawMutatedValue = "mutated-" + tag;
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         selectHost();
         switch (phase) {
             case "seed":

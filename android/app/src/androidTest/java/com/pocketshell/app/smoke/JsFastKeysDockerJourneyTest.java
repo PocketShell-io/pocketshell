@@ -122,7 +122,7 @@ public final class JsFastKeysDockerJourneyTest {
         firstSession = nameBase + "-keys";
         String dictationTargetSession = nameBase + "-dictation-target";
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         grantMicrophonePermissionForJourney();
         installNativeSpeechBridgeObserver();
         evalString("window.__ps2857CaptureTerminalEvidence = true; window.__ps2884HotkeyWrites = [];"
@@ -879,7 +879,7 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         awaitJsTrue("Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizeAcks ?? 0) > "
                 + resizeAcksBeforeBackgroundResume
-                + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim().endsWith('accepted by SSH') === true");
+                + " && document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status.endsWith('accepted by SSH') === true");
         // The first post-resume ACK can still carry the keyboard-up grid; the
         // IME-hidden layout then sends one more resize. Settle on the accepted
         // IME-hidden grid before recording the resume checkpoint.
@@ -2345,7 +2345,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),hotkeyWrites:window.__ps2884HotkeyWrites??[],"
                 + "terminalInputAcks:Number(shell?.dataset.sshTerminalInputAcks??0),"
                 + "resizeTraceMarker:window.__ps2884ResizeFitMarker??'',resizeFitEvents:fitEventsSince,resizeAckEvents:ackEventsSince,"
-                + "resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()??'',"
+                + "resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status??'',"
                 + "visualViewport:{height:window.visualViewport?.height??innerHeight,width:window.visualViewport?.width??innerWidth,"
                 + "offsetTop:window.visualViewport?.offsetTop??0},"
                 + "imeEdgeCssY:(window.visualViewport?.offsetTop??0)+(window.visualViewport?.height??innerHeight),innerWidth,innerHeight,"
@@ -2376,7 +2376,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "dictationPreview:status?.querySelector('[data-testid=inline-dictation-preview]')?.textContent?.trim()??null,"
                 + "dictationTogglePresent:!!toggle,dictationToggleDisabled:toggle?.disabled??null,"
                 + "resizeAcks:Number(shell?.dataset.sshTerminalResizeAcks??0),resizePending:Number(shell?.dataset.sshTerminalResizePending??0),"
-                + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.textContent?.trim()??null,"
+                + "resizeFailures:Number(shell?.dataset.sshTerminalResizeFailures??0),resizeStatus:document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status??null,"
                 + "jsDiagnostics:window.__ps2884JsDiagnostics?.events?.slice(-20)??[]});})()")
                 .put("nativeIme", readNativeImeState());
         Log.i("PS2884Geometry", "CHECKPOINT " + artifactRunId + " " + stage + " " + state);
@@ -3142,7 +3142,7 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("(() => {window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
                 + "const grid=window.__ps2875TerminalRuntimeGeometry;"
                 + "return !!grid && Number(document.querySelector('.app-shell')?.dataset.sshTerminalResizePending)===0"
-                + " && document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()"
+                + " && document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status"
                 + " === grid.cols+' × '+grid.rows+' accepted by SSH';})()");
     }
 

@@ -115,7 +115,7 @@ public final class SshPtyDockerJourneyTest {
                 + "|" + artifactDirectory.getAbsolutePath());
         org.json.JSONArray checkpoints = new org.json.JSONArray();
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         click("[aria-label='Settings']");
         click("[data-testid=open-connection-settings]");
         setValue("[data-testid=setting-background-grace]", Long.toString(BACKGROUND_GRACE_MILLIS));
@@ -2276,7 +2276,7 @@ public final class SshPtyDockerJourneyTest {
     }
 
     private int currentTerminalColumns() throws Exception {
-        String status = evalString("document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim() ?? ''");
+        String status = evalString("document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status ?? ''");
         Matcher grid = Pattern.compile("(\\d+)\\s*[×x]\\s*\\d+\\s+accepted by SSH").matcher(status);
         assertTrue("terminal resize status must expose the accepted PTY column count: " + status, grid.find());
         return Integer.parseInt(grid.group(1));
@@ -2297,7 +2297,7 @@ public final class SshPtyDockerJourneyTest {
     private JSONObject terminalResizeStats() throws Exception {
         return new JSONObject(evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');"
                 + "window.dispatchEvent(new Event('pocketshell:terminal-geometry-request'));"
-                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||'';"
+                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status||'';"
                 + "const accepted=status.match(/^(\\d+)\\s*[×x]\\s*(\\d+)\\s+accepted by SSH$/);"
                 + "const runtime=window.__ps2875TerminalRuntimeGeometry;"
                 + "const viewport=document.querySelector('#terminal-viewport');const rect=viewport?.getBoundingClientRect();"
@@ -2316,13 +2316,13 @@ public final class SshPtyDockerJourneyTest {
     private void awaitNativeResizeAckAfter(int previousAckCount, String checkpoint) throws Exception {
         try {
             awaitJsTrue("(() => {const root=document.querySelector('.app-shell');"
-                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.textContent.trim()||'';"
+                + "const status=document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status||'';"
                 + "return !!root && Number(root.dataset.sshTerminalResizeAcks||0) > " + previousAckCount
                 + " && Number(root.dataset.sshTerminalResizePending||0) === 0"
                 + " && Number(root.dataset.sshTerminalResizeFailures||0) === 0"
                 + " && status.endsWith('accepted by SSH');})()", WAIT_TIMEOUT_MILLIS);
         } catch (AssertionError failure) {
-            throw new AssertionError(checkpoint + " resize state: " + evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');return {phase:root?.dataset.sshPhase,surface:root?.dataset.homeSurface,selected:root?.dataset.sshSelectedTag,resize:document.querySelector('[data-testid=terminal-resize-status]')?.textContent,acks:root?.dataset.sshTerminalResizeAcks,pending:root?.dataset.sshTerminalResizePending,failures:root?.dataset.sshTerminalResizeFailures}})())"), failure);
+            throw new AssertionError(checkpoint + " resize state: " + evalString("JSON.stringify((()=>{const root=document.querySelector('.app-shell');return {phase:root?.dataset.sshPhase,surface:root?.dataset.homeSurface,selected:root?.dataset.sshSelectedTag,resize:document.querySelector('[data-testid=terminal-resize-status]')?.dataset.status,acks:root?.dataset.sshTerminalResizeAcks,pending:root?.dataset.sshTerminalResizePending,failures:root?.dataset.sshTerminalResizeFailures}})())"), failure);
         }
         JSONObject resize = awaitStableNativeResizeState(previousAckCount, checkpoint);
         assertEquals(checkpoint + " must finish with no pending native resize", 0, resize.getInt("pending"));

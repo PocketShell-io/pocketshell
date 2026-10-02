@@ -161,6 +161,36 @@ export function devBrowserShell(mode: DevBrowserMode, env: NodeJS.ProcessEnv): P
   };
 }
 
+/** Browser dev mode sources (#3022): served by the dev server only, never bundled. */
+const DEV_BROWSER_SOURCE_ROOT = path.join(repoRoot, 'src', 'dev') + path.sep;
+
+/** Module IDs from a build's module graph that are browser dev mode sources. */
+export function devBrowserModulesIn(moduleIds: Iterable<string>): string[] {
+  return [...moduleIds]
+    .map((id) => id.replace(/^\0/u, '').replace(/[?#].*$/u, ''))
+    .filter((id) => path.resolve(id).startsWith(DEV_BROWSER_SOURCE_ROOT))
+    .map((id) => path.relative(repoRoot, id).split(path.sep).join('/'));
+}
+
+/**
+ * Fails a production build whose module graph reaches any src/dev module
+ * (#3023), whatever the import shape and whether or not the module has a
+ * dev-only marker string. Runs before the bundle is written.
+ */
+export function refuseDevBrowserModules(): Plugin {
+  return {
+    name: 'pocketshell-refuse-dev-browser-modules',
+    apply: 'build',
+    buildEnd(error) {
+      if (error) return;
+      const leaked = devBrowserModulesIn(this.getModuleIds());
+      if (leaked.length > 0) {
+        throw new Error(`Production build reaches browser dev mode sources (#3022), which must never ship: ${[...new Set(leaked)].sort().join(', ')}`);
+      }
+    },
+  };
+}
+
 export default defineConfig(({ command, mode }) => {
   const core = readPinnedCore(repoRoot);
   const devBrowser = isDevBrowserMode(mode) ? mode : null;
@@ -177,6 +207,7 @@ export default defineConfig(({ command, mode }) => {
     plugins: [
       vue(),
       bundledAssetManifest(core.revision),
+      refuseDevBrowserModules(),
       ...(devBrowser ? [devBrowserShell(devBrowser, process.env)] : []),
     ],
     ...(devBrowser === 'live'

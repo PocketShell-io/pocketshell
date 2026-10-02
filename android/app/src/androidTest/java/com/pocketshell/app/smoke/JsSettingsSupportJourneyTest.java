@@ -110,7 +110,7 @@ public final class JsSettingsSupportJourneyTest {
         String probe = evalString("JSON.stringify({search: location.search,"
                 + " state: window.__ps2861ProbeState ?? null, readyState: document.readyState,"
                 + " route: document.querySelector('.app-shell')?.dataset.route ?? null,"
-                + " build: document.querySelector('[data-testid=build-status]')?.textContent.trim() ?? null,"
+                + " build: document.querySelector('[data-testid=build-status]')?.dataset.state ?? null,"
                 + " exposed: typeof " + SERVICES + ", now: Date.now()})");
         android.util.Log.i("PocketshellSettingsEvidence", "PROBE reloadRequestedAt=" + reloadRequestedAt + " " + probe);
         if (probeTimeout != null) {
@@ -432,7 +432,7 @@ public final class JsSettingsSupportJourneyTest {
     }
 
     private void awaitBuildVerified() throws Exception {
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
     }
 
     private void awaitReports(int expected) throws Exception {

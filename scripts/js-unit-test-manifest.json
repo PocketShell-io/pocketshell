@@ -643,6 +643,22 @@
         "surfaces timeouts and host failures instead of claiming success",
         "runs over the checked exec of the live connection and refuses a mismatched reply"
       ]
+    },
+    "tests/unit/releaseChrome.test.ts": {
+      "suite": "release look (#3023)",
+      "tests": [
+        "renders none of the removed developer chrome on any Android screen template",
+        "names diagnostic events without implementation terms",
+        "keeps build identity and SSH state as hidden test hooks, not visible text",
+        "names connection states in plain language",
+        "puts the build identity in one plain About line",
+        "shows a plain reinstall alert on home only when the build check fails",
+        "tells About readers to reinstall, with the failure reason for support, only on a failed check",
+        "keeps internal transport and implementation words out of user-visible script strings",
+        "finds an import of browser dev mode in every module specifier shape",
+        "fails a production build whose module graph reaches browser dev mode",
+        "tells Files users about the transfer limit without naming the transport"
+      ]
     }
   }
 }

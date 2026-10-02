@@ -85,7 +85,7 @@ public final class SshKeyVaultDockerJourneyTest {
         screenshotDirectory = new File(externalFiles, "pocketshell-key-vault/" + runId);
         assertTrue("run-scoped screenshot directory must be new", screenshotDirectory.mkdirs());
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         click("[data-testid=open-ssh-keys]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'keys' && !!document.querySelector('[data-testid=ssh-key-import-tab]')");
         // #3021 made Paste the default way to add a key; this cycle imports a file.
@@ -121,10 +121,11 @@ public final class SshKeyVaultDockerJourneyTest {
         setValue("[data-testid=ssh-username]", "testuser");
         captureScreenshot("ssh-host-form.png");
         assertHostFormTextFits();
-        evalRaw("document.querySelector('[data-testid=ssh-resources]').scrollIntoView({block:'center'}); 'scrolled'");
-        awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=ssh-resources] > div')).every(tile => {"
-            + "const bounds=tile.getBoundingClientRect();return bounds.top>=0&&bounds.bottom<=innerHeight;})");
-        captureScreenshot("ssh-resources.png");
+        // #3023: native resource counts are a hidden test hook, never chrome on the host form.
+        assertEquals("the SSH resource counts must not render on the host form", "true",
+            evalString("(() => {const hook=document.querySelector('[data-testid=ssh-resources]');"
+                + "return String(!!hook && hook.hidden && hook.getClientRects().length === 0"
+                + " && !document.body.innerText.includes('PTY channels'));})()"));
         setValue("[data-testid=legacy-key-passphrase]", TEST_PASSPHRASE);
         long importedConnectStartedAt = SystemClock.elapsedRealtime();
         click("[data-testid=ssh-connect]");
@@ -290,7 +291,7 @@ public final class SshKeyVaultDockerJourneyTest {
         screenshotDirectory = new File(externalFiles, "pocketshell-key-vault/" + runId + "/setup");
         assertTrue("run-scoped setup evidence directory must be new", screenshotDirectory.mkdirs());
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         // Discoverability: with no stored key the host form leads with an
         // "Add a key" action and the top bar names the Keys destination.
         awaitJsTrue("!!document.querySelector('[data-testid=ssh-key-cta]') && !!document.querySelector('[data-testid=add-ssh-key]')");
@@ -654,13 +655,8 @@ public final class SshKeyVaultDockerJourneyTest {
             + "const selectedWidth=context.measureText(select.selectedOptions[0].textContent.trim()).width;"
             + "const available=select.clientWidth-parseFloat(style.paddingLeft)-parseFloat(style.paddingRight)-24;"
             + "if(selectedWidth>available)failures.push('Selected SSH key text clips: '+selectedWidth+' > '+available);"
-            + "for(const value of document.querySelectorAll('[data-testid=ssh-resources] dd')){"
-            + "const range=document.createRange();range.selectNodeContents(value);"
-            + "const bounds=range.getBoundingClientRect();const tile=value.parentElement.getBoundingClientRect();"
-            + "if(bounds.left<tile.left||bounds.right>tile.right||bounds.right>innerWidth)"
-            + "failures.push('Resource status clips: '+value.dataset.testid+' '+bounds.width+' > '+tile.width);"
-            + "}return failures.join('; ');})()");
-        assertEquals("the real phone host form must display the selected key and every resource status without clipping", "", failures);
+            + "return failures.join('; ');})()");
+        assertEquals("the real phone host form must display the selected key without clipping", "", failures);
     }
 
     private static JSONObject connectionTiming(String credential, String sessionTag, long startedAt, long attachedAt) throws JSONException {

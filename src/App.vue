@@ -4,7 +4,6 @@ import { App as CapacitorApp } from '@capacitor/app';
 import { Capacitor } from '@capacitor/core';
 import {
   fromAndroidTrustedHostKeySha256,
-  formatBytes,
   isValidTcpPort,
   joinRemoteChildPath,
   PortForwardController,
@@ -29,6 +28,7 @@ import HostKeyTrustPrompt from '@ui/app/components/HostKeyTrustPrompt.vue';
 import { hostKeyAnswer, hostKeyCard, hostKeyRefusalMessage } from './session/hostKeyCard';
 import { verifyCurrentBuild, type BuildVerification } from './buildDiagnostics';
 import { coreSourceRevision } from './coreSourceInfo';
+import { connectionStateLabel, terminalStateLabel } from './session/releaseLabels';
 import {
   readImportedLegacyHosts,
   installedDataMigrationState,
@@ -59,6 +59,7 @@ import { readSshError, sshCapability } from './native/sshCapability';
 import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import { createKeyboardInsetsStateSync } from './native/keyboardInsetsState';
 import TerminalViewport from './components/TerminalViewport.vue';
+import BuildIntegrityAlert from './components/BuildIntegrityAlert.vue';
 import MobileHotkeys from './components/MobileHotkeys.vue';
 import TerminalDictationBar from './components/TerminalDictationBar.vue';
 import PromptComposer from './components/PromptComposer.vue';
@@ -139,20 +140,18 @@ const diagnostics = useDiagnosticsStore();
 // Shared with the shared app (#2936) so key deletes warn about every host.
 const keyManager = androidKeyManager;
 const buildVerification = ref<BuildVerification | { checking: true }>({ checking: true });
-const coreSample = formatBytes(1536);
-const coreShort = coreSourceRevision.slice(0, 12);
-const buildStatus = computed(() => {
-  if ('checking' in buildVerification.value) return 'Checking bundled assets';
-  return buildVerification.value.ok ? 'Build verified' : 'Build verification failed';
-});
 const buildStatusTone = computed(() => {
   if ('checking' in buildVerification.value) return 'checking';
   return buildVerification.value.ok ? 'verified' : 'error';
 });
-const bundleShort = computed(() =>
+/** Why the build check failed, kept for support (About and the hidden hook), never on home (#3023). */
+const buildFailureReason = computed(() =>
+  !('checking' in buildVerification.value) && !buildVerification.value.ok ? buildVerification.value.reason : '',
+);
+const bundleHash = computed(() =>
   !('checking' in buildVerification.value) && buildVerification.value.ok
-    ? buildVerification.value.bundleAssetHash.slice(0, 12)
-    : 'not verified',
+    ? buildVerification.value.bundleAssetHash
+    : '',
 );
 const activeTheme = computed(() => resolveTheme(appSettings.themeChoice));
 const terminalFontFamily = computed(() => fontCssVariables({
@@ -255,6 +254,8 @@ const publishedMigrationStatus = computed(() => installedDataMigrationState.relo
 const migrationBlocksConnection = computed(() => installedDataMigrationState.retrying
   || publishedMigrationStatus.value === 'pending');
 const isLive = computed(() => currentPhase.value === 'live');
+const connectionStateText = computed(() => connectionStateLabel(currentPhase.value));
+const terminalStateText = computed(() => terminalStateLabel(currentPhase.value));
 const terminalAutofocusAllowed = computed(() => (terminalAttachPromptFocusEpoch.value === 0
   || terminalAttachPromptFocusEpoch.value !== terminalAttachEpoch.value)
   && !promptComposerHasFocus.value);
@@ -1148,9 +1149,9 @@ async function writeComposerPty(bytes: Uint8Array): Promise<PtyWriteAcknowledgem
     snippetEvidence.__ps2885ComposerLastWriteHex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
   }
   const active = controller;
-  if (!active) return { ok: false, message: 'No active PTY.' };
+  if (!active) return { ok: false, message: 'No terminal is open.' };
   const selected = active.getSnapshot().selectedSession;
-  if (!selected) return { ok: false, message: 'No active PTY.' };
+  if (!selected) return { ok: false, message: 'No terminal is open.' };
   const result = await active.writeTerminalBytes(selected, bytes);
   if (result.ok) terminal.value?.scrollToBottom();
   return result.ok ? { ok: true } : { ok: false, message: result.message };
@@ -1291,7 +1292,7 @@ async function disconnectHost() {
     resourceSnapshotStatus.value = 'failed';
     const sshError = readSshError(error);
     diagnostics.record('resource-snapshot-failed', 'resource-snapshot', sshError.code);
-    connectionMessage.value = `Native resource snapshot failed (${sshError.code}): ${sshError.message}`;
+    connectionMessage.value = `Could not check the connection (${sshError.code}): ${sshError.message}`;
   }
 }
 
@@ -1650,7 +1651,6 @@ onBeforeUnmount(() => {
           <span class="wordmark">PocketShell</span>
         </button>
         <div class="app-bar-actions">
-          <span class="rewrite-chip">0.6.0 · rewrite preview</span>
           <button
             v-if="navigation.route === 'home'"
             class="icon-button"
@@ -1687,11 +1687,18 @@ onBeforeUnmount(() => {
       </template>
     </header>
 
-    <div v-if="!connectionSnapshot" class="build-strip" :class="`build-strip--${buildStatusTone}`" data-testid="build-status">
-      <AppIcon class="status-dot" name="dot" :size="12" />
-      <span>{{ buildStatus }}</span>
-      <span class="build-strip__detail">core {{ coreShort }} · assets {{ bundleShort }}</span>
-    </div>
+    <!-- Build identity is a test hook here, not chrome (#3023): the user reads
+         it in Settings → About. Only a failed integrity check is shown. -->
+    <span
+      v-if="!connectionSnapshot"
+      hidden
+      data-testid="build-status"
+      :data-state="buildStatusTone"
+      :data-core-revision="coreSourceRevision"
+      :data-bundle-hash="bundleHash"
+      :data-failure-reason="buildFailureReason"
+    />
+    <BuildIntegrityAlert v-if="buildStatusTone === 'error'" />
 
     <section
       v-if="publishedMigrationStatus === 'failed' || publishedMigrationStatus === 'partial'"
@@ -1742,11 +1749,10 @@ onBeforeUnmount(() => {
       <section class="panel host-panel" aria-labelledby="hosts-title">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">CONNECTION</p>
             <h1 id="hosts-title">SSH host</h1>
           </div>
-          <span class="state-tag" :class="isConnected ? 'state-tag--success' : 'state-tag--muted'">
-            {{ isLive ? 'LIVE' : isConnected ? 'CONNECTED' : isConnecting ? 'CONNECTING' : currentPhase.toUpperCase() }}
+          <span class="state-tag" :class="isConnected ? 'state-tag--success' : 'state-tag--muted'" data-testid="connection-state" :data-phase="currentPhase">
+            {{ connectionStateText }}
           </span>
         </div>
 
@@ -1831,59 +1837,26 @@ onBeforeUnmount(() => {
         <p v-if="connectionMessage || connectionSnapshot?.error" class="connection-message" role="alert" data-testid="ssh-message">
           {{ connectionMessage || connectionSnapshot?.error }}
         </p>
-        <p class="panel-footnote">SSH host-key pins are saved locally. Imported private keys stay in Android private storage and are read by native SSH only.</p>
+        <p class="panel-footnote">Your private keys and trusted hosts are stored only on this phone.</p>
       </section>
 
-      <section class="panel diagnostics-panel" aria-labelledby="diagnostics-title">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">TRANSPORT</p>
-            <h2 id="diagnostics-title">SSH resource status</h2>
-          </div>
-          <span class="state-tag state-tag--muted">{{ currentPhase.toUpperCase() }}</span>
-        </div>
-        <dl
-          class="resource-list"
-          data-testid="ssh-resources"
-          :data-snapshot-state="resourceSnapshotStatus"
-          :data-snapshot-request-id="resourceSnapshot?.requestId ?? ''"
-        >
-          <div><dt>Connections</dt><dd data-testid="ssh-resource-connections">{{ resourceSnapshot?.connections ?? 'Unverified' }}</dd></div>
-          <div><dt>PTY channels</dt><dd data-testid="ssh-resource-ptys">{{ resourceSnapshot?.ptys ?? 'Unverified' }}</dd></div>
-          <div><dt>SFTP clients</dt><dd data-testid="ssh-resource-sftp">{{ resourceSnapshot?.sftpClients ?? 'Unverified' }}</dd></div>
-          <div><dt>Port forwards</dt><dd data-testid="ssh-resource-forwards">{{ resourceSnapshot?.forwards ?? 'Unverified' }}</dd></div>
-        </dl>
-        <p class="panel-footnote">{{ resourceSnapshotStatus === 'verified' ? 'Native close snapshot verified.' : resourceSnapshotStatus === 'failed' ? 'Native close snapshot failed; counts are unverified.' : 'Native close snapshot has not been verified.' }}</p>
-      </section>
-
-      <section class="panel diagnostics-panel" aria-labelledby="build-diagnostics-title">
-        <div class="panel-heading">
-          <div>
-            <p class="eyebrow">BUILD</p>
-            <h2 id="build-diagnostics-title">Source and asset diagnostics</h2>
-          </div>
-          <span class="state-tag" :class="buildStatusTone === 'error' ? 'state-tag--error' : 'state-tag--success'">
-            {{ buildStatusTone === 'error' ? 'CHECK FAILED' : buildStatusTone === 'checking' ? 'CHECKING' : 'VERIFIED' }}
-          </span>
-        </div>
-        <dl class="diagnostic-list">
-          <div><dt>pocketshell-core revision (core + shared UI)</dt><dd data-testid="core-revision">{{ coreSourceRevision }}</dd></div>
-          <div>
-            <dt>Bundled asset SHA-256</dt>
-            <dd data-testid="bundle-asset-hash">{{ !('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Pending verification' }}</dd>
-          </div>
-          <div><dt>Core formatter</dt><dd>formatBytes(1536) → {{ coreSample }}</dd></div>
-        </dl>
-        <p v-if="!('checking' in buildVerification) && !buildVerification.ok" class="integrity-error" role="alert">
-          {{ buildVerification.reason }}
-        </p>
-      </section>
+      <!-- Native SSH resource counts after a close: a test hook, not chrome (#3023). -->
+      <dl
+        hidden
+        data-testid="ssh-resources"
+        :data-snapshot-state="resourceSnapshotStatus"
+        :data-snapshot-request-id="resourceSnapshot?.requestId ?? ''"
+      >
+        <dd data-testid="ssh-resource-connections">{{ resourceSnapshot?.connections ?? 'Unverified' }}</dd>
+        <dd data-testid="ssh-resource-ptys">{{ resourceSnapshot?.ptys ?? 'Unverified' }}</dd>
+        <dd data-testid="ssh-resource-sftp">{{ resourceSnapshot?.sftpClients ?? 'Unverified' }}</dd>
+        <dd data-testid="ssh-resource-forwards">{{ resourceSnapshot?.forwards ?? 'Unverified' }}</dd>
+      </dl>
       </section>
 
       <section v-if="homeSurface === 'sessions'" class="panel workspace-panel" aria-labelledby="sessions-title">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">REMOTE SESSIONS</p>
             <h2 id="sessions-title">Sessions</h2>
           </div>
           <div class="workspace-panel-actions">
@@ -1940,10 +1913,9 @@ onBeforeUnmount(() => {
         <section class="panel terminal-panel" aria-labelledby="terminal-title">
         <div class="panel-heading panel-heading--terminal">
           <div>
-            <p class="eyebrow">TERMINAL</p>
-            <h2 id="terminal-title">{{ connectionSnapshot?.selectedSession?.name || 'Live terminal' }}</h2>
+            <h2 id="terminal-title">{{ connectionSnapshot?.selectedSession?.name || 'Terminal' }}</h2>
           </div>
-          <span class="state-tag" :class="isLive ? 'state-tag--success' : 'state-tag--muted'">{{ isLive ? 'SSH PTY' : 'NO PTY' }}</span>
+          <span v-if="!isLive" class="state-tag" :class="currentPhase === 'lost' ? 'state-tag--warning' : 'state-tag--muted'" data-testid="terminal-state">{{ terminalStateText }}</span>
         </div>
         <div
           class="terminal-slot"
@@ -2004,7 +1976,8 @@ onBeforeUnmount(() => {
             </template>
           </MobileHotkeys>
         </div>
-        <p class="panel-footnote" data-testid="terminal-resize-status">{{ terminalResizeStatus }}</p>
+        <!-- The SSH-accepted terminal grid: a test hook, not chrome (#3023). -->
+        <span hidden data-testid="terminal-resize-status" :data-status="terminalResizeStatus" />
         </section>
         <PromptComposer
           v-if="connectionSnapshot?.selectedSession"
@@ -2071,10 +2044,10 @@ onBeforeUnmount(() => {
     />
     <AboutScreen
       v-if="navigation.route === 'about' || navigation.route === 'about-update'"
-      :build-verification="buildVerification"
+      :build-state="buildStatusTone"
       :core-revision="coreSourceRevision"
-      :bundle-hash="!('checking' in buildVerification) && buildVerification.ok ? buildVerification.bundleAssetHash : 'Not verified'"
-      :build-status="buildStatus"
+      :bundle-hash="bundleHash"
+      :failure-reason="buildFailureReason"
     />
   </div>
 </template>

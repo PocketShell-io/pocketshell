@@ -27,7 +27,7 @@ export function createComposerDeliveryController(
     write: async (bytes, context) => {
       const acknowledgement = await writePty(bytes, context);
       if (!acknowledgement.ok) {
-        throw new Error(acknowledgement.message || 'The PTY did not acknowledge this write.');
+        throw new Error(acknowledgement.message || 'The terminal did not confirm this input.');
       }
     },
     sleep: wait,
