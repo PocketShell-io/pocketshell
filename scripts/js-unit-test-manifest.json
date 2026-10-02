@@ -326,12 +326,6 @@
     "tests/unit/androidPlatform.test.ts": {
       "suite": "Android PocketShellApi platform",
       "tests": [
-        "never pins a first-contact key without a decision: no decider means refused",
-        "asks the registered decider with host, key type and fingerprint, and honours each answer",
-        "refuses a changed host key with a visible message and never asks about it",
-        "the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always",
-        "abandons a waiting host-key question when the user disconnects",
-        "ignores a caller-supplied standing accept: only the user's answer on the prompt trusts a key",
         "lists sessions as shared summaries and attaches, types and resizes on the selected PTY",
         "never drops the attach snapshot, on a first attach or a re-attach, even when it beats the shell id to the pane",
         "re-attaches and repaints the same session after its pane closed the shell",
@@ -339,7 +333,7 @@
         "a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id",
         "caps output held for an unclaimed shell id, keeping the newest bytes",
         "delivers held output after a fallback when the pane never calls on its new shell id",
-        "retires the superseded shell id when another session is attached",
+        "keeps the first session's shell id live when another session is attached",
         "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
         "maps controller phases onto the shared connection states",
         "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
@@ -347,7 +341,13 @@
         "reports a saved host with no key-vault handle as a dial failure",
         "drives the controller grace from Android lifecycle and never feeds the shared resume probe",
         "mounts the legacy screens unless the launch opted into the shared app",
-        "records each boot so a load-then-reload launch is visible as two entries"
+        "records each boot so a load-then-reload launch is visible as two entries",
+        "never pins a first-contact key without a decision: no decider means refused",
+        "asks the registered decider with host, key type and fingerprint, and honours each answer",
+        "refuses a changed host key with a visible message and never asks about it",
+        "the shared connection store prompts through ssh.onTrustDecision instead of dialling accept-always",
+        "abandons a waiting host-key question when the user disconnects",
+        "ignores a caller-supplied standing accept: only the user's answer on the prompt trusts a key"
       ]
     },
     "tests/unit/androidHostKeys.test.ts": {
@@ -422,6 +422,22 @@
         "routes by the shared map plus exactly the Android host form",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
+    },
+    "tests/unit/multiPtyHub.test.ts": {
+      "suite": "Android hub keeps one PTY per attached session (#2955)",
+      "tests": [
+        "keeps every attached session live, routing each one's bytes and keystrokes to its own shell id",
+        "closes only the PTY of the shell the pane gave up",
+        "re-attaches every open session exactly once after a drop, under the same shell ids",
+        "retires only the shell whose session ended",
+        "retires the shell of a PTY whose read failed and re-attaches it on re-selection, leaving the other tab live",
+        "evicts the least recently focused tab past the PTY bound; it re-attaches when looked at again",
+        "evicts the tab the user has not touched, not the one shown again and typed into, when a new tab opens past the bound",
+        "counts a redraw (the tab shown again) alone as focus for eviction",
+        "counts a geometry push alone as focus for eviction",
+        "counts typing alone as focus for eviction",
+        "states the native per-connection channel budget to core, so the controller keeps exec headroom"
       ]
     },
     "tests/unit/appLifecycle.test.ts": {
@@ -514,6 +530,12 @@
         "does not steal focus when a composer tap precedes WebView activeElement",
         "scopes composer pointer intent to the pending focus request",
         "still gives the terminal focus when no composer has claimed it"
+      ]
+    },
+    "tests/unit/mobileControlSelection.test.ts": {
+      "suite": "mobile control long-press hardening",
+      "tests": [
+        "keeps dock, launcher, dictation and Composer buttons out of text selection and the touch callout"
       ]
     },
     "tests/unit/legacyHostKeyCard.test.ts": {
