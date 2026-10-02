@@ -88,15 +88,34 @@ function freePort() {
   });
 }
 
+/**
+ * Vite colours its banner whenever it thinks colour is supported, which
+ * includes `CI=true` with no TTY. Readiness and token matching run on the
+ * de-coloured text so an escape between `Local` and `:` cannot hide it.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/gu;
+const stripAnsi = (text) => text.replace(ANSI_ESCAPE, '');
+
+/**
+ * The first VISIBLE element with this text. Plain `getByText(...).first()` can
+ * land on an invisible match: the shared session tree draws an agent-mark SVG
+ * whose `<title>` repeats the session name ahead of the clickable label.
+ */
+const visibleText = (page, text, options) => page.getByText(text, options).locator('visible=true').first();
+
 /** Start the dev launcher and resolve once Vite is serving. */
 function startDevServer(options, port) {
   const args = [path.join(repoRoot, 'scripts', 'dev-browser.mjs'), options.mode, ...options.launcher, '--port', String(port), '--', '--strictPort'];
-  const child = spawn(process.execPath, args, { cwd: repoRoot, env: { ...process.env, BROWSER: 'none' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, args, { cwd: repoRoot, env: { ...process.env, BROWSER: 'none', NO_COLOR: '1', FORCE_COLOR: undefined }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let rawLog = '';
   let log = '';
   const ready = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`dev server did not start:\n${log}`)), 60_000);
     const onData = (chunk) => {
-      log += chunk.toString();
+      // Strip the whole log, not each chunk: an escape can straddle chunks.
+      rawLog += chunk.toString();
+      log = stripAnsi(rawLog);
       if (/Local:\s+http:\/\//u.test(log)) {
         clearTimeout(timer);
         resolve();
@@ -293,7 +312,7 @@ async function mockJourneys(browser, base, smoke) {
     if (await page.locator('[data-testid="prompt-composer"]').isVisible()) await page.click('[data-testid="composer-close"]').catch(() => undefined);
     await page.click('[aria-label="Settings"]');
     await page.click('[data-testid="open-usage"]');
-    await page.getByText('Claude Code').first().waitFor({ timeout: 10_000 });
+    await visibleText(page, 'Claude Code').waitFor({ timeout: 10_000 });
     await shot(page, smoke, 'legacy-06-usage');
     return 'Claude Code, Codex, Copilot, Gemini';
   });
@@ -308,7 +327,7 @@ async function mockJourneys(browser, base, smoke) {
   const sharedPage = smoke.watch(await shared.newPage(), 'shared');
   await smoke.open(sharedPage, `${base}/?shell=shared`);
   await smoke.step('shared: the seeded mock host is listed and asks for host-key trust', async () => {
-    await sharedPage.getByText('mock-devbox').first().click({ timeout: 30_000 });
+    await visibleText(sharedPage, 'mock-devbox').click({ timeout: 30_000 });
     await sharedPage.waitForSelector('[data-testid="trust-host-key"]', { timeout: 20_000 });
     if (!(await sharedPage.locator('body').innerText()).includes(mockHostFingerprint())) {
       throw new Error('the shared trust prompt does not show the mock host fingerprint');
@@ -317,7 +336,7 @@ async function mockJourneys(browser, base, smoke) {
     await sharedPage.click('[data-testid="trust-host-key"]');
   });
   await smoke.step('shared: the session tree opens a terminal that echoes typed input', async () => {
-    await sharedPage.getByText('codex-review').first().click({ timeout: 20_000 });
+    await visibleText(sharedPage, 'codex-review').click({ timeout: 20_000 });
     await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 15_000 });
     await typeInTerminal(sharedPage, `echo shared-${marker}`);
     await waitForTerminalLine(sharedPage, `shared-${marker}`);
@@ -435,10 +454,10 @@ async function liveJourney(browser, base, smoke, options, token) {
       try {
         const sharedPage = smoke.watch(await shared.newPage(), 'shared');
         await smoke.open(sharedPage, entry('/?shell=shared'));
-        await sharedPage.getByText(options.host.name).first().click({ timeout: 30_000 });
+        await visibleText(sharedPage, options.host.name).click({ timeout: 30_000 });
         await sharedPage.waitForSelector('[data-testid="trust-host-key"]', { timeout: 20_000 });
         await sharedPage.click('[data-testid="trust-host-key"]');
-        await sharedPage.getByText(tag, { exact: true }).first().click({ timeout: 30_000 });
+        await visibleText(sharedPage, tag, { exact: true }).click({ timeout: 30_000 });
         await sharedPage.locator('.xterm:visible').first().waitFor({ timeout: 30_000 });
         await sharedPage.waitForTimeout(1_500);
         await typeInTerminal(sharedPage, `echo SHARED_$((40+2))_${tag}`);

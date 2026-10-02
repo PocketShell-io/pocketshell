@@ -19,8 +19,20 @@ import WebSocket from 'ws';
 const repoRoot = path.resolve(__dirname, '../..');
 let launcher: ChildProcess;
 let port = 0;
+let rawOutput = '';
 let output = '';
 let token = '';
+
+/**
+ * Vite colours its banner whenever it thinks colour is supported, which
+ * includes `CI=true` with no TTY. Readiness and token matching run on the
+ * de-coloured text so an escape between `Local` and `:` cannot hide it.
+ */
+// eslint-disable-next-line no-control-regex
+const ANSI_ESCAPE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/gu;
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_ESCAPE, '');
+}
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -74,13 +86,15 @@ describe('browser dev mode live dev server', () => {
     port = await freePort();
     launcher = spawn(process.execPath, [path.join(repoRoot, 'scripts', 'dev-browser.mjs'), 'live', '--port', String(port)], {
       cwd: repoRoot,
-      env: { ...process.env, BROWSER: 'none', POCKETSHELL_DEV_HOSTS: '', POCKETSHELL_DEV_IDENTITY: '' },
+      env: { ...process.env, BROWSER: 'none', NO_COLOR: '1', FORCE_COLOR: undefined, POCKETSHELL_DEV_HOSTS: '', POCKETSHELL_DEV_IDENTITY: '' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`dev:live did not start:\n${output}`)), 60_000);
       const onData = (chunk: Buffer) => {
-        output += chunk.toString();
+        // Strip the whole log, not each chunk: an escape can straddle chunks.
+        rawOutput += chunk.toString();
+        output = stripAnsi(rawOutput);
         if (/Local:\s+http:\/\//u.test(output)) {
           clearTimeout(timer);
           resolve();
