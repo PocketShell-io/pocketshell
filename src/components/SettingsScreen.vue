@@ -10,6 +10,8 @@ import { THEME_CHOICE_SYSTEM, THEMES } from '@ui/themes';
 import AppIcon from '@ui/components/AppIcon.vue';
 import SettingsConnectionsGroup from '@ui/app/components/settings/SettingsConnectionsGroup.vue';
 import HostSnippetsScreen from './HostSnippetsScreen.vue';
+import AccountSyncScreen from './AccountSyncScreen.vue';
+import { androidSync } from '../platform/android/sync';
 
 defineProps<{
   snippetHostId: string;
@@ -18,6 +20,12 @@ defineProps<{
 
 const settings = useAppSettings();
 const navigation = useNavigationStore();
+
+/** The phone's saved and imported hosts; loaded lazily so this screen's import stays storage-free. */
+async function loadLocalHosts() {
+  const { androidHosts } = await import('../platform/android/hosts');
+  return androidHosts.list();
+}
 
 function setTerminalFontSize(event: Event) {
   settings.setTerminalFontSize((event.target as HTMLInputElement).value);
@@ -61,6 +69,11 @@ function setVoiceSilence(event: Event) {
         <span><strong>Connections</strong><small>Background grace and reconnect</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
+      <button class="settings-link" type="button" data-testid="open-account-settings" @click="navigation.open('settings-account')">
+        <span class="settings-link__icon"><AppIcon name="folder" /></span>
+        <span><strong>Account &amp; sync</strong><small>Sign in with Google to sync hosts across devices</small></span>
+        <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
+      </button>
       <button class="settings-link" type="button" data-testid="open-ports" @click="navigation.open('ports')">
         <span class="settings-link__icon"><AppIcon name="arrow-right-left" /></span>
         <span><strong>Port forwarding</strong><small>Find remote services and open local tunnels</small></span>
@@ -83,7 +96,7 @@ function setVoiceSilence(event: Event) {
       </button>
       <button class="settings-link" type="button" data-testid="open-advanced-settings" @click="navigation.open('settings-advanced')">
         <span class="settings-link__icon"><AppIcon name="settings" /></span>
-        <span><strong>Advanced</strong><small>Compatibility and account sync status</small></span>
+        <span><strong>Advanced</strong><small>Compatibility and account sync</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
       <button class="settings-link" type="button" data-testid="open-diagnostics" @click="navigation.open('diagnostics')">
@@ -185,23 +198,18 @@ function setVoiceSilence(event: Event) {
       <p class="settings-note">This setting is saved on this device and applies the next time dictation starts. Android providers may treat silence timing as advisory.</p>
       <button class="settings-link" type="button" data-testid="open-account-sync" @click="navigation.open('settings-account')">
         <span class="settings-link__icon"><AppIcon name="folder" /></span>
-        <span><strong>Account sync</strong><small>Not connected · sync work is pending</small></span>
+        <span><strong>Account &amp; sync</strong><small>Google sign-in and host sync</small></span>
         <AppIcon class="settings-link__chevron" name="arrow-right" :size="16" />
       </button>
       <p class="settings-note">No unimplemented switch can change connection or retry behavior.</p>
     </section>
   </main>
 
-  <main v-else-if="navigation.route === 'settings-account'" class="screen-content settings-screen" data-testid="account-settings-screen">
-    <section class="panel settings-panel" aria-labelledby="account-settings-title">
-      <p class="eyebrow">SETTINGS · SYNC</p>
-      <h1 id="account-settings-title">Account sync</h1>
-      <div class="settings-empty-state">
-        <AppIcon name="folder" :size="16" />
-        <div><strong>Account sync is unavailable in this build.</strong><p>Google sign-in and the secure sync adapter are not configured, so PocketShell sends no request and does not change account data.</p></div>
-      </div>
-    </section>
-  </main>
+  <AccountSyncScreen
+    v-else-if="navigation.route === 'settings-account'"
+    :sync="androidSync()"
+    :load-local-hosts="loadLocalHosts"
+  />
 </template>
 
 <style scoped>

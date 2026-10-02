@@ -41,6 +41,7 @@ import {
 } from './migration/installedDataMigration';
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { androidKeyManager } from './platform/android/hosts';
+import { androidSync } from './platform/android/sync';
 import SshKeysScreen from './components/SshKeysScreen.vue';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
@@ -177,6 +178,9 @@ const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
 const selectedLegacyHostId = ref('');
+/** Hosts from the signed-in Google account's last sync (#3020); metadata only, no keys. */
+const syncedAccountHosts = ref<Array<{ name: string; hostname: string; port: number; user: string }>>([]);
+const selectedSyncedHostName = ref('');
 const sshKeys = ref<SshKeyMetadata[]>([]);
 const selectedKeyHandleId = ref('');
 const sshKeyLoadError = ref('');
@@ -596,6 +600,7 @@ function setManualPortForwarding(remotePort: number, enabled: boolean): void {
 }
 
 watch(() => navigation.route, (route) => {
+  if (route === 'home') refreshSyncedAccountHosts();
   if (route === 'usage') void refreshUsage();
   if (route === 'ports') void refreshPorts();
   if (route === 'keys') void refreshSshKeys();
@@ -811,7 +816,28 @@ function selectLegacyHost(): void {
 
 function clearLegacyHostSelection(): void {
   selectedLegacyHostId.value = '';
+  selectedSyncedHostName.value = '';
   legacyKeyPassphrase.value = '';
+}
+
+function refreshSyncedAccountHosts(): void {
+  syncedAccountHosts.value = (androidSync().accountHosts() ?? []).map((host) => ({
+    name: host.name,
+    hostname: host.hostname,
+    port: typeof host.port === 'number' && Number.isInteger(host.port) && host.port > 0 && host.port < 65536 ? host.port : 22,
+    user: typeof host.user === 'string' ? host.user : '',
+  }));
+  if (!syncedAccountHosts.value.some((host) => host.name === selectedSyncedHostName.value)) selectedSyncedHostName.value = '';
+}
+
+/** Fill the form from a synced host; its SSH key is chosen on this phone. */
+function selectSyncedHost(): void {
+  const host = syncedAccountHosts.value.find((candidate) => candidate.name === selectedSyncedHostName.value);
+  if (!host) return;
+  selectedLegacyHostId.value = '';
+  legacyKeyPassphrase.value = '';
+  hostDraft.value = { hostname: host.hostname, port: String(host.port), username: host.user };
+  connectionMessage.value = selectedKeyHandleId.value ? '' : `Choose an SSH key on this phone to connect to ${host.name}.`;
 }
 
 function selectSshKey(handleId: string): void {
@@ -1308,6 +1334,7 @@ function reloadAfterSettingsImport(settingsWritten: boolean): boolean {
 }
 
 onMounted(() => {
+  refreshSyncedAccountHosts();
   // Packaged instrumentation opts in through isolated app storage before
   // launch. This exposes the real core-backed policy with fake platform
   // effects; the production settings screen has no sync action or network
@@ -1706,6 +1733,15 @@ onBeforeUnmount(() => {
               <option value="">Choose a saved host</option>
               <option v-for="host in importedLegacyHosts" :key="host.id" :value="String(host.id)">
                 {{ host.name || host.hostname }} · {{ host.username }}@{{ host.hostname }}:{{ host.port }} · {{ host.keyName }}
+              </option>
+            </select>
+          </label>
+          <label v-if="syncedAccountHosts.length > 0" class="form-field host-field-name">
+            <span>Synced host from your account</span>
+            <select v-model="selectedSyncedHostName" data-testid="synced-host-select" @change="selectSyncedHost">
+              <option value="">Choose a synced host</option>
+              <option v-for="host in syncedAccountHosts" :key="host.name" :value="host.name">
+                {{ host.name }} · {{ host.user ? `${host.user}@` : '' }}{{ host.hostname }}:{{ host.port }}
               </option>
             </select>
           </label>

@@ -150,6 +150,17 @@ else
   settings_status=$?
 fi
 
+# Google sign-in and settings sync (#3020): fake Google and fake sync API
+# in-process, no Docker fixture.
+if scripts/connected-js-account-sync.sh \
+  --suffix i2855ci \
+  --run-id "js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+  --test-only; then
+  account_sync_status=0
+else
+  account_sync_status=$?
+fi
+
 # The shared PocketShell app (#2936): list, attach, re-attach and type, on
 # its own isolated agents lane (the workflow starts 2243 for it).
 if scripts/connected-js-shared-app.sh \
@@ -185,16 +196,16 @@ else
   signed_upgrade_status=$?
 fi
 
-printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
+printf 'Packaged API 35 lane statuses: smoke=%s lifecycle=%s usage-ports=%s files=%s composer=%s composer-junit-copy=%s composer-junit=%s hotkeys=%s hotkeys-junit=%s durable-storage=%s settings=%s account-sync=%s shared-app=%s key-vault=%s signed-upgrade=%s smoke-junit-copy=%s\n' \
   "$smoke_status" "$lifecycle_status" "$usage_status" "$files_status" "$composer_status" \
   "$composer_junit_copy_status" "$composer_junit_status" "$hotkeys_status" \
-  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$shared_app_status" \
+  "$hotkeys_junit_status" "$durable_status" "$settings_status" "$account_sync_status" "$shared_app_status" \
   "$key_vault_status" "$signed_upgrade_status" "$copy_status"
 
 if (( smoke_status != 0 || lifecycle_status != 0 || usage_status != 0 || files_status != 0 \
       || composer_status != 0 || composer_junit_copy_status != 0 || composer_junit_status != 0 \
       || hotkeys_status != 0 || hotkeys_junit_status != 0 || durable_status != 0 \
-      || settings_status != 0 || shared_app_status != 0 || key_vault_status != 0 \
+      || settings_status != 0 || account_sync_status != 0 || shared_app_status != 0 || key_vault_status != 0 \
       || signed_upgrade_status != 0 || copy_status != 0 )); then
   exit 1
 fi

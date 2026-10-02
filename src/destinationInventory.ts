@@ -14,7 +14,7 @@ export const DESTINATION_INVENTORY: readonly DestinationMapping[] = [
   { oldDestination: 'VoiceSettings', newRoute: 'settings-voice', status: 'available', owner: '#2857', note: 'Dictation language is persisted and applied to the next Android recognizer start.' },
   { oldDestination: 'ConnectionSettings', newRoute: 'settings-connections', status: 'available', owner: '#2861', note: 'Background grace is persisted and read when a live connection backgrounds.' },
   { oldDestination: 'AdvancedSettings', newRoute: 'settings-advanced', status: 'partial', owner: '#2861/#2936', note: 'Enter-key delay, usage warning threshold and reset live in the shared core SettingsView; the Android route shows them once #2936 mounts the shared app.' },
-  { oldDestination: 'AccountSync', newRoute: 'settings-account', status: 'information-only', owner: '#2852/#2861', note: 'Sync sign-in and credential handling remain pending.' },
+  { oldDestination: 'AccountSync', newRoute: 'settings-account', status: 'available', owner: '#3020/#2852', note: 'Google sign-in (Credential Manager, token kept natively), passphrase-encrypted host sync through core runSyncRound; synced hosts fill the home connection form.' },
   { oldDestination: 'Diagnostics', newRoute: 'diagnostics', status: 'available', owner: '#2861', note: 'Local redacted bridge, SSH, build, and lifecycle events can be reviewed and exported.' },
   { oldDestination: 'CrashReports', newRoute: 'diagnostics', status: 'available', owner: '#2861', note: 'Compatibility alias for the Diagnostics destination.' },
   { oldDestination: 'DiagnosticReport', newRoute: 'diagnostics-report', status: 'available', owner: '#2861', note: 'A selected event opens a report preview before export.' },

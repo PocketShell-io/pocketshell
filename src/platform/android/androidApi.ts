@@ -13,6 +13,9 @@
  *              advertises that, so the shared store never re-dials (#2954);
  *   hosts    — {@link AndroidHostStore}: hosts added on the phone plus the
  *              0.5.x import;
+ *   sync     — the Android settings-sync adapter (src/sync/androidSync.ts,
+ *              #3020) when supplied: native Google sign-in and transport,
+ *              WebView encryption, core's sync round;
  *   app      — Android lifecycle drives the controllers' background grace
  *              directly (see `bindLifecycle`), so the shared store's resume
  *              probe is deliberately NOT fed;
@@ -60,6 +63,8 @@ export interface AndroidApiDeps {
   log?: (entry: { kind: string; message: string; detail?: Record<string, unknown> }) => void;
   /** Controller snapshots as the hub sees them (diagnostics only). */
   observeConnections?: (entry: ConnectionJournalEntry) => void;
+  /** Google sign-in and settings sync (#3020); signed-out stub when absent. */
+  sync?: PocketShellApi['sync'];
 }
 
 export interface AndroidPlatform {
@@ -243,7 +248,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       },
     },
 
-    sync: {
+    sync: deps.sync ?? {
       status: async () => ({ loggedIn: false, email: null, keychainAvailable: false }),
       login: unsupported('sync.login'),
       logout: async () => undefined,

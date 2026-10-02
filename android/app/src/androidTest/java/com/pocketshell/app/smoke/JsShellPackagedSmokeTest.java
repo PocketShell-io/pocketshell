@@ -325,8 +325,11 @@ public final class JsShellPackagedSmokeTest {
         awaitJsTrue("document.querySelector('[data-testid=open-account-sync]') !== null");
         tapDomCenter("[data-testid=open-account-sync]");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.route === 'settings-account'");
-        awaitJsTrue("document.querySelector('[data-testid=account-settings-screen]')?.innerText.includes('Account sync is unavailable in this build.') === true");
-        assertEquals("unavailable account sync makes no network request", 0,
+        // Signed out (#3020): the Account screen offers Google sign-in and,
+        // until the user taps it, sends nothing — sync traffic is native-only.
+        awaitJsTrue("document.querySelector('[data-testid=account-sync-status]')?.dataset.signedIn === 'false'"
+                + " && !!document.querySelector('[data-testid=account-sign-in]')");
+        assertEquals("a signed-out account screen makes no WebView network request", 0,
                 Integer.parseInt(evalString("window.__ps2852NetworkRequestCount")));
 
         String probeStorageKey = "pocketshell.settings-sync-test-probe";
