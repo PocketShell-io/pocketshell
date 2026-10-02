@@ -79,10 +79,20 @@ function isResourceSnapshot(value: unknown, requestId: string): value is SshReso
   });
 }
 
+/**
+ * SshCapabilityPlugin.MAX_CHANNELS_PER_CONNECTION: the plugin refuses a
+ * channel past this many per connection (PTYs, execs and forwards share it).
+ * Stated to core so the controller bounds its PTYs below it (#2955).
+ */
+export const NATIVE_MAX_CHANNELS_PER_CONNECTION = 8;
+
 /** Adapt the core's string request ID to Capacitor's one-object plugin bridge. */
 export function adaptSshCapabilityPlugin(plugin: NativeSshCapabilityPlugin): SshCapabilityPlugin {
   return new Proxy(plugin, {
     get(target, property) {
+      // A plain value, answered here: Capacitor's plugin proxy would turn any
+      // unknown property into a native method call.
+      if (property === 'maxChannelsPerConnection') return NATIVE_MAX_CHANNELS_PER_CONNECTION;
       if (property === 'resourceSnapshot') {
         return async (requestId: string): Promise<SshResourceSnapshot> => {
           const call = Reflect.get(target, property, target) as NativeSshCapabilityPlugin['resourceSnapshot'];

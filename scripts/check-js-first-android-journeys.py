@@ -116,6 +116,7 @@ LANES = (
                 "sharedTerminalDeliversImeEditsAsExactBytes",
                 "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
                 "sharedAppReportsARealSessionEndWithoutReconnecting",
+                "sharedAppSwitchesSessionTabsKeepingEachTerminal",
             }
         ),
     ),

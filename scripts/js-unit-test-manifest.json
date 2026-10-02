@@ -334,7 +334,7 @@
         "a re-joining pane typing under its retired id does not flush the repaint before it adopts the new id",
         "caps output held for an unclaimed shell id, keeping the newest bytes",
         "delivers held output after a fallback when the pane never calls on its new shell id",
-        "retires the superseded shell id when another session is attached",
+        "keeps the first session's shell id live when another session is attached",
         "keeps one logical connection id and reports reconnecting, not lost, while the controller re-dials",
         "maps controller phases onto the shared connection states",
         "connects a saved host with its session key and serves bootstrap, usage and home over the controller",
@@ -417,6 +417,22 @@
         "routes by the shared map plus exactly the Android host form",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
+      ]
+    },
+    "tests/unit/multiPtyHub.test.ts": {
+      "suite": "Android hub keeps one PTY per attached session (#2955)",
+      "tests": [
+        "keeps every attached session live, routing each one's bytes and keystrokes to its own shell id",
+        "closes only the PTY of the shell the pane gave up",
+        "re-attaches every open session exactly once after a drop, under the same shell ids",
+        "retires only the shell whose session ended",
+        "retires the shell of a PTY whose read failed and re-attaches it on re-selection, leaving the other tab live",
+        "evicts the least recently focused tab past the PTY bound; it re-attaches when looked at again",
+        "evicts the tab the user has not touched, not the one shown again and typed into, when a new tab opens past the bound",
+        "counts a redraw (the tab shown again) alone as focus for eviction",
+        "counts a geometry push alone as focus for eviction",
+        "counts typing alone as focus for eviction",
+        "states the native per-connection channel budget to core, so the controller keeps exec headroom"
       ]
     },
     "tests/unit/appLifecycle.test.ts": {
