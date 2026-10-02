@@ -544,6 +544,30 @@
         "asks on first contact with the three shared answers",
         "refuses a changed key: both fingerprints, no first-contact wording, no trust action"
       ]
+    },
+    "tests/unit/syncCrypto.test.ts": {
+      "suite": "settings-sync envelope encryption",
+      "tests": [
+        "decrypts an envelope written by the desktop client",
+        "writes the desktop parameters at full strength and reads its own envelope back",
+        "uses a fresh salt and IV per write and round-trips multi-byte text and passphrases",
+        "refuses a wrong passphrase, a tampered ciphertext and an empty passphrase with one message",
+        "refuses malformed envelopes and bounds the blob-controlled iteration count before deriving"
+      ]
+    },
+    "tests/unit/androidSync.test.ts": {
+      "suite": "Android settings sync adapter",
+      "tests": [
+        "contributes only the host fields the phone owns, so synthesized defaults never overwrite desktop values",
+        "brings desktop hosts onto the phone and keeps desktop-only fields through a phone sync",
+        "creates a fresh account on base version 0 with the selected phone hosts",
+        "re-pulls and re-merges after another device writes first, keeping that device's new host",
+        "never uploads over unreadable account data, a wrong passphrase, or an empty selection",
+        "turns sync API refusals into plain words and refuses an envelope over the 8 KB limit before sending",
+        "signing out deletes the native sign-in and the cached account copy",
+        "serves the shared app's api.sync group from the same adapter",
+        "accepts only signed-in state from the native plugin, never a token field"
+      ]
     }
   }
 }

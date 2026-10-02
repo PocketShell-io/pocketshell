@@ -173,7 +173,13 @@ dependencies {
     implementation 'org.bouncycastle:bcpkix-jdk18on:1.80'
     implementation 'androidx.security:security-crypto:1.1.0'
     implementation 'com.google.crypto.tink:tink-android:1.8.0'
+    // Google sign-in for settings sync (#3020): Credential Manager + Sign in with Google.
+    implementation 'androidx.credentials:credentials:1.6.0'
+    implementation 'androidx.credentials:credentials-play-services-auth:1.6.0'
+    implementation 'com.google.android.libraries.identity.googleid:googleid:1.2.1'
     testImplementation "junit:junit:$junitVersion"
+    // The real org.json on the JVM; android.jar only carries stubs (#3020 GoogleIdToken claims).
+    testImplementation 'org.json:json:20250517'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     androidTestImplementation "androidx.test.espresso:espresso-intents:$androidxEspressoCoreVersion"

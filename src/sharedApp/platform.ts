@@ -9,6 +9,7 @@ import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } fr
 import { sshCapability } from '@/native/sshCapability';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
 import { androidHosts } from '@/platform/android/hosts';
+import { androidSync } from '@/platform/android/sync';
 import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE } from './router';
@@ -55,6 +56,7 @@ export const androidPlatform = createAndroidPlatform({
   addHostRoute: ADD_HOST_ROUTE,
   log: (entry) => console.info(`[pocketshell] ${entry.kind}: ${entry.message}`, entry.detail ?? ''),
   observeConnections: journalConnection,
+  sync: androidSync().api(),
 });
 
 export type { HostKeyTrustPin };

@@ -109,6 +109,14 @@ host form, and resource status screenshots under
 maintainer visual sign-off. Run it with
 `scripts/agents-pool.sh up 2244`, then run
 `scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 --container pocketshell-test-agents-2244 --run-id js2926-local`.
+The account-sync lane (issue #3020) needs no Docker fixture. It selects
+`AccountSyncJourneyTest`, which installs a fake Google sign-in and an
+in-process fake sync API through `GoogleSyncEnvironment` before launch, then
+signs in, reads a desktop-written envelope, syncs through a mid-sync
+conflict, picks a synced host on the home screen and signs out. Its checker
+requires both methods, seven distinct screenshots and a same-run logcat with
+the journey's EVIDENCE line and no ID token. Run it with
+`scripts/connected-js-account-sync.sh --suffix i3020 --run-id js3020-local`.
 The signed-upgrade lane runs `InstalledDataMigrationJourneyTest` last in the
 blocking packaged CI run (`scripts/ci-js-first-packaged-lanes.sh`), after the
 suffixed lanes, because it owns the unsuffixed `com.pocketshell.app` install.

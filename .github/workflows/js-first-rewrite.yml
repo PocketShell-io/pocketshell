@@ -90,6 +90,9 @@ jobs:
       - name: Check fail-closed packaged settings and support result guard
         run: scripts/check-js-settings-results.py --self-test
 
+      - name: Check fail-closed packaged account-sync result guard
+        run: scripts/check-js-account-sync-results.py --self-test
+
       - name: Check fail-closed packaged key-vault and signed-upgrade result guards
         run: |
           scripts/check-js-key-vault-results.py --self-test
@@ -281,6 +284,10 @@ jobs:
             --screenshots-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --reconnect-evidence "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/reconnect-evidence.json" \
             --host-listing "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host-pocketshell-sessions-list.json"
+          run_check "Account sync" scripts/check-js-account-sync-results.py \
+            --results-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --logcat "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
           run_check "Shared app" scripts/check-js-shared-app-results.py \
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
@@ -385,6 +392,7 @@ jobs:
             android/app/build/outputs/js-lifecycle/**
             android/app/build/outputs/js-files/**
             android/app/build/outputs/js-settings/**
+            android/app/build/outputs/js-account-sync/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**
             android/app/build/outputs/js-durable-storage/**
