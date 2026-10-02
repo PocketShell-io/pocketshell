@@ -116,6 +116,8 @@ LANES = (
                 "sharedTerminalDeliversImeEditsAsExactBytes",
                 "sharedAppRecoversAbruptServerDropWithOneControllerReconnect",
                 "sharedAppReportsARealSessionEndWithoutReconnecting",
+                # #3039: only the attach client dies; a silent re-join.
+                "sharedAppSilentlyRejoinsWhenOnlyTheAttachClientDies",
                 "sharedAppSwitchesSessionTabsKeepingEachTerminal",
                 # #2953: the shared host-key prompt, and a changed key refused.
                 "firstContactHostKeyAsksAndHonoursRejectOnceAndAlways",

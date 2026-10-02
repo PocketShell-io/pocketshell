@@ -211,4 +211,46 @@ describe('Shared store delegates recovery to the ConnectionController', () => {
     expect(ctx.native.execs.slice(execsBefore)).not.toContain('true');
     expect(ctx.native.connects.length).toBe(dialsBefore);
   });
+
+  it('lets the pane ask its client-exit verdict on a dying link without a second ladder (#3039)', async () => {
+    // #3039 review B2: the pane's verdict listing used helper.sessionsList,
+    // whose failure on a dead transport starts the controller's reconnect AND
+    // writes a second retry-0 `reconnecting` snapshot — doubling the #2954
+    // abrupt-drop ladder. The pane's probe is inert: no journal entry, no dial.
+    const ctx = setup();
+    const connectionId = await connectAndAttach(ctx);
+    expect(typeof platform!.api.helper.sessionsProbe).toBe('function');
+    const lost = () => Object.assign(new Error('SSH connection is no longer available.'), { code: 'CONNECTION_LOST' });
+    const journalAt = ctx.journal.length;
+    const dialsAt = ctx.native.connects.length;
+
+    ctx.native.sessionListFailures.push(lost());
+    await expect(platform!.api.helper.sessionsProbe!(connectionId)).rejects.toThrow(/no longer available/);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(ctx.journal.slice(journalAt), 'the verdict probe wrote connection state').toEqual([]);
+    expect(ctx.native.connects.length - dialsAt).toBe(0);
+    expect(ctx.store.state).toBe('connected');
+    expect(ctx.seenStates).not.toContain('reconnecting');
+
+    // While the controller recovers, the probe does not touch the link at all.
+    ctx.native.refuseDials = true;
+    ctx.native.dropTransport();
+    await until(() => ctx.store.state === 'reconnecting');
+    const execsAt = ctx.native.execs.length;
+    await expect(platform!.api.helper.sessionsProbe!(connectionId)).rejects.toThrow();
+    expect(ctx.native.execs.length).toBe(execsAt);
+    ctx.native.refuseDials = false;
+    await until(() => ctx.controllers.at(-1)!.getSnapshot().phase === 'live');
+    expect(await platform!.api.helper.sessionsProbe!(connectionId)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: 'main' })]),
+    );
+
+    // Liveness of the injected failure: the ordinary listing reads the very
+    // same failure as a lost link and recovers it.
+    const dialsBeforeList = ctx.native.connects.length;
+    ctx.native.sessionListFailures.push(lost());
+    await expect(platform!.api.helper.sessionsList(connectionId)).rejects.toThrow();
+    await until(() => ctx.native.connects.length === dialsBeforeList + 1);
+  });
 });

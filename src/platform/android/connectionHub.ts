@@ -342,6 +342,19 @@ export class AndroidConnectionHub {
     return result.value.sessions.map(sessionRowToSummary);
   }
 
+  /**
+   * The pane's "did this session outlive its client?" listing (#3039): the
+   * controller's side-effect-free probe. Unlike {@link sessionsList} it never
+   * starts a reconnect or writes connection state, and it refuses rather
+   * than asks while the link is not usable — so a verdict asked as the link
+   * dies cannot become a second recovery trigger (#2954's one ladder).
+   */
+  async sessionsProbe(connectionId: string): Promise<SessionSummary[]> {
+    const result = await this.recordOf(connectionId).controller.probeSessions();
+    if (!result.ok) throw new Error(result.message);
+    return result.value.sessions.map(sessionRowToSummary);
+  }
+
   // --- shell ----------------------------------------------------------------
 
   async attachSession(request: AttachRequest): Promise<{ shellId: ShellId; switched: boolean }> {

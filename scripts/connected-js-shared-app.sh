@@ -272,6 +272,22 @@ fetch_host_bytes() {
   fixture "cat ~/$SESSION_RUN-c/ps2952-bytes.hex" > "$HOST_BYTES_FILE" 2>/dev/null || rm -f "$HOST_BYTES_FILE"
 }
 
+# #3039: the session-end and client-drop journeys copy their phase traces here
+# (the app's own files go with the app's uninstall), so passing runs keep one
+# too. Clear stale copies first: an earlier run's trace must not stand in.
+PHASE_TRACES=(ps3039-journal-session-end.json ps3039-journal-client-drop.json)
+for trace in "${PHASE_TRACES[@]}"; do
+  "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/$trace" >/dev/null 2>&1 || true
+done
+pull_phase_traces() {
+  local destination="$1" trace
+  mkdir -p "$destination"
+  for trace in "${PHASE_TRACES[@]}"; do
+    "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/$trace" "$destination/$trace" >/dev/null 2>&1 || true
+    "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/$trace" >/dev/null 2>&1 || true
+  done
+}
+
 # The key reaches the app only through the key vault's content-URI import;
 # the raw copy sits outside every app package and the test deletes it.
 DEVICE_KEY_PATH="/data/local/tmp/pocketshell-$SUFFIX-shared-key.pem"
@@ -295,6 +311,7 @@ else
   test_exit_code=$?
   printf 'Shared-app journeys failed; capturing emulator diagnostics.\n' >&2
   mkdir -p "$RESULTS_DIR"
+  pull_phase_traces "$RESULTS_DIR" 7>&-
   fetch_host_bytes
   [[ -f "$HOST_BYTES_FILE" ]] && cp "$HOST_BYTES_FILE" "$RESULTS_DIR/host-ime-bytes.hex"
   "$ADB" -s "$ANDROID_SERIAL" logcat -d 7>&- -v threadtime -t 4000 \
@@ -314,6 +331,7 @@ else
   exit "$test_exit_code"
 fi
 fetch_host_bytes
+pull_phase_traces "$RESULTS_DIR" 7>&-
 "$ROOT_DIR/scripts/check-js-shared-app-results.py" --results-dir "$RESULTS_DIR" \
   --host-bytes "$HOST_BYTES_FILE" --evidence-dir "$SHARED_APP_RESULTS_DIR"
 # Screenshots the journeys took of the typed terminal (evidence, not a gate).

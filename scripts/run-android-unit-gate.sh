@@ -17,6 +17,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.KeyHandleConnectFailuresTest
   com.pocketshell.app.SpeechRecognitionOptionsTest
   com.pocketshell.app.SpeechRecognitionPluginTest
+  com.pocketshell.app.SshCapabilityPluginChannelRequestTest
   com.pocketshell.app.SshCapabilityPluginCloseTest
 )
 RESULTS_DIR="$ROOT_DIR/android/app/build/test-results/testDebugUnitTest"

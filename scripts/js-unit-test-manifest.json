@@ -402,7 +402,8 @@
         "recovers a dropped link with one ladder when an attempt inside it fails",
         "runs no second ladder after the controller gives up, and Retry re-attaches through ssh.reconnect",
         "words the lost-link banner from the controller ladder and its give-up reason",
-        "leaves the OS-resume probe to the controller when it owns recovery"
+        "leaves the OS-resume probe to the controller when it owns recovery",
+        "lets the pane ask its client-exit verdict on a dying link without a second ladder (#3039)"
       ]
     },
     "tests/unit/terminalLogicalLines.test.ts": {
