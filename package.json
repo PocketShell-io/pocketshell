@@ -9,6 +9,8 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "dev:mock": "node scripts/dev-browser.mjs mock",
+    "dev:live": "node scripts/dev-browser.mjs live",
     "typecheck": "vue-tsc --noEmit",
     "test:unit": "vitest run",
     "build:web": "pnpm verify:js-source && vue-tsc --noEmit && vite build",
@@ -55,12 +57,17 @@
   },
   "devDependencies": {
     "@capacitor/cli": "8.1.0",
+    "@types/ssh2": "1.15.5",
+    "@types/ws": "8.18.2",
     "@vitejs/plugin-vue": "5.2.1",
     "@vue/compiler-sfc": "3.5.13",
     "@vue/tsconfig": "0.7.0",
+    "playwright-core": "1.49.1",
+    "ssh2": "1.16.0",
     "typescript": "5.7.2",
-    "vite": "6.0.7",
+    "vite": "6.4.3",
     "vitest": "2.1.8",
-    "vue-tsc": "2.2.0"
+    "vue-tsc": "2.2.0",
+    "ws": "8.21.3"
   }
 }
