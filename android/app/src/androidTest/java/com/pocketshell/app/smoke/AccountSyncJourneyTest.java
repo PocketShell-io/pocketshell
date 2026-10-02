@@ -280,15 +280,29 @@ public final class AccountSyncJourneyTest {
     private void launchWithLocalHosts(JSONArray hosts) throws Exception {
         scenario = ActivityScenario.launch(MainActivity.class);
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true", 45_000);
-        evalRaw("localStorage.removeItem('" + ACCOUNT_HOSTS_KEY + "'); localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
+        // location.reload() only schedules the navigation: the old document
+        // keeps answering evaluateJavascript (Build verified, Back ready,
+        // Settings button present) until the new one commits, which on a
+        // starved emulator takes seconds. Tag the old document so the wait
+        // below can only pass on the reloaded one (#3034): without it the
+        // Settings tap landed on the outgoing page and was lost.
+        String staleDocument = "reload-" + SystemClock.uptimeMillis();
+        evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(staleDocument) + ";"
+                + "localStorage.removeItem('" + ACCOUNT_HOSTS_KEY + "'); localStorage.removeItem('" + SHARED_SETTINGS_KEY + "');"
                 + "localStorage.setItem('" + HOSTS_KEY + "', " + JSONObject.quote(hosts.toString()) + ");"
                 + "location.reload(); 'reload'");
-        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true"
+        Log.i(TAG, "document right after reload() is still the old one: "
+                + evalRaw("window.__pocketshellStaleDocument === " + JSONObject.quote(staleDocument)));
+        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(staleDocument)
+                + " && document.readyState === 'complete'"
+                + " && document.querySelector('[data-testid=build-status]')?.textContent.includes('Build verified') === true"
                 + " && localStorage.getItem('" + ACCOUNT_HOSTS_KEY + "') === null", 45_000);
     }
 
     private void openSettings() throws Exception {
-        awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'");
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.backButtonReady === 'true'"
+                + " && document.querySelector('.app-shell')?.dataset.route === 'home'"
+                + " && !!document.querySelector('[aria-label=Settings]')");
         tapDomCenter("[aria-label=Settings]");
         awaitRoute("settings");
     }
