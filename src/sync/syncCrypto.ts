@@ -49,12 +49,12 @@ function b64decode(value: string, what: string): Uint8Array {
   try {
     binary = atob(value);
   } catch {
-    throw new SyncCryptoError(`envelope ${what} is not valid base64`);
+    throw new SyncCryptoError(`The account's sync data is damaged (${what} could not be read).`);
   }
   const out = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) out[index] = binary.charCodeAt(index);
   if (b64encode(out).replace(/=+$/, '') !== value.replace(/=+$/, '')) {
-    throw new SyncCryptoError(`envelope ${what} is not valid base64`);
+    throw new SyncCryptoError(`The account's sync data is damaged (${what} could not be read).`);
   }
   return out;
 }

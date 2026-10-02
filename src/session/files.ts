@@ -4,6 +4,7 @@ import {
   composeAttachmentFilename,
   decideAttachmentStage,
   evaluateFileEditSave,
+  formatBytes,
   isEditableFileKind,
   isRemotePathWithin,
   joinRemoteChildPath,
@@ -173,7 +174,7 @@ export function createFileWorkspaceService(
     assertCurrent();
     const requestId = configuration.nextRequestId?.() ?? defaultRequestId(++requestSequence);
     if (typeof requestId !== 'string' || requestId.trim() === '') {
-      throw new FileWorkspaceError('invalid-request-id', 'A non-empty SFTP request ID is required.');
+      throw new FileWorkspaceError('invalid-request-id', 'The file request could not be started. Try again.');
     }
     return requestId;
   }
@@ -208,7 +209,7 @@ export function createFileWorkspaceService(
     const response = await pending;
     assertCurrent();
     if (typeof response !== 'object' || response === null || response.requestId !== requestId) {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP response did not match its request ID.');
+      throw new FileWorkspaceError('invalid-response', 'The server sent an unexpected reply. Try again.');
     }
     return response;
   }
@@ -243,11 +244,11 @@ export function createFileWorkspaceService(
 
   function mapEntry(directory: string, entry: SshSftpEntry): FileWorkspaceEntry {
     if (typeof entry.name !== 'string') {
-      throw new FileWorkspaceError('invalid-entry', 'The native SFTP listing contained an invalid name.');
+      throw new FileWorkspaceError('invalid-entry', 'The folder listing contained an unreadable name.');
     }
     const child = joinRemoteChildPath(directory, entry.name);
     if (!child.ok) {
-      throw new FileWorkspaceError('invalid-entry', `The native SFTP listing contained an unsafe child name (${child.reason}).`);
+      throw new FileWorkspaceError('invalid-entry', `The folder listing contained an unsafe file name (${child.reason}).`);
     }
     const type = entryType(entry);
     return {
@@ -266,19 +267,19 @@ export function createFileWorkspaceService(
     const options = requestOptions(directory);
     const response = await checkedResponse(capability.sftpList(options), options.requestId);
     if (!Array.isArray(response.entries)) {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP listing did not contain an entry array.');
+      throw new FileWorkspaceError('invalid-response', 'The folder listing could not be read.');
     }
 
     const mapped: FileWorkspaceEntry[] = [];
     const seenNames = new Set<string>();
     for (const rawEntry of response.entries as unknown[]) {
       if (typeof rawEntry !== 'object' || rawEntry === null) {
-        throw new FileWorkspaceError('invalid-entry', 'The native SFTP listing contained an invalid entry.');
+        throw new FileWorkspaceError('invalid-entry', 'The folder listing contained an unreadable entry.');
       }
       const entry = rawEntry as SshSftpEntry;
       if (entry.name === '.' || entry.name === '..') continue;
       if (typeof entry.name === 'string' && seenNames.has(entry.name)) {
-        throw new FileWorkspaceError('invalid-entry', 'The native SFTP listing contained a duplicate child name.');
+        throw new FileWorkspaceError('invalid-entry', 'The folder listing contained the same name twice.');
       }
       mapped.push(mapEntry(directory, entry));
       seenNames.add(entry.name);
@@ -300,7 +301,7 @@ export function createFileWorkspaceService(
 
   function assertNotSymlink(entry: FileWorkspaceEntry): void {
     if (entry.type === 'symlink') {
-      throw new FileWorkspaceError('symlink-unsupported', 'This SFTP adapter cannot safely operate on symbolic links.');
+      throw new FileWorkspaceError('symlink-unsupported', 'Symbolic links cannot be opened safely here.');
     }
     if (entry.type === 'other') {
       throw new FileWorkspaceError('not-file', 'The remote entry type cannot be verified safely.');
@@ -317,13 +318,13 @@ export function createFileWorkspaceService(
 
   function decodeBase64(value: unknown): Uint8Array {
     if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP response contained invalid base64.');
+      throw new FileWorkspaceError('invalid-response', 'The server sent file contents that could not be read.');
     }
     let binary: string;
     try {
       binary = atob(value);
     } catch {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP response contained invalid base64.');
+      throw new FileWorkspaceError('invalid-response', 'The server sent file contents that could not be read.');
     }
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
@@ -347,7 +348,7 @@ export function createFileWorkspaceService(
     if (bytes.byteLength > MAX_SFTP_FILE_BYTES) {
       throw new FileWorkspaceError(
         'file-too-large',
-        `This native SFTP bridge accepts at most ${MAX_SFTP_FILE_BYTES} bytes per transfer.`,
+        `This file is larger than the ${formatBytes(MAX_SFTP_FILE_BYTES)} transfer limit.`,
       );
     }
   }
@@ -357,14 +358,14 @@ export function createFileWorkspaceService(
     const options = { ...requestOptions(path), createOnly, dataBase64: encodeBase64(bytes) };
     const response = await checkedResponse(capability.sftpWrite(options), options.requestId);
     if (!Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
-      throw new FileWorkspaceError('invalid-response', 'The native SFTP write byte count did not match the uploaded content.');
+      throw new FileWorkspaceError('invalid-response', 'The server did not confirm the whole file was written.');
     }
     return { path, bytesWritten: response.bytesWritten };
   }
 
   async function readFile(path: string, maxBytes = DEFAULT_FILE_READ_BYTES): Promise<FileReadResult> {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_SFTP_FILE_BYTES) {
-      throw new FileWorkspaceError('file-too-large', `maxBytes must be between 1 and ${MAX_SFTP_FILE_BYTES}.`);
+      throw new FileWorkspaceError('file-too-large', `The read limit must be between 1 byte and ${formatBytes(MAX_SFTP_FILE_BYTES)}.`);
     }
     const parts = fileParts(path);
     const entry = await entryAt(parts.path);
@@ -499,7 +500,7 @@ export function createFileWorkspaceService(
         failures.push({
           sourceName: source.name,
           message: source.bytes instanceof Uint8Array
-            ? `The native SFTP bridge accepts at most ${MAX_SFTP_FILE_BYTES} bytes per transfer.`
+            ? `This file is larger than the ${formatBytes(MAX_SFTP_FILE_BYTES)} transfer limit.`
             : 'Attachment content must be a byte array.',
         });
         continue;
@@ -583,12 +584,12 @@ export function createFileWorkspaceService(
       );
       if (response.status === 'conflict') {
         if (response.verdict !== 'missing' && response.verdict !== 'changed') {
-          throw new FileWorkspaceError('invalid-response', 'The native SFTP conflict response was invalid.');
+          throw new FileWorkspaceError('invalid-response', 'The server sent an unexpected reply while saving. Try again.');
         }
         return { status: 'conflict', path: parts.path, verdict: response.verdict };
       }
       if (response.status !== 'written' || !Number.isSafeInteger(response.bytesWritten) || response.bytesWritten !== bytes.byteLength) {
-        throw new FileWorkspaceError('invalid-response', 'The native SFTP conditional write response was invalid.');
+        throw new FileWorkspaceError('invalid-response', 'The server did not confirm the save. Try again.');
       }
       return { status: 'saved', path: parts.path, bytesWritten: response.bytesWritten };
     },

@@ -72,7 +72,7 @@ describe('bounded Android document transfers', () => {
     };
     const service = createDocumentTransferService(documents as unknown as DocumentContentPlugin, { maxBytes: 10, chunkBytes: 4 });
 
-    await expect(service.pickUploadFile()).rejects.toThrow('mismatched chunk');
+    await expect(service.pickUploadFile()).rejects.toThrow('Android returned part of the file out of order');
     expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'source-1' });
   });
 

@@ -98,7 +98,7 @@ export function adaptSshCapabilityPlugin(plugin: NativeSshCapabilityPlugin): Ssh
           const call = Reflect.get(target, property, target) as NativeSshCapabilityPlugin['resourceSnapshot'];
           const snapshot = await call.call(target, { requestId });
           if (!isResourceSnapshot(snapshot, requestId)) {
-            throw new Error('Native resourceSnapshot returned an invalid request ID or resource count.');
+            throw new Error('The connection status reply could not be read.');
           }
           return snapshot;
         };

@@ -113,7 +113,7 @@ describe('Android platform input adapter', () => {
     const result = await service.pickAttachments();
 
     expect(result.sources).toEqual([]);
-    expect(result.failures[0]?.message).toBe('The Android document bridge returned an invalid file chunk.');
+    expect(result.failures[0]?.message).toBe('Android returned an unreadable part of the file. Pick it again.');
     expect(documents.releasePickedFile).toHaveBeenCalledWith({ fileId: 'picked' });
   });
 

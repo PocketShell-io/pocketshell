@@ -260,7 +260,7 @@ async function openEntry(entry: FileWorkspaceEntry): Promise<void> {
     return;
   }
   if (entry.sizeBytes > MAX_SFTP_FILE_BYTES) {
-    statusMessage.value = `This file is ${formatBytes(entry.sizeBytes)}. The secure SFTP bridge reads at most ${formatBytes(MAX_SFTP_FILE_BYTES)} at a time.`;
+    statusMessage.value = `This file is ${formatBytes(entry.sizeBytes)}, larger than the ${formatBytes(MAX_SFTP_FILE_BYTES)} transfer limit.`;
     return;
   }
   const active = workspace.value;
@@ -426,7 +426,6 @@ function sizeLabel(entry: FileWorkspaceEntry): string {
   <main class="screen-content files-screen" data-testid="files-screen" aria-labelledby="files-title">
     <header class="files-header">
       <div>
-        <p class="eyebrow">REMOTE FILES</p>
         <h1 id="files-title">Files</h1>
         <p class="files-subtitle">Browse and edit files over the current SSH connection.</p>
       </div>

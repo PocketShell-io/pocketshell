@@ -103,7 +103,6 @@ function addManualPort(): void {
     <section class="panel settings-panel feature-panel" aria-labelledby="ports-title">
       <div class="panel-heading">
         <div>
-          <p class="eyebrow">CONNECTED HOST</p>
           <h1 id="ports-title">Port forwarding</h1>
         </div>
         <button
@@ -118,7 +117,7 @@ function addManualPort(): void {
         </button>
       </div>
 
-      <p class="settings-copy">Listening services are discovered over SSH. Local tunnel sockets are opened by the Android SSH bridge.</p>
+      <p class="settings-copy">Find services running on the host and open them on this phone through your SSH connection.</p>
       <button
         class="settings-control port-auto-toggle"
         type="button"
@@ -160,7 +159,7 @@ function addManualPort(): void {
       </p>
       <div v-if="!connected" class="settings-empty-state" data-testid="ports-disconnected">
         <AppIcon name="arrow-right-left" :size="16" />
-        <div><strong>Connect to a host to discover services.</strong><p>Automatic forwards are limited by the shared core policy; explicit forwards remain available for any valid TCP port.</p></div>
+        <div><strong>Connect to a host to discover services.</strong><p>Auto-forward covers ports 1024 to 10000. You can forward any other TCP port by hand.</p></div>
       </div>
       <p v-else-if="loading && rows.length === 0" class="muted empty" data-testid="ports-loading">Scanning remote listeners…</p>
 
@@ -200,7 +199,7 @@ function addManualPort(): void {
       </div>
 
       <p v-else-if="snapshot.scan.ok" class="muted empty" data-testid="ports-empty">No listening TCP ports were reported by the host.</p>
-      <p class="settings-note">Auto-forward policy, scan parsing, and cleanup timing come from pocketshell-core. Nothing is forwarded outside this SSH connection.</p>
+      <p class="settings-note">Nothing is forwarded outside this SSH connection.</p>
     </section>
   </main>
 </template>

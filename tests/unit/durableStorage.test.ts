@@ -199,7 +199,7 @@ describe('Android durable storage seam', () => {
     let answerLate: (value: DurableStorageOpenResult) => void = () => undefined;
     const pending = new Promise<DurableStorageOpenResult>((resolve) => { answerLate = resolve; });
     const status = await installDurableStorage({ ...lost.dependencies, open: () => pending, openTimeoutMs: 20 });
-    expect(status).toEqual({ state: 'failed', reason: 'The native durable storage did not answer within 20 ms.' });
+    expect(status).toEqual({ state: 'failed', reason: "The phone's app storage did not answer within 20 ms." });
 
     // The reply that arrives after startup moved on must not hydrate or patch storage.
     answerLate({ token: 'late-token', initialized: true, entries: { saved: 'durable' } });

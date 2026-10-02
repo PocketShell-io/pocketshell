@@ -81,7 +81,6 @@ function handleSubmit(event: Event) {
 <template>
   <main class="screen-content settings-screen" data-testid="host-snippets-screen" :data-host-id="hostId">
     <section class="panel settings-panel host-snippets-panel" aria-labelledby="host-snippets-title">
-      <p class="eyebrow">SETTINGS · INPUT</p>
       <h1 id="host-snippets-title">Command chips</h1>
       <p class="settings-copy">Saved for <strong>{{ hostLabel }}</strong>. Choosing a chip fills the composer draft; Send remains a separate action.</p>
 

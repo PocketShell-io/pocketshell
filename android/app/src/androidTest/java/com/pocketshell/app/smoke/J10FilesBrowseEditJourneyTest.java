@@ -106,7 +106,7 @@ public final class J10FilesBrowseEditJourneyTest {
         File artifacts = new File(targetContext().getFilesDir(), "js2858-files/" + screenshotRunId);
         assertTrue("run-scoped screenshot directory must be new", artifacts.mkdirs());
 
-        awaitJsTrue("document.querySelector('[data-testid=build-status] > span:nth-child(2)')?.textContent.trim() === 'Build verified'");
+        awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         setValue("[data-testid=ssh-host]", host);
         setValue("[data-testid=ssh-port]", port);
         setValue("[data-testid=ssh-username]", "testuser");
@@ -230,7 +230,13 @@ public final class J10FilesBrowseEditJourneyTest {
         assertEquals("opening the next file clears the previous symlink error", "true",
                 evalRaw("document.querySelector('[data-testid=file-error]') === null"));
         String largeMessage = evalString("document.querySelector('[data-testid=file-too-large]')?.innerText ?? ''");
-        assertTrue("oversized files must explain the bridge limit and state that bytes were not read", largeMessage.contains("512.0 KB") && largeMessage.contains("No file contents were read"));
+        assertTrue("oversized files must explain the transfer limit and state that bytes were not read", largeMessage.contains("512.0 KB") && largeMessage.contains("No file contents were read"));
+        // #3023: the status banner is user-visible copy, so it names the limit in plain words, never the transport.
+        String largeStatus = evalString("document.querySelector('[data-testid=file-status]')?.textContent.trim() ?? ''");
+        assertTrue("the oversize status banner must name the transfer limit without internal wording: " + largeStatus,
+                largeStatus.contains("larger than the 512.0 KB transfer limit")
+                        && !largeStatus.toLowerCase(java.util.Locale.ROOT).contains("bridge")
+                        && !largeStatus.contains("SFTP"));
 
         click("[data-file-name='binary.bin'] .files-row-open");
         awaitJsTrue("!!document.querySelector('[data-testid=file-binary-viewer]')");

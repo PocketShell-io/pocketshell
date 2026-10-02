@@ -180,7 +180,7 @@ export function createDocumentTransferService(
       || value.bytesRead > maxChunkBytes
       || typeof value.eof !== 'boolean'
       || typeof value.base64 !== 'string') {
-      throw new Error('The Android document provider returned a mismatched chunk.');
+      throw new Error('Android returned part of the file out of order. Pick it again.');
     }
     const bytes = decodeBase64(value.base64);
     if (bytes.byteLength !== value.bytesRead) throw new Error('The Android document provider returned an invalid byte count.');

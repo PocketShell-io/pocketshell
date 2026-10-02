@@ -171,7 +171,7 @@ export function createPlatformInputService(
     options: DictationStartOptions = {},
   ): Promise<void> {
     if (typeof requestId !== 'string' || requestId.trim() === '') {
-      throw new PlatformInputError('invalid-request-id', 'A non-empty recognition request ID is required.');
+      throw new PlatformInputError('invalid-request-id', 'Speech recognition could not start. Try again.');
     }
     if (dictationRequests.has(requestId)) {
       throw new PlatformInputError('duplicate-request-id', 'This recognition request is already active.');
@@ -302,17 +302,17 @@ function decodeChunk(chunk: NativeDocumentChunk, fileId: string, offset: number,
   if (chunk.fileId !== fileId || chunk.offset !== offset
       || !Number.isSafeInteger(chunk.bytesRead) || chunk.bytesRead < 0 || chunk.bytesRead > maxBytes
       || typeof chunk.eof !== 'boolean' || typeof chunk.base64 !== 'string') {
-    throw new PlatformInputError('invalid-document-chunk', 'The Android document bridge returned an invalid file chunk.');
+    throw new PlatformInputError('invalid-document-chunk', 'Android returned an unreadable part of the file. Pick it again.');
   }
   try {
     const decoded = globalThis.atob(chunk.base64);
     if (decoded.length !== chunk.bytesRead) {
-      throw new PlatformInputError('invalid-document-chunk', 'The Android document bridge returned a mismatched chunk size.');
+      throw new PlatformInputError('invalid-document-chunk', 'Android returned an incomplete part of the file. Pick it again.');
     }
     return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
   } catch (error) {
     if (error instanceof PlatformInputError) throw error;
-    throw new PlatformInputError('invalid-document-chunk', 'The Android document bridge returned invalid Base64 data.');
+    throw new PlatformInputError('invalid-document-chunk', 'Android returned file contents that could not be read. Pick it again.');
   }
 }
 

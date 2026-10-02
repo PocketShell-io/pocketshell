@@ -20,8 +20,8 @@ function eventTitle(event: DiagnosticEvent): string {
     'build-verification-failed': 'Build verification failed',
     'ssh-connect-failed': 'SSH connection failed',
     'ssh-operation-failed': 'SSH operation failed',
-    'ssh-bridge-failed': 'SSH bridge failed',
-    'resource-snapshot-failed': 'Native resource snapshot failed',
+    'ssh-bridge-failed': 'SSH request failed',
+    'resource-snapshot-failed': 'Connection status check failed',
     'storage-durability-failed': 'Saved data is not crash-safe this launch',
   };
   return titles[event.kind];
@@ -69,13 +69,12 @@ function clearEvents() {
 <template>
   <main v-if="navigation.route === 'diagnostics'" class="screen-content settings-screen" data-testid="diagnostics-screen">
     <section class="panel settings-panel" aria-labelledby="diagnostics-page-title">
-      <p class="eyebrow">LOCAL SUPPORT</p>
       <h1 id="diagnostics-page-title">Diagnostics</h1>
-      <p class="settings-copy">Review recent build, SSH bridge, connection, and lifecycle events before exporting a report.</p>
+      <p class="settings-copy">Review recent connection events before sharing a report.</p>
 
       <div v-if="!diagnostics.events.length" class="settings-empty-state" data-testid="diagnostics-empty">
         <AppIcon name="bar-chart-2" :size="16" />
-        <div><strong>No diagnostic events yet.</strong><p>Future connection and bridge failures are recorded here automatically.</p></div>
+        <div><strong>No diagnostic events yet.</strong><p>Connection problems are recorded here automatically.</p></div>
       </div>
       <ol v-else class="event-list" data-testid="diagnostics-events">
         <li v-for="event in visibleEvents" :key="event.id">
@@ -94,13 +93,12 @@ function clearEvents() {
       <button class="action-button action-button--secondary" type="button" data-testid="export-diagnostics" @click="exportReport">Share or download report</button>
       <p v-if="exportMessage" class="settings-note" role="status" data-testid="diagnostics-export-status">{{ exportMessage }}</p>
       <button class="text-action" type="button" data-testid="clear-diagnostics" @click="openClearConfirmation">Clear local events</button>
-      <p class="privacy-note">The report contains event times, failure categories, operation names, and normalized error codes. It never includes host names, private keys, command text, or raw bridge messages. Nothing is sent until you choose Share or download.</p>
+      <p class="privacy-note">The report contains event times, failure categories, operation names, and normalized error codes. It never includes host names, private keys, command text, or raw error messages. Nothing is sent until you choose Share or download.</p>
     </section>
   </main>
 
   <main v-else-if="navigation.route === 'diagnostics-report'" class="screen-content settings-screen" data-testid="diagnostics-report-screen">
     <section class="panel settings-panel" aria-labelledby="diagnostics-report-title">
-      <p class="eyebrow">LOCAL SUPPORT · REPORT PREVIEW</p>
       <h1 id="diagnostics-report-title">{{ selectedReport ? eventTitle(selectedReport) : 'Connection report' }}</h1>
       <p class="settings-copy">{{ selectedReport ? `Selected event from ${formatTimestamp(selectedReport.at)}; the export below contains the local diagnostic timeline.` : 'This is the exact JSON that will be shared or downloaded.' }}</p>
       <dl v-if="selectedReport" class="diagnostic-list report-event" data-testid="selected-diagnostic-event">
@@ -115,7 +113,6 @@ function clearEvents() {
 
   <main v-else class="screen-content settings-screen" data-testid="diagnostics-clear-screen">
     <section class="panel settings-panel" aria-labelledby="diagnostics-clear-title">
-      <p class="eyebrow">LOCAL SUPPORT</p>
       <h1 id="diagnostics-clear-title">Clear local events?</h1>
       <p class="settings-copy">This removes {{ diagnostics.events.length }} locally stored event{{ diagnostics.events.length === 1 ? '' : 's' }} from this device. It does not change an SSH connection.</p>
       <button class="action-button" type="button" data-testid="confirm-clear-diagnostics" @click="clearEvents">Clear events</button>
