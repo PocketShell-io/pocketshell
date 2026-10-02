@@ -31,6 +31,7 @@ describe('session agent metadata projection', () => {
       codex: 'Codex',
       opencode: 'OpenCode',
       grok: 'Grok',
+      antigravity: 'Antigravity',
     };
 
     for (const [agent, label] of Object.entries(labels)) {
