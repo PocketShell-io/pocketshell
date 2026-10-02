@@ -82,5 +82,10 @@ fi
 mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
 printf 'Running the complete Vitest suite with JSON results at %s\n' "$REPORT"
-"$PNPM" exec vitest run --reporter=json "--outputFile=$REPORT"
+# The default reporter prints failing test names and assertion output to the
+# log; the JSON report is what the exact-result checker reads. Run the checker
+# even when Vitest fails so CI names the failing tests (#3043).
+vitest_status=0
+"$PNPM" exec vitest run --reporter=default --reporter=json "--outputFile.json=$REPORT" || vitest_status=$?
 scripts/check-js-unit-results.py --report "$REPORT"
+exit "$vitest_status"
