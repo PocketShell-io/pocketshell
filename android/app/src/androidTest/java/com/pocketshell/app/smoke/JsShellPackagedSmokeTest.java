@@ -774,16 +774,6 @@ public final class JsShellPackagedSmokeTest {
     }
 
     /**
-     * Regression for #3000: after an in-place page reload Capacitor 8.1.0 can
-     * deliver the reply to the page's FIRST native call to the previous
-     * document. Startup's first real call is DurableStorage.open(), so a lost
-     * reply used to leave the app unmounted on a blank screen. The page now
-     * sends a sacrificial, retried BridgeReady ping first. Every reload must
-     * mount the app with native-durable storage from one, unretried
-     * DurableStorage.open() call; without the warm-up a lost reply surfaces
-     * as the bounded open's localStorage fallback ("failed").
-     */
-    /**
      * Issue #2884/#2946 regression: on a starved hosted emulator an injected
      * ACTION_UP can reach the WebView most of a second after ACTION_DOWN. The
      * long-press timer runs in real time, so at the stock 400 ms timeout the
@@ -830,6 +820,16 @@ public final class JsShellPackagedSmokeTest {
         }
     }
 
+    /**
+     * Regression for #3000: after an in-place page reload Capacitor 8.1.0 can
+     * deliver the reply to the page's FIRST native call to the previous
+     * document. Startup's first real call is DurableStorage.open(), so a lost
+     * reply used to leave the app unmounted on a blank screen. The page now
+     * sends a sacrificial, retried BridgeReady ping first. Every reload must
+     * mount the app with native-durable storage from one, unretried
+     * DurableStorage.open() call; without the warm-up a lost reply surfaces
+     * as the bounded open's localStorage fallback ("failed").
+     */
     @Test
     public void pageReloadsKeepFirstNativeCallAnswered() throws Exception {
         assertTrue("the packaged bridge journey runs on API 35+", Build.VERSION.SDK_INT >= 35);

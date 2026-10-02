@@ -371,7 +371,7 @@ public final class JsFastKeysDockerJourneyTest {
         tapDomCenter("[data-testid=mobile-hotkeys-back-main-page]");
         awaitJsTrue("!!document.querySelector('[data-testid=mobile-hotkeys-main-page]')");
         sendControl("ctrl-c", false);
-        sendControl("ctrl-c", true);
+        holdControlPastSystemLongPress("ctrl-c");
         sendControl("ctrl-d", false);
         sendControl("ctrl-d", true);
         cancelControlPress("ctrl-c");
@@ -540,9 +540,6 @@ public final class JsFastKeysDockerJourneyTest {
         awaitTerminalResizeIdle();
         try {
             awaitImeVisible(true);
-            // keyboardVisible is the app's native-IME-insets state; whether Android
-            // also shrinks the WebView (adjustResize) varies by hosted image and
-            // is not what the dock layout relies on (#2884 run 36938038761).
             awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'", 10_000);
         } catch (AssertionError error) {
             JSONObject failureGeometry = captureGeometry("reattach-ime-wait-failure");
@@ -550,6 +547,11 @@ public final class JsFastKeysDockerJourneyTest {
             throw new AssertionError("reattached terminal did not settle into the keyboard-up state; geometry="
                     + failureGeometry, error);
         }
+        // The dock is above the IME only if the layout actually moved it there:
+        // check in screen pixels from the native side, then let xterm finish its
+        // refit to the keyboard-up container before measuring the grid.
+        assertDockAboveIme("after-reconnect-dock-check");
+        awaitStableAcknowledgedTerminalGrid();
         JSONObject afterReconnectGeometry = captureGeometry("after-reconnect");
         assertTrue("reattach geometry must describe the terminal-focused keyboard state", afterReconnectGeometry.getBoolean("keyboardVisible")
                 && afterReconnectGeometry.getBoolean("keyboardComposerMode"));
@@ -581,7 +583,8 @@ public final class JsFastKeysDockerJourneyTest {
         awaitImeVisible(true);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'", 10_000);
-        awaitTerminalResizeIdle();
+        assertDockAboveIme("reconnected-keybar-dock-check");
+        awaitStableAcknowledgedTerminalGrid();
         awaitRenderedFrame();
         awaitJsTrue("document.querySelector('[data-testid=mobile-hotkeys]')?.dataset.enabled === 'true'");
         long reconnectTapToVisibleOutputStartedAt = SystemClock.uptimeMillis();
@@ -1091,10 +1094,6 @@ public final class JsFastKeysDockerJourneyTest {
         // terminal (keyboardComposerMode=false), so an IME-only check skipped
         // the tap (hosted runs 36881616227 and 36895957308). Tap the terminal
         // physically until the keyboard-up terminal state holds, at most twice.
-        // The app's keyboard state comes from native IME insets; Android may or
-        // may not also shrink the WebView on a given hosted image (run
-        // 36938038761 kept it at 2274 px with the IME up and every dock
-        // geometry check passing), so the WebView height is not a precondition.
         String keyboardTerminalReady = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'"
                 + " && document.querySelector('.app-shell')?.dataset.keyboardComposerMode === 'true'";
         for (int attempt = 1; attempt <= 2 && !(isImeVisible()
@@ -1114,7 +1113,8 @@ public final class JsFastKeysDockerJourneyTest {
             throw new AssertionError(stale.getMessage() + "; windowTargets=" + AndroidInputDeliveryProbe.imeWindowTargets()
                     + "; webViewHeightPx=" + runOnUiThread("read WebView height", () -> packagedWebView.getHeight()), stale);
         }
-        awaitTerminalResizeIdle();
+        assertDockAboveIme("prompt-guard-dock-check");
+        awaitStableAcknowledgedTerminalGrid();
         awaitRenderedFrame();
         int writesBefore = terminalInputAcknowledgements();
         int cancelsBefore = controlledSpeechCallCount("cancelCount");
@@ -1836,6 +1836,43 @@ public final class JsFastKeysDockerJourneyTest {
         awaitImeVisible(true);
     }
 
+    /**
+     * Holds a holdable dock key past the system long-press timeout, so the
+     * WebView really performs its long press (#2884, #2946). The lanes raise
+     * that timeout to keep injected taps taps, and Chromium reads it once per
+     * process, so the hold exceeds the timeout this process actually uses
+     * rather than the stock 400 ms. A real long press on a dock key must still
+     * write exactly one hold, select no text, and leave window focus with the
+     * app (no callout, no Select-to-Speak).
+     */
+    private void holdControlPastSystemLongPress(String keyId) throws Exception {
+        swipeFastKeyIntoView("[data-key-id='" + keyId + "']");
+        int previous = hotkeyWrites().length();
+        evalString("(() => {window.__ps2884LongPress={contextmenu:0,selectionText:''};"
+                + "if(!window.__ps2884LongPressInstalled){window.__ps2884LongPressInstalled=true;"
+                + "document.addEventListener('contextmenu',()=>window.__ps2884LongPress.contextmenu++,true);"
+                + "document.addEventListener('selectionchange',()=>{const t=String(window.getSelection()??'');"
+                + "if(t)window.__ps2884LongPress.selectionText=t;});}return 'armed';})()");
+        long holdMillis = android.view.ViewConfiguration.getLongPressTimeout() + 500L;
+        longPressDomCenter("[data-key-id='" + keyId + "']", holdMillis);
+        awaitHotkeyWrites(previous + 1);
+        SystemClock.sleep(600);
+        JSONObject longPress = evalJson("JSON.stringify({...window.__ps2884LongPress,"
+                + "selectionNow:String(window.getSelection()??'')})");
+        String focus = AndroidInputDeliveryProbe.imeWindowTargets();
+        String app = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        journey.put("dockKeyLongPress", new JSONObject().put("key", keyId).put("holdMillis", holdMillis)
+                .put("systemLongPressTimeoutMs", android.view.ViewConfiguration.getLongPressTimeout())
+                .put("writes", hotkeyWrites().length() - previous).put("dom", longPress).put("windowFocus", focus));
+        assertEquals("a long press on " + keyId + " must write exactly one hold", previous + 1, hotkeyWrites().length());
+        assertEquals("a long press on " + keyId + " must not select text: " + longPress, "",
+                longPress.getString("selectionNow") + longPress.getString("selectionText"));
+        assertTrue("a long press on " + keyId + " must leave window focus with the app (no callout or "
+                + "Select-to-Speak): " + focus, focus.contains("mCurrentFocus=Window{") && focus.contains(app + "/"));
+        awaitJsTrue("document.activeElement?.classList.contains('xterm-helper-textarea') === true", 3_000);
+        awaitImeVisible(true);
+    }
+
     private void cancelControlPress(String keyId) throws Exception {
         swipeFastKeyIntoView("[data-key-id='" + keyId + "']");
         int beforeCancel = hotkeyWrites().length();
@@ -2312,7 +2349,9 @@ public final class JsFastKeysDockerJourneyTest {
                 + "imeEdgeCssY:(window.visualViewport?.offsetTop??0)+(window.visualViewport?.height??innerHeight),innerWidth,innerHeight,"
                 + "screenScroll:document.querySelector('.screen-content')?.scrollTop??null,"
                 + "documentScroll:document.scrollingElement?.scrollTop??null});})()");
-        dom.put("androidIme", readNativeImeState());
+        JSONObject nativeIme = readNativeImeState();
+        dom.put("androidIme", nativeIme);
+        dom.put("dockScreenContainment", dockScreenContainment(dom, nativeIme));
         geometryTrace.put(new JSONObject(dom.toString()));
         Log.i("PS2884Geometry", "RUN " + artifactRunId + " " + stage + " " + dom);
         return dom;
@@ -2342,6 +2381,43 @@ public final class JsFastKeysDockerJourneyTest {
         return state;
     }
 
+    /**
+     * The dock's bottom edge against the real IME top, both in screen pixels.
+     * The visual viewport alone cannot show the dock under the keyboard when
+     * Android leaves the WebView unresized (#2884 run 36938038761), so this is
+     * measured from the native side: WebView screen origin plus the dock's CSS
+     * bottom scaled to device pixels, against the window bottom minus the IME
+     * inset.
+     */
+    private static JSONObject dockScreenContainment(JSONObject dom, JSONObject nativeIme) throws JSONException {
+        JSONObject dock = dom.optJSONObject("mobileHotkeys");
+        double innerWidth = dom.optDouble("innerWidth", 0);
+        if (dock == null || innerWidth <= 0 || !nativeIme.optBoolean("visible")) {
+            return new JSONObject().put("measured", false);
+        }
+        double scale = nativeIme.getDouble("webViewWidthPx") / innerWidth;
+        double dockBottom = nativeIme.getDouble("webViewScreenY") + dock.getDouble("bottom") * scale;
+        double imeTop = nativeIme.getDouble("rootScreenY") + nativeIme.getDouble("rootHeightPx")
+                - nativeIme.getDouble("imeBottomPx");
+        return new JSONObject().put("measured", true).put("dockBottomScreenPx", dockBottom)
+                .put("imeTopScreenPx", imeTop).put("dockAboveIme", dockBottom <= imeTop + 1.5);
+    }
+
+    /** Fails unless, with the IME up, the dock's bottom edge sits above the IME in screen pixels. */
+    private void assertDockAboveIme(String label) throws Exception {
+        long deadline = SystemClock.uptimeMillis() + 5_000;
+        JSONObject geometry = captureGeometry(label);
+        while (!geometry.getJSONObject("dockScreenContainment").optBoolean("dockAboveIme")
+                && SystemClock.uptimeMillis() < deadline) {
+            SystemClock.sleep(250);
+            geometry = captureGeometry(label);
+        }
+        assertTrue("with the IME up the fast-key dock must sit above the keyboard in screen pixels ("
+                        + label + "): " + geometry.getJSONObject("dockScreenContainment") + " ime="
+                        + geometry.getJSONObject("androidIme"),
+                geometry.getJSONObject("dockScreenContainment").optBoolean("dockAboveIme"));
+    }
+
     private JSONObject readNativeImeState() throws Exception {
         return runOnUiThread("read native IME state", () -> {
             View decor = packagedActivity.getWindow().getDecorView();
@@ -2352,9 +2428,14 @@ public final class JsFastKeysDockerJourneyTest {
             Insets bars = insets == null ? Insets.NONE : insets.getInsets(WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
             int[] location = new int[2];
             if (webView != null) webView.getLocationOnScreen(location);
+            int[] rootLocation = new int[2];
+            decor.getLocationOnScreen(rootLocation);
             return new JSONObject()
                     .put("visible", insets != null && insets.isVisible(WindowInsets.Type.ime()))
                     .put("imeBottomDp", ime.bottom / density)
+                    .put("imeBottomPx", ime.bottom)
+                    .put("rootScreenY", rootLocation[1])
+                    .put("rootHeightPx", decor.getHeight())
                     .put("statusTopDp", bars.top / density)
                     .put("density", density)
                     .put("webViewScreenX", location[0])

@@ -50,7 +50,7 @@ import { createAppLifecycleHandler } from './session/appLifecycle';
 import { waitForAttachAutofocusTestGate } from './session/attachAutofocusTestGate';
 import { resolveAndroidBackDestination, transitionHomeSurface, type HomeSurface, type HomeSurfaceAction } from './session/homeSurface';
 import { readSshError, sshCapability } from './native/sshCapability';
-import { keyboardInsets, type KeyboardInsetsState } from './native/keyboardInsets';
+import { keyboardInsets, shellBottomInsets, type KeyboardInsetsState } from './native/keyboardInsets';
 import { createKeyboardInsetsStateSync } from './native/keyboardInsetsState';
 import TerminalViewport from './components/TerminalViewport.vue';
 import MobileHotkeys from './components/MobileHotkeys.vue';
@@ -1304,10 +1304,10 @@ onMounted(() => {
     }
     nativeKeyboardInsetsSupported = true;
     keyboardVisible.value = state.imeVisible;
-    document.documentElement.style.setProperty(
-      '--safe-area-inset-bottom',
-      `${state.imeVisible ? 0 : state.safeBottomDp}px`,
-    );
+    const bottom = shellBottomInsets(state);
+    document.documentElement.style.setProperty('--safe-area-inset-bottom', `${bottom.safeAreaBottom}px`);
+    // Keeps the dock above the IME even if Android did not resize the WebView.
+    document.documentElement.style.setProperty('--ime-overlap-bottom', `${bottom.imeOverlapBottom}px`);
   };
   keyboardInsetsStateSync = createKeyboardInsetsStateSync(
     () => keyboardInsets.getState(),

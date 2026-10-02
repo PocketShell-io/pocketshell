@@ -746,6 +746,35 @@ def parse_assets(log_text: str, run_id: str, *, preserve_on_failure: bool = Fals
     return decoded
 
 
+def validate_dock_above_ime(geometry_trace: object) -> None:
+    """With the IME up, the dock must end above the IME top in screen pixels (#2884).
+
+    The visual-viewport checks cannot see a dock under the keyboard when Android
+    leaves the WebView unresized, so every keyboard-up stage carries a native
+    screen-pixel measurement that must exist and hold.
+    """
+    if not isinstance(geometry_trace, list):
+        return
+    for item in geometry_trace:
+        if not isinstance(item, dict):
+            continue
+        ime = item.get("androidIme")
+        if not (isinstance(ime, dict) and ime.get("visible") is True and item.get("keyboardVisible") is True
+                and isinstance(item.get("mobileHotkeys"), dict)):
+            continue
+        containment = item.get("dockScreenContainment")
+        stage = item.get("stage")
+        if not isinstance(containment, dict) or containment.get("measured") is not True:
+            raise ExtractionFailure(f"keyboard-up stage {stage} lacks the native dock-vs-IME screen measurement")
+        dock_bottom = containment.get("dockBottomScreenPx")
+        ime_top = containment.get("imeTopScreenPx")
+        if (not isinstance(dock_bottom, (int, float)) or isinstance(dock_bottom, bool)
+                or not isinstance(ime_top, (int, float)) or isinstance(ime_top, bool)
+                or dock_bottom > ime_top + 1.5):
+            raise ExtractionFailure(
+                f"keyboard-up stage {stage} puts the dock under the IME: dock bottom {dock_bottom} px, IME top {ime_top} px")
+
+
 def validate_journey(journey: object) -> None:
     if not isinstance(journey, dict):
         raise ExtractionFailure("journey evidence must be a JSON object")
@@ -761,6 +790,16 @@ def validate_journey(journey: object) -> None:
     )
     if has_prompt_dictation_dock_control:
         raise ExtractionFailure("prompt dictation must start inside PromptComposer, not from a separate dock shortcut")
+    validate_dock_above_ime(geometry_trace)
+    long_press = journey.get("dockKeyLongPress")
+    dom = long_press.get("dom") if isinstance(long_press, dict) else None
+    if (not isinstance(long_press, dict) or not isinstance(dom, dict)
+            or long_press.get("writes") != 1
+            or not isinstance(long_press.get("holdMillis"), int)
+            or not isinstance(long_press.get("systemLongPressTimeoutMs"), int)
+            or long_press["holdMillis"] <= long_press["systemLongPressTimeoutMs"]
+            or dom.get("selectionNow") != "" or dom.get("selectionText") != ""):
+        raise ExtractionFailure("a dock key held past the system long-press timeout must write once and select no text")
     composer_entry = journey.get("promptComposerEntry")
     if (not isinstance(composer_entry, dict)
             or composer_entry.get("role") != "dialog"
@@ -1682,6 +1721,18 @@ def self_test() -> int:
          ] + expected_first_writes()[8:]}, False),
         ("terminal overlap from a docked fast-key tray rejected",
          with_intersecting_tray(sample_journey()), False),
+        ("dock key long press that selected text rejected",
+         {**sample_journey(), "dockKeyLongPress": {**sample_dock_key_long_press(),
+                                                   "dom": {"contextmenu": 1, "selectionText": "^C", "selectionNow": ""}}},
+         False),
+        ("dock key long press below the system timeout rejected",
+         {**sample_journey(), "dockKeyLongPress": {**sample_dock_key_long_press(), "holdMillis": 700}}, False),
+        ("dock key long press that wrote twice rejected",
+         {**sample_journey(), "dockKeyLongPress": {**sample_dock_key_long_press(), "writes": 2}}, False),
+        ("unresized WebView with the dock under the IME rejected",
+         with_dock_under_unresized_webview(sample_journey()), False),
+        ("keyboard-up stage without the native dock measurement rejected",
+         with_missing_dock_measurement(sample_journey()), False),
         ("nested rounded terminal panel rejected",
          with_nested_terminal_panel(sample_journey()), False),
         ("terminal viewport contact within the 0.01px CSS rounding epsilon accepted",
@@ -2044,6 +2095,12 @@ def self_test() -> int:
     return 1 if failures else 0
 
 
+def sample_dock_key_long_press() -> dict[str, object]:
+    return {"key": "ctrl-c", "holdMillis": 3500, "systemLongPressTimeoutMs": 3000, "writes": 1,
+            "dom": {"contextmenu": 1, "selectionText": "", "selectionNow": ""},
+            "windowFocus": "mCurrentFocus=Window{1 u0 com.pocketshell.app.i2884ci/com.pocketshell.app.MainActivity}; "}
+
+
 def sample_journey() -> dict[str, object]:
     base = {
         "runtimeGeometry": {"cols": 38, "rows": 6, "cellHeight": 22.6},
@@ -2140,6 +2197,8 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationMicInsideBar": True,
         "inlineDictationBarInsideTray": True,
         "androidIme": {"visible": True, "imeBottomDp": 260},
+        "dockScreenContainment": {"measured": True, "dockBottomScreenPx": 1500.0, "imeTopScreenPx": 1517.0,
+                                  "dockAboveIme": True},
         "navigationTargets": [
             {"label": label, "top": 208, "bottom": 256, "left": left, "right": left + 48,
              "width": 48, "height": 48, "insideViewport": True, "disabled": False}
@@ -2508,6 +2567,7 @@ def sample_journey() -> dict[str, object]:
         "androidIme": {"visible": True, "imeBottomDp": 260},
     }
     journey = {
+        "dockKeyLongPress": sample_dock_key_long_press(),
         "androidApi": 35,
         "promptComposerEntry": {
             "role": "dialog", "modal": "true", "micLabel": "Dictate prompt draft",
@@ -3064,6 +3124,27 @@ def with_dictation_resize_after_baseline(journey: dict[str, object]) -> dict[str
     for item in copied["geometryTrace"]:
         if item["stage"] == "dictation-listening-ime-open":
             item["resizeAcks"] += 1
+    return copied
+
+
+def with_dock_under_unresized_webview(journey: dict[str, object]) -> dict[str, object]:
+    """Run 36938038761's state: IME up, WebView kept at 2274 px, dock at the bottom of the screen."""
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "after-reconnect":
+            item["visualViewport"] = {"height": 867.05, "width": 412.19, "offsetTop": 0}
+            item["androidIme"] = {**item["androidIme"], "visible": True, "imeBottomDp": 336.4,
+                                  "webViewHeightPx": 2274}
+            item["dockScreenContainment"] = {"measured": True, "dockBottomScreenPx": 2259.0,
+                                             "imeTopScreenPx": 1517.0, "dockAboveIme": False}
+    return copied
+
+
+def with_missing_dock_measurement(journey: dict[str, object]) -> dict[str, object]:
+    copied = json.loads(json.dumps(journey))
+    for item in copied["geometryTrace"]:
+        if item["stage"] == "after-reconnect":
+            item.pop("dockScreenContainment", None)
     return copied
 
 

@@ -35,6 +35,7 @@ LAUNCHER=com.google.android.apps.nexuslauncher
 SETUP=com.google.android.googlesdksetup
 SERIAL=emulator-5554
 RECORD="$POCKETSHELL_AVD_LOCK_DIR/avd-lock-$SERIAL.disabled-launchers"
+LONG_PRESS_RECORD="$POCKETSHELL_AVD_LOCK_DIR/avd-lock-$SERIAL.long-press-timeout"
 
 cat > "$SANDBOX/adb" <<'ADB'
 #!/usr/bin/env bash
@@ -60,6 +61,12 @@ case "$*" in
     ;;
   'settings put secure long_press_timeout 3000')
     [[ -e "$state/long-press-ignored" ]] || printf '3000\n' > "$state/long-press"
+    ;;
+  'settings put secure long_press_timeout '*)
+    printf '%s\n' "$last" > "$state/long-press"
+    ;;
+  'settings delete secure long_press_timeout')
+    rm -f "$state/long-press"
     ;;
   'settings get secure long_press_timeout')
     cat "$state/long-press" 2>/dev/null || printf '400\n'
@@ -119,7 +126,8 @@ CASES=0
 reset_state() {
   export FAKE_ADB_STATE="$SANDBOX/state-$1"
   mkdir -p "$FAKE_ADB_STATE"
-  rm -f "$RECORD"
+  rm -f "$RECORD" "$LONG_PRESS_RECORD"
+  pocketshell_android_restore_long_press_timeout 2> /dev/null || true
   POCKETSHELL_DISABLED_LAUNCHERS=()
 }
 pass() {
@@ -338,5 +346,29 @@ grep -Fq 'pocketshell_android_restore_launchers' "$ROOT_DIR/scripts/lib/avd-lock
   || fail 'pocketshell_release_all does not restore launchers'
 pass 'pocketshell_release_all restores disabled launchers'
 
-(( CASES == 14 )) || fail "ran $CASES/14 cases"
-printf 'PASS: Android input preflight contract (%s/14 cases)\n' "$CASES"
+# 13. The lane puts the stock long-press timeout back on exit (#2884).
+reset_state longpress-restore
+printf '400\n' > "$FAKE_ADB_STATE/long-press"
+preflight "$SANDBOX/lp-restore/input-preflight.txt" > /dev/null 2>&1 || fail 'preflight failed before the long-press restore check'
+[[ "$(cat "$FAKE_ADB_STATE/long-press")" == 3000 ]] || fail 'preflight did not raise the long-press timeout'
+[[ "$(cat "$LONG_PRESS_RECORD")" == 400 ]] || fail 'the original long-press timeout was not recorded before raising it'
+grep -Fq 'pocketshell_android_restore_long_press_timeout' "$ROOT_DIR/scripts/lib/avd-lock.sh" \
+  || fail 'pocketshell_release_all does not restore the long-press timeout'
+pocketshell_android_restore_long_press_timeout 2> /dev/null
+[[ "$(cat "$FAKE_ADB_STATE/long-press")" == 400 ]] || fail 'lane exit did not restore the original long-press timeout'
+[[ ! -e "$LONG_PRESS_RECORD" ]] || fail 'the long-press record survived a successful restore'
+pass 'lane exit restores the original long-press timeout'
+
+# 14. A killed lane's raised timeout is recovered by the next lane, and an
+#     unset original is restored as unset.
+reset_state longpress-stale
+printf '3000\n' > "$FAKE_ADB_STATE/long-press"
+printf 'null\n' > "$LONG_PRESS_RECORD"
+pocketshell_android_recover_stale_launchers "$ADB" "$SERIAL" "$SANDBOX/lp-stale.txt" 2> /dev/null \
+  || fail 'stale long-press recovery failed'
+[[ ! -e "$FAKE_ADB_STATE/long-press" ]] || fail 'stale long-press recovery did not unset the timeout'
+[[ ! -e "$LONG_PRESS_RECORD" ]] || fail 'stale long-press record was not cleared'
+pass 'stale raised long-press timeout is recovered'
+
+(( CASES == 16 )) || fail "ran $CASES/16 cases"
+printf 'PASS: Android input preflight contract (%s/16 cases)\n' "$CASES"

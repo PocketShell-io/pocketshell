@@ -39,7 +39,9 @@ button { color: inherit; }
   padding-top: var(--android-shell-safe-top);
   padding-bottom: var(--android-shell-safe-bottom);
 }
-.app-shell[data-keyboard-visible="true"] { --android-shell-safe-bottom: 0px; }
+/* With the IME up the shell reserves only what still lies under the keyboard:
+   0 once Android resized the WebView, the native overlap if it did not. */
+.app-shell[data-keyboard-visible="true"] { --android-shell-safe-bottom: var(--ime-overlap-bottom, 0px); }
 
 .app-bar {
   display: flex;

@@ -115,6 +115,7 @@ _pocketshell_enable_package() {
 pocketshell_android_recover_stale_launchers() {
   local adb="$1" serial="$2" evidence="$3"
   local record package disabled
+  pocketshell_android_recover_stale_long_press_timeout "$adb" "$serial" "$evidence" || return 1
   record="$(pocketshell_android_launcher_record "$serial")"
   if [[ -s "$record" ]]; then
     while IFS= read -r package; do
@@ -298,10 +299,72 @@ pocketshell_android_recover_stale_launchers_on_devices() {
 # early event time does not help (the timer is not event-time based), so every
 # lane raises the system long-press timeout; journeys that hold a key do so far
 # below it. Usage: ADB SERIAL EVIDENCE_FILE
+POCKETSHELL_LONG_PRESS_RAISED_ADB=""
+POCKETSHELL_LONG_PRESS_RAISED_SERIAL=""
+
+# Host-side record of SERIAL's original long_press_timeout, next to its AVD
+# lock. Written before the lane changes the setting and removed only after it
+# was put back, so a killed lane is restored by the next lane (or the emulator
+# start path) exactly like a disabled launcher.
+pocketshell_android_long_press_record() {
+  local launcher_record
+  launcher_record="$(pocketshell_android_launcher_record "$1")"
+  printf '%s\n' "${launcher_record%.disabled-launchers}.long-press-timeout"
+}
+
+# Put SERIAL's long-press timeout back to RECORD's value ("null" = unset).
+_pocketshell_apply_long_press_record() {
+  local adb="$1" serial="$2" record="$3" original
+  original="$(head -n 1 -- "$record" 2> /dev/null | tr -d '\r')"
+  if [[ -z "$original" || "$original" == null ]]; then
+    "$adb" -s "$serial" shell settings delete secure long_press_timeout > /dev/null 2>&1 || return 1
+  elif [[ "$original" =~ ^[0-9]+$ ]]; then
+    "$adb" -s "$serial" shell settings put secure long_press_timeout "$original" > /dev/null 2>&1 || return 1
+  else
+    return 1
+  fi
+  rm -f -- "$record"
+}
+
+# Restore a long-press timeout a killed lane left raised. Usage: ADB SERIAL EVIDENCE_FILE
+pocketshell_android_recover_stale_long_press_timeout() {
+  local adb="$1" serial="$2" evidence="$3" record
+  record="$(pocketshell_android_long_press_record "$serial")"
+  [[ -s "$record" ]] || return 0
+  if _pocketshell_apply_long_press_record "$adb" "$serial" "$record"; then
+    printf 'RECOVERED_STALE_LONG_PRESS_TIMEOUT: %s (recorded in %s)\n' "$serial" "$record" | tee -a "$evidence" >&2
+  else
+    printf 'FAIL: could not restore the stale long-press timeout on %s (record kept: %s)\n' "$serial" "$record" | tee -a "$evidence" >&2
+    return 1
+  fi
+}
+
+# Called from pocketshell_release_all: put back the value this process raised.
+pocketshell_android_restore_long_press_timeout() {
+  local record
+  [[ -n "$POCKETSHELL_LONG_PRESS_RAISED_SERIAL" ]] || return 0
+  record="$(pocketshell_android_long_press_record "$POCKETSHELL_LONG_PRESS_RAISED_SERIAL")"
+  if _pocketshell_apply_long_press_record "$POCKETSHELL_LONG_PRESS_RAISED_ADB" "$POCKETSHELL_LONG_PRESS_RAISED_SERIAL" "$record"; then
+    printf 'RESTORED_LONG_PRESS_TIMEOUT: %s\n' "$POCKETSHELL_LONG_PRESS_RAISED_SERIAL" >&2
+  else
+    printf 'WARNING: could not restore the long-press timeout on %s; kept in %s for the next lane to recover\n' \
+      "$POCKETSHELL_LONG_PRESS_RAISED_SERIAL" "$record" >&2
+  fi
+  POCKETSHELL_LONG_PRESS_RAISED_ADB=""
+  POCKETSHELL_LONG_PRESS_RAISED_SERIAL=""
+}
+
 pocketshell_android_raise_long_press_timeout() {
-  local adb="$1" serial="$2" evidence="$3" value
+  local adb="$1" serial="$2" evidence="$3" value record original
   local wanted="${POCKETSHELL_LANE_LONG_PRESS_TIMEOUT_MS:-3000}"
   mkdir -p "$(dirname -- "$evidence")"
+  pocketshell_android_recover_stale_long_press_timeout "$adb" "$serial" "$evidence" || return 1
+  record="$(pocketshell_android_long_press_record "$serial")"
+  original="$("$adb" -s "$serial" shell settings get secure long_press_timeout 2> /dev/null | tr -d '\r')"
+  printf '%s\n' "${original:-null}" > "$record" || return 1
+  POCKETSHELL_LONG_PRESS_RAISED_ADB="$adb"
+  POCKETSHELL_LONG_PRESS_RAISED_SERIAL="$serial"
+  printf 'long_press_timeout_original=%s\n' "${original:-null}" >> "$evidence"
   {
     "$adb" -s "$serial" shell settings put secure long_press_timeout "$wanted"
     value="$("$adb" -s "$serial" shell settings get secure long_press_timeout | tr -d '\r')"
