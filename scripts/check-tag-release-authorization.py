@@ -1,11 +1,14 @@
 #!/usr/bin/python3 -I
 """Fail closed before publishing a manually requested main-branch release.
 
-The trusted proof is an artifact uploaded by the successful
-release-emulator-validation workflow run for the exact tag commit. The
-artifact's summary must record that commit, an overall PASS, and the D37 fault
-verdict for that same SHA. A tag annotation or locally supplied summary is not
-publication evidence.
+The trusted proof is an artifact uploaded by the successful js-release-validation
+workflow run for the exact tag commit. The artifact's summary must record that
+commit, an overall PASS, the D37 fault-run record for that same SHA, and a green
+journey qualification covering every class in
+scripts/js-journey-class-manifest.json. A tag annotation or locally supplied
+summary is not publication evidence. The pre-#2934 proof came from
+release-emulator-validation.yml / app2.yml; that line was hard-cut from main and
+this gate now consumes the JS replacement (issue #2863).
 
 Usage:
   scripts/check-tag-release-authorization.py --release-tag v0.6.0 --release-sha <sha> --workflow-ref refs/heads/main
@@ -27,12 +30,17 @@ from typing import Any, Callable
 
 ROOT = Path(__file__).resolve().parent.parent
 REPOSITORY = "PocketShell-io/pocketshell"
-RELEASE_WORKFLOW = ".github/workflows/release-emulator-validation.yml"
-RELEASE_JOB = "Emulator-only release validation"
-RELEASE_ARTIFACT_PREFIX = "release-emulator-validation-"
+RELEASE_WORKFLOW = ".github/workflows/js-release-validation.yml"
+RELEASE_WORKFLOW_NAME = "js-release-validation.yml"
+RELEASE_JOB = "JS release validation"
+RELEASE_JOB_ID = "js-release-validation"
+RELEASE_ARTIFACT_PREFIX = "js-release-validation-"
+FULL_SUITE_WORKFLOW = ".github/workflows/js-full-suite.yml"
+JOURNEY_CHECKER = "scripts/check-js-journey-results.py"
+JOURNEY_MANIFEST = ROOT / "scripts/js-journey-class-manifest.json"
 PUBLISH_WORKFLOW = ROOT / ".github/workflows/publish-release.yml"
 LEGACY_BUILD_WORKFLOW = ROOT / ".github/workflows/build.yml"
-EXPECTED_SELF_TESTS = 38
+EXPECTED_SELF_TESTS = 52
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 
@@ -47,8 +55,20 @@ def _one_line(lines: list[str], expected: str, label: str) -> None:
         raise GateFailure(f"release summary must contain exactly one {label}: {expected!r}")
 
 
+def _required_journey_class_count() -> int:
+    """The manifest is the single source of truth for the required class count."""
+    try:
+        data = json.loads(JOURNEY_MANIFEST.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GateFailure(f"journey class manifest is unreadable: {exc}") from exc
+    classes = data.get("requiredJourneyClasses") if isinstance(data, dict) else None
+    if not isinstance(classes, list) or not classes or not all(isinstance(c, str) and c for c in classes):
+        raise GateFailure("journey class manifest must carry a non-empty requiredJourneyClasses list")
+    return len(classes)
+
+
 def validate_summary(summary: str, expected_sha: str) -> None:
-    """Validate the existing release-summary contract, including an exact D37 PASS."""
+    """Validate the JS release-summary contract, including an exact D37 PASS."""
     if not SHA_PATTERN.fullmatch(expected_sha):
         raise GateFailure(f"release SHA is not a full lowercase commit hash: {expected_sha!r}")
 
@@ -67,19 +87,25 @@ def validate_summary(summary: str, expected_sha: str) -> None:
         raise GateFailure("D37 summary contains fixture dry-run output, not a release verdict")
 
     expected_run = re.compile(
-        rf"^Nightly fault run: workflow=app2\.yml id=[1-9][0-9]* status=completed "
-        rf"fault-verdict-job-conclusion=success headSha={re.escape(expected_sha)}$"
+        rf"^Nightly fault run: workflow={re.escape(RELEASE_WORKFLOW_NAME)} id=[1-9][0-9]* "
+        rf"headSha={re.escape(expected_sha)}$"
     )
     expected_release = f"Release HEAD={expected_sha} head_is_ancestor=yes"
-    expected_pass = (
-        "PASS: journey fault-injection safety verdict is green "
-        f"(app2 journey job conclusion=success) and covers the release HEAD ({expected_sha}). "
-        "The network-fault + bootstrap safety journeys passed on this line."
+    required = _required_journey_class_count()
+    expected_journey = re.compile(
+        rf"^Journey qualification: required={required} executed={required} failed=0 result=PASS$"
     )
     if sum(bool(expected_run.fullmatch(line)) for line in d37) != 1:
-        raise GateFailure("D37 summary must record one completed green fault run at the exact release SHA")
+        raise GateFailure("D37 summary must record one completed release-validation fault run at the exact release SHA")
     _one_line(d37, expected_release, "D37 release-head coverage")
-    _one_line(d37, expected_pass, "D37 fault-verdict PASS")
+    # The qualification line is appended after the producer's other summary
+    # sections, so it is pinned anywhere in the summary rather than inside the
+    # D37 section. It must cover every required class with zero failures.
+    if sum(bool(expected_journey.fullmatch(line)) for line in lines) != 1:
+        raise GateFailure(
+            "release summary must record one green journey qualification covering "
+            f"all {required} required journey classes at the exact release SHA"
+        )
 
 
 def validate_tag_and_main(tag: str, release_sha: str, main_sha: str) -> None:
@@ -323,6 +349,60 @@ def validate_workflow_wiring(workflow: str, legacy_build: str) -> None:
         raise GateFailure("legacy Build workflow must not have publication permission")
 
 
+def validate_release_producer_wiring(release: str, full_suite: str) -> None:
+    """Pin the D37 producer properties: fail-closed, never cancelled, no waive knob.
+
+    The release verdict is only as good as the workflow that produces it. These
+    are the properties the deleted app2-line guards (check-nightly-workflow.sh,
+    check-release-gate-bypass-absent.sh) pinned for release-emulator-validation
+    and its nightly, carried to the JS replacement (issue #2863).
+    """
+    if "inputs:" in release:
+        raise GateFailure("release validation must not accept dispatch inputs (no waive knob, D37)")
+    if re.search(r"(?m)^  schedule:", release):
+        raise GateFailure("release validation must react to the full suite, not run its own schedule")
+    if not re.search(r"(?m)^  queue: max$", release):
+        raise GateFailure("release validation concurrency must keep queued runs (queue: max)")
+    if re.search(r"(?m)^\s*cancel-in-progress:", release):
+        raise GateFailure("release validation must never cancel in-progress or queued runs")
+    if re.search(r"(?m)^\s*continue-on-error:", release):
+        raise GateFailure("release validation must be fail-closed (no continue-on-error)")
+    if "github.event_name == 'workflow_dispatch'" not in release:
+        raise GateFailure("release validation job must always run on manual dispatch")
+    if "github.event_name != 'workflow_dispatch'" in release or "!= 'schedule'" in release:
+        raise GateFailure("release validation job must not exclude schedule or dispatch events")
+    job = _job_text(release, RELEASE_JOB_ID)
+    if JOURNEY_CHECKER not in job:
+        raise GateFailure("release validation job must run the journey qualification checker")
+    steps = _job_step_blocks(release, RELEASE_JOB_ID)
+    journey_steps = [b for name, b in steps if name == "Run fail-closed feature journey qualification"]
+    if len(journey_steps) != 1:
+        raise GateFailure("release validation must contain exactly one journey qualification step")
+    if "if:" in journey_steps[0]:
+        raise GateFailure("the journey qualification step must be unconditional (no if: guard)")
+    pass_names = [name for name, _ in steps if name == "Mark release validation PASS"]
+    if pass_names != ["Mark release validation PASS"]:
+        raise GateFailure("release validation must flip the summary to PASS in exactly one final step")
+    if "name: js-release-validation-" not in release or "actions/upload-artifact@" not in release:
+        raise GateFailure("release validation must upload the js-release-validation- summary artifact")
+
+    if not re.search(r"(?m)^  schedule:\n    - cron: '[0-9]+ [0-9]+ \* \* \*'$", full_suite):
+        raise GateFailure("full suite must carry a nightly cron schedule")
+    if re.search(r"(?m)^  (push|pull_request):", full_suite):
+        raise GateFailure("full suite must not run on push or pull_request triggers")
+    if re.search(r"(?m)^\s+paths(?:-ignore)?:", full_suite):
+        raise GateFailure("full suite must not carry path filters (issue #2509: they suppress the nightly)")
+    if not re.search(r"(?m)^  queue: max$", full_suite) or re.search(r"(?m)^\s*cancel-in-progress:", full_suite):
+        raise GateFailure("full suite concurrency must queue, never cancel")
+    if "continue-on-error: true" in full_suite:
+        raise GateFailure("full suite must be fail-closed (no continue-on-error)")
+    if re.search(r"(?m)^    if:", full_suite):
+        raise GateFailure("full suite job must run unconditionally on schedule and dispatch")
+    suite_job = _job_text(full_suite, "web-and-android")
+    if "scripts/run-js-unit-gate.sh" not in suite_job or "scripts/ci-js-first-packaged-lanes.sh" not in full_suite:
+        raise GateFailure("full suite must run the exact unit gate and packaged lanes")
+
+
 def _gh_environment() -> dict[str, str]:
     env = os.environ.copy()
     # Keep a caller's repo/host override from redirecting this publication gate.
@@ -405,7 +485,7 @@ def select_latest_release_validation(
 
 def find_latest_release_validation(sha: str, env: dict[str, str]) -> tuple[dict[str, Any], dict[str, Any]]:
     endpoint = (
-        f"repos/{REPOSITORY}/actions/workflows/release-emulator-validation.yml/runs"
+        f"repos/{REPOSITORY}/actions/workflows/{RELEASE_WORKFLOW_NAME}/runs"
         f"?head_sha={sha}&per_page=100"
     )
     runs = _gh_objects(endpoint, ".workflow_runs[]", env)
@@ -503,33 +583,31 @@ def _synthetic_summary(
     run_sha: str | None = None,
     release_sha: str | None = None,
     head_ancestor: str = "yes",
-    include_pass: bool = True,
+    journey_pass: bool = True,
     fixture: bool = False,
 ) -> str:
     run_sha = run_sha or sha
     release_sha = release_sha or sha
-    pass_line = (
-        "PASS: journey fault-injection safety verdict is green "
-        f"(app2 journey job conclusion=success) and covers the release HEAD ({release_sha}). "
-        "The network-fault + bootstrap safety journeys passed on this line."
-        if include_pass
-        else "BLOCK: nightly fault verdict missing"
-    )
     fixture_prefix = "[FIXTURE DRY RUN] " if fixture else ""
+    required = _required_journey_class_count()
+    journey_line = (
+        f"Journey qualification: required={required} executed={required} failed=0 result=PASS"
+        if journey_pass
+        else f"Journey qualification: required={required} executed=0 failed=0 result=BLOCK"
+    )
     return "\n".join(
         [
-            "# PocketShell Release Emulator Validation",
+            "# PocketShell JS Release Validation",
             f"Commit SHA: {sha}",
             "Branch: main",
             f"Automated status: {automated}",
             "## Nightly fault/bootstrap run guard (issue #851)",
-            "```",
-            f"{fixture_prefix}Nightly fault run: workflow=app2.yml id=123 status=completed fault-verdict-job-conclusion=success headSha={run_sha}",
+            f"{fixture_prefix}Nightly fault run: workflow={RELEASE_WORKFLOW_NAME} id=123 headSha={run_sha}",
             f"{fixture_prefix}Release HEAD={release_sha} head_is_ancestor={head_ancestor}",
-            f"{fixture_prefix}{pass_line}",
-            "```",
             "## Validated APK identity",
             "",
+            "PASS: release APK identity chain verified",
+            journey_line,
         ]
     )
 
@@ -575,6 +653,8 @@ def self_test() -> int:
     good_summary = _synthetic_summary(sha)
     workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     legacy_build = LEGACY_BUILD_WORKFLOW.read_text(encoding="utf-8")
+    release_producer = (ROOT / RELEASE_WORKFLOW).read_text(encoding="utf-8")
+    full_suite = (ROOT / FULL_SUITE_WORKFLOW).read_text(encoding="utf-8")
 
     probes: list[tuple[str, Callable[[], None], bool]] = [
         (
@@ -645,8 +725,8 @@ def self_test() -> int:
             False,
         ),
         (
-            "missing D37 PASS line blocks",
-            lambda: validate_release_run(good_run, good_job, _synthetic_summary(sha, include_pass=False), sha),
+            "journey qualification BLOCK line blocks",
+            lambda: validate_release_run(good_run, good_job, _synthetic_summary(sha, journey_pass=False), sha),
             False,
         ),
         (
@@ -834,6 +914,135 @@ def self_test() -> int:
             lambda: validate_workflow_wiring(
                 workflow,
                 legacy_build + "\n      - name: Create GitHub Release\n        run: gh release create v0.6.0\n",
+            ),
+            False,
+        ),
+        (
+            "D37 producer and nightly full-suite wiring pass",
+            lambda: validate_release_producer_wiring(release_producer, full_suite),
+            True,
+        ),
+        (
+            "dispatch input (waive knob) on release validation blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n    inputs:\n      fault-waive:\n        type: string\n", 1),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "own schedule trigger on release validation blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("on:\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n  schedule:\n    - cron: '0 3 * * *'\n", 1),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "continue-on-error in the release validation job blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace(
+                    "      - name: Run fail-closed feature journey qualification\n",
+                    "      - name: Run fail-closed feature journey qualification\n        continue-on-error: true\n",
+                    1,
+                ),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "if: guard on the journey qualification step blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace(
+                    "      - name: Run fail-closed feature journey qualification\n",
+                    "      - name: Run fail-closed feature journey qualification\n        if: always()\n",
+                    1,
+                ),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "queue: max dropped from release validation blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("  queue: max\n", "", 1),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "cancel-in-progress added to release validation blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace(
+                    "  queue: max\n",
+                    "  queue: max\n  cancel-in-progress: true\n",
+                    1,
+                ),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "summary artifact without the trusted prefix blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace("name: js-release-validation-", "name: pocketshell-release-summary-", 1),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "PASS-flip step removed blocks",
+            lambda: validate_release_producer_wiring(
+                _drop_job_step(release_producer, RELEASE_JOB_ID, "Mark release validation PASS"),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "journey checker removed from release validation blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer.replace(JOURNEY_CHECKER, "scripts/check-missing-journey-checker.py", 1),
+                full_suite,
+            ),
+            False,
+        ),
+        (
+            "full suite losing the schedule trigger blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer,
+                full_suite.replace("on:\n  schedule:\n    - cron: '17 2 * * *'\n  workflow_dispatch:\n", "on:\n  workflow_dispatch:\n", 1),
+            ),
+            False,
+        ),
+        (
+            "full suite gaining a pull_request trigger blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer,
+                full_suite.replace("on:\n  schedule:", "on:\n  pull_request:\n  schedule:", 1),
+            ),
+            False,
+        ),
+        (
+            "full suite gaining a path filter blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer,
+                full_suite.replace(
+                    "  workflow_dispatch:\n",
+                    "  workflow_dispatch:\n    paths-ignore:\n      - docs/**\n",
+                    1,
+                ),
+            ),
+            False,
+        ),
+        (
+            "full suite job skipping scheduled runs blocks",
+            lambda: validate_release_producer_wiring(
+                release_producer,
+                full_suite.replace(
+                    "  web-and-android:\n",
+                    "  web-and-android:\n    if: github.event_name != 'schedule'\n",
+                    1,
+                ),
             ),
             False,
         ),

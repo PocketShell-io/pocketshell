@@ -26,13 +26,51 @@ The 24 replacement feature journey classes are registered in
 `scripts/js-journey-class-manifest.json`;
 `scripts/check-js-journey-results.py --json` still reports them missing.
 
-`main` has **no scheduled D36 full-suite run and no D37 nightly fault
-verdict**. `tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
+Since #2863 the D36/D37 replacement producers exist on `main`:
+
+- `.github/workflows/js-full-suite.yml` is the **D36 replacement**: the same
+  battery as push CI, on a nightly schedule (`02:17 UTC`) plus manual
+  dispatch, in its own never-cancelled `queue: max` concurrency group with no
+  path filters. Its redness is the D36 feature-merge-freeze signal.
+- `.github/workflows/js-release-validation.yml` is the **D37 replacement and
+  release-verdict producer**: it reacts to a green `JS full suite` completion
+  (or a manual dispatch), checks out that exact SHA, verifies it is an
+  ancestor of `origin/main`, rebuilds and re-checks the debug APK identity,
+  runs the same packaged API 35 lanes with the same per-lane fail-closed
+  result guards, and runs the fail-closed 24-journey qualification checker.
+  Only a fully green run flips its summary artifact
+  (`js-release-validation-<run>` — exactly one `summary.md`) to
+  `Automated status: PASS`; the summary records the commit SHA, the
+  nightly-fault run line at that SHA, the `origin/main` ancestry, and a
+  `Journey qualification: required=24 executed=24 failed=0 result=PASS` line.
+  There is deliberately no input or knob that waives the journey
+  qualification or the fault verdict (D37), and
+  `scripts/check-tag-release-authorization.py --self-test` pins the producer
+  wiring (no waive input, no own schedule, no `continue-on-error`, no
+  cancellable/collectible runs, unconditional qualification step).
+
+The release stays blocked until the registered journey classes actually
+execute: `check-js-journey-results.py` still BLOCKs at 0/24, which keeps every
+`js-release-validation` run red and the publisher below fail-closed. Porting
+those classes is the remaining 0.6.0 journey scope (#2959 and the other
+journey issues); until then a red `js-release-validation` run is the expected
+"release not ready" signal, **not** a D36 freeze — only a red `js-full-suite`
+run freezes feature merges.
+
+`tests.yml`, `app2.yml`, `release-emulator-validation.yml` and
 `full-suite-notify.yml` exercised only the deleted Kotlin modules and were
-hard-cut from `main` by #2934 (they remain on `release/0.5.x`); #2863 owns
-their JS replacement. Do not tag 0.6.0 until #2863's replacement gates are
-live and green on a validated `main` commit and the rest of the 0.6.0 scope is
-done.
+hard-cut from `main` by #2934 (they remain on `release/0.5.x`). Do not tag
+0.6.0 until the replacement gates above are green on a validated `main`
+commit and the rest of the 0.6.0 scope is done. Known stale leftovers from
+the old line, to be repointed or cut in #2863 follow-up slices (all inert on
+`main` today): `scripts/check-nightly-workflow.sh` and
+`scripts/check-nightly-fault-run.sh` still name `app2.yml`, and
+`scripts/check-test-execution-ledger-wiring.py --self-test` still expects
+deleted Kotlin trees and fails outside CI. The bare (non-`--j1-only`)
+`scripts/check-test-validity.sh --self-test` is green, not stale: it passes
+on `main` and with this diff (131 passed, 0 failed, in a git checkout); it
+fails only when run outside a git checkout (e.g. a git-archive extraction),
+because its fixture-repo probes require git.
 
 The legacy tag-triggered `Build` workflow on `main` builds the JS APKs, is
 artifact-only, and its GitHub workflow ID `280774562` remains disabled. Keep
@@ -51,10 +89,14 @@ the final publish job has `contents: write`. That job repeats authorization,
 runs `scripts/check-release-absence.py` (an authenticated exact-tag lookup
 that blocks on an existing release and on any inconclusive API error), then
 creates the release with create-only `gh release create --verify-tag`. A
-direct tag push cannot create a GitHub Release. With no
-`release-emulator-validation.yml` runs available on `main`, the publisher
-fails closed for every tag today; #2863 must repoint
-`scripts/check-tag-release-authorization.py` at the JS release verdict.
+direct tag push cannot create a GitHub Release. The authorization checker
+consumes the JS release verdict: it selects the newest completed/successful
+`js-release-validation.yml` run for the exact release SHA with a green
+`JS release validation` job, downloads its single `js-release-validation-*`
+artifact, and requires the summary contract above (exact SHA, `main`,
+`Automated status: PASS`, the D37 fault-run record and a full green journey
+qualification). Until such a run exists at the release SHA, the publisher
+fails closed for every tag.
 
 ## Release 0.5.x hotfixes
 

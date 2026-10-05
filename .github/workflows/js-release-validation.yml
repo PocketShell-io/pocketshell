@@ -1,0 +1,429 @@
+# JS release validation: the D37 replacement and the release verdict producer.
+#
+# Reaction trigger: a GREEN "JS full suite" (scheduled or dispatched) completion
+# on main. Manual dispatch always runs. This workflow executes the packaged
+# emulator battery at the EXACT head SHA of that full-suite run, runs the
+# fail-closed 24-journey qualification checker, and uploads one
+# `js-release-validation-*` artifact containing summary.md — the only trusted
+# release evidence `scripts/check-tag-release-authorization.py` accepts. The
+# old `release-emulator-validation.yml` / `app2.yml` contract was hard-cut from
+# main by #2934; this workflow replaces both verdict producers (issue #2863).
+#
+# D37 wiring this workflow must keep (checked by
+# scripts/check-tag-release-authorization.py --self-test):
+#   - there is deliberately NO input and NO environment knob that waives the
+#     journey qualification or the fault verdict (decision D37, issue #2379);
+#   - the journey-qualification and PASS-marking steps are unconditional and
+#     fail-closed: no `if:` that could skip them, no `continue-on-error`;
+#   - one concurrency group keyed on github.ref with `queue: max` and NO
+#     cancel-in-progress, so queued validations are delayed, never collapsed
+#     or cancelled (#2736, #2825);
+#   - `Automated status:` starts as RUNNING and only the final step — which
+#     cannot run after any failure — flips it to PASS; a red run's artifact
+#     therefore never carries a PASS verdict.
+#
+# A red or BLOCK journey qualification keeps this workflow red every night
+# until the registered journey classes execute (issue #2863). That is the
+# release-readiness signal, NOT a D36 feature freeze: only "JS full suite"
+# redness freezes feature merges.
+
+name: JS release validation
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["JS full suite"]
+    types: [completed]
+
+concurrency:
+  group: js-release-validation-${{ github.ref }}
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  js-release-validation:
+    name: JS release validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    # React only to a GREEN full-suite completion on main; a manual dispatch
+    # always runs. Red/skipped full-suite runs are not validated-RC signals.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+
+    steps:
+      - name: Checkout with pinned core source
+        uses: actions/checkout@v6
+        with:
+          # React runs validate the exact SHA the full suite ran; dispatch runs
+          # validate the dispatched SHA (github.event.workflow_run.head_sha is
+          # empty on workflow_dispatch).
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Resolve and pin the validated release SHA
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha="${{ github.event.workflow_run.head_sha || github.sha }}"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "FAIL: not a full SHA: $sha" >&2; exit 1; }
+          git fetch --quiet origin main
+          if git merge-base --is-ancestor "$sha" origin/main; then
+            ancestor=yes
+          else
+            ancestor=no
+          fi
+          printf 'sha=%s\nancestor=%s\n' "$sha" "$ancestor" >> "$GITHUB_OUTPUT"
+
+      - name: Fail closed when the validated SHA is not on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.resolve.outputs.ancestor }}" != "yes" ]]; then
+            echo "FAIL: validated SHA ${{ steps.resolve.outputs.sha }} is not an ancestor of origin/main" >&2
+            exit 1
+          fi
+
+      - name: Start release validation summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/js-release-validation
+          {
+            printf '# PocketShell JS Release Validation\n'
+            printf 'Commit SHA: %s\n' "${{ steps.resolve.outputs.sha }}"
+            printf 'Branch: main\n'
+            printf 'Automated status: RUNNING\n'
+            printf '## Nightly fault/bootstrap run guard (issue #851)\n'
+            printf 'Nightly fault run: workflow=js-release-validation.yml id=%s headSha=%s\n' \
+              "${GITHUB_RUN_ID}" "${{ steps.resolve.outputs.sha }}"
+            printf 'Release HEAD=%s head_is_ancestor=%s\n' \
+              "${{ steps.resolve.outputs.sha }}" "${{ steps.resolve.outputs.ancestor }}"
+          } > build/js-release-validation/summary.md
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Activate pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@12.5.1 --activate
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install screenshot OCR for packaged lifecycle evidence
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y imagemagick tesseract-ocr
+
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install locked JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Android debug APK
+        run: pnpm build:android:debug
+
+      - name: Validate packaged Android identity and derived version
+        run: |
+          scripts/check-js-apk-metadata.py --self-test
+          scripts/derive-version.sh --self-test
+          version_code="$(scripts/derive-version.sh version-code)"
+          version_name="$(scripts/derive-version.sh version-name)"
+          apk="android/app/build/outputs/apk/debug/app-debug.apk"
+          scripts/check-js-apk-metadata.py \
+            --apk "$apk" \
+            --variant debug \
+            --expected-version-code "$version_code" \
+            --expected-version-name "$version_name"
+          scripts/check-apk-signing.sh --variant debug --js-first --apk "$apk"
+          {
+            printf '## Validated APK identity\n\n'
+            printf 'PASS: release APK identity chain verified (versionCode %s, versionName %s)\n' \
+              "$version_code" "$version_name"
+          } >> build/js-release-validation/summary.md
+
+      - name: Prepare packaged JS smoke APKs
+        run: |
+          scripts/connected-js-smoke.sh --suffix i2863rv --prepare-only
+          scripts/connected-js-files-docker.sh --suffix i2863rv --prepare-only
+          scripts/connected-js-key-vault-docker.sh --suffix i2863rv --prepare-only
+
+      - name: Start version-matched Docker agents fixture
+        run: |
+          source scripts/lib/agents-fixture-version.sh
+          export_agents_fixture_version_for_run 0 android/app/build/outputs/apk/debug/app-debug.apk
+          scripts/ci-journey-fixture-retry.sh agents -- docker compose -f tests/docker/docker-compose.yml up -d --build --no-deps agents
+          source tests/docker/lib/wait-for-healthy.sh
+          wait_for_container_healthy tests/docker/docker-compose.yml agents /tmp/js-release-validation-agents-health.log 60
+          cat /tmp/js-release-validation-agents-health.log
+
+      - name: Start isolated Docker agents lanes for Composer and key-vault journeys
+        run: scripts/agents-pool.sh up 2244 2245
+
+      - name: Start isolated Docker agents lane for the mobile fast-key and shared-app journeys
+        run: scripts/agents-pool.sh up 2243
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Free disk space for API 35 emulator
+        run: scripts/ci-emulator-free-disk.sh
+
+      - name: Capture and verify emulator JS runtime after disk cleanup
+        id: emulator-js-runtime
+        shell: bash
+        run: |
+          node_path="$(command -v node)"
+          pnpm_path="$(command -v pnpm)"
+          [[ "$node_path" == /* && -x "$node_path" ]] || { echo 'FAIL: node is unavailable after disk cleanup' >&2; exit 1; }
+          [[ "$pnpm_path" == /* && -x "$pnpm_path" ]] || { echo 'FAIL: pnpm is unavailable after disk cleanup' >&2; exit 1; }
+          "$node_path" --version
+          "$pnpm_path" --version
+          printf 'path=%s\n' "$PATH" >> "$GITHUB_OUTPUT"
+          printf 'pnpm=%s\n' "$pnpm_path" >> "$GITHUB_OUTPUT"
+
+      - name: Repair Android cmdline-tools and accept licenses
+        run: scripts/ci-emulator-repair-sdk-tools.sh
+
+      - name: Check emulator action pin
+        run: scripts/check-emulator-action-pin.sh
+
+      - name: Run packaged JS journeys on API 35
+        id: packaged-smoke
+        timeout-minutes: 45
+        uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
+        env:
+          PATH: ${{ steps.emulator-js-runtime.outputs.path }}
+          PNPM: ${{ steps.emulator-js-runtime.outputs.pnpm }}
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-snapshot-load -no-window -gpu swiftshader_indirect -memory 6144 -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          script: scripts/ci-js-first-packaged-lanes.sh
+
+      - name: Require exact reports for every packaged JS lane
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          failed=0
+          run_check() {
+            local lane="$1"
+            shift
+            if "$@"; then
+              return 0
+            else
+              local status=$?
+              printf 'FAIL: %s result check exited %s\n' "$lane" "$status" >&2
+              failed=1
+            fi
+          }
+
+          run_check smoke scripts/check-js-smoke-results.py \
+            --results-dir android/app/build/outputs/js-smoke-results
+          run_check lifecycle scripts/check-js-lifecycle-results.py \
+            --results-dir "android/app/build/outputs/js-lifecycle/js2861-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Files scripts/check-js-files-results.py \
+            --results-dir "android/app/build/outputs/js-files/js2858-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Usage/Ports scripts/check-js-usage-ports-results.py \
+            --results-dir "android/app/build/outputs/js-usage-ports/js2859-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check Settings scripts/check-js-settings-results.py \
+            --results-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --reconnect-evidence "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/reconnect-evidence.json" \
+            --host-listing "android/app/build/outputs/js-settings/js2861s-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host-pocketshell-sessions-list.json"
+          run_check "Account sync" scripts/check-js-account-sync-results.py \
+            --results-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --logcat "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
+          run_check "Shared app" scripts/check-js-shared-app-results.py \
+            --results-dir android/app/build/outputs/js-shared-app-results
+          run_check Key-vault scripts/check-js-key-vault-results.py \
+            --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
+          run_check "Durable storage" scripts/check-js-durable-storage-results.py \
+            --run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          run_check Signed-upgrade scripts/check-js-signed-upgrade-results.py \
+            --artifacts-dir "android/app/build/outputs/js-key-vault-upgrade/up2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          composer_root="android/app/build/outputs/js-composer"
+          composer_prefix="js2891-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          composer_runs=("$composer_root/$composer_prefix"*)
+          if (( ${#composer_runs[@]} == 1 )); then
+            composer_run="${composer_runs[0]}"
+            run_check "Composer prepare" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-prepare"
+            run_check "Composer resume" scripts/check-js-composer-journey-results.py \
+              --results-dir "$composer_run/phase-resume"
+          else
+            printf 'FAIL: expected exactly one Composer report directory for prefix %s; found %s\n' \
+              "$composer_prefix" "${#composer_runs[@]}" >&2
+            failed=1
+          fi
+
+          if (( failed != 0 )); then
+            exit 1
+          fi
+
+      - name: Assert the packaged JS mobile fast-key journey executed exactly once
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence_root="android/app/build/outputs/js-hotkeys"
+          evidence_prefix="js2884-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-"
+          shopt -s nullglob
+          evidence_runs=("$evidence_root/$evidence_prefix"*)
+          if (( ${#evidence_runs[@]} != 1 )); then
+            printf 'FAIL: expected exactly one same-run fast-key evidence directory for %s; found %s\n' \
+              "$evidence_prefix" "${#evidence_runs[@]}" >&2
+            exit 1
+          fi
+          scripts/check-js-hotkeys-journey-results.py --results-dir "${evidence_runs[0]}"
+
+      # The fail-closed D37 journey qualification (issue #2863): every class in
+      # scripts/js-journey-class-manifest.json must have actually executed.
+      # BLOCK/missing results fail this step; the summary line is appended
+      # before the exit so a red run's artifact still records the verdict.
+      - name: Run fail-closed feature journey qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          scripts/check-js-journey-results.py \
+            --results-dir android/app/build/outputs/androidTest-results/connected/debug \
+            --json > build/js-release-validation/journey-qualification.json || rc=$?
+          python3 - build/js-release-validation/journey-qualification.json >> build/js-release-validation/summary.md <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              data = json.load(handle)
+          print(
+              "Journey qualification: required=%d executed=%d failed=%d result=%s"
+              % (
+                  data.get("requiredJourneyClasses", 0),
+                  len(data.get("executedJourneyClasses", [])),
+                  len(data.get("failedTests", [])),
+                  data.get("result", "UNKNOWN"),
+              )
+          )
+          PY
+          exit "$rc"
+
+      # Only reached when every preceding step succeeded; flips the summary to
+      # the only status the release gate accepts.
+      - name: Mark release validation PASS
+        shell: bash
+        run: |
+          set -euo pipefail
+          summary="build/js-release-validation/summary.md"
+          [[ "$(grep -c '^Automated status: RUNNING$' "$summary")" == "1" ]] || {
+            echo 'FAIL: summary must carry exactly one RUNNING status line to flip' >&2
+            exit 1
+          }
+          sed -i 's/^Automated status: RUNNING$/Automated status: PASS/' "$summary"
+          printf 'PASS: JS release validation completed\n'
+
+      - name: Upload release validation summary artifact
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: js-release-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/js-release-validation/summary.md
+          if-no-files-found: error
+
+      - name: Collect isolated composer fixture diagnostics
+        if: always()
+        run: |
+          mkdir -p android/app/build/outputs/js-composer/ci-fixture
+          docker inspect pocketshell-test-agents-2245 \
+            > android/app/build/outputs/js-composer/ci-fixture/agents-inspect.json 2>&1 || true
+          docker logs pocketshell-test-agents-2245 \
+            > android/app/build/outputs/js-composer/ci-fixture/agents.log 2>&1 || true
+
+      - name: Collect isolated fast-key fixture diagnostics
+        if: always()
+        run: |
+          mkdir -p android/app/build/outputs/js-hotkeys/ci-fixture
+          docker inspect pocketshell-test-agents-2243 \
+            > android/app/build/outputs/js-hotkeys/ci-fixture/agents-inspect.json 2>&1 || true
+          docker logs pocketshell-test-agents-2243 \
+            > android/app/build/outputs/js-hotkeys/ci-fixture/agents.log 2>&1 || true
+
+      - name: Upload packaged JS composer run evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-release-composer-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/outputs/js-composer/
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+          if-no-files-found: warn
+
+      - name: Upload packaged JS fast-key run evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-release-hotkeys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: android/app/build/outputs/js-hotkeys/
+          if-no-files-found: warn
+
+      - name: Upload packaged APK and connected journey evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: pocketshell-js-release-packaged-journeys-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/androidTest-results/connected/debug/TEST-*.xml
+            android/app/build/outputs/js-smoke-results/TEST-*.xml
+            android/app/build/outputs/js-smoke-diagnostics/**
+            android/app/build/outputs/js-usage-ports/**
+            android/app/build/outputs/androidTest-results/connected/debug/diagnostics-*
+            android/app/build/outputs/js-lifecycle/**
+            android/app/build/outputs/js-files/**
+            android/app/build/outputs/js-settings/**
+            android/app/build/outputs/js-account-sync/**
+            android/app/build/outputs/js-key-vault/**
+            android/app/build/outputs/js-durable-storage/**
+            android/app/build/outputs/js-shared-app-results/**
+          if-no-files-found: warn
+
+      - name: Stop isolated Composer and key-vault Docker agents lanes
+        if: always()
+        run: scripts/agents-pool.sh down 2244 2245
+
+      - name: Stop isolated fast-key and shared-app Docker agents lane
+        if: always()
+        run: scripts/agents-pool.sh down 2243
+
+      - name: Stop Docker agents fixture
+        if: always()
+        run: docker compose -f tests/docker/docker-compose.yml down --volumes --remove-orphans
