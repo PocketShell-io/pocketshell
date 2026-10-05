@@ -312,6 +312,7 @@ jobs:
       # BLOCK/missing results fail this step; the summary line is appended
       # before the exit so a red run's artifact still records the verdict.
       - name: Run fail-closed feature journey qualification
+        if: always()
         shell: bash
         run: |
           set -euo pipefail
