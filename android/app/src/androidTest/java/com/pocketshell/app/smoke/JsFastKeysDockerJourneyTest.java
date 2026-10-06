@@ -1806,10 +1806,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const bounds=b=>({left:b.left,right:b.right,top:b.top,bottom:b.bottom,width:b.width,height:b.height});"
                 + "return JSON.stringify({missing:false,width:r.width,height:r.height,targetBounds:bounds(r),contentBounds:bounds(c),"
                 + "axis,snapType:style.scrollSnapType,scrollLeft:content.scrollLeft,scrollTop:content.scrollTop,"
-                + "insideContent:r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5,"
                 + "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)});})()");
         target.put("keyId", keyId);
         assertTrue("catalog action must exist before it is tapped: " + target, !target.optBoolean("missing", true));
+        target.put("insideContent", RectContainment.insideWithTolerance(
+                target.getJSONObject("targetBounds"), target.getJSONObject("contentBounds")));
         assertTrue("catalog action must retain its full 48dp touch-target height: " + target,
                 target.getDouble("height") >= 47.9);
         assertTrue("catalog action must retain its full 48dp touch-target width: " + target,
@@ -1921,8 +1922,7 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const bounds=r=>({left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height});"
                 + "const keys=Array.from(node.querySelectorAll('button[data-key-id]')).map(key=>{const r=key.getBoundingClientRect();"
                 + "const intersectsContent=r.right>c.left&&r.left<c.right&&r.bottom>c.top&&r.top<c.bottom;"
-                + "const insideContent=r.left>=c.left&&r.right<=c.right&&r.top>=c.top&&r.bottom<=c.bottom;"
-                + "return {keyId:key.dataset.keyId,bounds:bounds(r),intersectsContent,insideContent,width:r.width,height:r.height,"
+                + "return {keyId:key.dataset.keyId,bounds:bounds(r),intersectsContent,width:r.width,height:r.height,"
                 + "insideViewport:r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=(v?.height??innerHeight)};});"
                 + "return JSON.stringify({missing:false,scrollLeft:node.scrollLeft,contentBounds:bounds(c),keys});})()");
         assertTrue("the Main rail endpoint must be measurable after physical swipes: " + endpoint,
@@ -1938,6 +1938,9 @@ public final class JsFastKeysDockerJourneyTest {
         for (int index = 0; index < endpointKeys.length(); index += 1) {
             JSONObject key = endpointKeys.getJSONObject(index);
             String keyId = key.getString("keyId");
+            // #3055: a fractional end-clamp scrollLeft can leave a full 48dp key a few tenths of a
+            // pixel past the rail edge; share the sibling checks' sub-pixel tolerance.
+            key.put("insideContent", RectContainment.insideWithTolerance(key.getJSONObject("bounds"), contentBounds));
             assertEquals("Main endpoint keys must keep their shared-core order", keyIds.getString(index), keyId);
             assertTrue("every Main endpoint target that intersects the rail must remain a full 48dp target: "
                             + keyId + "; " + endpoint,
@@ -2044,7 +2047,7 @@ public final class JsFastKeysDockerJourneyTest {
     }
 
     private JSONObject fastKeyGeometry(String selector) throws Exception {
-        return evalJson("(() => {const target=document.querySelector(" + JSONObject.quote(selector) + ");"
+        JSONObject geometry = evalJson("(() => {const target=document.querySelector(" + JSONObject.quote(selector) + ");"
                 + "const container=target?.closest('.mobile-hotkeys__main-keys,.mobile-hotkeys__ctrl-grid');"
                 + "if(!target||!container)return JSON.stringify({missing:true});"
                 + "const r=target.getBoundingClientRect(),c=container.getBoundingClientRect(),v=window.visualViewport;"
@@ -2060,13 +2063,17 @@ public final class JsFastKeysDockerJourneyTest {
                 + "const swipeAnchors=horizontal?{left:freeX(false),right:freeX(true),vertical:null}:"
                 + "{left:null,right:null,vertical:verticalAnchor};"
                 + "return JSON.stringify({missing:false,axis:horizontal?'horizontal':'vertical',"
-                + "insideContent:r.left>=c.left-0.5&&r.right<=c.right+0.5&&r.top>=c.top-0.5&&r.bottom<=c.bottom+0.5,"
                 + "insideViewport:r.left>=0&&r.top>=0&&r.bottom<=(v?.height??innerHeight)+0.5&&r.right<=innerWidth+0.5,"
                 + "key:{left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height},"
                 + "container:{left:c.left,right:c.right,top:c.top,bottom:c.bottom,width:c.width,height:c.height},"
                 + "layout:{rowGap:style.rowGap,columnGap:style.columnGap,gridAutoRows:style.gridAutoRows,"
                 + "clientHeight:container.clientHeight,scrollHeight:container.scrollHeight,scrollTop:container.scrollTop,buttonRects},"
                 + "swipeAnchors,scrollLeft:container.scrollLeft,scrollTop:container.scrollTop});})()");
+        if (!geometry.optBoolean("missing", true)) {
+            geometry.put("insideContent", RectContainment.insideWithTolerance(
+                    geometry.getJSONObject("key"), geometry.getJSONObject("container")));
+        }
+        return geometry;
     }
 
     private void injectSwipe(float startX, float startY, float endX, float endY) {

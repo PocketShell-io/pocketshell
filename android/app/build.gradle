@@ -122,6 +122,14 @@ android {
         versionName = pocketShellVersion.name
     }
 
+    // Pure-Java test helpers shared by the JVM unit gate and the packaged
+    // journeys, so a journey oracle (e.g. RectContainment, #3055) is pinned
+    // by scripts/run-android-unit-gate.sh without an emulator.
+    sourceSets {
+        test.java.srcDirs += 'src/sharedTest/java'
+        androidTest.java.srcDirs += 'src/sharedTest/java'
+    }
+
     buildTypes {
         debug {
             signingConfig = signingConfigs.debugKeystore
