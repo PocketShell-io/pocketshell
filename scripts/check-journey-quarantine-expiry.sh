@@ -42,7 +42,6 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Overridable so the sibling mechanism test can drive the REAL guard against a
 # mutated list without writing into the worktree.
 DEFAULT_FILE="${POCKETSHELL_JOURNEY_QUARANTINE_FILE:-$SCRIPT_DIR/journey-quarantine.txt}"
-JOURNEY_SUITE="${POCKETSHELL_TEST_AREAS_JOURNEY_SUITE:-$SCRIPT_DIR/ci-app2-journey-suite.sh}"
 # The androidTest root the journey lane runs, derived from the suite (below) so
 # this guard and the selection engine cannot disagree about where journeys live.
 JOURNEY_ROOT_OVERRIDE="${POCKETSHELL_JOURNEY_QUARANTINE_ROOT:-}"
@@ -58,12 +57,11 @@ journey_root() {
     printf '%s\n' "$JOURNEY_ROOT_OVERRIDE"
     return 0
   fi
-  [[ -f "$JOURNEY_SUITE" ]] || return 1
-  local task mod
-  task="$(sed -nE 's/^JOURNEY_TASK="([^"]+)".*/\1/p' "$JOURNEY_SUITE" | head -1)"
-  [[ -n "$task" ]] || return 1
-  mod="${task#:}"; mod="${mod%:*}"
-  printf '%s/%s/src/androidTest\n' "$REPO_ROOT" "${mod//://}"
+  # JS-first tree (#2934): the single androidTest root is the packaged app's.
+  # The old derivation parsed ci-app2-journey-suite.sh for an :app2: task that
+  # no longer exists on this branch, which left the guard resolving rows
+  # against a deleted tree.
+  printf '%s/android/app/src/androidTest\n' "$REPO_ROOT"
 }
 
 journey_registry_classes() {
@@ -97,16 +95,29 @@ journey_ignored_methods() {
     fqcn="${rel//\//.}"
     awk -v cls="$fqcn" '
       /^[[:space:]]*@Ignore([[:space:]]|\(|$)/ { pending = 1; next }
-      /^[[:space:]]*fun[[:space:]]/ {
-        if (pending) {
-          line = $0
+      /^[[:space:]]*$/ { pending = 0; next }
+      {
+        line = $0
+        name = ""
+        if (line ~ /^[[:space:]]*fun[[:space:]]/) {
           sub(/^[[:space:]]*fun[[:space:]]+/, "", line)
           sub(/[[:space:]]*\(.*$/, "", line)
-          print cls "#" line
+          name = line
+        } else if (line ~ /(^|[[:space:]])void[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/) {
+          n = split($0, toks, /[[:space:]]+/)
+          for (k = 1; k <= n; k++) {
+            if (toks[k] == "void" && k < n) {
+              name = toks[k + 1]
+              sub(/\(.*/, "", name)
+              break
+            }
+          }
         }
-        pending = 0; next
+        if (name != "") {
+          if (pending) print cls "#" name
+          pending = 0
+        }
       }
-      /^[[:space:]]*$/ { pending = 0 }
     ' "$f"
   done < <(find "$root" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null) |
     LC_ALL=C sort -u

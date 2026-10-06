@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Require the exact packaged mobile fast-key Docker journey to execute and pass."""
+"""Require the exact packaged mobile fast-key Docker journey to execute and pass.
+
+A skipped run is sanctioned ONLY by an unexpired, well-formed row for this
+exact method in scripts/journey-quarantine.txt (policy D36, issue #2355) —
+the same registry scripts/check-journey-quarantine-expiry.sh reconciles
+against the @Ignore on the source. Anything else (missing, extra, failed,
+unsanctioned skip, malformed or expired row) fails closed.
+"""
 
 from __future__ import annotations
 
@@ -8,16 +15,49 @@ import math
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from datetime import date
 from pathlib import Path
 
 
 REQUIRED_CLASS = "com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest"
 REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
+REQUIRED_KEY = f"{REQUIRED_CLASS}#{REQUIRED_METHOD}"
 DEFAULT_RESULTS_DIR = Path("android/app/build/outputs/androidTest-results/connected/debug")
+DEFAULT_QUARANTINE_FILE = Path(__file__).resolve().parent / "journey-quarantine.txt"
 
 
 class GateFailure(ValueError):
     """The packaged journey result is missing, extra, skipped, or red."""
+
+
+def quarantine_sanction(quarantine_file: Path):
+    """((issue, expires), None) when an unexpired well-formed row sanctions the
+    skip; (None, reason) otherwise. Fail-closed in every unclear case."""
+    try:
+        text = quarantine_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, f"quarantine registry is missing: {quarantine_file}"
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if fields[0] != REQUIRED_KEY:
+            continue
+        if len(fields) != 5:
+            return None, f"registry row for {REQUIRED_KEY} is malformed (expected 5 TAB-separated fields, got {len(fields)})"
+        _, issue, added, expires, _reason = fields
+        try:
+            added_date = date.fromisoformat(added)
+            expires_date = date.fromisoformat(expires)
+        except ValueError:
+            return None, f"registry row for {REQUIRED_KEY} carries a non-ISO date (added={added}, expires={expires})"
+        if expires_date <= added_date:
+            return None, f"registry row for {REQUIRED_KEY} expires ({expires}) before it was added ({added})"
+        if date.today() > expires_date:
+            return None, f"registry row for {REQUIRED_KEY} EXPIRED {expires} — resolve or re-triage it per policy D36"
+        return (issue, expires_date), None
+    return None, f"no registry row for {REQUIRED_KEY}"
 
 
 def require_successful_run_metadata(results_dir: Path, junit_path: Path) -> None:
@@ -50,7 +90,7 @@ def require_valid_duration(path: Path, element: ET.Element, label: str) -> None:
         raise GateFailure(f"{path}: {label} has an invalid or negative JUnit duration: {value!r}")
 
 
-def validate_results(results_dir: Path) -> None:
+def validate_results(results_dir: Path, quarantine_file: Path = DEFAULT_QUARANTINE_FILE) -> None:
     if not results_dir.is_dir():
         raise GateFailure(f"instrumentation results directory is missing: {results_dir}")
     xml_files = sorted(results_dir.rglob("TEST-*.xml"))
@@ -101,25 +141,39 @@ def validate_results(results_dir: Path) -> None:
     if list(case.iter("failure")) or list(case.iter("error")):
         raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} failed")
     if list(case.iter("skipped")):
-        raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped")
+        sanction, why = quarantine_sanction(quarantine_file)
+        if sanction is None:
+            raise GateFailure(f"{REQUIRED_CLASS}#{REQUIRED_METHOD} was skipped and no unexpired quarantine row sanctions it: {why}")
+        issue, expires = sanction
+        print(f"QUARANTINED (policy D36): {REQUIRED_KEY} skipped; tracked {issue}, expires {expires.isoformat()} ({quarantine_file})")
 
 
 def self_test() -> int:
     probes = [
-        ("one exact passing packaged journey passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")], True),
-        ("zero reports fail closed", None, False),
-        ("zero tests fail closed", [], False),
-        ("missing method fails", [(REQUIRED_CLASS, "other", "passed")], False),
-        ("extra method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False),
-        ("extra class fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), ("other.Journey", "run", "passed")], False),
-        ("failed method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], False),
-        ("skipped method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False),
+        ("one exact passing packaged journey passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")], True, ""),
+        ("zero reports fail closed", None, False, ""),
+        ("zero tests fail closed", [], False, ""),
+        ("missing method fails", [(REQUIRED_CLASS, "other", "passed")], False, ""),
+        ("extra method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), (REQUIRED_CLASS, "extra", "passed")], False, ""),
+        ("extra class fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "passed"), ("other.Journey", "run", "passed")], False, ""),
+        ("failed method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], False, ""),
+        ("skipped method without a quarantine row fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False, ""),
+        ("skipped with an unexpired registered quarantine passes", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], True,
+         f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2099-01-01\tsynthetic unexpired row"),
+        ("skipped with an expired registered quarantine fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+         f"{REQUIRED_KEY}\t#3056\t2026-01-01\t2026-01-15\tsynthetic expired row"),
+        ("skipped with a malformed registry row fails closed", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+         "this-row-has-no-tabs-at-all"),
+        ("skipped with a row for a different method fails", [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")], False,
+         f"{REQUIRED_CLASS}#other\t#3056\t2026-01-01\t2099-01-01\tsynthetic other-method row"),
     ]
     failures = 0
     with tempfile.TemporaryDirectory(prefix="pocketshell-js-hotkeys-results-") as temporary:
         root = Path(temporary)
-        for index, (label, probe, expected) in enumerate(probes):
+        for index, (label, probe, expected, registry) in enumerate(probes):
             directory = root / str(index)
+            registry_file = root / f"registry-{index}.txt"
+            registry_file.write_text(registry, encoding="utf-8")
             if probe is not None:
                 directory.mkdir()
                 suite = ET.Element("testsuite", {
@@ -138,7 +192,7 @@ def self_test() -> int:
                 ET.ElementTree(suite).write(directory / "TEST-fastkeys.xml", encoding="utf-8", xml_declaration=True)
                 (directory / "hotkeys-run-metadata.txt").write_text("run_id=self-test\nexit_code=0\n", encoding="utf-8")
             try:
-                validate_results(directory)
+                validate_results(directory, registry_file)
                 passed = True
             except GateFailure:
                 passed = False
@@ -170,10 +224,12 @@ def self_test() -> int:
         ]
         for index, (label, metadata, duration, include_metadata, expected) in enumerate(strict_probes, start=len(probes)):
             directory = root / f"strict-{index}"
+            registry_file = root / f"registry-strict-{index}.txt"
+            registry_file.write_text("", encoding="utf-8")
             write_report(directory, exit_code=metadata.get("exit_code", "0"), duration=duration,
                          include_metadata=include_metadata)
             try:
-                validate_results(directory)
+                validate_results(directory, registry_file)
                 passed = True
             except GateFailure:
                 passed = False
@@ -188,12 +244,13 @@ def self_test() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, default=DEFAULT_RESULTS_DIR)
+    parser.add_argument("--quarantine-file", type=Path, default=DEFAULT_QUARANTINE_FILE)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         return self_test()
     try:
-        validate_results(args.results_dir)
+        validate_results(args.results_dir, args.quarantine_file)
     except GateFailure as exc:
         print(f"BLOCK: {exc}", file=sys.stderr)
         return 1

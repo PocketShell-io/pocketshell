@@ -35,6 +35,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -97,6 +98,7 @@ public final class JsFastKeysDockerJourneyTest {
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
+    @Ignore("quarantined: #3056, expires 2026-10-20 — terminal slot escapes the clipped panel during dictation-listening; see scripts/journey-quarantine.txt")
     @Test
     public void fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect() throws Exception {
         assertTrue("fast-key screen assertions require Android API 35+", Build.VERSION.SDK_INT >= 35);

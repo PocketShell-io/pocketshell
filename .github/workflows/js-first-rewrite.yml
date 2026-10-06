@@ -94,6 +94,11 @@ jobs:
       - name: Check fail-closed packaged fast-key result guard
         run: scripts/check-js-hotkeys-journey-results.py --self-test
 
+      - name: Check flake quarantine registry and non-blocking self-test (policy D36)
+        run: |
+          scripts/check-journey-quarantine-expiry.sh
+          scripts/test-journey-quarantine-non-blocking.sh
+
       - name: Check fail-closed packaged Files result guard
         run: scripts/check-js-files-results.py --self-test
 

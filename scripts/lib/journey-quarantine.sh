@@ -189,11 +189,10 @@ pocketshell_journey_quarantine_ignore_reason() {
   local file="$1" method="$2"
   [[ -f "$file" ]] || return 1
   awk -v m="$method" '
-    # Reset the pending annotation block at each declaration boundary.
-    /^[[:space:]]*fun[[:space:]]/ {
-      if ($0 ~ ("fun[[:space:]]+" m "[[:space:]]*\\(")) { if (ign != "") { print ign; found = 1 } ; exit }
-      ign = ""; next
-    }
+    # Reset the pending annotation block at each declaration boundary. Both
+    # shapes the JS-first androidTest tree carries are recognised: Kotlin
+    # `fun name(` and Java `... void name(` (JUnit4 @Test methods are void).
+    /^[[:space:]]*$/ { ign = ""; next }
     /^[[:space:]]*@Ignore[[:space:]]*\(/ {
       line = $0
       sub(/^[^(]*\([[:space:]]*"?/, "", line)
@@ -202,8 +201,28 @@ pocketshell_journey_quarantine_ignore_reason() {
       next
     }
     /^[[:space:]]*@Ignore[[:space:]]*$/ { ign = "(no reason given)"; next }
-    # A blank line or a closing brace ends an annotation block.
-    /^[[:space:]]*$/ { ign = ""; next }
+    {
+      line = $0
+      name = ""
+      if (line ~ /^[[:space:]]*fun[[:space:]]/) {
+        sub(/^[[:space:]]*fun[[:space:]]+/, "", line)
+        sub(/[[:space:]]*\(.*$/, "", line)
+        name = line
+      } else if (line ~ /(^|[[:space:]])void[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/) {
+        n = split($0, toks, /[[:space:]]+/)
+        for (k = 1; k <= n; k++) {
+          if (toks[k] == "void" && k < n) {
+            name = toks[k + 1]
+            sub(/\(.*/, "", name)
+            break
+          }
+        }
+      }
+      if (name != "") {
+        if (name == m) { if (ign != "") { print ign; found = 1 } ; exit }
+        ign = ""
+      }
+    }
     END { if (!found) exit 1 }
   ' "$file"
 }

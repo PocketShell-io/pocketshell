@@ -47,11 +47,8 @@ SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
 # The lane's androidTest root, copied so mutations never touch the worktree.
-JOURNEY_ROOT="$(sed -nE 's/^JOURNEY_TASK="([^"]+)".*/\1/p' \
-  "$SCRIPT_DIR/ci-app2-journey-suite.sh" | head -1)"
-[[ -n "$JOURNEY_ROOT" ]] || fail "could not read JOURNEY_TASK from ci-app2-journey-suite.sh"
-JOURNEY_MODULE="${JOURNEY_ROOT#:}"; JOURNEY_MODULE="${JOURNEY_MODULE%:*}"
-REAL_ROOT="$REPO_ROOT/${JOURNEY_MODULE//://}/src/androidTest"
+# JS-first tree (#2934): the single androidTest root is the packaged app's.
+REAL_ROOT="$REPO_ROOT/android/app/src/androidTest"
 [[ -d "$REAL_ROOT" ]] || fail "journey androidTest root not found: $REAL_ROOT"
 
 reset_root() {
@@ -90,14 +87,14 @@ pick_fixture_class() {
     # The planter matches this exact line, so a class without it is unusable.
     grep -qxF '    @Test' "$f" || continue
     rel="${f#"$REAL_ROOT"/}"
-    rel="${rel#java/}"; rel="${rel#kotlin/}"; rel="${rel%.kt}"
+    rel="${rel#java/}"; rel="${rel#kotlin/}"; rel="${rel%.kt}"; rel="${rel%.java}"
     fqcn="${rel//\//.}"
     if [[ -n "$excluded" ]] && grep -qxF "$fqcn" <<<"$excluded"; then
       continue
     fi
     printf '%s\n' "$fqcn"
     return 0
-  done < <(find "$REAL_ROOT" -type f -name '*.kt' 2>/dev/null | LC_ALL=C sort)
+  done < <(find "$REAL_ROOT" -type f \( -name '*.kt' -o -name '*.java' \) 2>/dev/null | LC_ALL=C sort)
   return 1
 }
 
@@ -114,6 +111,7 @@ FIXTURE_CLASS="$(pick_fixture_class)" || fail "no unquarantined journey class wi
 # spurious red. Callers must reset_root first.
 plant_untracked_ignore() {
   local src="$SANDBOX/root/java/${FIXTURE_CLASS//./\/}.kt"
+  [[ -f "$src" ]] || src="$SANDBOX/root/java/${FIXTURE_CLASS//./\/}.java"
   if [[ ! -f "$src" ]]; then
     echo "fixture source not found: $src" >&2
     return 1
@@ -129,7 +127,7 @@ src = open(path).read()
 needle = "    @Test\n"
 i = src.index(needle)
 rest = src[i + len(needle):]
-m = re.search(r'\bfun[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(', rest)
+m = re.search(r'\b(?:fun|void)[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(', rest)
 if not m:
     sys.exit("no @Test method found to annotate")
 src = src[:i] + "    @Test\n    @Ignore(\"silently parked\")\n" + rest
@@ -165,6 +163,7 @@ else
   q_class="${first_row%%#*}"
   q_method="${first_row#*#}"
   q_src="$SANDBOX/root/java/${q_class//./\/}.kt"
+  [[ -f "$q_src" ]] || q_src="$SANDBOX/root/java/${q_class//./\/}.java"
   reset_root
   [[ -f "$q_src" ]] || fail "(b) could not find the source for $q_class at $q_src"
   # Remove only the @Ignore that governs THIS method.
@@ -172,7 +171,7 @@ else
 import re, sys
 path, method = sys.argv[1], sys.argv[2]
 src = open(path).read()
-pat = re.compile(r'[ \t]*@Ignore\([^\n]*\)\n(?=(?:[ \t]*@[A-Za-z][^\n]*\n)*[ \t]*fun[ \t]+' + re.escape(method) + r'[ \t]*\()')
+pat = re.compile(r'[ \t]*@Ignore\([^\n]*\)\n(?=(?:[ \t]*@[A-Za-z][^\n]*\n)*(?:[ \t]*fun[ \t]+' + re.escape(method) + r'[ \t]*\(|[^\n]*\bvoid[ \t]+' + re.escape(method) + r'[ \t]*\())')
 src, n = pat.subn('', src, count=1)
 if n != 1:
     sys.exit("mutation did not apply: no @Ignore governing " + method)
