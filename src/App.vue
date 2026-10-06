@@ -74,6 +74,7 @@ import AboutScreen from './components/AboutScreen.vue';
 import FileWorkspaceScreen from './components/FileWorkspaceScreen.vue';
 import { hostSnippets } from './stores/hostSnippets';
 import SessionAgentMetadata from './components/SessionAgentMetadata.vue';
+import EmptyStateSignIn from './components/EmptyStateSignIn.vue';
 import { projectSessionAgentPresentation, resolveSelectedSessionRow } from './session/agentMetadata';
 
 interface TerminalViewportHandle {
@@ -182,6 +183,8 @@ const selectedLegacyHostId = ref('');
 /** Hosts from the signed-in Google account's last sync (#3020); metadata only, no keys. */
 const syncedAccountHosts = ref<Array<{ name: string; hostname: string; port: number; user: string }>>([]);
 const selectedSyncedHostName = ref('');
+/** Whether a Google account is signed in (#3020); unknown while null, so the empty-state sign-in pointer (#3047) stays hidden. */
+const accountSignedIn = ref<boolean | null>(null);
 const sshKeys = ref<SshKeyMetadata[]>([]);
 const selectedKeyHandleId = ref('');
 const sshKeyLoadError = ref('');
@@ -603,7 +606,7 @@ function setManualPortForwarding(remotePort: number, enabled: boolean): void {
 }
 
 watch(() => navigation.route, (route) => {
-  if (route === 'home') refreshSyncedAccountHosts();
+  if (route === 'home') void refreshAccountState();
   if (route === 'usage') void refreshUsage();
   if (route === 'ports') void refreshPorts();
   if (route === 'keys') void refreshSshKeys();
@@ -831,6 +834,16 @@ function refreshSyncedAccountHosts(): void {
     user: typeof host.user === 'string' ? host.user : '',
   }));
   if (!syncedAccountHosts.value.some((host) => host.name === selectedSyncedHostName.value)) selectedSyncedHostName.value = '';
+}
+
+/** #3047: the empty-state sign-in pointer needs live sign-in state, not just the cached host copy; unknown stays hidden. */
+async function refreshAccountState(): Promise<void> {
+  refreshSyncedAccountHosts();
+  try {
+    accountSignedIn.value = (await androidSync().status()).signedIn;
+  } catch {
+    accountSignedIn.value = null;
+  }
 }
 
 /** Fill the form from a synced host; its SSH key is chosen on this phone. */
@@ -1358,7 +1371,7 @@ function reloadAfterSettingsImport(settingsWritten: boolean): boolean {
 }
 
 onMounted(() => {
-  refreshSyncedAccountHosts();
+  void refreshAccountState();
   // Packaged instrumentation opts in through isolated app storage before
   // launch. This exposes the real core-backed policy with fake platform
   // effects; the production settings screen has no sync action or network
@@ -1818,6 +1831,13 @@ onBeforeUnmount(() => {
             <KeyIcon :size="18" /><span>Add a key</span>
           </button>
         </div>
+        <!-- #3047: the empty, signed-out phone gets a pointer to the shipped
+             sign-in path; the component self-gates on hosts and sign-in state. -->
+        <EmptyStateSignIn
+          :has-hosts="importedLegacyHosts.length > 0 || syncedAccountHosts.length > 0"
+          :signed-in="accountSignedIn"
+          @sign-in="navigation.open('settings-account')"
+        />
         <div class="host-actions">
           <button class="small-action" type="button" data-testid="manage-ssh-keys" @click="openKeyManagement">Manage keys</button>
           <button class="action-button" type="button" data-testid="ssh-connect" :disabled="isConnecting || migrationBlocksConnection" @click="connectHost">

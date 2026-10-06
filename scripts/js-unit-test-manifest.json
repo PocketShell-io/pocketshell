@@ -546,6 +546,13 @@
         "refuses a changed key: both fingerprints, no first-contact wording, no trust action"
       ]
     },
+    "tests/unit/emptyStateSignIn.test.ts": {
+      "suite": "first-run sign-in affordance",
+      "tests": [
+        "shows the sign-in pointer only on an empty, signed-out phone",
+        "points at the shipped Account & sync screen and keeps sign-in in #3020"
+      ]
+    },
     "tests/unit/syncCrypto.test.ts": {
       "suite": "settings-sync envelope encryption",
       "tests": [
