@@ -162,6 +162,14 @@ def require_contract(source: str, packaged_lanes: str, packaged_runner: str, art
     if not packaged_lanes.index("scripts/connected-js-composer-docker.sh") < composer_phase_checks < run:
         raise AssertionError("both same-run composer phase JUnit reports must be checked before fastkeys")
 
+    skip_route = packaged_runner.index("journey_junit_outcome")
+    skip_sanction = packaged_runner.index(
+        'fail \'fast-key journey was skipped without an unexpired D36 quarantine row\'', skip_route)
+    host_oracle = packaged_runner.index('first_raw="$SESSION_BASE-keys-bytes.raw"')
+    if not skip_route < skip_sanction < host_oracle:
+        raise AssertionError(
+            "a skipped fast-key journey must be sanctioned by the exact-journey checker before the host byte oracle")
+
     guard_start = source.index("- name: Assert the packaged JS mobile fast-key journey executed exactly once")
     guard_end = source.index("- name:", guard_start + 8)
     guard = source[guard_start:guard_end]

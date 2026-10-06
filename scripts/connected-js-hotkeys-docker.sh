@@ -261,6 +261,64 @@ fi
 
 stop_asset_logcat
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -t 12000 > "$RESULTS_DIR/diagnostics-logcat.txt" 2>&1
+
+# A @Ignore'd (D36-quarantined) journey legitimately produces no PTY evidence,
+# so the host-side byte oracle below has nothing to verify. Route on the exact
+# journey's JUnit outcome: only a skip sanctioned by the fail-closed
+# check-js-hotkeys-journey-results.py contract (an unexpired, well-formed
+# journey-quarantine.txt row) may exit green here; anything else fails.
+journey_junit_outcome="$(python3 - "$RESULTS_DIR" <<'PY'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+REQUIRED_CLASS = "com.pocketshell.app.smoke.JsFastKeysDockerJourneyTest"
+REQUIRED_METHOD = "fastKeysStayReachableAndWriteExactBytesAcrossImeBackAndReconnect"
+
+results = Path(sys.argv[1])
+outcomes = []
+for path in sorted(results.rglob("TEST-*.xml")):
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise SystemExit(f"FAIL: could not parse {path}: {exc}")
+    suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    for suite in suites:
+        for case in suite.findall("testcase"):
+            if (case.attrib.get("classname"), case.attrib.get("name")) != (REQUIRED_CLASS, REQUIRED_METHOD):
+                continue
+            if list(case.iter("skipped")):
+                outcomes.append("skipped")
+            elif list(case.iter("failure")) or list(case.iter("error")):
+                outcomes.append("failed")
+            else:
+                outcomes.append("passed")
+if not outcomes:
+    print("missing")
+elif len(outcomes) == 1:
+    print(outcomes[0])
+else:
+    print("duplicate")
+PY
+)"
+case "$journey_junit_outcome" in
+  passed)
+    : # the executed journey re-verified host-side below
+    ;;
+  skipped)
+    write_run_exit_metadata 0
+    cp -- "$evidence_dir/hotkeys-run-metadata.txt" "$RESULTS_DIR/hotkeys-run-metadata.txt"
+    if ! "$ROOT_DIR/scripts/check-js-hotkeys-journey-results.py" --results-dir "$RESULTS_DIR"; then
+      fail 'fast-key journey was skipped without an unexpired D36 quarantine row'
+    fi
+    printf 'Evidence directory: %s\n' "$evidence_dir"
+    exit 0
+    ;;
+  *)
+    fail "packaged fast-key journey JUnit outcome is ${journey_junit_outcome:-unreadable} despite a green gradle run"
+    ;;
+esac
+
 "$ROOT_DIR/scripts/extract-js-hotkeys-artifacts.py" \
   --run-id "$ARTIFACT_RUN_ID" --logcat "$asset_logcat" --output-dir "$evidence_dir"
 
