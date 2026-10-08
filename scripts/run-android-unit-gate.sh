@@ -13,6 +13,7 @@ cd -- "$ROOT_DIR"
 REQUIRED_CLASSES=(
   com.pocketshell.app.CredentialHandleVaultTest
   com.pocketshell.app.DurableKeyValueStoreTest
+  com.pocketshell.app.EncryptedSyncTokenStoreTest
   com.pocketshell.app.GoogleSyncSessionTest
   com.pocketshell.app.KeyHandleConnectFailuresTest
   com.pocketshell.app.SpeechRecognitionOptionsTest
