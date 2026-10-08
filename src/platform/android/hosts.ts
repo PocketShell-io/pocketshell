@@ -9,10 +9,12 @@ import { sshKeyVault } from '@/native/sshKeyVault';
 import { createLegacySshKeyReferenceStore } from '@/migration/legacySshKeyReferences';
 import { readImportedLegacyHosts } from '@/migration/installedDataMigration';
 import { AndroidHostStore } from './hostStore';
+import { gatewayPairing } from '@/native/gatewayPairing';
 import { combineKeyReferenceStores, createAndroidHostKeyReferenceStore } from './hostKeyReferences';
 
 export const androidHosts = new AndroidHostStore({
   storage: window.localStorage,
+  gatewayPairings: gatewayPairing,
   readLegacyHosts: () => readImportedLegacyHosts(),
 });
 

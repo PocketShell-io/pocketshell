@@ -1,3 +1,4 @@
+import nativeReply from '../fixtures/gateway-pairing-reply.json';
 import { describe, expect, it } from 'vitest';
 import {
   GATEWAY_PAIRING_ERROR_CODES,
@@ -67,23 +68,29 @@ describe('gatewayPairing native API', () => {
   });
 
   it('parseGatewayPairingResult accepts a valid stored pairing', () => {
-    expect(parseGatewayPairingResult(validRow)).toEqual(validRow);
+    expect(parseGatewayPairingResult(nativeReply, 'request-1', 'sub-1')).toEqual(validRow);
   });
 
   it('parseGatewayPairingResult refuses anything that is not exactly a usable pairing', () => {
-    expect(() => parseGatewayPairingResult({})).toThrow();
-    expect(() => parseGatewayPairingResult({ ...validRow, serverUrl: 'wss://gateway.example.io/path' })).toThrow();
+    expect(() => parseGatewayPairingResult({}, 'request-1', 'sub-1')).toThrow();
+    expect(() => parseGatewayPairingResult({ ...nativeReply, serverUrl: 'wss://gateway.example.io/path' }, 'request-1', 'sub-1')).toThrow();
     expect(() =>
       parseGatewayPairingResult({
         // A token-shaped answer is not a pairing and must not pass.
+        ...nativeReply,
         token: 'a.b.c',
         serverUrl: validRow.serverUrl,
         deviceId: validRow.deviceId,
         fingerprintSha256: validRow.fingerprintSha256,
         keyHandleId: validRow.keyHandleId,
         pairedAtEpochMs: 1000,
-      }),
+      }, 'request-1', 'sub-1'),
     ).toThrow();
+  });
+
+  it('rejects native pairing replies for another request or account', () => {
+    expect(() => parseGatewayPairingResult(nativeReply, 'other-request', 'sub-1')).toThrow();
+    expect(() => parseGatewayPairingResult(nativeReply, 'request-1', 'sub-2')).toThrow();
   });
 
   it('parseGatewayPairingRemoval accepts a boolean answer', () => {
@@ -99,11 +106,12 @@ describe('gatewayPairing native API', () => {
       list: async () => ({ pairings: '[]' }),
       pair: async (request) => {
         calls.push(request);
-        return validRow;
+        return { ...nativeReply, requestId: request.requestId };
       },
       remove: async () => ({ removed: true }),
     });
     const result = await native.pair({
+      expectedAccountSubject: 'sub-1',
       serverUrl: validRow.serverUrl,
       deviceId: validRow.deviceId,
       fingerprintSha256: validRow.fingerprintSha256,
@@ -111,6 +119,7 @@ describe('gatewayPairing native API', () => {
     });
     expect(result).toEqual(validRow);
     const sent = calls[0] as Record<string, unknown>;
+    expect(sent.expectedAccountSubject).toBe('sub-1');
     expect(sent.serverUrl).toBe(validRow.serverUrl);
     expect(sent.fingerprintSha256).toBe(validRow.fingerprintSha256);
     expect(typeof sent.requestId).toBe('string');

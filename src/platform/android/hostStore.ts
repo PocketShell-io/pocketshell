@@ -11,6 +11,8 @@
  *    only names its handle, and the native plugin resolves it at dial time.
  */
 import type { GatewayTransportTarget, HostEntry, SshHostTarget } from '@pocketshell/core';
+import type { GatewayPairingNative } from '@/native/gatewayPairing';
+import { resolveAndroidGatewayTarget } from './gatewayTarget';
 import { makeLegacySshHostTarget } from '@/migration/legacySshTarget';
 import type { ImportedLegacyHost } from '@/migration/installedDataMigration';
 
@@ -32,6 +34,7 @@ export interface StringStorage {
 
 export interface AndroidHostStoreOptions {
   storage: StringStorage;
+  gatewayPairings?: Pick<GatewayPairingNative, 'currentAccount' | 'list'>;
   /** Hosts carried over from the 0.5.x app; empty off-device or before import. */
   readLegacyHosts: () => Promise<ImportedLegacyHost[]>;
 }
@@ -205,14 +208,15 @@ export class AndroidHostStore {
    * The dial target for a connect request, matched the way the shared store
    * names it: by alias first, then hostname + port.
    *
-   * Guards run before anything is resolved or read into a credential
-   * (#3059): a request that carries a gateway marker refuses here, and so
-   * does a stored record that carries one — before the key handle is named,
-   * before the legacy import is consulted, and before any native plugin
-   * call a returned target would lead to.
+   * Explicit gateway requests use only the current native pairing key.
+   * Stored gateway markers without an explicit gateway request still refuse;
+   * a route never degrades into direct SSH or legacy credential lookup.
    */
-  async resolve(request: { host: string; port?: number; user: string; hostAlias?: string }): Promise<SshHostTarget> {
-    if (hasGatewayMarker(request)) throw new GatewayHostUnsupported();
+  async resolve(request: { host: string; port?: number; user: string; hostAlias?: string; gateway?: unknown; link?: unknown }): Promise<SshHostTarget> {
+    if (hasGatewayMarker(request)) {
+      if (!this.options.gatewayPairings) throw new GatewayHostUnsupported();
+      return resolveAndroidGatewayTarget(request, this.options.gatewayPairings);
+    }
     const port = request.port ?? 22;
     const saved = this.readSaved();
     const savedMatch =

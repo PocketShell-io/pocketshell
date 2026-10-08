@@ -310,11 +310,13 @@ public final class SshCapabilityPlugin extends Plugin {
                     pendingConnects.remove(requestId, attempt);
                 }
                 JSObject hostKey = presented.asJson();
-                return new JSObject()
+                JSObject result = new JSObject()
                     .put("requestId", requestId)
                     .put("connectionId", connection.connectionId)
                     .put("generationId", generationId)
                     .put("hostKey", hostKey);
+                if (gatewayPlan != null) result.put("gatewayHostKeyVerified", true);
+                return result;
             } catch (Exception error) {
                 if (attempt.cancelled.get()) {
                     if (connection != null) closeConnection(connection, "connect-cancelled", false);

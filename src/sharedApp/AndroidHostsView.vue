@@ -3,13 +3,24 @@
 // ~/.ssh/config and web's /app hosts page: add a host and the key-vault key
 // it authenticates with. Logic lives in hostForm.ts; the shared picker owns
 // CONNECTING.
-import { onMounted } from 'vue';
+import { computed, onMounted, onBeforeUnmount, ref } from 'vue';
+import GatewayPairingPanel from '@/components/GatewayPairingPanel.vue';
+import { androidSync } from '@/platform/android/sync';
+import { hasGatewayMarker, gatewayMarkerValue } from '@/platform/android/hostStore';
 import { useRouter } from 'vue-router';
 import { useConnectionStore } from '@ui/app/stores/connection';
 import { androidHosts, androidKeyManager } from '@/platform/android/hosts';
 import { createHostForm } from './hostForm';
 
 const router = useRouter();
+const gatewayHostName = ref('');
+const gatewayHosts = ref<NonNullable<ReturnType<ReturnType<typeof androidSync>['accountHosts']>>>([]);
+const unsubscribeAccountHosts = androidSync().onAccountHostsChange((hosts) => {
+  gatewayHosts.value = (hosts ?? []).filter(hasGatewayMarker);
+  if (!gatewayHosts.value.some((host) => host.name === gatewayHostName.value)) gatewayHostName.value = '';
+});
+onBeforeUnmount(unsubscribeAccountHosts);
+const gatewayHost = computed(() => gatewayHosts.value.find((host) => host.name === gatewayHostName.value));
 const connection = useConnectionStore();
 const { state, loadKeys, importKey, save } = createHostForm({ keys: androidKeyManager, hosts: androidHosts });
 
@@ -28,6 +39,22 @@ onMounted(() => void loadKeys());
       <button class="btn-ghost" type="button" data-testid="android-add-host-back" @click="router.back()">Back</button>
       <h1>Add a host</h1>
     </header>
+    <section v-if="gatewayHosts.length" class="android-hosts__form" data-testid="shared-gateway-pairing">
+      <h2>Pair a gateway host</h2>
+      <label>Synced gateway host
+        <select v-model="gatewayHostName" data-testid="shared-gateway-host">
+          <option value="">Choose a host</option>
+          <option v-for="host in gatewayHosts" :key="host.name" :value="host.name">{{ host.name }}</option>
+        </select>
+      </label>
+      <label>SSH key
+        <select v-model="state.keyHandleId" data-testid="shared-gateway-key">
+          <option value="">Choose a key</option>
+          <option v-for="key in state.keys" :key="key.handleId" :value="key.handleId">{{ key.label }} · {{ key.fingerprintSha256 }}</option>
+        </select>
+      </label>
+      <GatewayPairingPanel v-if="gatewayHost" :target="gatewayMarkerValue(gatewayHost)" :key-handle-id="state.keyHandleId" />
+    </section>
     <form class="android-hosts__form" @submit.prevent="submit">
       <label>Name<input v-model="state.name" data-testid="host-name" autocomplete="off" placeholder="dev box" /></label>
       <label>Hostname<input v-model="state.hostname" data-testid="host-hostname" autocomplete="off" autocapitalize="off" inputmode="url" /></label>

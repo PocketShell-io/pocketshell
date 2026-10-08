@@ -32,7 +32,7 @@ import {
   type HomeResult,
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
-import { AndroidHostStore, GATEWAY_UNSUPPORTED_MESSAGE, hasGatewayMarker } from './hostStore';
+import { AndroidHostStore } from './hostStore';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -93,15 +93,6 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         return deps.hosts.list();
       },
       async connect(payload) {
-        // The gateway guard is the first thing a dial hits (#3059), before
-        // the host store is even asked: a shared connect payload carrying a
-        // PRESENT gateway marker — valid, null, or malformed, presence alone
-        // decides — must refuse here rather than resolve into an ordinary
-        // saved-host target (key handle, native plugin call, socket). The
-        // marker's value is data and is never inspected.
-        if (hasGatewayMarker(payload)) {
-          return { ok: false, error: GATEWAY_UNSUPPORTED_MESSAGE };
-        }
         let target;
         try {
           target = await deps.hosts.resolve(payload);

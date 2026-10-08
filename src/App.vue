@@ -43,7 +43,10 @@ import {
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { androidKeyManager } from './platform/android/hosts';
 import { androidSync } from './platform/android/sync';
-import { GATEWAY_UNSUPPORTED_MESSAGE, hasGatewayMarker } from './platform/android/hostStore';
+import { hasGatewayMarker, gatewayMarkerValue } from './platform/android/hostStore';
+import { resolveAndroidGatewayTarget } from './platform/android/gatewayTarget';
+import { gatewayPairing } from './native/gatewayPairing';
+import GatewayPairingPanel from './components/GatewayPairingPanel.vue';
 import { accountHostEntry } from './sync/androidSync';
 import SshKeysScreen, { type SshKeyHostInstallTarget } from './components/SshKeysScreen.vue';
 import KeyIcon from './components/KeyIcon.vue';
@@ -202,6 +205,7 @@ const selectedSyncedHostName = ref('');
  * Presence semantics match the row check; the marker's value is data.
  */
 const selectedSyncedGatewayIntent = ref(false);
+const selectedGatewayHost = computed(() => syncedAccountHosts.value.find((host) => host.name === selectedSyncedHostName.value && hasGatewayMarker(host)));
 /** Whether a Google account is signed in (#3020); unknown while null, so the empty-state sign-in pointer (#3047) stays hidden. */
 const accountSignedIn = ref<boolean | null>(null);
 const sshKeys = ref<SshKeyMetadata[]>([]);
@@ -802,19 +806,33 @@ function recordOperationFailure(operation: string) {
   diagnostics.record('ssh-operation-failed', operation, 'OPERATION_FAILED');
 }
 
-function makeHostTarget(): SshHostTarget | null {
-  // #3059: the default shell dials the form draft directly, so a selected
-  // synced row's gateway intent must refuse HERE — before the missing-field
-  // message, before a key handle is named, and before any controller or
-  // native plugin call a target would lead to. Presence decides; the
-  // marker's value is data and is never inspected or repaired. The retained
-  // intent keeps refusing when the row lookup can no longer vouch — the row
-  // was dropped or rewritten by an account refresh, or the picker anchor was
-  // cleared by a key change — because the draft still names that host.
-  const selectedSynced = syncedAccountHosts.value.find((candidate) => candidate.name === selectedSyncedHostName.value);
-  if (selectedSyncedGatewayIntent.value || (selectedSynced && hasGatewayMarker(selectedSynced))) {
-    connectionMessage.value = GATEWAY_UNSUPPORTED_MESSAGE;
-    return null;
+async function makeHostTarget(): Promise<SshHostTarget | null> {
+  const selectedSynced = selectedGatewayHost.value;
+  if (selectedSyncedGatewayIntent.value || selectedSynced) {
+    // A removed/reclassified account row cannot turn the retained gateway draft into direct SSH.
+    if (!selectedSynced) { connectionMessage.value = 'Select the gateway host again from your account before connecting.'; return null; }
+    try {
+      const selectedName = selectedSyncedHostName.value;
+      const selectedKey = selectedKeyHandleId.value;
+      const selectedDraft = JSON.stringify(hostDraft.value);
+      const selectedRoute = JSON.stringify({ gateway: gatewayMarkerValue(selectedSynced), link: selectedSynced.link,
+        hasLink: Object.prototype.hasOwnProperty.call(selectedSynced, 'link') });
+      const target = await resolveAndroidGatewayTarget({
+        host: hostDraft.value.hostname, port: Number(hostDraft.value.port), user: hostDraft.value.username,
+        gateway: gatewayMarkerValue(selectedSynced),
+        ...(Object.prototype.hasOwnProperty.call(selectedSynced, 'link') ? { link: selectedSynced.link } : {}),
+      }, gatewayPairing, selectedKey);
+      if (selectedName !== selectedSyncedHostName.value || selectedKey !== selectedKeyHandleId.value
+        || selectedDraft !== JSON.stringify(hostDraft.value)
+        || !selectedGatewayHost.value || selectedRoute !== JSON.stringify({ gateway: gatewayMarkerValue(selectedGatewayHost.value),
+          link: selectedGatewayHost.value.link, hasLink: Object.prototype.hasOwnProperty.call(selectedGatewayHost.value, 'link') })) {
+        connectionMessage.value = 'The selected host or key changed. Connect again.'; return null;
+      }
+      if (selectedSshKey.value?.passphraseRequired && target.credential.kind === 'key-handle') {
+        target.credential.passphrase = legacyKeyPassphrase.value;
+      }
+      return target;
+    } catch (error) { connectionMessage.value = error instanceof Error ? error.message : 'The gateway host could not be resolved.'; return null; }
   }
   const hostname = hostDraft.value.hostname.trim();
   const username = hostDraft.value.username.trim();
@@ -906,10 +924,9 @@ function selectSyncedHost(): void {
   // row's own marker — an ordinary row picked after a gateway one supersedes
   // the retained refusal (#3059), and a gateway row re-arms it.
   selectedSyncedGatewayIntent.value = hasGatewayMarker(host);
-  // #3059: a gateway row says no the moment it is picked — and again on
-  // Connect — instead of sitting in the picker as if it were dialable here.
+  // Gateway rows require an explicit pairing; selecting metadata never creates trust.
   connectionMessage.value = hasGatewayMarker(host)
-    ? GATEWAY_UNSUPPORTED_MESSAGE
+    ? 'Pair the host with its SSH host-key fingerprint and a key on this phone before connecting.'
     : selectedKeyHandleId.value ? '' : `Choose an SSH key on this phone to connect to ${host.name}.`;
 }
 
@@ -917,10 +934,8 @@ function selectSshKey(handleId: string, stay = false): void {
   selectedKeyHandleId.value = handleId;
   if (selectedLegacyHost.value?.keyHandleId !== handleId) selectedLegacyHostId.value = '';
   legacyKeyPassphrase.value = '';
-  // A retained gateway intent is still the drafted host's intent: picking a
-  // key re-states the refusal instead of wiping it (#3059) — the draft keeps
-  // naming a host this shell cannot dial.
-  connectionMessage.value = selectedSyncedGatewayIntent.value ? GATEWAY_UNSUPPORTED_MESSAGE : '';
+  // Changing a key retains the route and requires a matching explicit pairing.
+  connectionMessage.value = selectedSyncedGatewayIntent.value ? 'The selected key must match the saved gateway pairing.' : '';
   if (navigation.route === 'keys' && !stay) navigation.back();
 }
 
@@ -973,7 +988,7 @@ async function refreshSshKeys(): Promise<void> {
 
 async function connectHost() {
   if (migrationBlocksConnection.value) return;
-  const host = makeHostTarget();
+  const host = await makeHostTarget();
   if (!host) return;
   rememberDiagnosticTerms([host.hostname, host.username, host.hostId,
     ...importedLegacyHosts.value.flatMap((saved) => [saved.name, saved.hostname, saved.username])]);
@@ -1897,6 +1912,12 @@ onBeforeUnmount(() => {
           :has-hosts="importedLegacyHosts.length > 0 || syncedAccountHosts.length > 0"
           :signed-in="accountSignedIn"
           @sign-in="navigation.open('settings-account')"
+        />
+        <GatewayPairingPanel
+          v-if="selectedGatewayHost"
+          :target="gatewayMarkerValue(selectedGatewayHost)"
+          :key-handle-id="selectedKeyHandleId"
+          @paired="connectionMessage = 'Gateway pairing saved. Connect when ready.'"
         />
         <div class="host-actions">
           <button class="small-action" type="button" data-testid="manage-ssh-keys" @click="openKeyManagement">Manage keys</button>

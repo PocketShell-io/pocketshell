@@ -1,16 +1,17 @@
 # Android gateway transport (native backend chunk)
 
-Status: backend-complete, pending the remaining chunks listed at the bottom.
+Status: reviewed backend plus isolated recovery integration; source/build review and live acceptance pending.
 Issue: #3060. Contract: pocketshell-core `src/gatewayTransport.ts` at pin
 `4096fc569e` (the behavioral specification this chunk mirrors natively).
 
-This chunk adds the ANDROID NATIVE HALF of the gateway transport: a real SSH
+The original backend chunk adds the ANDROID NATIVE HALF of the gateway transport: a real SSH
 engine (sshj 0.40.0, unchanged) running over a bounded gateway-WebSocket byte
 transport, a dedicated native broker-token service, and the pairing storage
 namespace. It owns no UI: the existing App/shared gateway guards
 (#3059, uncommitted in the native worktree, inherited here as exact blobs)
 still refuse gateway dials before any of this code runs, until the separate
-UI/resolver integration lands.
+UI/resolver integration lands. The isolated recovery integration below now
+connects these seams; this historical backend description records its baseline.
 
 ## The dial, end to end
 
@@ -114,3 +115,35 @@ refuses dials; it is never silently emptied.
   marker is absent, and this chunk deliberately shipped no emulator/device
   work. Nothing here substitutes old sources for that proof; the JVM tests
   exercise the real byte transport and the real refusal order only.
+
+## Isolated recovery integration (#3060/#3059)
+
+The recovery variant adds a validated gateway resolver and explicit native
+pairing panel to both Android shells. In the default shell select the synced
+gateway host and stored SSH key, paste the independently obtained SSH host-key
+fingerprint, and press Pair. In the shared shell open Add a host to pair a
+synced gateway host with a stored key, then connect from the shared picker.
+Pairings remain native and account/origin/device scoped. A key change requires
+a matching explicit pairing; missing, malformed, conflicting, signed-out or
+stale gateway selections refuse without direct fallback. Pairing replies for a
+changed account/target/key cannot report success for the new selection.
+
+The proposed isolated core descendant adds the connect-level gateway marker
+and a trusted-platform verification receipt. Native SSH emits this receipt
+only after its saved pairing pin verifier and userauth succeed. Core requires
+it before accepting a gateway connection, skips ordinary TOFU for this path,
+and never turns a gateway host-key mismatch into a trust prompt. Broker tokens never cross the bridge; native connect refuses caller-supplied
+trust pins. Ordinary SSH trust behavior is unchanged.
+This descendant requires source review before shared integration; the receipt
+is a platform capability contract, never a gateway ready-frame advisory.
+
+The reviewed recovery pairing write is bound to `expectedAccountSubject`,
+observed before the user's explicit action. Native compares that subject with
+current sign-in before and after vault lookup, then persists only under the
+approved subject; an account switch cannot redirect the mutation. The reply
+carries the complete stored row plus request/account correlation, tested with
+one fixture shared by the real native serializer and JS parser. Shared-shell
+host choices subscribe to account-copy changes and clear on sign-in/sign-out.
+Public pairing fingerprints are visible in the narrow pairing API; the dial
+still takes its authoritative pin from native storage and refuses JS-supplied
+connect pins. Broker tokens never cross the bridge.

@@ -1,0 +1,9 @@
+{
+  "requestId": "request-1",
+  "accountSubject": "sub-1",
+  "serverUrl": "wss://gateway.example.io",
+  "deviceId": "host-1",
+  "fingerprintSha256": "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "keyHandleId": "01234567-89ab-cdef-0123-456789abcdef",
+  "pairedAtEpochMs": 1000
+}

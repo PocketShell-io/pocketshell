@@ -102,7 +102,7 @@ public final class GatewayPairingPlugin extends Plugin {
     }
 
     /**
-     * {@code {requestId, serverUrl, deviceId, fingerprintSha256, keyHandleId}} —
+     * {@code {requestId, expectedAccountSubject, serverUrl, deviceId, fingerprintSha256, keyHandleId}} —
      * an explicit user pairing action. The store validates the canonical
      * origin, device id, and SHA-256 fingerprint shape; the vault must hold
      * the named key.
@@ -114,22 +114,16 @@ public final class GatewayPairingPlugin extends Plugin {
         String deviceId = call.getString("deviceId");
         String fingerprint = call.getString("fingerprintSha256");
         String keyHandleId = call.getString("keyHandleId");
+        String expectedAccountSubject = call.getString("expectedAccountSubject");
         worker.execute(() -> {
             try {
                 if (store == null) {
                     call.reject("The saved gateway pairings could not be read.", "GATEWAY_PAIRING_STORE_FAILED");
                     return;
                 }
-                String subject = session.subject();
-                if (!vaultHasHandle(keyHandleId)) {
-                    call.reject("Choose an SSH key from the key vault.", "GATEWAY_PAIRING_KEY_MISSING");
-                    return;
-                }
-                GatewayPairingStore.Pairing pairing = store.pair(subject, serverUrl, deviceId, fingerprint, keyHandleId);
-                call.resolve(new JSObject().put("requestId", requestId)
-                        .put("serverUrl", pairing.serverUrl())
-                        .put("deviceId", pairing.deviceId())
-                        .put("fingerprintSha256", pairing.fingerprintSha256()));
+                GatewayPairingStore.Pairing pairing = pairForAccount(store, session::subject, this::vaultHasHandle,
+                        expectedAccountSubject, serverUrl, deviceId, fingerprint, keyHandleId);
+                call.resolve(pairReply(requestId, pairing));
             } catch (GatewayPairingStore.InvalidPairingException invalid) {
                 call.reject(invalid.getMessage(), "GATEWAY_PAIRING_INVALID");
             } catch (SyncAuthException signedOut) {
@@ -161,6 +155,37 @@ public final class GatewayPairingPlugin extends Plugin {
                 call.reject("The gateway pairing could not be removed.", "GATEWAY_PAIRING_STORE_FAILED");
             }
         });
+    }
+
+    interface AccountSubject { String current() throws SyncAuthException; }
+    interface VaultProbe { boolean hasHandle(String keyHandleId); }
+
+    /** Bind the mutation to the subject the user observed, never a later current account. */
+    static GatewayPairingStore.Pairing pairForAccount(GatewayPairingStore store, AccountSubject account,
+            VaultProbe vault, String expectedSubject, String serverUrl, String deviceId, String fingerprint,
+            String keyHandleId) throws IOException, SyncAuthException {
+        requireExpectedAccount(expectedSubject, account.current());
+        if (!vault.hasHandle(keyHandleId)) {
+            throw new SyncAuthException("GATEWAY_PAIRING_KEY_MISSING", "Choose an SSH key from the key vault.");
+        }
+        requireExpectedAccount(expectedSubject, account.current());
+        // A subsequent switch cannot redirect this write: its namespace is the approved subject.
+        return store.pair(expectedSubject, serverUrl, deviceId, fingerprint, keyHandleId);
+    }
+
+    private static void requireExpectedAccount(String expected, String actual) throws SyncAuthException {
+        if (expected == null || expected.isEmpty() || !expected.equals(actual)) {
+            throw new SyncAuthException("GATEWAY_PAIRING_ACCOUNT_CHANGED",
+                    "The signed-in account changed. Select the host and pair again.");
+        }
+    }
+
+    /** Actual bridge envelope, shared by production and native regression tests. */
+    static JSObject pairReply(String requestId, GatewayPairingStore.Pairing pairing) {
+        return new JSObject().put("requestId", requestId).put("accountSubject", pairing.accountSubject())
+                .put("serverUrl", pairing.serverUrl()).put("deviceId", pairing.deviceId())
+                .put("fingerprintSha256", pairing.fingerprintSha256()).put("keyHandleId", pairing.keyHandleId())
+                .put("pairedAtEpochMs", pairing.pairedAtEpochMs());
     }
 
     private boolean vaultHasHandle(String keyHandleId) {

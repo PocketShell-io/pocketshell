@@ -7,7 +7,7 @@
         "reads and persists only the phone theme, terminal text size and Android dictation settings",
         "degrades malformed or unsupported saved values to safe defaults",
         "clamps terminal size using the pinned desktop font-size policy",
-        "persists a supported recognizer language and clamps the silence window to the 2–60 second range",
+        "persists a supported recognizer language and clamps the silence window to the 2\u201360 second range",
         "ignores the unreleased branch-only dictation keys (D22) and maps a BCP-47 tag to its base language",
         "uses the Kotlin-aligned automatic language and four-second silence defaults",
         "offers every 0.5.x grace window from the shared core policy, including 10 minutes",
@@ -182,7 +182,7 @@
         "uses the pinned HostCliCore row for known host-reported identities",
         "shows only the three fresh host-reported states",
         "does not infer identity and suppresses non-reported or unknown state",
-        "keeps A→B→A chrome bound to the selected host id when metadata arrives late"
+        "keeps A\u2192B\u2192A chrome bound to the selected host id when metadata arrives late"
       ]
     },
     "tests/unit/filesWorkspace.test.ts": {
@@ -221,7 +221,7 @@
     "tests/unit/terminal-viewport-resize.test.ts": {
       "suite": "TerminalViewport resize failure across a route remount",
       "tests": [
-        "keeps delayed resize failures isolated after home → Settings → home and retries only after the current request fails"
+        "keeps delayed resize failures isolated after home \u2192 Settings \u2192 home and retries only after the current request fails"
       ]
     },
     "tests/unit/documentTransfers.test.ts": {
@@ -353,7 +353,7 @@
     "tests/unit/androidHostKeys.test.ts": {
       "suite": "Android add-host key flow",
       "tests": [
-        "\"Import key file…\" imports the picked document with its passphrase and selects the new key",
+        "\"Import key file\u2026\" imports the picked document with its passphrase and selects the new key",
         "a cancelled pick changes nothing, and an import failure is shown, not thrown",
         "refuses to save a host without a key",
         "asks before deleting a key a shared-app host uses, then detaches that host",
@@ -576,7 +576,8 @@
         "parseGatewayPairingResult accepts a valid stored pairing",
         "parseGatewayPairingResult refuses anything that is not exactly a usable pairing",
         "parseGatewayPairingRemoval accepts a boolean answer",
-        "createGatewayPairingNative forwards pair arguments verbatim and parses the reply"
+        "createGatewayPairingNative forwards pair arguments verbatim and parses the reply",
+        "rejects native pairing replies for another request or account"
       ]
     },
     "tests/unit/androidSync.test.ts": {
@@ -590,7 +591,9 @@
         "turns sync API refusals into plain words and refuses an envelope over the 8 KB limit before sending",
         "signing out deletes the native sign-in and the cached account copy",
         "serves the shared app's api.sync group from the same adapter",
-        "accepts only signed-in state from the native plugin, never a token field"
+        "accepts only signed-in state from the native plugin, never a token field",
+        "publishes reactive gateway host changes after account pulls and sign-out",
+        "clears a cached account host copy and notifies mounted views on sign-in"
       ]
     },
     "tests/unit/devBrowserCapacitor.test.ts": {
@@ -682,6 +685,18 @@
         "finds an import of browser dev mode in every module specifier shape",
         "fails a production build whose module graph reaches browser dev mode",
         "tells Files users about the transfer limit without naming the transport"
+      ]
+    },
+    "tests/unit/androidGatewayTarget.test.ts": {
+      "suite": "Android gateway target integration",
+      "tests": [
+        "resolves only the current native pairing key and carries the gateway marker",
+        "rejects malformed insecure credential-bearing and conflicting markers before native reads",
+        "refuses signed-out accounts before pairing lookup",
+        "refuses missing sibling-device and sibling-origin pairings without direct fallback",
+        "refuses key changes and rereads pairings for every dial",
+        "carries explicit gateway requests through the host store without saved-host or legacy lookup",
+        "normalizes secure origins but never accepts invalid device identifiers or nonobjects"
       ]
     }
   }

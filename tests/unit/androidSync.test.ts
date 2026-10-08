@@ -107,6 +107,38 @@ const DESKTOP_ACCOUNT = JSON.stringify({
 });
 
 describe('Android settings sync adapter', () => {
+  it('publishes reactive gateway host changes after account pulls and sign-out', async () => {
+    const { backend, sync } = setup();
+    const lists: Array<ReturnType<AndroidSync['accountHosts']>> = [];
+    const unsubscribe = sync.onAccountHostsChange((hosts) => lists.push(hosts));
+    expect(lists).toEqual([null]);
+    const host = { name: 'gateway-box', hostname: 'label', port: 22, user: 'me',
+      gateway: { serverUrl: 'wss://gateway.example', deviceId: 'device-a' } };
+    backend.slot = { version: 1, data: await encryptToEnvelope(JSON.stringify({ hosts: [host] }), PASSPHRASE, FAST) };
+    await sync.api().pull('main', PASSPHRASE);
+    expect(lists.at(-1)).toEqual([host]);
+    backend.slot = { version: 2, data: await encryptToEnvelope(JSON.stringify({ hosts: [{ ...host, gateway: null }] }), PASSPHRASE, FAST) };
+    await sync.api().pull('main', PASSPHRASE);
+    expect(lists.at(-1)?.[0]).toHaveProperty('gateway', null);
+    await sync.signOut();
+    expect(lists.at(-1)).toBeNull();
+    const count = lists.length;
+    unsubscribe();
+    await sync.signIn();
+    expect(lists).toHaveLength(count);
+  });
+
+  it('clears a cached account host copy and notifies mounted views on sign-in', async () => {
+    const { sync, storage } = setup();
+    storage.setItem(ACCOUNT_HOSTS_STORAGE_KEY, JSON.stringify([{ name: 'previous', hostname: 'previous' }]));
+    const lists: Array<ReturnType<AndroidSync['accountHosts']>> = [];
+    sync.onAccountHostsChange((hosts) => lists.push(hosts));
+    expect(lists.at(-1)?.[0]?.name).toBe('previous');
+    await sync.signIn();
+    expect(lists.at(-1)).toBeNull();
+    expect(sync.accountHosts()).toBeNull();
+  });
+
   it('contributes only the host fields the phone owns, so synthesized defaults never overwrite desktop values', () => {
     expect(phoneOwnedSyncFields(phoneHost('hetzner', '10.0.0.5'))).toEqual({
       name: 'hetzner', hostname: '10.0.0.5', port: 22, user: 'me',

@@ -36,6 +36,8 @@ export interface GatewayPairingAccount {
 }
 
 export interface GatewayPairRequest {
+  /** The account observed before the explicit user-approved write. Native binds persistence to it. */
+  expectedAccountSubject: string;
   serverUrl: string;
   deviceId: string;
   fingerprintSha256: string;
@@ -45,6 +47,7 @@ export interface GatewayPairRequest {
 /** Stable native rejection codes (GatewayPairingPlugin.java / SyncAuthException). */
 export const GATEWAY_PAIRING_ERROR_CODES = [
   'GATEWAY_PAIRING_INVALID',
+  'GATEWAY_PAIRING_ACCOUNT_CHANGED',
   'GATEWAY_PAIRING_KEY_MISSING',
   'GATEWAY_PAIRING_STORE_FAILED',
   'NOT_SIGNED_IN',
@@ -138,11 +141,13 @@ export function parseGatewayPairingList(value: unknown): GatewayPairingRecord[] 
   return parsed;
 }
 
-export function parseGatewayPairingResult(value: unknown): GatewayPairingRecord {
-  const record = parsePairingRow(value);
-  if (record === null) {
-    throw new Error('The gateway pairing answer could not be read.');
+export function parseGatewayPairingResult(value: unknown, requestId: string, accountSubject: string): GatewayPairingRecord {
+  if (!isRecord(value) || value.requestId !== requestId || value.accountSubject !== accountSubject) {
+    throw new Error('The gateway pairing answer did not match this request and account.');
   }
+  const { requestId: _requestId, accountSubject: _accountSubject, ...row } = value;
+  const record = parsePairingRow(row);
+  if (record === null) throw new Error('The gateway pairing answer could not be read.');
   return record;
 }
 
@@ -158,14 +163,18 @@ export function createGatewayPairingNative(plugin: GatewayPairingPluginMethods):
   return {
     currentAccount: async () => parseGatewayPairingAccount(await plugin.currentAccount({ requestId: crypto.randomUUID() })),
     list: async () => parseGatewayPairingList(await plugin.list({ requestId: crypto.randomUUID() })),
-    pair: async (request) =>
-      parseGatewayPairingResult(await plugin.pair({
-        requestId: crypto.randomUUID(),
+    pair: async (request) => {
+      const requestId = crypto.randomUUID();
+      const reply = await plugin.pair({
+        requestId,
+        expectedAccountSubject: request.expectedAccountSubject,
         serverUrl: request.serverUrl,
         deviceId: request.deviceId,
         fingerprintSha256: request.fingerprintSha256,
         keyHandleId: request.keyHandleId,
-      })),
+      });
+      return parseGatewayPairingResult(reply, requestId, request.expectedAccountSubject);
+    },
     remove: async (serverUrl, deviceId) =>
       parseGatewayPairingRemoval(await plugin.remove({ requestId: crypto.randomUUID(), serverUrl, deviceId })),
   };

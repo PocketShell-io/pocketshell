@@ -109,6 +109,7 @@ export class AndroidSync {
   private readonly native: GoogleSyncNative;
   private readonly storage: SyncStorage;
   private readonly kdfIterations: number;
+  private readonly accountHostListeners = new Set<(hosts: SyncHostEntry[] | null) => void>();
 
   constructor(deps: AndroidSyncDeps) {
     this.native = deps.native;
@@ -122,12 +123,15 @@ export class AndroidSync {
 
   async signIn(): Promise<GoogleSyncStatus> {
     const status = await this.native.signIn();
+    this.storage.removeItem(ACCOUNT_HOSTS_STORAGE_KEY);
+    this.publishAccountHosts();
     return status;
   }
 
   /** Native sign-out deletes the token; the cached account copy goes too. */
   async signOut(): Promise<void> {
     this.storage.removeItem(ACCOUNT_HOSTS_STORAGE_KEY);
+    this.publishAccountHosts();
     await this.native.signOut();
   }
 
@@ -198,8 +202,21 @@ export class AndroidSync {
     }
   }
 
+  /** Same-WebView storage changes do not fire a browser storage event. */
+  onAccountHostsChange(listener: (hosts: SyncHostEntry[] | null) => void): () => void {
+    this.accountHostListeners.add(listener);
+    listener(this.accountHosts());
+    return () => { this.accountHostListeners.delete(listener); };
+  }
+
+  private publishAccountHosts(): void {
+    const hosts = this.accountHosts();
+    for (const listener of this.accountHostListeners) listener(hosts);
+  }
+
   private rememberAccount(hosts: readonly SyncHostEntry[]): void {
     this.storage.setItem(ACCOUNT_HOSTS_STORAGE_KEY, JSON.stringify(hosts));
+    this.publishAccountHosts();
   }
 
   /**
