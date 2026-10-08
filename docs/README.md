@@ -23,6 +23,7 @@ Kotlin `app2` line and takes 0.5.x hotfixes only. Docs that describe `app2`,
 | [usage-panel.md](usage-panel.md) | Provider quota / usage tracking via server-side `pocketshell usage` over SSH — zero credentials on the phone |
 | [js-usage-ports.md](js-usage-ports.md) | JS-first Android provider usage and port forwarding routes, policy ownership, and packaged Docker journey |
 | [settings-sync.md](settings-sync.md) | Optional Google sign-in + end-to-end-encrypted host sync, and the OAuth client registration it is blocked on |
+| [gateway-android-transport.md](gateway-android-transport.md) | Native Android gateway transport: bounded WS byte transport under sshj, broker token exchange, pairing namespace (#3060); backend-complete pending UI/core/e2e chunks |
 | [diagnostics.md](diagnostics.md) | Shareable JSONL flight recorder for app, connection, network, and action events |
 | [design-language.md](design-language.md) | Termius-inspired visual tokens |
 | [design-system.md](design-system.md) | Codified dark dev-tool design tokens and shared UI primitives |

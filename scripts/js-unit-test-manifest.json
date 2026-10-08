@@ -563,6 +563,22 @@
         "refuses malformed envelopes and bounds the blob-controlled iteration count before deriving"
       ]
     },
+    "tests/unit/gatewayPairingNative.test.ts": {
+      "suite": "gatewayPairing native API",
+      "tests": [
+        "exposes no method that could return or accept a token",
+        "parseGatewayPairingAccount accepts a signed-in answer",
+        "parseGatewayPairingAccount blanks the subject when signed out",
+        "parseGatewayPairingAccount refuses malformed shapes",
+        "parseGatewayPairingList accepts a list of valid rows",
+        "parseGatewayPairingList drops rows that no longer normalize, keeps the rest",
+        "parseGatewayPairingList refuses unreadable answers instead of reading them as empty",
+        "parseGatewayPairingResult accepts a valid stored pairing",
+        "parseGatewayPairingResult refuses anything that is not exactly a usable pairing",
+        "parseGatewayPairingRemoval accepts a boolean answer",
+        "createGatewayPairingNative forwards pair arguments verbatim and parses the reply"
+      ]
+    },
     "tests/unit/androidSync.test.ts": {
       "suite": "Android settings sync adapter",
       "tests": [
