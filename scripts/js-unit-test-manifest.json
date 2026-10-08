@@ -732,6 +732,25 @@
         "the legacy Account screen's Sync now keeps account hosts and their fields the same way",
         "after a restart the account hosts come back once the passphrase unlocks them, with nothing uploaded"
       ]
+    },
+    "tests/unit/androidAccountHostAdversarial.test.ts": {
+      "suite": "Android account sync and key-prompt adversarial cases",
+      "tests": [
+        "R1 dataloss repro (round-1 scenario, production factory): unlock then Sync now keeps hetzner",
+        "R2 fields repro: ticked hetzner keeps identityFile/proxyJump/forwards/unknown",
+        "C1 account-only minimal host (no port/user, unknown field) comes back byte-identical",
+        "C2 first Sync now with no prior unlock keeps all hosts and fields; message reports count",
+        "C3 restart between unlock and Sync now (selection + known aliases persisted) keeps everything",
+        "C4 alias case mismatch (phone \"Hetzner\", account \"hetzner\") never drops the account entry",
+        "C5 account with hosts the phone has never seen + legacy screen Sync now keeps all",
+        "C6 explicit untick of a phone host still removes it",
+        "C7 unlock uploads nothing; storage holds aliases only",
+        "K1 same hostname+port, DIFFERENT user: account root@ must not rewrite keyless phone alexey@ host",
+        "K1b same as K1 but the picker sends no hostAlias",
+        "K2 same hostname, DIFFERENT port: account host is adopted as its own host, phone box untouched",
+        "K3 same hostname, port AND user: the key is attached to the keyless phone host in place, no duplicate",
+        "K4 different user on the same address: the account host becomes its own phone host and the next tap dials it without asking"
+      ]
     }
   }
 }

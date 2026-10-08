@@ -198,6 +198,9 @@ export class AndroidSync {
   async signOut(): Promise<void> {
     this.account = null;
     // The next account starts undecided: its aliases are ticked on unlock.
+    // Deliberately, signing out and back in therefore re-ticks a host the user
+    // had unticked: forgetting an untick can only keep a host in the account,
+    // never drop one (docs/settings-sync.md).
     this.storage.removeItem(KNOWN_ALIASES_STORAGE_KEY);
     await this.native.signOut();
   }

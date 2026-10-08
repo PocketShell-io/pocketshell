@@ -51,6 +51,12 @@ export class UnsupportedCapability extends Error {
 const unsupported = (method: string) => (): Promise<never> =>
   Promise.reject(new UnsupportedCapability(method));
 
+/** Whether a connect request names this exact phone host (alias, or address and user). */
+function isSameHost(host: { name: string; hostname: string; port: number; user: string }, request: { host: string; port?: number; user: string; hostAlias?: string }): boolean {
+  if (request.hostAlias) return request.hostAlias === host.name;
+  return host.hostname === request.host && host.port === (request.port ?? 22) && (!request.user || host.user === request.user);
+}
+
 export interface AndroidLifecycle {
   /** Register for foreground/background transitions; returns an unsubscribe. */
   onActiveChange(handler: (active: boolean) => void): () => void;
@@ -107,8 +113,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     } catch (error) {
       const keys = deps.accountHosts;
       if (!keys) throw error;
-      const missingKey = error instanceof MissingHostCredential;
-      const host = missingKey ? error.host : await keys.find(payload);
+      // Attach a key in place only to the phone host this dial IS: named by
+      // the request, or at the same address for the same user. A keyless
+      // phone host that merely shares the address (another user, #3063 review
+      // r2) is left alone, and the account host is saved as its own host.
+      const missingKey = error instanceof MissingHostCredential && isSameHost(error.host, payload);
+      const host = missingKey ? (error as MissingHostCredential).host : await keys.find(payload);
       if (!host) throw error;
       if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {
         throw new Error(declinedAccountHostMessage(host.name));

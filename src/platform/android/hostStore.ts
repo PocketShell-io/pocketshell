@@ -153,9 +153,13 @@ export class AndroidHostStore {
   async resolve(request: { host: string; port?: number; user: string; hostAlias?: string }): Promise<SshHostTarget> {
     const port = request.port ?? 22;
     const saved = this.readSaved();
+    const atAddress = (host: SavedHost) => host.hostname === request.host && host.port === port;
+    // By alias, then the host at this address for this user, then any host at
+    // this address: two hosts can share an address under different users.
     const savedMatch =
       (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined) ??
-      saved.find((host) => host.hostname === request.host && host.port === port);
+      (request.user ? saved.find((host) => atAddress(host) && host.user === request.user) : undefined) ??
+      saved.find(atAddress);
     if (savedMatch) {
       if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch);
       return {
