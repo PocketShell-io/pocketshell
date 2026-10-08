@@ -28,6 +28,7 @@ import {
   type SyncStatus,
 } from '@pocketshell/core';
 import type { GoogleSyncNative, GoogleSyncStatus } from '@/native/googleSync';
+import { carriedGatewayMarker, hasGatewayMarker } from '@/platform/android/hostStore';
 import { decryptEnvelope, encryptToEnvelope, SYNC_KDF_ITERATIONS } from './syncCrypto';
 
 /** The decrypted account copy, kept so synced hosts stay visible after a restart. */
@@ -280,5 +281,9 @@ export function accountHostEntry(host: SyncHostEntry): HostEntry {
     localForwards: [],
     remoteForwards: [],
     fromConfig: false,
+    // A gateway marker rides along VERBATIM (#3059): stripping it here would
+    // present a gateway host as an ordinary one, and the platform boundary
+    // refuses on presence — valid, null, or malformed alike.
+    ...(hasGatewayMarker(host) ? carriedGatewayMarker(host) : {}),
   };
 }

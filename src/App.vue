@@ -10,6 +10,7 @@ import {
   readHostUsage,
   runSyncRound,
   type ConnectionSnapshot,
+  type HostEntry,
   type HostKeyTrustChoice,
   type HostKeyTrustPin,
   type HostKeyTrustStore,
@@ -42,6 +43,8 @@ import {
 import { makeLegacySshHostTarget } from './migration/legacySshTarget';
 import { androidKeyManager } from './platform/android/hosts';
 import { androidSync } from './platform/android/sync';
+import { GATEWAY_UNSUPPORTED_MESSAGE, hasGatewayMarker } from './platform/android/hostStore';
+import { accountHostEntry } from './sync/androidSync';
 import SshKeysScreen, { type SshKeyHostInstallTarget } from './components/SshKeysScreen.vue';
 import KeyIcon from './components/KeyIcon.vue';
 import { installPublicKeyOnHost, liveAuthorizedKeyInstallHost, type DialedHost } from './credentials/authorizedKeys';
@@ -180,9 +183,25 @@ const homeSurface = ref<HomeSurface>('connection');
 const hostDraft = ref({ hostname: '', port: '22', username: '' });
 const importedLegacyHosts = ref<ImportedLegacyHost[]>([]);
 const selectedLegacyHostId = ref('');
-/** Hosts from the signed-in Google account's last sync (#3020); metadata only, no keys. */
-const syncedAccountHosts = ref<Array<{ name: string; hostname: string; port: number; user: string }>>([]);
+/**
+ * Hosts from the signed-in Google account's last sync (#3020); metadata only,
+ * no keys. A row that carries a PRESENT gateway transport marker keeps it
+ * verbatim (#3059) — the default shell has no gateway transport, so the dial
+ * boundary below refuses on the marker instead of the row passing for an
+ * ordinary direct host.
+ */
+const syncedAccountHosts = ref<HostEntry[]>([]);
 const selectedSyncedHostName = ref('');
+/**
+ * The picked synced row's transport intent, kept independently of the row
+ * lookup (#3059): refreshing the account copy can drop or rewrite rows and
+ * changing the SSH key clears the picker anchor, but the form draft still
+ * names that row's host — so the retained intent keeps refusing at the dial
+ * boundary until an EXPLICIT direct selection supersedes it: typing an
+ * address, or picking a saved host, or picking a different synced row.
+ * Presence semantics match the row check; the marker's value is data.
+ */
+const selectedSyncedGatewayIntent = ref(false);
 /** Whether a Google account is signed in (#3020); unknown while null, so the empty-state sign-in pointer (#3047) stays hidden. */
 const accountSignedIn = ref<boolean | null>(null);
 const sshKeys = ref<SshKeyMetadata[]>([]);
@@ -784,6 +803,19 @@ function recordOperationFailure(operation: string) {
 }
 
 function makeHostTarget(): SshHostTarget | null {
+  // #3059: the default shell dials the form draft directly, so a selected
+  // synced row's gateway intent must refuse HERE — before the missing-field
+  // message, before a key handle is named, and before any controller or
+  // native plugin call a target would lead to. Presence decides; the
+  // marker's value is data and is never inspected or repaired. The retained
+  // intent keeps refusing when the row lookup can no longer vouch — the row
+  // was dropped or rewritten by an account refresh, or the picker anchor was
+  // cleared by a key change — because the draft still names that host.
+  const selectedSynced = syncedAccountHosts.value.find((candidate) => candidate.name === selectedSyncedHostName.value);
+  if (selectedSyncedGatewayIntent.value || (selectedSynced && hasGatewayMarker(selectedSynced))) {
+    connectionMessage.value = GATEWAY_UNSUPPORTED_MESSAGE;
+    return null;
+  }
   const hostname = hostDraft.value.hostname.trim();
   const username = hostDraft.value.username.trim();
   const port = Number(hostDraft.value.port);
@@ -809,6 +841,13 @@ function selectLegacyHost(): void {
   const host = selectedLegacyHost.value;
   legacyKeyPassphrase.value = '';
   if (!host) return;
+  // Choosing a saved host supersedes a picked synced row (the mirror of
+  // selectSyncedHost clearing the legacy selection): the draft names one
+  // dial source, and an explicit direct host is never blocked by a row the
+  // user moved away from — nor still shown its refusal.
+  selectedSyncedHostName.value = '';
+  selectedSyncedGatewayIntent.value = false;
+  connectionMessage.value = '';
   hostDraft.value = {
     hostname: host.hostname,
     port: String(host.port),
@@ -820,19 +859,29 @@ function selectLegacyHost(): void {
   }
 }
 
+/** Typing into the address fields is the explicit direct-host selection: the synced row (and its retained transport intent) no longer names this draft. */
 function clearLegacyHostSelection(): void {
   selectedLegacyHostId.value = '';
   selectedSyncedHostName.value = '';
+  selectedSyncedGatewayIntent.value = false;
+  legacyKeyPassphrase.value = '';
+}
+
+/** The connect form's SSH-key select changed. The saved-host pairing goes (the record's own key no longer matches), but the drafted host is untouched — a picked synced row's transport intent must survive the key change (#3059), so the row anchor and intent stay. */
+function onSelectedSshKeyChanged(): void {
+  selectedLegacyHostId.value = '';
   legacyKeyPassphrase.value = '';
 }
 
 function refreshSyncedAccountHosts(): void {
-  syncedAccountHosts.value = (androidSync().accountHosts() ?? []).map((host) => ({
-    name: host.name,
-    hostname: host.hostname,
-    port: typeof host.port === 'number' && Number.isInteger(host.port) && host.port > 0 && host.port < 65536 ? host.port : 22,
-    user: typeof host.user === 'string' ? host.user : '',
-  }));
+  // The same marker-preserving mapping the shared picker's account group uses
+  // (#3059): a row's gateway intent survives into the default shell's picker,
+  // whatever its value, so the dial boundary sees it instead of the marker
+  // quietly vanishing between the account copy and the form draft.
+  syncedAccountHosts.value = (androidSync().accountHosts() ?? []).map(accountHostEntry);
+  // A refresh that drops or rewrites the selected row clears only the
+  // picker anchor: the retained transport intent (#3059) governs the draft
+  // the user already filled from that row, so it survives this refresh.
   if (!syncedAccountHosts.value.some((host) => host.name === selectedSyncedHostName.value)) selectedSyncedHostName.value = '';
 }
 
@@ -853,14 +902,25 @@ function selectSyncedHost(): void {
   selectedLegacyHostId.value = '';
   legacyKeyPassphrase.value = '';
   hostDraft.value = { hostname: host.hostname, port: String(host.port), username: host.user };
-  connectionMessage.value = selectedKeyHandleId.value ? '' : `Choose an SSH key on this phone to connect to ${host.name}.`;
+  // The explicit pick (re)establishes the draft's transport intent from the
+  // row's own marker — an ordinary row picked after a gateway one supersedes
+  // the retained refusal (#3059), and a gateway row re-arms it.
+  selectedSyncedGatewayIntent.value = hasGatewayMarker(host);
+  // #3059: a gateway row says no the moment it is picked — and again on
+  // Connect — instead of sitting in the picker as if it were dialable here.
+  connectionMessage.value = hasGatewayMarker(host)
+    ? GATEWAY_UNSUPPORTED_MESSAGE
+    : selectedKeyHandleId.value ? '' : `Choose an SSH key on this phone to connect to ${host.name}.`;
 }
 
 function selectSshKey(handleId: string, stay = false): void {
   selectedKeyHandleId.value = handleId;
   if (selectedLegacyHost.value?.keyHandleId !== handleId) selectedLegacyHostId.value = '';
   legacyKeyPassphrase.value = '';
-  connectionMessage.value = '';
+  // A retained gateway intent is still the drafted host's intent: picking a
+  // key re-states the refusal instead of wiping it (#3059) — the draft keeps
+  // naming a host this shell cannot dial.
+  connectionMessage.value = selectedSyncedGatewayIntent.value ? GATEWAY_UNSUPPORTED_MESSAGE : '';
   if (navigation.route === 'keys' && !stay) navigation.back();
 }
 
@@ -1802,7 +1862,7 @@ onBeforeUnmount(() => {
           </label>
           <label class="form-field host-field-key">
             <span>SSH key</span>
-            <select v-model="selectedKeyHandleId" data-testid="ssh-key-selection" :aria-describedby="selectedSshKey ? 'selected-ssh-key-details' : undefined" @change="clearLegacyHostSelection">
+            <select v-model="selectedKeyHandleId" data-testid="ssh-key-selection" :aria-describedby="selectedSshKey ? 'selected-ssh-key-details' : undefined" @change="onSelectedSshKeyChanged">
               <option value="">Choose a stored SSH key</option>
               <option v-for="key in sshKeys" :key="key.handleId" :value="key.handleId">
                 {{ key.label }} · {{ key.fingerprintSha256.slice(7, 15) }}

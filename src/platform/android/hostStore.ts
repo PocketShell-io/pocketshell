@@ -10,7 +10,7 @@
  *    Android key vault (#2926). Key bytes never enter the WebView: a host
  *    only names its handle, and the native plugin resolves it at dial time.
  */
-import type { HostEntry, SshHostTarget } from '@pocketshell/core';
+import type { GatewayTransportTarget, HostEntry, SshHostTarget } from '@pocketshell/core';
 import { makeLegacySshHostTarget } from '@/migration/legacySshTarget';
 import type { ImportedLegacyHost } from '@/migration/installedDataMigration';
 
@@ -44,6 +44,62 @@ export class MissingHostCredential extends Error {
   }
 }
 
+/**
+ * The one refusal a present gateway marker produces on this phone, word for
+ * word (issue #3059). The Android transport is the native SSH plugin only;
+ * the gateway ships in the browser first, so a gateway host must never be
+ * dialled here — and never silently degraded into an ordinary SSH target.
+ */
+export const GATEWAY_UNSUPPORTED_MESSAGE =
+  'This host dials through the PocketShell gateway, which this app does not support.';
+
+export class GatewayHostUnsupported extends Error {
+  constructor() {
+    super(GATEWAY_UNSUPPORTED_MESSAGE);
+    this.name = 'GatewayHostUnsupported';
+  }
+}
+
+/**
+ * Whether a host record carries a PRESENT gateway transport marker — an own
+ * `gateway` property, whatever its value: a valid target, null, or a shape
+ * this build does not understand. Presence is the whole contract for the
+ * guard (#3059): the marker is never inspected, normalized, or repaired, so
+ * a malformed or future-shaped marker cannot pass for an ordinary host. An
+ * entry carrying BOTH `link` and `gateway` refuses too — the conflict is
+ * never resolved by falling back to the link transport.
+ */
+export function hasGatewayMarker(host: object): boolean {
+  return Object.prototype.hasOwnProperty.call(host, 'gateway');
+}
+
+/** The marker's raw value; only meaningful when {@link hasGatewayMarker} is true. */
+export function gatewayMarkerValue(host: object): unknown {
+  return (host as unknown as Record<string, unknown>)['gateway'];
+}
+
+/**
+ * The raw marker, typed for CARRIAGE in a `HostEntry`'s `gateway` field
+ * (#3059). Core's `HostEntry.gateway?: GatewayTransportTarget` types a
+ * VALIDATED target — what `normalizeGatewayTarget` returns once the server
+ * URL and device id have been checked. What crosses this boundary is
+ * untrusted data (JSON out of on-device storage, the sync account copy, or
+ * a dial request) that may equally be null, undefined, or a shape this
+ * build does not understand, and it must arrive verbatim: dropping it
+ * would present a gateway host as an ordinary one, re-shaping it could
+ * pass malformed data off as a valid target. The single assertion here is
+ * a carriage annotation at that untrusted boundary, not a validity claim —
+ * nothing on the Android dial path reads the value (every guard decides on
+ * PRESENCE via `hasGatewayMarker` and refuses before any credential,
+ * controller or native call), and type validity resumes only where a
+ * gateway-dialling client interprets the value, through core's
+ * `normalizeGatewayTarget`, which fails closed on everything that is not a
+ * usable target.
+ */
+export function carriedGatewayMarker(host: object): { gateway: GatewayTransportTarget } {
+  return { gateway: gatewayMarkerValue(host) as GatewayTransportTarget };
+}
+
 function toEntry(host: Omit<SavedHost, 'keyHandleId'>): HostEntry {
   return {
     name: host.name,
@@ -56,6 +112,10 @@ function toEntry(host: Omit<SavedHost, 'keyHandleId'>): HostEntry {
     localForwards: [],
     remoteForwards: [],
     fromConfig: false,
+    // A stored entry that somehow carries a gateway marker keeps it (#3059):
+    // the listed entry must say what it is, so the platform boundary refuses
+    // the dial instead of the marker quietly vanishing into an ordinary host.
+    ...(hasGatewayMarker(host) ? carriedGatewayMarker(host) : {}),
   };
 }
 
@@ -75,6 +135,9 @@ export function validateSavedHost(host: SavedHost): string | null {
   if (!host.user.trim()) return 'Enter the SSH user.';
   if (!Number.isInteger(host.port) || host.port < 1 || host.port > 65535) return 'Port must be 1–65535.';
   if (!host.keyHandleId) return 'Choose an SSH key from the key vault.';
+  // Fail closed at the write, too (#3059): a gateway host is never stored as
+  // if it were an ordinary one.
+  if (hasGatewayMarker(host)) return GATEWAY_UNSUPPORTED_MESSAGE;
   return null;
 }
 
@@ -141,14 +204,22 @@ export class AndroidHostStore {
   /**
    * The dial target for a connect request, matched the way the shared store
    * names it: by alias first, then hostname + port.
+   *
+   * Guards run before anything is resolved or read into a credential
+   * (#3059): a request that carries a gateway marker refuses here, and so
+   * does a stored record that carries one — before the key handle is named,
+   * before the legacy import is consulted, and before any native plugin
+   * call a returned target would lead to.
    */
   async resolve(request: { host: string; port?: number; user: string; hostAlias?: string }): Promise<SshHostTarget> {
+    if (hasGatewayMarker(request)) throw new GatewayHostUnsupported();
     const port = request.port ?? 22;
     const saved = this.readSaved();
     const savedMatch =
       (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined) ??
       saved.find((host) => host.hostname === request.host && host.port === port);
     if (savedMatch) {
+      if (hasGatewayMarker(savedMatch)) throw new GatewayHostUnsupported();
       if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch.name);
       return {
         hostId: `${savedMatch.user}@${savedMatch.hostname}:${savedMatch.port}`,
