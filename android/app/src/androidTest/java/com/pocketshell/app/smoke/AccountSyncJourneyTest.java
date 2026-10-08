@@ -141,7 +141,12 @@ public final class AccountSyncJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=account-sync-status]')?.dataset.signedIn === 'false'"
                 + " && !!document.querySelector('[data-testid=account-sign-in]:not([disabled])')");
         captureScreenshot("account-signed-out.png", "#account-settings-title");
+        // #3047: startup and this screen both read the sign-in status. That read
+        // must not create the encrypted record, or the installed-data migration
+        // reports it as leftover 0.5.6 data on every signed-out phone.
+        assertFalse("a signed-out status read must not create " + authPrefsFile(), authPrefsFile().exists());
         int baselineEntries = authPrefsEntryCount();
+        assertEquals("signed out stores no token entry", 0, baselineEntries);
 
         tapDomCenter("[data-testid=account-sign-in]");
         awaitJsTrue("document.querySelector('[data-testid=account-sync-email]')?.textContent.includes("
@@ -359,11 +364,17 @@ public final class AccountSyncJourneyTest {
         return file.isFile() ? new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8) : "";
     }
 
-    /** Entries in the encrypted prefs file, keysets included (written synchronously by commit()). */
+    /**
+     * Encrypted data entries in the prefs file (written synchronously by
+     * commit()), excluding the two Tink keysets EncryptedSharedPreferences
+     * stores alongside them under its reserved names.
+     */
     private int authPrefsEntryCount() throws Exception {
-        Matcher matcher = Pattern.compile("<string name=").matcher(authPrefsXml());
+        Matcher matcher = Pattern.compile("<string name=\"([^\"]*)\"").matcher(authPrefsXml());
         int count = 0;
-        while (matcher.find()) count += 1;
+        while (matcher.find()) {
+            if (!matcher.group(1).startsWith("__androidx_security_crypto_encrypted_prefs_")) count += 1;
+        }
         return count;
     }
 
