@@ -9,6 +9,7 @@
  */
 import { reactive } from 'vue';
 import type { HostEntry } from '@pocketshell/core';
+import type { HostKeyReason } from '@/platform/android/accountHosts';
 import { createHostForm, type HostFormDeps } from './hostForm';
 
 export function createAccountHostKeyPrompt(deps: HostFormDeps) {
@@ -16,13 +17,15 @@ export function createAccountHostKeyPrompt(deps: HostFormDeps) {
   const state = reactive({
     /** The account host waiting for this phone's key, or null. */
     pending: null as HostEntry | null,
+    /** Why the phone asks; the prompt's wording follows it. */
+    reason: 'account' as HostKeyReason,
     /** Changes with every question, so the prompt remounts for each. */
     seq: 0,
   });
   let settle: ((saved: boolean) => void) | null = null;
 
   /** Ask for the key; true once the host is saved on the phone with it. */
-  function ask(host: HostEntry): Promise<boolean> {
+  function ask(host: HostEntry, reason: HostKeyReason = 'account'): Promise<boolean> {
     // One question at a time: a newer dial supersedes an unanswered one,
     // which is declined (nothing saved, nothing dialled).
     settle?.(false);
@@ -37,6 +40,7 @@ export function createAccountHostKeyPrompt(deps: HostFormDeps) {
       error: null,
     });
     state.seq += 1;
+    state.reason = reason;
     state.pending = host;
     void form.loadKeys();
     return new Promise<boolean>((resolve) => {

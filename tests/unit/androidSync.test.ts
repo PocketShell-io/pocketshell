@@ -10,6 +10,7 @@ import {
 import {
   ACCOUNT_HOSTS_STORAGE_KEY,
   AndroidSync,
+  KNOWN_ALIASES_STORAGE_KEY,
   phoneOwnedSyncFields,
   syncFailureText,
   type SyncStorage,
@@ -90,7 +91,7 @@ function phoneHost(name: string, hostname: string, port = 22, user = 'me'): Host
 function setup() {
   const backend = new FakeSyncBackend();
   const storage = new MemoryStorage();
-  const sync = new AndroidSync({ native: backend, storage, kdfIterations: FAST });
+  const sync = new AndroidSync({ native: backend, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
   return { backend, storage, sync };
 }
 
@@ -141,7 +142,8 @@ describe('Android settings sync adapter', () => {
     expect(sync.accountHosts()?.[1]).toMatchObject({ hostname: 'laptop.lan' });
     // In memory only (#3026): nothing decrypted is written to WebView storage.
     expect(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY)).toBeNull();
-    expect(storage.values.size).toBe(0);
+    expect([...storage.values.keys()]).toEqual([KNOWN_ALIASES_STORAGE_KEY]);
+    expect(JSON.stringify([...storage.values])).not.toContain('laptop.lan');
   });
 
   it('creates a fresh account on base version 0 with the selected phone hosts', async () => {
@@ -252,3 +254,9 @@ describe('Android settings sync adapter', () => {
     await expect(native.request({ method: 'GET', slot: 'main' })).rejects.toThrow('invalid response');
   });
 });
+
+/** The sync selection as a plain list (the settings store's `syncSelectedHosts` in the app). */
+function memorySelection(initial: string[] = []) {
+  let aliases = [...initial];
+  return { get: () => aliases, set: (next: string[]) => { aliases = [...next]; } };
+}

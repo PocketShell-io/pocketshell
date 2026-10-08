@@ -716,7 +716,21 @@
         "asks for this phone's key when an account host is tapped, saves it with the key, then connects",
         "cancelling the key prompt dials nothing and says why",
         "only an unlocked account host is adopted; an unknown host keeps its plain refusal",
+        "a phone host whose key is gone gets the key prompt and is updated in place, never duplicated",
+        "an account host at the address of a keyless phone host attaches the key to that phone host",
+        "keeps every account alias selected unless the user unticked it",
         "browser dev mode's GoogleSync stand-in signs in and serves an account the dev passphrase unlocks"
+      ]
+    },
+    "tests/unit/androidSharedSyncSafety.test.ts": {
+      "suite": "Android shared Account screen sync safety",
+      "tests": [
+        "unlocking then Sync now keeps a phone host that is also in the account (dataloss repro)",
+        "Sync now pressed without unlocking first still keeps every account host",
+        "a ticked phone host keeps every field another client owns (fields repro)",
+        "only an explicit untick removes an account host, and it stays unticked on the next unlock",
+        "the legacy Account screen's Sync now keeps account hosts and their fields the same way",
+        "after a restart the account hosts come back once the passphrase unlocks them, with nothing uploaded"
       ]
     }
   }

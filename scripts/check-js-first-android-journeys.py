@@ -159,6 +159,7 @@ LANES = (
         methods=frozenset(
             {
                 "sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton",
+                "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
             }
         ),
     ),

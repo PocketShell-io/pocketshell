@@ -35,7 +35,7 @@ import {
   type HomeResult,
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
-import type { AndroidHostStore } from './hostStore';
+import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
@@ -96,17 +96,24 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
 
   /**
-   * The dial target: a phone host, or an account host the user has just
-   * given this phone's key (saved on the phone, then resolved like any other).
+   * The dial target: a phone host; a phone host whose key is gone, once the
+   * user attaches a key to it (updated in place); or an account host the
+   * phone does not have, once the user gives it this phone's key (saved on
+   * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
     try {
       return await deps.hosts.resolve(payload);
     } catch (error) {
-      const account = deps.accountHosts ? await deps.accountHosts.find(payload) : null;
-      if (!account) throw error;
-      if (!(await deps.accountHosts!.adopt(account))) throw new Error(declinedAccountHostMessage(account.name));
-      return deps.hosts.resolve({ ...payload, hostAlias: account.name });
+      const keys = deps.accountHosts;
+      if (!keys) throw error;
+      const missingKey = error instanceof MissingHostCredential;
+      const host = missingKey ? error.host : await keys.find(payload);
+      if (!host) throw error;
+      if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {
+        throw new Error(declinedAccountHostMessage(host.name));
+      }
+      return deps.hosts.resolve({ ...payload, hostAlias: host.name });
     }
   }
 

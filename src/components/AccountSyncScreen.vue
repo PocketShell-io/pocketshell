@@ -23,7 +23,7 @@ const props = defineProps<{
 const sharedSettings = useSettingsStore();
 const status = ref<GoogleSyncStatus | null>(null);
 const statusError = ref('');
-const busy = ref<'' | 'sign-in' | 'sign-out' | 'sync'>('');
+const busy = ref<'' | 'sign-in' | 'sign-out' | 'sync' | 'unlock'>('');
 const message = ref<{ kind: 'ok' | 'error'; text: string } | null>(null);
 const passphrase = ref('');
 const localHosts = ref<HostEntry[]>([]);
@@ -105,6 +105,33 @@ async function signOut(): Promise<void> {
   } finally {
     busy.value = '';
     await refresh();
+  }
+}
+
+/**
+ * Read the account with the passphrase and upload nothing (#3063). The
+ * decrypted copy is kept in memory only, so after a restart this is how the
+ * account's hosts come back to the home screen.
+ */
+async function unlock(): Promise<void> {
+  if (busy.value) return;
+  if (passphrase.value === '') {
+    message.value = { kind: 'error', text: 'Enter your sync passphrase.' };
+    return;
+  }
+  busy.value = 'unlock';
+  message.value = null;
+  try {
+    const hosts = await props.sync.unlock(passphrase.value);
+    accountHosts.value = props.sync.accountHosts();
+    message.value = {
+      kind: 'ok',
+      text: `Your account has ${hosts.length} host${hosts.length === 1 ? '' : 's'}; they are listed on the home screen.`,
+    };
+  } catch (error) {
+    message.value = { kind: 'error', text: describeSyncError(error) };
+  } finally {
+    busy.value = '';
   }
 }
 
@@ -196,6 +223,12 @@ onMounted(() => {
             spellcheck="false"
           />
         </label>
+        <p v-if="accountHosts === null" class="settings-note" data-testid="account-sync-locked">
+          Your account's hosts stay locked until you enter the passphrase. PocketShell keeps them in memory only, so after a restart unlock again to list them on the home screen.
+        </p>
+        <button class="small-action" type="button" data-testid="account-sync-unlock" :disabled="!!busy" @click="unlock">
+          {{ busy === 'unlock' ? 'Unlocking…' : 'Show account hosts' }}
+        </button>
 
         <div class="account-hosts" data-testid="account-sync-hosts">
           <h2 class="account-hosts__title">Hosts to sync</h2>

@@ -32,7 +32,11 @@ function back(): void {
 .android-account__bar {
   display: flex;
   align-items: center;
-  padding: var(--sp-1) var(--sp-2) 0;
+  /* The same top clearance as the picker's header (its --sp-6 page padding):
+     the shared shell does not feed the real status-bar inset yet (#2936 A3,
+     --ps-inset-top is 0 on Android today), and a Back bar at the very top sat
+     under the status bar, where taps never reached it. */
+  padding: calc(var(--ps-inset-top) + var(--sp-6)) var(--sp-2) 0;
 }
 .android-account__back {
   display: inline-flex;

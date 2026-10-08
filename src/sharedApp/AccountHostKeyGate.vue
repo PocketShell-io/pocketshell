@@ -29,7 +29,11 @@ function connect(): void {
       @submit.prevent="connect"
     >
       <h2 id="account-host-key-title" class="account-key-title">Choose a key for {{ state.pending.name }}</h2>
-      <p class="account-key-body">
+      <p v-if="state.reason === 'missing-key'" class="account-key-body" data-testid="account-host-key-reason" data-reason="missing-key">
+        The key this phone used for <code>{{ state.pending.hostname }}:{{ state.pending.port }}</code> is gone.
+        Pick another key; the saved host keeps its name and gets the new key.
+      </p>
+      <p v-else class="account-key-body" data-testid="account-host-key-reason" data-reason="account">
         <code>{{ state.pending.hostname }}:{{ state.pending.port }}</code> is in your account.
         SSH keys never sync, so pick the key this phone uses for it.
       </p>

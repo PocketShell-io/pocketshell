@@ -38,9 +38,13 @@ export interface AndroidHostStoreOptions {
 
 /** Why a host cannot be dialled right now, in words the picker can show. */
 export class MissingHostCredential extends Error {
-  constructor(hostName: string) {
-    super(`No SSH key is chosen for “${hostName}” — add the host again with a key from the key vault.`);
+  /** The saved host with no key, so a prompt can attach one to it in place. */
+  readonly host: HostEntry;
+
+  constructor(host: Omit<SavedHost, 'keyHandleId'>) {
+    super(`No SSH key is chosen for “${host.name}” — add the host again with a key from the key vault.`);
     this.name = 'MissingHostCredential';
+    this.host = toEntry(host);
   }
 }
 
@@ -98,14 +102,18 @@ export class AndroidHostStore {
   save(host: SavedHost): void {
     const problem = validateSavedHost(host);
     if (problem) throw new Error(problem);
-    const saved = this.readSaved().filter((existing) => existing.name !== host.name);
-    saved.push({
+    const record = {
       name: host.name.trim(),
       hostname: host.hostname.trim(),
       port: host.port,
       user: host.user.trim(),
       keyHandleId: host.keyHandleId,
-    });
+    };
+    // A host of the same name is replaced where it stands, never duplicated.
+    const saved = this.readSaved();
+    const at = saved.findIndex((existing) => existing.name === record.name);
+    if (at >= 0) saved[at] = record;
+    else saved.push(record);
     this.options.storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify(saved));
   }
 
@@ -149,7 +157,7 @@ export class AndroidHostStore {
       (request.hostAlias ? saved.find((host) => host.name === request.hostAlias) : undefined) ??
       saved.find((host) => host.hostname === request.host && host.port === port);
     if (savedMatch) {
-      if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch.name);
+      if (!savedMatch.keyHandleId) throw new MissingHostCredential(savedMatch);
       return {
         hostId: `${savedMatch.user}@${savedMatch.hostname}:${savedMatch.port}`,
         hostname: savedMatch.hostname,

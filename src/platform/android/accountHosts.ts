@@ -7,6 +7,10 @@
  * with that key, and only then dials — the same rule the legacy home screen
  * applied by filling its form from a synced host.
  *
+ * A phone host whose key is gone (deleted from the vault) gets the same
+ * prompt, and the chosen key is attached to that host in place: the host is
+ * never saved a second time.
+ *
  * This module is the decision; the prompt itself is the Android shell's
  * (src/sharedApp/accountHostKey.ts).
  */
@@ -18,21 +22,25 @@ export interface AccountHostRequest {
   user: string;
 }
 
+/** Why the phone asks: a host from the account, or a phone host whose key is gone. */
+export type HostKeyReason = 'account' | 'missing-key';
+
 export interface AccountHostKeys {
   /** The account host a connect request names, or null when it names none. */
   find(request: AccountHostRequest): Promise<HostEntry | null>;
   /**
    * Ask the user for this phone's key for `host`. Resolves true once the host
-   * is saved on the phone with a key-vault key, false when the user declined.
+   * is saved on the phone with a key-vault key (an existing phone host of the
+   * same name is updated, not duplicated), false when the user declined.
    */
-  adopt(host: HostEntry): Promise<boolean>;
+  adopt(host: HostEntry, reason: HostKeyReason): Promise<boolean>;
 }
 
 export interface AccountHostKeysDeps {
   /** The unlocked account copy (`api.sync.accountHosts`), null while locked. */
   accountHosts(): Promise<HostEntry[] | null>;
   /** The phone's key prompt. */
-  ask(host: HostEntry): Promise<boolean>;
+  ask(host: HostEntry, reason: HostKeyReason): Promise<boolean>;
 }
 
 /**
@@ -52,7 +60,7 @@ export function createAccountHostKeys(deps: AccountHostKeysDeps): AccountHostKey
       const hosts = await deps.accountHosts().catch(() => null);
       return hosts ? matchAccountHost(hosts, request) : null;
     },
-    adopt: (host) => deps.ask(host),
+    adopt: (host, reason) => deps.ask(host, reason),
   };
 }
 

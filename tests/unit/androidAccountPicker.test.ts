@@ -11,7 +11,7 @@ import HostPickerView from '@ui/app/views/HostPickerView.vue';
 import { ConnectionController, type HostEntry } from '@pocketshell/core';
 import type { GoogleSyncHttpResponse, GoogleSyncNative, GoogleSyncRequest } from '@/native/googleSync';
 import type { SshKeyMetadata } from '@/native/sshKeyVault';
-import { ACCOUNT_HOSTS_STORAGE_KEY, AndroidSync } from '@/sync/androidSync';
+import { ACCOUNT_HOSTS_STORAGE_KEY, AndroidSync, keepAccountAliases, KNOWN_ALIASES_STORAGE_KEY } from '@/sync/androidSync';
 import { encryptToEnvelope } from '@/sync/syncCrypto';
 import { createAndroidPlatform } from '@/platform/android/androidApi';
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
@@ -78,7 +78,7 @@ class FakeGoogleSync implements GoogleSyncNative {
 function setup(options: { opened?: string[] } = {}) {
   const google = new FakeGoogleSync();
   const storage = new Storage();
-  const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST });
+  const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
   const syncApi = sync.api();
   const native = new FakeNative();
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
@@ -142,7 +142,7 @@ describe('Android account sync group and shared picker account hosts', () => {
     google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASSPHRASE, FAST) };
     const storage = new Storage();
     storage.setItem(ACCOUNT_HOSTS_STORAGE_KEY, JSON.stringify([{ name: 'stale', hostname: 'old.example' }]));
-    const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST });
+    const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
     expect(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY)).toBeNull();
     expect(sync.accountHosts()).toBeNull();
 
@@ -151,8 +151,12 @@ describe('Android account sync group and shared picker account hosts', () => {
     expect(result.kind).toBe('synced');
     expect(sync.accountHosts()?.map((host) => host.name)).toEqual(['hetzner', 'fixture']);
     // Nothing decrypted reached WebView storage: no host name, no address.
-    for (const secret of ['hetzner', '135.181.114.209', 'fixture']) expect(storage.dump()).not.toContain(secret);
-    expect(storage.values.size).toBe(0);
+    // Nothing decrypted reached WebView storage: no address, user or desktop
+    // field. Only the alias list the selection rule keeps (aliases, like the
+    // persisted selection itself) is stored.
+    for (const secret of ['135.181.114.209', 'alexey', 'id_ed25519', '2222']) expect(storage.dump()).not.toContain(secret);
+    expect([...storage.values.keys()]).toEqual([KNOWN_ALIASES_STORAGE_KEY]);
+    expect(JSON.parse(storage.getItem(KNOWN_ALIASES_STORAGE_KEY)!)).toEqual(['hetzner', 'fixture']);
   });
 
   it('the account button opens Account & sync on the phone instead of refusing', async () => {
@@ -269,14 +273,67 @@ describe('Android account sync group and shared picker account hosts', () => {
     expect(matchAccountHost(hosts, { host: 'h', port: 2222, user: 'anyone' })?.name).toBe('b');
   });
 
+  it('a phone host whose key is gone gets the key prompt and is updated in place, never duplicated', async () => {
+    const { native, hosts, prompt, created, storage } = setup();
+    storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify([
+      { name: 'first', hostname: 'one.lan', port: 22, user: 'a', keyHandleId: OTHER_KEY.handleId },
+      { name: 'box', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: '' },
+    ]));
+    const pending = created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u' });
+    await settle(() => prompt.state.pending !== null);
+    expect(prompt.state.reason).toBe('missing-key');
+    expect(prompt.state.pending).toMatchObject({ name: 'box', hostname: 'fixture', port: 2222 });
+    prompt.form.state.keyHandleId = KEY.handleId;
+    expect(prompt.confirm()).toBe(true);
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(native.connects[0]).toMatchObject({ credential: { kind: 'key-handle', handleId: KEY.handleId } });
+    expect(hosts.savedHosts()).toEqual([
+      { name: 'first', hostname: 'one.lan', port: 22, user: 'a', keyHandleId: OTHER_KEY.handleId },
+      { name: 'box', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: KEY.handleId },
+    ]);
+    await created.hub.close(result.connectionId!);
+  });
+
+  it('an account host at the address of a keyless phone host attaches the key to that phone host', async () => {
+    const { google, hosts, prompt, created, storage } = setup();
+    google.signedIn = true;
+    google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASSPHRASE, FAST) };
+    await created.api.sync.pull('main', PASSPHRASE);
+    storage.setItem(ANDROID_HOSTS_STORAGE_KEY, JSON.stringify([{ name: 'box', hostname: 'fixture', port: 2222, user: 'u', keyHandleId: '' }]));
+    // Tapped from the account group: the account calls it "fixture".
+    const pending = created.api.ssh.connect({ host: 'fixture', port: 2222, user: 'u' });
+    await settle(() => prompt.state.pending !== null);
+    expect(prompt.state).toMatchObject({ reason: 'missing-key', pending: { name: 'box' } });
+    prompt.form.state.keyHandleId = KEY.handleId;
+    prompt.confirm();
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(hosts.savedHosts().map((host) => [host.name, host.keyHandleId])).toEqual([['box', KEY.handleId]]);
+    await created.hub.close(result.connectionId!);
+  });
+
+  it('keeps every account alias selected unless the user unticked it', () => {
+    expect(keepAccountAliases(['a', 'b'], [], [])).toEqual({ selected: ['a', 'b'], known: ['a', 'b'] });
+    // 'a' was seen selected before and is no longer: an explicit untick.
+    expect(keepAccountAliases(['a', 'b', 'c'], ['b'], ['a', 'b'])).toEqual({ selected: ['b', 'c'], known: ['a', 'b', 'c'] });
+    expect(keepAccountAliases([], ['x'], [])).toEqual({ selected: ['x'], known: ['x'] });
+  });
+
   it("browser dev mode's GoogleSync stand-in signs in and serves an account the dev passphrase unlocks", async () => {
     const plugin = createGoogleSyncPlugin();
     const call = (name: string) => (options: Record<string, unknown> = {}) => Promise.resolve(plugin.methods[name]!(options));
     const native = createGoogleSyncNative({ status: call('status'), signIn: call('signIn'), signOut: call('signOut'), request: call('request') } as never);
-    const sync = new AndroidSync({ native, storage: new Storage(), kdfIterations: FAST }).api();
+    const sync = new AndroidSync({ native, storage: new Storage(), kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] }).api();
     expect((await sync.status()).loggedIn).toBe(false);
     expect(await sync.login()).toBe('dev@example.com');
     expect((await sync.pull('main', DEV_SYNC_PASSPHRASE)).kind).toBe('ok');
     expect((await sync.accountHosts())?.map((host) => host.name)).toEqual(DEV_SYNC_ACCOUNT.hosts.map((host) => host.name));
   });
 });
+
+/** The sync selection as a plain list (the settings store's `syncSelectedHosts` in the app). */
+function memorySelection(initial: string[] = []) {
+  let aliases = [...initial];
+  return { get: () => aliases, set: (next: string[]) => { aliases = [...next]; } };
+}
