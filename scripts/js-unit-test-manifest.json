@@ -420,7 +420,7 @@
     "tests/unit/sharedAppShell.test.ts": {
       "suite": "Android shared app shell",
       "tests": [
-        "routes by the shared map plus exactly the Android host form",
+        "routes by the shared map plus exactly the Android host form and account screen",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
       ]
@@ -703,6 +703,20 @@
         "explicit Stop inserts the whole utterance after 'no final'",
         "explicit Stop inserts the whole utterance after 'a stop timeout'",
         "an explicit user cancel still drops the text"
+      ]
+    },
+    "tests/unit/androidAccountPicker.test.ts": {
+      "suite": "Android account sync group and shared picker account hosts",
+      "tests": [
+        "maps native sign-in onto the shared status, login and logout",
+        "unlocks the account copy with the passphrase and serves it as picker rows; a fresh account unlocks empty",
+        "keeps the decrypted account copy in memory only and deletes a copy an older build persisted (#3026)",
+        "the account button opens Account & sync on the phone instead of refusing",
+        "lists every account host as a picker row once signed in and unlocked, beside the phone hosts",
+        "asks for this phone's key when an account host is tapped, saves it with the key, then connects",
+        "cancelling the key prompt dials nothing and says why",
+        "only an unlocked account host is adopted; an unknown host keeps its plain refusal",
+        "browser dev mode's GoogleSync stand-in signs in and serves an account the dev passphrase unlocks"
       ]
     }
   }

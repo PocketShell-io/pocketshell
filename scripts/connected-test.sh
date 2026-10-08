@@ -25,6 +25,11 @@ JS-first packaged Android lanes:
   key-vault-docker  SSH key import (file + paste), public-key share, install-on-host, auth and secret-leak journeys
   durable-storage   User data survives a kill right after acknowledgement
                     (seed / mutate+SIGKILL / verify; no Docker, issue #2993)
+  account-sync      Google sign-in and settings sync (fake Google and sync
+                    API in-process; no Docker, issue #3020)
+  account-picker    Shared host picker: header account button, unlock,
+                    account hosts on home, phone-key prompt (same fakes;
+                    no Docker, issue #3063)
 
 Each run requires an explicit per-worktree --suffix TOKEN. Docker lanes also
 require their fixture's port; lifecycle additionally requires its container
@@ -42,6 +47,8 @@ Examples:
   scripts/connected-test.sh key-vault-docker --suffix i2926 --port 2244 \
     --container pocketshell-test-agents-2244 --run-id js2926-local
   scripts/connected-test.sh durable-storage --suffix i2993 --run-id js2993-local
+  scripts/connected-test.sh account-sync --suffix i3020 --run-id js3020-local
+  scripts/connected-test.sh account-picker --suffix i3063 --run-id js3063-local
 
 During its connected phase, the selected lane owns the android/ Gradle output
 tree and one emulator while it installs and collects its exact same-run JUnit
@@ -86,8 +93,14 @@ case "$LANE" in
   durable-storage)
     TARGET="$ROOT_DIR/scripts/connected-js-durable-storage.sh"
     ;;
+  account-sync)
+    TARGET="$ROOT_DIR/scripts/connected-js-account-sync.sh"
+    ;;
+  account-picker)
+    TARGET="$ROOT_DIR/scripts/connected-js-account-picker.sh"
+    ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, or durable-storage"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, or account-picker"
     ;;
 esac
 

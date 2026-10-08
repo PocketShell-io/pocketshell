@@ -15,7 +15,10 @@
  *              0.5.x import;
  *   sync     — the Android settings-sync adapter (src/sync/androidSync.ts,
  *              #3020) when supplied: native Google sign-in and transport,
- *              WebView encryption, core's sync round;
+ *              WebView encryption, core's sync round. The picker's account
+ *              button (`win.openAccount`) opens the Android account route,
+ *              and an account host this phone has no key for asks for one
+ *              before it is dialled (#3063, `accountHosts`);
  *   app      — Android lifecycle drives the controllers' background grace
  *              directly (see `bindLifecycle`), so the shared store's resume
  *              probe is deliberately NOT fed;
@@ -33,6 +36,7 @@ import {
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import type { AndroidHostStore } from './hostStore';
+import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -65,6 +69,10 @@ export interface AndroidApiDeps {
   observeConnections?: (entry: ConnectionJournalEntry) => void;
   /** Google sign-in and settings sync (#3020); signed-out stub when absent. */
   sync?: PocketShellApi['sync'];
+  /** Open the Account & sync screen: the picker's account button (#3063). */
+  openAccount?: () => Promise<void>;
+  /** Account hosts this phone has no key for yet: find and adopt them (#3063). */
+  accountHosts?: AccountHostKeys;
 }
 
 export interface AndroidPlatform {
@@ -87,6 +95,21 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
 
   const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
 
+  /**
+   * The dial target: a phone host, or an account host the user has just
+   * given this phone's key (saved on the phone, then resolved like any other).
+   */
+  async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    try {
+      return await deps.hosts.resolve(payload);
+    } catch (error) {
+      const account = deps.accountHosts ? await deps.accountHosts.find(payload) : null;
+      if (!account) throw error;
+      if (!(await deps.accountHosts!.adopt(account))) throw new Error(declinedAccountHostMessage(account.name));
+      return deps.hosts.resolve({ ...payload, hostAlias: account.name });
+    }
+  }
+
   const api: PocketShellApi = {
     ssh: {
       async listConfigHosts() {
@@ -95,7 +118,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       async connect(payload) {
         let target;
         try {
-          target = await deps.hosts.resolve(payload);
+          target = await resolveTarget(payload);
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
@@ -264,7 +287,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       setTitle(title) {
         document.title = title;
       },
-      openAccount: unsupported('win.openAccount'),
+      openAccount: deps.openAccount ?? unsupported('win.openAccount'),
       setZoom: () => undefined,
       onZoomCommand: () => () => undefined,
     },

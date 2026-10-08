@@ -8,11 +8,13 @@ import { App as CapacitorApp } from '@capacitor/app';
 import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } from '@pocketshell/core';
 import { sshCapability } from '@/native/sshCapability';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
-import { androidHosts } from '@/platform/android/hosts';
+import { androidHosts, androidKeyManager } from '@/platform/android/hosts';
+import { createAccountHostKeys } from '@/platform/android/accountHosts';
 import { androidSync } from '@/platform/android/sync';
 import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
-import { ADD_HOST_ROUTE } from './router';
+import { ADD_HOST_ROUTE, openAccountRoute } from './router';
+import { createAccountHostKeyPrompt } from './accountHostKey';
 
 /** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
 const BACKGROUND_GRACE_MS = 60_000;
@@ -48,6 +50,11 @@ function journalConnection(entry: ConnectionJournalEntry): void {
   if (journal.length > CONNECTION_JOURNAL_LIMIT) journal.splice(0, journal.length - CONNECTION_JOURNAL_LIMIT);
 }
 
+/** The key prompt for account hosts (#3063), rendered by AccountHostKeyGate.vue. */
+export const accountHostKeyPrompt = createAccountHostKeyPrompt({ keys: androidKeyManager, hosts: androidHosts });
+
+const syncApi = androidSync().api();
+
 export const androidPlatform = createAndroidPlatform({
   createController: () => new ConnectionController({ capability: sshCapability, trustStore }),
   hosts: androidHosts,
@@ -56,7 +63,9 @@ export const androidPlatform = createAndroidPlatform({
   addHostRoute: ADD_HOST_ROUTE,
   log: (entry) => console.info(`[pocketshell] ${entry.kind}: ${entry.message}`, entry.detail ?? ''),
   observeConnections: journalConnection,
-  sync: androidSync().api(),
+  sync: syncApi,
+  openAccount: openAccountRoute,
+  accountHosts: createAccountHostKeys({ accountHosts: () => syncApi.accountHosts(), ask: accountHostKeyPrompt.ask }),
 });
 
 export type { HostKeyTrustPin };

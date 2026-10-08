@@ -30,7 +30,12 @@ import {
 import type { GoogleSyncNative, GoogleSyncStatus } from '@/native/googleSync';
 import { decryptEnvelope, encryptToEnvelope, SYNC_KDF_ITERATIONS } from './syncCrypto';
 
-/** The decrypted account copy, kept so synced hosts stay visible after a restart. */
+/**
+ * Where builds before #3063 persisted the DECRYPTED account copy in WebView
+ * storage. The copy now lives in memory only (like the desktop's session
+ * cache, #3026): an adapter deletes this key when it is created, so a phone
+ * upgraded from such a build does not keep plaintext host metadata on disk.
+ */
 export const ACCOUNT_HOSTS_STORAGE_KEY = 'pocketshell.sync.account-hosts.v1';
 
 /** The sync Lambda rejects `data` over 8 KB. */
@@ -44,6 +49,7 @@ export interface SyncStorage {
 
 export interface AndroidSyncDeps {
   native: GoogleSyncNative;
+  /** WebView storage; only used to delete the retired persisted account copy. */
   storage: SyncStorage;
   /** PBKDF2 rounds for new writes; only unit tests lower it. */
   kdfIterations?: number;
@@ -106,13 +112,19 @@ export function syncFailureText(result: Exclude<SyncRoundResult, { kind: 'synced
 
 export class AndroidSync {
   private readonly native: GoogleSyncNative;
-  private readonly storage: SyncStorage;
   private readonly kdfIterations: number;
+  /**
+   * The last decrypted account copy, in memory only: it is unlocked with the
+   * sync passphrase, which is never stored either, so after a restart the
+   * account's hosts reappear once the user unlocks again (desktop behaves the
+   * same way).
+   */
+  private account: SyncHostEntry[] | null = null;
 
   constructor(deps: AndroidSyncDeps) {
     this.native = deps.native;
-    this.storage = deps.storage;
     this.kdfIterations = deps.kdfIterations ?? SYNC_KDF_ITERATIONS;
+    deps.storage.removeItem(ACCOUNT_HOSTS_STORAGE_KEY);
   }
 
   status(): Promise<GoogleSyncStatus> {
@@ -126,7 +138,7 @@ export class AndroidSync {
 
   /** Native sign-out deletes the token; the cached account copy goes too. */
   async signOut(): Promise<void> {
-    this.storage.removeItem(ACCOUNT_HOSTS_STORAGE_KEY);
+    this.account = null;
     await this.native.signOut();
   }
 
@@ -182,27 +194,19 @@ export class AndroidSync {
     return { kind: 'ok', version };
   }
 
-  /** The last decrypted account copy, or null when none was read on this phone. */
+  /** The last decrypted account copy, or null when none was read since the app started. */
   accountHosts(): SyncHostEntry[] | null {
-    const raw = this.storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY);
-    if (!raw) return null;
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return null;
-      return parsed.filter((entry): entry is SyncHostEntry => isRecord(entry)
-        && typeof entry.name === 'string' && entry.name.length > 0
-        && typeof entry.hostname === 'string' && entry.hostname.length > 0);
-    } catch {
-      return null;
-    }
+    return this.account === null ? null : this.account.map((host) => ({ ...host }));
   }
 
-  private rememberAccount(hosts: readonly SyncHostEntry[]): void {
-    this.storage.setItem(ACCOUNT_HOSTS_STORAGE_KEY, JSON.stringify(hosts));
+  private rememberAccount(hosts: readonly unknown[]): void {
+    this.account = hosts.filter((entry): entry is SyncHostEntry => isRecord(entry)
+      && typeof entry.name === 'string' && entry.name.length > 0
+      && typeof entry.hostname === 'string' && entry.hostname.length > 0);
   }
 
   /**
-   * One shared sync round. The account copy is cached after every clean pull
+   * One shared sync round. The account copy is kept after every clean pull
    * and replaced by the uploaded set on success, so hosts from another client
    * appear on the phone even when the upload then fails.
    */
@@ -251,10 +255,13 @@ export class AndroidSync {
           // Mirror desktop's session cache so the picker can list the account.
           try {
             const parsed: unknown = JSON.parse(pulled.plaintext);
-            if (isRecord(parsed) && Array.isArray(parsed.hosts)) this.rememberAccount(parsed.hosts as SyncHostEntry[]);
+            if (isRecord(parsed) && Array.isArray(parsed.hosts)) this.rememberAccount(parsed.hosts);
           } catch {
             // The shared store's strict parser reports unreadable data.
           }
+        } else {
+          // A fresh account holds no hosts: unlocked, and empty.
+          this.account = [];
         }
         return pulled;
       },

@@ -138,7 +138,10 @@ describe('Android settings sync adapter', () => {
     expect(backend.puts[0].baseVersion).toBe(3);
     // The account copy the phone shows is the uploaded set.
     expect(sync.accountHosts()?.map((host) => host.name)).toEqual(['hetzner', 'laptop-only']);
-    expect(JSON.parse(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY) ?? 'null')[1]).toMatchObject({ hostname: 'laptop.lan' });
+    expect(sync.accountHosts()?.[1]).toMatchObject({ hostname: 'laptop.lan' });
+    // In memory only (#3026): nothing decrypted is written to WebView storage.
+    expect(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY)).toBeNull();
+    expect(storage.values.size).toBe(0);
   });
 
   it('creates a fresh account on base version 0 with the selected phone hosts', async () => {
