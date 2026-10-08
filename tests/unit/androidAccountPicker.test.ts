@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createSSRApp } from 'vue';
 import { renderToString } from 'vue/server-renderer';
 import { createPinia, setActivePinia } from 'pinia';
@@ -104,7 +104,15 @@ async function renderPicker(): Promise<string> {
   await router.isReady();
   const app = createSSRApp(HostPickerView);
   app.use(router);
-  return renderToString(app);
+  // The picker reads the window's launch request (core 2e60b8a,
+  // readLaunchRequest); this server render has no window, so give it a plain
+  // launch with no query.
+  vi.stubGlobal('window', { location: { search: '' } });
+  try {
+    return await renderToString(app);
+  } finally {
+    vi.unstubAllGlobals();
+  }
 }
 
 describe('Android account sync group and shared picker account hosts', () => {
