@@ -27,6 +27,7 @@ export default defineConfig({
     testTransformMode: { web: [
       '**/tests/unit/mobileHotkeys.test.ts',
       '**/tests/unit/composerDictationCancellation.test.ts',
+      '**/tests/unit/composerDictationKeepsText.test.ts',
     ] },
     include: ['tests/unit/**/*.test.ts'],
   },

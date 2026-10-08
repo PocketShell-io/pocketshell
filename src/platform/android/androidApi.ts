@@ -237,6 +237,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
 
     agent: {
       kinds: async () => null,
+      binaries: async () => null,
       profiles: async () => [],
       envList: async () => [],
       envGet: async () => ({}),

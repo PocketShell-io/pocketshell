@@ -102,6 +102,8 @@ TIMING_FIELDS = (
 MOBILE_HOTKEYS_BASE_HEIGHT_PX = 49
 INLINE_DICTATION_STATUS_ROW_HEIGHT_PX = 32
 INLINE_DICTATION_LISTENING_STATUS_ROW_HEIGHT_PX = 40
+# Issue #3060: interrupted words stay in the two-line recovery strip.
+INLINE_DICTATION_RECOVERY_STATUS_ROW_HEIGHT_PX = 64
 CATALOG_SHEET_HEIGHT_PX = 96
 ACCEPTED_ANDROID_TERMINAL_VIEWPORT_CAP_PX = 144
 API35_ACCEPTED_TERMINAL_GRID = (38, 6)
@@ -152,9 +154,11 @@ def expected_terminal_dictation_caption(phase: object, tone: object, disabled: o
 
 
 def dictation_status_row_height(item: dict[str, object]) -> int:
-    return (INLINE_DICTATION_LISTENING_STATUS_ROW_HEIGHT_PX
-            if item.get("inlineDictationPhase") == "listening"
-            else INLINE_DICTATION_STATUS_ROW_HEIGHT_PX)
+    if item.get("inlineDictationPhase") == "listening":
+        return INLINE_DICTATION_LISTENING_STATUS_ROW_HEIGHT_PX
+    if item.get("inlineDictationRecoveryVisible") is True:
+        return INLINE_DICTATION_RECOVERY_STATUS_ROW_HEIGHT_PX
+    return INLINE_DICTATION_STATUS_ROW_HEIGHT_PX
 
 
 def expected_terminal_dictation_mic_state(phase: object, tone: object, disabled: object) -> str:
@@ -405,7 +409,20 @@ def validate_docked_dictation_geometry(
             raise ExtractionFailure(f"{label} status is not a readable one-line row above the persistent keys")
         status_metrics = item.get("inlineDictationStatusMetrics")
         minimum_chip_height = 37.5 if phase == "listening" else 29.5
-        if (not isinstance(status_metrics, dict)
+        recovery = item.get("inlineDictationRecoveryVisible") is True
+        if recovery:
+            # Issue #3060: kept words show in the two-line recovery strip; its
+            # message line keeps the readable type size, and the strip must
+            # show the words with a reachable Copy action.
+            if (phase != "idle" or item.get("inlineDictationTone") != "warning"
+                    or not isinstance(status_metrics, dict)
+                    or status_metrics.get("fontSize", 0) < 11
+                    or status_metrics.get("lineHeight", 0) < 16
+                    or not isinstance(item.get("inlineDictationRecoveryPreview"), str)
+                    or not item.get("inlineDictationRecoveryPreview", "").strip()
+                    or item.get("inlineDictationRecoveryCopyHitTarget") is not True):
+                raise ExtractionFailure(f"{label} recovery strip lacks readable text, the kept words, or its Copy action")
+        elif (not isinstance(status_metrics, dict)
                 or status_metrics.get("fontSize", 0) < 11
                 or status_metrics.get("lineHeight", 0) < 16
                 or status_metrics.get("height", 0) < minimum_chip_height
@@ -555,10 +572,14 @@ def validate_dictation_behavior(journey: dict[str, object]) -> None:
             raise ExtractionFailure(f"dictation evidence is missing its host receiver {marker_name}")
 
     error = journey.get("dictationError")
-    if (not isinstance(error, dict) or not error.get("requestId") or error.get("tone") != "error"
-            or error.get("phaseIdle") is not True or error.get("previewCleared") is not True
+    # Issue #3060: a recognizer error keeps the words it had shown as the
+    # warning recovery transcript; it still must not write to the PTY.
+    if (not isinstance(error, dict) or not error.get("requestId") or error.get("tone") != "warning"
+            or error.get("phaseIdle") is not True or error.get("previewKeptForRecovery") is not True
+            or "previewCleared" in error
+            or not isinstance(error.get("recoveryPreview"), str) or not error.get("recoveryPreview")
             or error.get("writesBefore") != error.get("writesAfter") or error.get("nativeStartCalls") != 3):
-        raise ExtractionFailure("recognizer error did not clear the preview without inserting text")
+        raise ExtractionFailure("recognizer error did not keep the preview for recovery without inserting text")
 
     attach = journey.get("dictationAttachCancel")
     if not isinstance(attach, dict):
@@ -615,9 +636,14 @@ def validate_cancel_evidence(
             or not isinstance(cancels, int) or isinstance(cancels, bool) or cancels != expected_cancels
             or any(field in evidence for field in (
                 "stopRequestId", "stoppedEmitted", "stoppedReceived", "nativeStopCalls",
-            ))):
+            ))
+            # Issue #3060: the interrupted words stay visible as the warning
+            # recovery transcript instead of being dropped.
+            or not isinstance(evidence.get("recoveryPreview"), str) or not evidence.get("recoveryPreview")
+            or evidence.get("recoveryTone") != "warning"):
         raise ExtractionFailure(
             f"{label} cancellation must match its request ID, reject late results without PTY writes, "
+            "keep the interrupted words as the warning recovery transcript, "
             "and record the expected start/cancel calls without stop events"
         )
     return request_id
@@ -1178,10 +1204,15 @@ def validate_journey(journey: object) -> None:
             or post_stop.get("inlineDictationMic", {}).get("disabled") is not False):
         raise ExtractionFailure("post-Stop keyboard input did not remain in the focused terminal with five visible rows")
     error_geometry = by_name["dictation-error-ime-open"]
+    error_evidence = journey.get("dictationError")
+    # Issue #3060: the recognizer error keeps the words it had shown in the
+    # warning recovery strip instead of clearing them.
     if (error_geometry.get("inlineDictationPhase") != "idle"
-            or error_geometry.get("inlineDictationTone") != "error"
-            or error_geometry.get("inlineDictationPreview") != ""):
-        raise ExtractionFailure("recognizer error left a preview visible in the dock")
+            or error_geometry.get("inlineDictationTone") != "warning"
+            or error_geometry.get("inlineDictationRecoveryVisible") is not True
+            or not isinstance(error_evidence, dict)
+            or error_geometry.get("inlineDictationRecoveryPreview") != error_evidence.get("recoveryPreview")):
+        raise ExtractionFailure("recognizer error did not keep its words in the dock's recovery strip")
     attach_geometry = by_name["dictation-reattached-ime-open"]
     attach = journey["dictationAttachCancel"]
     assert isinstance(attach, dict)
@@ -1902,6 +1933,18 @@ def self_test() -> int:
             sample_journey(), "dictationBackgroundCancel", "nativeStartCalls", 3), False),
         ("background resume must acknowledge a fresh PTY size", with_cancel_evidence_field(
             sample_journey(), "dictationBackgroundCancel", "resizeAcksAfterResume", 4), False),
+        ("#3060 background must keep the interrupted words for recovery", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "recoveryPreview", ""), False),
+        ("#3060 background recovery must use the warning tone", with_cancel_evidence_field(
+            sample_journey(), "dictationBackgroundCancel", "recoveryTone", "quiet"), False),
+        ("#3060 attach must keep the interrupted words for recovery", with_cancel_evidence_field(
+            sample_journey(), "dictationAttachCancel", "recoveryPreview", ""), False),
+        ("#3060 recognizer error must keep the preview for recovery", with_cancel_evidence_field(
+            sample_journey(), "dictationError", "previewKeptForRecovery", False), False),
+        ("#3060 recognizer error must not claim the old cleared preview", with_cancel_evidence_field(
+            sample_journey(), "dictationError", "previewCleared", True), False),
+        ("#3060 recognizer error recovery must use the warning tone", with_cancel_evidence_field(
+            sample_journey(), "dictationError", "tone", "error"), False),
         ("post-Stop keyboard text entering the prompt draft rejected",
          with_post_stop_draft_input(sample_journey()), False),
         ("post-Stop keyboard text missing from the xterm input path rejected",
@@ -2397,24 +2440,27 @@ def sample_journey() -> dict[str, object]:
         "inlineDictationStatusVisible": False,
         "inlineDictationStatusRow": None,
     }
+    # Issue #3060: a recognizer error keeps the words it had shown in the
+    # warning recovery strip (64px row, 113px dock), measured on API 35.
     error = {
         **dictation_idle,
         "resizeAcks": 6,
         "resizeStatus": "38 × 6 accepted by SSH",
-        "inlineDictationTone": "error",
-        "inlineDictationStatusText": "Terminal · Error · Dictation failed: network",
-        "inlineDictationStatusRow": listening["inlineDictationStatusRow"],
+        "inlineDictationTone": "warning",
+        "inlineDictationStatusText": "Terminal · Warning · Dictation failed: network. Nothing was inserted; copy your text below.",
+        "inlineDictationStatusRow": {**listening["inlineDictationStatusRow"], "height": 64},
         "inlineDictationStatusVisible": True,
         "inlineDictationStatusOneLine": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
-        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 81}},
-        "terminalHotkeysDockHeightPx": 81,
+        "inlineDictationRecoveryVisible": True,
+        "inlineDictationRecoveryPreview": "kept after a recognizer error",
+        "inlineDictationRecoveryCopyHitTarget": True,
+        "fastKeysTray": {**base["fastKeysTray"], "bounds": {"height": 113}},
+        "terminalHotkeysDockHeightPx": 113,
         "terminalViewportDockCapPx": 144,
-        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 283, "height": 81},
-        "inlineDictationMic": {**base["inlineDictationMic"], "label": "Retry terminal cursor dictation",
-            "title": "Retry terminal cursor dictation", "visibleText": "Retry", "micState": "error",
-            "top": 235, "bottom": 283},
+        "inlineDictationBar": {**base["inlineDictationBar"], "bottom": 315, "height": 113},
+        "inlineDictationMic": {**base["inlineDictationMic"], "top": 267, "bottom": 315},
     }
     for status_stage in (listening, stop_waiting_final, final_inserted, post_stop, error):
         recording = status_stage.get("inlineDictationPhase") == "listening"
@@ -2520,6 +2566,8 @@ def sample_journey() -> dict[str, object]:
         "oldAttachEpoch": 2,
         "newAttachEpoch": 3,
         "lateResultEmitted": True,
+        "recoveryPreview": "kept across the session change",
+        "recoveryTone": "warning",
         "writesBefore": 4,
         "writesAfter": 4,
         "nativeStartCalls": 4,
@@ -2529,6 +2577,8 @@ def sample_journey() -> dict[str, object]:
         "requestId": "req-background",
         "cancelRequestId": "req-background",
         "lateResultEmitted": True,
+        "recoveryPreview": "kept across the background",
+        "recoveryTone": "warning",
         "writesBefore": 4,
         "writesAfter": 4,
         "nativeStartCalls": 2,
@@ -2656,8 +2706,9 @@ def sample_journey() -> dict[str, object]:
         "resumedDoneMarker": "PS2884_RESUMED_DONE_fixture",
         "dictation": dictation,
         "dictationError": {
-            "requestId": "req-error", "tone": "error", "phaseIdle": True,
-            "previewCleared": True, "writesBefore": 4, "writesAfter": 4, "nativeStartCalls": 3,
+            "requestId": "req-error", "tone": "warning", "phaseIdle": True,
+            "previewKeptForRecovery": True, "recoveryPreview": "kept after a recognizer error",
+            "writesBefore": 4, "writesAfter": 4, "nativeStartCalls": 3,
         },
         "dictationAttachCancel": attach_cancel,
         "dictationBackgroundCancel": background_cancel,

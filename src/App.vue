@@ -63,6 +63,7 @@ import BuildIntegrityAlert from './components/BuildIntegrityAlert.vue';
 import MobileHotkeys from './components/MobileHotkeys.vue';
 import TerminalDictationBar from './components/TerminalDictationBar.vue';
 import PromptComposer from './components/PromptComposer.vue';
+import { composerDraftTargetKey } from './stores/composerDrafts';
 import type { PtyWriteAcknowledgement } from './session/composerDelivery';
 import type { InlineDictationState } from './session/inlineDictation';
 import { allocateTerminalResizeRequestId, type TerminalResizeRequest } from './terminalGeometry';
@@ -274,7 +275,7 @@ const composerTargetKey = computed(() => {
   const hostname = hostDraft.value.hostname.trim();
   const username = hostDraft.value.username.trim();
   if (!session || !hostname || !username) return '';
-  return `${username}@${hostname}:${hostDraft.value.port}/${session.id ?? session.name}`;
+  return composerDraftTargetKey(`${username}@${hostname}:${hostDraft.value.port}`, session);
 });
 watch(composerTargetKey, (targetKey, previousTargetKey) => {
   if (targetKey === previousTargetKey) return;

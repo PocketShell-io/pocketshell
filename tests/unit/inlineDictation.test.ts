@@ -153,7 +153,7 @@ describe('inline terminal dictation', () => {
     await vi.waitFor(() => expect(harness.controller.getState().phase).toBe('listening'));
     harness.emit('partial', 'do not run this');
 
-    harness.controller.cancel('background');
+    harness.controller.cancel();
     harness.emit('result', 'do not run this');
 
     expect(harness.recognition.cancelRecognition).toHaveBeenCalledWith('turn-1');
@@ -161,7 +161,7 @@ describe('inline terminal dictation', () => {
     expect(harness.controller.getState()).toMatchObject({ phase: 'idle', preview: '', tone: 'quiet' });
   });
 
-  it('does not insert when explicit Stop receives no final result', async () => {
+  it('inserts the promoted last partial when explicit Stop receives no final result', async () => {
     const harness = makeHarness();
     harness.controller.start({ targetKey: 'host/session-1', languageTag: 'auto', silenceWindowMs: 4_000 });
     await vi.waitFor(() => expect(harness.recognition.startRecognition).toHaveBeenCalledTimes(1));
@@ -172,12 +172,9 @@ describe('inline terminal dictation', () => {
     harness.emit('recoverable', undefined, 'turn-1', 'no-match');
 
     await vi.waitFor(() => expect(harness.controller.getState().phase).toBe('idle'));
-    expect(harness.insertText).not.toHaveBeenCalled();
-    expect(harness.controller.getState()).toMatchObject({
-      phase: 'idle',
-      message: 'No final transcript was received. Nothing was inserted.',
-      tone: 'warning',
-    });
+    // Issue #3060: the words the user saw are never dropped on an explicit Stop.
+    expect(harness.insertText).toHaveBeenCalledWith('host/session-1', 'unconfirmed words');
+    expect(harness.controller.getState()).toMatchObject({ phase: 'idle', tone: 'success' });
     expect(harness.recognition.startRecognition).toHaveBeenCalledTimes(1);
   });
 

@@ -872,8 +872,13 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
         assertEquals("background cancellation must have one active recognizer", 2, controlledSpeechCallCount("startCount"));
         String backgroundRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
-        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on background'); 'partial emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'must be cancelled on background'");
+        // #3060: words spoken before the screen turns off are kept as the dock's
+        // copyable recovery transcript, never dropped and never written to the PTY.
+        String backgroundPartial = "kept across the background";
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(backgroundPartial)
+                + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(backgroundPartial));
         scenario.moveToState(Lifecycle.State.CREATED);
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 10_000);
         scenario.moveToState(Lifecycle.State.RESUMED);
@@ -890,7 +895,7 @@ public final class JsFastKeysDockerJourneyTest {
         awaitStableAcknowledgedTerminalGrid();
         evalString("window.__ps2857ControlledSpeech.emit('result', 'late background result', "
                 + JSONObject.quote(backgroundRequest) + "); 'late result emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        awaitInlineDictationRecovery(backgroundPartial);
         assertEquals("background results must not write after resume", writesBeforeBackgroundCancel,
                 terminalInputAcknowledgements());
         assertEquals("backgrounding must cancel the pending recognizer", backgroundRequest,
@@ -899,6 +904,8 @@ public final class JsFastKeysDockerJourneyTest {
         journey.put("dictationBackgroundCancel", new JSONObject().put("requestId", backgroundRequest)
                 .put("cancelRequestId", evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"))
                 .put("lateResultEmitted", true)
+                .put("recoveryPreview", backgroundPartial)
+                .put("recoveryTone", "warning")
                 .put("nativeStartCalls", 2)
                 .put("nativeCancelCalls", controlledSpeechCallCount("cancelCount"))
                 .put("resizeAcksBeforeResume", resizeAcksBeforeBackgroundResume)
@@ -972,10 +979,12 @@ public final class JsFastKeysDockerJourneyTest {
         awaitRenderedFrame();
         JSONObject postResumeUiState = captureDictationCheckpoint("dictation-post-resume-after-keyboard-input");
         journey.put("dictationPostResumeUiState", postResumeUiState);
+        // The background recovery transcript (#3060) stays until the next dictation.
         awaitJsTrue("(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
                 + "const toggle=document.querySelector('[data-testid=inline-dictation-toggle]');"
                 + "return bar?.dataset.phase==='idle'&&toggle?.disabled===false"
-                + "&&!bar.querySelector('[data-testid=inline-dictation-preview]');})()");
+                + "&&bar.querySelector('[data-testid=inline-dictation-recovery] [data-testid=inline-dictation-preview]')"
+                + "?.textContent.trim()===" + JSONObject.quote(backgroundPartial) + ";})()");
         String expectedHostHex = hex((dictatedText + postStopKeyboardText).getBytes(StandardCharsets.UTF_8));
         journey.put("dictation", new JSONObject()
                 .put("targetKey", targetBefore)
@@ -1014,13 +1023,17 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
         assertEquals("error recovery must start one fresh recognizer", 3, controlledSpeechCallCount("startCount"));
         String errorRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
-        evalString("window.__ps2857ControlledSpeech.emit('partial', 'discard this partial'); 'partial emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === 'discard this partial'");
+        // #3060: a recognizer error keeps the words it had already shown as the
+        // copyable recovery transcript (warning tone) and still writes nothing.
+        String errorPartial = "kept after a recognizer error";
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(errorPartial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(errorPartial));
         evalString("window.__ps2857ControlledSpeech.emit('error', 'NETWORK'); 'error emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
-                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'error'");
+        awaitInlineDictationRecovery(errorPartial);
+        assertTrue("the recovery message must name the recognizer failure",
+                evalString("document.querySelector('[data-testid=inline-dictation-recovery] [data-testid=inline-dictation-message]')"
+                        + "?.textContent ?? ''").startsWith("Dictation failed"));
         awaitDockGeometrySettled("showing recognizer error status");
         JSONObject errorGeometry = captureGeometry("dictation-error-ime-open");
         assertTerminalViewportCap("showing recognizer error status", idle, errorGeometry);
@@ -1030,12 +1043,14 @@ public final class JsFastKeysDockerJourneyTest {
                 runtimeGrid(postResumeKeyboardGeometry), postResumeKeyboardGeometry.getInt("resizeAcks"));
         captureScreenshot("fastkeys-dictation-error-ime-open.png");
         captureTerminalViewportScreenshot("fastkeys-dictation-error-ime-open-viewport.png", errorGeometry);
-        assertEquals("recognizer errors must discard previews without writing", writesBeforeError, terminalInputAcknowledgements());
+        assertEquals("recognizer errors must keep previews for recovery without writing", writesBeforeError,
+                terminalInputAcknowledgements());
         journey.put("dictationError", new JSONObject().put("requestId", errorRequest)
-                .put("tone", "error").put("writesBefore", writesBeforeError)
+                .put("tone", "warning").put("writesBefore", writesBeforeError)
                 .put("writesAfter", terminalInputAcknowledgements())
                 .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
-                .put("phaseIdle", true).put("previewCleared", true));
+                .put("phaseIdle", true).put("previewKeptForRecovery", true)
+                .put("recoveryPreview", errorPartial));
 
         int writesBeforeAttachCancel = terminalInputAcknowledgements();
         String staleTarget = evalString("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey ?? ''");
@@ -1043,7 +1058,12 @@ public final class JsFastKeysDockerJourneyTest {
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
         assertEquals("attach cancellation must not create a second recognizer", 4, controlledSpeechCallCount("startCount"));
         String attachRequest = evalJson("JSON.stringify(window.__ps2857ControlledSpeech.startOptions ?? null)").getString("requestId");
-        evalString("window.__ps2857ControlledSpeech.emit('partial', 'must be cancelled on attach'); 'partial emitted'");
+        // #3060: words spoken before a session change are kept as the dock's
+        // recovery transcript and never written to either session.
+        String attachPartial = "kept across the session change";
+        evalString("window.__ps2857ControlledSpeech.emit('partial', " + JSONObject.quote(attachPartial) + "); 'partial emitted'");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(attachPartial));
         int oldAttachEpoch = Integer.parseInt(evalString("String(document.querySelector('.app-shell')?.dataset.sshAttachEpoch ?? '-1')"));
         attachSession(changedSession);
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.targetKey !== "
@@ -1057,7 +1077,7 @@ public final class JsFastKeysDockerJourneyTest {
                 evalString("window.__ps2857ControlledSpeech?.cancelOptions?.requestId ?? ''"));
         evalString("window.__ps2857ControlledSpeech.emit('result', 'late attach result', "
                 + JSONObject.quote(attachRequest) + "); 'late result emitted'");
-        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'");
+        awaitInlineDictationRecovery(attachPartial);
         JSONObject attachCancelledGeometry = captureGeometry("dictation-attach-cancel-complete");
         assertDictationMicReachable(attachCancelledGeometry);
         captureScreenshot("fastkeys-dictation-attach-cancel.png");
@@ -1068,6 +1088,8 @@ public final class JsFastKeysDockerJourneyTest {
                 .put("oldTargetKey", staleTarget).put("newTargetKey", changedTarget)
                 .put("oldAttachEpoch", oldAttachEpoch).put("newAttachEpoch", newAttachEpoch)
                 .put("lateResultEmitted", true)
+                .put("recoveryPreview", attachPartial)
+                .put("recoveryTone", "warning")
                 .put("nativeStartCalls", controlledSpeechCallCount("startCount"))
                 .put("nativeCancelCalls", controlledSpeechCallCount("cancelCount"))
                 .put("writesBefore", writesBeforeAttachCancel).put("writesAfter", terminalInputAcknowledgements()));
@@ -1089,6 +1111,16 @@ public final class JsFastKeysDockerJourneyTest {
         captureScreenshot("fastkeys-dictation-reattached-ime-open.png");
 
         attachSession(firstSession);
+    }
+
+    /** #3060: the dock is idle and shows exactly these words as its warning recovery transcript. */
+    private void awaitInlineDictationRecovery(String expectedPreview) throws Exception {
+        awaitJsTrue("(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                + "const recovery=document.querySelector('[data-testid=inline-dictation-recovery]');"
+                + "return bar?.dataset.phase==='idle'&&bar?.dataset.dictationTone==='warning'&&!!recovery"
+                + "&&recovery.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim()==="
+                + JSONObject.quote(expectedPreview)
+                + "&&!!recovery.querySelector('[data-testid=inline-dictation-copy-transcript]');})()");
     }
 
     private void exerciseInlineDictationPromptGuard() throws Exception {
@@ -1158,6 +1190,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + " && document.querySelector('[data-testid=prompt-composer-launcher]')?.disabled === true"
                 + " && !document.querySelector('[data-testid=prompt-composer]')");
         captureScreenshot("fastkeys-dictation-listening-prompt-unavailable.png");
+        // #3060: an explicit Stop now inserts the last partial when no final
+        // covers it. This guard stage must stay write-free, so the recognizer
+        // first withdraws its preview (an empty partial) before Stop.
+        evalString("window.__ps2857ControlledSpeech.emit('partial', ''); 'preview withdrawn'");
+        awaitJsTrue("!document.querySelector('[data-testid=inline-dictation-preview]')");
         tapDomCenter("[data-testid=inline-dictation-toggle]");
         awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'stopping'");
         evalString("window.__ps2857ControlledSpeech.emit('result', ''); 'empty result delivered after Stop'");
@@ -1448,7 +1485,24 @@ public final class JsFastKeysDockerJourneyTest {
         boolean shouldShowStatus = !"idle".equals(phase) || "error".equals(tone) || "warning".equals(tone);
         assertEquals("listening/transcribing/error states expose a status strip above the row: " + geometry,
                 shouldShowStatus, geometry.getBoolean("inlineDictationStatusVisible"));
-        if (geometry.getBoolean("inlineDictationStatusVisible")) {
+        if (geometry.getBoolean("inlineDictationStatusVisible") && geometry.optBoolean("inlineDictationRecoveryVisible")) {
+            // #3060: interrupted words are kept in the existing two-line recovery
+            // strip (message + Copy, then the transcript), not the one-line chip.
+            JSONObject statusRow = geometry.getJSONObject("inlineDictationStatusRow");
+            assertTrue("the recovery strip must stay inside the dock above the persistent keys: " + geometry,
+                    geometry.getBoolean("inlineDictationStatusInsideBar")
+                            && geometry.getBoolean("inlineDictationStatusAboveKeybar")
+                            && statusRow.getDouble("bottom") <= keybar.getDouble("top") + 0.5
+                            && statusRow.getDouble("height") >= 59.5);
+            assertEquals("only an idle warning keeps a recovery transcript: " + geometry, "idle|warning",
+                    phase + "|" + tone);
+            JSONObject recoveryMetrics = geometry.getJSONObject("inlineDictationStatusMetrics");
+            assertTrue("the recovery message uses readable 11px text and a 16px line: " + recoveryMetrics,
+                    recoveryMetrics.getDouble("fontSize") >= 11 && recoveryMetrics.getDouble("lineHeight") >= 16);
+            assertTrue("the recovery strip shows the kept words and a reachable Copy action: " + geometry,
+                    !geometry.getString("inlineDictationRecoveryPreview").isEmpty()
+                            && geometry.getBoolean("inlineDictationRecoveryCopyHitTarget"));
+        } else if (geometry.getBoolean("inlineDictationStatusVisible")) {
             assertTrue("the dictation status chip must render on one line", geometry.getBoolean("inlineDictationStatusOneLine"));
             assertTrue("the dictation status chip must stay inside the dock", geometry.getBoolean("inlineDictationStatusInsideBar"));
             JSONObject statusRow = geometry.getJSONObject("inlineDictationStatusRow");
@@ -2320,6 +2374,11 @@ public final class JsFastKeysDockerJourneyTest {
                 + "inlineDictationPreview:inlineDictationStatusNode?.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim()??'',"
                 + "inlineDictationStatusMetrics,"
                 + "inlineDictationStatusOneLine,"
+                + "inlineDictationRecoveryVisible:!!document.querySelector('[data-testid=inline-dictation-recovery]'),"
+                + "inlineDictationRecoveryPreview:document.querySelector('[data-testid=inline-dictation-recovery] [data-testid=inline-dictation-preview]')?.textContent.trim()??'',"
+                + "inlineDictationRecoveryCopyHitTarget:(()=>{const copy=document.querySelector('[data-testid=inline-dictation-copy-transcript]');"
+                + "if(!copy)return false;const r=copy.getBoundingClientRect();if(r.width<=0||r.height<=0)return false;"
+                + "return document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)?.closest('[data-testid=inline-dictation-copy-transcript]')===copy;})(),"
                 + "inlineDictationStatusInsideBar:inlineDictationStatusRow&&inlineDictationBar?inlineDictationStatusRow.top>=inlineDictationBar.top-0.5"
                 + "&&inlineDictationStatusRow.left>=inlineDictationBar.left-0.5&&inlineDictationStatusRow.bottom<=inlineDictationBar.bottom+0.5"
                 + "&&inlineDictationStatusRow.right<=inlineDictationBar.right+0.5:false,"

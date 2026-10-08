@@ -20,6 +20,7 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 import android.view.inputmethod.InputMethodManager;
 
+import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -62,6 +63,10 @@ public final class JsComposerDockerJourneyTest {
     private static final String KEYBOARD_UP_WRAPPED_COMMAND_START = "$ printf 'alpha";
     private static final String POST_SEND_WRAPPED_COMMAND_START = "$ printf '%s' 'caf";
     private static final String POST_SEND_BYTE_OUTPUT = "636166c3a920f09fa7aa";
+    /** #3060: words dictated before screen-off and before a scrim tap; both must survive a restart. */
+    private static final String DICTATED_BEFORE_SCREEN_OFF = "dictated before the screen turned off";
+    private static final String DICTATED_BEFORE_SCRIM_TAP = "and words before the scrim tap";
+    private static final String COMPOSER_DRAFTS_STORAGE_KEY = "pocketshell.composerDrafts.v1";
     private JSONObject keyboardUpGridFidelity;
 
     private static final class SnippetScreenshotCapture {
@@ -136,6 +141,7 @@ public final class JsComposerDockerJourneyTest {
         expectedSnippetHostId = "testuser@" + host.trim() + ":" + Integer.parseInt(port);
         bytesSession = nameBase + "-bytes";
         uncertainSession = nameBase + "-uncertain";
+        String dictationSession = nameBase + "-dictation";
 
         awaitJsTrue("document.querySelector('[data-testid=build-status]')?.dataset.state === 'verified'");
         String testTag = nameBase.substring(Math.max(0, nameBase.length() - 5));
@@ -150,6 +156,7 @@ public final class JsComposerDockerJourneyTest {
         if (phase.equals("prepare")) {
             prepareHostSnippets(host, port, keyPath, bytesSession, uncertainSession,
                     chipLabel, chipBody, uncertainChipLabel, uncertainCommand, transientChipLabel, testTag);
+            dictateThroughScreenOffAndScrimTapKeepsText(dictationSession);
             return;
         }
         chipLabel = "PS2885-ME-" + testTag;
@@ -324,7 +331,210 @@ public final class JsComposerDockerJourneyTest {
                 evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
         awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
                 + ".some(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + uncertainChipLabel) + ")");
+        verifyDictatedDraftSurvivedRestartAndSendKeepsTail(dictationSession, nameBase);
         emitFocusTraceIfNeeded();
+    }
+
+    /**
+     * #3060 prepare phase: dictate through Android's packaged SpeechRecognition
+     * plugin (debug event injection), turn the screen off mid-dictation and tap
+     * the scrim mid-dictation. Neither may lose a word; the draft is left in
+     * place so the resume phase can prove it survived the force-stop.
+     */
+    private void dictateThroughScreenOffAndScrimTapKeepsText(String dictationSession) throws Exception {
+        try {
+            dictateThroughScreenOffAndScrimTapKeepsTextStages(dictationSession);
+        } finally {
+            endDictationStagesWithoutIdleSync();
+        }
+    }
+
+    private void dictateThroughScreenOffAndScrimTapKeepsTextStages(String dictationSession) throws Exception {
+        if (!"sessions".equals(evalRaw("document.querySelector('.app-shell')?.dataset.homeSurface ?? ''"))) {
+            click("[data-testid=open-sessions]");
+        }
+        createSession(dictationSession);
+        attachSession(dictationSession);
+        String targetKey = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.targetKey ?? ''");
+        assertTrue("the dictation composer must target the attached session", !targetKey.isEmpty());
+        assertEquals("the dictation session starts with an empty draft", "",
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        enableNativeDictationTestMode();
+
+        // 1. Screen off (activity stopped) while the recognizer still holds an unconfirmed partial.
+        startComposerDictation();
+        injectNativeDictationEvent("partial", DICTATED_BEFORE_SCREEN_OFF);
+        awaitJsTrue("document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(DICTATED_BEFORE_SCREEN_OFF) + ")");
+        scenario.moveToState(Lifecycle.State.CREATED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 15_000);
+        scenario.moveToState(Lifecycle.State.RESUMED);
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 30_000);
+        injectNativeDictationEvent("result", "late result after the screen came back");
+        openPromptComposerAndAssertDraftFocus();
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === "
+                + JSONObject.quote(DICTATED_BEFORE_SCREEN_OFF));
+        assertEquals("screen-off must keep the unconfirmed partial and ignore the stale late result",
+                DICTATED_BEFORE_SCREEN_OFF, evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        Log.i("PS3060Dictation", "SCREEN_OFF_KEPT|" + targetKey + "|" + DICTATED_BEFORE_SCREEN_OFF);
+
+        // 2. Tap the scrim above the sheet while dictating: the sheet closes, the words stay.
+        startComposerDictation();
+        injectNativeDictationEvent("partial", DICTATED_BEFORE_SCRIM_TAP);
+        awaitJsTrue("document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(DICTATED_BEFORE_SCRIM_TAP) + ")");
+        tapScrimAboveComposerSheet();
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
+        String expected = DICTATED_BEFORE_SCREEN_OFF + " " + DICTATED_BEFORE_SCRIM_TAP;
+        openPromptComposerAndAssertDraftFocus();
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(expected));
+        awaitJsTrue("JSON.parse(localStorage.getItem(" + JSONObject.quote(COMPOSER_DRAFTS_STORAGE_KEY) + ") || '{}')["
+                + JSONObject.quote(targetKey) + "] === " + JSONObject.quote(expected));
+        Log.i("PS3060Dictation", "SCRIM_TAP_KEPT|" + targetKey + "|" + expected);
+        evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+    }
+
+    /**
+     * #3060 resume phase, after the wrapper's external force-stop: the dictated
+     * draft is still there for the same session. Then the "last words cut off"
+     * case end to end: Send while a partial is showing, a SHORTER final from the
+     * recognizer, and the whole utterance must reach the Docker PTY (the runner's
+     * host oracle checks the file the full command writes).
+     */
+    private void verifyDictatedDraftSurvivedRestartAndSendKeepsTail(String dictationSession, String nameBase)
+            throws Exception {
+        try {
+            verifyDictatedDraftSurvivedRestartAndSendKeepsTailStages(dictationSession, nameBase);
+        } finally {
+            endDictationStagesWithoutIdleSync();
+        }
+    }
+
+    private void verifyDictatedDraftSurvivedRestartAndSendKeepsTailStages(String dictationSession, String nameBase)
+            throws Exception {
+        String expected = DICTATED_BEFORE_SCREEN_OFF + " " + DICTATED_BEFORE_SCRIM_TAP;
+        attachSession(dictationSession);
+        String targetKey = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.targetKey ?? ''");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === " + JSONObject.quote(expected));
+        assertEquals("the dictated draft must survive the process restart", expected,
+                evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''"));
+        Log.i("PS3060Dictation", "RESTART_KEPT|" + targetKey + "|" + expected);
+
+        // Only an explicit two-tap Discard clears it, including from storage.
+        tapComposerAction("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=composer-discard]')?.textContent.trim() === 'Discard?'");
+        tapComposerAction("[data-testid=composer-discard]");
+        awaitJsTrue("document.querySelector('[data-testid=prompt-draft]')?.value === ''"
+                + " && !(" + JSONObject.quote(targetKey) + " in JSON.parse(localStorage.getItem("
+                + JSONObject.quote(COMPOSER_DRAFTS_STORAGE_KEY) + ") || '{}'))");
+
+        enableNativeDictationTestMode();
+        String tailMarker = "PS3060_TAIL_" + nameBase;
+        String fullUtterance = "printf " + tailMarker + " > /tmp/" + dictationSession + "-tail.marker";
+        String shorterFinal = "printf " + tailMarker;
+        startComposerDictation();
+        injectNativeDictationEvent("partial", fullUtterance);
+        awaitJsTrue("document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(fullUtterance) + ")");
+        // The recording controls are tapped with the IME hidden (the draft is the
+        // hidden dictation anchor), so use a physical tap that is retried only
+        // while it provably did nothing, not the IME-up composer action helper.
+        tapUntilComposerDictationState("[data-testid=composer-dictation-send]", "recording", "transcribing");
+        SystemClock.sleep(300);
+        assertEquals("Send must not deliver before the recognizer's final result", "0",
+                evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.acknowledgedWrites ?? ''"));
+        injectNativeDictationEvent("result", shorterFinal);
+        awaitDeliveredAndCleared();
+        Log.i("PS3060Dictation", "SEND_KEPT_TAIL|" + targetKey + "|" + fullUtterance + "|final=" + shorterFinal);
+        evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+    }
+
+    private void enableNativeDictationTestMode() throws Exception {
+        String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
+        // UiAutomation's grant is synchronous; reading a `pm grant` shell stream
+        // hung the resume phase once the permission was already granted.
+        InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .grantRuntimePermission(packageName, android.Manifest.permission.RECORD_AUDIO);
+        evalString("window.__ps2857DictationTestMode = true; 'debug speech event mode enabled'");
+    }
+
+    /**
+     * Physically tap the composer mic once its layout has settled. Reopening the
+     * sheet focuses the draft and raises the IME, which moves the mic; a tap
+     * measured mid-animation can miss. Only a tap that provably started nothing
+     * (state still idle/review) is retried, at most once.
+     */
+    private void startComposerDictation() throws Exception {
+        beginDictationStagesWithoutIdleSync();
+        awaitJsTrue("document.querySelector('[data-testid=composer-dictate]')?.disabled === false");
+        hideImeUntilStableWithoutEditableFocus();
+        awaitWebViewVisualState();
+        String state = evalString("document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState ?? ''");
+        assertTrue("the composer mic is offered only while idle or reviewing: " + state,
+                state.equals("idle") || state.equals("review"));
+        tapUntilComposerDictationState("[data-testid=composer-dictate]", state, "recording");
+    }
+
+    /** Tap until the composer leaves `fromState`; retry once only if the tap provably changed nothing. */
+    private void tapUntilComposerDictationState(String selector, String fromState, String toState) throws Exception {
+        String current = "document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState";
+        for (int attempt = 1; attempt <= 2; attempt += 1) {
+            awaitJsTrue("(() => {const node=document.querySelector(" + JSONObject.quote(selector) + ");"
+                    + "const rect=node?.getBoundingClientRect();return !!node && !node.disabled && rect.height > 0"
+                    + " && document.elementFromPoint(rect.left+rect.width/2, rect.top+rect.height/2)?.closest("
+                    + JSONObject.quote(selector) + ") === node;})()");
+            tapDomCenter(selector);
+            long deadline = SystemClock.uptimeMillis() + 5_000;
+            while (SystemClock.uptimeMillis() < deadline
+                    && JSONObject.quote(fromState).equals(evalRaw(current))) {
+                SystemClock.sleep(60);
+            }
+            if (!JSONObject.quote(fromState).equals(evalRaw(current))) break;
+            Log.w("PS3060Dictation", "TAP_RETRY|" + selector + "|attempt=" + attempt + "|" + lastPhysicalTapEvidence);
+        }
+        awaitJsTrue(current + " === " + JSONObject.quote(toState), 15_000);
+    }
+
+    private void injectNativeDictationEvent(String type, String text) throws Exception {
+        JSONObject options = new JSONObject().put("type", type).put("text", text);
+        evalString("window.__ps3060Injection = null; (() => {"
+                + "const plugin=window.Capacitor?.Plugins?.SpeechRecognition;"
+                + "if(!plugin?.injectTestDictationEvent)throw new Error('native debug dictation injection is unavailable');"
+                + "plugin.injectTestDictationEvent(JSON.parse(" + JSONObject.quote(options.toString()) + "))"
+                + ".then(result=>window.__ps3060Injection=JSON.stringify(result))"
+                + ".catch(error=>window.__ps3060Injection='ERROR: '+String(error));return 'queued';})()");
+        awaitJsTrue("typeof window.__ps3060Injection === 'string'");
+        String result = evalString("window.__ps3060Injection");
+        assertTrue("the packaged SpeechRecognition plugin must emit the injected " + type + ": " + result,
+                result.startsWith("{") && new JSONObject(result).optBoolean("emitted"));
+    }
+
+    /** Physically tap the scrim in the strip above the composer sheet (a real outside tap). */
+    private void tapScrimAboveComposerSheet() throws Exception {
+        beforeFirstInjectedInput("before the scrim tap");
+        JSONObject point = evalJson("(() => {const scrim=document.querySelector('[data-testid=prompt-composer-scrim]');"
+                + "const sheet=document.querySelector('[data-testid=prompt-composer]');"
+                + "if(!scrim||!sheet)return JSON.stringify({missing:true});"
+                + "const top=sheet.getBoundingClientRect().top;const x=innerWidth/2,y=Math.max(8,Math.min(top/2,top-24));"
+                + "return JSON.stringify({x,y,sheetTop:top,width:innerWidth,cssHeight:innerHeight,"
+                + "hitIsScrim:document.elementFromPoint(x,y)===scrim});})()");
+        assertTrue("the composer sheet and its scrim must be present: " + point, !point.optBoolean("missing"));
+        assertTrue("the tap point above the sheet must hit the scrim: " + point, point.getBoolean("hitIsScrim"));
+        AtomicReference<float[]> screenPoint = new AtomicReference<>();
+        onActivity(activity -> {
+            WebView webView = findWebView(activity.getWindow().getDecorView());
+            assertNotNull("packaged Capacitor activity must contain a WebView", webView);
+            int[] location = new int[2];
+            webView.getLocationOnScreen(location);
+            float scaleX = webView.getWidth() / (float) point.optDouble("width");
+            float scaleY = webView.getHeight() / (float) point.optDouble("cssHeight");
+            screenPoint.set(new float[] {
+                    location[0] + (float) point.optDouble("x") * scaleX,
+                    location[1] + (float) point.optDouble("y") * scaleY});
+        });
+        float[] screen = screenPoint.get();
+        PhysicalTap.Result tap = PhysicalTap.tap(screen[0], screen[1]);
+        assertTrue("the scrim tap must be injected", tap.downInjected && tap.upInjected);
     }
 
     private void importAndSelectKey(String keyPath, String suffix) throws Exception {
@@ -2182,7 +2392,7 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void beforeFirstInjectedInput(String context) throws Exception {
-        inputGuard.beforeFirstInjectedInput(context, this::evalRaw, action -> scenario.onActivity(action::accept));
+        inputGuard.beforeFirstInjectedInput(context, this::evalRaw, action -> onActivity(action::accept));
     }
 
     private long tapDomCenter(String selector) throws Exception {
@@ -2214,7 +2424,7 @@ public final class JsComposerDockerJourneyTest {
         JSONObject initiallyMeasuredPoint = point;
         AtomicReference<float[]> screenPoint = new AtomicReference<>();
         AtomicReference<JSONObject> nativeMapping = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             int[] location = new int[2];
@@ -2515,10 +2725,58 @@ public final class JsComposerDockerJourneyTest {
         return new JSONObject(evalString(expression));
     }
 
+    /**
+     * #3060: while composer dictation shows its recording/transcribing
+     * animation the main looper never goes idle, so ActivityScenario.onActivity
+     * (which waits for idle sync) blocks forever. During those stages, run the
+     * action on the main thread directly on the activity captured before them.
+     */
+    private MainActivity activityWithoutIdleSync;
+
+    private void onActivity(ActivityScenario.ActivityAction<MainActivity> action) {
+        MainActivity activity = activityWithoutIdleSync;
+        if (activity == null) {
+            scenario.onActivity(action);
+            return;
+        }
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        activity.runOnUiThread(() -> {
+            try {
+                action.perform(activity);
+            } catch (Throwable error) {
+                failure.set(error);
+            } finally {
+                done.countDown();
+            }
+        });
+        boolean completed;
+        try {
+            completed = done.await(JS_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while running on the packaged activity's main thread", interrupted);
+        }
+        assertTrue("timed out running on the packaged activity's main thread", completed);
+        if (failure.get() instanceof RuntimeException) throw (RuntimeException) failure.get();
+        if (failure.get() instanceof Error) throw (Error) failure.get();
+        if (failure.get() != null) throw new RuntimeException(failure.get());
+    }
+
+    private void beginDictationStagesWithoutIdleSync() {
+        AtomicReference<MainActivity> captured = new AtomicReference<>();
+        scenario.onActivity(captured::set);
+        activityWithoutIdleSync = captured.get();
+    }
+
+    private void endDictationStagesWithoutIdleSync() {
+        activityWithoutIdleSync = null;
+    }
+
     private String evalRaw(String expression) throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<String> result = new AtomicReference<>();
-        scenario.onActivity(activity -> {
+        onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             webView.evaluateJavascript(expression, value -> {

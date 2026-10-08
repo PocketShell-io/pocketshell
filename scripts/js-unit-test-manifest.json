@@ -455,17 +455,15 @@
         "keeps recording and transcribing preview regions present before speech arrives",
         "places the mobile Dictate prompt microphone in the composer action row",
         "keeps prompt dictation inside the composer instead of auto-starting from the terminal dock",
-        "cancels dictation when the mobile sheet composer is dismissed",
-        "cancels dictation when the mobile inline composer is dismissed",
         "pins the production composer mic and shared dictation action styles to the Kotlin hierarchy",
-        "cancels a pending start on background, restores the base draft, and rejects late partials",
         "uses the latest persisted voice settings on the next composer start",
         "keeps recording through a recoverable turn restart, then finalizes only on explicit Stop",
         "blocks an unedited error dictation review from sending until deliberate text edits",
         "blocks an unedited empty dictation review from sending until deliberate text edits",
         "stops 'recording' capture before the explicit 'insert' delivery and freezes the visible transcript",
         "stops 'recording' capture before the explicit 'submit' delivery and freezes the visible transcript",
-        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript"
+        "stops 'transcribing' capture before the explicit 'submit' delivery and freezes the visible transcript",
+        "stops a pending start on background, keeps the early partial in the draft, and rejects late partials"
       ]
     },
     "tests/unit/dictationSettingsInteraction.test.ts": {
@@ -478,13 +476,13 @@
       "suite": "inline terminal dictation",
       "tests": [
         "cancels the active request and ignores a late final callback",
-        "does not insert when explicit Stop receives no final result",
         "keeps the final transcript available when PTY insertion returns false",
         "keeps the final transcript available when PTY insertion rejects",
         "previews partials and inserts only sanitized final segments after explicit Stop",
         "reports native errors and does not write speech",
         "restarts after recoverable turns, isolates request IDs, and does not rearm after Stop",
-        "sanitizes terminal controls out of final text"
+        "sanitizes terminal controls out of final text",
+        "inserts the promoted last partial when explicit Stop receives no final result"
       ]
     },
     "tests/unit/mobileHotkeys.test.ts": {
@@ -521,7 +519,9 @@
       "suite": "terminal dictation bar lifecycle",
       "tests": [
         "keeps one Kotlin-sized hit slot with visible Dictate/Stop actions and listening tint",
-        "cancels on unmount, clears parent state, and ignores late transcript events"
+        "stops on unmount, hands the dictated words to the parent for recovery, and ignores late transcript events",
+        "keeps the dictated words for recovery when the dock is disabled mid-dictation",
+        "does not re-announce idle on mount, so a remount keeps the parent recovery state"
       ]
     },
     "tests/unit/terminalFocus.test.ts": {
@@ -666,6 +666,43 @@
         "finds an import of browser dev mode in every module specifier shape",
         "fails a production build whose module graph reaches browser dev mode",
         "tells Files users about the transfer limit without naming the transport"
+      ]
+    },
+    "tests/unit/composerDictationKeepsText.test.ts": {
+      "suite": "composer dictation keeps dictated text",
+      "tests": [
+        "keeps finals and the latest partial when the screen turns off mid-dictation",
+        "keeps the dictated text when the sheet scrim is tapped, and shows it again on reopen",
+        "keeps the dictated text when the mobile sheet composer is dismissed (back/swipe)",
+        "keeps the dictated text when the mobile inline composer is dismissed (back/swipe)",
+        "keeps the dictated text when the composer unmounts mid-dictation",
+        "keeps the dictated text under the original target when the target changes",
+        "still restores the original draft on an explicit Discard",
+        "Send waits for the final result and delivers the whole utterance after 'a shorter final'",
+        "Send waits for the final result and delivers the whole utterance after 'no final'",
+        "Send waits for the final result and delivers the whole utterance after 'a stop timeout'"
+      ]
+    },
+    "tests/unit/composerDraftsPersistence.test.ts": {
+      "suite": "composer draft persistence",
+      "tests": [
+        "restores each target draft after a restart (fresh store instance)",
+        "forgets a draft that was sent or discarded",
+        "ignores corrupt or foreign stored values",
+        "keeps working in memory when storage is unavailable or throws",
+        "keys drafts by session id so a recreated session with the same name starts empty"
+      ]
+    },
+    "tests/unit/inlineDictationKeepsText.test.ts": {
+      "suite": "inline terminal dictation keeps dictated text",
+      "tests": [
+        "keeps finals and the latest partial for recovery when the screen turns off",
+        "keeps the text for recovery on a target change and on interrupt (dock closed)",
+        "keeps the text for recovery when the recognizer fails mid-utterance",
+        "explicit Stop inserts the whole utterance after 'a shorter final'",
+        "explicit Stop inserts the whole utterance after 'no final'",
+        "explicit Stop inserts the whole utterance after 'a stop timeout'",
+        "an explicit user cancel still drops the text"
       ]
     }
   }
