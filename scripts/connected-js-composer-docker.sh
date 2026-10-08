@@ -383,4 +383,20 @@ uncertain_file_state="$(ssh_remote "if test -e /tmp/$uncertain_session-uncertain
 printf 'PASS: uncertain command %s was not replayed after reconnect\n' "$uncertain_marker" \
   | tee -a "$evidence_dir/composer-host-oracle.txt"
 
+# Issue #3060: Send during dictation waited for a final result SHORTER than the
+# last partial and still delivered the whole utterance (the redirect is the tail
+# the recognizer dropped), and the draft kept across screen-off, a scrim tap and
+# the force-stop was never written to the PTY by any of those paths.
+dictation_session="$SESSION_BASE-dictation"
+tail_marker="PS3060_TAIL_$SESSION_BASE"
+tail_state="$(ssh_remote "if test -e /tmp/$dictation_session-tail.marker; then cat /tmp/$dictation_session-tail.marker; else printf absent; fi")"
+[[ "$tail_state" == "$tail_marker" ]] \
+  || fail "dictated Send lost its tail: expected /tmp/$dictation_session-tail.marker to hold $tail_marker, got ${tail_state:-<empty>}"
+dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$dictation_session' --bytes 8192")"
+[[ "$dictation_capture" == *"$tail_marker"* ]] || fail 'remote PTY history did not contain the dictated Send'
+[[ "$dictation_capture" != *'dictated before the screen turned off'* ]] \
+  || fail 'a draft kept across screen-off/scrim/restart was written to the PTY without an explicit Send'
+printf 'PASS: dictated Send delivered the whole utterance (%s written) and the kept draft never reached the PTY\n' \
+  "$tail_marker" | tee -a "$evidence_dir/composer-host-oracle.txt"
+
 printf 'Evidence directory: %s\n' "$evidence_dir"

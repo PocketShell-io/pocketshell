@@ -1,4 +1,4 @@
-import { compile, createRenderer, getCurrentInstance, ssrContextKey, type App, type VNode } from 'vue';
+import { compile, createRenderer, getCurrentInstance, h, ref, ssrContextKey, type App, type Component, type VNode } from 'vue';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DictationEvent } from '../../src/session/platformInput';
 import DictationMicIcon from '../../src/components/DictationMicIcon.vue';
@@ -210,7 +210,7 @@ describe('terminal dictation bar lifecycle', () => {
     await flushPromises();
   });
 
-  it('cancels on unmount, clears parent state, and ignores late transcript events', async () => {
+  it('stops on unmount, hands the dictated words to the parent for recovery, and ignores late transcript events', async () => {
     let recognitionEvent: ((event: DictationEvent) => void) | undefined;
     let requestId = '';
     mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
@@ -239,7 +239,7 @@ describe('terminal dictation bar lifecycle', () => {
     (toggle?.props.onClick as (() => void) | undefined)?.();
     await flushPromises();
     expect(states.at(-1)?.phase).toBe('listening');
-    recognitionEvent?.({ requestId, type: 'partial', text: 'discard this phrase' });
+    recognitionEvent?.({ requestId, type: 'partial', text: 'keep this phrase' });
     expect(insertText).not.toHaveBeenCalled();
 
     app.unmount();
@@ -247,12 +247,71 @@ describe('terminal dictation bar lifecycle', () => {
     await flushPromises();
 
     expect(mocks.cancelRecognition).toHaveBeenCalledWith(requestId);
+    // Issue #3060: nothing dictated disappears; the parent keeps it for Copy.
     expect(states.at(-1)).toEqual({
       phase: 'idle',
-      preview: '',
-      message: 'Tap Dictate to speak at the terminal cursor.',
-      tone: 'quiet',
+      preview: 'keep this phrase',
+      message: 'Dictation stopped when the terminal dock closed. Nothing was inserted; copy your text below.',
+      tone: 'warning',
     });
     expect(insertText).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dictated words for recovery when the dock is disabled mid-dictation', async () => {
+    let recognitionEvent: ((event: DictationEvent) => void) | undefined;
+    let requestId = '';
+    mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
+    mocks.startRecognition.mockImplementation(async (id: string, onEvent: (event: DictationEvent) => void) => {
+      requestId = id;
+      recognitionEvent = onEvent;
+    });
+    const enabled = ref(true);
+    const states: Array<{ phase: string; preview: string; tone: string }> = [];
+    const insertText = vi.fn(async () => true);
+    const root = node('root');
+    const app = renderer.createApp({
+      setup: () => () => h(mountedDictationBar as unknown as Component, {
+        enabled: enabled.value,
+        targetKey: 'host/session-1',
+        languageTag: 'auto',
+        silenceWindowMs: 4_000,
+        insertText,
+        onStateChange: (state: { phase: string; preview: string; tone: string }) => states.push(state),
+      }),
+    }) as App;
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+    (findByTestId(root, 'inline-dictation-toggle')?.props.onClick as (() => void) | undefined)?.();
+    await flushPromises();
+    expect(states.at(-1)?.phase).toBe('listening');
+    recognitionEvent?.({ requestId, type: 'partial', text: 'kept when disabled' });
+
+    enabled.value = false;
+    await flushPromises();
+
+    expect(mocks.cancelRecognition).toHaveBeenCalledWith(requestId);
+    expect(states.at(-1)).toMatchObject({ phase: 'idle', preview: 'kept when disabled', tone: 'warning' });
+    expect(insertText).not.toHaveBeenCalled();
+    app.unmount();
+  });
+
+  it('does not re-announce idle on mount, so a remount keeps the parent recovery state', async () => {
+    mocks.addListener.mockResolvedValue({ remove: vi.fn(async () => {}) });
+    const root = node('root');
+    const states: unknown[] = [];
+    const app = renderer.createApp(mountedDictationBar, {
+      enabled: true,
+      targetKey: 'host/session-1',
+      languageTag: 'auto',
+      silenceWindowMs: 4_000,
+      insertText: vi.fn(async () => true),
+      onStateChange: (state: unknown) => states.push(state),
+    }) as App;
+    app.provide(ssrContextKey, { modules: new Set<string>() });
+    app.mount(root);
+    await flushPromises();
+    expect(states).toEqual([]);
+    app.unmount();
   });
 });

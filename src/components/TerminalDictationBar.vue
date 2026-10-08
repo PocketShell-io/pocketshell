@@ -31,16 +31,22 @@ const controller = createInlineDictationController({
   createController: (settings) => createSharedDictationController(settings),
   insertText: (targetKey, text) => props.insertText(targetKey, text),
 });
+// The subscription's immediate initial snapshot is not forwarded: App already
+// starts idle, and re-announcing idle on a remount would wipe a recovery
+// transcript kept from an interrupted run (#3060).
+let forwardStates = false;
 const stopWatching = controller.subscribe((next) => {
   state.value = next;
-  emit('stateChange', next);
+  if (forwardStates) emit('stateChange', next);
 });
+forwardStates = true;
 let appStateListener: PluginListenerHandle | null = null;
 let disposed = false;
 let previousTargetKey = props.targetKey;
 
 watch(() => props.enabled, (enabled) => {
-  if (!enabled) void controller.cancel();
+  // Disabling the dock stops dictation but keeps the words for recovery.
+  if (!enabled) controller.interrupt();
 }, { flush: 'sync' });
 
 watch(() => props.targetKey, (targetKey) => {
@@ -62,11 +68,13 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   void appStateListener?.remove();
-  // Cancellation clears buffered finals and rejects late native events. Start
-  // it before detaching the controller listener, then reset App's external
-  // state explicitly because the sheet containing this control is going away.
-  void controller.cancel();
-  emit('stateChange', { ...initialState });
+  // Interrupting releases the microphone and rejects late native events but
+  // keeps every dictated word (#3060): App receives the recovery state with the
+  // transcript. Anything not settled to idle (an in-flight insertion) resets
+  // App's state because the control reporting it is going away.
+  controller.interrupt();
+  const settled = controller.getState();
+  emit('stateChange', settled.phase === 'idle' ? settled : { ...initialState });
   stopWatching();
 });
 
@@ -79,7 +87,7 @@ function toggleDictation() {
       silenceWindowMs: props.silenceWindowMs,
     });
   } else if (state.value.phase === 'starting') {
-    controller.cancel('user');
+    controller.cancel();
   } else if (state.value.phase === 'listening') {
     controller.stop();
   }

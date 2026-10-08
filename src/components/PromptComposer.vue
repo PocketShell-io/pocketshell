@@ -4,7 +4,13 @@ import { App as CapacitorApp } from '@capacitor/app';
 import type { PluginListenerHandle } from '@capacitor/core';
 import AppIcon from '@ui/components/AppIcon.vue';
 import ComposerControls from '@ui/components/ComposerControls.vue';
-import type { ComposerDeliveryIntent, ComposerDeliveryResult, DictationController, DictationSnapshot } from '@pocketshell/core';
+import type {
+  ComposerDeliveryIntent,
+  ComposerDeliveryResult,
+  DictationController,
+  DictationInterruptReason,
+  DictationSnapshot,
+} from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
 import { createSharedDictationController } from '../session/dictationController';
 import { useAppSettings, VOICE_LANGUAGE_AUTO } from '../stores/appSettings';
@@ -168,6 +174,8 @@ watch(() => props.writePty, () => {
 });
 watch(() => props.targetKey, () => {
   const operation = activeDictation.value;
+  // The shared controller ends the run on a target change but keeps its text;
+  // the completed snapshot lands under the original target's draft (#3060).
   if (operation && operation.targetKey !== props.targetKey) operation.controller.setTarget(props.targetKey);
   // Invalidate an in-flight paste before installing a controller for another
   // PTY. Otherwise its next bracketed-paste chunk could land in the new shell.
@@ -204,8 +212,9 @@ watch(() => props.open || props.mobileInline, (open, previousOpen) => {
       }
     });
   } else if (previousOpen) {
+    // Back, swipe or a scrim tap closes the composer: stop and keep the text.
     const operation = activeDictation.value;
-    if (operation) cancelDictation(operation, false);
+    if (operation) interruptDictation(operation, 'closed');
     draftInput.value?.blur();
   }
 }, { immediate: true });
@@ -214,12 +223,13 @@ onBeforeUnmount(() => {
   composerUnmounting = true;
   void appStateListener?.remove();
   const operation = activeDictation.value;
-  if (operation) cancelDictation(operation, false, 'background');
+  if (operation) interruptDictation(operation, 'closed');
   stopRecordingTimer();
 });
 
 onMounted(() => {
   void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+    // Screen-off/background stops recognition but keeps the dictated text.
     activeDictation.value?.controller.setForeground(isActive);
   }).then((listener) => {
     if (composerUnmounting) void listener.remove();
@@ -375,6 +385,12 @@ function finishDictationCancellation(operation: ActiveDictation) {
   failureReviewEdited.value = false;
 }
 
+const INTERRUPTED_STATUS: Record<DictationInterruptReason, string> = {
+  background: 'Dictation stopped when PocketShell went to the background. Your text was kept in the draft.',
+  closed: 'Dictation stopped when the composer closed. Your text was kept in the draft.',
+  'target-change': 'Dictation stopped when the session changed. Your text was kept in its draft.',
+};
+
 function finishDictationReview(operation: ActiveDictation, snapshot: DictationSnapshot, hasError: boolean) {
   renderDictationDraft(operation, snapshot.transcript, '');
   dictationReviewResult.value = hasError ? 'error' : snapshot.transcript.trim() ? 'ready' : 'empty';
@@ -419,11 +435,25 @@ function handleDictationSnapshot(operation: ActiveDictation, snapshot: Dictation
   }
   if (snapshot.phase === 'completed') {
     finishDictationReview(operation, snapshot, false);
+    if (snapshot.interruptReason && !operation.deliveryChosen) {
+      statusTone.value = 'quiet';
+      statusText.value = INTERRUPTED_STATUS[snapshot.interruptReason];
+    }
+    return;
+  }
+  if (snapshot.phase === 'error'
+    && operation.stopRequested
+    && snapshot.error?.code === 'recognizer-stop-timeout'
+    && snapshot.transcript.trim()) {
+    // The recognizer never confirmed the last turn after Stop. The shared
+    // controller already promoted its latest partial, so finish with the whole
+    // utterance instead of blocking the Insert/Send the user asked for.
+    finishDictationReview(operation, snapshot, false);
     return;
   }
   if (snapshot.phase === 'error') {
     operation.failureCode = snapshot.error?.code ?? 'speech recognition failed';
-    if (!operation.sawListening && !operation.stopRequested) {
+    if (!operation.sawListening && !operation.stopRequested && !snapshot.transcript.trim()) {
       const message = snapshot.error?.message ?? 'Speech recognition could not start.';
       operation.cancelled = true;
       detachDictation(operation);
@@ -502,17 +532,20 @@ function stopDictation(operation: ActiveDictation, updateStatus = true): boolean
   return true;
 }
 
-function cancelDictation(
-  operation: ActiveDictation,
-  showStatus = true,
-  reason: 'user' | 'background' | 'target-change' = 'user',
-) {
+/** Explicit user Cancel/Discard: the only path that restores the base draft. */
+function cancelDictation(operation: ActiveDictation, showStatus = true) {
   if (operation.cancelled) return;
   operation.showCancelStatus = showStatus;
-  operation.controller.cancel(reason);
+  operation.controller.cancel('user');
   if (!operation.cancelled && operation.controller.getSnapshot().phase === 'cancelled') {
     finishDictationCancellation(operation);
   }
+}
+
+/** Lifecycle stop (close/unmount): end recognition now and keep every dictated word. */
+function interruptDictation(operation: ActiveDictation, reason: DictationInterruptReason) {
+  if (operation.cancelled || activeDictation.value !== operation) return;
+  operation.controller.interrupt(reason);
 }
 
 function showResult(result: ComposerDeliveryResult, intent: ComposerDeliveryIntent) {
@@ -612,7 +645,7 @@ function discardDraft() {
 function requestClose() {
   if (!mobileComposer.value || (!props.open && !props.mobileInline) || sendingIntent.value !== null) return;
   const operation = activeDictation.value;
-  if (operation) cancelDictation(operation);
+  if (operation) interruptDictation(operation, 'closed');
   draftInput.value?.blur();
   emit('openChange', false);
 }

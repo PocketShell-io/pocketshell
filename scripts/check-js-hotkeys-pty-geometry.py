@@ -125,23 +125,33 @@ def _expect_near(value: object, expected: float, label: str) -> None:
         raise OracleFailure(f"error-state {label} is {actual:g}px; expected the measured {expected:g}px contract")
 
 
+# Issue #3060: a recognizer error keeps the words it had shown, so the error
+# checkpoint is the dock's warning recovery strip (64px row, 113px dock),
+# measured on API 35 (run js3060-hk03), not the old 32px one-line error chip.
+ERROR_RECOVERY_STATUS_ROW_HEIGHT_PX = 64
+ERROR_RECOVERY_DOCK_HEIGHT_PX = 113
+
+
 def validate_error_status_dock(stage: object) -> None:
-    """Pin the visible error dock geometry while preserving the terminal viewport."""
+    """Pin the visible error recovery dock geometry while preserving the terminal viewport."""
     if not isinstance(stage, dict):
         raise OracleFailure("dictation-error-ime-open geometry is not an object")
     if (stage.get("stage") != "dictation-error-ime-open"
             or stage.get("inlineDictationPhase") != "idle"
-            or stage.get("inlineDictationTone") != "error"
+            or stage.get("inlineDictationTone") != "warning"
             or stage.get("inlineDictationStatusVisible") is not True
-            or stage.get("inlineDictationStatusOneLine") is not True
+            or stage.get("inlineDictationRecoveryVisible") is not True
+            or not isinstance(stage.get("inlineDictationRecoveryPreview"), str)
+            or not stage.get("inlineDictationRecoveryPreview", "").strip()
+            or stage.get("inlineDictationRecoveryCopyHitTarget") is not True
             or stage.get("inlineDictationStatusInsideBar") is not True
             or stage.get("inlineDictationStatusAboveKeybar") is not True):
-        raise OracleFailure("recognizer error is not visibly contained in the one-line terminal status row")
+        raise OracleFailure("recognizer error did not keep its words in the visible terminal recovery strip")
 
-    _expect_near(stage.get("terminalHotkeysDockHeightPx"), 81, "slot reservation")
+    _expect_near(stage.get("terminalHotkeysDockHeightPx"), ERROR_RECOVERY_DOCK_HEIGHT_PX, "slot reservation")
     _expect_near(stage.get("inlineDictationStatusRow", {}).get("height")
                  if isinstance(stage.get("inlineDictationStatusRow"), dict) else None,
-                 32, "settled status row height")
+                 ERROR_RECOVERY_STATUS_ROW_HEIGHT_PX, "settled recovery row height")
     _expect_near(stage.get("keybarRect", {}).get("height")
                  if isinstance(stage.get("keybarRect"), dict) else None,
                  48, "fast-key row height")
@@ -155,11 +165,11 @@ def validate_error_status_dock(stage: object) -> None:
     if not isinstance(dock, dict) or not isinstance(tray, dict) or not isinstance(tray.get("bounds"), dict):
         raise OracleFailure("error-state rendered dock bounds are missing")
     bounds = tray["bounds"]
-    _expect_near(dock.get("height"), 81, "settled status-visible dock height")
-    _expect_near(bounds.get("height"), 81, "tray height")
+    _expect_near(dock.get("height"), ERROR_RECOVERY_DOCK_HEIGHT_PX, "settled recovery-visible dock height")
+    _expect_near(bounds.get("height"), ERROR_RECOVERY_DOCK_HEIGHT_PX, "tray height")
     if (_number(bounds.get("top"), "tray top") > _number(status.get("top"), "status row top") + 0.5
             or _number(bounds.get("bottom"), "tray bottom") < _number(keybar.get("bottom"), "fast-key row bottom") - 0.5):
-        raise OracleFailure("rendered status or fast-key row extends outside the settled 81px error dock")
+        raise OracleFailure("rendered recovery or fast-key row extends outside the settled 113px error dock")
     if (tray.get("insideSlot") is not True
             or tray.get("insideTerminalPanel") is not True
             or tray.get("belowTerminalViewport") is not True
@@ -221,17 +231,19 @@ def self_test() -> int:
     error_stage = {
         "stage": "dictation-error-ime-open",
         "inlineDictationPhase": "idle",
-        "inlineDictationTone": "error",
+        "inlineDictationTone": "warning",
         "inlineDictationStatusVisible": True,
-        "inlineDictationStatusOneLine": True,
+        "inlineDictationRecoveryVisible": True,
+        "inlineDictationRecoveryPreview": "kept after a recognizer error",
+        "inlineDictationRecoveryCopyHitTarget": True,
         "inlineDictationStatusInsideBar": True,
         "inlineDictationStatusAboveKeybar": True,
-        "terminalHotkeysDockHeightPx": 81,
-        "inlineDictationStatusRow": {"top": 201, "bottom": 233, "height": 32},
-        "keybarRect": {"top": 233, "bottom": 281, "height": 48},
-        "mobileHotkeys": {"top": 200, "bottom": 281, "height": 81},
+        "terminalHotkeysDockHeightPx": 113,
+        "inlineDictationStatusRow": {"top": 201, "bottom": 265, "height": 64},
+        "keybarRect": {"top": 265, "bottom": 313, "height": 48},
+        "mobileHotkeys": {"top": 200, "bottom": 313, "height": 113},
         "fastKeysTray": {
-            "bounds": {"top": 200, "bottom": 281, "height": 81},
+            "bounds": {"top": 200, "bottom": 313, "height": 113},
             "insideSlot": True, "insideTerminalPanel": True, "belowTerminalViewport": True,
             "intersectsTerminalViewport": False, "intersectsComposerPanel": False,
         },
@@ -247,13 +259,20 @@ def self_test() -> int:
     next(stage for stage in journey["geometryTrace"]
          if stage["stage"] == "dictation-error-ime-open").update(error_stage)
     error_dock_cases = [
-        ("settled 81px status-visible error dock passes", error_stage, True),
-        ("unsettled 89px status-visible error dock fails", {
+        ("settled 113px recovery-visible error dock passes", error_stage, True),
+        ("old 81px one-line error dock that dropped the words fails", {
             **error_stage,
-            "inlineDictationStatusRow": {**error_stage["inlineDictationStatusRow"], "bottom": 241, "height": 40},
-            "keybarRect": {**error_stage["keybarRect"], "top": 241},
-            "mobileHotkeys": {**error_stage["mobileHotkeys"], "bottom": 289, "height": 89},
-            "fastKeysTray": {**error_stage["fastKeysTray"], "bounds": {"top": 200, "bottom": 289, "height": 89}},
+            "inlineDictationTone": "error",
+            "inlineDictationRecoveryVisible": False,
+            "inlineDictationRecoveryPreview": "",
+            "terminalHotkeysDockHeightPx": 81,
+            "inlineDictationStatusRow": {**error_stage["inlineDictationStatusRow"], "bottom": 233, "height": 32},
+            "keybarRect": {**error_stage["keybarRect"], "top": 233, "bottom": 281},
+            "mobileHotkeys": {**error_stage["mobileHotkeys"], "bottom": 281, "height": 81},
+            "fastKeysTray": {**error_stage["fastKeysTray"], "bounds": {"top": 200, "bottom": 281, "height": 81}},
+        }, False),
+        ("recovery strip without a reachable Copy action fails", {
+            **error_stage, "inlineDictationRecoveryCopyHitTarget": False,
         }, False),
         ("hidden recognizer error status fails", {**error_stage, "inlineDictationStatusVisible": False}, False),
         ("error dock overlapping xterm fails", {

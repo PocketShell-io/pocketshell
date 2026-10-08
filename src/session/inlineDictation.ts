@@ -1,4 +1,4 @@
-import type { DictationController, DictationSnapshot } from '@pocketshell/core';
+import type { DictationController, DictationInterruptReason, DictationSnapshot } from '@pocketshell/core';
 import { createSharedDictationController, type SharedDictationOptions } from './dictationController';
 
 export type InlineDictationPhase =
@@ -37,9 +37,18 @@ const INITIAL_STATE: InlineDictationState = {
 const INSERTION_UNCONFIRMED_MESSAGE =
   'Terminal insertion was not confirmed. Check for partial text before copying or trying again.';
 
+const KEPT_FOR_RECOVERY: Record<DictationInterruptReason, string> = {
+  background: 'Dictation stopped when PocketShell went to the background. Nothing was inserted; copy your text below.',
+  closed: 'Dictation stopped when the terminal dock closed. Nothing was inserted; copy your text below.',
+  'target-change': 'Dictation stopped when the terminal changed. Nothing was inserted; copy your text below.',
+};
+
 /**
- * Project the shared recognizer lifecycle into the terminal dock. Only final,
- * sanitized segments completed after explicit Stop can reach the PTY.
+ * Project the shared recognizer lifecycle into the terminal dock. Only
+ * sanitized text completed after explicit Stop can reach the PTY. Text from a
+ * run that ended any other way (screen off, target change, closed dock,
+ * recognizer error) is kept visible for recovery, never dropped (#3060); only
+ * an explicit user cancel discards it.
  */
 export function createInlineDictationController(
   dependencies: InlineDictationControllerDependencies,
@@ -74,6 +83,36 @@ export function createInlineDictationController(
     publish({ phase: 'idle', preview: '', message, tone });
   }
 
+  /** Keep words from a run that cannot be inserted visible and copyable. */
+  function finishKeptForRecovery(gen: number, text: string, message: string) {
+    if (generation !== gen) return;
+    disposeShared();
+    explicitStop = false;
+    publish({ phase: 'idle', preview: text, message, tone: 'warning' });
+  }
+
+  function insertCompleted(gen: number, text: string) {
+    const targetKey = activeTargetKey;
+    disposeShared();
+    explicitStop = false;
+    publish({
+      phase: 'inserting',
+      preview: text,
+      message: 'Inserting dictated text at the terminal cursor…',
+      tone: 'quiet',
+    });
+    void dependencies.insertText(targetKey, text).then((inserted) => {
+      if (generation !== gen) return;
+      if (inserted) {
+        publish({ phase: 'idle', preview: '', message: 'Inserted at the cursor. Press Enter to run.', tone: 'success' });
+      } else {
+        finishInsertUnconfirmed(gen, text);
+      }
+    }).catch(() => {
+      finishInsertUnconfirmed(gen, text);
+    });
+  }
+
   function finishInsertUnconfirmed(gen: number, text: string) {
     if (generation !== gen) return;
     publish({
@@ -102,38 +141,38 @@ export function createInlineDictationController(
       case 'cancelled':
         finishWithoutInsert(gen, 'Dictation cancelled. Nothing was inserted.', 'quiet');
         return;
-      case 'error':
+      case 'error': {
+        const text = safeInlineTranscriptText(snapshot.transcript);
+        if (text && explicitStop && snapshot.error?.code === 'recognizer-stop-timeout') {
+          // Stop was explicit and the shared controller promoted the last
+          // partial when the recognizer never confirmed it: insert it all.
+          insertCompleted(gen, text);
+          return;
+        }
+        if (text) {
+          finishKeptForRecovery(gen, text, `${speechFailureMessage(snapshot.error)} Nothing was inserted; copy your text below.`);
+          return;
+        }
         finishWithoutInsert(gen, speechFailureMessage(snapshot.error), 'error');
         return;
+      }
       case 'completed': {
         const text = safeInlineTranscriptText(snapshot.transcript);
+        if (snapshot.interruptReason) {
+          if (text) finishKeptForRecovery(gen, text, KEPT_FOR_RECOVERY[snapshot.interruptReason]);
+          else finishWithoutInsert(gen, 'Dictation stopped. Nothing was recognized.', 'quiet');
+          return;
+        }
         if (!explicitStop) {
-          finishWithoutInsert(gen, 'Dictation ended without explicit Stop. Nothing was inserted.', 'warning');
+          if (text) finishKeptForRecovery(gen, text, 'Dictation ended without explicit Stop. Nothing was inserted; copy your text below.');
+          else finishWithoutInsert(gen, 'Dictation ended without explicit Stop. Nothing was inserted.', 'warning');
           return;
         }
         if (!text) {
-          finishWithoutInsert(gen, 'No final transcript was received. Nothing was inserted.', 'warning');
+          finishWithoutInsert(gen, 'No speech was recognized. Nothing was inserted.', 'warning');
           return;
         }
-        const targetKey = activeTargetKey;
-        disposeShared();
-        explicitStop = false;
-        publish({
-          phase: 'inserting',
-          preview: text,
-          message: 'Inserting dictated text at the terminal cursor…',
-          tone: 'quiet',
-        });
-        void dependencies.insertText(targetKey, text).then((inserted) => {
-          if (generation !== gen) return;
-          if (inserted) {
-            publish({ phase: 'idle', preview: '', message: 'Inserted at the cursor. Press Enter to run.', tone: 'success' });
-          } else {
-            finishInsertUnconfirmed(gen, text);
-          }
-        }).catch(() => {
-          finishInsertUnconfirmed(gen, text);
-        });
+        insertCompleted(gen, text);
         return;
       }
     }
@@ -161,7 +200,7 @@ export function createInlineDictationController(
 
   function stop(): void {
     if (state.phase === 'starting') {
-      cancel('user');
+      cancel();
       return;
     }
     if (state.phase !== 'listening' || !shared) return;
@@ -169,13 +208,25 @@ export function createInlineDictationController(
     shared.stop();
   }
 
-  function cancel(reason: 'user' | 'background' | 'target-change' = 'user'): void {
+  /** Explicit user cancel: the only path that discards dictated words. */
+  function cancel(): void {
     if (state.phase === 'idle' || state.phase === 'inserting') return;
     const active = shared;
-    if (active) active.cancel(reason);
+    if (active) active.cancel('user');
     else {
       generation += 1;
       finishWithoutInsert(generation, 'Dictation cancelled. Nothing was inserted.', 'quiet');
+    }
+  }
+
+  /** Lifecycle stop (dock disabled/unmounted): end now and keep the words for recovery. */
+  function interrupt(): void {
+    if (state.phase === 'idle' || state.phase === 'inserting') return;
+    const active = shared;
+    if (active) active.interrupt('closed');
+    else {
+      generation += 1;
+      finishWithoutInsert(generation, 'Dictation stopped. Nothing was inserted.', 'quiet');
     }
   }
 
@@ -202,6 +253,7 @@ export function createInlineDictationController(
     start,
     stop,
     cancel,
+    interrupt,
     setTarget,
     setForeground,
   };

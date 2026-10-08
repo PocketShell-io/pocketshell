@@ -616,8 +616,9 @@ defineExpose({
   overflow: hidden;
   margin: 0;
   color: var(--warning);
-  font-size: 10px;
-  line-height: 14px;
+  /* #3060: interrupted dictation now lands here, so it meets the dock's 11px/16px readability bar. */
+  font-size: 11px;
+  line-height: 16px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
