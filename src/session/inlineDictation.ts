@@ -1,5 +1,6 @@
-import type { DictationController, DictationInterruptReason, DictationSnapshot } from '@pocketshell/core';
+import type { DictationController, DictationInterruptReason, DictationNoSpeech, DictationSnapshot } from '@pocketshell/core';
 import { createSharedDictationController, type SharedDictationOptions } from './dictationController';
+import { noSpeechWarningCopy } from './dictationNoSpeech';
 
 export type InlineDictationPhase =
   | 'idle'
@@ -14,6 +15,11 @@ export interface InlineDictationState {
   preview: string;
   message: string;
   tone: 'quiet' | 'success' | 'warning' | 'error';
+  /**
+   * Set while listening has produced no recognized text for a while (#3062).
+   * Informational only; the dock shows a warning and keeps listening.
+   */
+  noSpeech?: DictationNoSpeech | null;
 }
 
 export interface InlineDictationOptions {
@@ -62,6 +68,8 @@ export function createInlineDictationController(
   let activeTargetKey = '';
   let foreground = true;
   let explicitStop = false;
+  /** The current run already reached listening; later restart turns stay "listening" (#3062). */
+  let sawListening = false;
   const listeners = new Set<(next: InlineDictationState) => void>();
 
   function publish(next: InlineDictationState) {
@@ -130,11 +138,28 @@ export function createInlineDictationController(
       case 'idle':
         return;
       case 'starting':
-        publish({ phase: 'starting', preview, message: 'Requesting microphone access…', tone: 'quiet' });
+        if (sawListening) {
+          // A silent restart between recognizer turns: keep the listening band
+          // (and any no-words warning) instead of flashing "Starting".
+          finishSnapshot(gen, { ...snapshot, phase: 'listening' });
+          return;
+        }
+        publish({ phase: 'starting', preview, message: 'Requesting microphone access…', tone: 'quiet', noSpeech: snapshot.noSpeech });
         return;
-      case 'listening':
-        publish({ phase: 'listening', preview, message: 'Listening. Tap Stop to insert at the terminal cursor.', tone: 'quiet' });
+      case 'listening': {
+        sawListening = true;
+        const warning = snapshot.noSpeech ? noSpeechWarningCopy(snapshot.noSpeech) : null;
+        publish({
+          phase: 'listening',
+          preview,
+          message: warning
+            ? `${warning.title}. ${warning.detail}`
+            : 'Listening. Tap Stop to insert at the terminal cursor.',
+          tone: 'quiet',
+          noSpeech: snapshot.noSpeech,
+        });
         return;
+      }
       case 'stopping':
         publish({ phase: 'stopping', preview, message: 'Finishing speech recognition…', tone: 'quiet' });
         return;
@@ -185,6 +210,7 @@ export function createInlineDictationController(
     configuredTargetKey = options.targetKey;
     activeTargetKey = options.targetKey;
     explicitStop = false;
+    sawListening = false;
     const controller = createController({
       languageTag: options.languageTag,
       silenceWindowMs: options.silenceWindowMs,

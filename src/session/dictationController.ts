@@ -20,6 +20,8 @@ export interface SharedDictationOptions extends DictationStartOptions {
   recognition?: DictationRecognitionPort;
   restartDelayMs?: number;
   createRequestId?: () => string;
+  /** Override the shared "no recognized text" warning window (#3062); core defaults to 8 s. */
+  noTextWarningMs?: number;
 }
 
 const DEFAULT_RESTART_DELAY_MS = 300;
@@ -51,6 +53,7 @@ export function createSharedDictationController(options: SharedDictationOptions 
     schedule: (callback) => setTimeout(callback, restartDelayMs),
     cancelScheduled: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
     ...(options.createRequestId ? { createRequestId: options.createRequestId } : {}),
+    ...(options.noTextWarningMs !== undefined ? { noTextWarningMs: options.noTextWarningMs } : {}),
   };
   controller = new DictationController(controllerOptions);
 
@@ -67,6 +70,9 @@ export function createSharedDictationController(options: SharedDictationOptions 
         break;
       case 'error':
         controller.onError(event.requestId, recognitionError(event.code));
+        break;
+      case 'audio':
+        controller.onAudioLevel(event.requestId, event.code === 'sound');
         break;
     }
   }

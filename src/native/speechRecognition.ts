@@ -5,6 +5,11 @@ export type DictationEventType =
   | 'result'
   | 'recoverable'
   | 'error'
+  /**
+   * Coarse microphone evidence (#3062): `code` is `sound` or `silence`,
+   * thresholded and rate-limited natively from onRmsChanged. No audio content.
+   */
+  | 'audio'
 
 export interface NativeDictationEvent {
   requestId: string;
@@ -37,7 +42,7 @@ export type SpeechRecognitionPlugin = Plugin & {
   cancelDictation(options: { requestId: string }): Promise<{ requestId: string; cancelled: boolean }>;
   injectTestDictationEvent(options: {
     requestId?: string;
-    type: 'partial' | 'result' | 'recoverable' | 'error';
+    type: 'partial' | 'result' | 'recoverable' | 'error' | 'audio';
     text?: string;
     code?: string;
   }): Promise<{

@@ -28,6 +28,8 @@ export default defineConfig({
       '**/tests/unit/mobileHotkeys.test.ts',
       '**/tests/unit/composerDictationCancellation.test.ts',
       '**/tests/unit/composerDictationKeepsText.test.ts',
+      '**/tests/unit/composerNoSpeechWarning.test.ts',
+      '**/tests/unit/inlineDictationNoSpeech.test.ts',
     ] },
     include: ['tests/unit/**/*.test.ts'],
   },

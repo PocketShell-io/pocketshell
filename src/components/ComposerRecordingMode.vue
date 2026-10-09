@@ -1,23 +1,38 @@
 <script setup lang="ts">
-defineProps<{
+import type { DictationNoSpeech } from '@pocketshell/core';
+import { computed } from 'vue';
+import { noSpeechWarningCopy } from '../session/dictationNoSpeech';
+import { usePrefersReducedMotion } from './prefersReducedMotion';
+
+const props = withDefaults(defineProps<{
   state: 'starting' | 'recording' | 'transcribing';
   elapsedLabel: string;
   livePreview: string;
   stopDisabled: boolean;
-}>();
+  /** #3062: listening has produced no recognized words for a while. Informational only. */
+  noSpeech?: DictationNoSpeech | null;
+}>(), { noSpeech: null });
 const emit = defineEmits<{ stop: [] }>();
+const reducedMotion = usePrefersReducedMotion();
+const warning = computed(() => props.noSpeech && props.state !== 'transcribing' ? noSpeechWarningCopy(props.noSpeech) : null);
 </script>
 
 <template>
-  <section class="recording-mode" :class="{ 'recording-mode--recording': state === 'recording' }"
+  <section class="recording-mode" :class="{ 'recording-mode--recording': state === 'recording', 'recording-mode--no-speech': warning }"
     role="group" data-testid="composer-recording-mode" :data-recording-state="state"
+    :data-no-speech="warning ? 'true' : 'false'"
     :aria-label="state === 'recording' ? 'Prompt dictation recording' : state === 'transcribing' ? 'Transcribing prompt' : 'Starting prompt dictation'">
     <div v-if="state === 'recording'" class="recording-mode__live-row">
-      <span class="recording-mode__phase">Listening</span>
+      <span class="recording-mode__phase" data-testid="composer-recording-phase">{{ warning ? 'Still listening' : 'Listening' }}</span>
       <time data-testid="composer-recording-timer" aria-label="Dictation duration">
         {{ elapsedLabel }}
       </time>
       <div class="recording-mode__waveform" role="img"
+        :class="{
+          'recording-mode__waveform--no-speech': warning,
+          'recording-mode__waveform--pulse': warning && !reducedMotion,
+          'recording-mode__waveform--static': warning && reducedMotion,
+        }"
         aria-label="Speech capture is active. The animated bars show recording state, not volume.">
         <span v-for="bar in 30" :key="bar" :style="{ '--bar': bar - 1 }"></span>
       </div>
@@ -41,7 +56,17 @@ const emit = defineEmits<{ stop: [] }>();
       <span class="recording-mode__spinner" aria-hidden="true"></span>
       <span>Requesting microphone access…</span>
     </div>
-    <p v-if="state === 'recording' || state === 'transcribing'" id="composer-recording-preview"
+    <p v-if="warning" class="recording-mode__no-speech"
+      :class="{ 'recording-mode__no-speech--static': reducedMotion }"
+      data-testid="composer-no-speech-warning" role="status" aria-live="polite"
+      :data-no-speech-reason="noSpeech?.reason" :data-no-speech-audio="noSpeech?.audio"
+      :data-motion="reducedMotion ? 'static' : 'pulse'">
+      <span class="recording-mode__no-speech-dot" aria-hidden="true"></span>
+      <span><strong>{{ warning.title }}</strong> {{ warning.detail }}</span>
+    </p>
+
+    <!-- #3062: with the warning up and nothing heard yet, the "Listening for speech…" placeholder would contradict it. -->
+    <p v-if="state === 'transcribing' || (state === 'recording' && (livePreview.trim() || !warning))" id="composer-recording-preview"
       class="recording-mode__preview" data-testid="composer-recording-preview" aria-live="polite">
       {{ livePreview.trim() ? livePreview : state === 'recording' ? 'Listening for speech…' : 'Waiting for transcript…' }}
     </p>
@@ -189,8 +214,46 @@ const emit = defineEmits<{ stop: [] }>();
 }
 @keyframes recording-spin { to { transform: rotate(360deg); } }
 
+/* #3062: listening without recognized words. The panel, waveform and a dot
+   take the warning colour and pulse; the draft and controls are untouched. */
+.recording-mode--no-speech {
+  border-color: var(--warning);
+  box-shadow: inset 3px 0 var(--warning);
+}
+.recording-mode__waveform--no-speech span { background: var(--warning); }
+.recording-mode__waveform--pulse { animation: recording-no-speech-pulse 900ms ease-in-out infinite alternate; }
+.recording-mode__no-speech {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0;
+  color: var(--fg);
+  font: var(--fs-200)/1.4 var(--font-ui);
+}
+.recording-mode__no-speech strong { color: var(--warning); font-weight: var(--fw-semibold); }
+.recording-mode__no-speech-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: recording-no-speech-pulse 900ms ease-in-out infinite alternate;
+}
+/* Reduced motion: a static warning highlight instead of the pulse. */
+.recording-mode__waveform--static,
+.recording-mode__no-speech--static .recording-mode__no-speech-dot { animation: none; }
+.recording-mode__no-speech--static {
+  border-radius: var(--r-sm);
+  background: var(--warning-soft);
+  padding: var(--sp-1) var(--sp-2);
+}
+@keyframes recording-no-speech-pulse { from { opacity: 1; } to { opacity: 0.35; } }
+
 @media (prefers-reduced-motion: reduce) {
+  .recording-mode__waveform--no-speech span, .recording-mode__waveform--pulse, .recording-mode__no-speech-dot { animation: none; }
   .recording-mode__waveform span, .recording-mode__spinner { animation: none; }
   .recording-mode__waveform span { height: 8px; }
+  .recording-mode__no-speech { border-radius: var(--r-sm); background: var(--warning-soft); padding: var(--sp-1) var(--sp-2); }
 }
 </style>

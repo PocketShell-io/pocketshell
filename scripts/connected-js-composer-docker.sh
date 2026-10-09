@@ -12,6 +12,11 @@ PORT=""
 SESSION_BASE="js2857-$(date +%s)"
 FORCE_FIRST_POST_ATTACH_TAP_MISS=0
 COMPOSER_FOCUS_MAX_ATTEMPTS=""
+FORCE_NO_SPEECH_STAGE_FAILURE=0
+# Issue #3062 hang guard: one instrumentation phase may not run longer than
+# this. A hung phase is force-stopped and reported, instead of sitting until
+# the CI job cap with no failure reason.
+COMPOSER_PHASE_TIMEOUT_SECONDS="$(printenv COMPOSER_PHASE_TIMEOUT_SECONDS || printf '900')"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -22,10 +27,16 @@ usage() {
   cat <<'USAGE'
 Usage: scripts/connected-js-composer-docker.sh --port 2243|2244|2245 [--session-prefix NAME] [--suffix TOKEN]
        [--force-first-post-attach-tap-miss] [--composer-focus-max-attempts 1|2]
+       [--force-no-speech-stage-failure]
 
 Builds and runs the packaged composer journey against an already healthy
 agents fixture pool lane, then checks exact bytes and insert/uncertain markers
 from the host side. It uses the shared Gradle-output and Android-device locks.
+
+Each instrumentation phase is bounded by COMPOSER_PHASE_TIMEOUT_SECONDS
+(default 900). --force-no-speech-stage-failure makes the #3062 stage fail on
+purpose after its warning appears, to prove that a failure ends the run with
+its message (and is expected to fail the lane).
 
 Start an unclaimed lane with scripts/agents-pool.sh up PORT first. This runner
 does not create or tear down Docker state.
@@ -53,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       FORCE_FIRST_POST_ATTACH_TAP_MISS=1
       shift
       ;;
+    --force-no-speech-stage-failure)
+      FORCE_NO_SPEECH_STAGE_FAILURE=1
+      shift
+      ;;
     --composer-focus-max-attempts)
       [[ $# -ge 2 ]] || fail '--composer-focus-max-attempts needs a value'
       COMPOSER_FOCUS_MAX_ATTEMPTS="$2"
@@ -69,6 +84,7 @@ done
 [[ "$PORT" =~ ^(2243|2244|2245)$ ]] || fail '--port must be one of the isolated pool ports 2243, 2244, or 2245'
 [[ "$SESSION_BASE" =~ ^[A-Za-z0-9-]{8,32}$ ]] || fail '--session-prefix must be 8-32 letters, digits, or dashes'
 [[ "$SUFFIX" =~ ^[A-Za-z0-9._]+$ ]] || fail '--suffix must match [A-Za-z0-9._]+'
+[[ "$COMPOSER_PHASE_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'COMPOSER_PHASE_TIMEOUT_SECONDS must be a positive integer'
 if [[ -n "$COMPOSER_FOCUS_MAX_ATTEMPTS" && ! "$COMPOSER_FOCUS_MAX_ATTEMPTS" =~ ^[12]$ ]]; then
   fail '--composer-focus-max-attempts must be 1 or 2'
 fi
@@ -167,6 +183,9 @@ fi
 if [[ -n "$COMPOSER_FOCUS_MAX_ATTEMPTS" ]]; then
   composer_instrumentation_args+=(-e composerFocusMaxAttempts "$COMPOSER_FOCUS_MAX_ATTEMPTS")
 fi
+if [[ "$FORCE_NO_SPEECH_STAGE_FAILURE" == 1 ]]; then
+  composer_instrumentation_args+=(-e composer3062ForceFailure after-warning)
+fi
 asset_logcat="$evidence_dir/composer-assets-live-logcat.txt"
 asset_logcat_pid=""
 prepare_asset_logcat_path() {
@@ -215,7 +234,7 @@ prepare_asset_logcat_path "$asset_logcat"
 printf 'PASS: live artifact collector output is writable and outside Gradle result cleanup\n'
 "$ADB" -s "$ANDROID_SERIAL" logcat -c
 pocketshell_start_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -v threadtime \
-  -s PS2857Asset:I > "$asset_logcat" 2>&1
+  -s PS2857Asset:I PS3062NoSpeech:I > "$asset_logcat" 2>&1
 asset_logcat_pid="$POCKETSHELL_AVD_CHILD_PID"
 sleep 0.2
 kill -0 "$asset_logcat_pid" 2>/dev/null || fail 'could not start the live composer artifact logcat collector'
@@ -269,9 +288,20 @@ if results.exists():
     shutil.rmtree(results)
 PY
   local instrumentation_status=0
+  local phase_started=$SECONDS
   pocketshell_run_without_avd_lock_fd_to_log "$phase_dir/composer-instrumentation.log" \
+    timeout --kill-after=30 "$COMPOSER_PHASE_TIMEOUT_SECONDS" \
     "$ADB" -s "$ANDROID_SERIAL" shell am instrument -w -r "${phase_args[@]}" \
     "$INSTRUMENTATION_COMPONENT" || instrumentation_status=$?
+  printf 'phase=%s instrumentation_seconds=%s status=%s\n' "$phase" "$((SECONDS - phase_started))" "$instrumentation_status" \
+    | tee -a "$evidence_dir/composer-phase-timing.txt"
+  if (( instrumentation_status == 124 || instrumentation_status == 137 )); then
+    # The host-side adb was killed; stop the device-side test too so nothing keeps running.
+    "$ADB" -s "$ANDROID_SERIAL" shell am force-stop "$TEST_PACKAGE" >/dev/null 2>&1 || true
+    "$ADB" -s "$ANDROID_SERIAL" shell am force-stop "$APP_PACKAGE" >/dev/null 2>&1 || true
+    capture_phase_failure "$phase"
+    fail "instrumentation phase $phase exceeded the ${COMPOSER_PHASE_TIMEOUT_SECONDS}s hang guard (COMPOSER_PHASE_TIMEOUT_SECONDS) and was force-stopped; see $phase_dir/composer-instrumentation.log and the PS3062NoSpeech/PS3060Dictation logcat tags"
+  fi
   if (( instrumentation_status != 0 )) || ! grep -q '^INSTRUMENTATION_CODE: -1$' "$phase_dir/composer-instrumentation.log"; then
     capture_phase_failure "$phase"
     fail "instrumentation phase $phase did not finish cleanly (adb status $instrumentation_status)"
@@ -337,6 +367,8 @@ stop_asset_logcat
   --expected-terminal-marker "PS2857_SENT_$SESSION_BASE"
 sha256sum "$evidence_dir/composer-keyboard.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
 sha256sum "$evidence_dir/composer-post-send.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
+sha256sum "$evidence_dir/composer-no-speech-warning.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
+sha256sum "$evidence_dir/inline-no-speech-warning.png" | tee -a "$evidence_dir/composer-host-oracle.txt"
 
 ssh_remote() {
   ssh -q "${ssh_opts[@]}" testuser@127.0.0.1 "$1"
@@ -398,5 +430,23 @@ dictation_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$di
   || fail 'a draft kept across screen-off/scrim/restart was written to the PTY without an explicit Send'
 printf 'PASS: dictated Send delivered the whole utterance (%s written) and the kept draft never reached the PTY\n' \
   "$tail_marker" | tee -a "$evidence_dir/composer-host-oracle.txt"
+
+# Issue #3062: after the "not hearing words" warning (sound but no words for the
+# 8 s window) a partial cleared it and the words that followed were still sent;
+# then the inline terminal bar warned with the keyboard up and Stop inserted the
+# next words at the prompt. Both are read back from the host, not the app.
+no_speech_marker="PS3062_WORDS_$SESSION_BASE"
+no_speech_state="$(ssh_remote "if test -e /tmp/$dictation_session-3062.marker; then cat /tmp/$dictation_session-3062.marker; else printf absent; fi")"
+[[ "$no_speech_state" == "$no_speech_marker" ]] \
+  || fail "words dictated after the no-speech warning were not sent: expected /tmp/$dictation_session-3062.marker to hold $no_speech_marker, got ${no_speech_state:-<empty>}"
+inline_marker="PS3062_INLINE_$SESSION_BASE"
+inline_capture="$(ssh_remote "a capture --workspace /home/testuser --tag '$dictation_session' --bytes 8192")"
+[[ "$inline_capture" == *"echo $inline_marker"* ]] \
+  || fail 'inline dictation after the no-speech warning did not insert its words at the terminal prompt'
+# The #3062 stage's per-step log (warning seen, state read, screenshot, partial ...)
+# rides the live collector, so a slow or failing step is visible by name.
+grep 'PS3062NoSpeech' "$asset_logcat" > "$evidence_dir/no-speech-steps.txt" || true
+printf 'PASS: after the no-speech warning, composer Send wrote %s and inline Stop inserted %s\n' \
+  "$no_speech_marker" "$inline_marker" | tee -a "$evidence_dir/composer-host-oracle.txt"
 
 printf 'Evidence directory: %s\n' "$evidence_dir"

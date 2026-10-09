@@ -7,6 +7,7 @@ import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -143,6 +144,12 @@ public final class SpeechRecognitionPlugin extends Plugin {
             } else if ("recoverable".equals(type)) {
                 emit("recoverable", eventRequestId, null, requestedCode == null ? "no-match" : requestedCode);
                 if (eventRequestId.equals(activeRequestId)) finishTurn(eventRequestId, false);
+            } else if ("audio".equals(type)) {
+                if (!"sound".equals(requestedCode) && !"silence".equals(requestedCode)) {
+                    call.reject("Test audio events need code sound or silence.", "DICTATION_TEST_INVALID_EVENT");
+                    return;
+                }
+                emit("audio", eventRequestId, null, requestedCode);
             } else if ("error".equals(type)) {
                 emit("error", eventRequestId, null,
                         requestedCode == null ? (text == null ? "test-recognition-error" : text) : requestedCode);
@@ -282,6 +289,7 @@ public final class SpeechRecognitionPlugin extends Plugin {
 
     private final class DictationListener implements RecognitionListener {
         private final String requestId;
+        private final SpeechAudioPresence audioPresence = new SpeechAudioPresence();
 
         DictationListener(String requestId) {
             this.requestId = requestId;
@@ -289,7 +297,14 @@ public final class SpeechRecognitionPlugin extends Plugin {
 
         @Override public void onReadyForSpeech(Bundle params) {}
         @Override public void onBeginningOfSpeech() {}
-        @Override public void onRmsChanged(float rmsdB) {}
+
+        /** #3062: forward only a coarse, rate-limited sound/silence flag, never the level itself. */
+        @Override
+        public void onRmsChanged(float rmsdB) {
+            if (!requestId.equals(activeRequestId)) return;
+            Boolean sound = audioPresence.onRms(rmsdB, SystemClock.uptimeMillis());
+            if (sound != null) emit("audio", requestId, null, sound ? "sound" : "silence");
+        }
         @Override public void onBufferReceived(byte[] buffer) {}
         @Override public void onEndOfSpeech() {}
 

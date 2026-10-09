@@ -16,6 +16,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.EncryptedSyncTokenStoreTest
   com.pocketshell.app.GoogleSyncSessionTest
   com.pocketshell.app.KeyHandleConnectFailuresTest
+  com.pocketshell.app.SpeechAudioPresenceTest
   com.pocketshell.app.SpeechRecognitionOptionsTest
   com.pocketshell.app.SpeechRecognitionPluginTest
   com.pocketshell.app.SshCapabilityPluginChannelRequestTest
