@@ -766,7 +766,14 @@
         "link and gateway together: a dial that omits the marker is still refused from the account entry",
         "a link marker alone (no link transport on Android): the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
         "a link marker alone (no link transport on Android): a dial that omits the marker is still refused from the account entry",
-        "Sync now keeps every account marker byte-identical, including on a host the phone also has"
+        "Sync now keeps every account marker byte-identical, including on a host the phone also has",
+        "valid gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "null gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "malformed gateway (string): the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "malformed gateway (array): the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "link and gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "link alone: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "null link: the marked account row is refused even when a keyed phone host \"box\" sits at the same address"
       ]
     }
   }

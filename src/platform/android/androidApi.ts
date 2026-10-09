@@ -29,6 +29,7 @@
  */
 import type { PocketShellApi } from '@ui/app/api';
 import {
+  hasGatewayMarker,
   readHostUsage,
   runHostBootstrap,
   type ConnectionController,
@@ -36,7 +37,7 @@ import {
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import { MissingHostCredential, type AndroidHostStore } from './hostStore';
-import { declinedAccountHostMessage, unsupportedTransportMessage, type AccountHostKeys } from './accountHosts';
+import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -50,6 +51,33 @@ export class UnsupportedCapability extends Error {
 
 const unsupported = (method: string) => (): Promise<never> =>
   Promise.reject(new UnsupportedCapability(method));
+
+/**
+ * Why this phone must not dial a host or connect request at all, or null.
+ *
+ * Core's gateway contract (#3059, core docs/SYNC.md): a client that cannot
+ * dial the PocketShell gateway refuses any PRESENT `gateway` marker, whatever
+ * its value (valid, null, malformed, or alongside `link`), instead of treating
+ * the entry as ordinary SSH. Presence is decided by core's own
+ * `hasGatewayMarker`. Android has no gateway transport and no link transport
+ * yet, so a `link` marker is refused the same way: dialling plain SSH would
+ * reach the host over a transport it was not configured for. The check runs
+ * before any key prompt, save, credential or socket.
+ *
+ * This is the ONE place Android decides transport support: `resolveTarget`
+ * asks it about both the connect request and the account entry. A build that
+ * can dial the gateway or a link lifts the refusal here, and only here, behind
+ * an explicit transport capability, never by falling back to plain SSH.
+ */
+export function unsupportedTransportMessage(name: string, entry: object): string | null {
+  if (hasGatewayMarker(entry)) {
+    return `“${name}” is reached through the PocketShell gateway, which this phone can't connect through yet. Nothing was dialled.`;
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'link')) {
+    return `“${name}” is reached through a PocketShell relay link, which this phone can't connect through yet. Nothing was dialled.`;
+  }
+  return null;
+}
 
 /** Whether a connect request names this exact phone host (alias, or address and user). */
 function isSameHost(host: { name: string; hostname: string; port: number; user: string }, request: { host: string; port?: number; user: string; hostAlias?: string }): boolean {

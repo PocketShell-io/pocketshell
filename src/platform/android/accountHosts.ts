@@ -14,7 +14,7 @@
  * This module is the decision; the prompt itself is the Android shell's
  * (src/sharedApp/accountHostKey.ts).
  */
-import { hasGatewayMarker, type HostEntry } from '@pocketshell/core';
+import type { HostEntry } from '@pocketshell/core';
 
 export interface AccountHostRequest {
   host: string;
@@ -67,26 +67,4 @@ export function createAccountHostKeys(deps: AccountHostKeysDeps): AccountHostKey
 /** What the picker shows when the user closed the key prompt without a key. */
 export function declinedAccountHostMessage(name: string): string {
   return `No SSH key was chosen for “${name}” on this phone, so nothing was dialled.`;
-}
-
-/**
- * Why this phone must not dial a host or connect request at all, or null.
- *
- * Core's gateway contract (#3059, core docs/SYNC.md): a client that cannot
- * dial the PocketShell gateway refuses any PRESENT `gateway` marker, whatever
- * its value (valid, null, malformed, or alongside `link`), instead of treating
- * the entry as ordinary SSH. Presence is decided by core's own
- * `hasGatewayMarker`. Android has no gateway transport and no link transport
- * yet, so a `link` marker is refused the same way: dialling plain SSH would
- * reach the host over a transport it was not configured for. The check runs
- * before any key prompt, save, credential or socket.
- */
-export function unsupportedTransportMessage(name: string, entry: object): string | null {
-  if (hasGatewayMarker(entry)) {
-    return `“${name}” is reached through the PocketShell gateway, which this phone can't connect through yet. Nothing was dialled.`;
-  }
-  if (Object.prototype.hasOwnProperty.call(entry, 'link')) {
-    return `“${name}” is reached through a PocketShell relay link, which this phone can't connect through yet. Nothing was dialled.`;
-  }
-  return null;
 }

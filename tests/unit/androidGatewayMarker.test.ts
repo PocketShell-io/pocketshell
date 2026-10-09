@@ -149,4 +149,35 @@ describe('Android refuses gateway and link account hosts (core #3059)', () => {
     expect(account.find((h) => h.name === 'gw')).toEqual({ name: 'gw', hostname: 'gw.phone.lan', port: 22, user: 'root', gateway: GW });
     for (const host of markedHosts.slice(1)) expect(account.find((h) => h.name === host.name)).toEqual(host);
   });
+
+  // Round 6: a KEYED phone host under another name at the same address. The
+  // phone resolves the address on its own, so only the check on the connect
+  // request's marker stands between the marked account row and a plain SSH
+  // dial to `box` — the account-entry check never runs.
+  const SHAPES: Array<[string, Record<string, unknown>, RegExp]> = [
+    ['valid gateway', { gateway: GW }, GATEWAY_REFUSAL],
+    ['null gateway', { gateway: null }, GATEWAY_REFUSAL],
+    ['malformed gateway (string)', { gateway: 'x' }, GATEWAY_REFUSAL],
+    ['malformed gateway (array)', { gateway: [1] }, GATEWAY_REFUSAL],
+    ['link and gateway', { link: LINK, gateway: GW }, GATEWAY_REFUSAL],
+    ['link alone', { link: LINK }, LINK_REFUSAL],
+    ['null link', { link: null }, LINK_REFUSAL],
+  ];
+  for (const [label, marker, refusal] of SHAPES) {
+    it(`${label}: the marked account row is refused even when a keyed phone host "box" sits at the same address`, async () => {
+      const box: Saved = { name: 'box', hostname: '10.0.0.5', port: 22, user: 'root', keyHandleId: KEY.handleId };
+      const { hosts, prompt, store, native } = await setup([{ name: 'gw', hostname: '10.0.0.5', port: 22, user: 'root', ...marker }], [box]);
+      await store.loadAccount();
+      const row = store.accountHosts!.find((h) => h.name === 'gw')!;
+      const ok = await useConnectionStore().connect(row);
+      expect(ok).toBe(false);
+      expect(useConnectionStore().error).toMatch(refusal);
+      expect(useConnectionStore().error).toContain('“gw”');
+      expect(prompt.state.pending).toBeNull();
+      expect(native.connects).toHaveLength(0);
+      expect(native.execs).toHaveLength(0);
+      expect(native.opened).toHaveLength(0);
+      expect(hosts.savedHosts()).toEqual([box]);
+    });
+  }
 });
