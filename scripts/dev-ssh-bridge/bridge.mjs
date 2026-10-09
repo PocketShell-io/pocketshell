@@ -19,7 +19,7 @@
  *    key fails the dial with HOST_KEY_REJECTED and the presented key, which
  *    the app's own trust prompt then shows (exactly like the Android plugin).
  */
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -108,6 +108,51 @@ export function hostKeyTrusted(pin, presented) {
   return false;
 }
 
+function sshString(value) {
+  const bytes = Buffer.from(value);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+/** PKCS#8 DER header of an Ed25519 private key; the 32-byte seed follows it. */
+const ED25519_PKCS8_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
+
+/**
+ * An unencrypted OpenSSH ("openssh-key-v1") Ed25519 private key, from `seed`
+ * (32 bytes) or a fresh random one.
+ *
+ * Not `ssh2.utils.generateKeyPairSync('ed25519')`: ssh2 1.16.0 strips leading
+ * zero bytes from the 32-byte public key, so about 1 in 256 of its keys is
+ * written malformed and its own `parseKey` rejects it (#3078).
+ */
+export function ed25519OpenSshPrivateKey(seed = undefined, comment = '') {
+  const privateKey = seed === undefined
+    ? generateKeyPairSync('ed25519').privateKey
+    : createPrivateKey({ key: Buffer.concat([ED25519_PKCS8_PREFIX, Buffer.from(seed)]), format: 'der', type: 'pkcs8' });
+  const jwk = privateKey.export({ format: 'jwk' });
+  const secret = Buffer.from(jwk.d, 'base64url');
+  const publicKey = Buffer.from(createPublicKey(privateKey).export({ format: 'jwk' }).x, 'base64url');
+  if (secret.length !== 32 || publicKey.length !== 32) throw new Error('Unexpected Ed25519 key size.');
+  const publicBlob = Buffer.concat([sshString('ssh-ed25519'), sshString(publicKey)]);
+  const check = randomBytes(4);
+  let section = Buffer.concat([
+    check, check,
+    sshString('ssh-ed25519'), sshString(publicKey), sshString(Buffer.concat([secret, publicKey])), sshString(comment),
+  ]);
+  const padding = (8 - (section.length % 8)) % 8;
+  section = Buffer.concat([section, Buffer.from(Array.from({ length: padding }, (_, i) => i + 1))]);
+  const body = Buffer.concat([
+    Buffer.from('openssh-key-v1\0', 'latin1'),
+    sshString('none'), sshString('none'), sshString(''),
+    Buffer.from([0, 0, 0, 1]),
+    sshString(publicBlob),
+    sshString(section),
+  ]).toString('base64');
+  const lines = body.match(/.{1,70}/gu) ?? [];
+  return ['-----BEGIN OPENSSH PRIVATE KEY-----', ...lines, '-----END OPENSSH PRIVATE KEY-----', ''].join('\n');
+}
+
 /** A stable vault handle (UUID-shaped, as the app validates) for a key fingerprint. */
 function handleIdFor(fingerprint) {
   const hex = createHash('sha256').update(`dev-vault:${fingerprint}`).digest('hex');
@@ -150,9 +195,10 @@ export function createKeyVault() {
       return add(pem, label, typeof options.passphrase === 'string' ? options.passphrase : undefined);
     },
     generate(options) {
-      const type = options?.algorithm === 'RSA-3072' ? 'rsa' : 'ed25519';
-      const pair = sshUtils.generateKeyPairSync(type, type === 'rsa' ? { bits: 3072 } : undefined);
-      return add(pair.private, typeof options?.label === 'string' ? options.label : 'Dev key');
+      const privateKey = options?.algorithm === 'RSA-3072'
+        ? sshUtils.generateKeyPairSync('rsa', { bits: 3072 }).private
+        : ed25519OpenSshPrivateKey();
+      return add(privateKey, typeof options?.label === 'string' ? options.label : 'Dev key');
     },
     remove(handleId, fingerprintSha256) {
       const entry = keys.get(handleId);
