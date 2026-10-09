@@ -5,6 +5,7 @@ import {
   serializeSyncPayload,
   type SyncHostEntry,
   type SyncRoundEffects,
+  type SyncRoundPulled,
   type SyncRoundSnapshot,
 } from '@pocketshell/core';
 import rawVectors from '../../vendor/pocketshell-core/tests/fixtures/settings-sync-vectors.json';
@@ -28,8 +29,18 @@ interface SettingsSyncVectors {
     id: string;
     remote: unknown[];
     checked: string[];
-    localAliases: string[];
+    unticked: string[];
     expected: string[];
+    expectedUnticked: string[];
+  }>;
+  untickRoundCases: Array<{
+    id: string;
+    local: unknown[];
+    remote: unknown[];
+    checked: string[];
+    unticked: string[];
+    expectedUploaded: string[];
+    expectedUntickedAfterPush: string[];
   }>;
   payloadCases: Array<{
     id: string;
@@ -67,7 +78,7 @@ describe('Android settings sync runs the shared vectors through core runSyncRoun
     const effects = effectsFor({ kind: 'absent' });
     const result = await runSyncRound(
       [{ name: 'prod', hostname: 'prod.example.net' }],
-      ['prod'],
+      { checked: ['prod'], unticked: [] },
       effects,
     );
 
@@ -86,7 +97,12 @@ describe('Android settings sync runs the shared vectors through core runSyncRoun
         plaintext: JSON.stringify({ hosts: vector.remote }),
       });
 
-      const result = await runSyncRound(hosts(vector.local), vector.checked, effects);
+      // A merge case's `checked` is the final selection, so every account
+      // alias it leaves out is one the user explicitly unticked.
+      const unticked = hosts(vector.remote)
+        .map((entry) => entry.name)
+        .filter((name) => !vector.checked.includes(name));
+      const result = await runSyncRound(hosts(vector.local), { checked: vector.checked, unticked }, effects);
 
       expect(result.kind).toBe('synced');
       expect(effects.uploads).toHaveLength(1);
@@ -98,17 +114,47 @@ describe('Android settings sync runs the shared vectors through core runSyncRoun
 
   for (const vector of vectors.autoCheckCases) {
     it(vector.id, async () => {
-      const local = vector.localAliases.map((name) => ({ name, hostname: `${name}.example.net` }));
+      const local = vector.checked.map((name) => ({ name, hostname: `${name}.example.net` }));
       const effects = effectsFor({
         kind: 'ok',
         version: 3,
         plaintext: JSON.stringify({ hosts: vector.remote }),
       });
 
-      const result = await runSyncRound(local, vector.checked, effects);
+      const observed: SyncRoundPulled[] = [];
+      const result = await runSyncRound(
+        local,
+        { checked: vector.checked, unticked: vector.unticked },
+        { ...effects, onPulled: (pulled) => observed.push(pulled) },
+      );
 
+      // The vector pins the selection after the pull...
+      expect(observed[0]?.selectedAliases).toEqual(vector.expected);
+      expect(observed[0]?.untickedAliases).toEqual(vector.expectedUnticked);
       expect(result.kind).toBe('synced');
-      if (result.kind === 'synced') expect(result.selectedAliases).toEqual(vector.expected);
+      // ...and the push then carries every pending untick out (one-shot).
+      if (result.kind === 'synced') {
+        expect(result.selectedAliases).toEqual(vector.expected);
+        expect(result.untickedAliases).toEqual([]);
+      }
+      expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+        .toEqual(vector.expected);
+    });
+  }
+
+  for (const vector of vectors.untickRoundCases) {
+    it(vector.id, async () => {
+      const effects = effectsFor({ kind: 'ok', version: 2, plaintext: JSON.stringify({ hosts: vector.remote }) });
+
+      const result = await runSyncRound(
+        hosts(vector.local),
+        { checked: vector.checked, unticked: vector.unticked },
+        effects,
+      );
+
+      expect(JSON.parse(effects.uploads[0]!.plaintext).hosts.map((h: { name: string }) => h.name))
+        .toEqual(vector.expectedUploaded);
+      expect(result).toMatchObject({ kind: 'synced', untickedAliases: vector.expectedUntickedAfterPush });
     });
   }
 
@@ -119,7 +165,7 @@ describe('Android settings sync runs the shared vectors through core runSyncRoun
 
       const effects = effectsFor({ kind: 'ok', version: 4, plaintext: vector.plaintext });
 
-      const result = await runSyncRound([], [], effects);
+      const result = await runSyncRound([], { checked: [], unticked: [] }, effects);
 
       expect(result).toMatchObject({ kind: 'invalid-payload', reason: vector.expected.reason });
       expect(result).not.toHaveProperty('hosts');
@@ -131,7 +177,7 @@ describe('Android settings sync runs the shared vectors through core runSyncRoun
   it('accepts an explicit empty payload but never uploads an empty selection', async () => {
     const effects = effectsFor({ kind: 'ok', version: 5, plaintext: '{"hosts":[]}' });
 
-    const result = await runSyncRound([], [], effects);
+    const result = await runSyncRound([], { checked: [], unticked: [] }, effects);
 
     expect(parseSyncPayloadResult('{"hosts":[]}')).toEqual({ kind: 'ok', hosts: [] });
     expect(result).toEqual({ kind: 'empty-selection' });

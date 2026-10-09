@@ -79,8 +79,8 @@ const HETZNER_PHONE: Saved = { name: 'hetzner', hostname: '135.181.114.209', por
  */
 const GW = { serverUrl: 'wss://gateway.example', deviceId: 'dev-1' };
 const LINK = { relayUrl: 'wss://relay.example', hostId: 'h-1' };
-const GATEWAY_REFUSAL = /is reached through the PocketShell gateway, which this phone can't connect through yet\. Nothing was dialled\.$/;
-const LINK_REFUSAL = /is reached through a PocketShell relay link, which this phone can't connect through yet\. Nothing was dialled\.$/;
+const GATEWAY_REFUSAL = /is reached through the PocketShell gateway, which this device can't connect through yet\. Nothing was dialled\.$/;
+const LINK_REFUSAL = /is reached through a PocketShell relay link, which this device can't connect through yet\. Nothing was dialled\.$/;
 
 const CASES: Array<[string, Record<string, unknown>, RegExp]> = [
   ['a valid gateway marker', { gateway: GW }, GATEWAY_REFUSAL],

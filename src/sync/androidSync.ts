@@ -11,7 +11,11 @@
  *    passphrase encryption, the cached account copy, and the phone's
  *    contribution to the round (only the host fields the phone owns, so
  *    desktop-only fields survive — #2852 / core docs/SYNC.md).
- *  - core `runSyncRound`: pull → auto-select → merge → push → conflict retry.
+ *  - core `runSyncRound`: pull → auto-select → merge → push → conflict retry,
+ *    including the one tick rule every client shares (#3072): every account
+ *    host stays selected unless the user explicitly unticked it, and an
+ *    untick is spent by the push that carries it out. This adapter keeps no
+ *    selection logic of its own.
  *
  * The same adapter backs the legacy Account screen and the shared app's
  * `api.sync` group, so both shells sync through one implementation.
@@ -28,6 +32,7 @@ import {
   type SyncPullResult,
   type SyncPushResult,
   type SyncRoundResult,
+  type SyncSelectionState,
   type SyncStatus,
 } from '@pocketshell/core';
 import type { GoogleSyncNative, GoogleSyncStatus } from '@/native/googleSync';
@@ -42,12 +47,13 @@ import { decryptEnvelope, encryptToEnvelope, SYNC_KDF_ITERATIONS } from './syncC
 export const ACCOUNT_HOSTS_STORAGE_KEY = 'pocketshell.sync.account-hosts.v1';
 
 /**
- * Account aliases this phone has already seen in its sync selection or ticked
- * on its own (aliases only, like the persisted selection itself). An account
- * alias missing from it is new to this phone and is ticked, so a Sync now
- * keeps it; an alias in it but no longer selected is one the user unticked.
+ * Where #3063 builds kept the account aliases this phone had "seen", reading a
+ * seen-but-unselected alias as an untick. #3072 replaced that with core's one
+ * tick rule and the shared settings' saved unticks, so an adapter deletes this
+ * key when it is created. A host the phone had unticked comes back ticked,
+ * which is the safe direction: forgetting an untick can only keep a host.
  */
-export const KNOWN_ALIASES_STORAGE_KEY = 'pocketshell.sync.known-aliases.v1';
+export const RETIRED_KNOWN_ALIASES_STORAGE_KEY = 'pocketshell.sync.known-aliases.v1';
 
 /** The sync Lambda rejects `data` over 8 KB. */
 export const SYNC_DATA_LIMIT_BYTES = 8 * 1024;
@@ -58,22 +64,10 @@ export interface SyncStorage {
   removeItem(key: string): void;
 }
 
-/** The shared host selection (the settings store's `syncSelectedHosts`). */
-export interface SyncSelection {
-  get(): readonly string[];
-  set(aliases: string[]): void;
-}
-
 export interface AndroidSyncDeps {
   native: GoogleSyncNative;
-  /** WebView storage: the known-alias list, and deleting the retired persisted account copy. */
+  /** WebView storage: only to delete what older builds persisted there. */
   storage: SyncStorage;
-  /**
-   * The sync selection. With it, every account alias this phone has not
-   * decided about is ticked on each pull, so a Sync now never drops an account
-   * host the user did not untick (#3063).
-   */
-  selection: SyncSelection;
   /**
    * The phone's hosts. A push always carries only the fields the phone owns
    * for them; every other field comes from the account copy (#3020, #3063).
@@ -86,40 +80,21 @@ export interface AndroidSyncDeps {
 export interface SyncNowRequest {
   /** The phone's hosts (saved and imported). */
   localHosts: readonly HostEntry[];
-  /** Selected aliases, in order. */
+  /** Selected aliases, in order (the shared settings' `syncSelectedHosts`). */
   selected: readonly string[];
+  /** The user's pending explicit unticks (the shared settings' `syncUntickedHosts`). */
+  unticked: readonly string[];
   passphrase: string;
-  /** Persist the selection after each pull's auto-select. */
-  onSelection?: (aliases: string[]) => void;
+  /**
+   * Persist the selection: after each pull's auto-select, and once more after
+   * a successful push, which spends the unticks it carried out (one-shot).
+   */
+  onSelection?: (selection: { checked: string[]; unticked: string[] }) => void;
 }
 
 /** The phone's contribution: only the fields its host model owns. */
 export function phoneOwnedSyncFields(host: Pick<HostEntry, 'name' | 'hostname' | 'port' | 'user'>): SyncHostEntry {
   return { name: host.name, hostname: host.hostname, port: host.port, user: host.user };
-}
-
-/**
- * The Android selection rule (#3063): every account alias stays selected
- * unless the user unticked it. `known` holds the aliases this phone has
- * decided about (seen selected, or ticked here); an account alias outside it
- * is ticked and becomes known. A known alias that is not selected is an
- * explicit untick and stays off.
- */
-export function keepAccountAliases(
-  account: readonly string[],
-  selected: readonly string[],
-  known: readonly string[],
-): { selected: string[]; known: string[] } {
-  const nextKnown = [...new Set([...known, ...selected])];
-  const knownSet = new Set(nextKnown);
-  const nextSelected = [...selected];
-  for (const alias of account) {
-    if (knownSet.has(alias)) continue;
-    knownSet.add(alias);
-    nextKnown.push(alias);
-    if (!nextSelected.includes(alias)) nextSelected.push(alias);
-  }
-  return { selected: nextSelected, known: nextKnown };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -164,8 +139,6 @@ export function syncFailureText(result: Exclude<SyncRoundResult, { kind: 'synced
 
 export class AndroidSync {
   private readonly native: GoogleSyncNative;
-  private readonly storage: SyncStorage;
-  private readonly selection: SyncSelection;
   private readonly localHosts: () => Promise<readonly HostEntry[]>;
   private readonly kdfIterations: number;
   /**
@@ -178,11 +151,10 @@ export class AndroidSync {
 
   constructor(deps: AndroidSyncDeps) {
     this.native = deps.native;
-    this.storage = deps.storage;
-    this.selection = deps.selection;
     this.localHosts = deps.localHosts;
     this.kdfIterations = deps.kdfIterations ?? SYNC_KDF_ITERATIONS;
     deps.storage.removeItem(ACCOUNT_HOSTS_STORAGE_KEY);
+    deps.storage.removeItem(RETIRED_KNOWN_ALIASES_STORAGE_KEY);
   }
 
   status(): Promise<GoogleSyncStatus> {
@@ -194,14 +166,13 @@ export class AndroidSync {
     return status;
   }
 
-  /** Native sign-out deletes the token; the cached account copy goes too. */
+  /**
+   * Native sign-out deletes the token; the cached account copy goes too. The
+   * saved unticks are the shared settings', and whoever signs out clears them
+   * (the shared sync store's `logout`, the legacy screen's sign-out).
+   */
   async signOut(): Promise<void> {
     this.account = null;
-    // The next account starts undecided: its aliases are ticked on unlock.
-    // Deliberately, signing out and back in therefore re-ticks a host the user
-    // had unticked: forgetting an untick can only keep a host in the account,
-    // never drop one (docs/settings-sync.md).
-    this.storage.removeItem(KNOWN_ALIASES_STORAGE_KEY);
     await this.native.signOut();
   }
 
@@ -261,31 +232,34 @@ export class AndroidSync {
   }
 
   /**
-   * The payload a phone uploads, whoever assembled it (#3063): the selected
-   * aliases plus every selected account alias, each with only the fields the
-   * phone owns ({@link phoneOwnedSyncFields}) over the account's entry, so a
-   * phone sync never clears another client's identityFile, proxyJump or
-   * forwards — the #3020 rule, now also for the shared Account screen, whose
-   * round assembles from full picker entries. Null leaves unreadable
-   * plaintext untouched (the round already refuses to produce it).
+   * The payload a phone uploads, whoever assembled it (#3063): the round's
+   * aliases — core's tick rule already put every account alias the user did
+   * not untick there — each with only the fields the phone owns
+   * ({@link phoneOwnedSyncFields}) over the account's entry, so a phone sync
+   * never clears another client's identityFile, proxyJump or forwards — the
+   * #3020 rule, now also for the shared Account screen, whose round assembles
+   * from full picker entries. Null leaves unreadable plaintext untouched (the
+   * round already refuses to produce it).
    */
   private async phoneOwnedPayload(plaintext: string): Promise<SyncHostEntry[] | null> {
     const parsed = parseSyncPayloadResult(plaintext);
     if (parsed.kind !== 'ok') return null;
     const account = this.account ?? [];
-    const accountNames = new Set(account.map((host) => host.name));
     const pushedNames = parsed.hosts.map((host) => host.name);
-    const kept = this.selection.get().filter((alias) => accountNames.has(alias) && !pushedNames.includes(alias));
     const phone = await this.localHosts().catch(() => []);
     const local = phone.map(phoneOwnedSyncFields);
     const localNames = new Set(local.map((host) => host.name));
     for (const host of parsed.hosts) {
       if (!localNames.has(host.name)) local.push(phoneOwnedSyncFields(host as Pick<HostEntry, 'name' | 'hostname' | 'port' | 'user'>));
     }
-    return assembleSyncSet(local, account, [...pushedNames, ...kept]).map(withoutUndefined);
+    return assembleSyncSet(local, account, pushedNames).map(withoutUndefined);
   }
 
-  /** Every pull: keep the decrypted copy in memory and apply the selection rule. */
+  /**
+   * Every pull: keep the decrypted copy in memory. The selection is not this
+   * adapter's: core's tick rule applies it wherever the account is read (the
+   * shared sync store, `runSyncRound`).
+   */
   private afterPull(pulled: SyncPullResult): void {
     if (pulled.kind !== 'ok') {
       // A fresh account holds no hosts: unlocked, and empty.
@@ -295,17 +269,6 @@ export class AndroidSync {
     const parsed = parseSyncPayloadResult(pulled.plaintext);
     if (parsed.kind !== 'ok') return;
     this.rememberAccount(parsed.hosts);
-    let known: string[] = [];
-    try {
-      const raw: unknown = JSON.parse(this.storage.getItem(KNOWN_ALIASES_STORAGE_KEY) ?? '[]');
-      if (Array.isArray(raw)) known = raw.filter((alias): alias is string => typeof alias === 'string');
-    } catch {
-      known = [];
-    }
-    const current = this.selection.get();
-    const next = keepAccountAliases(parsed.hosts.map((host) => host.name), current, known);
-    this.storage.setItem(KNOWN_ALIASES_STORAGE_KEY, JSON.stringify(next.known));
-    if (next.selected.length !== current.length) this.selection.set(next.selected);
   }
 
   /**
@@ -336,7 +299,8 @@ export class AndroidSync {
    */
   async syncNow(request: SyncNowRequest): Promise<SyncRoundResult> {
     let pulls = 0;
-    return runSyncRound(request.localHosts.map(phoneOwnedSyncFields), request.selected, {
+    const selection: SyncSelectionState = { checked: request.selected, unticked: request.unticked };
+    const result = await runSyncRound(request.localHosts.map(phoneOwnedSyncFields), selection, {
       pull: async () => {
         pulls += 1;
         const pulled = await this.pull(SYNC_SLOT, request.passphrase);
@@ -347,13 +311,15 @@ export class AndroidSync {
         return pulled;
       },
       push: ({ baseVersion, plaintext }) => this.push(SYNC_SLOT, plaintext, request.passphrase, baseVersion ?? 0),
-      onPulled: ({ hosts, selectedAliases }) => {
+      onPulled: ({ hosts, selectedAliases, untickedAliases }) => {
         this.rememberAccount(hosts);
-        // The round's own auto-select plus every alias the selection rule kept.
-        const kept = this.selection.get();
-        request.onSelection?.([...selectedAliases, ...kept.filter((alias) => !selectedAliases.includes(alias))]);
+        request.onSelection?.({ checked: selectedAliases, unticked: untickedAliases });
       },
-    }).then((result) => (result.kind === 'synced' ? { ...result, hosts: this.accountHosts() ?? result.hosts } : result));
+    });
+    if (result.kind !== 'synced') return result;
+    // The push carried out every pending untick: they are spent (one-shot).
+    request.onSelection?.({ checked: result.selectedAliases, unticked: result.untickedAliases });
+    return { ...result, hosts: this.accountHosts() ?? result.hosts };
   }
 
   /** The shared app's `api.sync` group over this adapter. */
@@ -375,8 +341,8 @@ export class AndroidSync {
       logout: () => this.signOut(),
       pull: async (slot, passphrase) => {
         const pulled = await this.pull(slot, passphrase);
-        // Mirror desktop's session cache so the picker can list the account,
-        // and keep every undecided account alias selected.
+        // Mirror desktop's session cache so the picker can list the account;
+        // the shared sync store applies core's tick rule to what it pulled.
         this.afterPull(pulled);
         return pulled;
       },

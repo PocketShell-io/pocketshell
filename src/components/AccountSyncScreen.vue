@@ -8,9 +8,10 @@
  * never reaches the WebView at all.
  */
 import { computed, onMounted, ref } from 'vue';
-import type { HostEntry, SyncHostEntry } from '@pocketshell/core';
+import { applyAccountToSelection, type HostEntry, type SyncHostEntry } from '@pocketshell/core';
 import AppIcon from '@ui/components/AppIcon.vue';
 import { useSettingsStore } from '@ui/app/stores/settings';
+import { useSyncStore } from '@ui/app/stores/sync';
 import type { GoogleSyncStatus } from '@/native/googleSync';
 import { describeSyncError, syncFailureText, type AndroidSync } from '@/sync/androidSync';
 
@@ -57,11 +58,29 @@ const rows = computed<HostRow[]>(() => {
 
 const selected = computed(() => new Set(sharedSettings.syncSelectedHosts));
 
+/**
+ * A tick or untick is the shared sync store's (core's tick rule, #3072): an
+ * untick is saved in `syncUntickedHosts`, so it is the one thing that removes
+ * the host from the account on the next Sync now, and ticking again cancels it.
+ */
 function setSelected(alias: string, on: boolean): void {
-  const current = sharedSettings.syncSelectedHosts;
-  if (on === current.includes(alias)) return;
-  const rest = current.filter((name) => name !== alias);
-  sharedSettings.syncSelectedHosts = on ? [...rest, alias] : rest;
+  useSyncStore().setSelected(alias, on);
+}
+
+/** Write a selection core computed back to the shared settings. */
+function persistSelection(next: { checked: string[]; unticked: string[] }): void {
+  sharedSettings.syncSelectedHosts = next.checked;
+  sharedSettings.syncUntickedHosts = next.unticked;
+}
+
+/** Show an account copy with core's tick rule applied: every host the user did not untick is ticked. */
+function showAccount(hosts: SyncHostEntry[] | null): void {
+  accountHosts.value = hosts;
+  if (hosts === null) return;
+  persistSelection(applyAccountToSelection(hosts, {
+    checked: sharedSettings.syncSelectedHosts,
+    unticked: sharedSettings.syncUntickedHosts,
+  }));
 }
 
 async function refresh(): Promise<void> {
@@ -72,7 +91,7 @@ async function refresh(): Promise<void> {
     status.value = null;
     statusError.value = describeSyncError(error);
   }
-  accountHosts.value = status.value?.signedIn ? props.sync.accountHosts() : null;
+  showAccount(status.value?.signedIn ? props.sync.accountHosts() : null);
   localHosts.value = await props.loadLocalHosts().catch(() => []);
 }
 
@@ -82,7 +101,7 @@ async function signIn(): Promise<void> {
   message.value = null;
   try {
     status.value = await props.sync.signIn();
-    accountHosts.value = props.sync.accountHosts();
+    showAccount(props.sync.accountHosts());
     message.value = { kind: 'ok', text: `Signed in as ${status.value.email ?? 'your Google account'}.` };
   } catch (error) {
     message.value = { kind: 'error', text: describeSyncError(error) };
@@ -99,6 +118,9 @@ async function signOut(): Promise<void> {
     await props.sync.signOut();
     passphrase.value = '';
     accountHosts.value = null;
+    // The next account starts with every host kept (the shared store's logout
+    // does the same): forgetting an untick can only keep a host.
+    sharedSettings.syncUntickedHosts = [];
     message.value = { kind: 'ok', text: 'Signed out. The Google sign-in was removed from this phone.' };
   } catch (error) {
     message.value = { kind: 'error', text: describeSyncError(error) };
@@ -123,7 +145,7 @@ async function unlock(): Promise<void> {
   message.value = null;
   try {
     const hosts = await props.sync.unlock(passphrase.value);
-    accountHosts.value = props.sync.accountHosts();
+    showAccount(props.sync.accountHosts());
     message.value = {
       kind: 'ok',
       text: `Your account has ${hosts.length} host${hosts.length === 1 ? '' : 's'}; they are listed on the home screen.`,
@@ -152,10 +174,9 @@ async function syncNow(): Promise<void> {
     const result = await props.sync.syncNow({
       localHosts: localHosts.value,
       selected: sharedSettings.syncSelectedHosts,
+      unticked: sharedSettings.syncUntickedHosts,
       passphrase: passphrase.value,
-      onSelection: (aliases) => {
-        sharedSettings.syncSelectedHosts = aliases;
-      },
+      onSelection: persistSelection,
     });
     accountHosts.value = props.sync.accountHosts();
     if (result.kind === 'synced') {

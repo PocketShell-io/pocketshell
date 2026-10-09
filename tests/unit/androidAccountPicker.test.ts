@@ -5,13 +5,14 @@ import { createPinia, setActivePinia } from 'pinia';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { provideApi } from '@ui/app/ipc';
 import { useConnectionStore } from '@ui/app/stores/connection';
+import { useSettingsStore } from '@ui/app/stores/settings';
 import { useSyncStore } from '@ui/app/stores/sync';
 import { createAppRoutes } from '@ui/app/routes';
 import HostPickerView from '@ui/app/views/HostPickerView.vue';
 import { ConnectionController, type HostEntry } from '@pocketshell/core';
 import type { GoogleSyncHttpResponse, GoogleSyncNative, GoogleSyncRequest } from '@/native/googleSync';
 import type { SshKeyMetadata } from '@/native/sshKeyVault';
-import { ACCOUNT_HOSTS_STORAGE_KEY, AndroidSync, keepAccountAliases, KNOWN_ALIASES_STORAGE_KEY } from '@/sync/androidSync';
+import { ACCOUNT_HOSTS_STORAGE_KEY, AndroidSync, RETIRED_KNOWN_ALIASES_STORAGE_KEY } from '@/sync/androidSync';
 import { encryptToEnvelope } from '@/sync/syncCrypto';
 import { createAndroidPlatform } from '@/platform/android/androidApi';
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
@@ -78,7 +79,7 @@ class FakeGoogleSync implements GoogleSyncNative {
 function setup(options: { opened?: string[] } = {}) {
   const google = new FakeGoogleSync();
   const storage = new Storage();
-  const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
+  const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, localHosts: async () => [] });
   const syncApi = sync.api();
   const native = new FakeNative();
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
@@ -150,21 +151,22 @@ describe('Android account sync group and shared picker account hosts', () => {
     google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASSPHRASE, FAST) };
     const storage = new Storage();
     storage.setItem(ACCOUNT_HOSTS_STORAGE_KEY, JSON.stringify([{ name: 'stale', hostname: 'old.example' }]));
-    const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
+    // A #3063 build's "seen aliases" list (#3072 retired it) goes the same way.
+    storage.setItem(RETIRED_KNOWN_ALIASES_STORAGE_KEY, JSON.stringify(['hetzner']));
+    const sync = new AndroidSync({ native: google, storage, kdfIterations: FAST, localHosts: async () => [] });
     expect(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(RETIRED_KNOWN_ALIASES_STORAGE_KEY)).toBeNull();
     expect(sync.accountHosts()).toBeNull();
 
     await sync.api().pull('main', PASSPHRASE);
-    const result = await sync.syncNow({ localHosts: [], selected: ['hetzner', 'fixture'], passphrase: PASSPHRASE });
+    const result = await sync.syncNow({ localHosts: [], selected: ['hetzner', 'fixture'], unticked: [], passphrase: PASSPHRASE });
     expect(result.kind).toBe('synced');
     expect(sync.accountHosts()?.map((host) => host.name)).toEqual(['hetzner', 'fixture']);
-    // Nothing decrypted reached WebView storage: no host name, no address.
-    // Nothing decrypted reached WebView storage: no address, user or desktop
-    // field. Only the alias list the selection rule keeps (aliases, like the
-    // persisted selection itself) is stored.
-    for (const secret of ['135.181.114.209', 'alexey', 'id_ed25519', '2222']) expect(storage.dump()).not.toContain(secret);
-    expect([...storage.values.keys()]).toEqual([KNOWN_ALIASES_STORAGE_KEY]);
-    expect(JSON.parse(storage.getItem(KNOWN_ALIASES_STORAGE_KEY)!)).toEqual(['hetzner', 'fixture']);
+    // Nothing decrypted reached WebView storage: no host name, address, user
+    // or desktop field. The adapter stores nothing at all; the selection is
+    // the shared settings' (aliases only).
+    for (const secret of ['hetzner', 'fixture', '135.181.114.209', 'alexey', 'id_ed25519', '2222']) expect(storage.dump()).not.toContain(secret);
+    expect([...storage.values.keys()]).toEqual([]);
   });
 
   it('the account button opens Account & sync on the phone instead of refusing', async () => {
@@ -321,27 +323,39 @@ describe('Android account sync group and shared picker account hosts', () => {
     await created.hub.close(result.connectionId!);
   });
 
-  it('keeps every account alias selected unless the user unticked it', () => {
-    expect(keepAccountAliases(['a', 'b'], [], [])).toEqual({ selected: ['a', 'b'], known: ['a', 'b'] });
-    // 'a' was seen selected before and is no longer: an explicit untick.
-    expect(keepAccountAliases(['a', 'b', 'c'], ['b'], ['a', 'b'])).toEqual({ selected: ['b', 'c'], known: ['a', 'b', 'c'] });
-    expect(keepAccountAliases([], ['x'], [])).toEqual({ selected: ['x'], known: ['x'] });
+  it('keeps every account alias selected unless the user unticked it', async () => {
+    // Core's one tick rule (#3072), applied by the shared store to what the
+    // Android adapter pulls; the adapter itself keeps no selection.
+    const { google, created } = setup();
+    google.signedIn = true;
+    google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASSPHRASE, FAST) };
+    provideApi(created.api);
+    setActivePinia(createPinia());
+    const sync = useSyncStore();
+    const settings = useSettingsStore();
+    await sync.refreshStatus();
+    sync.passphrase = PASSPHRASE;
+    await sync.loadAccount();
+    expect(settings.syncSelectedHosts).toEqual(['hetzner', 'fixture']);
+    sync.setSelected('hetzner', false);
+    expect(settings.syncUntickedHosts).toEqual(['hetzner']);
+    // Unlocking again keeps the explicit untick; every other host stays ticked.
+    await sync.loadAccount();
+    expect(settings.syncSelectedHosts).toEqual(['fixture']);
+    expect(settings.syncUntickedHosts).toEqual(['hetzner']);
+    // Ticking again cancels it.
+    sync.setSelected('hetzner', true);
+    expect(settings.syncUntickedHosts).toEqual([]);
   });
 
   it("browser dev mode's GoogleSync stand-in signs in and serves an account the dev passphrase unlocks", async () => {
     const plugin = createGoogleSyncPlugin();
     const call = (name: string) => (options: Record<string, unknown> = {}) => Promise.resolve(plugin.methods[name]!(options));
     const native = createGoogleSyncNative({ status: call('status'), signIn: call('signIn'), signOut: call('signOut'), request: call('request') } as never);
-    const sync = new AndroidSync({ native, storage: new Storage(), kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] }).api();
+    const sync = new AndroidSync({ native, storage: new Storage(), kdfIterations: FAST, localHosts: async () => [] }).api();
     expect((await sync.status()).loggedIn).toBe(false);
     expect(await sync.login()).toBe('dev@example.com');
     expect((await sync.pull('main', DEV_SYNC_PASSPHRASE)).kind).toBe('ok');
     expect((await sync.accountHosts())?.map((host) => host.name)).toEqual(DEV_SYNC_ACCOUNT.hosts.map((host) => host.name));
   });
 });
-
-/** The sync selection as a plain list (the settings store's `syncSelectedHosts` in the app). */
-function memorySelection(initial: string[] = []) {
-  let aliases = [...initial];
-  return { get: () => aliases, set: (next: string[]) => { aliases = [...next]; } };
-}

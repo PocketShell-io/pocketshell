@@ -41,6 +41,8 @@ REQUIRED_SCREENSHOTS = frozenset(
         "account-wrong-passphrase.png",
         "account-synced.png",
         "home-synced-host.png",
+        # #3072: the legacy screen's one-shot untick, after another device re-added the host.
+        "account-untick-one-shot.png",
         "account-after-sign-out.png",
         "account-sign-in-unavailable.png",
     }

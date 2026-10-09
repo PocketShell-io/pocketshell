@@ -29,9 +29,9 @@
  */
 import type { PocketShellApi } from '@ui/app/api';
 import {
-  hasGatewayMarker,
   readHostUsage,
   runHostBootstrap,
+  unsupportedTransport,
   type ConnectionController,
   type HomeResult,
 } from '@pocketshell/core';
@@ -70,13 +70,8 @@ const unsupported = (method: string) => (): Promise<never> =>
  * an explicit transport capability, never by falling back to plain SSH.
  */
 export function unsupportedTransportMessage(name: string, entry: object): string | null {
-  if (hasGatewayMarker(entry)) {
-    return `“${name}” is reached through the PocketShell gateway, which this phone can't connect through yet. Nothing was dialled.`;
-  }
-  if (Object.prototype.hasOwnProperty.call(entry, 'link')) {
-    return `“${name}” is reached through a PocketShell relay link, which this phone can't connect through yet. Nothing was dialled.`;
-  }
-  return null;
+  const decision = unsupportedTransport(entry, { gateway: false, link: false }, name);
+  return decision.refused ? decision.message : null;
 }
 
 /** Whether a connect request names this exact phone host (alias, or address and user). */

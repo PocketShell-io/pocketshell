@@ -10,7 +10,6 @@ import {
 import {
   ACCOUNT_HOSTS_STORAGE_KEY,
   AndroidSync,
-  KNOWN_ALIASES_STORAGE_KEY,
   phoneOwnedSyncFields,
   syncFailureText,
   type SyncStorage,
@@ -91,7 +90,7 @@ function phoneHost(name: string, hostname: string, port = 22, user = 'me'): Host
 function setup() {
   const backend = new FakeSyncBackend();
   const storage = new MemoryStorage();
-  const sync = new AndroidSync({ native: backend, storage, kdfIterations: FAST, selection: memorySelection(), localHosts: async () => [] });
+  const sync = new AndroidSync({ native: backend, storage, kdfIterations: FAST, localHosts: async () => [] });
   return { backend, storage, sync };
 }
 
@@ -117,16 +116,21 @@ describe('Android settings sync adapter', () => {
   it('brings desktop hosts onto the phone and keeps desktop-only fields through a phone sync', async () => {
     const { backend, storage, sync } = setup();
     await backend.seed(DESKTOP_ACCOUNT);
-    const selections: string[][] = [];
+    const selections: Array<{ checked: string[]; unticked: string[] }> = [];
     const result = await sync.syncNow({
       localHosts: [phoneHost('hetzner', 'hetzner.phone.example', 2200, 'alexey'), phoneHost('phone-box', '192.168.1.9')],
       selected: ['hetzner'],
+      unticked: [],
       passphrase: PASSPHRASE,
-      onSelection: (aliases) => selections.push(aliases),
+      onSelection: (selection) => selections.push(selection),
     });
     expect(result).toMatchObject({ kind: 'synced', version: 4, attempts: 1 });
-    // The account-only alias is auto-selected; the phone-only one stays unticked.
-    expect(selections).toEqual([['hetzner', 'laptop-only']]);
+    // The account-only alias is auto-selected (after the pull, and again after
+    // the push); the phone-only one stays unticked.
+    expect(selections).toEqual([
+      { checked: ['hetzner', 'laptop-only'], unticked: [] },
+      { checked: ['hetzner', 'laptop-only'], unticked: [] },
+    ]);
     const uploaded = await backend.uploaded();
     expect(uploaded.hosts.map((host) => host.name)).toEqual(['hetzner', 'laptop-only']);
     expect(uploaded.hosts[0]).toEqual({
@@ -142,13 +146,13 @@ describe('Android settings sync adapter', () => {
     expect(sync.accountHosts()?.[1]).toMatchObject({ hostname: 'laptop.lan' });
     // In memory only (#3026): nothing decrypted is written to WebView storage.
     expect(storage.getItem(ACCOUNT_HOSTS_STORAGE_KEY)).toBeNull();
-    expect([...storage.values.keys()]).toEqual([KNOWN_ALIASES_STORAGE_KEY]);
+    expect([...storage.values.keys()]).toEqual([]);
     expect(JSON.stringify([...storage.values])).not.toContain('laptop.lan');
   });
 
   it('creates a fresh account on base version 0 with the selected phone hosts', async () => {
     const { backend, sync } = setup();
-    const result = await sync.syncNow({ localHosts: [phoneHost('phone-box', '192.168.1.9')], selected: ['phone-box'], passphrase: PASSPHRASE });
+    const result = await sync.syncNow({ localHosts: [phoneHost('phone-box', '192.168.1.9')], selected: ['phone-box'], unticked: [], passphrase: PASSPHRASE });
     expect(result).toMatchObject({ kind: 'synced', version: 1 });
     expect(backend.puts[0].baseVersion).toBe(0);
     expect((await backend.uploaded()).hosts).toEqual([{ name: 'phone-box', hostname: '192.168.1.9', port: 22, user: 'me' }]);
@@ -161,7 +165,7 @@ describe('Android settings sync adapter', () => {
       { name: 'hetzner', hostname: 'h', port: 22, user: 'a' },
       { name: 'new-from-web', hostname: 'web.example', port: 22, user: 'w' },
     ] });
-    const result = await sync.syncNow({ localHosts: [phoneHost('phone-box', 'p')], selected: ['phone-box'], passphrase: PASSPHRASE });
+    const result = await sync.syncNow({ localHosts: [phoneHost('phone-box', 'p')], selected: ['phone-box'], unticked: [], passphrase: PASSPHRASE });
     expect(result).toMatchObject({ kind: 'synced', attempts: 2, version: 5 });
     expect((await backend.uploaded()).hosts.map((host) => host.name)).toEqual(['phone-box', 'hetzner', 'new-from-web']);
   });
@@ -169,17 +173,17 @@ describe('Android settings sync adapter', () => {
   it('never uploads over unreadable account data, a wrong passphrase, or an empty selection', async () => {
     const { backend, sync } = setup();
     await backend.seed('{"schemaVersion":2,"hosts":[]}');
-    const invalid = await sync.syncNow({ localHosts: [phoneHost('a', 'a')], selected: ['a'], passphrase: PASSPHRASE });
+    const invalid = await sync.syncNow({ localHosts: [phoneHost('a', 'a')], selected: ['a'], unticked: [], passphrase: PASSPHRASE });
     expect(invalid).toEqual({ kind: 'invalid-payload', reason: 'unsupported-version' });
     if (invalid.kind !== 'synced') {
       expect(syncFailureText(invalid, 1)).toBe('The account holds sync data this version cannot read, so nothing was uploaded.');
     }
 
     await backend.seed(DESKTOP_ACCOUNT);
-    const wrong = await sync.syncNow({ localHosts: [phoneHost('a', 'a')], selected: ['a'], passphrase: 'not it' });
+    const wrong = await sync.syncNow({ localHosts: [phoneHost('a', 'a')], selected: ['a'], unticked: [], passphrase: 'not it' });
     expect(wrong).toEqual({ kind: 'error', stage: 'pull', message: 'Wrong sync passphrase, or the account data is corrupted.' });
 
-    const empty = await setup().sync.syncNow({ localHosts: [], selected: [], passphrase: PASSPHRASE });
+    const empty = await setup().sync.syncNow({ localHosts: [], selected: [], unticked: [], passphrase: PASSPHRASE });
     expect(empty).toEqual({ kind: 'empty-selection' });
     expect(backend.puts).toHaveLength(0);
   });
@@ -204,7 +208,7 @@ describe('Android settings sync adapter', () => {
   it('signing out deletes the native sign-in and the cached account copy', async () => {
     const { backend, storage, sync } = setup();
     await backend.seed(DESKTOP_ACCOUNT);
-    await sync.syncNow({ localHosts: [], selected: ['hetzner'], passphrase: PASSPHRASE });
+    await sync.syncNow({ localHosts: [], selected: ['hetzner'], unticked: [], passphrase: PASSPHRASE });
     expect(sync.accountHosts()).not.toBeNull();
     await sync.signOut();
     expect(backend.signOuts).toBe(1);
@@ -254,9 +258,3 @@ describe('Android settings sync adapter', () => {
     await expect(native.request({ method: 'GET', slot: 'main' })).rejects.toThrow('invalid response');
   });
 });
-
-/** The sync selection as a plain list (the settings store's `syncSelectedHosts` in the app). */
-function memorySelection(initial: string[] = []) {
-  let aliases = [...initial];
-  return { get: () => aliases, set: (next: string[]) => { aliases = [...next]; } };
-}

@@ -378,7 +378,7 @@ public final class JsShellPackagedSmokeTest {
             JSONArray localHosts = new JSONArray().put(localHost);
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 7, plaintext: " + JSONObject.quote(remotePlaintext) + "}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 8};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -398,10 +398,38 @@ public final class JsShellPackagedSmokeTest {
             assertEquals("keep", uploadedPayload.getJSONArray("hosts").getJSONObject(0)
                     .getJSONObject("futureDirective").getJSONArray("tags").getString(1));
 
+            // Core's tick rule (#3072) takes a {checked, unticked} selection.
+            // An explicit untick of an account host must keep it out of the
+            // upload and be spent by the push. A legacy array argument reads
+            // as "nothing decided", which auto-ticks and re-uploads "retired",
+            // so this probe fails on the wrong shape.
+            String untickPlaintext = new JSONObject().put("hosts", new JSONArray()
+                    .put(new JSONObject().put("name", "prod").put("hostname", "prod-desktop.example.net"))
+                    .put(new JSONObject().put("name", "retired").put("hostname", "retired.example.net")))
+                    .toString();
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: ['retired']}, {"
+                    + "pull: async () => ({kind: 'ok', version: 13, plaintext: " + JSONObject.quote(untickPlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 14};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject unticked = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject untickedResult = unticked.getJSONObject("result");
+            assertEquals("synced", untickedResult.getString("kind"));
+            assertEquals("only the ticked host is selected", "[\"prod\"]",
+                    untickedResult.getJSONArray("selectedAliases").toString());
+            assertEquals("the push spends the untick it carried out", 0,
+                    untickedResult.getJSONArray("untickedAliases").length());
+            JSONArray untickUploaded = new JSONObject(unticked.getJSONArray("uploads").getJSONObject(0)
+                    .getString("plaintext")).getJSONArray("hosts");
+            assertEquals("the unticked account host is not uploaded", 1, untickUploaded.length());
+            assertEquals("prod", untickUploaded.getJSONObject(0).getString("name"));
+
             String invalidPlaintext = "{\"schemaVersion\":2,\"hosts\":[]}";
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "const result = await window.__ps2852RunSettingsSync([], {checked: [], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 9, plaintext: " + JSONObject.quote(invalidPlaintext) + "}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 10};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -417,7 +445,7 @@ public final class JsShellPackagedSmokeTest {
 
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "const result = await window.__ps2852RunSettingsSync([], {checked: [], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 11, plaintext: '{\"hosts\":[]}'}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 12};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -428,7 +456,7 @@ public final class JsShellPackagedSmokeTest {
 
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: []}, {"
                     + "pull: async () => ({kind: 'absent'}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'error', message: 'service unavailable'};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");

@@ -168,8 +168,8 @@ public final class AccountSyncJourneyTest {
         assertEquals("a wrong passphrase uploads nothing", 0, backend.puts.size());
         captureScreenshot("account-wrong-passphrase.png", "[data-testid=account-sync-message]");
 
-        // Tick the phone's hosts (a local alias is never auto-selected: the
-        // user decides about hosts they can see), then sync for real.
+        // Tick the phone's hosts (nothing has been read from the account yet,
+        // so a phone-only host starts unticked), then sync for real.
         tapDomCenter("[data-testid=account-sync-select-phone-box]");
         awaitJsTrue("document.querySelector('[data-testid=account-sync-select-phone-box]')?.checked === true");
         tapDomCenter("[data-testid=account-sync-select-hetzner]");
@@ -225,10 +225,34 @@ public final class AccountSyncJourneyTest {
                 + " && document.querySelector('[data-testid=ssh-port]')?.value === '22'");
         captureScreenshot("home-synced-host.png", "[data-testid=synced-host-select]");
 
-        // Sign out removes the token and the cached account copy.
+        // #3072: an untick is ONE-SHOT. Unticking web-box removes it from the
+        // account once; when another device adds it back, the phone's next
+        // untouched Sync now keeps it instead of deleting it again.
         openSettings();
         tapDomCenter("[data-testid=open-account-settings]");
         awaitRoute("settings-account");
+        awaitJsTrue("document.querySelector('[data-testid=account-sync-select-web-box]')?.checked === true");
+        setValue("[data-testid=account-sync-passphrase]", PASSPHRASE);
+        tapDomCenter("[data-testid=account-sync-select-web-box]");
+        awaitJsTrue("document.querySelector('[data-testid=account-sync-select-web-box]')?.checked === false");
+        tapDomCenter("[data-testid=account-sync-now]");
+        awaitSyncMessageText("ok", "Synced: 3 hosts in your account.");
+        JSONArray afterUntick = decrypt(backend.puts.get(backend.puts.size() - 1).data).getJSONArray("hosts");
+        assertEquals("the explicit untick removes web-box", List.of("phone-box", "hetzner", "bäckerei"), names(afterUntick));
+        backend.writeElsewhere(encrypt(new JSONObject().put("hosts", new JSONArray(afterUntick.toString())
+                .put(new JSONObject().put("name", "web-box").put("hostname", "web.example.org").put("port", 22).put("user", "w"))
+        ).toString()));
+        int uploadsBeforeReAdd = backend.puts.size();
+        tapDomCenter("[data-testid=account-sync-now]");
+        awaitSyncMessageText("ok", "Synced: 4 hosts in your account.");
+        assertEquals(uploadsBeforeReAdd + 1, backend.puts.size());
+        JSONArray afterReAdd = decrypt(backend.puts.get(backend.puts.size() - 1).data).getJSONArray("hosts");
+        assertEquals("the spent untick does not delete the re-added host",
+                List.of("phone-box", "hetzner", "bäckerei", "web-box"), names(afterReAdd));
+        awaitJsTrue("document.querySelector('[data-testid=account-sync-select-web-box]')?.checked === true");
+        captureScreenshot("account-untick-one-shot.png", "[data-testid=account-sync-message]");
+
+        // Sign out removes the token and the cached account copy.
         awaitJsTrue("!!document.querySelector('[data-testid=account-sign-out]:not([disabled])')");
         tapDomCenter("[data-testid=account-sign-out]");
         awaitJsTrue("document.querySelector('[data-testid=account-sync-status]')?.dataset.signedIn === 'false'"
@@ -498,6 +522,12 @@ public final class AccountSyncJourneyTest {
         synchronized void seed(String envelope, int atVersion) {
             data = envelope;
             version = atVersion;
+        }
+
+        /** Another device writes the account on the current version. */
+        synchronized void writeElsewhere(String envelope) {
+            data = envelope;
+            version += 1;
         }
 
         @Override
