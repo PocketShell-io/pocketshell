@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SHARED_ROUTE_NAMES } from '@ui/app/routes';
 import { INSET_VARIABLES } from '@ui/app/insets';
-import { ADD_HOST_ROUTE, createSharedAppRouter } from '@/sharedApp/router';
+import { ACCOUNT_ROUTE, ADD_HOST_ROUTE, createSharedAppRouter } from '@/sharedApp/router';
 import { ANDROID_INSETS, ANDROID_MONO_FALLBACK, applyAndroidInsets } from '@/sharedApp/androidShell';
 
 /**
@@ -11,11 +11,12 @@ import { ANDROID_INSETS, ANDROID_MONO_FALLBACK, applyAndroidInsets } from '@/sha
  * copy of the root's watchers.
  */
 describe('Android shared app shell', () => {
-  it('routes by the shared map plus exactly the Android host form', async () => {
+  it('routes by the shared map plus exactly the Android host form and account screen', async () => {
     const router = createSharedAppRouter();
     const names = router.getRoutes().map((r) => r.name).filter(Boolean).map(String).sort();
-    expect(names).toEqual([...SHARED_ROUTE_NAMES, 'android-hosts'].sort());
+    expect(names).toEqual([...SHARED_ROUTE_NAMES, 'android-hosts', 'android-account'].sort());
     expect(router.resolve(ADD_HOST_ROUTE).name).toBe('android-hosts');
+    expect(router.resolve(ACCOUNT_ROUTE).name).toBe('android-account');
     expect(router.resolve('/host/dev/folder/~%2Fgit%2Fx').name).toBe('folder');
     await router.push('/nowhere');
     expect(router.currentRoute.value.name).toBe('hosts');

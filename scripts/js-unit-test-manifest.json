@@ -420,7 +420,7 @@
     "tests/unit/sharedAppShell.test.ts": {
       "suite": "Android shared app shell",
       "tests": [
-        "routes by the shared map plus exactly the Android host form",
+        "routes by the shared map plus exactly the Android host form and account screen",
         "writes the system-bar and landscape side insets into the shared inset contract",
         "hands the shared root a phone mono stack, not the desktop Consolas default"
       ]
@@ -735,6 +735,77 @@
         "keeps the listening band (and the warning) through silent recognizer restarts instead of flashing Starting",
         "uses a static highlight under reduced motion",
         "says \"No speech was recognized\" on Stop with nothing captured and inserts nothing"
+      ]
+    },
+    "tests/unit/androidAccountPicker.test.ts": {
+      "suite": "Android account sync group and shared picker account hosts",
+      "tests": [
+        "maps native sign-in onto the shared status, login and logout",
+        "unlocks the account copy with the passphrase and serves it as picker rows; a fresh account unlocks empty",
+        "keeps the decrypted account copy in memory only and deletes a copy an older build persisted (#3026)",
+        "the account button opens Account & sync on the phone instead of refusing",
+        "lists every account host as a picker row once signed in and unlocked, beside the phone hosts",
+        "asks for this phone's key when an account host is tapped, saves it with the key, then connects",
+        "cancelling the key prompt dials nothing and says why",
+        "only an unlocked account host is adopted; an unknown host keeps its plain refusal",
+        "a phone host whose key is gone gets the key prompt and is updated in place, never duplicated",
+        "an account host at the address of a keyless phone host attaches the key to that phone host",
+        "keeps every account alias selected unless the user unticked it",
+        "browser dev mode's GoogleSync stand-in signs in and serves an account the dev passphrase unlocks"
+      ]
+    },
+    "tests/unit/androidSharedSyncSafety.test.ts": {
+      "suite": "Android shared Account screen sync safety",
+      "tests": [
+        "unlocking then Sync now keeps a phone host that is also in the account (dataloss repro)",
+        "Sync now pressed without unlocking first still keeps every account host",
+        "a ticked phone host keeps every field another client owns (fields repro)",
+        "only an explicit untick removes an account host, and it stays unticked on the next unlock",
+        "the legacy Account screen's Sync now keeps account hosts and their fields the same way",
+        "after a restart the account hosts come back once the passphrase unlocks them, with nothing uploaded"
+      ]
+    },
+    "tests/unit/androidAccountHostAdversarial.test.ts": {
+      "suite": "Android account sync and key-prompt adversarial cases",
+      "tests": [
+        "R1 dataloss repro (round-1 scenario, production factory): unlock then Sync now keeps hetzner",
+        "R2 fields repro: ticked hetzner keeps identityFile/proxyJump/forwards/unknown",
+        "C1 account-only minimal host (no port/user, unknown field) comes back byte-identical",
+        "C2 first Sync now with no prior unlock keeps all hosts and fields; message reports count",
+        "C3 restart between unlock and Sync now (selection + known aliases persisted) keeps everything",
+        "C4 alias case mismatch (phone \"Hetzner\", account \"hetzner\") never drops the account entry",
+        "C5 account with hosts the phone has never seen + legacy screen Sync now keeps all",
+        "C6 explicit untick of a phone host still removes it",
+        "C7 unlock uploads nothing; storage holds aliases only",
+        "K1 same hostname+port, DIFFERENT user: account root@ must not rewrite keyless phone alexey@ host",
+        "K1b same as K1 but the picker sends no hostAlias",
+        "K2 same hostname, DIFFERENT port: account host is adopted as its own host, phone box untouched",
+        "K3 same hostname, port AND user: the key is attached to the keyless phone host in place, no duplicate",
+        "K4 different user on the same address: the account host becomes its own phone host and the next tap dials it without asking"
+      ]
+    },
+    "tests/unit/androidGatewayMarker.test.ts": {
+      "suite": "Android refuses gateway and link account hosts (core #3059)",
+      "tests": [
+        "reviewer probe: a gateway account host tapped on Android is refused, never prompted, saved or dialled",
+        "a valid gateway marker: the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
+        "a valid gateway marker: a dial that omits the marker is still refused from the account entry",
+        "a null gateway marker: the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
+        "a null gateway marker: a dial that omits the marker is still refused from the account entry",
+        "a malformed gateway marker: the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
+        "a malformed gateway marker: a dial that omits the marker is still refused from the account entry",
+        "link and gateway together: the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
+        "link and gateway together: a dial that omits the marker is still refused from the account entry",
+        "a link marker alone (no link transport on Android): the picker's dial is refused with no prompt, save or socket, and the account copy keeps the marker verbatim",
+        "a link marker alone (no link transport on Android): a dial that omits the marker is still refused from the account entry",
+        "Sync now keeps every account marker byte-identical, including on a host the phone also has",
+        "valid gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "null gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "malformed gateway (string): the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "malformed gateway (array): the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "link and gateway: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "link alone: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
+        "null link: the marked account row is refused even when a keyed phone host \"box\" sits at the same address"
       ]
     }
   }

@@ -34,6 +34,7 @@ import {
   type SeedHost,
 } from './liveBridge';
 import { createMockSshPlugin, MOCK_SEED_HOST } from './mockSsh';
+import { createGoogleSyncPlugin } from './googleSyncPlugin';
 import { createDevToolbar } from './toolbar';
 import { seedSavedHosts } from './seedHosts';
 import { traceSshPlugin } from './trace';
@@ -112,6 +113,7 @@ function install(): void {
     NativeCrashReports: crashes.plugin,
     SshKeyVault: vaultPlugin,
     SshCapability: sshPlugin,
+    GoogleSync: createGoogleSyncPlugin(),
   });
   installFakeNativeBridge(window as unknown as Parameters<typeof installFakeNativeBridge>[0], bridge);
   (window as unknown as Record<string, unknown>).PocketShellDurableStorage = durableStorageWriter;

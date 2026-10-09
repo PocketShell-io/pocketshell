@@ -1,0 +1,67 @@
+/*
+ * The phone layer over the shared app (docs/design-system.md, "Phone layer"):
+ * touch-sized controls and phone-width fitting only. Colours, type and
+ * structure stay the shared views' own; nothing here restyles a component's
+ * look. Scoped to the host picker (#3063) until core grows its shared
+ * coarse-pointer token and narrow layout (#2936 A3).
+ */
+
+/* Tap targets: the 48px design-language minimum on a coarse pointer, where
+   the desktop's 28-32px controls are too small for a thumb. */
+@media (pointer: coarse) {
+  .picker .header-actions .icon-btn,
+  .picker .header-actions .account-action,
+  .picker .host-item .icon-btn,
+  .picker .locked-note .btn-ghost,
+  .picker .auto-banner .btn-ghost,
+  .picker .btn-ghost.disconnect {
+    min-width: 48px;
+    min-height: 48px;
+  }
+  .picker .host-item {
+    min-height: 56px;
+  }
+}
+
+/* Phone width: the header's account button gives way before the screen edge
+   (a long email ellipsizes instead of pushing the row off-screen; signed in,
+   the green dot plus the email is the identity, so "Google" drops), and a
+   host row keeps its name on one line and truncates the address. */
+@media (max-width: 599px) {
+  .picker header h1 {
+    flex: none;
+  }
+  .picker .header-actions {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: flex-end;
+  }
+  .picker .header-actions .icon-btn {
+    flex: none;
+  }
+  .picker .account-action {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: none;
+  }
+  .picker .account-action.signed-in .account-provider {
+    display: none;
+  }
+  .picker .host-name {
+    white-space: nowrap;
+  }
+  .picker .host-detail {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* While the account-host key prompt is open the dial is waiting on the user,
+   not connecting: stop the row's pulse under the scrim, as core does for its
+   host-key prompt. An endless animation behind a modal repaints the whole
+   WebView every frame (battery) and keeps the UI thread from ever idling. */
+#app:has(.account-key-scrim) .status-dot.connecting {
+  animation: none;
+}
