@@ -342,14 +342,18 @@ function isPickedDocuments(value: unknown): value is { cancelled: boolean; files
 function isDictationEvent(value: unknown): value is NativeDictationEvent {
   if (typeof value !== 'object' || value === null) return false;
   const event = value as Record<string, unknown>;
-  return typeof event.requestId === 'string'
-    && ['partial', 'result', 'recoverable', 'error'].includes(String(event.type))
+  if (typeof event.requestId !== 'string') return false;
+  if (event.type === 'audio') {
+    // #3062: a bounded sound/silence flag only; never text or other payload.
+    return event.text === undefined && (event.code === 'sound' || event.code === 'silence');
+  }
+  return ['partial', 'result', 'recoverable', 'error'].includes(String(event.type))
     && (event.text === undefined || typeof event.text === 'string')
     && (event.code === undefined || typeof event.code === 'string');
 }
 
 function isTerminalDictationEvent(type: DictationEventType): boolean {
-  return type !== 'partial';
+  return type !== 'partial' && type !== 'audio';
 }
 
 function validName(value: unknown): value is string {

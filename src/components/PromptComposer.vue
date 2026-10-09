@@ -9,6 +9,7 @@ import type {
   ComposerDeliveryResult,
   DictationController,
   DictationInterruptReason,
+  DictationNoSpeech,
   DictationSnapshot,
 } from '@pocketshell/core';
 import { createComposerDeliveryController, type PtyWriteEffect } from '../session/composerDelivery';
@@ -100,6 +101,8 @@ const draft = computed(() => drafts.draftFor(props.targetKey));
 const commandChips = computed(() => hostSnippets.itemsForHost(props.hostId));
 const dictationPreview = ref('');
 const dictationReviewResult = ref<'ready' | 'empty' | 'error'>('ready');
+/** #3062: the shared controller's "listening, but no words recognized" signal. Never touches the draft. */
+const dictationNoSpeech = shallowRef<DictationNoSpeech | null>(null);
 const failureReviewEdited = ref(false);
 const dictationBusy = computed(() => dictationPhase.value === 'starting'
   || dictationPhase.value === 'recording'
@@ -111,7 +114,7 @@ const composerModeStatus = computed(() => {
   if (transportStateIsOffline()) return props.transportState === 'lost' ? 'RECONNECTING' : 'OFFLINE';
   switch (dictationPhase.value) {
     case 'starting': return 'STARTING';
-    case 'recording': return 'LISTENING';
+    case 'recording': return dictationNoSpeech.value ? 'NO WORDS' : 'LISTENING';
     case 'transcribing': return 'TRANSCRIBING';
     case 'review': return 'REVIEW';
     case 'idle': return 'READY';
@@ -119,6 +122,7 @@ const composerModeStatus = computed(() => {
 });
 const composerModeStatusClass = computed(() => {
   if (props.transportState !== 'connected') return props.transportState === 'lost' ? 'state-tag--warning' : 'state-tag--muted';
+  if (dictationPhase.value === 'recording' && dictationNoSpeech.value) return 'state-tag--warning';
   return dictationPhase.value === 'idle' ? 'state-tag--success' : 'state-tag--dictation';
 });
 const composerModeStatusLabel = computed(() => {
@@ -126,6 +130,7 @@ const composerModeStatusLabel = computed(() => {
     return props.transportState === 'lost' ? 'Terminal reconnecting' : 'No live terminal session';
   }
   if (dictationPhase.value === 'starting') return 'Prompt dictation is starting';
+  if (dictationPhase.value === 'recording' && dictationNoSpeech.value) return 'Prompt dictation is listening but not hearing words';
   if (dictationPhase.value === 'recording') return 'Prompt dictation is listening';
   if (dictationPhase.value === 'transcribing') return 'Prompt dictation is transcribing';
   if (dictationPhase.value === 'review' && dictationReviewResult.value === 'empty') return 'No speech was recognized';
@@ -134,7 +139,7 @@ const composerModeStatusLabel = computed(() => {
   return 'Terminal ready';
 });
 const composerReviewText = computed(() => {
-  if (dictationReviewResult.value === 'empty') return 'No speech recognized. Your original draft is unchanged. Edit it to continue.';
+  if (dictationReviewResult.value === 'empty') return 'No speech was recognized. Your draft is unchanged. Edit it to continue.';
   if (dictationReviewResult.value === 'error') return 'Recognition stopped. Edit the draft before inserting or sending.';
   return 'Transcript ready. Edit it, then choose Insert or Send.';
 });
@@ -191,6 +196,7 @@ watch(() => props.targetKey, () => {
   dictationPreview.value = '';
   dictationReviewResult.value = 'ready';
   failureReviewEdited.value = false;
+  dictationNoSpeech.value = null;
   dictationPhase.value = 'idle';
   if (props.mobileSheet) emit('openChange', false);
   selectionTargetKey.value = props.targetKey;
@@ -374,6 +380,7 @@ function finishDictationCancellation(operation: ActiveDictation) {
   if (activeDictation.value !== operation) return;
   activeDictation.value = null;
   dictationPhase.value = 'idle';
+  dictationNoSpeech.value = null;
   stopRecordingTimer();
   dictationPreview.value = '';
   drafts.setDraft(operation.targetKey, operation.baseDraft);
@@ -409,6 +416,14 @@ function finishDictationReview(operation: ActiveDictation, snapshot: DictationSn
 
 function handleDictationSnapshot(operation: ActiveDictation, snapshot: DictationSnapshot) {
   if (operation.cancelled || activeDictation.value !== operation) return;
+  dictationNoSpeech.value = snapshot.phase === 'starting' || snapshot.phase === 'listening' ? snapshot.noSpeech : null;
+  if (snapshot.phase === 'starting' && operation.sawListening && !operation.stopRequested) {
+    // #3062: a silent restart between recognizer turns is still the same
+    // recording to the user; do not flash "Requesting microphone access".
+    dictationPhase.value = 'recording';
+    renderDictationDraft(operation, snapshot.transcript, snapshot.partial);
+    return;
+  }
   if (snapshot.phase === 'starting') {
     dictationPhase.value = 'starting';
     renderDictationDraft(operation, snapshot.transcript, snapshot.partial);
@@ -506,6 +521,7 @@ function toggleDictation() {
   dictationPreview.value = '';
   dictationReviewResult.value = 'ready';
   failureReviewEdited.value = false;
+  dictationNoSpeech.value = null;
   activeDictation.value = operation;
   dictationPhase.value = 'starting';
   elapsedMs.value = 0;
@@ -522,6 +538,7 @@ function stopDictation(operation: ActiveDictation, updateStatus = true): boolean
   if (operation.cancelled || activeDictation.value !== operation) return false;
   if (operation.stopRequested) return true;
   operation.stopRequested = true;
+  dictationNoSpeech.value = null;
   dictationPhase.value = 'transcribing';
   stopRecordingTimer();
   if (updateStatus) {
@@ -593,6 +610,15 @@ async function deliver(intent: ComposerDeliveryIntent) {
     const finishResult = await operation.finished;
     if (finishResult !== 'stopped' || operation.failureCode || delivery.value !== activeDelivery || props.targetKey !== targetKey) {
       if (sendingIntent.value === intent) sendingIntent.value = null;
+      return;
+    }
+    if (dictationReviewResult.value === 'empty') {
+      // #3062: the user tapped Send/Insert to deliver what they dictated, and
+      // nothing was recognized. Say so instead of silently delivering only the
+      // earlier draft; the draft stays for review.
+      if (sendingIntent.value === intent) sendingIntent.value = null;
+      statusTone.value = 'warning';
+      statusText.value = `No speech was recognized. Nothing was ${intent === 'insert' ? 'inserted' : 'sent'}; your draft was kept.`;
       return;
     }
   }
@@ -753,6 +779,7 @@ function startPromptDictation() {
         :state="dictationPhase"
         :elapsed-label="elapsedLabel"
         :live-preview="dictationPreview"
+        :no-speech="dictationNoSpeech"
         :stop-disabled="sendingIntent !== null"
         @stop="activeDictation && stopDictation(activeDictation)"
       />

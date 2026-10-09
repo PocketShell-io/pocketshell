@@ -10,6 +10,8 @@ import {
 import AppIcon from '@ui/components/AppIcon.vue';
 import { createMobileHotkeysActions, createMobileHotkeysState, type MobileHotkeysPage } from './mobileHotkeysModel';
 import type { InlineDictationState } from '../session/inlineDictation';
+import { noSpeechWarningCopy } from '../session/dictationNoSpeech';
+import { usePrefersReducedMotion } from './prefersReducedMotion';
 
 // Keep the one-tap keys in the terminal flow. The full catalog is a compact,
 // on-demand grid with its own vertical scroll area.
@@ -104,6 +106,14 @@ const dictationElapsedLabel = computed(() => {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 });
 const dictationWaveformBars = [8, 15, 11, 21, 13, 18, 9, 16, 11, 20, 12, 17];
+/** #3062: listening, but no words recognized for a while. Shown in the same 40px band. */
+const dictationNoSpeech = computed(() => props.dictationState.phase === 'listening' && props.dictationState.noSpeech
+  ? noSpeechWarningCopy(props.dictationState.noSpeech)
+  : null);
+const reducedMotion = usePrefersReducedMotion();
+const dictationListeningLabel = computed(() => dictationNoSpeech.value
+  ? `Terminal listening. ${dictationNoSpeech.value.title}. ${dictationNoSpeech.value.detail}`
+  : 'Terminal listening. Stop inserts the final transcript at the terminal cursor.');
 const sendKey = actions.sendKey;
 let keyboardPointer: { id: number; button: Element } | null = null;
 let dictationStartedAt = 0;
@@ -273,6 +283,7 @@ defineExpose({
       'mobile-hotkeys--dictation-listening': dictationStatusVisible && dictationState.phase === 'listening',
       'mobile-hotkeys--dictation-recovery': dictationTranscriptRecoverable,
       'mobile-hotkeys--dictation-available': dictationAvailable,
+      'mobile-hotkeys--reduced-motion': reducedMotion,
     }"
     data-testid="mobile-hotkeys"
     :data-enabled="enabled"
@@ -295,12 +306,23 @@ defineExpose({
         :class="{ 'mobile-hotkeys__dictation-status-row--recording': dictationState.phase === 'listening' }"
         data-testid="inline-dictation-status-row">
         <div v-if="dictationState.phase === 'listening'" class="mobile-hotkeys__recording-status"
+          :class="{
+            'mobile-hotkeys__recording-status--no-speech': dictationNoSpeech,
+            'mobile-hotkeys__recording-status--static': dictationNoSpeech && reducedMotion,
+          }"
           data-testid="inline-dictation-status" data-dictation-tone="quiet" data-dictation-phase="listening"
-          role="status" aria-live="polite" aria-label="Terminal listening. Stop inserts the final transcript at the terminal cursor.">
+          :data-no-speech="dictationNoSpeech ? 'true' : 'false'"
+          :data-motion="dictationNoSpeech ? (reducedMotion ? 'static' : 'pulse') : undefined"
+          role="status" aria-live="polite" :aria-label="dictationListeningLabel">
           <span class="mobile-hotkeys__recording-heading">
-            <span class="mobile-hotkeys__dictation-destination">{{ 'Terminal' }}</span>
-            <span class="mobile-hotkeys__recording-separator" aria-hidden="true">·</span>
-            <span class="mobile-hotkeys__dictation-phase">{{ 'Listening' }}</span>
+            <!-- #3062: the warning needs the room; the destination stays in the status aria-label. -->
+            <template v-if="!dictationNoSpeech">
+              <span class="mobile-hotkeys__dictation-destination">{{ 'Terminal' }}</span>
+              <span class="mobile-hotkeys__recording-separator" aria-hidden="true">·</span>
+            </template>
+            <span v-if="dictationNoSpeech" class="mobile-hotkeys__dictation-phase mobile-hotkeys__dictation-phase--no-speech"
+              data-testid="inline-dictation-no-speech-title">{{ dictationNoSpeech.title }}</span>
+            <span v-else class="mobile-hotkeys__dictation-phase">{{ 'Listening' }}</span>
           </span>
           <span class="mobile-hotkeys__recording-elapsed" data-testid="inline-dictation-elapsed" aria-hidden="true">{{ dictationElapsedLabel }}</span>
           <span class="mobile-hotkeys__recording-waveform" data-testid="inline-dictation-waveform" aria-hidden="true">
@@ -309,6 +331,8 @@ defineExpose({
           </span>
           <span v-if="dictationState.preview" class="terminal-dictation-preview mobile-hotkeys__recording-preview"
             data-testid="inline-dictation-preview" aria-live="off">{{ dictationState.preview }}</span>
+          <span v-else-if="dictationNoSpeech" class="mobile-hotkeys__recording-preview mobile-hotkeys__no-speech-detail"
+            data-testid="inline-dictation-no-speech-warning" :title="dictationNoSpeech.detail">{{ dictationNoSpeech.shortDetail }}</span>
           <span v-else class="mobile-hotkeys__recording-preview" data-testid="inline-dictation-message" aria-live="off">{{ 'Speak now' }}</span>
         </div>
         <div v-else-if="dictationTranscriptRecoverable" class="mobile-hotkeys__dictation-recovery"
@@ -707,9 +731,30 @@ defineExpose({
 .mobile-hotkeys__recording-preview.terminal-dictation-preview { color: var(--fg); }
 @keyframes terminal-recording-pulse { from { opacity: 1; } to { opacity: 0.5; } }
 @keyframes terminal-recording-wave { from { transform: scaleY(0.28); } to { transform: scaleY(1); } }
+/* #3062: listening without recognized words. Same band and height; warning
+   colours, and the dot and waveform pulse slower so the change is noticed. */
+.mobile-hotkeys__recording-status--no-speech {
+  border-color: var(--warning);
+  box-shadow: inset 3px 0 var(--warning);
+}
+.mobile-hotkeys__recording-status--no-speech .mobile-hotkeys__recording-heading::before {
+  background: var(--warning);
+  animation: terminal-no-speech-pulse 900ms ease-in-out infinite alternate;
+}
+.mobile-hotkeys__recording-status--no-speech .mobile-hotkeys__recording-waveform i { background: var(--warning); }
+.mobile-hotkeys__recording-status--no-speech .mobile-hotkeys__recording-elapsed,
+.mobile-hotkeys__recording-status--no-speech .mobile-hotkeys__dictation-phase--no-speech { color: var(--warning); }
+.mobile-hotkeys__no-speech-detail { color: var(--fg); font-family: var(--font-ui); }
+/* Reduced motion: a static warning highlight instead of the pulse. */
+.mobile-hotkeys__recording-status--static { background: var(--warning-soft); }
+.mobile-hotkeys__recording-status--static .mobile-hotkeys__recording-heading::before,
+.mobile-hotkeys__recording-status--static .mobile-hotkeys__recording-waveform i { animation: none; }
+@keyframes terminal-no-speech-pulse { from { opacity: 1; } to { opacity: 0.25; } }
 @media (prefers-reduced-motion: reduce) {
   .mobile-hotkeys__recording-heading::before,
+  .mobile-hotkeys__recording-status--no-speech .mobile-hotkeys__recording-heading::before,
   .mobile-hotkeys__recording-waveform i { animation: none; }
+  .mobile-hotkeys__recording-status--no-speech { background: var(--warning-soft); }
 }
 .mobile-hotkeys__dictation-status {
   overflow: hidden;
@@ -900,6 +945,26 @@ defineExpose({
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.01em;
+}
+/* #3062: the Stop control pulses in the warning colour while no words are recognized. */
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"][data-no-speech="true"]) {
+  border-color: var(--warning);
+  color: var(--warning);
+  box-shadow: inset 0 0 0 1px var(--warning-soft);
+  animation: terminal-no-speech-pulse 900ms ease-in-out infinite alternate;
+}
+.mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="listening"][data-no-speech="true"] .terminal-dictation-label) {
+  color: var(--warning);
+}
+.mobile-hotkeys--reduced-motion .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-no-speech="true"]) {
+  animation: none;
+  background: var(--warning-soft);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-no-speech="true"]) {
+    animation: none;
+    background: var(--warning-soft);
+  }
 }
 .mobile-hotkeys__persistent-accessory :deep(.terminal-dictation-button[data-mic-state="transcribing"]) {
   border-color: var(--warning);

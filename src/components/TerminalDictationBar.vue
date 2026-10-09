@@ -4,6 +4,7 @@ import type { PluginListenerHandle } from '@capacitor/core';
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { createSharedDictationController } from '../session/dictationController';
 import DictationMicIcon from './DictationMicIcon.vue';
+import { noSpeechWarningCopy } from '../session/dictationNoSpeech';
 import {
   createInlineDictationController,
   type InlineDictationState,
@@ -97,7 +98,14 @@ const buttonDisabled = () => !props.enabled
   || !props.targetKey
   || ['stopping', 'cancelling', 'inserting'].includes(state.value.phase);
 
+/** #3062: listening, but nothing recognized for a while. */
+const noSpeechActive = () => state.value.phase === 'listening' && Boolean(state.value.noSpeech);
+
 const buttonLabel = () => {
+  if (state.value.phase === 'listening' && state.value.noSpeech) {
+    const warning = noSpeechWarningCopy(state.value.noSpeech);
+    return `${warning.title}. ${warning.detail} Stop dictation and insert at terminal cursor`;
+  }
   if (state.value.phase === 'listening') return 'Stop dictation and insert at terminal cursor';
   if (state.value.phase === 'starting') return 'Cancel terminal cursor dictation request';
   if (state.value.phase === 'cancelling') return 'Cancelling terminal dictation';
@@ -132,6 +140,7 @@ const buttonState = () => {
     type="button"
     data-testid="inline-dictation-toggle"
     :data-mic-state="buttonState()"
+    :data-no-speech="noSpeechActive() ? 'true' : 'false'"
     :aria-label="buttonLabel()"
     :title="buttonLabel()"
     :aria-pressed="state.phase === 'listening'"

@@ -20,7 +20,6 @@ import android.view.accessibility.AccessibilityNodeInfo;
 import android.webkit.WebView;
 import android.view.inputmethod.InputMethodManager;
 
-import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -110,6 +109,13 @@ public final class JsComposerDockerJourneyTest {
             emitFocusTraceIfNeeded();
         } catch (Exception error) {
             Log.e("PS2891Focus", "could not emit composer tap trace before ActivityScenario teardown", error);
+        }
+        // #3062: a failure mid-dictation must not leave animating dictation UI
+        // behind, or scenario.close() waits forever for an idle main looper.
+        try {
+            quiesceDictationUiWithoutIdleSync("teardown");
+        } catch (Throwable error) {
+            Log.w(NO_SPEECH_TAG, "could not quiesce dictation UI before ActivityScenario teardown", error);
         }
         if (scenario != null) scenario.close();
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
@@ -332,6 +338,7 @@ public final class JsComposerDockerJourneyTest {
         awaitJsTrue("Array.from(document.querySelectorAll('[data-testid=snippet-chip]'))"
                 + ".some(node => node.getAttribute('aria-label') === " + JSONObject.quote("Insert " + uncertainChipLabel) + ")");
         verifyDictatedDraftSurvivedRestartAndSendKeepsTail(dictationSession, nameBase);
+        warnWhenDictationHearsNoWords(dictationSession, nameBase);
         emitFocusTraceIfNeeded();
     }
 
@@ -366,9 +373,14 @@ public final class JsComposerDockerJourneyTest {
         injectNativeDictationEvent("partial", DICTATED_BEFORE_SCREEN_OFF);
         awaitJsTrue("document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
                 + JSONObject.quote(DICTATED_BEFORE_SCREEN_OFF) + ")");
-        scenario.moveToState(Lifecycle.State.CREATED);
+        // A real screen-off. ActivityScenario.moveToState first waits for the
+        // main looper to go idle, which never happens while the recording view
+        // (and, after 8 s without new words, the #3062 warning) animates on a
+        // slow emulator; the power key needs no idle sync.
+        executeShellCommand("input keyevent KEYCODE_SLEEP");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'background'", 15_000);
-        scenario.moveToState(Lifecycle.State.RESUMED);
+        executeShellCommand("input keyevent KEYCODE_WAKEUP");
+        executeShellCommand("wm dismiss-keyguard");
         awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'", 30_000);
         injectNativeDictationEvent("result", "late result after the screen came back");
         openPromptComposerAndAssertDraftFocus();
@@ -449,6 +461,349 @@ public final class JsComposerDockerJourneyTest {
         evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
     }
 
+    /** #3062: the shared no-text window; the warning must not appear before it. */
+    private static final long NO_SPEECH_WINDOW_MILLIS = 8_000;
+    private static final String NO_SPEECH_WARNING = "[data-testid=composer-no-speech-warning]";
+    private static final String INLINE_NO_SPEECH_TITLE = "[data-testid=inline-dictation-no-speech-title]";
+
+    /**
+     * #3062 resume phase, the maintainer's report end to end: dictation listens,
+     * the packaged SpeechRecognition plugin delivers sound but no words, and
+     * after the 8 s window a visible role=status warning appears near the
+     * waveform without touching the draft. A partial clears it, and the words
+     * that follow are still sent to the Docker PTY (the runner's host oracle
+     * reads the file they write). Then the inline terminal bar with the IME up
+     * shows the same warning, and the inserted words reach the PTY.
+     */
+    private void warnWhenDictationHearsNoWords(String dictationSession, String nameBase) throws Exception {
+        try {
+            warnWhenComposerDictationHearsNoWords(dictationSession, nameBase);
+            warnWhenInlineDictationHearsNoWords(dictationSession, nameBase);
+        } finally {
+            // Whatever happened, leave no recording/warning animation behind:
+            // ActivityScenario.close() waits for an idle main looper and would
+            // otherwise hang the run and swallow the failure message.
+            quiesceDictationUiWithoutIdleSync("no-speech-stage-exit");
+            endDictationStagesWithoutIdleSync();
+        }
+    }
+
+    private static final String NO_SPEECH_TAG = "PS3062NoSpeech";
+    private long noSpeechStageStartedAt;
+
+    private void noSpeechStep(String step) {
+        Log.i(NO_SPEECH_TAG, "STEP|" + step + "|t=" + (SystemClock.uptimeMillis() - noSpeechStageStartedAt));
+    }
+
+    /**
+     * Stop any composer or inline dictation, close the composer and leave debug
+     * speech mode, without ActivityScenario's idle sync. Best effort: each step
+     * is logged and its failure is swallowed so the original test failure stays
+     * the reported one.
+     */
+    private void quiesceDictationUiWithoutIdleSync(String reason) {
+        Log.i(NO_SPEECH_TAG, "QUIESCE|begin|" + reason);
+        if (activityWithoutIdleSync == null) activityWithoutIdleSync = resumedActivityWithoutIdleSync();
+        if (activityWithoutIdleSync == null) {
+            Log.w(NO_SPEECH_TAG, "QUIESCE|no resumed activity|" + reason);
+            return;
+        }
+        String[] steps = {
+                // Composer: Discard/Cancel ends recording or transcribing (explicit cancel).
+                "(() => {const c=document.querySelector('[data-testid=composer-recording-cancel]');"
+                        + "if(c&&!c.disabled){c.click();return 'composer dictation cancelled';}return 'no composer dictation';})()",
+                // Inline: Stop a listening band; an injected end-of-turn completes it.
+                "(() => {const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                        + "const t=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                        + "if(bar&&['listening','starting'].includes(bar.dataset.phase)&&t&&!t.disabled){t.click();return 'inline stop tapped';}"
+                        + "return 'inline idle';})()",
+                "(() => {const plugin=window.Capacitor?.Plugins?.SpeechRecognition;"
+                        + "const bar=document.querySelector('[data-testid=inline-dictation-bar]');"
+                        + "if(plugin?.injectTestDictationEvent&&bar&&bar.dataset.phase!=='idle')"
+                        + "plugin.injectTestDictationEvent({type:'recoverable',code:'no-match'}).catch(()=>undefined);"
+                        + "return 'end-of-turn requested';})()",
+        };
+        for (String step : steps) {
+            try {
+                Log.i(NO_SPEECH_TAG, "QUIESCE|" + evalString(step));
+            } catch (Throwable error) {
+                Log.w(NO_SPEECH_TAG, "QUIESCE|step failed|" + error);
+            }
+        }
+        long deadline = SystemClock.uptimeMillis() + 10_000;
+        String idle = "!document.querySelector('[data-testid=composer-recording-mode]')"
+                + " && !['listening','starting','stopping'].includes("
+                + "document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase ?? 'idle')";
+        boolean quiet = false;
+        while (SystemClock.uptimeMillis() < deadline) {
+            try {
+                if ("true".equals(evalRaw(idle))) {
+                    quiet = true;
+                    break;
+                }
+            } catch (Throwable error) {
+                Log.w(NO_SPEECH_TAG, "QUIESCE|poll failed|" + error);
+            }
+            SystemClock.sleep(200);
+        }
+        try {
+            Log.i(NO_SPEECH_TAG, "QUIESCE|" + evalString("(() => {const c=document.querySelector('[data-testid=composer-close]');"
+                    + "if(c&&!c.disabled){c.click();return 'composer closed';}return 'no composer';})()"));
+            evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+        } catch (Throwable error) {
+            Log.w(NO_SPEECH_TAG, "QUIESCE|close failed|" + error);
+        }
+        Log.i(NO_SPEECH_TAG, "QUIESCE|end|" + reason + "|dictationUiStopped=" + quiet);
+    }
+
+    /** The resumed MainActivity, looked up on the main thread without waiting for it to go idle. */
+    private MainActivity resumedActivityWithoutIdleSync() {
+        AtomicReference<MainActivity> found = new AtomicReference<>();
+        InstrumentationRegistry.getInstrumentation().runOnMainSync(() -> {
+            for (android.app.Activity activity : androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+                    .getInstance().getActivitiesInStage(androidx.test.runner.lifecycle.Stage.RESUMED)) {
+                if (activity instanceof MainActivity) found.set((MainActivity) activity);
+            }
+        });
+        return found.get();
+    }
+
+    private void warnWhenComposerDictationHearsNoWords(String dictationSession, String nameBase) throws Exception {
+        String marker = "PS3062_WORDS_" + nameBase;
+        String spoken = "printf " + marker + " > /tmp/" + dictationSession + "-3062.marker";
+        noSpeechStageStartedAt = SystemClock.uptimeMillis();
+        noSpeechStep("composer:begin");
+        enableNativeDictationTestMode();
+        // The previous Send left the normal-flow composer in place; reopen the
+        // Prompt sheet the maintainer dictates into.
+        closeComposerIfPresent();
+        openPromptComposerAndAssertDraftFocus();
+        String draftBefore = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        noSpeechStep("composer:start-dictation");
+        startComposerDictation();
+        long listeningAt = SystemClock.uptimeMillis();
+        noSpeechStep("composer:listening");
+        // The plugin's coarse audio flag: the mic hears sound, but no words come back.
+        injectNativeDictationEvent("audio", null, "sound");
+        noSpeechStep("composer:audio-injected");
+        SystemClock.sleep(2_000);
+        assertEquals("the warning must not appear before the no-text window", "false",
+                evalRaw("!!document.querySelector(" + JSONObject.quote(NO_SPEECH_WARNING) + ")"));
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(NO_SPEECH_WARNING) + ")", 20_000);
+        long warnedAfter = SystemClock.uptimeMillis() - listeningAt;
+        noSpeechStep("composer:warning-seen|after=" + warnedAfter);
+        JSONObject state = evalJson("(() => {const w=document.querySelector(" + JSONObject.quote(NO_SPEECH_WARNING) + ");"
+                + "const mode=document.querySelector('[data-testid=composer-recording-mode]');"
+                + "const wave=mode?.querySelector('.recording-mode__waveform');"
+                + "const r=w.getBoundingClientRect();const vv=window.visualViewport;"
+                + "return JSON.stringify({role:w.getAttribute('role'),ariaLive:w.getAttribute('aria-live'),"
+                + "text:w.textContent.replace(/\\s+/g,' ').trim(),reason:w.dataset.noSpeechReason??'',"
+                + "audio:w.dataset.noSpeechAudio??'',motion:w.dataset.motion??'',"
+                + "dictationState:document.querySelector('[data-testid=prompt-composer]')?.dataset.dictationState??'',"
+                + "appTimer:document.querySelector('[data-testid=composer-recording-timer]')?.textContent.trim()??'',"
+                + "waveformWarning:!!wave?.classList.contains('recording-mode__waveform--no-speech'),"
+                + "stopEnabled:document.querySelector('[data-testid=composer-recording-stop]')?.disabled===false,"
+                + "draft:document.querySelector('[data-testid=prompt-draft]')?.value??null,"
+                + "rect:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},"
+                + "viewport:{width:vv?.width??innerWidth,height:vv?.height??innerHeight}});})()");
+        noSpeechStep("composer:state-read|" + state);
+        assertEquals("role=status", "status", state.getString("role"));
+        assertTrue("warning text: " + state, state.getString("text").contains("Not hearing words")
+                && state.getString("text").contains("Sound, but no words"));
+        assertEquals("the draft must not change while warning", draftBefore, state.getString("draft"));
+        assertEquals("dictation keeps listening behind the warning", "recording", state.getString("dictationState"));
+        assertWarningNotBeforeWindow("composer", state);
+        noSpeechStep("composer:asserts-passed");
+        byte[] png = captureScreenPng("composer-no-speech-warning.png");
+        noSpeechStep("composer:screenshot-taken|bytes=" + png.length);
+        if ("after-warning".equals(InstrumentationRegistry.getArguments().getString("composer3062ForceFailure", ""))) {
+            throw new AssertionError("#3062 forced stage failure after the composer warning appeared"
+                    + " (--force-no-speech-stage-failure); the run must end with this message, not hang");
+        }
+
+        injectNativeDictationEvent("partial", spoken, null);
+        noSpeechStep("composer:partial-injected");
+        awaitJsTrue("!document.querySelector(" + JSONObject.quote(NO_SPEECH_WARNING) + ")"
+                + " && document.querySelector('[data-testid=composer-recording-preview]')?.textContent.includes("
+                + JSONObject.quote(spoken) + ")");
+        boolean clearedByPartial = true;
+        String draftAfterPartial = evalString("document.querySelector('[data-testid=prompt-draft]')?.value ?? ''");
+        noSpeechStep("composer:warning-cleared");
+        tapUntilComposerDictationState("[data-testid=composer-dictation-send]", "recording", "transcribing");
+        injectNativeDictationEvent("result", spoken, null);
+        awaitDeliveredAndCleared();
+        noSpeechStep("composer:sent");
+        state.put("warnedAfterMs", warnedAfter)
+                .put("windowMs", NO_SPEECH_WINDOW_MILLIS)
+                .put("draftBefore", draftBefore)
+                .put("clearedByPartial", clearedByPartial)
+                .put("draftAfterPartial", draftAfterPartial)
+                .put("sentMarker", marker)
+                .put("nativeImeVisible", isImeVisible());
+        Log.i("PS3062NoSpeech", "COMPOSER_WARNED|" + warnedAfter + "|" + state.getString("audio") + "|" + marker);
+        emitArtifact(artifactRunId, "composer-no-speech-warning.png", png);
+        emitArtifact(artifactRunId, "composer-no-speech-warning.json", state.toString().getBytes(StandardCharsets.UTF_8));
+        evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+    }
+
+    private void warnWhenInlineDictationHearsNoWords(String dictationSession, String nameBase) throws Exception {
+        String inlineMarker = "PS3062_INLINE_" + nameBase;
+        noSpeechStep("inline:begin");
+        enableNativeDictationTestMode();
+        closeComposerIfPresent();
+        awaitJsTrue("document.querySelector('.app-shell')?.dataset.sshPhase === 'live'"
+                + " && !document.querySelector('[data-testid=prompt-composer]')"
+                + " && document.querySelector('[data-testid=inline-dictation-toggle]')?.disabled === false", 20_000);
+        // Keyboard up on the terminal, as the maintainer dictates.
+        raiseTerminalImeWithRetry();
+        beginDictationStagesWithoutIdleSync();
+        noSpeechStep("inline:ime-up");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'listening'");
+        long listeningAt = SystemClock.uptimeMillis();
+        noSpeechStep("inline:listening");
+        injectNativeDictationEvent("audio", null, "silence");
+        SystemClock.sleep(2_000);
+        assertEquals("the inline warning must not appear before the no-text window", "false",
+                evalRaw("!!document.querySelector(" + JSONObject.quote(INLINE_NO_SPEECH_TITLE) + ")"));
+        awaitJsTrue("!!document.querySelector(" + JSONObject.quote(INLINE_NO_SPEECH_TITLE) + ")", 20_000);
+        long warnedAfter = SystemClock.uptimeMillis() - listeningAt;
+        noSpeechStep("inline:warning-seen|after=" + warnedAfter);
+        JSONObject state = evalJson("(() => {const s=document.querySelector('[data-testid=inline-dictation-status]');"
+                + "const t=document.querySelector('[data-testid=inline-dictation-toggle]');"
+                + "const d=document.querySelector('[data-testid=inline-dictation-no-speech-warning]');"
+                + "const r=s.getBoundingClientRect();const vv=window.visualViewport;"
+                + "return JSON.stringify({role:s.getAttribute('role'),ariaLabel:s.getAttribute('aria-label')??'',"
+                + "noSpeech:s.dataset.noSpeech??'',motion:s.dataset.motion??'',"
+                + "title:document.querySelector(" + JSONObject.quote(INLINE_NO_SPEECH_TITLE) + ")?.textContent.trim()??'',"
+                + "detail:d?.textContent.trim()??'',toggleNoSpeech:t?.dataset.noSpeech??'',toggleMicState:t?.dataset.micState??'',"
+                + "keyboardVisible:document.querySelector('.app-shell')?.dataset.keyboardVisible??'',"
+                + "appTimer:document.querySelector('[data-testid=inline-dictation-elapsed]')?.textContent.trim()??'',"
+                + "rect:{top:r.top,bottom:r.bottom,left:r.left,right:r.right},"
+                + "viewport:{width:vv?.width??innerWidth,height:vv?.height??innerHeight}});})()");
+        boolean imeVisible = isImeVisible();
+        noSpeechStep("inline:state-read|ime=" + imeVisible + "|" + state);
+        assertEquals("role=status", "status", state.getString("role"));
+        assertEquals("Not hearing words", state.getString("title"));
+        assertEquals("the band shows the compact detail", "No sound from mic", state.getString("detail"));
+        assertTrue("the full message stays in the status label: " + state,
+                state.getString("ariaLabel").contains("No sound from the mic. Check it or try again."));
+        assertEquals("the Stop control carries the warning too", "true", state.getString("toggleNoSpeech"));
+        assertWarningNotBeforeWindow("inline", state);
+        assertTrue("the inline warning is checked with the Android keyboard up", imeVisible);
+        noSpeechStep("inline:asserts-passed");
+        byte[] png = captureScreenPng("inline-no-speech-warning.png");
+        noSpeechStep("inline:screenshot-taken|bytes=" + png.length);
+
+        String inlineText = "echo " + inlineMarker;
+        injectNativeDictationEvent("partial", inlineText, null);
+        awaitJsTrue("!document.querySelector(" + JSONObject.quote(INLINE_NO_SPEECH_TITLE) + ")"
+                + " && document.querySelector('[data-testid=inline-dictation-preview]')?.textContent.trim() === "
+                + JSONObject.quote(inlineText));
+        noSpeechStep("inline:warning-cleared");
+        tapDomCenter("[data-testid=inline-dictation-toggle]");
+        injectNativeDictationEvent("result", inlineText, null);
+        awaitJsTrue("document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.phase === 'idle'"
+                + " && document.querySelector('[data-testid=inline-dictation-bar]')?.dataset.dictationTone === 'success'", 20_000);
+        state.put("warnedAfterMs", warnedAfter)
+                .put("windowMs", NO_SPEECH_WINDOW_MILLIS)
+                .put("nativeImeVisible", imeVisible)
+                .put("clearedByPartial", true)
+                .put("insertedMarker", inlineMarker);
+        noSpeechStep("inline:inserted");
+        Log.i("PS3062NoSpeech", "INLINE_WARNED|" + warnedAfter + "|ime=" + imeVisible + "|" + inlineMarker);
+        emitArtifact(artifactRunId, "inline-no-speech-warning.png", png);
+        emitArtifact(artifactRunId, "inline-no-speech-warning.json", state.toString().getBytes(StandardCharsets.UTF_8));
+        evalString("window.__ps2857DictationTestMode = false; 'debug speech event mode disabled'");
+    }
+
+    /**
+     * The window is measured by the app's own recording clock (the visible
+     * mm:ss timer that starts when listening starts), not by the test thread,
+     * whose view of "listening started" lags the app under emulator load. The
+     * clock ticks every 200-250 ms and floors to whole seconds, so a warning
+     * raised at 8 s reads at least 00:07. Records appElapsedSeconds.
+     */
+    private void assertWarningNotBeforeWindow(String surface, JSONObject state) throws Exception {
+        java.util.regex.Matcher clock = java.util.regex.Pattern.compile("^(\\d+):(\\d{2})$")
+                .matcher(state.optString("appTimer"));
+        assertTrue(surface + " recording clock must be readable at the warning: " + state, clock.matches());
+        int seconds = Integer.parseInt(clock.group(1)) * 60 + Integer.parseInt(clock.group(2));
+        state.put("appElapsedSeconds", seconds);
+        assertTrue(surface + " warning appeared before the " + NO_SPEECH_WINDOW_MILLIS + " ms window: app clock "
+                + state.optString("appTimer"), seconds >= NO_SPEECH_WINDOW_MILLIS / 1000 - 1);
+    }
+
+    /**
+     * Tap the terminal until Android shows the IME. Right after the composer
+     * sheet closes, a tap can land while focus is still settling and leave the
+     * IME down; only a tap that provably raised nothing is repeated (max 3).
+     */
+    private void raiseTerminalImeWithRetry() throws Exception {
+        String imeUp = "document.querySelector('.app-shell')?.dataset.keyboardVisible === 'true'";
+        for (int attempt = 1; attempt <= 3; attempt += 1) {
+            awaitWebViewVisualState();
+            tapDomCenter(".terminal-viewport");
+            long deadline = SystemClock.uptimeMillis() + 10_000;
+            while (SystemClock.uptimeMillis() < deadline) {
+                if (isImeVisible() && "true".equals(evalRaw(imeUp))) {
+                    noSpeechStep("inline:ime-raised|attempt=" + attempt);
+                    return;
+                }
+                SystemClock.sleep(200);
+            }
+            noSpeechStep("inline:ime-not-raised|attempt=" + attempt + "|focus="
+                    + evalRaw("document.activeElement?.className ?? ''"));
+        }
+        awaitImeVisible(true);
+        awaitJsTrue(imeUp);
+    }
+
+    /** Close the Prompt sheet or the post-Send normal-flow composer, keeping its draft. */
+    private void closeComposerIfPresent() throws Exception {
+        if (!"true".equals(evalRaw("!!document.querySelector('[data-testid=prompt-composer]')"))) return;
+        awaitJsTrue("document.querySelector('[data-testid=composer-close]')?.disabled === false");
+        tapDomCenter("[data-testid=composer-close]");
+        awaitJsTrue("!document.querySelector('[data-testid=prompt-composer]')", 10_000);
+    }
+
+    /** Full-device screenshot on the instrumentation thread (no idle sync), saved in the app's files dir. */
+    private static final long SCREENSHOT_TIMEOUT_MILLIS = 30_000;
+
+    private byte[] captureScreenPng(String name) throws Exception {
+        awaitWebViewVisualState();
+        // UiAutomation.takeScreenshot() has no timeout of its own; bound it so a
+        // stalled capture fails this step instead of the whole run.
+        AtomicReference<Bitmap> captured = new AtomicReference<>();
+        AtomicReference<Throwable> captureError = new AtomicReference<>();
+        CountDownLatch done = new CountDownLatch(1);
+        Thread capture = new Thread(() -> {
+            try {
+                captured.set(InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot());
+            } catch (Throwable error) {
+                captureError.set(error);
+            } finally {
+                done.countDown();
+            }
+        }, "ps3062-screenshot");
+        capture.setDaemon(true);
+        capture.start();
+        assertTrue("UiAutomation.takeScreenshot did not return within " + SCREENSHOT_TIMEOUT_MILLIS + " ms: " + name,
+                done.await(SCREENSHOT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS));
+        if (captureError.get() != null) throw new AssertionError("screenshot failed: " + name, captureError.get());
+        Bitmap screenshot = captured.get();
+        assertNotNull("same-run Android screenshot must be captured: " + name, screenshot);
+        try {
+            ByteArrayOutputStream encoded = new ByteArrayOutputStream();
+            boolean compressed = screenshot.compress(Bitmap.CompressFormat.PNG, 100, encoded);
+            byte[] png = encoded.toByteArray();
+            assertTrue("same-run Android screenshot must be a non-empty PNG: " + name, compressed && png.length >= 1024);
+            return png;
+        } finally {
+            screenshot.recycle();
+        }
+    }
+
     private void enableNativeDictationTestMode() throws Exception {
         String packageName = InstrumentationRegistry.getInstrumentation().getTargetContext().getPackageName();
         // UiAutomation's grant is synchronous; reading a `pm grant` shell stream
@@ -496,7 +851,13 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void injectNativeDictationEvent(String type, String text) throws Exception {
-        JSONObject options = new JSONObject().put("type", type).put("text", text);
+        injectNativeDictationEvent(type, text, null);
+    }
+
+    private void injectNativeDictationEvent(String type, String text, String code) throws Exception {
+        JSONObject options = new JSONObject().put("type", type);
+        if (text != null) options.put("text", text);
+        if (code != null) options.put("code", code);
         evalString("window.__ps3060Injection = null; (() => {"
                 + "const plugin=window.Capacitor?.Plugins?.SpeechRecognition;"
                 + "if(!plugin?.injectTestDictationEvent)throw new Error('native debug dictation injection is unavailable');"
@@ -2167,7 +2528,7 @@ public final class JsComposerDockerJourneyTest {
 
     private void awaitWebViewVisualState() throws Exception {
         CountDownLatch latch = new CountDownLatch(1);
-        scenario.onActivity(activity -> {
+        onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
             assertNotNull("packaged Capacitor activity must contain a WebView", webView);
             long requestId = SystemClock.uptimeMillis();
@@ -2263,7 +2624,7 @@ public final class JsComposerDockerJourneyTest {
 
     private boolean isImeVisible() {
         AtomicReference<Boolean> visible = new AtomicReference<>(false);
-        scenario.onActivity(activity -> {
+        onActivity(activity -> {
             WindowInsets insets = activity.getWindow().getDecorView().getRootWindowInsets();
             visible.set(insets != null && Build.VERSION.SDK_INT >= 30 && insets.isVisible(WindowInsets.Type.ime()));
         });
@@ -2284,7 +2645,7 @@ public final class JsComposerDockerJourneyTest {
     }
 
     private void requestImeHide() {
-        scenario.onActivity(activity -> {
+        onActivity(activity -> {
             View decor = activity.getWindow().getDecorView();
             android.view.WindowInsetsController controller = decor.getWindowInsetsController();
             if (controller != null) controller.hide(WindowInsets.Type.ime());

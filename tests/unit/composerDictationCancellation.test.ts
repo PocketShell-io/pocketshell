@@ -520,7 +520,8 @@ describe('composer dictation cancellation', () => {
 
     expect(liveRow).toContain('display: flex');
     expect(cssRule(recordingStyles, '.recording-mode__waveform')).toContain('flex: 1 1 auto');
-    expect(composerRecordingModeSource).toContain('class="recording-mode__phase">Listening</span>');
+    // #3062: the label reads "Still listening" while the no-words warning is up.
+    expect(composerRecordingModeSource).toContain('class="recording-mode__phase" data-testid="composer-recording-phase">{{ warning ? \'Still listening\' : \'Listening\' }}</span>');
     expect(composerRecordingModeSource).toContain('v-for="bar in 30"');
     expect(composerRecordingModeSource).not.toContain('data-testid="composer-recording-actions"');
   });
@@ -767,7 +768,7 @@ describe('composer dictation cancellation', () => {
     expect(composerState(root)).toBe('review');
     expect(textContent(findByTestId(root, 'composer-mode-status')!)).toBe('REVIEW');
     expect(textContent(findByTestId(root, 'composer-dictation-review')!)).toContain(
-      outcome === 'error' ? 'Recognition stopped.' : 'No speech recognized.',
+      outcome === 'error' ? 'Recognition stopped.' : 'No speech was recognized.',
     );
     const insert = findByTestId(root, 'composer-insert');
     const send = findAll(root, (candidate) => candidate.type === 'button' && candidate.props.title === 'Send (Enter)')[0];

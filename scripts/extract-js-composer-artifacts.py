@@ -28,6 +28,12 @@ REQUIRED_NAMES = {
     "snippet-selected-chip.png",
     "snippet-selected-chip-geometry.json",
     "snippet-restart-evidence.json",
+    # Issue #3062: the "not hearing words" warning on the composer and on the
+    # inline terminal bar (keyboard up), with their same-run state records.
+    "composer-no-speech-warning.png",
+    "composer-no-speech-warning.json",
+    "inline-no-speech-warning.png",
+    "inline-no-speech-warning.json",
 }
 OPTIONAL_NAMES = {
     "composer-focus-failure.png",
@@ -375,7 +381,8 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
             raise ExtractionFailure(f"artifact {name} SHA-256 does not match its logcat manifest")
         decoded[name] = payload
 
-    for name in ("composer-keyboard.png", "composer-post-send.png", "snippet-keyboard-down.png", "snippet-selected-chip.png"):
+    for name in ("composer-keyboard.png", "composer-post-send.png", "snippet-keyboard-down.png", "snippet-selected-chip.png",
+                 "composer-no-speech-warning.png", "inline-no-speech-warning.png"):
         screenshot = decoded.get(name)
         if screenshot is not None and (not screenshot.startswith(b"\x89PNG\r\n\x1a\n") or len(screenshot) < 1024):
             raise ExtractionFailure(f"{name} is not a non-empty PNG")
@@ -635,7 +642,60 @@ def parse_assets(log_text: str, run_id: str, *, validate_layout: bool = True,
                 raise ExtractionFailure("composer focus trace has an invalid post-IME wait observation")
         if focus_failure_screenshot is not None:
             raise ExtractionFailure("packaged composer run contains a failure-state focus screenshot")
+        _validate_no_speech_evidence(decoded)
     return decoded
+
+
+def _no_speech_record(decoded: dict[str, bytes], name: str) -> dict:
+    payload = decoded.get(name)
+    if payload is None:
+        raise ExtractionFailure(f"#3062 no-speech record {name} is missing")
+    try:
+        record = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ExtractionFailure(f"#3062 no-speech record {name} is invalid JSON: {error}") from error
+    if not isinstance(record, dict):
+        raise ExtractionFailure(f"#3062 no-speech record {name} must be an object")
+    if record.get("role") != "status":
+        raise ExtractionFailure(f"{name}: the warning is not announced with role=status")
+    try:
+        window = float(record["windowMs"])
+        app_seconds = float(record["appElapsedSeconds"])
+        rect, viewport = record["rect"], record["viewport"]
+        top, bottom = float(rect["top"]), float(rect["bottom"])
+        left, right = float(rect["left"]), float(rect["right"])
+        width, height = float(viewport["width"]), float(viewport["height"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ExtractionFailure(f"{name}: timing or geometry is missing: {error}") from error
+    # The app's own recording clock floors to whole seconds and ticks every
+    # 200-250 ms, so a warning raised at the 8 s window reads at least 7 s.
+    if app_seconds < window / 1000 - 1:
+        raise ExtractionFailure(f"{name}: the warning appeared at app clock {app_seconds} s, before the {window} ms no-text window")
+    if bottom <= top or right <= left or top < 0 or left < 0 or bottom > height + 0.5 or right > width + 0.5:
+        raise ExtractionFailure(f"{name}: the warning is not fully inside the visible viewport: {rect} in {viewport}")
+    if record.get("clearedByPartial") is not True:
+        raise ExtractionFailure(f"{name}: a partial did not clear the warning")
+    return record
+
+
+def _validate_no_speech_evidence(decoded: dict[str, bytes]) -> None:
+    composer = _no_speech_record(decoded, "composer-no-speech-warning.json")
+    text = composer.get("text")
+    if not isinstance(text, str) or "Not hearing words" not in text:
+        raise ExtractionFailure("composer no-speech warning does not say it is not hearing words")
+    if composer.get("draft") != composer.get("draftBefore") or composer.get("draftAfterPartial") != composer.get("draftBefore"):
+        raise ExtractionFailure("composer no-speech warning changed the draft")
+    if composer.get("dictationState") != "recording":
+        raise ExtractionFailure("composer no-speech warning was not shown while dictation kept listening")
+    if not isinstance(composer.get("sentMarker"), str) or not composer["sentMarker"].startswith("PS3062_WORDS_"):
+        raise ExtractionFailure("composer no-speech record does not name the words sent after the warning")
+    inline = _no_speech_record(decoded, "inline-no-speech-warning.json")
+    if inline.get("title") != "Not hearing words" or inline.get("noSpeech") != "true":
+        raise ExtractionFailure("inline terminal bar did not show the no-speech warning")
+    if inline.get("toggleNoSpeech") != "true":
+        raise ExtractionFailure("inline Stop control does not carry the no-speech warning")
+    if inline.get("nativeImeVisible") is not True or inline.get("keyboardVisible") != "true":
+        raise ExtractionFailure("inline no-speech warning was not captured with the Android keyboard up")
 
 
 def extract(run_id: str, logcat: Path, output: Path, *, validate_layout: bool = True,
@@ -753,6 +813,28 @@ def self_test() -> None:
     clipped_post_send_value = json.loads(post_send)
     clipped_post_send_value["terminalViewport"]["top"] = 220.0
     clipped_post_send_value["terminalViewport"]["bottom"] = 1000.0
+    composer_no_speech_value = {
+        "role": "status", "ariaLive": "polite", "text": "Not hearing words Sound, but no words. Check the language or speak closer.",
+        "reason": "no-text-timeout", "audio": "sound", "motion": "pulse", "dictationState": "recording",
+        "waveformWarning": True, "stopEnabled": True, "draft": "", "draftBefore": "", "draftAfterPartial": "",
+        "rect": {"top": 600, "bottom": 640, "left": 16, "right": 396}, "viewport": {"width": 412, "height": 915},
+        "warnedAfterMs": 8_120, "appElapsedSeconds": 8, "appTimer": "00:08", "windowMs": 8_000, "clearedByPartial": True, "sentMarker": "PS3062_WORDS_js-self",
+        "nativeImeVisible": False,
+    }
+    inline_no_speech_value = {
+        "role": "status", "ariaLabel": "Terminal listening. Not hearing words. No sound from the mic. Check it or try again.",
+        "noSpeech": "true", "motion": "pulse", "title": "Not hearing words",
+        "detail": "No sound from the mic. Check it or try again.", "toggleNoSpeech": "true", "toggleMicState": "listening",
+        "keyboardVisible": "true", "rect": {"top": 400, "bottom": 440, "left": 16, "right": 396},
+        "viewport": {"width": 412, "height": 520}, "warnedAfterMs": 8_090, "appElapsedSeconds": 8, "appTimer": "00:08", "windowMs": 8_000,
+        "nativeImeVisible": True, "clearedByPartial": True, "insertedMarker": "PS3062_INLINE_js-self",
+    }
+
+    def no_speech_with(base: dict, **changes: object) -> bytes:
+        return json.dumps({**base, **changes}).encode()
+
+    composer_no_speech = no_speech_with(composer_no_speech_value)
+    inline_no_speech = no_speech_with(inline_no_speech_value)
     clipped_post_send = json.dumps(clipped_post_send_value).encode()
     keyboard_up_post_send_value = json.loads(post_send)
     keyboard_up_post_send_value["keyboardVisible"] = True
@@ -947,7 +1029,9 @@ def self_test() -> None:
     def make_lines(geometry_bytes: bytes = geometry, post_send_bytes: bytes = post_send,
                    chip_down_bytes: bytes = chip_down, chip_selected_bytes: bytes = chip_selected,
                    restart_bytes: bytes = restart_evidence,
-                   chip_down_image: bytes = png, chip_selected_image: bytes = selected_png) -> list[str]:
+                   chip_down_image: bytes = png, chip_selected_image: bytes = selected_png,
+                   composer_no_speech_bytes: bytes = composer_no_speech,
+                   inline_no_speech_bytes: bytes = inline_no_speech) -> list[str]:
         source = [
             ("composer-keyboard.png", png),
             ("composer-keyboard-geometry.json", geometry_bytes),
@@ -959,6 +1043,10 @@ def self_test() -> None:
             ("snippet-selected-chip.png", chip_selected_image),
             ("snippet-selected-chip-geometry.json", chip_selected_bytes),
             ("snippet-restart-evidence.json", restart_bytes),
+            ("composer-no-speech-warning.png", png),
+            ("composer-no-speech-warning.json", composer_no_speech_bytes),
+            ("inline-no-speech-warning.png", png),
+            ("inline-no-speech-warning.json", inline_no_speech_bytes),
         ]
         lines: list[str] = []
         for name, payload in source:
@@ -1028,6 +1116,24 @@ def self_test() -> None:
         ("snippet rail outside composer", make_lines(chip_down_bytes=snippet_rail_outside_composer)),
         ("snippet terminal viewport clipped", make_lines(chip_down_bytes=snippet_terminal_clipped)),
         ("snippet leaves less than 48dp of visible terminal above composer", make_lines(chip_down_bytes=snippet_insufficient_terminal)),
+        ("no-speech composer record missing", [line for line in lines if "composer-no-speech-warning.json" not in line]),
+        ("no-speech inline screenshot missing", [line for line in lines if "inline-no-speech-warning.png" not in line]),
+        ("no-speech warning appeared before the window", make_lines(
+            composer_no_speech_bytes=no_speech_with(composer_no_speech_value, appElapsedSeconds=2))),
+        ("no-speech record without the app clock", make_lines(
+            inline_no_speech_bytes=json.dumps({k: v for k, v in inline_no_speech_value.items() if k != "appElapsedSeconds"}).encode())),
+        ("no-speech warning changed the draft", make_lines(
+            composer_no_speech_bytes=no_speech_with(composer_no_speech_value, draft="typed before dictating"))),
+        ("no-speech warning not cleared by a partial", make_lines(
+            composer_no_speech_bytes=no_speech_with(composer_no_speech_value, clearedByPartial=False))),
+        ("no-speech warning is not role=status", make_lines(
+            composer_no_speech_bytes=no_speech_with(composer_no_speech_value, role="note"))),
+        ("no-speech warning outside the viewport", make_lines(
+            composer_no_speech_bytes=no_speech_with(composer_no_speech_value, rect={"top": 880, "bottom": 940, "left": 16, "right": 396}))),
+        ("inline no-speech warning captured with the keyboard down", make_lines(
+            inline_no_speech_bytes=no_speech_with(inline_no_speech_value, nativeImeVisible=False))),
+        ("inline Stop control lacks the warning", make_lines(
+            inline_no_speech_bytes=no_speech_with(inline_no_speech_value, toggleNoSpeech="false"))),
     ):
         try:
             parse_assets("\n".join(altered), run_id, expected_terminal_marker=marker)

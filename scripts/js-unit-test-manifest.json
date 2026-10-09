@@ -705,6 +705,38 @@
         "an explicit user cancel still drops the text"
       ]
     },
+    "tests/unit/dictationAudioEvidence.test.ts": {
+      "suite": "dictation audio evidence (#3062)",
+      "tests": [
+        "passes sound/silence events through the platform adapter without ending the recognizer turn",
+        "feeds the adapter flag into the shared controller so the warning says sound vs silence",
+        "words the warning for every audio state and keeps the issue wording for unknown audio",
+        "never says \"no sound from the mic\" after words were already recognized in this dictation",
+        "keeps the compact inline detail short enough for the 40px terminal band"
+      ]
+    },
+    "tests/unit/composerNoSpeechWarning.test.ts": {
+      "suite": "composer warns when listening hears no words (#3062)",
+      "tests": [
+        "shows a pulsing role=status warning after 8 s with no text, clears it on a partial, and never changes the draft",
+        "raises the warning early when the recognizer keeps ending turns with no match",
+        "uses a static highlight instead of pulsing when the user prefers reduced motion",
+        "says \"No speech was recognized\" on Stop with nothing captured",
+        "still sends a typed-only draft normally when no dictation was started",
+        "does not send the old draft when Send is tapped mid-dictation with nothing captured"
+      ]
+    },
+    "tests/unit/inlineDictationNoSpeech.test.ts": {
+      "suite": "inline terminal dictation warns when it hears no words (#3062)",
+      "tests": [
+        "projects the shared no-text signal into the inline listening state and clears it on a partial",
+        "shows the warning on the listening band and the Stop control, then clears it when text arrives",
+        "keeps earlier words visible in the band while warning about a later silence",
+        "keeps the listening band (and the warning) through silent recognizer restarts instead of flashing Starting",
+        "uses a static highlight under reduced motion",
+        "says \"No speech was recognized\" on Stop with nothing captured and inserts nothing"
+      ]
+    },
     "tests/unit/androidAccountPicker.test.ts": {
       "suite": "Android account sync group and shared picker account hosts",
       "tests": [
