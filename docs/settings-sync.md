@@ -45,7 +45,10 @@ account's hosts under "From your account". Tapping one that this phone has no
 key for asks for the phone's key and saves it as a phone host. A keyless phone
 host gets the key attached in place only when the dial is for that exact host
 (its name, or the same address *and* user); a host that merely shares the
-address under another user is kept separate.
+address under another user is kept separate. An account host carrying a `gateway` marker (any value, also with `link`)
+or a `link` marker is listed but refused when tapped, before any key prompt or
+socket: Android has neither transport yet, and core's #3059 contract forbids
+dialling such a host as plain SSH. Sync keeps the markers verbatim.
 
 Selection on Android: every account host stays ticked unless the user
 unticked it on this phone, so Sync now never drops an account host by default.

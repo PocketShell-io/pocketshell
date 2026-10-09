@@ -36,7 +36,7 @@ import {
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import { MissingHostCredential, type AndroidHostStore } from './hostStore';
-import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
+import { declinedAccountHostMessage, unsupportedTransportMessage, type AccountHostKeys } from './accountHosts';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -108,6 +108,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    // A gateway or link marker on the request is refused before anything
+    // else (core #3059): no key prompt, save, credential or socket.
+    if (unsupportedTransportMessage('', payload) !== null) {
+      const named = deps.accountHosts ? await deps.accountHosts.find(payload) : null;
+      throw new Error(unsupportedTransportMessage(named?.name ?? deps.hosts.labelFor(payload), payload)!);
+    }
     try {
       return await deps.hosts.resolve(payload);
     } catch (error) {
@@ -118,7 +124,12 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       // phone host that merely shares the address (another user, #3063 review
       // r2) is left alone, and the account host is saved as its own host.
       const missingKey = error instanceof MissingHostCredential && isSameHost(error.host, payload);
-      const host = missingKey ? (error as MissingHostCredential).host : await keys.find(payload);
+      const account = missingKey ? null : await keys.find(payload);
+      // An account host marked for the gateway or a link is refused, never
+      // adopted as a plain SSH phone host (core #3059).
+      const refusal = account ? unsupportedTransportMessage(account.name, account) : null;
+      if (refusal) throw new Error(refusal);
+      const host = missingKey ? (error as MissingHostCredential).host : account;
       if (!host) throw error;
       if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {
         throw new Error(declinedAccountHostMessage(host.name));

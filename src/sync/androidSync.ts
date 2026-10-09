@@ -406,5 +406,9 @@ export function accountHostEntry(host: SyncHostEntry): HostEntry {
     localForwards: [],
     remoteForwards: [],
     fromConfig: false,
+    // Transport markers travel verbatim, whatever their shape (core #3059):
+    // the platform refuses what it cannot dial, so they must stay visible.
+    ...(Object.prototype.hasOwnProperty.call(host, 'link') ? { link: host.link } : {}),
+    ...(Object.prototype.hasOwnProperty.call(host, 'gateway') ? { gateway: host.gateway } : {}),
   };
 }
