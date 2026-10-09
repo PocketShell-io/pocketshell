@@ -17,7 +17,7 @@ clients, so one account works from all three.
 | --- | --- |
 | `GoogleSyncPlugin.java` / `GoogleSyncSession.java` | Credential Manager sign-in, the Google ID token in `EncryptedSharedPreferences` (`pocketshell-sync-auth`, Keystore master key), the authenticated HTTPS call to the fixed `/settings/{slot}` and `/me` routes, silent renewal of an expired token, one retry after a 401 |
 | `src/sync/syncCrypto.ts` | PBKDF2-SHA256 (600 000 rounds) + AES-256-GCM envelope in the WebView (WebCrypto), byte-compatible with the desktop |
-| `src/sync/androidSync.ts` | the sync API's status codes, the 8 KB limit, the cached account copy, and the phone's contribution to the round (only `name`, `hostname`, `port`, `user`) |
+| `src/sync/androidSync.ts` | the sync API's status codes, the 8 KB limit, the in-memory account copy, the Android selection rule, and the phone's contribution to every upload (only `name`, `hostname`, `port`, `user`) |
 | core `runSyncRound` | pull → auto-select → merge → push → conflict retry (shared with desktop and web) |
 | `AccountSyncScreen.vue` | sign in/out, status, passphrase, host selection, Sync now |
 
@@ -26,16 +26,39 @@ account email, and the sync API's status and body. Plugin rejections carry
 fixed user-facing messages, never a token or a transport message. The sync
 passphrase lives only in the Account screen's memory and never reaches native
 code or storage. Sign-out deletes the token, clears Credential Manager's
-authorized-account state and removes the cached account copy.
+authorized-account state and forgets the in-memory account copy.
 
 The same adapter serves the shared app's `api.sync` group
 (`src/platform/android/androidApi.ts`), so the shared Account UI gets it when
 the shared shell mounts it.
 
-Hosts from the account are cached on the phone (metadata only) and listed on
-the home screen as "Synced host from your account"; picking one fills the
-connection form. The user still chooses an SSH key on the phone — key
-material is never synced.
+Hosts from the account are listed on the home screen as "Synced host from
+your account"; picking one fills the connection form. The user still chooses
+an SSH key on the phone — key material is never synced. The decrypted account
+copy is kept in memory only (#3026): after a restart the list is empty until
+Account & sync → **Show account hosts** unlocks it again with the passphrase
+(nothing is uploaded).
+
+On the shared app (#3063) the host picker's header account button opens the
+shared Account & sync screen; once it is unlocked the picker lists the
+account's hosts under "From your account". Tapping one that this phone has no
+key for asks for the phone's key and saves it as a phone host. A keyless phone
+host gets the key attached in place only when the dial is for that exact host
+(its name, or the same address *and* user); a host that merely shares the
+address under another user is kept separate. An account host carrying a `gateway` marker (any value, also with `link`)
+or a `link` marker is listed but refused when tapped, before any key prompt or
+socket: Android has neither transport yet, and core's #3059 contract forbids
+dialling such a host as plain SSH. Sync keeps the markers verbatim.
+
+Selection on Android: every account host stays ticked unless the user
+unticked it on this phone, so Sync now never drops an account host by default.
+The phone remembers which aliases it has decided about
+(`pocketshell.sync.known-aliases.v1`, aliases only). Signing out forgets that
+list, so signing out and back in re-ticks a host the user had unticked — on
+purpose: the forgotten untick can only keep a host in the account, never
+remove one. Every upload carries only the fields the phone owns (name,
+hostname, port, user) over the account's entry, so desktop-only fields
+(`identityFile`, `proxyJump`, forwards, unknown fields) survive a phone sync.
 
 ## OAuth configuration for real sign-in
 

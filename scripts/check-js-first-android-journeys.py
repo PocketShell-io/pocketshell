@@ -3,7 +3,7 @@
 
 The JS path is deliberately a dispatch guard, not a feature-coverage claim. It
 proves that each journey-shaped androidTest class is selected by one of the
-twelve packaged lanes, and that the lane's exact method
+thirteen packaged lanes, and that the lane's exact method
 contract agrees with both its source and result checker. The independent
 24-class feature qualification gate remains separate and incomplete until
 those journeys exist.
@@ -148,6 +148,18 @@ LANES = (
             {
                 "googleSignInSyncsDesktopHostsKeepsCrossClientFieldsAndSignOutClearsToken",
                 "unavailableGoogleSignInExplainsWhichPackageNeedsRegistering",
+            }
+        ),
+    ),
+    LaneContract(
+        name="account-picker",
+        class_name="com.pocketshell.app.smoke.SharedAccountPickerJourneyTest",
+        child_runner="scripts/connected-js-account-picker.sh",
+        result_checker="scripts/check-js-account-picker-results.py",
+        methods=frozenset(
+            {
+                "sharedPickerListsAccountHostsAfterSignInAndUnlockFromTheHeaderButton",
+                "legacyHomeListsAccountHostsAgainAfterRestartOnceUnlocked",
             }
         ),
     ),
@@ -419,7 +431,7 @@ def check_js(repo_root: Path) -> list[Finding]:
         findings.append(Finding("ERROR", "JS-first packaged lane dispatcher is empty; refusing a zero-lane pass"))
         return findings
 
-    # A fixed twelve-lane inventory makes an empty/partially deleted registry a
+    # A fixed thirteen-lane inventory makes an empty/partially deleted registry a
     # hard error. This is the current packaged suite only, not the 24-class
     # feature-journey inventory in scripts/js-journey-class-manifest.json.
     required_lanes = {
@@ -435,9 +447,10 @@ def check_js(repo_root: Path) -> list[Finding]:
         "durable-storage",
         "hotkeys-docker",
         "account-sync",
+        "account-picker",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required twelve-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required thirteen-lane packaged journey inventory changed"))
 
     for lane in LANES:
         if not _script_invokes(dispatcher, lane.child_runner):
@@ -717,7 +730,7 @@ def self_test() -> int:
         for lane in LANES:
             _write_fixture(root, lane)
         result = check(root, "auto")
-        probe("all twelve exact packaged lane classes and methods dispatch", result == 0, True)
+        probe("all thirteen exact packaged lane classes and methods dispatch", result == 0, True)
 
         shared = next(lane for lane in LANES if lane.name == "shared-app")
         shared_runner = root / shared.child_runner

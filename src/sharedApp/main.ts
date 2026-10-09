@@ -5,10 +5,11 @@ import '@xterm/xterm/css/xterm.css';
 // The shared tokens, primitives and Inter — the desktop's and web's first import.
 import '@ui/styles.css';
 import { provideApi } from '@ui/app/ipc';
-import { provideExtensions } from '@ui/app/extensions';
+import { dismissTopLayer, provideExtensions } from '@ui/app/extensions';
 import { recordDiagError } from '@ui/app/diag';
 import { runInstalledDataMigration } from '@/migration/installedDataMigration';
-import AppRoot from '@ui/app/AppRoot.vue';
+import AndroidAppRoot from './AndroidAppRoot.vue';
+import './phone.css';
 import { createSharedAppRouter } from './router';
 import { androidPlatform } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
@@ -29,8 +30,8 @@ export function mountSharedApp(target: string | Element): void {
 
   applyAndroidInsets();
   // The shared app root (theme and typography watchers, diag strip, outlet),
-  // the same component desktop and web mount.
-  const app = createApp(AppRoot, { monoFallback: ANDROID_MONO_FALLBACK });
+  // the same component desktop and web mount, plus the phone's own gates.
+  const app = createApp(AndroidAppRoot, { monoFallback: ANDROID_MONO_FALLBACK });
   app.config.errorHandler = (err): void => {
     recordDiagError('render', err);
   };
@@ -42,8 +43,10 @@ export function mountSharedApp(target: string | Element): void {
   const router = createSharedAppRouter();
   app.use(createPinia()).use(router).mount(target);
 
-  // Android Back walks the shared app's history, then leaves the app.
+  // Android Back closes the topmost open layer (an overlay, a prompt), then
+  // walks the shared app's history, then leaves the app.
   void CapacitorApp.addListener('backButton', () => {
+    if (dismissTopLayer()) return;
     if (router.currentRoute.value.name === 'hosts') {
       void CapacitorApp.exitApp();
     } else if (router.options.history.state.back) {

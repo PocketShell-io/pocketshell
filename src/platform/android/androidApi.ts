@@ -15,7 +15,10 @@
  *              0.5.x import;
  *   sync     — the Android settings-sync adapter (src/sync/androidSync.ts,
  *              #3020) when supplied: native Google sign-in and transport,
- *              WebView encryption, core's sync round;
+ *              WebView encryption, core's sync round. The picker's account
+ *              button (`win.openAccount`) opens the Android account route,
+ *              and an account host this phone has no key for asks for one
+ *              before it is dialled (#3063, `accountHosts`);
  *   app      — Android lifecycle drives the controllers' background grace
  *              directly (see `bindLifecycle`), so the shared store's resume
  *              probe is deliberately NOT fed;
@@ -26,13 +29,15 @@
  */
 import type { PocketShellApi } from '@ui/app/api';
 import {
+  hasGatewayMarker,
   readHostUsage,
   runHostBootstrap,
   type ConnectionController,
   type HomeResult,
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
-import type { AndroidHostStore } from './hostStore';
+import { MissingHostCredential, type AndroidHostStore } from './hostStore';
+import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -46,6 +51,39 @@ export class UnsupportedCapability extends Error {
 
 const unsupported = (method: string) => (): Promise<never> =>
   Promise.reject(new UnsupportedCapability(method));
+
+/**
+ * Why this phone must not dial a host or connect request at all, or null.
+ *
+ * Core's gateway contract (#3059, core docs/SYNC.md): a client that cannot
+ * dial the PocketShell gateway refuses any PRESENT `gateway` marker, whatever
+ * its value (valid, null, malformed, or alongside `link`), instead of treating
+ * the entry as ordinary SSH. Presence is decided by core's own
+ * `hasGatewayMarker`. Android has no gateway transport and no link transport
+ * yet, so a `link` marker is refused the same way: dialling plain SSH would
+ * reach the host over a transport it was not configured for. The check runs
+ * before any key prompt, save, credential or socket.
+ *
+ * This is the ONE place Android decides transport support: `resolveTarget`
+ * asks it about both the connect request and the account entry. A build that
+ * can dial the gateway or a link lifts the refusal here, and only here, behind
+ * an explicit transport capability, never by falling back to plain SSH.
+ */
+export function unsupportedTransportMessage(name: string, entry: object): string | null {
+  if (hasGatewayMarker(entry)) {
+    return `“${name}” is reached through the PocketShell gateway, which this phone can't connect through yet. Nothing was dialled.`;
+  }
+  if (Object.prototype.hasOwnProperty.call(entry, 'link')) {
+    return `“${name}” is reached through a PocketShell relay link, which this phone can't connect through yet. Nothing was dialled.`;
+  }
+  return null;
+}
+
+/** Whether a connect request names this exact phone host (alias, or address and user). */
+function isSameHost(host: { name: string; hostname: string; port: number; user: string }, request: { host: string; port?: number; user: string; hostAlias?: string }): boolean {
+  if (request.hostAlias) return request.hostAlias === host.name;
+  return host.hostname === request.host && host.port === (request.port ?? 22) && (!request.user || host.user === request.user);
+}
 
 export interface AndroidLifecycle {
   /** Register for foreground/background transitions; returns an unsubscribe. */
@@ -65,6 +103,10 @@ export interface AndroidApiDeps {
   observeConnections?: (entry: ConnectionJournalEntry) => void;
   /** Google sign-in and settings sync (#3020); signed-out stub when absent. */
   sync?: PocketShellApi['sync'];
+  /** Open the Account & sync screen: the picker's account button (#3063). */
+  openAccount?: () => Promise<void>;
+  /** Account hosts this phone has no key for yet: find and adopt them (#3063). */
+  accountHosts?: AccountHostKeys;
 }
 
 export interface AndroidPlatform {
@@ -87,6 +129,43 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
 
   const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
 
+  /**
+   * The dial target: a phone host; a phone host whose key is gone, once the
+   * user attaches a key to it (updated in place); or an account host the
+   * phone does not have, once the user gives it this phone's key (saved on
+   * the phone). Either way it then resolves like any other phone host.
+   */
+  async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
+    // A gateway or link marker on the request is refused before anything
+    // else (core #3059): no key prompt, save, credential or socket.
+    if (unsupportedTransportMessage('', payload) !== null) {
+      const named = deps.accountHosts ? await deps.accountHosts.find(payload) : null;
+      throw new Error(unsupportedTransportMessage(named?.name ?? deps.hosts.labelFor(payload), payload)!);
+    }
+    try {
+      return await deps.hosts.resolve(payload);
+    } catch (error) {
+      const keys = deps.accountHosts;
+      if (!keys) throw error;
+      // Attach a key in place only to the phone host this dial IS: named by
+      // the request, or at the same address for the same user. A keyless
+      // phone host that merely shares the address (another user, #3063 review
+      // r2) is left alone, and the account host is saved as its own host.
+      const missingKey = error instanceof MissingHostCredential && isSameHost(error.host, payload);
+      const account = missingKey ? null : await keys.find(payload);
+      // An account host marked for the gateway or a link is refused, never
+      // adopted as a plain SSH phone host (core #3059).
+      const refusal = account ? unsupportedTransportMessage(account.name, account) : null;
+      if (refusal) throw new Error(refusal);
+      const host = missingKey ? (error as MissingHostCredential).host : account;
+      if (!host) throw error;
+      if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {
+        throw new Error(declinedAccountHostMessage(host.name));
+      }
+      return deps.hosts.resolve({ ...payload, hostAlias: host.name });
+    }
+  }
+
   const api: PocketShellApi = {
     ssh: {
       async listConfigHosts() {
@@ -95,7 +174,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       async connect(payload) {
         let target;
         try {
-          target = await deps.hosts.resolve(payload);
+          target = await resolveTarget(payload);
         } catch (error) {
           return { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
@@ -264,7 +343,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       setTitle(title) {
         document.title = title;
       },
-      openAccount: unsupported('win.openAccount'),
+      openAccount: deps.openAccount ?? unsupported('win.openAccount'),
       setZoom: () => undefined,
       onZoomCommand: () => () => undefined,
     },
