@@ -1,10 +1,10 @@
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import ssh2 from 'ssh2';
 import WebSocket from 'ws';
 import { startBridge, type RunningBridge } from '../../scripts/dev-ssh-bridge/bridge.mjs';
+import { loadBridgeTestHostKey, parsedKeyOrThrow } from './support/devSshBridgeHostKey';
 
 /**
  * The dev:live bridge (#3022) against a real in-process SSH server (ssh2's
@@ -13,12 +13,11 @@ import { startBridge, type RunningBridge } from '../../scripts/dev-ssh-bridge/br
  */
 const repoRoot = path.resolve(__dirname, '../..');
 const clientKeyFile = path.join(repoRoot, 'tests/docker/test_key');
-const clientPublic = ssh2.utils.parseKey(readFileSync(path.join(repoRoot, 'tests/docker/test_key.pub'))) as ssh2.ParsedKey;
+const clientPublic = parsedKeyOrThrow(readFileSync(path.join(repoRoot, 'tests/docker/test_key.pub')), 'tests/docker/test_key.pub');
 const PASSWORD = 'correct horse battery staple 3022';
 const TOKEN = 'bridge-test-token-0123456789';
-const hostKey = ssh2.utils.generateKeyPairSync('ed25519');
-const hostPublicBlob = (ssh2.utils.parseKey(hostKey.private) as ssh2.ParsedKey).getPublicSSH();
-const hostFingerprint = `SHA256:${createHash('sha256').update(hostPublicBlob).digest('base64').replace(/=+$/u, '')}`;
+// A fixed, committed throwaway key, never a per-run random one (#3078).
+const { privateKey: hostPrivateKey, publicBlob: hostPublicBlob, fingerprintSha256: hostFingerprint } = loadBridgeTestHostKey();
 
 let server: ssh2.Server;
 let sshPort = 0;
@@ -27,7 +26,7 @@ let bridge: RunningBridge;
 const logs: string[] = [];
 
 function startSshServer(): Promise<void> {
-  server = new ssh2.Server({ hostKeys: [hostKey.private] }, (client) => {
+  server = new ssh2.Server({ hostKeys: [hostPrivateKey] }, (client) => {
     // A refused host key ends the handshake from the client side.
     client.on('error', () => undefined);
     client.on('authentication', (ctx) => {

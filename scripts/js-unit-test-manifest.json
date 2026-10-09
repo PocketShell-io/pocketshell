@@ -625,6 +625,14 @@
         "never logs credentials, key material, commands or PTY bytes"
       ]
     },
+    "tests/unit/devSshBridgeKeys.test.ts": {
+      "suite": "dev SSH bridge Ed25519 keys",
+      "tests": [
+        "the bridge suite host key is a fixed key that ssh2 parses on every load",
+        "every Ed25519 key the dev vault generates is a valid OpenSSH key",
+        "writes an Ed25519 key whose public key starts with zero bytes at full length"
+      ]
+    },
     "tests/unit/devBrowserServer.test.ts": {
       "suite": "browser dev mode live dev server",
       "tests": [

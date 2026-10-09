@@ -39,6 +39,8 @@ export function fingerprintOf(blob: Uint8Array): string;
 export function presentedHostKey(blob: Buffer): PresentedHostKey;
 export function hostKeyTrusted(pin: unknown, presented: PresentedHostKey): boolean;
 export function createKeyVault(): DevKeyVault;
+/** An unencrypted OpenSSH Ed25519 private key from a 32-byte seed, or a fresh random one (#3078). */
+export function ed25519OpenSshPrivateKey(seed?: Uint8Array, comment?: string): string;
 
 export interface RunningBridge {
   address: AddressInfo;
