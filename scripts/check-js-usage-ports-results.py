@@ -1,5 +1,12 @@
 #!/usr/bin/python3 -I
-"""Fail closed unless the packaged JS usage/ports journey ran exactly once."""
+"""Fail closed unless the packaged JS usage/ports journey ran exactly once.
+
+A skipped run is sanctioned ONLY by an unexpired, well-formed row for this
+exact method in scripts/journey-quarantine.txt (policy D36) — the registry
+scripts/check-journey-quarantine-expiry.sh reconciles against the @Ignore on
+the source. Missing, malformed, expired or foreign rows fail closed, exactly
+like scripts/check-js-hotkeys-journey-results.py.
+"""
 
 from __future__ import annotations
 
@@ -9,19 +16,55 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 
 REQUIRED_CLASS = "com.pocketshell.app.smoke.UsagePortsDockerJourneyTest"
 REQUIRED_METHOD = "usageAndPortForwardingPoliciesUseDockerAndNativePlugin"
+REQUIRED_KEY = f"{REQUIRED_CLASS}#{REQUIRED_METHOD}"
 DEFAULT_RESULTS = Path("android/app/build/outputs/androidTest-results/connected/debug")
+DEFAULT_QUARANTINE_FILE = Path(__file__).resolve().parent / "journey-quarantine.txt"
 
 
 class GateFailure(ValueError):
     pass
 
 
-def validate(results: Path) -> None:
+def quarantine_sanction(quarantine_file: Path):
+    """((issue, expires), None) when an unexpired well-formed row sanctions the
+    skip; (None, reason) otherwise. Fail-closed in every unclear case."""
+    try:
+        text = quarantine_file.read_text(encoding="utf-8")
+    except OSError:
+        return None, f"quarantine registry is missing or unreadable: {quarantine_file}"
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if not line.strip() or line.startswith("#"):
+            continue
+        fields = line.split("\t")
+        if fields[0] != REQUIRED_KEY:
+            continue
+        if len(fields) != 5:
+            return None, f"registry row for {REQUIRED_KEY} is malformed (expected 5 TAB-separated fields, got {len(fields)})"
+        _, issue, added, expires, reason = fields
+        if not issue.strip() or not reason.strip():
+            return None, f"registry row for {REQUIRED_KEY} has an empty issue or reason"
+        try:
+            added_date = date.fromisoformat(added)
+            expires_date = date.fromisoformat(expires)
+        except ValueError:
+            return None, f"registry row for {REQUIRED_KEY} carries a non-ISO date (added={added}, expires={expires})"
+        if expires_date <= added_date:
+            return None, f"registry row for {REQUIRED_KEY} expires ({expires}) before it was added ({added})"
+        if date.today() > expires_date:
+            return None, f"registry row for {REQUIRED_KEY} EXPIRED {expires} — resolve or re-triage it per policy D36"
+        return (issue, expires_date), None
+    return None, f"no registry row for {REQUIRED_KEY}"
+
+
+def validate(results: Path, quarantine_file: Path = DEFAULT_QUARANTINE_FILE) -> bool:
+    """Return True when the exact journey passed, False for a D36-sanctioned skip."""
     if not results.is_dir():
         raise GateFailure(f"instrumentation results directory is missing: {results}")
     reports = sorted(results.rglob("TEST-*.xml"))
@@ -80,7 +123,13 @@ def validate(results: Path) -> None:
     if failures:
         raise GateFailure("failed tests: " + ", ".join(failures))
     if skipped:
-        raise GateFailure("skipped tests: " + ", ".join(skipped))
+        sanction, why = quarantine_sanction(quarantine_file)
+        if sanction is None:
+            raise GateFailure("skipped tests: " + ", ".join(skipped) + f" (no unexpired quarantine row sanctions it: {why})")
+        issue, expires = sanction
+        print(f"QUARANTINED (policy D36): {REQUIRED_KEY} skipped; tracked {issue}, expires {expires.isoformat()} ({quarantine_file})")
+        return False
+    return True
 
 
 LAUNCHER_PHASES = ("HTTP_START", "HTTP_CLEANUP")
@@ -171,6 +220,23 @@ def write_report(directory: Path, cases: list[tuple[str, str, str]]) -> None:
 
 def self_test() -> int:
     good = [(REQUIRED_CLASS, REQUIRED_METHOD, "passed")]
+    skip = [(REQUIRED_CLASS, REQUIRED_METHOD, "skipped")]
+    today = date.today()
+    live = f"{REQUIRED_KEY}\t#3076\t{today.isoformat()}\t{date.fromordinal(today.toordinal() + 14).isoformat()}\tselftest\n"
+    expired = f"{REQUIRED_KEY}\t#3076\t2020-01-01\t2020-01-15\tselftest\n"
+    malformed = f"{REQUIRED_KEY}\t#3076\t{today.isoformat()}\n"
+    foreign = f"{REQUIRED_CLASS}#otherMethod\t#3076\t{today.isoformat()}\t2099-01-01\tselftest\n"
+    backwards = f"{REQUIRED_KEY}\t#3076\t2099-01-02\t2099-01-01\tselftest\n"
+    registry_probes: list[tuple[str, list[tuple[str, str, str]], str | None, bool]] = [
+        ("skipped journey with an unexpired registry row passes", skip, live, True),
+        ("skipped journey with an expired registry row blocks", skip, expired, False),
+        ("skipped journey with a malformed registry row blocks", skip, malformed, False),
+        ("skipped journey with only a foreign method's row blocks", skip, foreign, False),
+        ("skipped journey with expires before added blocks", skip, backwards, False),
+        ("skipped journey with a missing registry file blocks", skip, None, False),
+        ("failed journey still blocks under a live registry row", [(REQUIRED_CLASS, REQUIRED_METHOD, "failed")], live, False),
+        ("duplicate skipped journey still blocks under a live registry row", skip + skip, live, False),
+    ]
     probes: list[tuple[str, list[tuple[str, str, str]] | None, bool]] = [
         ("exact packaged journey passes", good, True),
         ("missing result XML blocks", None, False),
@@ -187,8 +253,10 @@ def self_test() -> int:
             report_dir = root / f"case-{index}"
             if cases is not None:
                 write_report(report_dir, cases)
+            empty_registry = root / f"registry-empty-{index}.txt"
+            empty_registry.write_text("", encoding="utf-8")
             try:
-                validate(report_dir)
+                validate(report_dir, empty_registry)
                 passed = True
             except GateFailure:
                 passed = False
@@ -196,7 +264,23 @@ def self_test() -> int:
                 print(f"FAIL: usage/ports result guard probe {index + 1}: {label}", file=sys.stderr)
                 return 1
             print(f"ok [{index + 1}/{len(probes)}] {label}")
-    print("PASS: packaged usage/ports result guard checks (8/8)")
+        for index, (label, cases, registry, expected) in enumerate(registry_probes, start=1):
+            report_dir = root / f"registry-case-{index}"
+            write_report(report_dir, cases)
+            registry_file = root / f"registry-{index}.txt"
+            if registry is not None:
+                registry_file.write_text(registry, encoding="utf-8")
+            try:
+                validate(report_dir, registry_file)
+                passed = True
+            except GateFailure:
+                passed = False
+            if passed != expected:
+                print(f"FAIL: usage/ports quarantine probe {index}: {label}", file=sys.stderr)
+                return 1
+            print(f"ok [{index}/{len(registry_probes)}] quarantine: {label}")
+    print(f"PASS: packaged usage/ports result guard checks ({len(probes)}/{len(probes)}) "
+          f"and D36 quarantine sanction checks ({len(registry_probes)}/{len(registry_probes)})")
     return launcher_self_test()
 
 
@@ -268,6 +352,7 @@ def main() -> int:
     parser.add_argument("--launcher-logcat", type=Path,
                         help="same-run logcat; requires trusted physical Prompt launcher evidence for both phases")
     parser.add_argument("--run-id", help="run id whose launcher evidence --launcher-logcat must contain")
+    parser.add_argument("--quarantine-file", type=Path, default=DEFAULT_QUARANTINE_FILE)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -276,7 +361,11 @@ def main() -> int:
         print("FAIL: --launcher-logcat and --run-id must be given together", file=sys.stderr)
         return 2
     try:
-        validate(args.results_dir)
+        executed = validate(args.results_dir, args.quarantine_file)
+        if not executed:
+            # A sanctioned skip produced no journey evidence; nothing else to check.
+            print(f"PASS (QUARANTINED): {REQUIRED_KEY} reported exactly once as a D36-sanctioned skip")
+            return 0
         if args.launcher_logcat is not None:
             validate_launcher_evidence(args.launcher_logcat, args.run_id)
     except GateFailure as error:
