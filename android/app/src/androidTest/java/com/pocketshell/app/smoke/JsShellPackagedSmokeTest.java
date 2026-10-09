@@ -386,10 +386,6 @@ public final class JsShellPackagedSmokeTest {
             JSONObject preserved = evalJson("window.__ps2852SyncProbeResult");
             JSONObject preservedResult = preserved.getJSONObject("result");
             assertEquals("synced", preservedResult.getString("kind"));
-            // Core's tick rule (#3072) takes {checked, unticked}: the round
-            // reports the selection it synced and no pending untick.
-            assertEquals("prod", preservedResult.getJSONArray("selectedAliases").getString(0));
-            assertEquals("a push spends every untick", 0, preservedResult.getJSONArray("untickedAliases").length());
             JSONObject mergedHost = preservedResult.getJSONArray("hosts").getJSONObject(0);
             assertEquals("the local phone address wins", "prod-phone.example.net", mergedHost.getString("hostname"));
             assertEquals("the desktop jump host survives", "bastion", mergedHost.getString("proxyJump"));
@@ -401,6 +397,34 @@ public final class JsShellPackagedSmokeTest {
             assertEquals("the existing payload stays versionless", 1, uploadedPayload.length());
             assertEquals("keep", uploadedPayload.getJSONArray("hosts").getJSONObject(0)
                     .getJSONObject("futureDirective").getJSONArray("tags").getString(1));
+
+            // Core's tick rule (#3072) takes a {checked, unticked} selection.
+            // An explicit untick of an account host must keep it out of the
+            // upload and be spent by the push. A legacy array argument reads
+            // as "nothing decided", which auto-ticks and re-uploads "retired",
+            // so this probe fails on the wrong shape.
+            String untickPlaintext = new JSONObject().put("hosts", new JSONArray()
+                    .put(new JSONObject().put("name", "prod").put("hostname", "prod-desktop.example.net"))
+                    .put(new JSONObject().put("name", "retired").put("hostname", "retired.example.net")))
+                    .toString();
+            evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
+                    + "const uploads = [];"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: ['retired']}, {"
+                    + "pull: async () => ({kind: 'ok', version: 13, plaintext: " + JSONObject.quote(untickPlaintext) + "}),"
+                    + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 14};}"
+                    + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
+            awaitJsTrue("typeof window.__ps2852SyncProbeResult === 'string' && window.__ps2852SyncProbeResult !== 'pending'");
+            JSONObject unticked = evalJson("window.__ps2852SyncProbeResult");
+            JSONObject untickedResult = unticked.getJSONObject("result");
+            assertEquals("synced", untickedResult.getString("kind"));
+            assertEquals("only the ticked host is selected", "[\"prod\"]",
+                    untickedResult.getJSONArray("selectedAliases").toString());
+            assertEquals("the push spends the untick it carried out", 0,
+                    untickedResult.getJSONArray("untickedAliases").length());
+            JSONArray untickUploaded = new JSONObject(unticked.getJSONArray("uploads").getJSONObject(0)
+                    .getString("plaintext")).getJSONArray("hosts");
+            assertEquals("the unticked account host is not uploaded", 1, untickUploaded.length());
+            assertEquals("prod", untickUploaded.getJSONObject(0).getString("name"));
 
             String invalidPlaintext = "{\"schemaVersion\":2,\"hosts\":[]}";
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"

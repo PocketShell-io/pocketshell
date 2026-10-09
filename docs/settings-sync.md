@@ -50,14 +50,18 @@ or a `link` marker is listed but refused when tapped, before any key prompt or
 socket: Android has neither transport yet, and core's #3059 contract forbids
 dialling such a host as plain SSH. Sync keeps the markers verbatim.
 
-Selection on Android: every account host stays ticked unless the user
-unticked it on this phone, so Sync now never drops an account host by default.
-The phone remembers which aliases it has decided about
-(`pocketshell.sync.known-aliases.v1`, aliases only). Signing out forgets that
-list, so signing out and back in re-ticks a host the user had unticked — on
-purpose: the forgotten untick can only keep a host in the account, never
-remove one. Every upload carries only the fields the phone owns (name,
-hostname, port, user) over the account's entry, so desktop-only fields
+Selection on Android is core's one tick rule, the same on every client
+(#3072, core docs/SYNC.md): every account host stays ticked unless the user
+explicitly unticked it, so an untouched Sync now never removes an account
+host. An untick is saved in the shared settings (`syncUntickedHosts`, aliases
+only) and is one-shot: the push that removes the host spends it, so a host
+another device adds back later is kept. A failed push keeps it pending.
+Signing out clears the saved unticks; forgetting an untick can only keep a
+host in the account, never remove one. The #3063 build's
+`pocketshell.sync.known-aliases.v1` list is deleted on upgrade, so a host
+the phone had unticked under it comes back ticked.
+Every upload carries only the fields the phone owns (name, hostname, port,
+user) over the account's entry, so desktop-only fields
 (`identityFile`, `proxyJump`, forwards, unknown fields) survive a phone sync.
 
 ## OAuth configuration for real sign-in
