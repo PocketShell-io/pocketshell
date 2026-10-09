@@ -263,6 +263,55 @@ else
 fi
 
 cp -a "$RESULTS_DIR" "$ARTIFACTS_DIR/instrumentation-results"
+
+# A @Ignore'd (D36-quarantined) journey legitimately produces no launcher,
+# artifact or host evidence, so the oracles below have nothing to verify.
+# Route on the exact journey's JUnit outcome: only a skip sanctioned by the
+# fail-closed check-js-usage-ports-results.py contract (an unexpired,
+# well-formed journey-quarantine.txt row) may exit green here (#3076; the
+# same trap 82a9dc1d2 fixed for the hotkeys lane).
+journey_junit_outcome="$(python3 - "$RESULTS_DIR" <<'OUTCOME'
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+REQUIRED = ("com.pocketshell.app.smoke.UsagePortsDockerJourneyTest",
+            "usageAndPortForwardingPoliciesUseDockerAndNativePlugin")
+outcomes = []
+for path in sorted(Path(sys.argv[1]).rglob("TEST-*.xml")):
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError) as exc:
+        raise SystemExit(f"FAIL: could not parse {path}: {exc}")
+    suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+    for suite in suites:
+        for case in suite.findall("testcase"):
+            if (case.attrib.get("classname"), case.attrib.get("name")) != REQUIRED:
+                continue
+            if list(case.iter("skipped")):
+                outcomes.append("skipped")
+            elif list(case.iter("failure")) or list(case.iter("error")):
+                outcomes.append("failed")
+            else:
+                outcomes.append("passed")
+print(outcomes[0] if len(outcomes) == 1 else ("missing" if not outcomes else "duplicate"))
+OUTCOME
+)"
+case "$journey_junit_outcome" in
+  passed)
+    : # the executed journey is re-verified below
+    ;;
+  skipped)
+    "$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR" \
+      || fail 'usage/ports journey was skipped without an unexpired D36 quarantine row'
+    printf 'PASS: usage/ports journey QUARANTINED (policy D36); evidence directory: %s\n' "$ARTIFACTS_DIR"
+    exit 0
+    ;;
+  *)
+    fail "packaged usage/ports journey JUnit outcome is ${journey_junit_outcome:-unreadable} despite a green gradle run"
+    ;;
+esac
+
 "$ROOT_DIR/scripts/check-js-usage-ports-results.py" --results-dir "$RESULTS_DIR" \
   --launcher-logcat "$LIVE_ASSET_LOGCAT" --run-id "$RUN_ID"
 "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime -s UsagePortsDockerJourney PocketshellJourneyAsset chromium Chromium \

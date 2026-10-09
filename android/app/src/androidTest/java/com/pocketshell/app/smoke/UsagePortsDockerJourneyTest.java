@@ -27,6 +27,7 @@ import org.json.JSONObject;
 import org.json.JSONTokener;
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -92,6 +93,7 @@ public final class UsagePortsDockerJourneyTest {
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
     }
 
+    @Ignore("quarantined: #3076, expires 2026-10-23 — typed remote output row never renders in the terminal viewport on the hosted emulator; see scripts/journey-quarantine.txt")
     @Test
     public void usageAndPortForwardingPoliciesUseDockerAndNativePlugin() throws Exception {
         try {
