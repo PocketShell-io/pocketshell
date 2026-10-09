@@ -378,7 +378,7 @@ public final class JsShellPackagedSmokeTest {
             JSONArray localHosts = new JSONArray().put(localHost);
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 7, plaintext: " + JSONObject.quote(remotePlaintext) + "}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 8};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -386,6 +386,10 @@ public final class JsShellPackagedSmokeTest {
             JSONObject preserved = evalJson("window.__ps2852SyncProbeResult");
             JSONObject preservedResult = preserved.getJSONObject("result");
             assertEquals("synced", preservedResult.getString("kind"));
+            // Core's tick rule (#3072) takes {checked, unticked}: the round
+            // reports the selection it synced and no pending untick.
+            assertEquals("prod", preservedResult.getJSONArray("selectedAliases").getString(0));
+            assertEquals("a push spends every untick", 0, preservedResult.getJSONArray("untickedAliases").length());
             JSONObject mergedHost = preservedResult.getJSONArray("hosts").getJSONObject(0);
             assertEquals("the local phone address wins", "prod-phone.example.net", mergedHost.getString("hostname"));
             assertEquals("the desktop jump host survives", "bastion", mergedHost.getString("proxyJump"));
@@ -401,7 +405,7 @@ public final class JsShellPackagedSmokeTest {
             String invalidPlaintext = "{\"schemaVersion\":2,\"hosts\":[]}";
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "const result = await window.__ps2852RunSettingsSync([], {checked: [], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 9, plaintext: " + JSONObject.quote(invalidPlaintext) + "}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 10};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -417,7 +421,7 @@ public final class JsShellPackagedSmokeTest {
 
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync([], [], {"
+                    + "const result = await window.__ps2852RunSettingsSync([], {checked: [], unticked: []}, {"
                     + "pull: async () => ({kind: 'ok', version: 11, plaintext: '{\"hosts\":[]}'}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'ok', version: 12};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");
@@ -428,7 +432,7 @@ public final class JsShellPackagedSmokeTest {
 
             evalRaw("window.__ps2852SyncProbeResult = 'pending'; void (async () => {"
                     + "const uploads = [];"
-                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", ['prod'], {"
+                    + "const result = await window.__ps2852RunSettingsSync(" + localHosts + ", {checked: ['prod'], unticked: []}, {"
                     + "pull: async () => ({kind: 'absent'}),"
                     + "push: async (input) => {uploads.push(input); return {kind: 'error', message: 'service unavailable'};}"
                     + "}); window.__ps2852SyncProbeResult = JSON.stringify({result, uploads}); })()");

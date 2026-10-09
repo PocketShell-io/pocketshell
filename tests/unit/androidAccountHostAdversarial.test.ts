@@ -37,7 +37,7 @@ class Google implements GoogleSyncNative {
 }
 
 type Saved = { name: string; hostname: string; port: number; user: string; keyHandleId: string };
-async function setup(account: object[], phone: Saved[], opts: { storage?: Storage; google?: Google; selected?: string[] } = {}) {
+async function setup(account: object[], phone: Saved[], opts: { storage?: Storage; google?: Google; selected?: string[]; unticked?: string[] } = {}) {
   const google = opts.google ?? new Google();
   if (!opts.google) google.slot = { version: 2, data: await encryptToEnvelope(JSON.stringify({ hosts: account }), PASS, FAST) };
   const storage = opts.storage ?? new Storage();
@@ -45,6 +45,7 @@ async function setup(account: object[], phone: Saved[], opts: { storage?: Storag
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
   setActivePinia(createPinia());
   if (opts.selected) useSettingsStore().syncSelectedHosts = [...opts.selected];
+  if (opts.unticked) useSettingsStore().syncUntickedHosts = [...opts.unticked];
   const sync = createAndroidSync({ native: google, storage, localHosts: () => hosts.list(), kdfIterations: FAST });
   const syncApi = sync.api();
   const native = new FakeNative();
@@ -108,16 +109,26 @@ describe('Android account sync and key-prompt adversarial cases', () => {
     expect(acc.find((h) => h.name === 'hetzner')).toEqual(HETZNER_ACC);
   });
 
-  it('C3 restart between unlock and Sync now (selection + known aliases persisted) keeps everything', async () => {
+  it('C3 restart between unlock and Sync now (selection + saved unticks persisted) keeps every host not unticked', async () => {
     const first = await setup([HETZNER_ACC, FIXTURE_ACC], [HETZNER_PHONE]);
     await first.store.loadAccount();
-    const persisted = [...first.settings.syncSelectedHosts];
-    const second = await setup([], [], { storage: first.storage, google: first.google, selected: persisted });
+    const persisted = { selected: [...first.settings.syncSelectedHosts], unticked: [...first.settings.syncUntickedHosts] };
+    const second = await setup([], [], { storage: first.storage, google: first.google, ...persisted });
     expect(second.sync.accountHosts()).toBeNull();
     await second.store.syncNow();
     const acc = await first.google.account();
     expect(acc.map((h) => h.name).sort()).toEqual(['fixture', 'hetzner']);
     expect(acc.find((h) => h.name === 'hetzner')).toEqual(HETZNER_ACC);
+    // An untick saved before a restart is still the user's decision after it:
+    // the next Sync now removes that host, and only that host.
+    second.store.setSelected('fixture', false);
+    const third = await setup([], [], {
+      storage: first.storage, google: first.google,
+      selected: [...second.settings.syncSelectedHosts], unticked: [...second.settings.syncUntickedHosts],
+    });
+    await third.store.syncNow();
+    expect((await first.google.account()).map((h) => h.name)).toEqual(['hetzner']);
+    expect(third.settings.syncUntickedHosts).toEqual([]);
   });
 
   it('C4 alias case mismatch (phone "Hetzner", account "hetzner") never drops the account entry', async () => {
@@ -130,7 +141,10 @@ describe('Android account sync and key-prompt adversarial cases', () => {
 
   it('C5 account with hosts the phone has never seen + legacy screen Sync now keeps all', async () => {
     const { google, hosts, sync, settings } = await setup([HETZNER_ACC, FIXTURE_ACC, { name: 'third', hostname: 't', port: 22, user: 'x', identityFile: '~/k' }], []);
-    const r = await sync.syncNow({ localHosts: await hosts.list(), selected: settings.syncSelectedHosts, passphrase: PASS, onSelection: (a) => { settings.syncSelectedHosts = a; } });
+    const r = await sync.syncNow({
+      localHosts: await hosts.list(), selected: settings.syncSelectedHosts, unticked: settings.syncUntickedHosts, passphrase: PASS,
+      onSelection: (a) => { settings.syncSelectedHosts = a.checked; settings.syncUntickedHosts = a.unticked; },
+    });
     expect(r.kind).toBe('synced');
     const acc = await google.account();
     expect(acc.map((h) => h.name).sort()).toEqual(['fixture', 'hetzner', 'third']);
@@ -146,14 +160,17 @@ describe('Android account sync and key-prompt adversarial cases', () => {
   });
 
   it('C7 unlock uploads nothing; storage holds aliases only', async () => {
-    const { google, store, storage, syncApi } = await setup([HETZNER_ACC, FIXTURE_ACC], [HETZNER_PHONE]);
+    const { google, store, storage, syncApi, settings } = await setup([HETZNER_ACC, FIXTURE_ACC], [HETZNER_PHONE]);
     await store.loadAccount();
     await syncApi.pull('main', PASS);
     expect(google.puts).toBe(0);
     // The host store and the test's own trust pins (seeded in setup) are not sync data.
     const dump = JSON.stringify([...storage.v].filter(([k]) => k !== ANDROID_HOSTS_STORAGE_KEY && !k.startsWith('pocketshell.ssh.host-key.')));
     for (const s of ['id_ed25519', 'bastion', 'fixture"', PASS, '2222']) expect(dump).not.toContain(s);
-    expect(JSON.parse(storage.getItem('pocketshell.sync.known-aliases.v1')!)).toEqual(['hetzner', 'fixture']);
+    // The selection is the shared settings' alias list; the adapter keeps no
+    // alias list of its own any more (#3072 retired the known-aliases key).
+    expect(storage.getItem('pocketshell.sync.known-aliases.v1')).toBeNull();
+    expect(settings.syncSelectedHosts).toEqual(['hetzner', 'fixture']);
   });
 
   it('K1 same hostname+port, DIFFERENT user: account root@ must not rewrite keyless phone alexey@ host', async () => {

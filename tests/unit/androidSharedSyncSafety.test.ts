@@ -43,11 +43,18 @@ class Storage {
 class Google implements GoogleSyncNative {
   signedIn = true;
   slot: { version: number; data: string } | null = null;
+  /** Refuse the next upload with this HTTP status (a failed push). */
+  failNextPut: number | null = null;
   async status() { return { signedIn: this.signedIn, email: 'p@example.com', packageName: 'p' }; }
   async signIn() { this.signedIn = true; return this.status(); }
   async signOut() { this.signedIn = false; return this.status(); }
   async request(r: GoogleSyncRequest): Promise<GoogleSyncHttpResponse> {
     if (r.method === 'GET') return this.slot ? { status: 200, body: JSON.stringify(this.slot) } : { status: 404, body: '{}' };
+    if (this.failNextPut !== null) {
+      const status = this.failNextPut;
+      this.failNextPut = null;
+      return { status, body: '{"message":"service unavailable"}' };
+    }
     const { data, version } = JSON.parse(r.body) as { data: string; version: number };
     this.slot = { version: version + 1, data };
     return { status: 200, body: JSON.stringify({ version: version + 1 }) };
@@ -55,16 +62,29 @@ class Google implements GoogleSyncNative {
   async account(): Promise<Array<Record<string, unknown>>> {
     return (JSON.parse(await decryptEnvelope(this.slot!.data, PASS)) as { hosts: Array<Record<string, unknown>> }).hosts;
   }
+  /** Another device writes the account (re-adds a host), on the current version. */
+  async writeElsewhere(plaintext: string): Promise<void> {
+    this.slot = { version: (this.slot?.version ?? 0) + 1, data: await encryptToEnvelope(plaintext, PASS, FAST) };
+  }
 }
 
-/** The phone has its own `hetzner` (a migrated or added host); the account has hetzner and fixture. */
-async function setup() {
-  const google = new Google();
-  google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASS, FAST) };
-  const storage = new Storage();
+/**
+ * The phone has its own `hetzner` (a migrated or added host); the account has
+ * hetzner and fixture. `restart` re-launches over an existing phone: the same
+ * WebView storage and account, the persisted sync settings, a fresh adapter.
+ */
+async function setup(restart?: { google: Google; storage: Storage; selected: string[]; unticked: string[] }) {
+  const google = restart?.google ?? new Google();
+  if (!restart) google.slot = { version: 2, data: await encryptToEnvelope(ACCOUNT, PASS, FAST) };
+  const storage = restart?.storage ?? new Storage();
   const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
-  hosts.save({ name: 'hetzner', hostname: 'hetzner.phone.lan', port: 2200, user: 'alexey', keyHandleId: 'k1' });
+  if (!restart) hosts.save({ name: 'hetzner', hostname: 'hetzner.phone.lan', port: 2200, user: 'alexey', keyHandleId: 'k1' });
   setActivePinia(createPinia());
+  if (restart) {
+    // The settings store persists these per device (localStorage in the app).
+    useSettingsStore().syncSelectedHosts = [...restart.selected];
+    useSettingsStore().syncUntickedHosts = [...restart.unticked];
+  }
   const sync = createAndroidSync({ native: google, storage, localHosts: () => hosts.list(), kdfIterations: FAST });
   const native = new FakeNative();
   const { api } = createAndroidPlatform({
@@ -117,17 +137,74 @@ describe('Android shared Account screen sync safety', () => {
     expect((await google.account()).find((host) => host.name === 'fixture')).toEqual({ name: 'fixture', hostname: 'fixture', port: 2222, user: 'u' });
   });
 
-  it('only an explicit untick removes an account host, and it stays unticked on the next unlock', async () => {
-    // Core's rule, kept: an untick means something for a host this phone can
-    // see; an account-only host re-ticks itself so a sync never wipes it.
+  it('only an explicit untick removes an account host, and the push spends it: a host another device re-adds is kept', async () => {
+    // #3072 ruling: an untick is ONE-SHOT, consumed by the push that removes
+    // the host, never a standing per-device ban. The phone presses Sync now
+    // again without touching anything (no unlock in between): the host
+    // another device added back must stay in the account.
     const { google, store, settings } = await setup();
     await store.loadAccount();
     store.setSelected('hetzner', false);
     await store.syncNow();
     expect((await google.account()).map((host) => host.name)).toEqual(['fixture']);
-    google.slot = { version: google.slot!.version, data: await encryptToEnvelope(ACCOUNT, PASS, FAST) };
-    await store.loadAccount();
-    expect(settings.syncSelectedHosts).not.toContain('hetzner');
+    await google.writeElsewhere(ACCOUNT);
+    await store.syncNow();
+    expect(store.message).toEqual({ kind: 'ok', text: 'Synced: 2 hosts in your account.' });
+    expect((await google.account()).map((host) => host.name).sort()).toEqual(['fixture', 'hetzner']);
+    expect(settings.syncSelectedHosts).toEqual(expect.arrayContaining(['hetzner', 'fixture']));
+    expect(settings.syncUntickedHosts).toEqual([]);
+  });
+
+  it('a spent untick stays spent across a restart: a host another device re-adds is kept', async () => {
+    const first = await setup();
+    await first.store.loadAccount();
+    first.store.setSelected('hetzner', false);
+    await first.store.syncNow();
+    expect((await first.google.account()).map((host) => host.name)).toEqual(['fixture']);
+    await first.google.writeElsewhere(ACCOUNT);
+    const second = await setup({
+      google: first.google,
+      storage: first.storage,
+      selected: [...first.settings.syncSelectedHosts],
+      unticked: [...first.settings.syncUntickedHosts],
+    });
+    await second.store.syncNow();
+    expect((await first.google.account()).map((host) => host.name).sort()).toEqual(['fixture', 'hetzner']);
+  });
+
+  it('an untick survives a restart until a push carries it out, and a failed push keeps it pending', async () => {
+    const first = await setup();
+    await first.store.loadAccount();
+    first.store.setSelected('hetzner', false);
+    expect(first.settings.syncUntickedHosts).toEqual(['hetzner']);
+    first.google.failNextPut = 503;
+    await first.store.syncNow();
+    expect(first.store.message?.kind).toBe('error');
+    expect((await first.google.account()).map((host) => host.name)).toEqual(['hetzner', 'fixture']);
+    expect(first.settings.syncUntickedHosts).toEqual(['hetzner']);
+    // Restart: the pending untick is still the user's decision.
+    const second = await setup({
+      google: first.google,
+      storage: first.storage,
+      selected: [...first.settings.syncSelectedHosts],
+      unticked: [...first.settings.syncUntickedHosts],
+    });
+    await second.store.syncNow();
+    expect((await first.google.account()).map((host) => host.name)).toEqual(['fixture']);
+    expect(second.settings.syncUntickedHosts).toEqual([]);
+  });
+
+  it('a phone upgraded with the retired known-aliases list: an untouched Sync now keeps an overlapping host', async () => {
+    // A #3063 build kept "account aliases this phone has seen" and treated a
+    // seen-but-unselected alias as an untick, so a stale entry deleted the
+    // phone's overlapping host on an untouched Sync now. #3072 hard-cuts that
+    // list: it is deleted on upgrade, and only a saved untick removes a host.
+    const first = await setup();
+    first.storage.setItem('pocketshell.sync.known-aliases.v1', JSON.stringify(['hetzner', 'fixture']));
+    const upgraded = await setup({ google: first.google, storage: first.storage, selected: ['fixture'], unticked: [] });
+    await upgraded.store.syncNow();
+    expect((await first.google.account()).map((host) => host.name).sort()).toEqual(['fixture', 'hetzner']);
+    expect(upgraded.storage.getItem('pocketshell.sync.known-aliases.v1')).toBeNull();
   });
 
   it('the legacy Account screen\'s Sync now keeps account hosts and their fields the same way', async () => {
@@ -135,15 +212,41 @@ describe('Android shared Account screen sync safety', () => {
     const result = await sync.syncNow({
       localHosts: await hosts.list(),
       selected: settings.syncSelectedHosts,
+      unticked: settings.syncUntickedHosts,
       passphrase: PASS,
-      onSelection: (aliases) => { settings.syncSelectedHosts = aliases; },
+      onSelection: (selection) => {
+        settings.syncSelectedHosts = selection.checked;
+        settings.syncUntickedHosts = selection.unticked;
+      },
     });
     expect(result).toMatchObject({ kind: 'synced' });
-    if (result.kind === 'synced') expect(result.hosts.map((host) => host.name)).toEqual(['fixture', 'hetzner']);
+    // Core's rule ticks every account host in the account's own order.
+    if (result.kind === 'synced') expect(result.hosts.map((host) => host.name)).toEqual(['hetzner', 'fixture']);
     const account = await google.account();
-    expect(account.map((host) => host.name)).toEqual(['fixture', 'hetzner']);
+    expect(account.map((host) => host.name)).toEqual(['hetzner', 'fixture']);
     expect(account.find((host) => host.name === 'hetzner')).toMatchObject({ hostname: 'hetzner.phone.lan', identityFile: '~/.ssh/id_ed25519', proxyJump: 'bastion' });
     expect(settings.syncSelectedHosts).toEqual(expect.arrayContaining(['hetzner', 'fixture']));
+  });
+
+  it('the legacy Account screen\'s untick is one-shot too: its push spends it, and a host another device re-adds is kept', async () => {
+    const { google, hosts, sync, settings } = await setup();
+    const legacySyncNow = async () => sync.syncNow({
+      localHosts: await hosts.list(),
+      selected: settings.syncSelectedHosts,
+      unticked: settings.syncUntickedHosts,
+      passphrase: PASS,
+      onSelection: (selection) => {
+        settings.syncSelectedHosts = selection.checked;
+        settings.syncUntickedHosts = selection.unticked;
+      },
+    });
+    settings.syncUntickedHosts = ['hetzner'];
+    expect((await legacySyncNow()).kind).toBe('synced');
+    expect((await google.account()).map((host) => host.name)).toEqual(['fixture']);
+    expect(settings.syncUntickedHosts).toEqual([]);
+    await google.writeElsewhere(ACCOUNT);
+    expect((await legacySyncNow()).kind).toBe('synced');
+    expect((await google.account()).map((host) => host.name).sort()).toEqual(['fixture', 'hetzner']);
   });
 
   it('after a restart the account hosts come back once the passphrase unlocks them, with nothing uploaded', async () => {
