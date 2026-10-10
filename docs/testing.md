@@ -137,7 +137,7 @@ TLS port 3287 via `adb reverse`, a per-run test CA trusted only by its
 `gwlane`-suffixed debug build, and a host-side controller that is the oracle.
 It needs the private gateway checkout at the pinned commit:
 `scripts/connected-test.sh gateway-docker --suffix i3086gwlane --gateway-src ~/git/pocketshell-gateway`
-(CI checks it out with a read-only deploy key, secret `POCKETSHELL_GATEWAY_READ_SSH_KEY`). Details and the TLS
+(CI checks it out with a fine-grained read-only Contents token for that one repository, secret `POCKETSHELL_GATEWAY_READ_TOKEN`). Details and the TLS
 design: [gateway-android-transport.md](gateway-android-transport.md#emulator-lane-gateway-docker).
 The signed-upgrade lane runs `InstalledDataMigrationJourneyTest` last in the
 blocking packaged CI run (`scripts/ci-js-first-packaged-lanes.sh`), after the

@@ -175,10 +175,12 @@ gateway-docker --suffix i3086gwlane --gateway-src DIR`), run by
   4403 cannot be produced end to end; its mapping is covered by the JVM
   close-code tests.
 - CI: the workflow checks the gateway repository out at the exact pinned
-  commit with a read-only deploy key (secret
-  `POCKETSHELL_GATEWAY_READ_SSH_KEY`, handed only to that `actions/checkout`
-  step, `ssh-strict: true`, `persist-credentials: false`). A missing secret
-  fails the required check with an explicit error; the lane never skips.
+  commit with a fine-grained, read-only (Contents) token limited to
+  PocketShell-io/pocketshell-gateway (secret `POCKETSHELL_GATEWAY_READ_TOKEN`,
+  handed only to that `actions/checkout` step, `persist-credentials: false`;
+  never GITHUB_TOKEN or another broad token). A missing secret fails the
+  required check with an explicit error; the lane never skips. (The org has
+  deploy keys disabled, so a deploy key is not an option.)
   Locally, pass any checkout at the pin with `--gateway-src` (or
   `POCKETSHELL_GATEWAY_SRC`); the runner refuses another commit or a dirty
   tree.
