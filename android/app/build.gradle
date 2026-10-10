@@ -184,6 +184,10 @@ dependencies {
     testImplementation "junit:junit:$junitVersion"
     // The real org.json on the JVM; android.jar only carries stubs (#3020 GoogleIdToken claims).
     testImplementation 'org.json:json:20250517'
+    // A real SSH server behind the JVM gateway fixture (#3086): proves the
+    // pin is checked against the key the host presents BEFORE userauth, and
+    // that gateway close codes survive the full sshj connect path. Test only.
+    testImplementation 'org.apache.sshd:sshd-core:2.14.0'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     androidTestImplementation "androidx.test.espresso:espresso-intents:$androidxEspressoCoreVersion"
