@@ -87,6 +87,11 @@ public final class GatewayTunnel implements AutoCloseable {
     private final GatewayTargetPolicy.Endpoint endpoint;
     private final String routingToken;
     private final boolean insecureLoopbackAllowed;
+    /** TLS trust and the post-handshake hostname check: the platform's in
+     * production (null here); JVM tests inject a test-CA context, since a
+     * JVM has neither the app's trust store nor Android's hostname verifier. */
+    private final SSLSocketFactory tlsBaseForTesting;
+    private final javax.net.ssl.HostnameVerifier hostnameVerifierForTesting;
 
     private final AtomicReference<Phase> phase = new AtomicReference<>(Phase.DIALING);
     private final AtomicReference<GatewayTunnelException> failure = new AtomicReference<>();
@@ -146,10 +151,18 @@ public final class GatewayTunnel implements AutoCloseable {
     }
 
     public GatewayTunnel(GatewayTargetPolicy.Target target, String routingToken, boolean insecureLoopbackAllowed) {
+        this(target, routingToken, insecureLoopbackAllowed, null, null);
+    }
+
+    /** JVM tests only: a wss:// fixture with its own CA. */
+    GatewayTunnel(GatewayTargetPolicy.Target target, String routingToken, boolean insecureLoopbackAllowed,
+            SSLSocketFactory tlsBaseForTesting, javax.net.ssl.HostnameVerifier hostnameVerifierForTesting) {
         this.target = target;
         this.routingToken = routingToken;
         this.insecureLoopbackAllowed = insecureLoopbackAllowed;
         this.endpoint = GatewayTargetPolicy.endpoint(target, insecureLoopbackAllowed);
+        this.tlsBaseForTesting = tlsBaseForTesting;
+        this.hostnameVerifierForTesting = hostnameVerifierForTesting;
     }
 
     /**
@@ -303,8 +316,9 @@ public final class GatewayTunnel implements AutoCloseable {
             throw new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway TLS identity could not be verified.");
         }
-        boolean verified = session != null
-                && HttpsURLConnection.getDefaultHostnameVerifier().verify(endpoint.host, session);
+        javax.net.ssl.HostnameVerifier verifier = hostnameVerifierForTesting != null
+                ? hostnameVerifierForTesting : HttpsURLConnection.getDefaultHostnameVerifier();
+        boolean verified = session != null && verifier.verify(endpoint.host, session);
         if (!verified) {
             close();
             throw new GatewayTunnelException(
@@ -315,10 +329,16 @@ public final class GatewayTunnel implements AutoCloseable {
     /** Platform default trust (OS CA store), with explicit SNI on the wrapped
      * socket; the handshake happens on first use of the returned socket. */
     private SocketFactory gatewayTlsSocketFactory() {
-        SSLSocketFactory base = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocketFactory base = tlsBaseForTesting != null
+                ? tlsBaseForTesting : (SSLSocketFactory) SSLSocketFactory.getDefault();
         return new SSLSocketFactory() {
             @Override public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
             @Override public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }
+
+            /** Java-WebSocket asks a configured factory for an UNCONNECTED
+             * socket and connects it itself (#3086 slice 3: without this the
+             * inherited default threw, and every wss:// dial failed). */
+            @Override public Socket createSocket() throws IOException { return base.createSocket(); }
 
             @Override
             public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {

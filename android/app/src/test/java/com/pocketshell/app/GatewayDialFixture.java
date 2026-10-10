@@ -119,9 +119,11 @@ final class GatewayDialFixture implements AutoCloseable {
                 .put("gateway", new JSObject().put("serverUrl", serverUrl()).put("deviceId", DEVICE));
     }
 
-    /** Run the real connect path; returns the result or records the typed failure. */
+    /** Run the real connect path; returns the result or records the typed failure.
+     * The options round-trip through JSON first, as the Capacitor bridge
+     * delivers them: nested objects arrive as plain org.json.JSONObject. */
     JSObject connect(String requestId) throws Exception {
-        return plugin.connectNow(connectOptions(requestId));
+        return plugin.connectNow(new JSObject(connectOptions(requestId).toString()));
     }
 
     SshCapabilityPlugin.PluginFailure connectExpectingFailure(String requestId) throws Exception {

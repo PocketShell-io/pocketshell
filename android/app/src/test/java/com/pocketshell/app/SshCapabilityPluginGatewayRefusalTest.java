@@ -149,6 +149,22 @@ public final class SshCapabilityPluginGatewayRefusalTest {
                 0, session.exchanges);
     }
 
+    @Test public void aTargetAsTheCapacitorBridgeDeliversItPlansTheDial() throws Exception {
+        // #3086 slice 3, found by the emulator gateway lane: the bridge parses
+        // the call's JSON into a JSObject whose NESTED objects are plain
+        // org.json.JSONObject, never JSObject. Slice 2 refused every real
+        // gateway dial as "malformed" because it required a JSObject here.
+        pairFor("sub-1", "wss://gateway.example.io", "host-1");
+        JSObject bridged = new JSObject(connectOptions(
+                target("wss://gateway.example.io", "host-1"), "key-handle").toString());
+        assertFalse("the bridge's nested target is a plain JSONObject",
+                bridged.opt("gateway") instanceof JSObject);
+        SshCapabilityPlugin.GatewayDialPlan plan = plugin.resolveGatewayDialPlan(
+                bridged, "key-handle", HANDLE, 60_000);
+        assertNotNull(plan);
+        assertEquals("host-1", plan.target.deviceId);
+    }
+
     // --- harness ------------------------------------------------------------------------
 
     private void pairFor(String subject, String serverUrl, String deviceId) throws IOException {

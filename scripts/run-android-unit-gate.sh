@@ -19,6 +19,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.GatewayTargetPolicyTest
   com.pocketshell.app.GatewayTokenBrokerTest
   com.pocketshell.app.GatewayTunnelTest
+  com.pocketshell.app.GatewayTunnelTlsTest
   com.pocketshell.app.GoogleSyncSessionGatewayExchangeTest
   com.pocketshell.app.GoogleSyncSessionTest
   com.pocketshell.app.KeyHandleConnectFailuresTest

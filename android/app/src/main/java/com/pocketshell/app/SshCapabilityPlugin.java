@@ -428,7 +428,12 @@ public final class SshCapabilityPlugin extends Plugin {
             else attempt.closeClient();
             if (presented.keyType != null && !presented.trusted) {
                 JSObject details = presented.asJson();
-                throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
+                // A gateway dial has no trust prompt: the pairing's pin is the
+                // whole decision, so say which pin did not match.
+                String message = gatewayPlan != null
+                    ? "The host's SSH key does not match the key this phone paired for that device. Nothing was sent; check the host key and pair again."
+                    : "The SSH host key has not been trusted.";
+                throw new PluginFailure("HOST_KEY_REJECTED", message, details, null);
             }
             // A gateway verdict (a close frame, or a handshake error frame
             // mapped to its close code) reaches core intact, whether it
@@ -1345,11 +1350,14 @@ public final class SshCapabilityPlugin extends Plugin {
         if (!"key-handle".equals(credentialKind)) {
             throw new PluginFailure("INVALID_ARGUMENT", "Gateway connections authenticate with a stored SSH key only.");
         }
+        // The Capacitor bridge hands nested objects over as plain
+        // org.json.JSONObject (JSObject is only the call's top level), so
+        // that is the shape a target must have; anything else refuses.
         Object rawGateway = options.opt("gateway");
-        if (!(rawGateway instanceof JSObject)) {
+        if (!(rawGateway instanceof org.json.JSONObject)) {
             throw new PluginFailure("INVALID_ARGUMENT", "The gateway target is malformed.");
         }
-        JSObject rawTarget = (JSObject) rawGateway;
+        org.json.JSONObject rawTarget = (org.json.JSONObject) rawGateway;
         GatewayTargetPolicy.Target target = GatewayTargetPolicy.normalizeTarget(
                 rawTarget.opt("serverUrl"), rawTarget.opt("deviceId"));
         if (target == null) {

@@ -47,6 +47,8 @@ public final class SshCapabilityPluginGatewayPinTest {
                 otherHostsPin, GatewayDialFixture.HANDLE);
         SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("pin-mismatch");
         assertEquals("HOST_KEY_REJECTED", failure.code);
+        assertTrue("the refusal names the pairing, not a trust prompt: " + failure.getMessage(),
+                failure.getMessage().startsWith("The host's SSH key does not match the key this phone paired"));
         assertEquals("the presented key is reported for diagnosis, never trusted",
                 fixture.hostFingerprint(), failure.data.getString("fingerprintSha256"));
         assertEquals("a mismatch stops the dial BEFORE any userauth attempt",
