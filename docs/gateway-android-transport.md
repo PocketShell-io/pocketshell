@@ -64,6 +64,22 @@ lock that registers a successful connection, so exactly one wins: a claimed
 deadline makes registration refuse with `CONNECT_TIMEOUT`, and an accepted
 connection is never claimed afterwards.
 
+## Gateway origin allowlist
+
+`GatewayOriginAllowlist` is the ONE native list of gateway origins a gateway
+credential may be used with (#3086 review B1). Before a dial reads the
+sign-in, looks up a pairing, mints a routing token or opens a socket, and
+before a pairing is stored, the canonical origin must be exactly (scheme,
+host, port) one of: `wss://gateway.pocketshell.io` (443) in every build, or
+the emulator lane's `wss://localhost:<port>`, which only the `gwlane` debug
+build compiles in (`BuildConfig.GATEWAY_LANE_TEST_ORIGIN`, set by
+`-PpocketshellGatewayTestPort` next to the test CA; empty in every other
+build). No suffix, prefix, look-alike, IP-literal or punycode matching, and
+nothing at run time (JS, localStorage, sync data, plugin arguments) can widen
+it. A refused dial is `GATEWAY_ORIGIN_NOT_ALLOWED`; a refused pairing is the
+same code. Identity API calls use `allowsHttpsOrigin` for the same (host,
+port) over HTTPS.
+
 ## The routing token never leaves native code
 
 It exists only in `GatewayRoutingTokens` (memory) and the tunnel's auth
@@ -162,7 +178,10 @@ gateway-docker --suffix i3086gwlane --gateway-src DIR`), run by
   reverse` mirrors on the emulator. Only a debug build with
   `-PpocketshellGatewayTestCa=<ca.pem>` AND a package suffix containing
   `gwlane` gets a generated network-security-config that trusts that CA, for
-  the domain `localhost` only (`android/app/build.gradle`). Release, the
+  the domain `localhost` only (`android/app/build.gradle`); the same build,
+  with `-PpocketshellGatewayTestPort`, admits `wss://localhost:<port>` into
+  the native gateway-origin allowlist (the runner checks the generated
+  `BuildConfig`). Release, the
   unsuffixed and preview packages and every other lane keep platform trust;
   the tunnel's wss-only rule and hostname checks are unchanged.
 - What it proves: session list, attach, terminal I/O and resize read back

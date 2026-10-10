@@ -2,6 +2,7 @@ package com.pocketshell.app;
 
 import static org.junit.Assert.*;
 import com.getcapacitor.JSObject;
+import java.io.IOException;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.json.JSONObject;
@@ -15,7 +16,7 @@ import org.junit.Test;
  */
 public final class GatewayPairingPluginContractTest {
     private static final String HANDLE = "01234567-89ab-cdef-0123-456789abcdef";
-    private static final String URL = "wss://gateway.example.io";
+    private static final String URL = "wss://gateway.pocketshell.io";
     private static final String PIN = "SHA256:" + "A".repeat(43);
 
     private static final class Memory implements GatewayPairingStore.Repository {
@@ -131,5 +132,23 @@ public final class GatewayPairingPluginContractTest {
             fail("missing account must refuse");
         } catch (SyncAuthException expected) { assertEquals("GATEWAY_PAIRING_ACCOUNT_CHANGED", expected.code); }
         assertNull(memory.value);
+    }
+
+    /** #3086 review B1: JS cannot store a pairing (and so later a dial) for a foreign gateway. */
+    @Test public void aPairingForAForeignGatewayOriginIsRefusedBeforeTheAccountVaultOrStore() throws Exception {
+        for (String origin : SshCapabilityPluginGatewayRefusalTest.FOREIGN_ORIGINS) {
+            Memory memory = new Memory();
+            GatewayPairingStore store = new GatewayPairingStore(memory, () -> 1000L);
+            try {
+                GatewayPairingPlugin.pairForAccount(store, new Account("sub-1", "me@example.com"),
+                        key -> { fail(origin + ": the vault must not be probed"); return true; },
+                        "me@example.com", origin, "host-1", PIN, HANDLE);
+                fail(origin + ": a foreign gateway origin must not be paired");
+            } catch (IOException refused) {
+                assertTrue(origin + ": refused for its origin: " + refused.getMessage(),
+                        refused.getMessage().contains("not allowed"));
+            }
+            assertNull(origin + ": nothing was stored", memory.value);
+        }
     }
 }

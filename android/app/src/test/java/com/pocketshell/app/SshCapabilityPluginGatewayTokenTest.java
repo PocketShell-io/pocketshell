@@ -234,6 +234,29 @@ public final class SshCapabilityPluginGatewayTokenTest {
                 List.of(fixture.broker.minted.get(0), fixture.broker.minted.get(0)), tokensSentToTheGateway());
     }
 
+    /**
+     * #3086 review B1, end to end: a pairing for a foreign origin (stored
+     * the way any WebView JS could) never gets a routing token minted or
+     * sent. The foreign origin here is the fixture gateway itself under
+     * another name, so on the old code the token really was minted for it.
+     */
+    @Test public void aForeignGatewayOriginNeverGetsATokenMintedOrSent() throws Exception {
+        String foreign = "wss://localhost:" + fixture.gateway.getPort();
+        fixture.pairings.pair(GatewayDialFixture.SUBJECT, foreign, GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), GatewayDialFixture.HANDLE);
+        JSObject options = fixture.connectOptions("foreign-origin");
+        options.put("gateway", new JSObject().put("serverUrl", foreign).put("deviceId", GatewayDialFixture.DEVICE));
+        try {
+            fixture.plugin.connectNow(new JSObject(options.toString()));
+            fail("a foreign gateway origin must be refused");
+        } catch (SshCapabilityPlugin.PluginFailure refused) {
+            assertEquals("GATEWAY_ORIGIN_NOT_ALLOWED", refused.code);
+        }
+        assertEquals("no routing token was minted", 0, fixture.broker.mints.get());
+        assertTrue("nothing reached any gateway", fixture.gateway.authFrames.isEmpty());
+        assertEquals(0, fixture.gateway.clientConnections.get());
+    }
+
     @Test public void aFreshToken4401IsTheVerdictAndIsNotRetried() throws Exception {
         // Every token is refused: the sign-in itself is not accepted.
         fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, 4401, null);

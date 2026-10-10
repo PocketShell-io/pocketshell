@@ -76,7 +76,7 @@ final class GatewayDialFixture implements AutoCloseable {
                     return pem.getBytes(StandardCharsets.UTF_8);
                 },
                 (target, routingToken) -> new GatewayTunnel(target, routingToken, true),
-                loggedFailureCodes::add);
+                loggedFailureCodes::add, GatewayOriginAllowlist.forTesting(serverUrl()));
     }
 
     String serverUrl() {

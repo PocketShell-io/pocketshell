@@ -175,6 +175,10 @@ public final class SshCapabilityPlugin extends Plugin {
      * the JVM-test constructor's fixture factory. Production is always false,
      * so a ws:// target is refused at plan time, before any mint. */
     private volatile boolean gatewayInsecureLoopbackForTesting = false;
+    /** The ONE native list of origins a gateway credential may be used with
+     * (B1): this build's, never widened at run time. JVM tests that dial a
+     * loopback fixture add exactly that fixture's origin. */
+    private volatile GatewayOriginAllowlist gatewayOriginAllowlist = GatewayOriginAllowlist.forBuild();
 
     public SshCapabilityPlugin() {
         this(new Handler(Looper.getMainLooper()), SystemClock::elapsedRealtime);
@@ -201,7 +205,17 @@ public final class SshCapabilityPlugin extends Plugin {
             GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore,
             PrivateKeySource privateKeySource, GatewayTunnelFactory gatewayTunnelFactory,
             ConnectFailureLog connectFailureLog) {
+        this(mainHandler, elapsedRealtimeClock, gatewaySyncSession, gatewayPairingStore, privateKeySource,
+                gatewayTunnelFactory, connectFailureLog, GatewayOriginAllowlist.forBuild());
+    }
+
+    /** JVM tests: as above, with the allowlist that admits the loopback fixture. */
+    SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock,
+            GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore,
+            PrivateKeySource privateKeySource, GatewayTunnelFactory gatewayTunnelFactory,
+            ConnectFailureLog connectFailureLog, GatewayOriginAllowlist gatewayOriginAllowlist) {
         this(mainHandler, elapsedRealtimeClock, gatewaySyncSession, gatewayPairingStore);
+        this.gatewayOriginAllowlist = gatewayOriginAllowlist;
         this.connectFailureLog = connectFailureLog;
         this.privateKeySource = privateKeySource;
         this.gatewayVaultProbe = keyHandleId -> {
@@ -1370,6 +1384,13 @@ public final class SshCapabilityPlugin extends Plugin {
             GatewayTargetPolicy.endpoint(target, gatewayInsecureLoopbackForTesting);
         } catch (IllegalArgumentException insecure) {
             throw new PluginFailure("INVALID_ARGUMENT", "A gateway connection needs an encrypted wss:// address.");
+        }
+        // B1: the routing token goes only to an allowlisted gateway. Checked
+        // before the sign-in is read, a pairing looked up, a token minted or
+        // any socket opened; JS cannot widen the list.
+        if (!gatewayOriginAllowlist.allowsGatewayOrigin(target.serverUrl)) {
+            throw new PluginFailure(GatewayOriginAllowlist.NOT_ALLOWED,
+                    "PocketShell connects only through the PocketShell gateway; this gateway address is not allowed.");
         }
         GatewaySyncSession session = gatewaySyncSession;
         GatewayPairingStore pairingStore = gatewayPairingStore;

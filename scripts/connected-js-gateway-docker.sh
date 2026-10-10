@@ -23,8 +23,11 @@
 # skip.
 #
 # TLS: the prepare phase builds the suffixed debug APK with
-# -PpocketshellGatewayTestCa, which makes ONLY that build trust the run's
-# test CA, for `localhost` only (android/app/build.gradle). Production and
+# -PpocketshellGatewayTestCa and -PpocketshellGatewayTestPort, which make ONLY
+# that build trust the run's test CA (for `localhost` only) and admit
+# wss://localhost:<port> into the native gateway-origin allowlist
+# (android/app/build.gradle, GatewayOriginAllowlist). Prepare and test must
+# use the same --tls-port. Production and
 # every other lane keep platform trust; the native transport's wss-only and
 # hostname checks are unchanged.
 
@@ -131,7 +134,14 @@ if [[ "$TEST_ONLY" != 1 ]]; then
   "${PNPM:-pnpm}" build:web
   "${PNPM:-pnpm}" cap:sync
   "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:assembleDebug :app:assembleDebugAndroidTest \
-    "-PpocketshellAppIdSuffix=$SUFFIX" "-PpocketshellGatewayTestCa=$TLS_DIR/ca.pem" --stacktrace --console=plain
+    "-PpocketshellAppIdSuffix=$SUFFIX" "-PpocketshellGatewayTestCa=$TLS_DIR/ca.pem" \
+    "-PpocketshellGatewayTestPort=$TLS_PORT" --stacktrace --console=plain
+  # The native gateway allowlist (#3086 B1) admits the lane's TLS front only
+  # because THIS build compiled it in: prove the build config says exactly that.
+  build_config="$ROOT_DIR/android/app/build/generated/source/buildConfig/debug/com/pocketshell/app/BuildConfig.java"
+  grep -Fq "GATEWAY_LANE_TEST_ORIGIN = \"wss://localhost:$TLS_PORT\";" "$build_config" \
+    || fail "the gwlane build does not allow exactly wss://localhost:$TLS_PORT ($build_config)"
+  printf '%s\n' "$TLS_PORT" > "$BIN_DIR/tls-port"
 fi
 
 if [[ "$PREPARE_ONLY" == 1 ]]; then
@@ -139,10 +149,13 @@ if [[ "$PREPARE_ONLY" == 1 ]]; then
   exit 0
 fi
 
-for needed in gateway pocketshell-link gwfixture gateway-source.commit; do
+for needed in gateway pocketshell-link gwfixture gateway-source.commit tls-port; do
   [[ -s "$BIN_DIR/$needed" ]] || fail "prepared gateway lane file missing: $BIN_DIR/$needed (run --prepare-only first)"
 done
 [[ "$(cat "$BIN_DIR/gateway-source.commit")" == "$PINNED_GATEWAY" ]] || fail 'the prepared gateway binaries are not the pinned commit; prepare again'
+[[ "$(cat "$BIN_DIR/tls-port")" == "$TLS_PORT" ]] \
+  || fail "the prepared build allows the lane origin on port $(cat "$BIN_DIR/tls-port"), not --tls-port $TLS_PORT; prepare with the same --tls-port"
+
 for needed in ca.pem server.pem server.key; do
   [[ -s "$TLS_DIR/$needed" ]] || fail "prepared test-CA file missing: $TLS_DIR/$needed"
 done
@@ -283,6 +296,7 @@ printf 'Running packaged gateway journey on %s (API %s), suffix %s, run %s, gate
 test_status=0
 pocketshell_run_without_avd_lock_fd "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/android" :app:connectedDebugAndroidTest \
   "-PpocketshellAppIdSuffix=$SUFFIX" "-PpocketshellGatewayTestCa=$TLS_DIR/ca.pem" \
+  "-PpocketshellGatewayTestPort=$TLS_PORT" \
   "-Pandroid.testInstrumentationRunnerArguments.class=$test_class" \
   "-Pandroid.testInstrumentationRunnerArguments.gatewayRunId=$RUN_ID" \
   "-Pandroid.testInstrumentationRunnerArguments.gatewayControllerPort=$controller_port" \
