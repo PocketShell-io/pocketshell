@@ -131,6 +131,9 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private volatile GatewayVaultProbe gatewayVaultProbe;
+    /** Native-only routing tokens, in memory for this process; never bridged. */
+    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(System::currentTimeMillis);
+    static final String GATEWAY_CLOSED = "GATEWAY_CLOSED";
 
     /** Resolves a key handle to private key bytes for userauth. Production:
      * the native vault; JVM tests substitute an in-memory key. */
@@ -192,17 +195,17 @@ public final class SshCapabilityPlugin extends Plugin {
         this.gatewayTunnelFactory = gatewayTunnelFactory;
     }
 
+    /** JVM tests: drive token reuse and expiry with a controlled clock. */
+    void useGatewayRoutingTokensForTesting(GatewayRoutingTokens tokens) {
+        this.gatewayRoutingTokens = tokens;
+    }
+
     @Override
     public void load() {
         gatewaySyncSession = new GatewaySyncSession(getContext(), this::getActivity);
-        try {
-            gatewayPairingStore = new GatewayPairingStore(
-                new GatewayPairingPlugin.PreferencesRepository(getContext()), System::currentTimeMillis);
-        } catch (IOException unavailable) {
-            // A store that will not parse refuses every gateway dial at
-            // plan time; direct dials are untouched.
-            gatewayPairingStore = null;
-        }
+        // The pairing store is opened lazily, on the connect thread, the
+        // first time a gateway dial needs it (Keystore work stays off the
+        // main thread, and an ordinary dial never touches it).
         privateKeySource = keyHandleId -> CredentialHandleVault.forContext(getContext()).resolvePrivateKey(keyHandleId);
         gatewayVaultProbe = keyHandleId -> {
             byte[] probe = privateKeySource.resolvePrivateKey(keyHandleId);
@@ -216,6 +219,24 @@ public final class SshCapabilityPlugin extends Plugin {
         for (SshConnection connection : new ArrayList<>(connections.values())) {
             closeConnection(connection, "plugin-destroyed", false);
         }
+    }
+
+    /**
+     * What this build's {@code connect()} can dial beyond direct TCP. Core's
+     * {@code SshCapability.gatewayTransport} is read from here — never from
+     * a JS constant — so a build without the native gateway transport can
+     * never claim it. {@code link} is not implemented natively.
+     */
+    @PluginMethod
+    public void transportCapabilities(PluginCall call) {
+        run(call, options -> transportCapabilitiesReply(options.getString("requestId", "")));
+    }
+
+    static JSObject transportCapabilitiesReply(String requestId) {
+        return new JSObject()
+            .put("requestId", requestId)
+            .put("gatewayTransport", true)
+            .put("linkTransport", false);
     }
 
     @PluginMethod
@@ -277,17 +298,15 @@ public final class SshCapabilityPlugin extends Plugin {
             if (gatewayPlan == null) {
                 client.addHostKeyVerifier(new PinVerifier(expectedHostKey, presented, attempt));
             } else {
-                // Valid pair + key are already checked; the broker mints a
-                // FRESH routing token per attempt (no caching across
-                // reconnects), and the tunnel owns it natively.
-                String routingToken = mintGatewayRoutingToken(gatewayPlan);
-                GatewayTunnel tunnel = gatewayTunnelFactory.create(gatewayPlan.target, routingToken);
-                attempt.attachTunnel(tunnel);
+                // Valid pair + key are already checked. The routing token
+                // stays native: the in-memory cache hands out one with
+                // enough life for this attempt or mints a fresh one, and the
+                // tunnel carries it in its auth frame and nowhere else.
                 deadlineWatchdog = scheduleConnectDeadline(attempt, gatewayPlan.deadlineEpochMs);
                 // Dial + auth TEXT + ready, within the one whole-connect
                 // deadline; the socket comes back pre-connected, so sshj
                 // performs no DNS and no TCP to the display hostname/port.
-                tunnel.open(gatewayPlan.deadlineEpochMs);
+                GatewayTunnel tunnel = openGatewayTunnel(attempt, gatewayPlan);
                 client.setSocketFactory(new GatewaySocketFactory(tunnel));
                 // The pin comes from the saved pairing only. PinVerifier
                 // compares it against the key the host PRESENTS during
@@ -382,6 +401,13 @@ public final class SshCapabilityPlugin extends Plugin {
                 JSObject details = presented.asJson();
                 throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
             }
+            // A gateway verdict (a close frame, or a handshake error frame
+            // mapped to its close code) reaches core intact, whether it
+            // ended the WebSocket handshake or surfaced to sshj as a plain
+            // stream error mid-KEX. It is never reclassified as an SSH or
+            // key failure: core's retry matrix keys on the close code.
+            PluginFailure gatewayClosed = gatewayClosedFailure(attempt.tunnel);
+            if (gatewayClosed != null) throw gatewayClosed;
             if ("key-handle".equals(credentialKind)) {
                 // Our own PluginFailures carry curated codes and messages;
                 // anything else is classified without copying its message.
@@ -1244,17 +1270,26 @@ public final class SshCapabilityPlugin extends Plugin {
     static final class GatewayDialPlan {
         final GatewayTargetPolicy.Target target;
         final GatewayPairingStore.Pairing pairing;
+        /** The signed-in account the pairing and the routing token belong to. */
+        final String subject;
         final long deadlineEpochMs;
 
-        GatewayDialPlan(GatewayTargetPolicy.Target target, GatewayPairingStore.Pairing pairing, long deadlineEpochMs) {
+        GatewayDialPlan(GatewayTargetPolicy.Target target, GatewayPairingStore.Pairing pairing, String subject,
+                long deadlineEpochMs) {
             this.target = target;
             this.pairing = pairing;
+            this.subject = subject;
             this.deadlineEpochMs = deadlineEpochMs;
         }
 
-        /** The verifier expectation: the pairing's fingerprint against the
-         * key the host actually presents. Never the ready advisory. */
+        /** The verifier expectation from the saved pairing only, compared
+         * against the key the host actually presents: the exact public key
+         * when the user pasted the {@code gateway show --host-key} line, its
+         * SHA-256 fingerprint otherwise. Never the ready advisory. */
         HostKeyPinExpectation pinExpectation() {
+            if (pairing.hostKeyType() != null && pairing.hostKeyB64() != null) {
+                return new HostKeyPinExpectation(pairing.hostKeyType(), pairing.hostKeyB64(), null);
+            }
             return new HostKeyPinExpectation(null, null, pairing.fingerprintSha256);
         }
     }
@@ -1292,7 +1327,17 @@ public final class SshCapabilityPlugin extends Plugin {
         }
         GatewaySyncSession session = gatewaySyncSession;
         GatewayPairingStore pairingStore = gatewayPairingStore;
+        if (pairingStore == null && session != null && getBridge() != null) {
+            try {
+                pairingStore = GatewayPairingPlugin.sharedStore(getContext());
+                gatewayPairingStore = pairingStore;
+            } catch (IOException unreadable) {
+                pairingStore = null;
+            }
+        }
         if (session == null || pairingStore == null) {
+            // An unreadable store refuses every gateway dial at plan time;
+            // direct dials never reach this.
             throw new PluginFailure("GATEWAY_PAIRING_STORE_FAILED", "The saved gateway pairings could not be read.");
         }
         final String subject;
@@ -1322,30 +1367,65 @@ public final class SshCapabilityPlugin extends Plugin {
             KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
             throw new PluginFailure(unavailable.code, unavailable.message);
         }
-        return new GatewayDialPlan(target, pairing, System.currentTimeMillis() + connectTimeout);
+        return new GatewayDialPlan(target, pairing, subject, System.currentTimeMillis() + connectTimeout);
     }
 
     /**
-     * Mint a FRESH routing token for this attempt — never reused across
-     * reconnects — through the dedicated native broker exchange. The token
-     * never crosses the Capacitor bridge: it is returned to the caller that
-     * hands it to the tunnel, and nothing else.
+     * Open the gateway tunnel for one attempt with a native routing token.
+     * A cached token is used only while it outlives this attempt's deadline;
+     * otherwise a fresh one is minted. If the gateway answers a REUSED
+     * token with 4401 (rotated keys, or a token revoked early), the cache is
+     * dropped and the dial is retried once, inside the same deadline, with a
+     * freshly minted token: core treats 4401 as "sign in again" and never
+     * retries it, so a stale cache entry must not be the reason. A 4401 on
+     * a fresh token is the real verdict and is reported as such.
      */
-    private String mintGatewayRoutingToken(GatewayDialPlan plan) throws PluginFailure {
-        final GatewayTokenBroker.RoutingToken token;
+    private GatewayTunnel openGatewayTunnel(ConnectAttempt attempt, GatewayDialPlan plan) throws Exception {
+        GatewayRoutingTokens.Issued token = mintGatewayRoutingToken(plan, false);
+        while (true) {
+            checkConnectNotCancelled(attempt);
+            GatewayTunnel tunnel = gatewayTunnelFactory.create(plan.target, token.token);
+            attempt.attachTunnel(tunnel);
+            // A cancel that landed while the token was minted already closed
+            // the client; joining the tunnel now means it never dials.
+            checkConnectNotCancelled(attempt);
+            try {
+                tunnel.open(plan.deadlineEpochMs);
+                return tunnel;
+            } catch (GatewayTunnel.GatewayTunnelException failure) {
+                if (failure.closeCode == 4401) gatewayRoutingTokens.invalidate(token);
+                if (failure.closeCode != 4401 || !token.reused) throw failure;
+                tunnel.close();
+                token = mintGatewayRoutingToken(plan, true);
+            }
+        }
+    }
+
+    private GatewayRoutingTokens.Issued mintGatewayRoutingToken(GatewayDialPlan plan, boolean forceFresh)
+            throws PluginFailure {
         try {
-            token = new GatewayTokenBroker().parse(gatewaySyncSession.exchange());
+            return gatewayRoutingTokens.issue(gatewaySyncSession, plan.subject,
+                plan.deadlineEpochMs - System.currentTimeMillis(), forceFresh);
         } catch (SyncAuthException error) {
             throw new PluginFailure(error.code, error.getMessage());
         } catch (GatewayTokenBroker.GatewayBrokerException error) {
             throw new PluginFailure(error.code, error.getMessage());
         }
-        if (token.expiresAtEpochMs <= plan.deadlineEpochMs - 5_000L) {
-            // Enough lifetime to finish this attempt's tunnel exchange; the
-            // SSH session continues past it (the token admits the route only).
-            throw new PluginFailure("GATEWAY_BROKER_BAD_RESPONSE", "The gateway credential expires too soon.");
-        }
-        return token.token;
+    }
+
+    /**
+     * Core's gateway refusal contract (core docs/SYNC.md,
+     * {@code classifyGatewayDialFailure}): code {@code GATEWAY_CLOSED} with
+     * {@code data.gatewayCloseCode}. Null when the attempt had no tunnel or
+     * the gateway never delivered a verdict (DNS/TCP/TLS failure, timeout,
+     * local protocol refusal) — those keep their ordinary codes.
+     */
+    static PluginFailure gatewayClosedFailure(GatewayTunnel tunnel) {
+        if (tunnel == null) return null;
+        GatewayTunnel.GatewayTunnelException verdict = tunnel.failure();
+        if (verdict == null || !verdict.hasGatewayCloseCode()) return null;
+        JSObject data = new JSObject().put("gatewayCloseCode", verdict.closeCode);
+        return new PluginFailure(GATEWAY_CLOSED, verdict.getMessage(), data, null);
     }
 
     /** Cancels the attempt at its whole-connect deadline. A watchdog firing

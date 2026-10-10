@@ -13,8 +13,9 @@ import org.junit.Before;
 import org.junit.Test;
 
 /**
- * Issue #3060: the gateway pairing namespace — (account, canonical gateway,
- * device) — with an explicitly provisioned SHA-256 pin and a key-handle
+ * Issue #3060/#3086: the gateway pairing namespace — (account, canonical
+ * gateway, device) — with an explicitly provisioned pin (the host-key line
+ * or its SHA-256 fingerprint) and a key-handle
  * association. Sibling pins and keys can never be borrowed across the
  * namespace, and malformed data never passes for a pairing.
  */
@@ -115,6 +116,63 @@ public final class GatewayPairingStoreTest {
         assertNotNull(pairing);
         assertEquals(pin, pairing.fingerprintSha256());
         assertEquals(1_000L, pairing.pairedAtEpochMs());
+    }
+
+    // --- the `gateway show --host-key` line (#3086) ---------------------------------
+
+    /** A real `ssh-keygen -t ed25519` public key line and its `ssh-keygen -lf` fingerprint. */
+    static final String ED25519_LINE = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINsI+xMBCARP+feB9XlS5sazCADY9SpfgrwI+d4CNIW+";
+    static final String ED25519_FINGERPRINT = "SHA256:0SaR+rP252ArUmO5WjbODysbWTHbHS8UYAzJYGGvzkM";
+    static final String ECDSA_LINE = "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBGIXCRaw/ZiT6WG7uAG6qZi6LVYt9KS7qB16Pix70Rh1PN9jdE6j2IwnMqtpNjn7B7kKxEbR+VIgkr2mrxQUSds=";
+
+    @Test public void theHostKeyLinePinsTheExactKeyAndItsFingerprint() throws IOException {
+        // A paste usually carries the trailing newline; surrounding
+        // whitespace is the only thing trimmed.
+        GatewayPairingStore.Pairing pairing = store.pair(
+                "sub-1", "wss://gateway.example.io", "host-1", ED25519_LINE + "\n", HANDLE);
+        assertEquals("ssh-ed25519", pairing.hostKeyType());
+        assertEquals(ED25519_LINE.split(" ")[1], pairing.hostKeyB64());
+        assertEquals("the fingerprint is ssh-keygen's, derived from the exact key",
+                ED25519_FINGERPRINT, pairing.fingerprintSha256());
+        GatewayPairingStore.Pairing reread = store.lookup("sub-1", "wss://gateway.example.io", "host-1");
+        assertEquals(ED25519_LINE.split(" ")[1], reread.hostKeyB64());
+        assertEquals("ecdsa-sha2-nistp256",
+                store.pair("sub-1", "wss://gateway.example.io", "host-2", ECDSA_LINE, HANDLE).hostKeyType());
+    }
+
+    @Test public void malformedHostKeyLinesRefuse() {
+        String blob = ED25519_LINE.split(" ")[1];
+        String[] bad = {
+            ED25519_LINE + " comment",                          // a trailing comment is refused, not dropped
+            "@cert-authority " + ED25519_LINE,                  // known_hosts markers
+            "host.example " + ED25519_LINE,                     // a known_hosts line, not the key line
+            "ssh-ed25519  " + blob,                             // two spaces
+            "ssh-ed25519\t" + blob,                             // a tab
+            "ssh-dss " + blob,                                  // unsupported type
+            "ecdsa-sha2-nistp256 " + blob,                      // blob names a different type
+            "ssh-ed25519 " + blob.substring(0, blob.length() - 4), // truncated base64
+            "ssh-ed25519 " + blob + "\n" + ED25519_LINE,        // a second line
+            "ssh-ed25519 ",                                     // no key
+        };
+        for (String line : bad) {
+            assertPairingRefused("sub-1", "wss://gateway.example.io", "host-1", line, HANDLE);
+        }
+        assertNull(GatewayTargetPolicy.parseHostKeyLine(null));
+        assertTrue("nothing was written by the refusals", repository.value == null);
+    }
+
+    @Test public void aTamperedStoredHostKeyIsRefusedNotTrusted() throws IOException {
+        store.pair("sub-1", "wss://gateway.example.io", "host-1", ED25519_LINE, HANDLE);
+        // Swap the stored key for another one while leaving its fingerprint:
+        // the row no longer agrees with itself and must not become a pin.
+        repository.value = repository.value.replace(ED25519_LINE.split(" ")[1], ECDSA_LINE.split(" ")[1])
+                .replace("\"ssh-ed25519\"", "\"ecdsa-sha2-nistp256\"");
+        try {
+            store.lookup("sub-1", "wss://gateway.example.io", "host-1");
+            fail("a stored key that disagrees with its fingerprint must refuse");
+        } catch (IOException expected) {
+            assertNotNull(expected.getMessage());
+        }
     }
 
     private static final String HANDLE = "01234567-89ab-cdef-0123-456789abcdef";

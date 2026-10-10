@@ -2,51 +2,64 @@ package com.pocketshell.app;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import androidx.security.crypto.EncryptedSharedPreferences;
+import androidx.security.crypto.MasterKey;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.File;
 import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import org.json.JSONArray;
 
 /**
- * The narrow native API for gateway pairing storage (issue #3060) — the seam
- * the shared UI's pairing flow will call once the resolver integration lands.
+ * The narrow native API for gateway pairing storage (#3086) — the seam the
+ * shared UI's pairing flow will call (slice 4). It stores and lists pairings;
+ * it never derives one.
  *
- * <p>This plugin stores and lists pairings; it never derives one. The
- * fingerprint must arrive from an explicit user action over an out-of-band
- * channel (the host's own {@code ssh-keygen -lf} output), never from synced
- * metadata, never from the gateway's ready advisory — so there is no method
- * here that accepts a pairing from a host record, and no method that returns
- * or accepts any token, Google or routing.
+ * <p>The pin must arrive from an explicit user action over an out-of-band
+ * channel: the line {@code pocketshell gateway show --host-key} prints on the
+ * host, or that key's SHA-256 fingerprint. There is no method that accepts a
+ * pairing from a host record, the gateway's ready advisory, or the device
+ * list's {@code ssh_host_key}, and no method that returns or accepts any
+ * token, Google or routing.
  *
- * <p>Everything is scoped to the CURRENT signed-in account; records for other
- * accounts are invisible here and unusable at dial time. Storage is private
- * to the app, crash-durable via commit, and holds only public data (fingerprint,
- * canonical gateway origin, device id, key handle, timestamp).
+ * <p>Everything is scoped to the CURRENT signed-in account. The account
+ * subject is the storage namespace but is never returned to JS: a pairing
+ * write is bound to the account EMAIL the user saw (the same value
+ * {@code GoogleSync.status} already reports), checked before and after the
+ * vault lookup, so an account switch mid-action cannot redirect it.
+ *
+ * <p>Storage is protected: an {@link EncryptedSharedPreferences} file keyed
+ * by an Android Keystore master key (AES-256-GCM values, so a tampered row
+ * fails to decrypt rather than becoming a pin), private to the app, excluded
+ * from backup and device transfer, and written with {@code commit()}.
  */
 @CapacitorPlugin(name = "GatewayPairing")
 public final class GatewayPairingPlugin extends Plugin {
-    private static final String PREFERENCES_FILE = "pocketshell_gateway_pairings_v1";
+    static final String PREFERENCES_FILE = "pocketshell-gateway-pairings";
     private static final String RECORDS_KEY = "records";
+
+    private static GatewayPairingStore sharedStore;
 
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private GatewaySyncSession session;
-    private GatewayPairingStore store;
+
+    /** The process-wide pairing store; the SSH plugin dials from the same one. */
+    static synchronized GatewayPairingStore sharedStore(Context context) throws IOException {
+        if (sharedStore == null) {
+            sharedStore = new GatewayPairingStore(
+                    new EncryptedRepository(context.getApplicationContext()), System::currentTimeMillis);
+        }
+        return sharedStore;
+    }
 
     @Override
     public void load() {
         session = new GatewaySyncSession(getContext(), this::getActivity);
-        try {
-            store = new GatewayPairingStore(new PreferencesRepository(getContext()), System::currentTimeMillis);
-        } catch (IOException unavailable) {
-            // A store that will not parse refuses every listing and pairing
-            // below; nothing is silently emptied.
-            store = null;
-        }
     }
 
     @Override
@@ -54,45 +67,18 @@ public final class GatewayPairingPlugin extends Plugin {
         worker.shutdown();
     }
 
-    /** The account pairings bind to, for the UI's signed-in gate. */
-    @PluginMethod
-    public void currentAccount(PluginCall call) {
-        worker.execute(() -> {
-            try {
-                String subject = session.subject();
-                call.resolve(new JSObject().put("requestId", call.getString("requestId", ""))
-                        .put("signedIn", true)
-                        .put("accountSubject", subject));
-            } catch (SyncAuthException signedOut) {
-                call.resolve(new JSObject().put("requestId", call.getString("requestId", ""))
-                        .put("signedIn", false)
-                        .put("accountSubject", ""));
-            }
-        });
-    }
-
-    /** The current account's pairings. Other accounts' records are invisible. */
+    /** The current account's pairings: public data only, no account subject. */
     @PluginMethod
     public void list(PluginCall call) {
+        String requestId = call.getString("requestId", "");
         worker.execute(() -> {
             try {
-                if (store == null) {
-                    call.reject("The saved gateway pairings could not be read.", "GATEWAY_PAIRING_STORE_FAILED");
-                    return;
-                }
                 String subject = session.subject();
                 JSONArray rows = new JSONArray();
-                for (GatewayPairingStore.Pairing pairing : store.list(subject)) {
-                    rows.put(new org.json.JSONObject()
-                            .put("serverUrl", pairing.serverUrl())
-                            .put("deviceId", pairing.deviceId())
-                            .put("fingerprintSha256", pairing.fingerprintSha256())
-                            .put("keyHandleId", pairing.keyHandleId())
-                            .put("pairedAtEpochMs", pairing.pairedAtEpochMs()));
+                for (GatewayPairingStore.Pairing pairing : sharedStore(getContext()).list(subject)) {
+                    rows.put(pairingRow(pairing));
                 }
-                call.resolve(new JSObject().put("requestId", call.getString("requestId", ""))
-                        .put("accountSubject", subject)
-                        .put("pairings", rows.toString()));
+                call.resolve(new JSObject().put("requestId", requestId).put("pairings", rows));
             } catch (SyncAuthException signedOut) {
                 reject(call, signedOut);
             } catch (IOException | org.json.JSONException storeError) {
@@ -102,33 +88,30 @@ public final class GatewayPairingPlugin extends Plugin {
     }
 
     /**
-     * {@code {requestId, expectedAccountSubject, serverUrl, deviceId, fingerprintSha256, keyHandleId}} —
-     * an explicit user pairing action. The store validates the canonical
-     * origin, device id, and SHA-256 fingerprint shape; the vault must hold
-     * the named key.
+     * {@code {requestId, expectedAccountEmail, serverUrl, deviceId, hostKey, keyHandleId}}
+     * — an explicit user pairing action. {@code hostKey} is the
+     * {@code gateway show --host-key} line (or its SHA256 fingerprint). The
+     * store validates the canonical origin, device id and pin; the vault
+     * must hold the named key.
      */
     @PluginMethod
     public void pair(PluginCall call) {
         String requestId = call.getString("requestId", "");
         String serverUrl = call.getString("serverUrl");
         String deviceId = call.getString("deviceId");
-        String fingerprint = call.getString("fingerprintSha256");
+        String hostKey = call.getString("hostKey");
         String keyHandleId = call.getString("keyHandleId");
-        String expectedAccountSubject = call.getString("expectedAccountSubject");
+        String expectedEmail = call.getString("expectedAccountEmail");
         worker.execute(() -> {
             try {
-                if (store == null) {
-                    call.reject("The saved gateway pairings could not be read.", "GATEWAY_PAIRING_STORE_FAILED");
-                    return;
-                }
-                GatewayPairingStore.Pairing pairing = pairForAccount(store, session::subject, this::vaultHasHandle,
-                        expectedAccountSubject, serverUrl, deviceId, fingerprint, keyHandleId);
+                GatewayPairingStore.Pairing pairing = pairForAccount(sharedStore(getContext()), session,
+                        this::vaultHasHandle, expectedEmail, serverUrl, deviceId, hostKey, keyHandleId);
                 call.resolve(pairReply(requestId, pairing));
             } catch (GatewayPairingStore.InvalidPairingException invalid) {
                 call.reject(invalid.getMessage(), "GATEWAY_PAIRING_INVALID");
             } catch (SyncAuthException signedOut) {
                 reject(call, signedOut);
-            } catch (IOException storeError) {
+            } catch (IOException | org.json.JSONException storeError) {
                 call.reject("The gateway pairing could not be saved.", "GATEWAY_PAIRING_STORE_FAILED");
             }
         });
@@ -142,12 +125,7 @@ public final class GatewayPairingPlugin extends Plugin {
         String deviceId = call.getString("deviceId", "");
         worker.execute(() -> {
             try {
-                if (store == null) {
-                    call.reject("The saved gateway pairings could not be read.", "GATEWAY_PAIRING_STORE_FAILED");
-                    return;
-                }
-                String subject = session.subject();
-                boolean removed = store.remove(subject, serverUrl, deviceId);
+                boolean removed = sharedStore(getContext()).remove(session.subject(), serverUrl, deviceId);
                 call.resolve(new JSObject().put("requestId", requestId).put("removed", removed));
             } catch (SyncAuthException signedOut) {
                 reject(call, signedOut);
@@ -157,35 +135,52 @@ public final class GatewayPairingPlugin extends Plugin {
         });
     }
 
-    interface AccountSubject { String current() throws SyncAuthException; }
     interface VaultProbe { boolean hasHandle(String keyHandleId); }
 
-    /** Bind the mutation to the subject the user observed, never a later current account. */
-    static GatewayPairingStore.Pairing pairForAccount(GatewayPairingStore store, AccountSubject account,
-            VaultProbe vault, String expectedSubject, String serverUrl, String deviceId, String fingerprint,
+    /** Bind the mutation to the account the user observed, never a later current account. */
+    static GatewayPairingStore.Pairing pairForAccount(GatewayPairingStore store, GatewaySyncSession account,
+            VaultProbe vault, String expectedEmail, String serverUrl, String deviceId, String hostKey,
             String keyHandleId) throws IOException, SyncAuthException {
-        requireExpectedAccount(expectedSubject, account.current());
+        String subject = requireExpectedAccount(expectedEmail, account);
         if (!vault.hasHandle(keyHandleId)) {
             throw new SyncAuthException("GATEWAY_PAIRING_KEY_MISSING", "Choose an SSH key from the key vault.");
         }
-        requireExpectedAccount(expectedSubject, account.current());
-        // A subsequent switch cannot redirect this write: its namespace is the approved subject.
-        return store.pair(expectedSubject, serverUrl, deviceId, fingerprint, keyHandleId);
+        String after = requireExpectedAccount(expectedEmail, account);
+        if (!after.equals(subject)) throw accountChanged();
+        // A switch after this point cannot redirect the write: its namespace
+        // is the subject that was current when the user's email matched.
+        return store.pair(subject, serverUrl, deviceId, hostKey, keyHandleId);
     }
 
-    private static void requireExpectedAccount(String expected, String actual) throws SyncAuthException {
-        if (expected == null || expected.isEmpty() || !expected.equals(actual)) {
-            throw new SyncAuthException("GATEWAY_PAIRING_ACCOUNT_CHANGED",
-                    "The signed-in account changed. Select the host and pair again.");
+    private static String requireExpectedAccount(String expectedEmail, GatewaySyncSession account) throws SyncAuthException {
+        String email = account.email();
+        if (expectedEmail == null || expectedEmail.isEmpty() || email == null || !expectedEmail.equals(email)) {
+            throw accountChanged();
         }
+        return account.subject();
+    }
+
+    private static SyncAuthException accountChanged() {
+        return new SyncAuthException("GATEWAY_PAIRING_ACCOUNT_CHANGED",
+                "The signed-in account changed. Select the host and pair again.");
+    }
+
+    /** One public row: never the account subject, never a token. */
+    static org.json.JSONObject pairingRow(GatewayPairingStore.Pairing pairing) throws org.json.JSONException {
+        org.json.JSONObject row = new org.json.JSONObject()
+                .put("serverUrl", pairing.serverUrl())
+                .put("deviceId", pairing.deviceId())
+                .put("fingerprintSha256", pairing.fingerprintSha256())
+                .put("pinKind", pairing.hostKeyType() != null ? "host-key" : "fingerprint")
+                .put("keyHandleId", pairing.keyHandleId())
+                .put("pairedAtEpochMs", pairing.pairedAtEpochMs());
+        if (pairing.hostKeyType() != null) row.put("hostKeyType", pairing.hostKeyType());
+        return row;
     }
 
     /** Actual bridge envelope, shared by production and native regression tests. */
-    static JSObject pairReply(String requestId, GatewayPairingStore.Pairing pairing) {
-        return new JSObject().put("requestId", requestId).put("accountSubject", pairing.accountSubject())
-                .put("serverUrl", pairing.serverUrl()).put("deviceId", pairing.deviceId())
-                .put("fingerprintSha256", pairing.fingerprintSha256()).put("keyHandleId", pairing.keyHandleId())
-                .put("pairedAtEpochMs", pairing.pairedAtEpochMs());
+    static JSObject pairReply(String requestId, GatewayPairingStore.Pairing pairing) throws org.json.JSONException {
+        return new JSObject().put("requestId", requestId).put("pairing", pairingRow(pairing));
     }
 
     private boolean vaultHasHandle(String keyHandleId) {
@@ -204,25 +199,58 @@ public final class GatewayPairingPlugin extends Plugin {
         call.reject(error.getMessage(), error.code);
     }
 
-    /** SharedPreferences-backed pairing persistence: commit() returns only
-     * once the bytes are on disk, matching the vault's durability bar. */
-    static final class PreferencesRepository implements GatewayPairingStore.Repository {
-        private final SharedPreferences preferences;
+    /**
+     * Keystore-encrypted pairing persistence. Reads never create the file
+     * (app start must not leave one behind, cf. #3047). A keyset the
+     * Keystore can no longer open is deleted: losing pins only makes every
+     * gateway host UNPAIRED, which refuses the dial — it can never grant
+     * trust — and the user recovers by pairing again.
+     */
+    @SuppressWarnings("deprecation") // security-crypto 1.1.0 deprecates the helper; it is the app's at-rest store.
+    static final class EncryptedRepository implements GatewayPairingStore.Repository {
+        private final Context context;
+        private SharedPreferences preferences;
 
-        PreferencesRepository(Context context) {
-            this.preferences = context.getSharedPreferences(PREFERENCES_FILE, Context.MODE_PRIVATE);
+        EncryptedRepository(Context context) {
+            this.context = context;
         }
 
         @Override
-        public String read() {
-            return preferences.getString(RECORDS_KEY, null);
+        public synchronized String read() throws IOException {
+            SharedPreferences existing = open(false);
+            return existing == null ? null : existing.getString(RECORDS_KEY, null);
         }
 
         @Override
-        public void write(String json) throws IOException {
-            if (!preferences.edit().putString(RECORDS_KEY, json).commit()) {
+        public synchronized void write(String json) throws IOException {
+            if (!open(true).edit().putString(RECORDS_KEY, json).commit()) {
                 throw new IOException("The gateway pairing storage refused the write.");
             }
+        }
+
+        private SharedPreferences open(boolean create) throws IOException {
+            if (preferences != null) return preferences;
+            File file = new File(new File(context.getApplicationInfo().dataDir, "shared_prefs"), PREFERENCES_FILE + ".xml");
+            if (!create && !file.exists()) return null;
+            try {
+                preferences = create();
+            } catch (Exception unreadable) {
+                context.deleteSharedPreferences(PREFERENCES_FILE);
+                if (!create) return null;
+                try {
+                    preferences = create();
+                } catch (Exception still) {
+                    throw new IOException("The gateway pairing storage could not be opened.");
+                }
+            }
+            return preferences;
+        }
+
+        private SharedPreferences create() throws Exception {
+            MasterKey masterKey = new MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build();
+            return EncryptedSharedPreferences.create(context, PREFERENCES_FILE, masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM);
         }
     }
 }

@@ -92,18 +92,32 @@ public final class GatewayTokenBrokerTest {
         }
     }
 
-    @Test public void expiriesMustAgreeAndStayBounded() {
-        // expires_in stamped from a clock 60s away from expires_at: hostile or broken.
-        assertBadResponse(broker, mint(NOW / 1000 + 240, 180));
-        // Already expired at arrival.
-        assertBadResponse(broker, mint(NOW / 1000 - 10, 240));
-        // Outlives the 5 min + skew contract.
-        assertBadResponse(broker, mint(NOW / 1000 + 500, 500));
+    @Test public void lifetimesStayBoundedAndPositive() {
+        // Already expired (or zero-lived) at arrival.
+        assertBadResponse(broker, mint(NOW / 1000, 0));
+        assertBadResponse(broker, mint(NOW / 1000 - 10, -10));
+        // Outlives the 5-minute broker contract.
+        assertBadResponse(broker, mint(NOW / 1000 + 301, 301));
+        // A fractional expiry is not an integer.
+        assertBadResponse(broker, "{\"token\":\"a.b.c\",\"token_type\":\"Bearer\",\"expires_at\":1800000240,\"expires_in\":240.5}");
     }
 
-    @Test public void theAgreementAllowanceToleratesSmallClockSpread() throws Exception {
-        GatewayTokenBroker.RoutingToken token = broker.parse(exchange(200, mint(NOW / 1000 + 240, 242)));
+    @Test public void theLocalExpiryNeverDependsOnThePhoneClockAgreeingWithTheBroker() throws Exception {
+        // #3086: 7b882759e compared expires_at with THIS phone's clock and
+        // refused anything more than 5 s apart, so a phone a few minutes off
+        // could never dial. The broker stamps both spellings from its own
+        // clock; the local expiry is arrival + expires_in, whatever the skew.
+        long fiveMinutesBehind = NOW / 1000 + 240 + 300;
+        GatewayTokenBroker.RoutingToken skewed = broker.parse(exchange(200, mint(fiveMinutesBehind, 240)));
+        assertEquals(NOW + 240_000, skewed.expiresAtEpochMs);
+        long fiveMinutesAhead = NOW / 1000 + 240 - 300;
+        assertEquals(NOW + 240_000, broker.parse(exchange(200, mint(fiveMinutesAhead, 240))).expiresAtEpochMs);
+    }
+
+    @Test public void theRoutingTokenNeverPrints() throws Exception {
+        GatewayTokenBroker.RoutingToken token = broker.parse(exchange(200, mint(NOW / 1000 + 240, 240)));
+        assertFalse(token.toString().contains("SCOPEDROUTINGCLAIMS"));
         assertNotEquals(0, token.expiresAtEpochMs);
-        assertTrue(token.expiresAtEpochMs > NOW);
+        assertTrue(token.toString().contains("redacted"));
     }
 }

@@ -282,7 +282,7 @@ final class GatewayTargetPolicy {
 
     static CloseKind classifyClose(int code) {
         switch (code) {
-            case 4400: return new CloseKind("protocol", "The gateway rejected this connection as malformed.");
+            case 4400: return new CloseKind("protocol", "The gateway rejected the request — update PocketShell.");
             case 4401: return new CloseKind("unauthorized", "Your sign-in expired — sign in again and retry.");
             case 4403: return new CloseKind("forbidden", "This PocketShell account cannot reach that host.");
             case 4404: return new CloseKind("not_found", "That host is not registered on the gateway.");
@@ -291,6 +291,45 @@ final class GatewayTargetPolicy {
             case 4503: return new CloseKind("host_offline",
                     "The host is not connected to the gateway right now — check that its agent is running.");
             default: return new CloseKind("abnormal", "The connection to the gateway closed before it was ready.");
+        }
+    }
+
+    /**
+     * Whether a WebSocket close code was delivered on the wire by the
+     * gateway: the registered range, minus the codes RFC 6455 reserves for
+     * local reporting only (1005 no status, 1006 abnormal drop, 1015 TLS).
+     * Java-WebSocket also reports negative pseudo-codes for a socket that
+     * never opened; none of those is a gateway verdict.
+     */
+    static boolean isGatewayCloseCode(int code) {
+        return code >= 1000 && code <= 4999 && code != 1005 && code != 1006 && code != 1015;
+    }
+
+    /**
+     * The documented close code for a client-route handshake {@code error}
+     * frame code — the exact pairs the gateway's {@code reject(...)} sends
+     * (pocketshell-gateway internal/tunnel/service.go; docs/tunnel.md FH-1).
+     * {@code revoked} (the agent route's 4403 code) is included so a
+     * gateway that reuses it on the client route still classifies the same
+     * way. The agent-only {@code challenge} code is stage-dependent (4408
+     * before a challenge exists, 4401 after) and {@code signature} never
+     * appears on the client route, so neither is guessed here. Unknown codes
+     * (e.g. {@code internal}) return
+     * {@link GatewayTunnel.GatewayTunnelException#NO_CLOSE_CODE}: the close
+     * frame that follows decides.
+     */
+    static int closeCodeForErrorFrame(String code) {
+        if (code == null) return GatewayTunnel.GatewayTunnelException.NO_CLOSE_CODE;
+        switch (code) {
+            case "protocol": return 4400;
+            case "unauthorized": return 4401;
+            case "forbidden":
+            case "revoked": return 4403;
+            case "not_found": return 4404;
+            case "timeout": return 4408;
+            case "quota": return 4429;
+            case "host_offline": return 4503;
+            default: return GatewayTunnel.GatewayTunnelException.NO_CLOSE_CODE;
         }
     }
 
@@ -316,6 +355,139 @@ final class GatewayTargetPolicy {
             return null;
         }
         return "SHA256:" + body;
+    }
+
+    /** Host-key types a pin may name (pocketshell-cli gateway/pins.py KEY_TYPES). */
+    static final java.util.List<String> HOST_KEY_TYPES = java.util.List.of(
+            "ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521", "ssh-rsa");
+    /** Largest accepted public-key blob (pocketshell-cli MAX_KEY_BLOB_BYTES). */
+    static final int MAX_HOST_KEY_BLOB_BYTES = 8192;
+
+    /** A pinned public host key, as {@code gateway show --host-key} prints it. */
+    static final class HostKey {
+        final String keyType;
+        final String keyB64;
+        final String fingerprintSha256;
+
+        HostKey(String keyType, String keyB64, String fingerprintSha256) {
+            this.keyType = keyType;
+            this.keyB64 = keyB64;
+            this.fingerprintSha256 = fingerprintSha256;
+        }
+    }
+
+    /**
+     * Strictly parse the one {@code <keytype> <base64>} line that
+     * {@code pocketshell gateway show --host-key} prints on the host — the
+     * same grammar the CLI's own pin parser enforces: exactly two fields
+     * separated by one space, printable ASCII only (no second line, no
+     * {@code @cert-authority}/{@code @revoked} marker, no comment), a
+     * supported key type, canonical padded base64, and a blob no larger than
+     * 8 KiB that is a well-formed public key OF the stated type with nothing
+     * trailing (the CLI's {@code _check_blob}: a 32-byte ed25519 key; the
+     * matching curve and an uncompressed point for ECDSA; positive minimal
+     * mpints, an odd exponent of at least 3 and a modulus of at least 2048
+     * bits for RSA). Surrounding
+     * whitespace from a paste (a trailing newline) is trimmed; anything else
+     * is refused, never repaired. Null when the input is not such a line.
+     */
+    static HostKey parseHostKeyLine(String input) {
+        if (input == null) return null;
+        String line = input.strip();
+        if (line.isEmpty()) return null;
+        for (int index = 0; index < line.length(); index++) {
+            char c = line.charAt(index);
+            if (c < 0x20 || c > 0x7E) return null;
+        }
+        String[] fields = line.split(" ", -1);
+        if (fields.length != 2 || fields[0].isEmpty() || fields[1].isEmpty()) return null;
+        String keyType = fields[0];
+        String keyB64 = fields[1];
+        if (!HOST_KEY_TYPES.contains(keyType)) return null;
+        if (!keyB64.matches("[A-Za-z0-9+/]+={0,2}") || keyB64.length() % 4 != 0) return null;
+        byte[] blob;
+        try {
+            blob = Base64.getDecoder().decode(keyB64);
+        } catch (IllegalArgumentException error) {
+            return null;
+        }
+        if (!Base64.getEncoder().encodeToString(blob).equals(keyB64)) return null;
+        if (blob.length > MAX_HOST_KEY_BLOB_BYTES || !wellFormedKeyBlob(keyType, blob)) return null;
+        String fingerprint;
+        try {
+            fingerprint = "SHA256:" + Base64.getEncoder()
+                    .encodeToString(java.security.MessageDigest.getInstance("SHA-256").digest(blob))
+                    .replaceAll("=+$", "");
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            return null;
+        }
+        return new HostKey(keyType, keyB64, fingerprint);
+    }
+
+    /** The structure check for {@link #parseHostKeyLine}; false on anything off. */
+    private static boolean wellFormedKeyBlob(String keyType, byte[] blob) {
+        WireReader reader = new WireReader(blob);
+        byte[] inner = reader.string();
+        if (inner == null || !keyType.equals(new String(inner, java.nio.charset.StandardCharsets.US_ASCII))) return false;
+        switch (keyType) {
+            case "ssh-ed25519": {
+                byte[] key = reader.string();
+                if (key == null || key.length != 32) return false;
+                break;
+            }
+            case "ecdsa-sha2-nistp256":
+            case "ecdsa-sha2-nistp384":
+            case "ecdsa-sha2-nistp521": {
+                String curve = keyType.substring("ecdsa-sha2-".length());
+                int pointLength = "nistp256".equals(curve) ? 65 : "nistp384".equals(curve) ? 97 : 133;
+                byte[] named = reader.string();
+                if (named == null || !curve.equals(new String(named, java.nio.charset.StandardCharsets.US_ASCII))) return false;
+                byte[] point = reader.string();
+                if (point == null || point.length != pointLength || point[0] != 0x04) return false;
+                break;
+            }
+            default: { // ssh-rsa
+                java.math.BigInteger e = reader.positiveMpint();
+                java.math.BigInteger n = reader.positiveMpint();
+                if (e == null || n == null) return false;
+                if (e.compareTo(java.math.BigInteger.valueOf(3)) < 0 || !e.testBit(0)) return false;
+                if (n.bitLength() < 2048) return false;
+                break;
+            }
+        }
+        return reader.atEnd();
+    }
+
+    /** A bounds-checked SSH wire-format reader; every read returns null on truncation. */
+    private static final class WireReader {
+        private final byte[] data;
+        private int position;
+
+        WireReader(byte[] data) {
+            this.data = data;
+        }
+
+        byte[] string() {
+            if (data.length - position < 4) return null;
+            long length = ((data[position] & 0xFFL) << 24) | ((data[position + 1] & 0xFFL) << 16)
+                    | ((data[position + 2] & 0xFFL) << 8) | (data[position + 3] & 0xFFL);
+            position += 4;
+            if (length > data.length - position) return null;
+            byte[] out = java.util.Arrays.copyOfRange(data, position, position + (int) length);
+            position += (int) length;
+            return out;
+        }
+
+        java.math.BigInteger positiveMpint() {
+            byte[] raw = string();
+            if (raw == null || raw.length == 0 || (raw[0] & 0x80) != 0) return null;
+            if (raw.length > 1 && raw[0] == 0 && (raw[1] & 0x80) == 0) return null;
+            return new java.math.BigInteger(1, raw);
+        }
+
+        boolean atEnd() {
+            return position == data.length;
+        }
     }
 
     /** The three ways a dial can relate to a pin — no "unknown → ask" arm:

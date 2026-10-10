@@ -190,4 +190,36 @@ public final class GatewayTargetPolicyTest {
                 GatewayTargetPolicy.PIN_UNPINNED, GatewayTargetPolicy.verifyHostKeyPin("garbage", same));
         assertEquals(GatewayTargetPolicy.PIN_MISMATCH, GatewayTargetPolicy.verifyHostKeyPin(pin, "not-a-fingerprint"));
     }
+
+    // --- #3086: gateway verdicts that reach core as GATEWAY_CLOSED ---------------------
+
+    @Test public void onlyCloseCodesThatTravelOnTheWireAreGatewayVerdicts() {
+        for (int code : new int[] {1000, 1001, 1011, 4000, 4400, 4401, 4403, 4404, 4408, 4429, 4503, 4999}) {
+            org.junit.Assert.assertTrue(String.valueOf(code), GatewayTargetPolicy.isGatewayCloseCode(code));
+        }
+        // Local-only (RFC 6455 §7.4.1) and Java-WebSocket's never-opened pseudo-codes.
+        for (int code : new int[] {-3, -2, -1, 0, 999, 1005, 1006, 1015, 5000}) {
+            org.junit.Assert.assertFalse(String.valueOf(code), GatewayTargetPolicy.isGatewayCloseCode(code));
+        }
+    }
+
+    @Test public void clientRouteErrorFramesMapToTheGatewaysCloseCodes() {
+        org.junit.Assert.assertEquals(4400, GatewayTargetPolicy.closeCodeForErrorFrame("protocol"));
+        org.junit.Assert.assertEquals(4401, GatewayTargetPolicy.closeCodeForErrorFrame("unauthorized"));
+        org.junit.Assert.assertEquals(4403, GatewayTargetPolicy.closeCodeForErrorFrame("forbidden"));
+        org.junit.Assert.assertEquals(4403, GatewayTargetPolicy.closeCodeForErrorFrame("revoked"));
+        org.junit.Assert.assertEquals(4404, GatewayTargetPolicy.closeCodeForErrorFrame("not_found"));
+        org.junit.Assert.assertEquals(4408, GatewayTargetPolicy.closeCodeForErrorFrame("timeout"));
+        org.junit.Assert.assertEquals(4429, GatewayTargetPolicy.closeCodeForErrorFrame("quota"));
+        org.junit.Assert.assertEquals(4503, GatewayTargetPolicy.closeCodeForErrorFrame("host_offline"));
+        for (String unknown : new String[] {null, "", "internal", "challenge", "signature", "HOST_OFFLINE"}) {
+            org.junit.Assert.assertEquals(String.valueOf(unknown), GatewayTunnel.GatewayTunnelException.NO_CLOSE_CODE,
+                    GatewayTargetPolicy.closeCodeForErrorFrame(unknown));
+        }
+    }
+
+    @Test public void the4400AdviceMatchesCore() {
+        org.junit.Assert.assertEquals("The gateway rejected the request — update PocketShell.",
+                GatewayTargetPolicy.classifyClose(4400).userMessage);
+    }
 }

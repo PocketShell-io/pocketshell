@@ -14,22 +14,21 @@ import java.util.regex.Pattern;
  * exactly the v1 shape — a plausible-JWT {@code token} (three base64url
  * segments, values not inspected — the gateway verifies signature and
  * claims), {@code token_type} exactly {@code Bearer}, and BOTH expiry
- * spellings from one clock: bounded-integer {@code expires_in} seconds and
- * positive-integer {@code expires_at} unix seconds, agreeing within a small
- * allowance, with a bounded lifetime and no already-expired mint. An endpoint
+ * spellings (pocketshell-sync {@code mintBrokerToken}): a positive integer
+ * {@code expires_in} of at most 300 seconds, and a positive integer
+ * {@code expires_at} in unix seconds. The local expiry is ARRIVAL time plus
+ * {@code expires_in}, so it never depends on this phone's wall clock agreeing
+ * with the broker's: a phone a few minutes off would otherwise refuse every
+ * credential, or keep a dead one. {@code expires_at} is shape-checked only
+ * (the gateway enforces the real {@code exp}). An endpoint
  * echoing the Google bearer back instead of minting is refused. Error bodies
  * surface their {@code {"error": code}} code only — never body text, which
  * could carry token material or an error page. Nothing is persisted and
  * nothing token-shaped is logged.
  */
 final class GatewayTokenBroker {
-    /** The broker answers in one round trip; anything slower is an outage. */
-    static final long MAX_LIFETIME_MS = 5 * 60_000L + 60_000L;
     /** The broker's relative-TTL ceiling in seconds (the 5-minute contract). */
     static final long MAX_LIFETIME_SECS = 5 * 60L;
-    /** How far apart the two expiry spellings may fall; both are stamped from
-     * one clock in one response, so anything wider is broken or hostile. */
-    static final long EXPIRY_AGREEMENT_ALLOWANCE_MS = 5_000L;
     /** The broker rejects bearers over 8192 chars; a minted JWT has three
      * base64url segments and is bounded by the same figure. */
     static final int MAX_TOKEN_CHARS = 8192;
@@ -52,6 +51,11 @@ final class GatewayTokenBroker {
         RoutingToken(String token, long expiresAtEpochMs) {
             this.token = token;
             this.expiresAtEpochMs = expiresAtEpochMs;
+        }
+
+        @Override
+        public String toString() {
+            return "RoutingToken{expiresAt=" + expiresAtEpochMs + ", token=<redacted>}";
         }
     }
 
@@ -109,44 +113,27 @@ final class GatewayTokenBroker {
         }
         if (!"Bearer".equals(body.optString("token_type", ""))) throw malformed();
 
-        // Both expiry spellings, both bounded, agreeing within the allowance;
-        // `now` is taken at ARRIVAL so the network trip cannot stretch the
-        // credential's accepted lifetime. Numbers only — a quoted "123" is
-        // malformed, no coercion, no fallback.
+        // Both expiry spellings must be present integers (a quoted "123" is
+        // malformed: no coercion, no fallback). `now` is taken at ARRIVAL, so
+        // the network trip cannot stretch the credential's accepted lifetime.
         long now = nowMs.getAsLong();
-        long expiresAtMs;
         Object rawAt = body.opt("expires_at");
-        if (rawAt instanceof Number) {
-            double raw = ((Number) rawAt).doubleValue();
-            if (Math.floor(raw) != raw || raw <= 0 || raw > 4_000_000_000L) throw malformedExpiry();
-            expiresAtMs = (long) raw * 1000L;
-        } else {
-            throw malformedExpiry();
-        }
-        Object rawInValue = body.opt("expires_in");
-        if (rawInValue instanceof Number) {
-            double rawIn = ((Number) rawInValue).doubleValue();
-            if (Math.floor(rawIn) != rawIn || rawIn <= 0 || rawIn > MAX_LIFETIME_SECS) {
-                throw malformedExpiry();
-            }
-            long expiresInMillis = (long) rawIn * 1000L;
-            if (Math.abs(expiresAtMs - (now + expiresInMillis)) > EXPIRY_AGREEMENT_ALLOWANCE_MS) {
-                throw new GatewayBrokerException(GatewayBrokerException.BAD_RESPONSE,
-                        "The gateway credential's two expiries disagree — refusing it.");
-            }
-        } else {
-            throw malformedExpiry();
-        }
-
-        long lifetimeMs = expiresAtMs - now;
-        if (lifetimeMs <= 0) {
+        if (!(rawAt instanceof Number)) throw malformedExpiry();
+        double at = ((Number) rawAt).doubleValue();
+        if (Math.floor(at) != at || at <= 0 || at > 4_000_000_000L) throw malformedExpiry();
+        Object rawIn = body.opt("expires_in");
+        if (!(rawIn instanceof Number)) throw malformedExpiry();
+        double in = ((Number) rawIn).doubleValue();
+        if (Math.floor(in) != in) throw malformedExpiry();
+        if (in <= 0) {
             throw new GatewayBrokerException(GatewayBrokerException.BAD_RESPONSE,
                     "The gateway credential arrived already expired.");
         }
-        if (lifetimeMs > MAX_LIFETIME_MS) {
+        if (in > MAX_LIFETIME_SECS) {
             throw new GatewayBrokerException(GatewayBrokerException.BAD_RESPONSE,
                     "The gateway credential outlives the broker contract — refusing it.");
         }
+        long expiresAtMs = now + (long) in * 1000L;
         return new RoutingToken(token, expiresAtMs);
     }
 

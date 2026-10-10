@@ -93,6 +93,31 @@ public final class GoogleSyncSessionGatewayExchangeTest {
         assertFalse("the old bearer never reaches the wire", sent.headers.get("Authorization").contains("OLDBEARER"));
     }
 
+    @Test public void aBroker401RenewsSilentlyAndRetriesExactlyOnce() throws Exception {
+        // #3086: same rule as a sync request — the ID token can age out
+        // between the local expiry check and the broker's authorizer.
+        String stale = token("sub-77", "phone@example.com", NOW + 3600, "STALEBEARER");
+        store.value = stale;
+        String renewed = token("sub-77", "phone@example.com", NOW + 3600, "RENEWEDBEARER");
+        signIn.tokens.add(renewed);
+        transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
+        transport.responses.add(new GoogleSyncSession.Response(200, "{\"token\":\"hdr.SCOPED.sig\","
+                + "\"token_type\":\"Bearer\",\"expires_at\":" + (NOW + 240) + ",\"expires_in\":240}"));
+        GoogleSyncSession.GatewayBrokerExchange exchange = session.gatewayTokenExchange();
+        assertEquals(200, exchange.response.status);
+        assertEquals(2, transport.requests.size());
+        assertEquals("Bearer " + renewed, transport.requests.get(1).headers.get("Authorization"));
+        assertTrue("the echo check follows the bearer actually sent", exchange.bearerEchoedBy(renewed));
+
+        // A second 401 is the broker's answer, not retried again.
+        signIn.tokens.add(token("sub-77", "phone@example.com", NOW + 3600, "THIRDBEARER"));
+        transport.requests.clear();
+        transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
+        transport.responses.add(new GoogleSyncSession.Response(401, "{}"));
+        assertEquals(401, session.gatewayTokenExchange().response.status);
+        assertEquals(2, transport.requests.size());
+    }
+
     @Test public void aDifferentSubjectOnRenewalDropsTheSignIn() throws Exception {
         store.value = token("sub-77", "phone@example.com", NOW - 10, "OLDBEARER");
         signIn.tokens.add(token("sub-other", "other@example.com", NOW + 3600, "OTHERSUB"));

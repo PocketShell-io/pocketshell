@@ -1,0 +1,190 @@
+package com.pocketshell.app;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
+import com.getcapacitor.JSObject;
+import com.getcapacitor.PluginMethod;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+
+/**
+ * #3086 slice 2: the gateway routing token (the broker's 5-minute JWT from
+ * {@code POST /gateway/token}) is native-only and in memory only. It reaches
+ * the gateway inside the auth frame and nowhere else — not a connect result,
+ * an error, a log line, or any bridge method — and it is re-minted when the
+ * cached one would not outlive the attempt, when the account changes, and
+ * once (only once) when the gateway refuses a cached token with 4401.
+ */
+public final class SshCapabilityPluginGatewayTokenTest {
+    private final AtomicLong now = new AtomicLong(1_800_000_000_000L);
+    private GatewayDialFixture fixture;
+
+    @Before public void setUp() throws Exception {
+        fixture = new GatewayDialFixture(now::get);
+        fixture.plugin.useGatewayRoutingTokensForTesting(new GatewayRoutingTokens(now::get));
+        fixture.pairings.pair(GatewayDialFixture.SUBJECT, fixture.serverUrl(), GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), GatewayDialFixture.HANDLE);
+    }
+
+    @After public void tearDown() throws Exception {
+        fixture.close();
+    }
+
+    private List<String> tokensSentToTheGateway() {
+        List<String> tokens = new ArrayList<>();
+        for (String frame : fixture.gateway.authFrames) tokens.add(GatewayDialFixture.FakeGateway.tokenOf(frame));
+        return tokens;
+    }
+
+    @Test public void theTokenReachesOnlyTheGatewayAuthFrame() throws Exception {
+        JSObject result = fixture.connect("only-auth-frame");
+        String minted = fixture.broker.minted.get(0);
+        assertEquals("the gateway got the minted routing token", List.of(minted), tokensSentToTheGateway());
+        assertFalse("the connect result crossing the bridge has no token", result.toString().contains(minted));
+        assertFalse(result.toString().contains(GatewayDialFixture.ScriptedBroker.GOOGLE_BEARER));
+        assertFalse("the Google ID token is never sent to the gateway",
+                fixture.gateway.authFrames.get(0).contains(GatewayDialFixture.ScriptedBroker.GOOGLE_BEARER));
+
+        // A refusal after a mint carries no token either, and the plugin's
+        // only log line is a code.
+        fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, 4503, null);
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("refused");
+        for (String token : fixture.broker.minted) {
+            assertFalse(failure.getMessage().contains(token));
+            assertFalse(String.valueOf(failure.data).contains(token));
+        }
+        for (String logged : fixture.loggedFailureCodes) {
+            assertTrue("logs carry codes only: " + logged, logged.matches("[A-Z_]+"));
+        }
+    }
+
+    @Test public void noBridgeMethodCanYieldAToken() {
+        // GoogleSync's bridge is unchanged by the gateway work (no new
+        // method, so nothing new reaches JS from the Google session) ...
+        assertEquals(Set.of("status", "signIn", "signOut", "request"), pluginMethods(GoogleSyncPlugin.class));
+        // ... the pairing bridge has no token method ...
+        assertEquals(Set.of("list", "pair", "remove"), pluginMethods(GatewayPairingPlugin.class));
+        // ... and the capability report is a flag, nothing more.
+        JSObject capabilities = SshCapabilityPlugin.transportCapabilitiesReply("r-1");
+        assertEquals(Set.of("requestId", "gatewayTransport", "linkTransport"), keys(capabilities));
+    }
+
+    @Test public void theSyncBridgeCannotReachTheBrokerRoute() throws Exception {
+        // GoogleSync.request() is JS-callable; its route table must not let
+        // JS ask for a gateway token with the stored Google token.
+        GoogleSyncSession session = new GoogleSyncSession(new GoogleSyncSession.TokenStore() {
+            public String read() { return null; }
+            public void write(String token) { }
+            public void clear() { }
+        }, new GoogleSyncSession.SignInProvider() {
+            public String obtainIdToken(boolean interactive) throws SyncAuthException {
+                throw new SyncAuthException(SyncAuthException.FAILED, "no");
+            }
+
+            public void clearCredentialState() { }
+        },
+                (method, url, headers, body) -> { throw new AssertionError("no request may be sent"); },
+                "https://sync.example.test", () -> 0L);
+        for (String[] call : new String[][] {{"POST", null, ""}, {"POST", "gateway/token", ""},
+                {"GET", "../gateway/token", null}, {"POST", "x", "{}"}}) {
+            try {
+                session.request(call[0], call[1], call[2]);
+                fail("the sync bridge must refuse " + call[0] + " " + call[1]);
+            } catch (SyncAuthException refused) {
+                assertEquals(SyncAuthException.INVALID_REQUEST, refused.code);
+            }
+        }
+    }
+
+    @Test public void aCachedTokenIsReusedWhileItOutlivesTheAttempt() throws Exception {
+        fixture.connect("first");
+        now.addAndGet(60_000);
+        fixture.connect("second");
+        assertEquals("one mint serves both dials", 1, fixture.broker.mints.get());
+        List<String> sent = tokensSentToTheGateway();
+        assertEquals(sent.get(0), sent.get(1));
+    }
+
+    @Test public void anExpiringTokenIsReMinted() throws Exception {
+        fixture.connect("first");
+        // 290 s into a 300 s token: 10 s left cannot cover a 15 s attempt.
+        now.addAndGet(290_000);
+        fixture.connect("after-expiry");
+        assertEquals(2, fixture.broker.mints.get());
+        List<String> sent = tokensSentToTheGateway();
+        assertEquals(fixture.broker.minted, sent);
+        assertFalse(sent.get(0).equals(sent.get(1)));
+        // Past expiry entirely: also a fresh mint.
+        now.addAndGet(600_000);
+        fixture.connect("long-after");
+        assertEquals(3, fixture.broker.mints.get());
+    }
+
+    @Test public void anAccountChangeNeverReusesTheOtherAccountsToken() throws Exception {
+        fixture.connect("first");
+        fixture.broker.subject = "sub-2";
+        fixture.pairings.pair("sub-2", fixture.serverUrl(), GatewayDialFixture.DEVICE,
+                fixture.hostKeyLine(), GatewayDialFixture.HANDLE);
+        fixture.connect("other-account");
+        assertEquals(2, fixture.broker.mints.get());
+    }
+
+    @Test public void aCachedTokenRefusedWith4401IsReMintedOnceAndTheDialSucceeds() throws Exception {
+        fixture.connect("first");
+        fixture.gateway.rejectedTokens.add(fixture.broker.minted.get(0));
+        JSObject result = fixture.connect("after-rotation");
+        assertTrue(result.getBoolean("gatewayHostKeyVerified"));
+        assertEquals("the stale cache entry cost exactly one re-mint", 2, fixture.broker.mints.get());
+        assertEquals(List.of(fixture.broker.minted.get(0), fixture.broker.minted.get(0), fixture.broker.minted.get(1)),
+                tokensSentToTheGateway());
+    }
+
+    @Test public void aFreshToken4401IsTheVerdictAndIsNotRetried() throws Exception {
+        // Every token is refused: the sign-in itself is not accepted.
+        fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, 4401, null);
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("refused-sign-in");
+        assertEquals("GATEWAY_CLOSED", failure.code);
+        assertEquals(4401, failure.data.getInt("gatewayCloseCode"));
+        assertEquals("a fresh token's 4401 is not retried natively", 1, fixture.broker.mints.get());
+        // The refused token is dropped: the next dial mints again.
+        fixture.gateway.script(GatewayDialFixture.Mode.READY_RELAY, 0, null);
+        fixture.connect("after-sign-in");
+        assertEquals(2, fixture.broker.mints.get());
+    }
+
+    @Test public void aTokenTooShortToUseIsRefusedNotSent() throws Exception {
+        fixture.broker.lifetimeSeconds = 5;
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("short-token");
+        assertEquals(GatewayTokenBroker.GatewayBrokerException.BAD_RESPONSE, failure.code);
+        assertEquals("nothing was sent to the gateway", 0, fixture.gateway.authFrames.size());
+    }
+
+    @Test public void issuedTokensPrintRedacted() {
+        GatewayRoutingTokens.Issued issued = new GatewayRoutingTokens.Issued("aaa.SECRET.ccc", 1L, false);
+        assertFalse(issued.toString().contains("SECRET"));
+    }
+
+    private static Set<String> pluginMethods(Class<?> plugin) {
+        Set<String> names = new TreeSet<>();
+        for (Method method : plugin.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(PluginMethod.class)) names.add(method.getName());
+        }
+        return names;
+    }
+
+    private static Set<String> keys(JSObject json) {
+        Set<String> keys = new TreeSet<>();
+        json.keys().forEachRemaining(keys::add);
+        return keys;
+    }
+}

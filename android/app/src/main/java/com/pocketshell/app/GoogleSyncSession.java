@@ -107,7 +107,9 @@ public final class GoogleSyncSession {
      * response content can never choose the URL (issue #3060). The exchange
      * rides the same no-redirect, deadline- and size-bounded transport as
      * settings sync, and the token is renewed silently first, exactly like a
-     * sync request.
+     * sync request — including the one retry after a silent renewal when the
+     * broker answers 401 (the ID token can age out between the check and the
+     * broker's authorizer).
      *
      * <p>The bearer never leaves this class except through
      * {@link GatewayBrokerExchange#bearerEchoedBy(String)} — an equality
@@ -119,6 +121,10 @@ public final class GoogleSyncSession {
         // Empty body by contract: an explicit zero-length body, so the
         // exchange is a POST with Content-Length: 0 on every HTTP stack.
         Response response = send("POST", "/gateway/token", "", token);
+        if (response.status == 401) {
+            token = renew(token);
+            response = send("POST", "/gateway/token", "", token);
+        }
         return new GatewayBrokerExchange(response, token.token);
     }
 

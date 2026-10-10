@@ -124,13 +124,18 @@ public final class GatewayTunnelTest {
         }
     }
 
-    @Test public void anErrorFrameRefuses() throws Exception {
+    @Test public void anErrorFrameRefusesWithItsDocumentedCloseCode() throws Exception {
+        // #3086: the frame's code is the gateway's verdict; 7b882759e
+        // collapsed every error frame into UNREACHABLE with no close code.
         gateway = new FakeGateway(FakeGateway.Script.ERROR_FRAME);
         try {
             openTunnel(gateway);
             fail("a gateway error frame must refuse the dial");
         } catch (GatewayTunnel.GatewayTunnelException expected) {
-            assertEquals(GatewayTunnel.GatewayTunnelException.UNREACHABLE, expected.code);
+            assertEquals(GatewayTunnel.GatewayTunnelException.HOST_OFFLINE, expected.code);
+            assertEquals(4503, expected.closeCode);
+            assertTrue(expected.hasGatewayCloseCode());
+            assertTrue("the gateway's free text is never surfaced", !expected.getMessage().contains("not now"));
         }
     }
 
@@ -151,6 +156,18 @@ public final class GatewayTunnelTest {
             fail("a 4503 close before ready must refuse the dial");
         } catch (GatewayTunnel.GatewayTunnelException expected) {
             assertEquals(GatewayTunnel.GatewayTunnelException.HOST_OFFLINE, expected.code);
+            assertEquals("the close frame's code is kept for core", 4503, expected.closeCode);
+        }
+    }
+
+    @Test public void aLocalProtocolRefusalCarriesNoGatewayCloseCode() throws Exception {
+        gateway = new FakeGateway(FakeGateway.Script.MALFORMED_TEXT);
+        try {
+            openTunnel(gateway);
+            fail("a malformed handshake must refuse the dial");
+        } catch (GatewayTunnel.GatewayTunnelException expected) {
+            assertEquals("the client refused; the gateway gave no verdict",
+                    GatewayTunnel.GatewayTunnelException.NO_CLOSE_CODE, expected.closeCode);
         }
     }
 

@@ -92,6 +92,10 @@ public final class GatewayTunnel implements AutoCloseable {
     private final AtomicReference<GatewayTunnelException> failure = new AtomicReference<>();
     private final AtomicBoolean closeStarted = new AtomicBoolean(false);
 
+    /** An unrecognized handshake error frame arrived; the close frame that
+     * follows carries the verdict. Any other TEXT now is a violation. */
+    private volatile boolean errorFrameAwaitingClose;
+
     private final ArrayBlockingQueue<byte[]> inboundFrames = new ArrayBlockingQueue<>(MAX_INBOUND_QUEUED_FRAMES);
     private final Semaphore inboundBytes = new Semaphore(MAX_INBOUND_BUFFER_BYTES);
 
@@ -104,8 +108,14 @@ public final class GatewayTunnel implements AutoCloseable {
     private enum Phase { DIALING, AUTHENTICATING, READY, FAILED, CLOSED }
 
     /** A tunnel failure with a stable kind; the message is fixed text that
-     * never carries gateway-supplied content, URLs, or token material. */
+     * never carries gateway-supplied content, URLs, or token material.
+     * {@link #closeCode} is the gateway's verdict when it gave one (a close
+     * frame, or a handshake error frame mapped to its documented close
+     * code), and {@link #NO_CLOSE_CODE} for transport failures the gateway
+     * never ruled on. Core reads it as {@code data.gatewayCloseCode}. */
     public static final class GatewayTunnelException extends IOException {
+        /** No gateway verdict: DNS/TCP/TLS failure, timeout, cancel, local protocol refusal. */
+        public static final int NO_CLOSE_CODE = 0;
         public static final String PROTOCOL = "GATEWAY_PROTOCOL";
         public static final String UNAUTHORIZED = "GATEWAY_UNAUTHORIZED";
         public static final String FORBIDDEN = "GATEWAY_FORBIDDEN";
@@ -117,10 +127,21 @@ public final class GatewayTunnel implements AutoCloseable {
         public static final String CONNECT_FAILED = "GATEWAY_CONNECT_FAILED";
 
         final String code;
+        final int closeCode;
 
         GatewayTunnelException(String code, String message) {
+            this(code, message, NO_CLOSE_CODE);
+        }
+
+        GatewayTunnelException(String code, String message, int closeCode) {
             super(message);
             this.code = code;
+            this.closeCode = closeCode;
+        }
+
+        /** Whether the gateway itself delivered this verdict. */
+        boolean hasGatewayCloseCode() {
+            return closeCode != NO_CLOSE_CODE;
         }
     }
 
@@ -237,7 +258,7 @@ public final class GatewayTunnel implements AutoCloseable {
 
             @Override
             public void onClose(int code, String reason, boolean remote) {
-                onClosed(code);
+                onClosed(code, remote);
             }
 
             @Override
@@ -311,15 +332,27 @@ public final class GatewayTunnel implements AutoCloseable {
 
     private void onTextFrame(String message) {
         Phase current = phase.get();
+        if (current == Phase.AUTHENTICATING && errorFrameAwaitingClose) {
+            failIfOpen(new GatewayTunnelException(
+                    GatewayTunnelException.PROTOCOL, "The gateway sent a second handshake message."));
+            return;
+        }
         if (current == Phase.AUTHENTICATING) {
             try {
                 GatewayTargetPolicy.Handshake handshake = GatewayTargetPolicy.parseHandshakeFrame(message);
                 if (!handshake.ready) {
                     // The error frame's code is machine vocabulary; its message
                     // text is never surfaced (a hostile gateway could write
-                    // anything into it).
-                    throw new GatewayTunnelException(
-                            GatewayTunnelException.UNREACHABLE, "The gateway refused this connection.");
+                    // anything into it). A recognized code IS the verdict and
+                    // maps to its documented close code at once; an
+                    // unrecognized one waits for the close frame the gateway
+                    // sends right after it (bounded by the handshake deadline).
+                    int closeCode = GatewayTargetPolicy.closeCodeForErrorFrame(handshake.errorCode);
+                    if (closeCode == GatewayTunnelException.NO_CLOSE_CODE) {
+                        errorFrameAwaitingClose = true;
+                        return;
+                    }
+                    throw verdict(closeCode);
                 }
                 if (!target.deviceId.equals(handshake.deviceId)) {
                     failIfOpen(new GatewayTunnelException(
@@ -389,11 +422,25 @@ public final class GatewayTunnel implements AutoCloseable {
         }
     }
 
-    private void onClosed(int code) {
+    private void onClosed(int code, boolean remote) {
         Phase current = phase.get();
         if (current == Phase.CLOSED || current == Phase.FAILED) return;
+        // Only a close frame FROM the gateway is its verdict; a close the
+        // library initiated locally (e.g. 1009 for an oversized frame) is not.
+        if (remote && GatewayTargetPolicy.isGatewayCloseCode(code)) {
+            failIfOpen(verdict(code));
+            return;
+        }
+        // No close frame (an abnormal drop is synthesized locally as 1006,
+        // or -1 when the WebSocket never opened): no gateway verdict.
         GatewayTargetPolicy.CloseKind kind = GatewayTargetPolicy.classifyClose(code);
         failIfOpen(new GatewayTunnelException(toFailureCode(kind.kind), kind.userMessage));
+    }
+
+    /** The gateway's own verdict, carrying its close code. */
+    private static GatewayTunnelException verdict(int closeCode) {
+        GatewayTargetPolicy.CloseKind kind = GatewayTargetPolicy.classifyClose(closeCode);
+        return new GatewayTunnelException(toFailureCode(kind.kind), kind.userMessage, closeCode);
     }
 
     private static String toFailureCode(String closeKind) {
@@ -686,6 +733,13 @@ public final class GatewayTunnel implements AutoCloseable {
             if (total > Integer.MAX_VALUE / 2) break;
         }
         return total;
+    }
+
+    /** The strict failure, when the tunnel failed; null while healthy. The
+     * plugin reads it to report a gateway verdict that surfaced to sshj as
+     * a plain stream error. */
+    GatewayTunnelException failure() {
+        return failure.get();
     }
 
     /** Test-only visibility: the strict failure, when the tunnel failed. */
