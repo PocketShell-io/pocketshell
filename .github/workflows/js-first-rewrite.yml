@@ -118,6 +118,11 @@ jobs:
       - name: Check fail-closed packaged durable-storage result guard
         run: scripts/check-js-durable-storage-results.py --self-test
 
+      - name: Check fail-closed packaged gateway result guard and host controller
+        run: |
+          scripts/check-js-gateway-results.py --self-test
+          scripts/gateway-lane-fixture.py --self-test
+
       - name: Check JS Android journey dispatch guard
         run: |
           scripts/check-test-validity.sh --j1-only --self-test
@@ -211,6 +216,33 @@ jobs:
           scripts/connected-js-smoke.sh --suffix i2855ci --prepare-only
           scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
           scripts/connected-js-key-vault-docker.sh --suffix i2926ci --prepare-only
+
+      - name: Read the gateway lane's pinned gateway commit
+        id: gateway-pin
+        run: printf 'sha=%s\n' "$(tr -d '[:space:]' < tests/docker/gateway/gateway-source.pin)" >> "$GITHUB_OUTPUT"
+
+      # The gateway lane (#3086 slice 3) builds the real gateway and host agent
+      # from the PRIVATE PocketShell-io/pocketshell-gateway repository at the
+      # pinned commit. POCKETSHELL_GATEWAY_READ_TOKEN is a read-only (contents)
+      # token for that one repository. Without it this checkout fails and the
+      # required check is red: the lane never skips.
+      - name: Check out the pinned PocketShell gateway source for the gateway lane
+        uses: actions/checkout@v6
+        with:
+          repository: PocketShell-io/pocketshell-gateway
+          ref: ${{ steps.gateway-pin.outputs.sha }}
+          token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}
+          path: .ci/pocketshell-gateway
+          persist-credentials: false
+
+      - name: Set up Go for the gateway lane
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: .ci/pocketshell-gateway/go.mod
+          cache: false
+
+      - name: Prepare the packaged gateway lane (gateway binaries, test-CA APK)
+        run: scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only
 
       - name: Start version-matched Docker agents fixture
         run: |
@@ -325,6 +357,9 @@ jobs:
             --results-dir "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
             --screenshots-dir "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --logcat "android/app/build/outputs/js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
+          run_check Gateway scripts/check-js-gateway-results.py \
+            --results-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --host-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host"
           run_check "Shared app" scripts/check-js-shared-app-results.py \
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
@@ -431,6 +466,7 @@ jobs:
             android/app/build/outputs/js-settings/**
             android/app/build/outputs/js-account-sync/**
             android/app/build/outputs/js-account-picker/**
+            android/app/build/outputs/js-gateway/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**
             android/app/build/outputs/js-durable-storage/**

@@ -130,6 +130,15 @@ conflict, picks a synced host on the home screen and signs out. Its checker
 requires both methods, seven distinct screenshots and a same-run logcat with
 the journey's EVIDENCE line and no ID token. Run it with
 `scripts/connected-js-account-sync.sh --suffix i3020 --run-id js3020-local`.
+The gateway-docker lane (issue #3086) dials a host registered on the REAL
+PocketShell gateway end to end: its own Docker project (gateway, TLS front,
+enrolled pocketshell-link agent, agents-image host with no published port) on
+TLS port 3287 via `adb reverse`, a per-run test CA trusted only by its
+`gwlane`-suffixed debug build, and a host-side controller that is the oracle.
+It needs the private gateway checkout at the pinned commit:
+`scripts/connected-test.sh gateway-docker --suffix i3086gwlane --gateway-src ~/git/pocketshell-gateway`
+(CI uses the `POCKETSHELL_GATEWAY_READ_TOKEN` secret). Details and the TLS
+design: [gateway-android-transport.md](gateway-android-transport.md#emulator-lane-gateway-docker).
 The signed-upgrade lane runs `InstalledDataMigrationJourneyTest` last in the
 blocking packaged CI run (`scripts/ci-js-first-packaged-lanes.sh`), after the
 suffixed lanes, because it owns the unsuffixed `com.pocketshell.app` install.

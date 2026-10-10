@@ -30,6 +30,10 @@ JS-first packaged Android lanes:
   account-picker    Shared host picker: header account button, unlock,
                     account hosts on home, phone-key prompt (same fakes;
                     no Docker, issue #3063)
+  gateway-docker    The real PocketShell gateway end to end: pinned host key,
+                    session list/attach/I/O/resize/reconnect, and the
+                    pin-mismatch, 4401, 4404 and offline refusals (Docker;
+                    needs --gateway-src, a suffix containing "gwlane"; #3086)
 
 Each run requires an explicit per-worktree --suffix TOKEN. Docker lanes also
 require their fixture's port; lifecycle additionally requires its container
@@ -49,6 +53,8 @@ Examples:
   scripts/connected-test.sh durable-storage --suffix i2993 --run-id js2993-local
   scripts/connected-test.sh account-sync --suffix i3020 --run-id js3020-local
   scripts/connected-test.sh account-picker --suffix i3063 --run-id js3063-local
+  scripts/connected-test.sh gateway-docker --suffix i3086gwlane --run-id gw3086-local \
+    --gateway-src ~/git/pocketshell-gateway
 
 During its connected phase, the selected lane owns the android/ Gradle output
 tree and one emulator while it installs and collects its exact same-run JUnit
@@ -99,8 +105,11 @@ case "$LANE" in
   account-picker)
     TARGET="$ROOT_DIR/scripts/connected-js-account-picker.sh"
     ;;
+  gateway-docker)
+    TARGET="$ROOT_DIR/scripts/connected-js-gateway-docker.sh"
+    ;;
   *)
-    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, or account-picker"
+    fail "unknown JS-first connected lane '$LANE'; choose smoke, lifecycle, composer-docker, hotkeys-docker, key-vault-docker, durable-storage, account-sync, account-picker, or gateway-docker"
     ;;
 esac
 
