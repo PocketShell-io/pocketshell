@@ -166,6 +166,11 @@ jobs:
           scripts/connected-js-files-docker.sh --suffix i2863rv --prepare-only
           scripts/connected-js-key-vault-docker.sh --suffix i2863rv --prepare-only
 
+      - name: Prepare the packaged gateway lane (pinned private gateway source, test-CA APK)
+        uses: ./.github/actions/prepare-gateway-lane
+        with:
+          read-token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}
+
       - name: Start version-matched Docker agents fixture
         run: |
           source scripts/lib/agents-fixture-version.sh
@@ -262,6 +267,9 @@ jobs:
             --results-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
             --screenshots-dir "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
             --logcat "android/app/build/outputs/js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat.txt"
+          run_check Gateway scripts/check-js-gateway-results.py \
+            --results-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --host-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host"
           run_check "Shared app" scripts/check-js-shared-app-results.py \
             --results-dir android/app/build/outputs/js-shared-app-results
           run_check Key-vault scripts/check-js-key-vault-results.py \
@@ -415,6 +423,7 @@ jobs:
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-durable-storage/**
             android/app/build/outputs/js-shared-app-results/**
+            android/app/build/outputs/js-gateway/**
           if-no-files-found: warn
 
       - name: Stop isolated Composer and key-vault Docker agents lanes

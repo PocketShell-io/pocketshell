@@ -29,6 +29,7 @@
  */
 import type { PocketShellApi } from '@ui/app/api';
 import {
+  hasGatewayMarker,
   readHostUsage,
   runHostBootstrap,
   unsupportedTransport,
@@ -38,6 +39,7 @@ import {
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
+import { insecureGatewayMessage, resolveGatewayTarget, type GatewayPairings } from './gatewayTarget';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -53,25 +55,39 @@ const unsupported = (method: string) => (): Promise<never> =>
   Promise.reject(new UnsupportedCapability(method));
 
 /**
+ * What this phone's native transport reported it can dial beyond direct SSH
+ * (#3086). `gateway` is true only when the native `SshCapability` plugin's
+ * own `transportCapabilities` reply said so (src/native/sshCapability.ts);
+ * Android has no link transport, so `link` is not a field at all.
+ */
+export interface AndroidTransports {
+  gateway: boolean;
+}
+
+/**
  * Why this phone must not dial a host or connect request at all, or null.
  *
- * Core's gateway contract (#3059, core docs/SYNC.md): a client that cannot
- * dial the PocketShell gateway refuses any PRESENT `gateway` marker, whatever
- * its value (valid, null, malformed, or alongside `link`), instead of treating
- * the entry as ordinary SSH. Presence is decided by core's own
- * `hasGatewayMarker`. Android has no gateway transport and no link transport
- * yet, so a `link` marker is refused the same way: dialling plain SSH would
- * reach the host over a transport it was not configured for. The check runs
- * before any key prompt, save, credential or socket.
+ * Core's gateway contract (#3059, core docs/SYNC.md): the shared
+ * `unsupportedTransport` decision, made on PRESENCE of a `gateway` or `link`
+ * marker. With `transports.gateway` false every gateway marker (valid, null,
+ * malformed, or alongside `link`) refuses; with it true, a null, malformed or
+ * future-shaped marker and a `gateway` + `link` pair still refuse, and only a
+ * valid target is admitted. Android has no link transport, so a `link`
+ * marker always refuses: dialling plain SSH would reach the host over a
+ * transport it was not configured for. On top of core's decision Android
+ * refuses an admitted `ws://` gateway origin: its native transport dials
+ * `wss://` only. The check runs before any key prompt, save, credential or
+ * socket.
  *
  * This is the ONE place Android decides transport support: `resolveTarget`
- * asks it about both the connect request and the account entry. A build that
- * can dial the gateway or a link lifts the refusal here, and only here, behind
- * an explicit transport capability, never by falling back to plain SSH.
+ * asks it about both the connect request and the account entry. An admitted
+ * gateway marker is dialled through the native gateway transport, never by
+ * falling back to plain SSH (D28).
  */
-export function unsupportedTransportMessage(name: string, entry: object): string | null {
-  const decision = unsupportedTransport(entry, { gateway: false, link: false }, name);
-  return decision.refused ? decision.message : null;
+export function unsupportedTransportMessage(name: string, entry: object, transports: AndroidTransports): string | null {
+  const decision = unsupportedTransport(entry, { gateway: transports.gateway, link: false }, name);
+  if (decision.refused) return decision.message;
+  return hasGatewayMarker(entry) ? insecureGatewayMessage(name, (entry as { gateway?: unknown }).gateway) : null;
 }
 
 /** Whether a connect request names this exact phone host (alias, or address and user). */
@@ -102,6 +118,14 @@ export interface AndroidApiDeps {
   openAccount?: () => Promise<void>;
   /** Account hosts this phone has no key for yet: find and adopt them (#3063). */
   accountHosts?: AccountHostKeys;
+  /**
+   * Whether the native SshCapability plugin reported the gateway transport
+   * (#3086), awaited at dial time so a dial never races the probe. Absent or
+   * false: every gateway host is refused before any effect.
+   */
+  gatewayTransport?: () => Promise<boolean>;
+  /** The native gateway pairings (#3086); required for a gateway dial. */
+  gatewayPairings?: GatewayPairings;
 }
 
 export interface AndroidPlatform {
@@ -131,11 +155,20 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * the phone). Either way it then resolves like any other phone host.
    */
   async function resolveTarget(payload: Parameters<PocketShellApi['ssh']['connect']>[0]) {
-    // A gateway or link marker on the request is refused before anything
-    // else (core #3059): no key prompt, save, credential or socket.
-    if (unsupportedTransportMessage('', payload) !== null) {
+    // The native report, read at dial time; any failure reads as "no gateway".
+    const transports: AndroidTransports = {
+      gateway: deps.gatewayPairings !== undefined && (await deps.gatewayTransport?.().catch(() => false)) === true,
+    };
+    // A gateway or link marker the phone cannot dial is refused before
+    // anything else (core #3059): no key prompt, save, credential or socket.
+    if (unsupportedTransportMessage('', payload, transports) !== null) {
       const named = deps.accountHosts ? await deps.accountHosts.find(payload) : null;
-      throw new Error(unsupportedTransportMessage(named?.name ?? deps.hosts.labelFor(payload), payload)!);
+      throw new Error(unsupportedTransportMessage(named?.name ?? deps.hosts.labelFor(payload), payload, transports)!);
+    }
+    // An admitted gateway marker is dialled through the gateway, with the key
+    // of this phone's pairing for that device; never as an ordinary host.
+    if (hasGatewayMarker(payload)) {
+      return resolveGatewayTarget(payload, deps.hosts.labelFor(payload), deps.gatewayPairings!);
     }
     try {
       return await deps.hosts.resolve(payload);
@@ -148,10 +181,18 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       // r2) is left alone, and the account host is saved as its own host.
       const missingKey = error instanceof MissingHostCredential && isSameHost(error.host, payload);
       const account = missingKey ? null : await keys.find(payload);
-      // An account host marked for the gateway or a link is refused, never
-      // adopted as a plain SSH phone host (core #3059).
-      const refusal = account ? unsupportedTransportMessage(account.name, account) : null;
+      // An account host marked for the gateway or a link is never adopted as
+      // a plain SSH phone host (core #3059): it is refused, or, when this
+      // phone can dial its gateway, dialled through the gateway.
+      const refusal = account ? unsupportedTransportMessage(account.name, account, transports) : null;
       if (refusal) throw new Error(refusal);
+      if (account && hasGatewayMarker(account)) {
+        return resolveGatewayTarget(
+          { host: account.hostname, port: account.port, user: payload.user || account.user, gateway: account.gateway },
+          account.name,
+          deps.gatewayPairings!,
+        );
+      }
       const host = missingKey ? (error as MissingHostCredential).host : account;
       if (!host) throw error;
       if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {

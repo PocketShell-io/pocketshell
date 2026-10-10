@@ -1,0 +1,52 @@
+# The packaged gateway lane's preparation (pocketshell#3086 slice 3), shared
+# by every workflow that runs scripts/ci-js-first-packaged-lanes.sh
+# (js-first-rewrite.yml, js-full-suite.yml, js-release-validation.yml), so
+# they cannot drift apart. The contract is pinned by
+# tests/scripts/js-first-rewrite-composer-gate-test.sh.
+#
+# The lane builds the real gateway and host agent from the PRIVATE
+# PocketShell-io/pocketshell-gateway repository at the pinned commit
+# (tests/docker/gateway/gateway-source.pin; the lane runner refuses any other
+# HEAD). Access is a fine-grained, read-only (Contents) token limited to that
+# one repository: the repository secret POCKETSHELL_GATEWAY_READ_TOKEN, which
+# the calling step passes as `read-token`. Inside, only the checkout receives
+# it; the guard sees a boolean only. A missing token fails loudly and never
+# falls back to GITHUB_TOKEN: the lane never skips. Fork pull requests and any
+# run without repository secrets therefore fail here, by design.
+name: Prepare the packaged gateway lane
+description: Check out the pinned private gateway source and build the gateway lane's binaries and test-CA APK.
+inputs:
+  read-token:
+    description: POCKETSHELL_GATEWAY_READ_TOKEN (fine-grained, read-only Contents on PocketShell-io/pocketshell-gateway only).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Require the gateway lane's read token
+      shell: bash
+      env:
+        GATEWAY_READ_TOKEN_PRESENT: ${{ inputs.read-token != '' }}
+      run: |
+        if [[ "$GATEWAY_READ_TOKEN_PRESENT" != true ]]; then
+          echo '::error title=Gateway lane read token missing::The repository secret POCKETSHELL_GATEWAY_READ_TOKEN (a fine-grained read-only Contents token for PocketShell-io/pocketshell-gateway) is not available to this run (fork pull requests never get it). The gateway-docker lane cannot build the pinned gateway and never skips.'
+          exit 1
+        fi
+
+    - name: Check out the pinned PocketShell gateway source
+      uses: actions/checkout@v6
+      with:
+        repository: PocketShell-io/pocketshell-gateway
+        ref: 8f2f360f01025ee5d78a813d918190a185d4af98
+        token: ${{ inputs.read-token }}
+        persist-credentials: false
+        path: .ci/pocketshell-gateway
+
+    - name: Set up Go for the gateway lane
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: .ci/pocketshell-gateway/go.mod
+        cache: false
+
+    - name: Build the gateway binaries and the test-CA APK
+      shell: bash
+      run: scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only

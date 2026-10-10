@@ -131,8 +131,17 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private volatile GatewayVaultProbe gatewayVaultProbe;
+    /** Wall time for the gateway path: routing-token arrival times only, never
+     * a deadline. JVM tests make it jump. */
+    private volatile LongSupplier gatewayWallClock = System::currentTimeMillis;
+    /** The monotonic clock (ms) every gateway connect deadline is measured on,
+     * so a wall-clock jump mid-dial can neither expire a healthy dial nor
+     * stretch a stalled one. Production: {@code SystemClock.elapsedRealtime}
+     * (monotonic, and it keeps counting while the device sleeps); the JVM
+     * test constructors use {@code System.nanoTime}. */
+    private volatile LongSupplier gatewayDeadlineClock = () -> System.nanoTime() / 1_000_000L;
     /** Native-only routing tokens, in memory for this process; never bridged. */
-    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(System::currentTimeMillis);
+    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(() -> gatewayWallClock.getAsLong());
     static final String GATEWAY_CLOSED = "GATEWAY_CLOSED";
     /** The signed-in account changed after a gateway dial was planned. */
     static final String GATEWAY_ACCOUNT_CHANGED = "GATEWAY_ACCOUNT_CHANGED";
@@ -162,9 +171,18 @@ public final class SshCapabilityPlugin extends Plugin {
 
     private volatile GatewayTunnelFactory gatewayTunnelFactory =
         (target, routingToken) -> new GatewayTunnel(target, routingToken, false);
+    /** Whether the tunnel factory may dial plaintext ws:// on loopback: only
+     * the JVM-test constructor's fixture factory. Production is always false,
+     * so a ws:// target is refused at plan time, before any mint. */
+    private volatile boolean gatewayInsecureLoopbackForTesting = false;
+    /** The ONE native list of origins a gateway credential may be used with
+     * (B1): this build's, never widened at run time. JVM tests that dial a
+     * loopback fixture add exactly that fixture's origin. */
+    private volatile GatewayOriginAllowlist gatewayOriginAllowlist = GatewayOriginAllowlist.forBuild();
 
     public SshCapabilityPlugin() {
         this(new Handler(Looper.getMainLooper()), SystemClock::elapsedRealtime);
+        this.gatewayDeadlineClock = SystemClock::elapsedRealtime;
     }
 
     SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock) {
@@ -187,7 +205,17 @@ public final class SshCapabilityPlugin extends Plugin {
             GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore,
             PrivateKeySource privateKeySource, GatewayTunnelFactory gatewayTunnelFactory,
             ConnectFailureLog connectFailureLog) {
+        this(mainHandler, elapsedRealtimeClock, gatewaySyncSession, gatewayPairingStore, privateKeySource,
+                gatewayTunnelFactory, connectFailureLog, GatewayOriginAllowlist.forBuild());
+    }
+
+    /** JVM tests: as above, with the allowlist that admits the loopback fixture. */
+    SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock,
+            GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore,
+            PrivateKeySource privateKeySource, GatewayTunnelFactory gatewayTunnelFactory,
+            ConnectFailureLog connectFailureLog, GatewayOriginAllowlist gatewayOriginAllowlist) {
         this(mainHandler, elapsedRealtimeClock, gatewaySyncSession, gatewayPairingStore);
+        this.gatewayOriginAllowlist = gatewayOriginAllowlist;
         this.connectFailureLog = connectFailureLog;
         this.privateKeySource = privateKeySource;
         this.gatewayVaultProbe = keyHandleId -> {
@@ -195,11 +223,17 @@ public final class SshCapabilityPlugin extends Plugin {
             if (probe != null) java.util.Arrays.fill(probe, (byte) 0);
         };
         this.gatewayTunnelFactory = gatewayTunnelFactory;
+        this.gatewayInsecureLoopbackForTesting = true;
     }
 
     /** JVM tests: drive token reuse and expiry with a controlled clock. */
     void useGatewayRoutingTokensForTesting(GatewayRoutingTokens tokens) {
         this.gatewayRoutingTokens = tokens;
+    }
+
+    /** JVM tests: a wall clock that jumps (an NTP or user clock change mid-dial). */
+    void useGatewayWallClockForTesting(LongSupplier clock) {
+        this.gatewayWallClock = clock;
     }
 
     @Override
@@ -304,7 +338,7 @@ public final class SshCapabilityPlugin extends Plugin {
                 // stays native: the in-memory cache hands out one with
                 // enough life for this attempt or mints a fresh one, and the
                 // tunnel carries it in its auth frame and nowhere else.
-                deadlineWatchdog = scheduleConnectDeadline(attempt, gatewayPlan.deadlineEpochMs);
+                deadlineWatchdog = scheduleConnectDeadline(attempt, gatewayPlan.deadlineMonotonicMs);
                 // Dial + auth TEXT + ready, within the one whole-connect
                 // deadline; the socket comes back pre-connected, so sshj
                 // performs no DNS and no TCP to the display hostname/port.
@@ -408,7 +442,12 @@ public final class SshCapabilityPlugin extends Plugin {
             else attempt.closeClient();
             if (presented.keyType != null && !presented.trusted) {
                 JSObject details = presented.asJson();
-                throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
+                // A gateway dial has no trust prompt: the pairing's pin is the
+                // whole decision, so say which pin did not match.
+                String message = gatewayPlan != null
+                    ? "The host's SSH key does not match the key this phone paired for that device. Nothing was sent; check the host key and pair again."
+                    : "The SSH host key has not been trusted.";
+                throw new PluginFailure("HOST_KEY_REJECTED", message, details, null);
             }
             // A gateway verdict (a close frame, or a handshake error frame
             // mapped to its close code) reaches core intact, whether it
@@ -1281,14 +1320,15 @@ public final class SshCapabilityPlugin extends Plugin {
         final GatewayPairingStore.Pairing pairing;
         /** The signed-in account the pairing and the routing token belong to. */
         final String subject;
-        final long deadlineEpochMs;
+        /** The whole-connect deadline on {@link #gatewayDeadlineClock} (monotonic ms). */
+        final long deadlineMonotonicMs;
 
         GatewayDialPlan(GatewayTargetPolicy.Target target, GatewayPairingStore.Pairing pairing, String subject,
-                long deadlineEpochMs) {
+                long deadlineMonotonicMs) {
             this.target = target;
             this.pairing = pairing;
             this.subject = subject;
-            this.deadlineEpochMs = deadlineEpochMs;
+            this.deadlineMonotonicMs = deadlineMonotonicMs;
         }
 
         /** The verifier expectation from the saved pairing only, compared
@@ -1324,15 +1364,33 @@ public final class SshCapabilityPlugin extends Plugin {
         if (!"key-handle".equals(credentialKind)) {
             throw new PluginFailure("INVALID_ARGUMENT", "Gateway connections authenticate with a stored SSH key only.");
         }
+        // The Capacitor bridge hands nested objects over as plain
+        // org.json.JSONObject (JSObject is only the call's top level), so
+        // that is the shape a target must have; anything else refuses.
         Object rawGateway = options.opt("gateway");
-        if (!(rawGateway instanceof JSObject)) {
+        if (!(rawGateway instanceof org.json.JSONObject)) {
             throw new PluginFailure("INVALID_ARGUMENT", "The gateway target is malformed.");
         }
-        JSObject rawTarget = (JSObject) rawGateway;
+        org.json.JSONObject rawTarget = (org.json.JSONObject) rawGateway;
         GatewayTargetPolicy.Target target = GatewayTargetPolicy.normalizeTarget(
                 rawTarget.opt("serverUrl"), rawTarget.opt("deviceId"));
         if (target == null) {
             throw new PluginFailure("INVALID_ARGUMENT", "The gateway target is malformed.");
+        }
+        // The same endpoint rule the tunnel applies (wss://, or ws:// on
+        // loopback for the JVM fixture only), checked here so a target the
+        // tunnel would refuse never reaches the sign-in or the broker.
+        try {
+            GatewayTargetPolicy.endpoint(target, gatewayInsecureLoopbackForTesting);
+        } catch (IllegalArgumentException insecure) {
+            throw new PluginFailure("INVALID_ARGUMENT", "A gateway connection needs an encrypted wss:// address.");
+        }
+        // B1: the routing token goes only to an allowlisted gateway. Checked
+        // before the sign-in is read, a pairing looked up, a token minted or
+        // any socket opened; JS cannot widen the list.
+        if (!gatewayOriginAllowlist.allowsGatewayOrigin(target.serverUrl)) {
+            throw new PluginFailure(GatewayOriginAllowlist.NOT_ALLOWED,
+                    "PocketShell connects only through the PocketShell gateway; this gateway address is not allowed.");
         }
         GatewaySyncSession session = gatewaySyncSession;
         GatewayPairingStore pairingStore = gatewayPairingStore;
@@ -1376,7 +1434,7 @@ public final class SshCapabilityPlugin extends Plugin {
             KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
             throw new PluginFailure(unavailable.code, unavailable.message);
         }
-        return new GatewayDialPlan(target, pairing, subject, System.currentTimeMillis() + connectTimeout);
+        return new GatewayDialPlan(target, pairing, subject, gatewayDeadlineClock.getAsLong() + connectTimeout);
     }
 
     /**
@@ -1402,15 +1460,26 @@ public final class SshCapabilityPlugin extends Plugin {
             // the client; joining the tunnel now means it never dials.
             checkConnectNotCancelled(attempt);
             try {
-                tunnel.open(plan.deadlineEpochMs);
+                tunnel.open(remainingConnectBudgetMs(plan));
                 return tunnel;
             } catch (GatewayTunnel.GatewayTunnelException failure) {
                 if (failure.closeCode == 4401) gatewayRoutingTokens.invalidate(token);
                 if (failure.closeCode != 4401 || !token.reused) throw failure;
                 tunnel.close();
+                // That 4401 judged a stale CACHED token, not this account's
+                // sign-in: it is not the dial's verdict. Detach it, so if the
+                // re-mint itself fails (signed out, account switched, broker
+                // refused the sign-in — core#49) the dial reports that code
+                // and its advice, never "sign-in expired" from a cache entry.
+                attempt.attachTunnel(null);
                 token = mintGatewayRoutingToken(plan, true);
             }
         }
+    }
+
+    /** What is left of the dial's whole-connect budget, on the monotonic clock. */
+    private long remainingConnectBudgetMs(GatewayDialPlan plan) {
+        return plan.deadlineMonotonicMs - gatewayDeadlineClock.getAsLong();
     }
 
     private void requirePlannedAccount(GatewayDialPlan plan) throws PluginFailure {
@@ -1427,7 +1496,7 @@ public final class SshCapabilityPlugin extends Plugin {
             throws PluginFailure {
         try {
             return gatewayRoutingTokens.issue(gatewaySyncSession, plan.subject,
-                plan.deadlineEpochMs - System.currentTimeMillis(), forceFresh);
+                remainingConnectBudgetMs(plan), forceFresh);
         } catch (SyncAuthException error) {
             throw new PluginFailure(error.code, error.getMessage());
         } catch (GatewayTokenBroker.GatewayBrokerException error) {
@@ -1453,8 +1522,8 @@ public final class SshCapabilityPlugin extends Plugin {
     /** Cancels the attempt at its whole-connect deadline. A watchdog firing
      * on a completed attempt is a no-op: only a still-pending registration is
      * cancelled, so a live connection is never killed by its own deadline. */
-    private ScheduledFuture<?> scheduleConnectDeadline(ConnectAttempt attempt, long deadlineEpochMs) {
-        long delay = Math.max(0, deadlineEpochMs - System.currentTimeMillis());
+    private ScheduledFuture<?> scheduleConnectDeadline(ConnectAttempt attempt, long deadlineMonotonicMs) {
+        long delay = Math.max(0, deadlineMonotonicMs - gatewayDeadlineClock.getAsLong());
         return CONNECT_DEADLINE_SCHEDULER.schedule(() -> runConnectDeadline(attempt), delay, TimeUnit.MILLISECONDS);
     }
 

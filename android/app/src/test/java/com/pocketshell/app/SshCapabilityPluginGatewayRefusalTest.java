@@ -47,21 +47,32 @@ public final class SshCapabilityPluginGatewayRefusalTest {
     }
 
     @Test public void aPresentNonObjectMarkerRefuses() {
-        assertRefused(connectOptions("wss://gateway.example.io", "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions("wss://gateway.pocketshell.io", "key-handle"), "INVALID_ARGUMENT");
     }
 
     @Test public void malformedTargetsRefuse() {
         assertRefused(connectOptions(target(null, "host-1"), "key-handle"), "INVALID_ARGUMENT");
-        assertRefused(connectOptions(target("wss://gateway.example.io/path", "host-1"), "key-handle"), "INVALID_ARGUMENT");
-        assertRefused(connectOptions(target("wss://gateway.example.io", "no"), "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io/path", "host-1"), "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "no"), "key-handle"), "INVALID_ARGUMENT");
         assertRefused(connectOptions(target(42, "host-1"), "key-handle"), "INVALID_ARGUMENT");
-        assertRefused(connectOptions(target("wss://gateway.example.io", 42), "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", 42), "key-handle"), "INVALID_ARGUMENT");
     }
 
     // --- refusals that must happen before any sign-in or broker call -----------------
 
+    @Test public void aPlaintextWsTargetRefusesBeforeTheSignInOrBroker() throws Exception {
+        // Core accepts ws:// as a (development) target; the phone's tunnel
+        // dials wss:// only. #3086 slice 3: the refusal happens at plan time,
+        // not after a routing token was already minted for it.
+        pairFor("sub-1", "ws://gateway.pocketshell.io", "host-1");
+        assertRefused(connectOptions(target("ws://gateway.pocketshell.io", "host-1"), "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions(target("ws://127.0.0.1:8080", "host-1"), "key-handle"), "INVALID_ARGUMENT");
+        assertFalse("the sign-in was never even read", session.subjectReads > 0);
+        assertEquals(0, session.exchanges);
+    }
+
     @Test public void aCallerSuppliedHostKeyPinRefusesBeforeEverything() {
-        JSObject options = connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle");
+        JSObject options = connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle");
         options.put("expectedHostKey", new JSObject().put("kind", "sha256-fingerprint").put("fingerprintSha256", PIN));
         assertRefused(options, "INVALID_ARGUMENT");
         assertFalse("the sign-in was never even read", session.subjectReads > 0);
@@ -69,21 +80,21 @@ public final class SshCapabilityPluginGatewayRefusalTest {
     }
 
     @Test public void aConflictingLinkMarkerRefuses() {
-        JSObject options = connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle");
+        JSObject options = connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle");
         options.put("link", new JSObject().put("relay", "x"));
         assertRefused(options, "INVALID_ARGUMENT");
         assertFalse(session.subjectReads > 0);
     }
 
     @Test public void aPasswordCredentialRefuses() {
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "password"),
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "password"),
                 "INVALID_ARGUMENT");
         assertFalse(session.subjectReads > 0);
     }
 
     @Test public void aSignedOutPhoneRefusesBeforeAnyBrokerCall() {
         session.signedOut = true;
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle"),
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle"),
                 "NOT_SIGNED_IN");
         assertEquals("no exchange may run for a signed-out phone", 0, session.exchanges);
     }
@@ -91,28 +102,28 @@ public final class SshCapabilityPluginGatewayRefusalTest {
     // --- pairing namespace refusals, still before the broker -------------------------
 
     @Test public void anUnpairedTargetRefusesBeforeTheBroker() {
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle"),
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle"),
                 "GATEWAY_UNPAIRED");
         assertEquals(0, session.exchanges);
     }
 
     @Test public void aDifferentNamespacedAccountDoesNotSeeThePairing() throws Exception {
-        pairFor("sub-OTHER", "wss://gateway.example.io", "host-1");
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle"),
+        pairFor("sub-OTHER", "wss://gateway.pocketshell.io", "host-1");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle"),
                 "GATEWAY_UNPAIRED");
         assertEquals(0, session.exchanges);
     }
 
     @Test public void aPairingForAnotherDeviceRefuses() throws Exception {
-        pairFor("sub-1", "wss://gateway.example.io", "host-2");
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle"),
+        pairFor("sub-1", "wss://gateway.pocketshell.io", "host-2");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle"),
                 "GATEWAY_UNPAIRED");
         assertEquals(0, session.exchanges);
     }
 
     @Test public void aPairingBoundToAnotherKeyRefuses() throws Exception {
-        pairFor("sub-1", "wss://gateway.example.io", "host-1");
-        assertRefused(connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle", "ffffffff-ffff-ffff-ffff-ffffffffffff"),
+        pairFor("sub-1", "wss://gateway.pocketshell.io", "host-1");
+        assertRefused(connectOptions(target("wss://gateway.pocketshell.io", "host-1"), "key-handle", "ffffffff-ffff-ffff-ffff-ffffffffffff"),
                 "GATEWAY_UNPAIRED");
         assertEquals(0, session.exchanges);
     }
@@ -120,21 +131,77 @@ public final class SshCapabilityPluginGatewayRefusalTest {
     // --- the happy plan ---------------------------------------------------------------
 
     @Test public void aValidPairedTargetPlansTheDial() throws Exception {
-        pairFor("sub-1", "wss://gateway.example.io", "host-1");
+        pairFor("sub-1", "wss://gateway.pocketshell.io", "host-1");
         SshCapabilityPlugin.GatewayDialPlan plan = plugin.resolveGatewayDialPlan(
-                connectOptions(target("wss://gateway.example.io/", "host-1"), "key-handle"), "key-handle", HANDLE, 60_000);
+                connectOptions(target("wss://gateway.pocketshell.io/", "host-1"), "key-handle"), "key-handle", HANDLE, 60_000);
         assertNotNull(plan);
-        assertEquals("wss://gateway.example.io", plan.target.serverUrl);
+        assertEquals("wss://gateway.pocketshell.io", plan.target.serverUrl);
         assertEquals("host-1", plan.target.deviceId);
         assertEquals(PIN, plan.pairing.fingerprintSha256());
         assertEquals("the verifier expectation is the saved pin, never the ready advisory",
                 PIN, plan.pinExpectation().fingerprintSha256);
         assertNull(plan.pinExpectation().keyB64);
-        long now = System.currentTimeMillis();
+        // On the monotonic clock (the JVM constructor's System.nanoTime), never wall time.
+        long now = System.nanoTime() / 1_000_000L;
         assertTrue("the whole-connect deadline covers broker, dial, ready, KEX and userauth",
-                plan.deadlineEpochMs > now && plan.deadlineEpochMs <= now + 60_000 + 1_000);
+                plan.deadlineMonotonicMs > now && plan.deadlineMonotonicMs <= now + 60_000 + 1_000);
         assertEquals("planning never mints; the mint happens inside the owned attempt",
                 0, session.exchanges);
+    }
+
+    @Test public void aTargetAsTheCapacitorBridgeDeliversItPlansTheDial() throws Exception {
+        // #3086 slice 3, found by the emulator gateway lane: the bridge parses
+        // the call's JSON into a JSObject whose NESTED objects are plain
+        // org.json.JSONObject, never JSObject. Slice 2 refused every real
+        // gateway dial as "malformed" because it required a JSObject here.
+        pairFor("sub-1", "wss://gateway.pocketshell.io", "host-1");
+        JSObject bridged = new JSObject(connectOptions(
+                target("wss://gateway.pocketshell.io", "host-1"), "key-handle").toString());
+        assertFalse("the bridge's nested target is a plain JSONObject",
+                bridged.opt("gateway") instanceof JSObject);
+        SshCapabilityPlugin.GatewayDialPlan plan = plugin.resolveGatewayDialPlan(
+                bridged, "key-handle", HANDLE, 60_000);
+        assertNotNull(plan);
+        assertEquals("host-1", plan.target.deviceId);
+    }
+
+    /** Gateway origins the routing token must never reach (#3086 review B1). */
+    static final String[] FOREIGN_ORIGINS = {
+        "wss://gateway.example:8443",
+        "wss://gateway.example.io",
+        "wss://gateway.pocketshell.io.evil.com",
+        "wss://gateway.pocketshell.io.evil.test",
+        "wss://evil-gateway.pocketshell.io",
+        "wss://pocketshell.io",
+        "wss://gateway.pocketshell.io:8443",
+        "wss://gateway.pocketshell.io:444",
+        "wss://135.181.114.209",
+        "wss://[::1]:443",
+        "wss://127.0.0.1",
+        "wss://localhost:3287",
+        "wss://xn--gatewy-9ua.pocketshell.io",
+        "https://gateway.example.io",
+    };
+
+    @Test public void aForeignGatewayOriginIsRefusedBeforeTheSignInPairingOrBroker() throws Exception {
+        for (String origin : FOREIGN_ORIGINS) {
+            // Even with a stored pairing for it (as JS can create one), the
+            // plan refuses before the sign-in is read or anything is minted.
+            pairFor("sub-1", origin, "host-1");
+            assertRefused(connectOptions(target(origin, "host-1"), "key-handle"), "GATEWAY_ORIGIN_NOT_ALLOWED");
+            assertFalse(origin + ": the sign-in was never read", session.subjectReads > 0);
+            assertEquals(origin + ": nothing was minted", 0, session.exchanges);
+        }
+    }
+
+    @Test public void theProductionGatewayIsAllowed() throws Exception {
+        for (String origin : new String[] {"wss://gateway.pocketshell.io", "wss://gateway.pocketshell.io:443",
+                "https://gateway.pocketshell.io/", "wss://GATEWAY.pocketshell.io"}) {
+            pairFor("sub-1", origin, "host-1");
+            SshCapabilityPlugin.GatewayDialPlan plan = plugin.resolveGatewayDialPlan(
+                    connectOptions(target(origin, "host-1"), "key-handle"), "key-handle", HANDLE, 60_000);
+            assertNotNull(origin, plan);
+        }
     }
 
     // --- harness ------------------------------------------------------------------------

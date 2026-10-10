@@ -14,11 +14,13 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.CredentialHandleVaultTest
   com.pocketshell.app.DurableKeyValueStoreTest
   com.pocketshell.app.EncryptedSyncTokenStoreTest
+  com.pocketshell.app.GatewayOriginAllowlistTest
   com.pocketshell.app.GatewayPairingPluginContractTest
   com.pocketshell.app.GatewayPairingStoreTest
   com.pocketshell.app.GatewayTargetPolicyTest
   com.pocketshell.app.GatewayTokenBrokerTest
   com.pocketshell.app.GatewayTunnelTest
+  com.pocketshell.app.GatewayTunnelTlsTest
   com.pocketshell.app.GoogleSyncSessionGatewayExchangeTest
   com.pocketshell.app.GoogleSyncSessionTest
   com.pocketshell.app.KeyHandleConnectFailuresTest
@@ -29,6 +31,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SshCapabilityPluginCloseTest
   com.pocketshell.app.SshCapabilityPluginConnectDeadlineTest
   com.pocketshell.app.SshCapabilityPluginGatewayAccountTest
+  com.pocketshell.app.SshCapabilityPluginGatewayClockTest
   com.pocketshell.app.SshCapabilityPluginGatewayCloseCodeTest
   com.pocketshell.app.SshCapabilityPluginGatewayPinTest
   com.pocketshell.app.SshCapabilityPluginGatewayRefusalTest

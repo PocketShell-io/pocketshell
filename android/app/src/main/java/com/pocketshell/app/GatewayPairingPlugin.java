@@ -107,6 +107,8 @@ public final class GatewayPairingPlugin extends Plugin {
                 GatewayPairingStore.Pairing pairing = pairForAccount(sharedStore(getContext()), session,
                         this::vaultHasHandle, expectedEmail, serverUrl, deviceId, hostKey, keyHandleId);
                 call.resolve(pairReply(requestId, pairing));
+            } catch (OriginNotAllowedException notAllowed) {
+                call.reject(notAllowed.getMessage(), GatewayOriginAllowlist.NOT_ALLOWED);
             } catch (GatewayPairingStore.InvalidPairingException invalid) {
                 call.reject(invalid.getMessage(), "GATEWAY_PAIRING_INVALID");
             } catch (SyncAuthException signedOut) {
@@ -142,10 +144,23 @@ public final class GatewayPairingPlugin extends Plugin {
 
     interface VaultProbe { boolean hasHandle(String keyHandleId); }
 
-    /** Bind the mutation to the account the user observed, never a later current account. */
+    /** A pairing for a gateway origin outside the native allowlist (B1). */
+    static final class OriginNotAllowedException extends IOException {
+        OriginNotAllowedException() {
+            super("PocketShell pairs only with the PocketShell gateway; this gateway address is not allowed.");
+        }
+    }
+
+    /** Bind the mutation to the account the user observed, never a later current account.
+     * The origin must be on the native allowlist first: nothing is read, probed or stored
+     * for any other gateway (#3086 B1). */
     static GatewayPairingStore.Pairing pairForAccount(GatewayPairingStore store, GatewaySyncSession account,
             VaultProbe vault, String expectedEmail, String serverUrl, String deviceId, String hostKey,
             String keyHandleId) throws IOException, SyncAuthException {
+        String canonical = GatewayTargetPolicy.normalizeServerUrl(serverUrl);
+        if (canonical == null || !GatewayOriginAllowlist.forBuild().allowsGatewayOrigin(canonical)) {
+            throw new OriginNotAllowedException();
+        }
         String subject = requireExpectedAccount(expectedEmail, account);
         if (!vault.hasHandle(keyHandleId)) {
             throw new SyncAuthException("GATEWAY_PAIRING_KEY_MISSING", "Choose an SSH key from the key vault.");

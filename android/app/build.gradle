@@ -113,8 +113,16 @@ android {
         }
     }
 
+    buildFeatures {
+        // GatewayOriginAllowlist reads GATEWAY_LANE_TEST_ORIGIN (#3086).
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = 'com.pocketshell.app'
+        // The gateway lane's test origin: empty in every build except the
+        // gwlane debug build below. Never set from anywhere at run time.
+        buildConfigField 'String', 'GATEWAY_LANE_TEST_ORIGIN', '""'
         minSdk = 26
         targetSdk = 35
         testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
@@ -140,6 +148,60 @@ android {
             }
         }
     }
+}
+
+// The Android gateway emulator lane (#3086 slice 3,
+// scripts/connected-js-gateway-docker.sh) dials real wss:// through a TLS
+// front whose certificate comes from a per-run test CA. Only that lane's
+// build passes -PpocketshellGatewayTestCa=<ca.pem>, and only for a debug
+// build whose package suffix names the lane ("gwlane"), so neither a release,
+// nor an unsuffixed or preview install, nor any other lane's APK ever trusts
+// it. The CA is a trust anchor for the one host `localhost` only (reached
+// through `adb reverse`); every other host keeps the platform defaults, and
+// the native transport's own hostname check and wss-only rule are unchanged.
+// docs/gateway-android-transport.md, "Emulator lane".
+def gatewayTestCaPath = (project.findProperty('pocketshellGatewayTestCa') ?: '').toString().trim()
+if (gatewayTestCaPath) {
+    def suffix = (project.findProperty('pocketshellAppIdSuffix') ?: '').toString().trim()
+    if (!(suffix ==~ /[A-Za-z0-9._]*gwlane[A-Za-z0-9._]*/)) {
+        throw new GradleException('pocketshellGatewayTestCa is for the gateway lane only: pass a pocketshellAppIdSuffix containing "gwlane".')
+    }
+    // The lane's TLS front, wss://localhost:<port>: the one extra origin the
+    // native gateway allowlist (GatewayOriginAllowlist) accepts in this build.
+    def gatewayTestPort = (project.findProperty('pocketshellGatewayTestPort') ?: '').toString().trim()
+    if (!(gatewayTestPort ==~ /[0-9]{4,5}/) || gatewayTestPort.toInteger() < 1024 || gatewayTestPort.toInteger() > 65535) {
+        throw new GradleException('pocketshellGatewayTestCa needs pocketshellGatewayTestPort, the lane TLS front port (1024-65535).')
+    }
+    android.buildTypes.debug.buildConfigField 'String', 'GATEWAY_LANE_TEST_ORIGIN', "\"wss://localhost:${gatewayTestPort}\""
+    def caFile = new File(gatewayTestCaPath)
+    if (!caFile.isFile() || !caFile.text.contains('-----BEGIN CERTIFICATE-----')) {
+        throw new GradleException("pocketshellGatewayTestCa must name a PEM certificate: ${gatewayTestCaPath}")
+    }
+    def generated = new File(project.layout.buildDirectory.get().asFile, 'generated/gatewayLaneTestCa')
+    def resDir = new File(generated, 'res')
+    new File(resDir, 'raw').mkdirs()
+    new File(resDir, 'xml').mkdirs()
+    new File(resDir, 'raw/gateway_lane_test_ca.pem').text = caFile.text
+    new File(resDir, 'xml/gateway_lane_network_security_config.xml').text = '''<?xml version="1.0" encoding="utf-8"?>
+<!-- Generated for the gateway emulator lane only (app/build.gradle, pocketshellGatewayTestCa). -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="false">localhost</domain>
+        <trust-anchors>
+            <certificates src="@raw/gateway_lane_test_ca" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
+'''
+    def manifest = new File(generated, 'AndroidManifest.xml')
+    manifest.text = '''<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/gateway_lane_network_security_config" />
+</manifest>
+'''
+    android.sourceSets.debug.res.srcDirs += resDir
+    android.sourceSets.debug.manifest.srcFile manifest
+    logger.lifecycle("gateway lane: debug build ${suffix} trusts the test CA ${caFile} for localhost only and allows the gateway origin wss://localhost:${gatewayTestPort}")
 }
 
 if (releaseSigning == null) {

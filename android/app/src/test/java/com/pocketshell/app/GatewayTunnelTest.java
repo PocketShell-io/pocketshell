@@ -32,7 +32,7 @@ import org.junit.Test;
 public final class GatewayTunnelTest {
     private static final String ROUTING_TOKEN = "routing-token-secret-1";
     private static final String DEVICE = "host-1";
-    private static final long OPEN_DEADLINE = System.currentTimeMillis() + 15_000;
+    private static final long OPEN_BUDGET_MS = 15_000;
 
     private FakeGateway gateway;
 
@@ -46,7 +46,7 @@ public final class GatewayTunnelTest {
         GatewayTargetPolicy.Target target = GatewayTargetPolicy.normalizeTarget(
                 "ws://127.0.0.1:" + server.getPort(), DEVICE);
         GatewayTunnel tunnel = new GatewayTunnel(target, ROUTING_TOKEN, true);
-        tunnel.open(OPEN_DEADLINE);
+        tunnel.open(OPEN_BUDGET_MS);
         return tunnel;
     }
 
@@ -191,7 +191,7 @@ public final class GatewayTunnelTest {
         AtomicReference<Throwable> outcome = new AtomicReference<>();
         Thread dialer = new Thread(() -> {
             try {
-                tunnel.open(System.currentTimeMillis() + 30_000);
+                tunnel.open(30_000);
             } catch (Throwable failure) {
                 outcome.set(failure);
             }

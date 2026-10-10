@@ -1,10 +1,11 @@
 # Android gateway transport (native half)
 
-Status: native transport landed dark in #3086 slice 2. Android still refuses
-every gateway host at its platform boundary (`unsupportedTransportMessage` in
-`src/platform/android/androidApi.ts`, `gateway: false`); slice 3 lifts that
-behind the native capability, and slice 4 adds the shared device list and
-pairing UI.
+Status: native transport from #3086 slice 2; dialling turned on in slice 3.
+The Android platform boundary (`unsupportedTransportMessage` in
+`src/platform/android/androidApi.ts`) admits a gateway host only when the
+native plugin's own `transportCapabilities` reply reports the gateway
+transport. Slice 4 adds the shared device list and pairing UI; until then a
+pairing is written through the `GatewayPairing` plugin only.
 
 Contracts this mirrors: pocketshell-core `src/gatewayTransport.ts` and
 `docs/SYNC.md` (gateway dials, `GATEWAY_CLOSED`), pocketshell-gateway
@@ -33,7 +34,9 @@ owner of dial, trust, reconnect and grace (D28, D42).
    cached in memory for the signed-in account and reused only while it
    outlives the attempt's whole connect budget; otherwise it is re-minted. A
    4401 on a reused token drops the cache and retries once with a fresh mint
-   inside the same deadline; a 4401 on a fresh token is reported. The token
+   inside the same deadline; a 4401 on a fresh token is reported. If that
+   re-mint itself fails (signed out, account switched, broker refused the
+   sign-in), the dial reports that code, not the stale token's 4401. The token
    is bound to the account the dial was planned for: the signed-in subject is
    re-read before the cache is used or the broker asked, after the broker
    answers (before anything is cached), and right before the tunnel is
@@ -55,10 +58,27 @@ owner of dial, trust, reconnect and grace (D28, D42).
    receipt.
 
 One whole-connect deadline (default 60 s, 5–90 s) covers token, dial,
-`ready`, KEX and userauth. The watchdog claims the deadline under the same
+`ready`, KEX and userauth. It and every tunnel deadline run on a monotonic
+clock (`SystemClock.elapsedRealtime`), so a wall-clock jump cannot move them. The watchdog claims the deadline under the same
 lock that registers a successful connection, so exactly one wins: a claimed
 deadline makes registration refuse with `CONNECT_TIMEOUT`, and an accepted
 connection is never claimed afterwards.
+
+## Gateway origin allowlist
+
+`GatewayOriginAllowlist` is the ONE native list of gateway origins a gateway
+credential may be used with (#3086 review B1). Before a dial reads the
+sign-in, looks up a pairing, mints a routing token or opens a socket, and
+before a pairing is stored, the canonical origin must be exactly (scheme,
+host, port) one of: `wss://gateway.pocketshell.io` (443) in every build, or
+the emulator lane's `wss://localhost:<port>`, which only the `gwlane` debug
+build compiles in (`BuildConfig.GATEWAY_LANE_TEST_ORIGIN`, set by
+`-PpocketshellGatewayTestPort` next to the test CA; empty in every other
+build). No suffix, prefix, look-alike, IP-literal or punycode matching, and
+nothing at run time (JS, localStorage, sync data, plugin arguments) can widen
+it. A refused dial is `GATEWAY_ORIGIN_NOT_ALLOWED`; a refused pairing is the
+same code. Identity API calls use `allowsHttpsOrigin` for the same (host,
+port) over HTTPS.
 
 ## The routing token never leaves native code
 
@@ -70,8 +90,9 @@ are unchanged and its `request` route table still allows only `/me` and
 
 ## Gateway refusals reach core intact
 
-Any gateway verdict rejects `connect()` with code `GATEWAY_CLOSED` and
-`data.gatewayCloseCode`, whether it arrived as a close frame before `ready`,
+Any gateway verdict (a remote close code in 4000–4999 only; a remote
+1000/1001/1011 is an ordinary drop) rejects `connect()` with code
+`GATEWAY_CLOSED` and `data.gatewayCloseCode`, whether it arrived as a close frame before `ready`,
 as a handshake `error` frame, or as a close after `ready` that sshj saw as a
 stream error. Error frames map to the gateway's own pairs: `protocol` 4400,
 `unauthorized` 4401, `forbidden`/`revoked` 4403, `not_found` 4404, `timeout`
@@ -105,13 +126,95 @@ validates the complete target (a usable gateway origin and a device id)
 before the store is opened, and deletes only the exact (account, canonical
 origin, device) pairing; a missing or malformed target removes nothing.
 
-## Capability
+## Capability and the Android boundary
 
 `SshCapabilityPlugin.transportCapabilities` reports `{gatewayTransport: true,
 linkTransport: false}`. `src/native/sshCapability.ts` copies that into
 `sshCapability.gatewayTransport` (false until the reply arrives, and false on
-any unreadable reply); core's controller reads it. Slice 2 leaves the Android
-boundary refusal in place regardless.
+any unreadable reply); core's controller reads it.
+
+`unsupportedTransportMessage` is the one place Android decides transport
+support. It awaits the same native reply at dial time and passes
+`{gateway: <native report>, link: false}` to core's `unsupportedTransport`:
+
+- transport not reported: every gateway marker refuses before any effect;
+- reported: null, malformed or future-shaped markers, `gateway` + `link`, and
+  a `link` marker alone still refuse; an admitted `ws://` origin refuses too
+  (the native tunnel dials `wss://` only, and also refuses it at plan time);
+- an admitted marker (on the request, or on the account entry the request
+  names) resolves through `src/platform/android/gatewayTarget.ts`: the
+  credential is the vault key of the phone's pairing for that device
+  (`GatewayPairing.list`), and the target carries the normalized `gateway`.
+  It is dialled by the same ConnectionController and native `connect()` as any
+  host; it is never re-dialled as plain SSH (D28). Signed out and unpaired
+  refuse with core's own advice.
+
+## Emulator lane (`gateway-docker`)
+
+`scripts/connected-js-gateway-docker.sh` (`scripts/connected-test.sh
+gateway-docker --suffix i3086gwlane --gateway-src DIR`), run by
+`scripts/ci-js-first-packaged-lanes.sh` and checked by
+`scripts/check-js-gateway-results.py`. Journey:
+`GatewayDockerJourneyTest`.
+
+- Fixture (`tests/docker/gateway/docker-compose.yml`, one compose project per
+  run): the REAL pocketshell-gateway and pocketshell-link, built from the
+  private repository at `tests/docker/gateway/gateway-source.pin`; the host is
+  the agents image (sshd, the pinned CLI, aplexer) with no published port, so
+  the emulator has no route to its sshd. The agent enrolls like a user's host
+  and pins the host key, checked against the key file read from the host; the
+  phone pairs with the agent's `show` line (what `pocketshell gateway show
+  --host-key` prints). The phone's vault key is authorized on the host
+  through the runner's controller, as a user would paste it.
+- Broker: the only stand-in is the ISSUER. `gwfixture brokerkey` makes a
+  per-run RSA key; `gwfixture jwks` serves its public half and the gateway
+  runs its full RS256/iss/aud/scope/exp/allowlist verification. The journey's
+  fake sync backend (installed through `GoogleSyncEnvironment`, like the
+  account lanes) answers `POST /gateway/token` with a token signed by that
+  key. No Google token is used anywhere.
+- TLS: `gwfixture certs` makes a per-prepare test CA (its private key is never
+  written) and a `localhost` server certificate; `gwfixture tlsfront`
+  terminates TLS in front of the gateway on 127.0.0.1:3287, which `adb
+  reverse` mirrors on the emulator. Only a debug build with
+  `-PpocketshellGatewayTestCa=<ca.pem>` AND a package suffix containing
+  `gwlane` gets a generated network-security-config that trusts that CA, for
+  the domain `localhost` only (`android/app/build.gradle`); the same build,
+  with `-PpocketshellGatewayTestPort`, admits `wss://localhost:<port>` into
+  the native gateway-origin allowlist (the runner checks the generated
+  `BuildConfig`). Release, the
+  unsuffixed and preview packages and every other lane keep platform trust;
+  the tunnel's wss-only rule and hostname checks are unchanged.
+- What it proves: session list, attach, terminal I/O and resize read back
+  from host files; a tunnel drop re-dialled by the controller with a fresh
+  token; a pin mismatch that reaches sshd with zero userauth attempts; 4401
+  (a token the gateway cannot verify), 4404 (an unenrolled device) and 4503
+  (the agent stopped; the gateway's presence says offline) refused before
+  sshd, each with its own message. The real gateway answers revoked and
+  other-account devices on the client route with 4404 (uniform denial), so
+  4403 cannot be produced end to end; its mapping is covered by the JVM
+  close-code tests.
+- CI: every workflow that runs `scripts/ci-js-first-packaged-lanes.sh`
+  (`js-first-rewrite.yml`, the nightly `js-full-suite.yml` and
+  `js-release-validation.yml`) prepares the lane through the one shared
+  composite action `.github/actions/prepare-gateway-lane`, so they cannot
+  drift; the composer gate test pins all three. The action checks the
+  gateway repository out at the exact pinned commit with a fine-grained,
+  read-only (Contents) token limited to PocketShell-io/pocketshell-gateway
+  (secret `POCKETSHELL_GATEWAY_READ_TOKEN`, passed only to that action and,
+  inside it, only to the `actions/checkout` step, `persist-credentials:
+  false`; never GITHUB_TOKEN or another broad token). The org has deploy keys
+  disabled, so a deploy key is not an option.
+  - A run without the secret fails the lane with an explicit error; it never
+    skips. That includes **pull requests from forks**, which GitHub never
+    gives repository secrets: they always fail this required check. That is
+    accepted for this solo-maintainer repository.
+  - The JS-first workflow has no `paths-ignore`, so **docs-only pushes need
+    the secret too**.
+  - Locally, pass any checkout at the pin with `--gateway-src` (or
+    `POCKETSHELL_GATEWAY_SRC`); the runner refuses another commit or a dirty
+    tree.
+- The lane's host controller binds 127.0.0.1 only; the emulator reaches it
+  as 10.0.2.2.
 
 ## Tests
 
@@ -123,4 +226,7 @@ and three end-to-end classes over `GatewayDialFixture` — a loopback gateway
 relaying to a real SSH server (Apache MINA sshd, test-only):
 `SshCapabilityPluginGatewayCloseCodeTest`, `SshCapabilityPluginGatewayPinTest`,
 `SshCapabilityPluginGatewayTokenTest`, `SshCapabilityPluginGatewayAccountTest`,
-`SshCapabilityPluginConnectDeadlineTest`. JS: `tests/unit/androidGatewayCapability.test.ts`.
+`SshCapabilityPluginConnectDeadlineTest`, plus `SshCapabilityPluginGatewayClockTest`
+(monotonic deadline) and `GatewayTunnelTlsTest` (the real wss:// socket
+factory). JS: `tests/unit/androidGatewayCapability.test.ts`,
+`tests/unit/androidGatewayDial.test.ts`. Packaged: the `gateway-docker` lane above.
