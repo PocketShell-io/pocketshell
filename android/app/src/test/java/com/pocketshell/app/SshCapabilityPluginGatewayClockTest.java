@@ -17,6 +17,10 @@ import org.junit.Test;
  * update) must neither kill a healthy dial at once nor stretch a stalled one
  * past its budget.
  *
+ * <p>Each case has a JUnit timeout: a deadline back on the wall clock must
+ * FAIL fast here, not hang the unit gate (a backward jump stretches it by an
+ * hour).
+ *
  * <p>The plugin's gateway wall clock is replaced with one that jumps right
  * after its first read (on the old code: the dial plan's deadline), and
  * every case drives the REAL
@@ -50,14 +54,14 @@ public final class SshCapabilityPluginGatewayClockTest {
         };
     }
 
-    @Test public void aWallClockJumpForwardDoesNotExpireAHealthyDial() throws Exception {
+    @Test(timeout = 30_000) public void aWallClockJumpForwardDoesNotExpireAHealthyDial() throws Exception {
         fixture.plugin.useGatewayWallClockForTesting(jumpingWallClock(HOUR_MS));
         JSObject result = fixture.connect("clock-forward");
         assertTrue("the dial completes on its real budget", result.getBoolean("gatewayHostKeyVerified"));
         assertTrue("the host accepted the phone key", fixture.host.acceptedLogins.get() > 0);
     }
 
-    @Test public void aWallClockJumpBackwardCannotStretchAStalledDialPastItsBudget() throws Exception {
+    @Test(timeout = 30_000) public void aWallClockJumpBackwardCannotStretchAStalledDialPastItsBudget() throws Exception {
         fixture.plugin.useGatewayWallClockForTesting(jumpingWallClock(-HOUR_MS));
         fixture.gateway.script(GatewayDialFixture.Mode.SILENT, 0, null);
         JSObject options = fixture.connectOptions("clock-backward").put("connectTimeoutMs", 5_000);

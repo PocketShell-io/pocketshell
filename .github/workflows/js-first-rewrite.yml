@@ -217,40 +217,10 @@ jobs:
           scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
           scripts/connected-js-key-vault-docker.sh --suffix i2926ci --prepare-only
 
-      # The gateway lane (#3086 slice 3) builds the real gateway and host agent
-      # from the PRIVATE PocketShell-io/pocketshell-gateway repository at the
-      # pinned commit (tests/docker/gateway/gateway-source.pin; the lane runner
-      # refuses any other HEAD). Access is a fine-grained, read-only (Contents)
-      # token limited to that one repository, in POCKETSHELL_GATEWAY_READ_TOKEN.
-      # Only the checkout step below receives it; this guard sees a boolean
-      # only. A missing secret fails here with a clear message, never falling
-      # back to GITHUB_TOKEN: the lane never skips.
-      - name: Require the gateway lane's read token
-        env:
-          GATEWAY_READ_TOKEN_PRESENT: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN != '' }}
-        run: |
-          if [[ "$GATEWAY_READ_TOKEN_PRESENT" != true ]]; then
-            echo '::error title=Gateway lane read token missing::The repository secret POCKETSHELL_GATEWAY_READ_TOKEN (a fine-grained read-only Contents token for PocketShell-io/pocketshell-gateway) is not available to this run. The gateway-docker lane cannot build the pinned gateway and never skips.'
-            exit 1
-          fi
-
-      - name: Check out the pinned PocketShell gateway source for the gateway lane
-        uses: actions/checkout@v6
+      - name: Prepare the packaged gateway lane (pinned private gateway source, test-CA APK)
+        uses: ./.github/actions/prepare-gateway-lane
         with:
-          repository: PocketShell-io/pocketshell-gateway
-          ref: 8f2f360f01025ee5d78a813d918190a185d4af98
-          token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}
-          persist-credentials: false
-          path: .ci/pocketshell-gateway
-
-      - name: Set up Go for the gateway lane
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: .ci/pocketshell-gateway/go.mod
-          cache: false
-
-      - name: Prepare the packaged gateway lane (gateway binaries, test-CA APK)
-        run: scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only
+          read-token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}
 
       - name: Start version-matched Docker agents fixture
         run: |

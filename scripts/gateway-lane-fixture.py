@@ -3,7 +3,8 @@
 
 pocketshell#3086 slice 3 (scripts/connected-js-gateway-docker.sh). The
 packaged journey (GatewayDockerJourneyTest) reaches this controller from the
-emulator at 10.0.2.2:<port> with one JSON request line per TCP connection and
+emulator at 10.0.2.2:<port> (the host's loopback; the controller binds
+127.0.0.1 only) with one JSON request line per TCP connection and
 gets one JSON reply line. Every operation acts on the run's own Docker
 compose project and every answer comes from Docker or the real gateway, never
 from the app, so the journey's host-side assertions have an independent
@@ -215,7 +216,8 @@ def serve(args: argparse.Namespace) -> int:
         allow_reuse_address = True
         daemon_threads = True
 
-    with Server(("0.0.0.0", 0), Handler) as server:
+    # Loopback only: the emulator reaches the host's loopback as 10.0.2.2.
+    with Server(("127.0.0.1", 0), Handler) as server:
         Path(args.port_file).write_text(str(server.server_address[1]))
         server.serve_forever()
     return 0

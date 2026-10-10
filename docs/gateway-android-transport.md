@@ -174,16 +174,28 @@ gateway-docker --suffix i3086gwlane --gateway-src DIR`), run by
   other-account devices on the client route with 4404 (uniform denial), so
   4403 cannot be produced end to end; its mapping is covered by the JVM
   close-code tests.
-- CI: the workflow checks the gateway repository out at the exact pinned
-  commit with a fine-grained, read-only (Contents) token limited to
-  PocketShell-io/pocketshell-gateway (secret `POCKETSHELL_GATEWAY_READ_TOKEN`,
-  handed only to that `actions/checkout` step, `persist-credentials: false`;
-  never GITHUB_TOKEN or another broad token). A missing secret fails the
-  required check with an explicit error; the lane never skips. (The org has
-  deploy keys disabled, so a deploy key is not an option.)
-  Locally, pass any checkout at the pin with `--gateway-src` (or
-  `POCKETSHELL_GATEWAY_SRC`); the runner refuses another commit or a dirty
-  tree.
+- CI: every workflow that runs `scripts/ci-js-first-packaged-lanes.sh`
+  (`js-first-rewrite.yml`, the nightly `js-full-suite.yml` and
+  `js-release-validation.yml`) prepares the lane through the one shared
+  composite action `.github/actions/prepare-gateway-lane`, so they cannot
+  drift; the composer gate test pins all three. The action checks the
+  gateway repository out at the exact pinned commit with a fine-grained,
+  read-only (Contents) token limited to PocketShell-io/pocketshell-gateway
+  (secret `POCKETSHELL_GATEWAY_READ_TOKEN`, passed only to that action and,
+  inside it, only to the `actions/checkout` step, `persist-credentials:
+  false`; never GITHUB_TOKEN or another broad token). The org has deploy keys
+  disabled, so a deploy key is not an option.
+  - A run without the secret fails the lane with an explicit error; it never
+    skips. That includes **pull requests from forks**, which GitHub never
+    gives repository secrets: they always fail this required check. That is
+    accepted for this solo-maintainer repository.
+  - The JS-first workflow has no `paths-ignore`, so **docs-only pushes need
+    the secret too**.
+  - Locally, pass any checkout at the pin with `--gateway-src` (or
+    `POCKETSHELL_GATEWAY_SRC`); the runner refuses another commit or a dirty
+    tree.
+- The lane's host controller binds 127.0.0.1 only; the emulator reaches it
+  as 10.0.2.2.
 
 ## Tests
 
