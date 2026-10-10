@@ -180,12 +180,15 @@ public final class GatewayTargetPolicyTest {
 
     // --- #3086: gateway verdicts that reach core as GATEWAY_CLOSED ---------------------
 
-    @Test public void onlyCloseCodesThatTravelOnTheWireAreGatewayVerdicts() {
-        for (int code : new int[] {1000, 1001, 1011, 4000, 4400, 4401, 4403, 4404, 4408, 4429, 4503, 4999}) {
+    @Test public void onlyApplicationCloseCodesAreGatewayVerdicts() {
+        // core GATEWAY_VERDICT_CLOSE_CODE_MIN..MAX (core #48): 4000–4999 only.
+        for (int code : new int[] {4000, 4400, 4401, 4403, 4404, 4408, 4429, 4503, 4999}) {
             org.junit.Assert.assertTrue(String.valueOf(code), GatewayTargetPolicy.isGatewayCloseCode(code));
         }
-        // Local-only (RFC 6455 §7.4.1) and Java-WebSocket's never-opened pseudo-codes.
-        for (int code : new int[] {-3, -2, -1, 0, 999, 1005, 1006, 1015, 5000}) {
+        // Protocol-range closes a peer can send (1000 normal, 1001 going away,
+        // 1011 server error, 3xxx registered), local-only (RFC 6455 §7.4.1)
+        // and Java-WebSocket's never-opened pseudo-codes are not verdicts.
+        for (int code : new int[] {-3, -2, -1, 0, 999, 1000, 1001, 1005, 1006, 1011, 1015, 3000, 3999, 5000}) {
             org.junit.Assert.assertFalse(String.valueOf(code), GatewayTargetPolicy.isGatewayCloseCode(code));
         }
     }

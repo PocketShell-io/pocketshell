@@ -153,18 +153,20 @@ public final class GatewayTunnel implements AutoCloseable {
     }
 
     /**
-     * Dial, authenticate and reach READY within {@code deadlineMs}. On any
-     * failure the tunnel is closed and a {@link GatewayTunnelException} is
-     * thrown; on success the socket is connected and its streams are live.
+     * Dial, authenticate and reach READY within {@code budgetMs} from now,
+     * measured on the monotonic clock (a wall-clock jump cannot move it). On
+     * any failure the tunnel is closed and a {@link GatewayTunnelException}
+     * is thrown; on success the socket is connected and its streams are live.
      */
-    public void open(long deadlineMs) throws GatewayTunnelException, InterruptedException {
+    public void open(long budgetMs) throws GatewayTunnelException, InterruptedException {
+        long deadlineMs = monotonicMs() + budgetMs;
         try {
             client = buildClient();
             // The library's own keepalive checker is disabled (class doc);
             // passing a non-positive timeout cancels it before it starts.
             client.setConnectionLostTimeout(0);
             socket = new GatewayTunnelSocket();
-            long remaining = deadlineMs - System.currentTimeMillis();
+            long remaining = deadlineMs - monotonicMs();
             if (remaining <= 0) throw new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway connection ran out of time before dialing.");
             boolean opened;
@@ -185,7 +187,7 @@ public final class GatewayTunnel implements AutoCloseable {
             }
             // The routing token travels in this one TEXT frame and nowhere else.
             sendText(GatewayTargetPolicy.buildAuthFrame(routingToken, target.deviceId));
-            remaining = deadlineMs - System.currentTimeMillis();
+            remaining = deadlineMs - monotonicMs();
             GatewayTunnelException failureWhileWaiting = awaitHandshakeFailure(remaining);
             if (failureWhileWaiting != null) throw failureWhileWaiting;
             if (phase.get() != Phase.READY) {
@@ -200,6 +202,11 @@ public final class GatewayTunnel implements AutoCloseable {
             throw failedOr(new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway connection could not be established."));
         }
+    }
+
+    /** Every tunnel deadline (connect, read, write stall) is on this monotonic clock. */
+    private static long monotonicMs() {
+        return System.nanoTime() / 1_000_000L;
     }
 
     /** The connected socket for sshj's SocketFactory; valid after {@link #open}. */
@@ -539,8 +546,8 @@ public final class GatewayTunnel implements AutoCloseable {
         public void connect(SocketAddress endpoint, int timeout) throws IOException {
             // Defensive only: with the pre-connected socket sshj never calls
             // this. A virtual peer join, bounded by the given timeout.
-            long deadline = System.currentTimeMillis() + Math.max(0, timeout);
-            while (phase.get() != Phase.READY && System.currentTimeMillis() < deadline) {
+            long deadline = monotonicMs() + Math.max(0, timeout);
+            while (phase.get() != Phase.READY && monotonicMs() < deadline) {
                 if (phase.get() == Phase.FAILED || phase.get() == Phase.CLOSED) {
                     throw new IOException("Gateway tunnel is closed.");
                 }
@@ -629,7 +636,7 @@ public final class GatewayTunnel implements AutoCloseable {
          * cancellation cannot wedge the sshj reader thread. */
         private byte[] takeFrame() throws IOException {
             int timeoutBudgetMs = socketSoTimeoutMs > 0 ? socketSoTimeoutMs : 0;
-            long deadline = timeoutBudgetMs > 0 ? System.currentTimeMillis() + timeoutBudgetMs : 0;
+            long deadline = timeoutBudgetMs > 0 ? monotonicMs() + timeoutBudgetMs : 0;
             while (true) {
                 if (phase.get() == Phase.FAILED) {
                     GatewayTunnelException error = failure.get();
@@ -646,7 +653,7 @@ public final class GatewayTunnel implements AutoCloseable {
                 Phase now = phase.get();
                 if (now == Phase.CLOSED) return null;
                 if (now == Phase.FAILED) continue; // rethrow at loop top
-                if (timeoutBudgetMs > 0 && System.currentTimeMillis() >= deadline) {
+                if (timeoutBudgetMs > 0 && monotonicMs() >= deadline) {
                     throw new SocketTimeoutException("Read timed out");
                 }
             }
@@ -686,12 +693,12 @@ public final class GatewayTunnel implements AutoCloseable {
          * nothing queues without bound, and a stopped gateway surfaces as an
          * IOException instead of silent growth. */
         private void awaitOutboundCapacity() throws IOException {
-            long stallDeadline = System.currentTimeMillis() + WRITE_STALL_TIMEOUT_MS;
+            long stallDeadline = monotonicMs() + WRITE_STALL_TIMEOUT_MS;
             while (outboundPendingBytes() > MAX_OUTBOUND_PENDING_BYTES) {
                 if (phase.get() == Phase.FAILED || phase.get() == Phase.CLOSED) {
                     throw new IOException("Gateway tunnel is closed.");
                 }
-                if (System.currentTimeMillis() >= stallDeadline) {
+                if (monotonicMs() >= stallDeadline) {
                     throw new IOException("The gateway stopped accepting data.");
                 }
                 try {

@@ -197,6 +197,43 @@ public final class SshCapabilityPluginGatewayTokenTest {
                 tokensSentToTheGateway());
     }
 
+    /**
+     * core#49 item 3: a cached token refused with 4401 is re-minted once.
+     * When THAT re-mint fails because the phone signed out, the account
+     * changed, or the broker refused the sign-in, the dial reports the
+     * sign-in/account code — core's terminal "sign in" / "account changed"
+     * advice — never the 4401 of a stale cache entry.
+     */
+    @Test public void aReMintThatFailsOnSignOutReportsTheSignInCodeNotThe4401() throws Exception {
+        fixture.connect("first");
+        fixture.gateway.rejectedTokens.add(fixture.broker.minted.get(0));
+        fixture.gateway.onRejectedToken = fixture.broker::signOut;
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("signed-out-during-remint");
+        assertEquals(SyncAuthException.NOT_SIGNED_IN, failure.code);
+        assertFalse(failure.data != null && failure.data.has("gatewayCloseCode"));
+        assertEquals("nothing was minted for a signed-out phone", 1, fixture.broker.mints.get());
+    }
+
+    @Test public void aReMintThatFailsOnAnAccountSwitchReportsAccountChangedNotThe4401() throws Exception {
+        fixture.connect("first");
+        fixture.gateway.rejectedTokens.add(fixture.broker.minted.get(0));
+        fixture.gateway.onRejectedToken = () -> fixture.broker.switchTo("sub-2");
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("switched-during-remint");
+        assertEquals(SshCapabilityPlugin.GATEWAY_ACCOUNT_CHANGED, failure.code);
+        assertFalse(failure.data != null && failure.data.has("gatewayCloseCode"));
+    }
+
+    @Test public void aReMintTheBrokerRefusesReportsTheBrokerSignInCodeNotThe4401() throws Exception {
+        fixture.connect("first");
+        fixture.gateway.rejectedTokens.add(fixture.broker.minted.get(0));
+        fixture.gateway.onRejectedToken = () -> fixture.broker.status = 401;
+        SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("broker-refused-remint");
+        assertEquals(GatewayTokenBroker.GatewayBrokerException.SIGN_IN_REJECTED, failure.code);
+        assertFalse(failure.data != null && failure.data.has("gatewayCloseCode"));
+        assertEquals("the stale token and nothing else reached the gateway",
+                List.of(fixture.broker.minted.get(0), fixture.broker.minted.get(0)), tokensSentToTheGateway());
+    }
+
     @Test public void aFreshToken4401IsTheVerdictAndIsNotRetried() throws Exception {
         // Every token is refused: the sign-in itself is not accepted.
         fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, 4401, null);

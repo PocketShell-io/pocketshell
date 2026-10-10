@@ -60,6 +60,17 @@ public final class SshCapabilityPluginGatewayRefusalTest {
 
     // --- refusals that must happen before any sign-in or broker call -----------------
 
+    @Test public void aPlaintextWsTargetRefusesBeforeTheSignInOrBroker() throws Exception {
+        // Core accepts ws:// as a (development) target; the phone's tunnel
+        // dials wss:// only. #3086 slice 3: the refusal happens at plan time,
+        // not after a routing token was already minted for it.
+        pairFor("sub-1", "ws://gateway.example.io", "host-1");
+        assertRefused(connectOptions(target("ws://gateway.example.io", "host-1"), "key-handle"), "INVALID_ARGUMENT");
+        assertRefused(connectOptions(target("ws://127.0.0.1:8080", "host-1"), "key-handle"), "INVALID_ARGUMENT");
+        assertFalse("the sign-in was never even read", session.subjectReads > 0);
+        assertEquals(0, session.exchanges);
+    }
+
     @Test public void aCallerSuppliedHostKeyPinRefusesBeforeEverything() {
         JSObject options = connectOptions(target("wss://gateway.example.io", "host-1"), "key-handle");
         options.put("expectedHostKey", new JSObject().put("kind", "sha256-fingerprint").put("fingerprintSha256", PIN));
@@ -130,9 +141,10 @@ public final class SshCapabilityPluginGatewayRefusalTest {
         assertEquals("the verifier expectation is the saved pin, never the ready advisory",
                 PIN, plan.pinExpectation().fingerprintSha256);
         assertNull(plan.pinExpectation().keyB64);
-        long now = System.currentTimeMillis();
+        // On the monotonic clock (the JVM constructor's System.nanoTime), never wall time.
+        long now = System.nanoTime() / 1_000_000L;
         assertTrue("the whole-connect deadline covers broker, dial, ready, KEX and userauth",
-                plan.deadlineEpochMs > now && plan.deadlineEpochMs <= now + 60_000 + 1_000);
+                plan.deadlineMonotonicMs > now && plan.deadlineMonotonicMs <= now + 60_000 + 1_000);
         assertEquals("planning never mints; the mint happens inside the owned attempt",
                 0, session.exchanges);
     }
