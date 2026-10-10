@@ -7,6 +7,7 @@
 import { App as CapacitorApp } from '@capacitor/app';
 import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } from '@pocketshell/core';
 import { loadSshTransportCapabilities, sshCapability } from '@/native/sshCapability';
+import { gatewayPairings } from '@/native/gatewayPairing';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
 import { androidHosts, androidKeyManager } from '@/platform/android/hosts';
 import { createAccountHostKeys } from '@/platform/android/accountHosts';
@@ -56,9 +57,9 @@ export const accountHostKeyPrompt = createAccountHostKeyPrompt({ keys: androidKe
 const syncApi = androidSync().api();
 
 // Core reads `sshCapability.gatewayTransport` from what the native plugin
-// reports (#3086). Gateway hosts stay refused at the Android boundary
-// (`unsupportedTransportMessage`) until slice 3 lifts that behind this flag.
-void loadSshTransportCapabilities();
+// reports (#3086), and the Android boundary (`unsupportedTransportMessage`)
+// admits a gateway host only on that same report, awaited at dial time.
+const nativeTransports = loadSshTransportCapabilities();
 
 export const androidPlatform = createAndroidPlatform({
   createController: () => new ConnectionController({ capability: sshCapability, trustStore }),
@@ -71,6 +72,8 @@ export const androidPlatform = createAndroidPlatform({
   sync: syncApi,
   openAccount: openAccountRoute,
   accountHosts: createAccountHostKeys({ accountHosts: () => syncApi.accountHosts(), ask: accountHostKeyPrompt.ask }),
+  gatewayTransport: async () => (await nativeTransports).gatewayTransport,
+  gatewayPairings,
 });
 
 export type { HostKeyTrustPin };

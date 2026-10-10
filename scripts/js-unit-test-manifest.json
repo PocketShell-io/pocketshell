@@ -832,8 +832,28 @@
         "fails closed on a reply for another request",
         "fails closed on a non-boolean flag",
         "fails closed on an empty reply",
-        "fails closed on an explicit false",
-        "still refuses a valid gateway host while native reports the transport (slice 3 lifts this)"
+        "fails closed on an explicit false"
+      ]
+    },
+    "tests/unit/androidGatewayDial.test.ts": {
+      "suite": "Android dials the gateway behind the native capability (#3086 slice 3)",
+      "tests": [
+        "admits a valid gateway host once the native plugin reports the transport, and dials it through native connect with the pairing key",
+        "refuses every gateway host when the native plugin reports no gateway transport, before any pairing read or socket",
+        "refuses every gateway host when an older native build without the capability method, before any pairing read or socket",
+        "decides on the native reply, never a constant: the lift point refuses with the transport off and admits with it on",
+        "with the transport on, still refuses a null gateway marker before any pairing read, prompt or socket",
+        "with the transport on, still refuses a malformed gateway marker before any pairing read, prompt or socket",
+        "with the transport on, still refuses a gateway marker with a bad device id before any pairing read, prompt or socket",
+        "with the transport on, still refuses a gateway marker with a path before any pairing read, prompt or socket",
+        "with the transport on, still refuses link and gateway together before any pairing read, prompt or socket",
+        "with the transport on, still refuses a link marker alone (no link transport on Android) before any pairing read, prompt or socket",
+        "with the transport on, still refuses an unencrypted ws:// gateway before any pairing read, prompt or socket",
+        "refuses a signed-out phone with the sign-in advice, and an unpaired device with the pairing advice, nothing dialled",
+        "never falls back to plain SSH: a gateway refusal reaches the user and no direct dial follows, even for a phone host at the same address",
+        "an account host carrying a gateway marker is dialled through the gateway, never adopted as a plain SSH phone host",
+        "reconnect stays on the gateway: the controller re-dials native connect with the same gateway target and pairing key",
+        "reads public pairing rows and fails closed on any other reply"
       ]
     }
   }
