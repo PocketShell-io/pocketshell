@@ -742,11 +742,6 @@ public final class GatewayTunnel implements AutoCloseable {
         return failure.get();
     }
 
-    /** Test-only visibility: the strict failure, when the tunnel failed. */
-    GatewayTunnelException failureForTesting() {
-        return failure.get();
-    }
-
     /** Test-only visibility: the current phase name. */
     String phaseForTesting() {
         return phase.get().name();

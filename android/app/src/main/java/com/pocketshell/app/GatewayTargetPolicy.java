@@ -7,7 +7,8 @@ import java.util.Base64;
  * The Android mirror of pocketshell-core's {@code gatewayTransport.ts}
  * contract (pocketshell-gateway-tunnel v1) at core pin 4096fc569e: target
  * validation, the dial endpoint, the JSON handshake frames, the close-code
- * vocabulary, and the fail-closed host-key pin verdict.
+ * vocabulary, and the host-key pin grammar (the verdict itself runs in
+ * SshCapabilityPlugin.PinVerifier against the key the host presents).
  *
  * <p>This is the ONE place the native transport interprets gateway-shaped
  * data. Every check fails closed: anything that is not exactly the v1
@@ -34,9 +35,6 @@ final class GatewayTargetPolicy {
      * plus overhead; the WS draft is bounded to exactly this BEFORE any
      * payload allocation. */
     static final int MAX_WS_MESSAGE_BYTES = (1 << 20) + (64 << 10);
-    /** The client gives the whole auth→ready exchange 30s (core
-     * GATEWAY_HANDSHAKE_TIMEOUT_MS). */
-    static final long HANDSHAKE_TIMEOUT_MS = 30_000L;
 
     /** Same shape the Go registry enforces (identity: deviceIDPattern). */
     private static final String DEVICE_ID_PATTERN = "[A-Za-z0-9][A-Za-z0-9._:-]{2,63}";
@@ -54,11 +52,6 @@ final class GatewayTargetPolicy {
         Target(String serverUrl, String deviceId) {
             this.serverUrl = serverUrl;
             this.deviceId = deviceId;
-        }
-
-        /** The host the WebSocket actually dials (never the display hostname). */
-        String tlsHost() {
-            return hostOf(serverUrl);
         }
     }
 
@@ -333,7 +326,7 @@ final class GatewayTargetPolicy {
         }
     }
 
-    // --- fingerprint + host-key pin verdicts -----------------------------------
+    // --- fingerprint + host-key pin grammar ------------------------------------
 
     /**
      * Normalize a SHA-256 fingerprint to the OpenSSH display form
@@ -490,28 +483,6 @@ final class GatewayTargetPolicy {
         }
     }
 
-    /** The three ways a dial can relate to a pin — no "unknown → ask" arm:
-     * gateway mode fails closed; an absent pin is a refusal, not a TOFU
-     * prompt, because the gateway can never be trusted to introduce the key. */
-    static final String PIN_TRUSTED = "trusted";
-    static final String PIN_MISMATCH = "mismatch";
-    static final String PIN_UNPINNED = "unpinned";
-
-    /**
-     * The verdict that runs inside {@code PinVerifier}, BEFORE userauth: the
-     * independently provisioned pin (paired out of band) against the
-     * fingerprint of the key the host actually presented. The ready frame's
-     * key advisory never reaches this method.
-     */
-    static String verifyHostKeyPin(String pinnedFingerprint, String presentedFingerprint) {
-        if (pinnedFingerprint == null) return PIN_UNPINNED;
-        String pinned = normalizeSha256Fingerprint(pinnedFingerprint);
-        if (pinned == null) return PIN_UNPINNED;
-        String presented = normalizeSha256Fingerprint(presentedFingerprint);
-        if (presented == null) return PIN_MISMATCH;
-        return pinned.equals(presented) ? PIN_TRUSTED : PIN_MISMATCH;
-    }
-
     /**
      * Percent-encode exactly like the web's {@code encodeURIComponent}: the
      * unreserved set stays, everything else becomes strict uppercase %XX.
@@ -533,13 +504,5 @@ final class GatewayTargetPolicy {
             }
         }
         return out.toString();
-    }
-
-    private static String hostOf(String serverUrl) {
-        try {
-            return new URI(serverUrl).getHost();
-        } catch (Exception error) {
-            throw new IllegalArgumentException("not a gateway URL");
-        }
     }
 }

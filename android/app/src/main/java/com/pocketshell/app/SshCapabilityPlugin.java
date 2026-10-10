@@ -374,6 +374,11 @@ public final class SshCapabilityPlugin extends Plugin {
             if (beforeRegistration != null) beforeRegistration.accept(attempt);
             synchronized (connectLock) {
                 checkConnectNotCancelled(attempt);
+                if (attempt.deadlineExceeded.get()) {
+                    // The watchdog claimed the deadline first; the catch
+                    // below closes this connection and reports the timeout.
+                    throw new PluginFailure("CONNECT_TIMEOUT", "The gateway connection did not complete within its deadline.");
+                }
                 if (!connection.state.equals("connected") || !client.isConnected()) {
                     throw new PluginFailure("CONNECTION_LOST", "SSH connection ended during setup.");
                 }
@@ -1388,6 +1393,9 @@ public final class SshCapabilityPlugin extends Plugin {
         GatewayRoutingTokens.Issued token = mintGatewayRoutingToken(plan, false);
         while (true) {
             checkConnectNotCancelled(attempt);
+            // The last account check before the token can leave: the account
+            // signed in now must still be the one the dial was planned for.
+            requirePlannedAccount(plan);
             GatewayTunnel tunnel = gatewayTunnelFactory.create(plan.target, token.token);
             attempt.attachTunnel(tunnel);
             // A cancel that landed while the token was minted already closed
@@ -1402,6 +1410,16 @@ public final class SshCapabilityPlugin extends Plugin {
                 tunnel.close();
                 token = mintGatewayRoutingToken(plan, true);
             }
+        }
+    }
+
+    private void requirePlannedAccount(GatewayDialPlan plan) throws PluginFailure {
+        try {
+            gatewayRoutingTokens.requireAccount(gatewaySyncSession, plan.subject);
+        } catch (SyncAuthException error) {
+            throw new PluginFailure(error.code, error.getMessage());
+        } catch (GatewayTokenBroker.GatewayBrokerException error) {
+            throw new PluginFailure(error.code, error.getMessage());
         }
     }
 
@@ -1449,14 +1467,17 @@ public final class SshCapabilityPlugin extends Plugin {
 
     /** The watchdog body: fire the whole-connect deadline for a still-pending attempt. */
     void runConnectDeadline(ConnectAttempt attempt) {
-        boolean stillPending;
+        // Claim the deadline under the same lock success registration holds:
+        // exactly one of them wins. Registration refuses a claimed deadline,
+        // and a registered (no longer pending) attempt is never claimed.
         synchronized (connectLock) {
-            stillPending = pendingConnects.get(attempt.requestId) == attempt;
+            if (pendingConnects.get(attempt.requestId) != attempt) return;
+            attempt.deadlineExceeded.set(true);
         }
-        if (!stillPending) return;
         Runnable hook = afterConnectDeadlineDecisionForTesting;
         if (hook != null) hook.run();
-        attempt.deadlineExceeded.set(true);
+        // Closing outside the lock is safe: the claim already made
+        // registration impossible.
         attempt.closeClient();
     }
 

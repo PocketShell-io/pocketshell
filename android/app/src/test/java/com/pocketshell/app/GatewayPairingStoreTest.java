@@ -175,6 +175,72 @@ public final class GatewayPairingStoreTest {
         }
     }
 
+    // --- remove never wildcards (#3086 review round 1, blocker 3) -------------------
+
+    /** Counts every repository access, to prove a refused remove touched nothing. */
+    static final class CountingRepository implements GatewayPairingStore.Repository {
+        String value;
+        int reads;
+        int writes;
+
+        @Override public String read() { reads++; return value; }
+
+        @Override public void write(String json) { writes++; value = json; }
+    }
+
+    @Test public void reviewerProbeANullUrlRemoveDeletesNothing() throws IOException {
+        // finding3-remove-wildcard-probe: two origins for (sub-1, host-1);
+        // remove("sub-1", null, "host-1") returned true and 2 -> 0.
+        store.pair("sub-1", "wss://a.example", "host-1", "SHA256:" + "A".repeat(43), HANDLE);
+        store.pair("sub-1", "wss://b.example", "host-1", "SHA256:" + "B".repeat(43), HANDLE);
+        assertEquals(2, store.list("sub-1").size());
+        try {
+            store.remove("sub-1", null, "host-1");
+            fail("a remove without a gateway origin must refuse");
+        } catch (GatewayPairingStore.InvalidPairingException expected) {
+            assertNotNull(expected.getMessage());
+        }
+        assertEquals("nothing was removed", 2, store.list("sub-1").size());
+    }
+
+    @Test public void aMalformedRemoveTargetRefusesBeforeAnyStoreAccess() throws IOException {
+        CountingRepository counting = new CountingRepository();
+        GatewayPairingStore twoOrigins = new GatewayPairingStore(counting, () -> 1_000L);
+        twoOrigins.pair("sub-1", "wss://a.example", "host-1", "SHA256:" + "A".repeat(43), HANDLE);
+        twoOrigins.pair("sub-1", "wss://b.example", "host-1", "SHA256:" + "B".repeat(43), HANDLE);
+        String[][] bad = {
+            {null, "host-1"}, {"", "host-1"}, {"   ", "host-1"}, {"not a url", "host-1"},
+            {"wss://a.example/path", "host-1"}, {"ftp://a.example", "host-1"}, {"wss://user@a.example", "host-1"},
+            {"wss://a.example", null}, {"wss://a.example", ""}, {"wss://a.example", "no"},
+        };
+        for (String[] target : bad) {
+            int reads = counting.reads;
+            int writes = counting.writes;
+            try {
+                twoOrigins.remove("sub-1", target[0], target[1]);
+                fail("remove must refuse " + java.util.Arrays.toString(target));
+            } catch (GatewayPairingStore.InvalidPairingException expected) {
+                assertNotNull(expected.getMessage());
+            }
+            assertEquals("no store read for " + java.util.Arrays.toString(target), reads, counting.reads);
+            assertEquals("no store write for " + java.util.Arrays.toString(target), writes, counting.writes);
+        }
+        assertEquals(2, twoOrigins.list("sub-1").size());
+    }
+
+    @Test public void aValidRemoveDeletesOnlyTheExactCanonicalTarget() throws IOException {
+        store.pair("sub-1", "wss://a.example", "host-1", "SHA256:" + "A".repeat(43), HANDLE);
+        store.pair("sub-1", "wss://b.example", "host-1", "SHA256:" + "B".repeat(43), HANDLE);
+        store.pair("sub-2", "wss://a.example", "host-1", "SHA256:" + "C".repeat(43), HANDLE);
+        // A non-canonical spelling of origin a names exactly origin a.
+        assertTrue(store.remove("sub-1", "https://A.example/", "host-1"));
+        assertNull(store.lookup("sub-1", "wss://a.example", "host-1"));
+        assertNotNull("the other origin is untouched", store.lookup("sub-1", "wss://b.example", "host-1"));
+        assertNotNull("the other account is untouched", store.lookup("sub-2", "wss://a.example", "host-1"));
+        assertFalse(store.remove("sub-1", "wss://a.example:8443", "host-1"));
+        assertEquals(1, store.list("sub-1").size());
+    }
+
     private static final String HANDLE = "01234567-89ab-cdef-0123-456789abcdef";
     private static final String HANDLE_OTHER = "ffffffff-ffff-ffff-ffff-ffffffffffff";
 

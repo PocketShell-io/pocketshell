@@ -33,7 +33,13 @@ owner of dial, trust, reconnect and grace (D28, D42).
    cached in memory for the signed-in account and reused only while it
    outlives the attempt's whole connect budget; otherwise it is re-minted. A
    4401 on a reused token drops the cache and retries once with a fresh mint
-   inside the same deadline; a 4401 on a fresh token is reported.
+   inside the same deadline; a 4401 on a fresh token is reported. The token
+   is bound to the account the dial was planned for: the signed-in subject is
+   re-read before the cache is used or the broker asked, after the broker
+   answers (before anything is cached), and right before the tunnel is
+   created. A sign-out (`NOT_SIGNED_IN`) or another account
+   (`GATEWAY_ACCOUNT_CHANGED`) fails the dial with nothing sent and the cache
+   dropped.
 3. **Tunnel** (`GatewayTunnel`). `wss://<gateway>/api/v1/hosts/<device>/ssh`
    only (plaintext needs a test-only flag and a loopback host), platform CA
    trust with SNI and hostname checks, one auth TEXT frame carrying the token,
@@ -49,7 +55,10 @@ owner of dial, trust, reconnect and grace (D28, D42).
    receipt.
 
 One whole-connect deadline (default 60 s, 5–90 s) covers token, dial,
-`ready`, KEX and userauth.
+`ready`, KEX and userauth. The watchdog claims the deadline under the same
+lock that registers a successful connection, so exactly one wins: a claimed
+deadline makes registration refuse with `CONNECT_TIMEOUT`, and an accepted
+connection is never claimed afterwards.
 
 ## The routing token never leaves native code
 
@@ -91,7 +100,10 @@ opened is deleted, which only leaves hosts unpaired.
 The `GatewayPairing` plugin (`list`, `pair`, `remove`) is the native API the
 shared pairing UI will call in slice 4. It never returns the account subject:
 a `pair` call names the account email the user saw, and native checks it
-against the current sign-in before and after the vault lookup.
+against the current sign-in before and after the vault lookup. `remove`
+validates the complete target (a usable gateway origin and a device id)
+before the store is opened, and deletes only the exact (account, canonical
+origin, device) pairing; a missing or malformed target removes nothing.
 
 ## Capability
 
@@ -110,4 +122,5 @@ JVM (`scripts/run-android-unit-gate.sh`): `GatewayTunnelTest`,
 and three end-to-end classes over `GatewayDialFixture` — a loopback gateway
 relaying to a real SSH server (Apache MINA sshd, test-only):
 `SshCapabilityPluginGatewayCloseCodeTest`, `SshCapabilityPluginGatewayPinTest`,
-`SshCapabilityPluginGatewayTokenTest`. JS: `tests/unit/androidGatewayCapability.test.ts`.
+`SshCapabilityPluginGatewayTokenTest`, `SshCapabilityPluginGatewayAccountTest`,
+`SshCapabilityPluginConnectDeadlineTest`. JS: `tests/unit/androidGatewayCapability.test.ts`.

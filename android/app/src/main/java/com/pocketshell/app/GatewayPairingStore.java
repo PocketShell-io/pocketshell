@@ -164,13 +164,50 @@ public final class GatewayPairingStore {
         return replacement;
     }
 
-    /** Remove the pairing for the triple; true when one was removed. */
-    public synchronized boolean remove(String accountSubject, String serverUrl, String deviceId) throws IOException {
-        List<Pairing> pairings = readAll();
+    /** The exact canonical target a remove names. */
+    static final class RemoveTarget {
+        final String serverUrl;
+        final String deviceId;
+
+        private RemoveTarget(String serverUrl, String deviceId) {
+            this.serverUrl = serverUrl;
+            this.deviceId = deviceId;
+        }
+    }
+
+    /**
+     * Validate a remove target completely, touching no storage: a usable
+     * gateway origin (canonicalized) and a well-formed device id. Anything
+     * missing or malformed refuses — a remove is never widened to "every
+     * origin" or "every device" (#3086 review: a null URL used to delete the
+     * pairing for every gateway origin).
+     */
+    static RemoveTarget requireRemoveTarget(String serverUrl, String deviceId) throws InvalidPairingException {
         String canonical = GatewayTargetPolicy.normalizeServerUrl(serverUrl);
+        if (canonical == null) {
+            throw new InvalidPairingException("Name the gateway address of the pairing to remove.");
+        }
+        String device = deviceId == null ? "" : deviceId.trim();
+        if (!GatewayTargetPolicy.isValidDeviceId(device)) {
+            throw new InvalidPairingException("Name the device id of the pairing to remove.");
+        }
+        return new RemoveTarget(canonical, device);
+    }
+
+    /**
+     * Remove the pairing for the exact (account, canonical gateway origin,
+     * device) triple; true when one was removed. The target is validated
+     * before the store is read.
+     */
+    public synchronized boolean remove(String accountSubject, String serverUrl, String deviceId) throws IOException {
+        RemoveTarget target = requireRemoveTarget(serverUrl, deviceId);
+        if (accountSubject == null || accountSubject.isEmpty()) {
+            throw new InvalidPairingException("Remove gateway pairings from a signed-in account.");
+        }
+        List<Pairing> pairings = readAll();
         boolean removed = pairings.removeIf(existing -> existing.accountSubject.equals(accountSubject)
-                && (canonical == null || existing.serverUrl.equals(canonical))
-                && existing.deviceId.equals(deviceId));
+                && existing.serverUrl.equals(target.serverUrl)
+                && existing.deviceId.equals(target.deviceId));
         if (removed) writeAll(pairings);
         return removed;
     }

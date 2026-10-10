@@ -64,6 +64,8 @@ final class GatewayTokenBroker {
         static final String SIGN_IN_REJECTED = "GATEWAY_BROKER_SIGN_IN_REJECTED";
         static final String UNAVAILABLE = "GATEWAY_BROKER_UNAVAILABLE";
         static final String BAD_RESPONSE = "GATEWAY_BROKER_BAD_RESPONSE";
+        /** The signed-in account changed after the dial was planned (#3086). */
+        static final String ACCOUNT_CHANGED = "GATEWAY_ACCOUNT_CHANGED";
 
         final String code;
 

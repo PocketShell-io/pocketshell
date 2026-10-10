@@ -162,7 +162,7 @@ public final class GatewayTargetPolicyTest {
         assertEquals("abnormal", GatewayTargetPolicy.classifyClose(1006).kind);
     }
 
-    // --- fingerprints + pin verdicts --------------------------------------------------
+    // --- fingerprints ----------------------------------------------------------------
 
     @Test public void normalizesSha256Fingerprints() {
         String body = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
@@ -176,19 +176,6 @@ public final class GatewayTargetPolicyTest {
         assertNull(GatewayTargetPolicy.normalizeSha256Fingerprint(null));
         assertNull("an internal '=' is not decodable base64",
                 GatewayTargetPolicy.normalizeSha256Fingerprint("SHA256:A=b" + "0".repeat(40)));
-    }
-
-    @Test public void pinVerdictsFailClosed() {
-        String pin = GatewayTargetPolicy.normalizeSha256Fingerprint("SHA256:" + "A".repeat(43));
-        String same = GatewayTargetPolicy.normalizeSha256Fingerprint("SHA256:" + "A".repeat(43) + "=");
-        String other = GatewayTargetPolicy.normalizeSha256Fingerprint("SHA256:" + "B".repeat(43));
-        assertEquals(GatewayTargetPolicy.PIN_TRUSTED, GatewayTargetPolicy.verifyHostKeyPin(pin, same));
-        assertEquals(GatewayTargetPolicy.PIN_MISMATCH, GatewayTargetPolicy.verifyHostKeyPin(pin, other));
-        assertEquals("an absent pin refuses; there is no ask-TOFU arm",
-                GatewayTargetPolicy.PIN_UNPINNED, GatewayTargetPolicy.verifyHostKeyPin(null, same));
-        assertEquals("an unparseable stored pin refuses too",
-                GatewayTargetPolicy.PIN_UNPINNED, GatewayTargetPolicy.verifyHostKeyPin("garbage", same));
-        assertEquals(GatewayTargetPolicy.PIN_MISMATCH, GatewayTargetPolicy.verifyHostKeyPin(pin, "not-a-fingerprint"));
     }
 
     // --- #3086: gateway verdicts that reach core as GATEWAY_CLOSED ---------------------

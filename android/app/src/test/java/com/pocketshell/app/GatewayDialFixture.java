@@ -235,8 +235,19 @@ final class GatewayDialFixture implements AutoCloseable {
             started.countDown();
         }
 
+        /** Everything the client put on the upgrade request: the request
+         * URI (path + query) and every header name and value. */
+        final List<String> upgradeRequests = new CopyOnWriteArrayList<>();
+
         @Override public void onOpen(WebSocket conn, ClientHandshake handshake) {
             clientConnections.incrementAndGet();
+            StringBuilder seen = new StringBuilder(handshake.getResourceDescriptor());
+            java.util.Iterator<String> names = handshake.iterateHttpFields();
+            while (names.hasNext()) {
+                String name = names.next();
+                seen.append('\n').append(name).append(": ").append(handshake.getFieldValue(name));
+            }
+            upgradeRequests.add(seen.toString());
         }
 
         @Override
@@ -355,6 +366,24 @@ final class GatewayDialFixture implements AutoCloseable {
         private final GatewayTokenBroker.LongSupplierNow clock;
         volatile long lifetimeSeconds = 300;
         volatile String subject = SUBJECT;
+        volatile boolean signedOut;
+        /** Subject reads so far; {@link #onSubjectRead} sees the 1-based count. */
+        final AtomicInteger subjectReads = new AtomicInteger();
+        /** Runs AFTER the n-th subject read has answered (to switch the
+         * account between the plan and anything later). */
+        volatile java.util.function.IntConsumer onSubjectRead;
+        /** Runs inside the exchange, after the broker answered (a switch
+         * landing while the mint is in flight). */
+        volatile Runnable duringExchange;
+
+        void switchTo(String next) {
+            subject = next;
+            signedOut = false;
+        }
+
+        void signOut() {
+            signedOut = true;
+        }
 
         ScriptedBroker(GatewayTokenBroker.LongSupplierNow clock) {
             super((GoogleSyncSession) null);
@@ -362,8 +391,14 @@ final class GatewayDialFixture implements AutoCloseable {
         }
 
         @Override
-        String subject() {
-            return subject;
+        String subject() throws SyncAuthException {
+            int read = subjectReads.incrementAndGet();
+            boolean out = signedOut;
+            String answer = subject;
+            java.util.function.IntConsumer hook = onSubjectRead;
+            if (hook != null) hook.accept(read);
+            if (out) throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
+            return answer;
         }
 
         @Override
@@ -374,6 +409,8 @@ final class GatewayDialFixture implements AutoCloseable {
             long nowSeconds = clock.getAsLong() / 1000L;
             String body = "{\"token\":\"" + token + "\",\"token_type\":\"Bearer\",\"expires_in\":" + lifetimeSeconds
                     + ",\"expires_at\":" + (nowSeconds + lifetimeSeconds) + "}";
+            Runnable hook = duringExchange;
+            if (hook != null) hook.run();
             return new GoogleSyncSession.GatewayBrokerExchange(new GoogleSyncSession.Response(200, body), GOOGLE_BEARER);
         }
     }

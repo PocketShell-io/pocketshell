@@ -66,6 +66,47 @@ public final class SshCapabilityPluginGatewayTokenTest {
         for (String logged : fixture.loggedFailureCodes) {
             assertTrue("logs carry codes only: " + logged, logged.matches("[A-Z_]+"));
         }
+        assertTokensOnlyInAuthFrames(List.of(result.toString(), failure.getMessage(), String.valueOf(failure.data)));
+    }
+
+    @Test public void theUpgradeRequestCarriesNoTokenInItsUrlQueryOrHeaders() throws Exception {
+        // #3086 review round 1, blocker 4: a token appended to the WebSocket
+        // URL (`?t=<token>`) passed every other test. Every dial below —
+        // fresh mint, cached reuse, the 4401 re-mint — is checked.
+        fixture.connect("fresh");
+        fixture.connect("reused");
+        fixture.gateway.rejectedTokens.add(fixture.broker.minted.get(0));
+        fixture.connect("re-minted");
+        assertEquals(4, fixture.gateway.upgradeRequests.size());
+        for (String upgrade : fixture.gateway.upgradeRequests) {
+            assertTrue("the upgrade targets the fixed route only: " + upgrade,
+                    upgrade.startsWith("/api/v1/hosts/" + GatewayDialFixture.DEVICE + "/ssh\n"));
+        }
+        assertTokensOnlyInAuthFrames(List.of());
+    }
+
+    /**
+     * Every minted routing token and the Google bearer appear nowhere the
+     * client produced except the auth frames: not the upgrade request (path,
+     * query, any header), not the given bridge payloads or error texts, not
+     * the logged codes.
+     */
+    private void assertTokensOnlyInAuthFrames(List<String> bridgePayloads) {
+        List<String> secrets = new ArrayList<>(fixture.broker.minted);
+        secrets.add(GatewayDialFixture.ScriptedBroker.GOOGLE_BEARER);
+        List<String> outside = new ArrayList<>(fixture.gateway.upgradeRequests);
+        outside.addAll(bridgePayloads);
+        outside.addAll(fixture.loggedFailureCodes);
+        for (String secret : secrets) {
+            for (String place : outside) {
+                assertFalse("a token escaped the auth frame into: " + place, place != null && place.contains(secret));
+            }
+            // URL-encoded or partial copies of the JWT body count too.
+            String middle = secret.split("\\.")[1];
+            for (String place : outside) {
+                assertFalse("a token segment escaped into: " + place, place != null && place.contains(middle));
+            }
+        }
     }
 
     @Test public void noBridgeMethodCanYieldAToken() {
@@ -74,6 +115,13 @@ public final class SshCapabilityPluginGatewayTokenTest {
         assertEquals(Set.of("status", "signIn", "signOut", "request"), pluginMethods(GoogleSyncPlugin.class));
         // ... the pairing bridge has no token method ...
         assertEquals(Set.of("list", "pair", "remove"), pluginMethods(GatewayPairingPlugin.class));
+        // ... and the SSH plugin's bridge surface is pinned, so a future
+        // method that could hand back a token cannot appear unnoticed.
+        assertEquals(Set.of("transportCapabilities", "connect", "cancelOperation", "getConnectionState",
+                "closeConnection", "scheduleClose", "cancelScheduledClose", "exec", "openPty", "readPty",
+                "writePty", "resizePty", "closePty", "sftpList", "sftpRead", "sftpWrite", "sftpWriteIfUnchanged",
+                "sftpMkdir", "sftpRename", "sftpDelete", "openPortForward", "closePortForward", "resourceSnapshot"),
+                pluginMethods(SshCapabilityPlugin.class));
         // ... and the capability report is a flag, nothing more.
         JSObject capabilities = SshCapabilityPlugin.transportCapabilitiesReply("r-1");
         assertEquals(Set.of("requestId", "gatewayTransport", "linkTransport"), keys(capabilities));

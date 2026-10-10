@@ -122,11 +122,16 @@ public final class GatewayPairingPlugin extends Plugin {
     public void remove(PluginCall call) {
         String requestId = call.getString("requestId", "");
         String serverUrl = call.getString("serverUrl");
-        String deviceId = call.getString("deviceId", "");
+        String deviceId = call.getString("deviceId");
         worker.execute(() -> {
             try {
+                // The whole target is validated before the store is even
+                // opened: a missing or malformed origin/device removes nothing.
+                GatewayPairingStore.requireRemoveTarget(serverUrl, deviceId);
                 boolean removed = sharedStore(getContext()).remove(session.subject(), serverUrl, deviceId);
                 call.resolve(new JSObject().put("requestId", requestId).put("removed", removed));
+            } catch (GatewayPairingStore.InvalidPairingException invalid) {
+                call.reject(invalid.getMessage(), "GATEWAY_PAIRING_INVALID");
             } catch (SyncAuthException signedOut) {
                 reject(call, signedOut);
             } catch (IOException storeError) {

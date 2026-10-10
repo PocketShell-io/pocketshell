@@ -51,14 +51,44 @@ final class GatewayRoutingTokens {
     }
 
     /**
+     * Require that the account signed in NOW is {@code subject}, the one the
+     * dial was planned for. A sign-out rethrows the session's
+     * {@code NOT_SIGNED_IN}; another account is {@code GATEWAY_ACCOUNT_CHANGED}.
+     * Either way the cache is dropped, so nothing minted for one account can
+     * be handed to a dial for another.
+     */
+    void requireAccount(GatewaySyncSession session, String subject)
+            throws SyncAuthException, GatewayTokenBroker.GatewayBrokerException {
+        String current;
+        try {
+            current = session.subject();
+        } catch (SyncAuthException signedOut) {
+            clear();
+            throw signedOut;
+        }
+        if (!subject.equals(current)) {
+            clear();
+            throw new GatewayTokenBroker.GatewayBrokerException(GatewayTokenBroker.GatewayBrokerException.ACCOUNT_CHANGED,
+                    "The signed-in account changed while connecting. Nothing was sent; connect again.");
+        }
+    }
+
+    /**
      * A token for {@code subject} that stays valid for the next
      * {@code requiredValidityMs} (the attempt's remaining connect budget),
      * reusing the cached one when it does, and minting (one broker exchange)
      * when it does not, when the account changed, or when {@code forceFresh}
      * is set. Expiry is judged on this class's own clock only.
+     *
+     * <p>The current account must still be {@code subject} before the cache
+     * is consulted or the broker is asked, and again after the broker
+     * answers: the exchange spends whatever Google token is current at that
+     * moment, so a mint that raced an account switch is discarded, never
+     * cached or returned.
      */
     Issued issue(GatewaySyncSession session, String subject, long requiredValidityMs, boolean forceFresh)
             throws SyncAuthException, GatewayTokenBroker.GatewayBrokerException {
+        requireAccount(session, subject);
         synchronized (this) {
             if (!forceFresh && cached != null && subject.equals(cachedSubject)
                     && cached.expiresAtEpochMs > clock.getAsLong() + Math.max(0, requiredValidityMs) + REUSE_SLACK_MS) {
@@ -70,6 +100,7 @@ final class GatewayRoutingTokens {
         // The exchange runs outside the lock: two concurrent dials may both
         // mint, which is harmless; a slow broker must not block the other.
         GatewayTokenBroker.RoutingToken minted = broker.parse(session.exchange());
+        requireAccount(session, subject);
         if (minted.expiresAtEpochMs - clock.getAsLong() < MIN_FRESH_LIFETIME_MS) {
             throw new GatewayTokenBroker.GatewayBrokerException(GatewayTokenBroker.GatewayBrokerException.BAD_RESPONSE,
                     "The gateway credential expires too soon to use.");

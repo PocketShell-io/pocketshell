@@ -27,6 +27,8 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SpeechRecognitionPluginTest
   com.pocketshell.app.SshCapabilityPluginChannelRequestTest
   com.pocketshell.app.SshCapabilityPluginCloseTest
+  com.pocketshell.app.SshCapabilityPluginConnectDeadlineTest
+  com.pocketshell.app.SshCapabilityPluginGatewayAccountTest
   com.pocketshell.app.SshCapabilityPluginGatewayCloseCodeTest
   com.pocketshell.app.SshCapabilityPluginGatewayPinTest
   com.pocketshell.app.SshCapabilityPluginGatewayRefusalTest
