@@ -134,6 +134,8 @@ public final class SshCapabilityPlugin extends Plugin {
     /** Native-only routing tokens, in memory for this process; never bridged. */
     private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(System::currentTimeMillis);
     static final String GATEWAY_CLOSED = "GATEWAY_CLOSED";
+    /** The signed-in account changed after a gateway dial was planned. */
+    static final String GATEWAY_ACCOUNT_CHANGED = "GATEWAY_ACCOUNT_CHANGED";
 
     /** Resolves a key handle to private key bytes for userauth. Production:
      * the native vault; JVM tests substitute an in-memory key. */
@@ -368,6 +370,8 @@ public final class SshCapabilityPlugin extends Plugin {
                 event.put("reason", message == null || message.isBlank() ? String.valueOf(reason) : message);
                 mainHandler.post(() -> notifyListeners("connectionState", event));
             });
+            java.util.function.Consumer<ConnectAttempt> beforeRegistration = beforeConnectRegistrationForTesting;
+            if (beforeRegistration != null) beforeRegistration.accept(attempt);
             synchronized (connectLock) {
                 checkConnectNotCancelled(attempt);
                 if (!connection.state.equals("connected") || !client.isConnected()) {
@@ -1433,15 +1437,27 @@ public final class SshCapabilityPlugin extends Plugin {
      * cancelled, so a live connection is never killed by its own deadline. */
     private ScheduledFuture<?> scheduleConnectDeadline(ConnectAttempt attempt, long deadlineEpochMs) {
         long delay = Math.max(0, deadlineEpochMs - System.currentTimeMillis());
-        return CONNECT_DEADLINE_SCHEDULER.schedule(() -> {
-            boolean stillPending;
-            synchronized (connectLock) {
-                stillPending = pendingConnects.get(attempt.requestId) == attempt;
-            }
-            if (!stillPending) return;
-            attempt.deadlineExceeded.set(true);
-            attempt.closeClient();
-        }, delay, TimeUnit.MILLISECONDS);
+        return CONNECT_DEADLINE_SCHEDULER.schedule(() -> runConnectDeadline(attempt), delay, TimeUnit.MILLISECONDS);
+    }
+
+    /** JVM tests only: runs on the watchdog thread after it decided to fire
+     * and before it closes anything. Null in production. */
+    volatile Runnable afterConnectDeadlineDecisionForTesting;
+    /** JVM tests only: runs on the connect thread just before the success
+     * registration block. Null in production. */
+    volatile java.util.function.Consumer<ConnectAttempt> beforeConnectRegistrationForTesting;
+
+    /** The watchdog body: fire the whole-connect deadline for a still-pending attempt. */
+    void runConnectDeadline(ConnectAttempt attempt) {
+        boolean stillPending;
+        synchronized (connectLock) {
+            stillPending = pendingConnects.get(attempt.requestId) == attempt;
+        }
+        if (!stillPending) return;
+        Runnable hook = afterConnectDeadlineDecisionForTesting;
+        if (hook != null) hook.run();
+        attempt.deadlineExceeded.set(true);
+        attempt.closeClient();
     }
 
     /** Hands sshj the tunnel's already-connected socket; no other socket kind
@@ -2050,7 +2066,7 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class ConnectAttempt {
+    static final class ConnectAttempt {
         final String requestId;
         final SSHClient client;
         final AtomicBoolean cancelled = new AtomicBoolean(false);
