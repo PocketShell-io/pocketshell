@@ -37,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -99,6 +101,13 @@ public final class SshCapabilityPlugin extends Plugin {
         thread.setDaemon(true);
         return thread;
     });
+    /** Cancels a gateway connect attempt at its whole-connect deadline — the
+     * single budget that covers broker, dial, ready, KEX and userauth. */
+    private static final ScheduledExecutorService CONNECT_DEADLINE_SCHEDULER = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "pocketshell-ssh-connect-deadline");
+        thread.setDaemon(true);
+        return thread;
+    });
     private static final AtomicInteger ACTIVE_FORWARD_WORKERS = new AtomicInteger();
     private static final AtomicInteger ACTIVE_EXEC_STREAM_READERS = new AtomicInteger();
     private static volatile boolean sshProviderReady;
@@ -111,6 +120,48 @@ public final class SshCapabilityPlugin extends Plugin {
     private final LinkedHashMap<String, Long> connectCancellationTombstones = new LinkedHashMap<>();
     private final Handler mainHandler;
     private final LongSupplier elapsedRealtimeClock;
+    /** Gateway dials only: the native sign-in seam and the pairing store.
+     * Built in load(); the JVM test constructor injects fakes. */
+    private volatile GatewaySyncSession gatewaySyncSession;
+    private volatile GatewayPairingStore gatewayPairingStore;
+    /** The vault check a gateway dial runs before any broker call or socket.
+     * Production decrypts and wipes the real handle; tests substitute fakes. */
+    interface GatewayVaultProbe {
+        void requireResolvable(String keyHandleId) throws IOException;
+    }
+
+    private volatile GatewayVaultProbe gatewayVaultProbe;
+    /** Native-only routing tokens, in memory for this process; never bridged. */
+    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(System::currentTimeMillis);
+    static final String GATEWAY_CLOSED = "GATEWAY_CLOSED";
+    /** The signed-in account changed after a gateway dial was planned. */
+    static final String GATEWAY_ACCOUNT_CHANGED = "GATEWAY_ACCOUNT_CHANGED";
+
+    /** Resolves a key handle to private key bytes for userauth. Production:
+     * the native vault; JVM tests substitute an in-memory key. */
+    interface PrivateKeySource {
+        byte[] resolvePrivateKey(String keyHandleId) throws IOException;
+    }
+
+    private volatile PrivateKeySource privateKeySource;
+
+    /** Builds the gateway tunnel for one attempt. Production always refuses
+     * plaintext ws:// (insecure flag false); JVM tests dial a loopback fixture. */
+    interface GatewayTunnelFactory {
+        GatewayTunnel create(GatewayTargetPolicy.Target target, String routingToken);
+    }
+
+    /** Where a stored-key connect failure CODE is logged (never a message).
+     * Production: logcat; JVM tests record it. */
+    interface ConnectFailureLog {
+        void storedKeyConnectFailed(String code);
+    }
+
+    private volatile ConnectFailureLog connectFailureLog =
+        code -> android.util.Log.i(KeyHandleConnectFailures.LOG_TAG, "stored-key connect failed code=" + code);
+
+    private volatile GatewayTunnelFactory gatewayTunnelFactory =
+        (target, routingToken) -> new GatewayTunnel(target, routingToken, false);
 
     public SshCapabilityPlugin() {
         this(new Handler(Looper.getMainLooper()), SystemClock::elapsedRealtime);
@@ -121,6 +172,49 @@ public final class SshCapabilityPlugin extends Plugin {
         this.elapsedRealtimeClock = elapsedRealtimeClock;
     }
 
+    SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock,
+            GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore) {
+        this.mainHandler = mainHandler;
+        this.elapsedRealtimeClock = elapsedRealtimeClock;
+        this.gatewaySyncSession = gatewaySyncSession;
+        this.gatewayPairingStore = gatewayPairingStore;
+        this.gatewayVaultProbe = keyHandleId -> { };
+    }
+
+    /** JVM tests: the whole connect path against a loopback gateway fixture
+     * and an in-memory key, with no Android context. */
+    SshCapabilityPlugin(Handler mainHandler, LongSupplier elapsedRealtimeClock,
+            GatewaySyncSession gatewaySyncSession, GatewayPairingStore gatewayPairingStore,
+            PrivateKeySource privateKeySource, GatewayTunnelFactory gatewayTunnelFactory,
+            ConnectFailureLog connectFailureLog) {
+        this(mainHandler, elapsedRealtimeClock, gatewaySyncSession, gatewayPairingStore);
+        this.connectFailureLog = connectFailureLog;
+        this.privateKeySource = privateKeySource;
+        this.gatewayVaultProbe = keyHandleId -> {
+            byte[] probe = privateKeySource.resolvePrivateKey(keyHandleId);
+            if (probe != null) java.util.Arrays.fill(probe, (byte) 0);
+        };
+        this.gatewayTunnelFactory = gatewayTunnelFactory;
+    }
+
+    /** JVM tests: drive token reuse and expiry with a controlled clock. */
+    void useGatewayRoutingTokensForTesting(GatewayRoutingTokens tokens) {
+        this.gatewayRoutingTokens = tokens;
+    }
+
+    @Override
+    public void load() {
+        gatewaySyncSession = new GatewaySyncSession(getContext(), this::getActivity);
+        // The pairing store is opened lazily, on the connect thread, the
+        // first time a gateway dial needs it (Keystore work stays off the
+        // main thread, and an ordinary dial never touches it).
+        privateKeySource = keyHandleId -> CredentialHandleVault.forContext(getContext()).resolvePrivateKey(keyHandleId);
+        gatewayVaultProbe = keyHandleId -> {
+            byte[] probe = privateKeySource.resolvePrivateKey(keyHandleId);
+            if (probe != null) java.util.Arrays.fill(probe, (byte) 0);
+        };
+    }
+
     @Override
     protected void handleOnDestroy() {
         cancelPendingConnects();
@@ -129,142 +223,216 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
+    /**
+     * What this build's {@code connect()} can dial beyond direct TCP. Core's
+     * {@code SshCapability.gatewayTransport} is read from here — never from
+     * a JS constant — so a build without the native gateway transport can
+     * never claim it. {@code link} is not implemented natively.
+     */
+    @PluginMethod
+    public void transportCapabilities(PluginCall call) {
+        run(call, options -> transportCapabilitiesReply(options.getString("requestId", "")));
+    }
+
+    static JSObject transportCapabilitiesReply(String requestId) {
+        return new JSObject()
+            .put("requestId", requestId)
+            .put("gatewayTransport", true)
+            .put("linkTransport", false);
+    }
+
     @PluginMethod
     public void connect(PluginCall call) {
-        run(call, options -> {
-            String requestId = requiredString(options, "requestId");
-            String generationId = requiredString(options, "generationId");
-            String hostId = requiredString(options, "hostId");
-            String hostname = requiredString(options, "hostname");
-            int port = boundedInt(options, "port", 1, 65535, 22);
-            String username = requiredString(options, "username");
-            int connectTimeout = boundedInt(options, "connectTimeoutMs", 1000, 30_000, 20_000);
-            JSObject credential = options.getJSObject("credential");
-            if (credential == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH credential is missing.");
-            String credentialKind = requiredString(credential, "kind");
-            String keyHandleId = null;
-            String keyHandlePassphraseValue = null;
-            char[] keyHandlePassphrase = new char[0];
+        run(call, this::connectNow);
+    }
+
+    /** The connect operation behind {@link #connect}; package-visible so JVM
+     * tests drive the real path without a Capacitor bridge. */
+    JSObject connectNow(JSObject options) throws Exception {
+        String requestId = requiredString(options, "requestId");
+        String generationId = requiredString(options, "generationId");
+        String hostId = requiredString(options, "hostId");
+        String hostname = requiredString(options, "hostname");
+        int port = boundedInt(options, "port", 1, 65535, 22);
+        String username = requiredString(options, "username");
+        // A gateway dial has a wider WHOLE-connect budget (broker, dial,
+        // ready, KEX and userauth under one deadline); direct keeps its
+        // historical 30s bound.
+        int connectTimeout = options.has("gateway")
+            ? boundedInt(options, "connectTimeoutMs", 5_000, 90_000, 60_000)
+            : boundedInt(options, "connectTimeoutMs", 1000, 30_000, 20_000);
+        JSObject credential = options.getJSObject("credential");
+        if (credential == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH credential is missing.");
+        String credentialKind = requiredString(credential, "kind");
+        String keyHandleId = null;
+        String keyHandlePassphraseValue = null;
+        char[] keyHandlePassphrase = new char[0];
+        if ("key-handle".equals(credentialKind)) {
+            keyHandleId = requiredString(credential, "handleId");
+            keyHandlePassphraseValue = credential.getString("passphrase", "");
+            credential.remove("passphrase");
+        } else if (!"password".equals(credentialKind)) {
+            throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
+        }
+        HostKeyPinExpectation expectedHostKey;
+        // The gateway plan is resolved BEFORE anything is created: every
+        // refusal below is typed and happens before the SSH engine, the
+        // broker, or any socket exists. Presence of the raw `gateway`
+        // marker decides the transport; the value must strictly validate.
+        GatewayDialPlan gatewayPlan = resolveGatewayDialPlan(options, credentialKind, keyHandleId, connectTimeout);
+        expectedHostKey = parseExpectedHostKey(options.getJSObject("expectedHostKey"));
+
+        ensureSshCryptoProvider();
+        SSHClient client = gatewayPlan == null ? new SSHClient() : new GatewayVirtualPeerClient();
+        ConnectAttempt attempt = new ConnectAttempt(requestId, client);
+        PresentedHostKey presented = new PresentedHostKey();
+        SshConnection connection = null;
+        ScheduledFuture<?> deadlineWatchdog = null;
+        try {
             if ("key-handle".equals(credentialKind)) {
-                keyHandleId = requiredString(credential, "handleId");
-                keyHandlePassphraseValue = credential.getString("passphrase", "");
-                credential.remove("passphrase");
-            } else if (!"password".equals(credentialKind)) {
+                keyHandlePassphrase = keyHandlePassphraseValue == null
+                    ? new char[0]
+                    : keyHandlePassphraseValue.toCharArray();
+                keyHandlePassphraseValue = null;
+            }
+            registerConnectAttempt(attempt);
+            checkConnectNotCancelled(attempt);
+            if (gatewayPlan == null) {
+                client.addHostKeyVerifier(new PinVerifier(expectedHostKey, presented, attempt));
+            } else {
+                // Valid pair + key are already checked. The routing token
+                // stays native: the in-memory cache hands out one with
+                // enough life for this attempt or mints a fresh one, and the
+                // tunnel carries it in its auth frame and nowhere else.
+                deadlineWatchdog = scheduleConnectDeadline(attempt, gatewayPlan.deadlineEpochMs);
+                // Dial + auth TEXT + ready, within the one whole-connect
+                // deadline; the socket comes back pre-connected, so sshj
+                // performs no DNS and no TCP to the display hostname/port.
+                GatewayTunnel tunnel = openGatewayTunnel(attempt, gatewayPlan);
+                client.setSocketFactory(new GatewaySocketFactory(tunnel));
+                // The pin comes from the saved pairing only. PinVerifier
+                // compares it against the key the host PRESENTS during
+                // KEX — before userauth — and never consults the ready
+                // frame's advisory host key.
+                client.addHostKeyVerifier(new PinVerifier(gatewayPlan.pinExpectation(), presented, attempt));
+            }
+            client.setConnectTimeout(connectTimeout);
+            client.setTimeout(Math.min(connectTimeout, 10_000));
+            client.connect(hostname, port);
+            checkConnectNotCancelled(attempt);
+            client.setTimeout(5000);
+            if ("password".equals(credentialKind)) {
+                String password = requiredString(credential, "password");
+                char[] secret = password.toCharArray();
+                try {
+                    client.authPassword(username, secret);
+                } finally {
+                    PasswordUtils.blankOut(secret);
+                }
+            } else if ("key-handle".equals(credentialKind)) {
+                char[] secret = keyHandlePassphrase;
+                byte[] privateKeyBytes = null;
+                try {
+                    try {
+                        privateKeyBytes = privateKeySource().resolvePrivateKey(keyHandleId);
+                    } catch (IOException | RuntimeException vaultError) {
+                        KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
+                        connectFailureLog.storedKeyConnectFailed(unavailable.code);
+                        throw new PluginFailure(unavailable.code, unavailable.message);
+                    }
+                    String privateKeyPem = new String(privateKeyBytes, StandardCharsets.UTF_8);
+                    KeyFormat format = KeyProviderUtil.detectKeyFileFormat(privateKeyPem, secret.length > 0);
+                    FileKeyProvider keyProvider = Factory.Named.Util.create(
+                        client.getTransport().getConfig().getFileKeyProviderFactories(),
+                        format.toString()
+                    );
+                    if (keyProvider == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH private key format is not supported.");
+                    keyProvider.init(privateKeyPem, null, PasswordUtils.createOneOff(secret));
+                    client.authPublickey(username, keyProvider);
+                } finally {
+                    if (privateKeyBytes != null) java.util.Arrays.fill(privateKeyBytes, (byte) 0);
+                }
+            } else {
                 throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
             }
-            HostKeyPinExpectation expectedHostKey = parseExpectedHostKey(options.getJSObject("expectedHostKey"));
+            checkConnectNotCancelled(attempt);
 
-            ensureSshCryptoProvider();
-            SSHClient client = new SSHClient();
-            ConnectAttempt attempt = new ConnectAttempt(requestId, client);
-            PresentedHostKey presented = new PresentedHostKey();
-            SshConnection connection = null;
-            try {
-                if ("key-handle".equals(credentialKind)) {
-                    keyHandlePassphrase = keyHandlePassphraseValue == null
-                        ? new char[0]
-                        : keyHandlePassphraseValue.toCharArray();
-                    keyHandlePassphraseValue = null;
-                }
-                registerConnectAttempt(attempt);
+            connection = new SshConnection(UUID.randomUUID().toString(), generationId, hostId, requestId, client);
+            final SshConnection connected = connection;
+            client.getTransport().setDisconnectListener((reason, message) -> {
+                if (connected.intentionalClose.get()) return;
+                connected.state = "lost";
+                CLEANUP_EXECUTOR.execute(() -> closeChildren(connected));
+                JSObject event = new JSObject();
+                event.put("connectionId", connected.connectionId);
+                event.put("generationId", connected.generationId);
+                event.put("state", "lost");
+                event.put("reason", message == null || message.isBlank() ? String.valueOf(reason) : message);
+                mainHandler.post(() -> notifyListeners("connectionState", event));
+            });
+            java.util.function.Consumer<ConnectAttempt> beforeRegistration = beforeConnectRegistrationForTesting;
+            if (beforeRegistration != null) beforeRegistration.accept(attempt);
+            synchronized (connectLock) {
                 checkConnectNotCancelled(attempt);
-                client.setConnectTimeout(connectTimeout);
-                client.setTimeout(Math.min(connectTimeout, 10_000));
-                client.addHostKeyVerifier(new PinVerifier(expectedHostKey, presented, attempt));
-                client.connect(hostname, port);
-                checkConnectNotCancelled(attempt);
-                client.setTimeout(5000);
-                if ("password".equals(credentialKind)) {
-                    String password = requiredString(credential, "password");
-                    char[] secret = password.toCharArray();
-                    try {
-                        client.authPassword(username, secret);
-                    } finally {
-                        PasswordUtils.blankOut(secret);
-                    }
-                } else if ("key-handle".equals(credentialKind)) {
-                    char[] secret = keyHandlePassphrase;
-                    byte[] privateKeyBytes = null;
-                    try {
-                        try {
-                            privateKeyBytes = CredentialHandleVault.forContext(getContext()).resolvePrivateKey(keyHandleId);
-                        } catch (IOException | RuntimeException vaultError) {
-                            KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
-                            android.util.Log.i(KeyHandleConnectFailures.LOG_TAG, "stored-key connect failed code=" + unavailable.code);
-                            throw new PluginFailure(unavailable.code, unavailable.message);
-                        }
-                        String privateKeyPem = new String(privateKeyBytes, StandardCharsets.UTF_8);
-                        KeyFormat format = KeyProviderUtil.detectKeyFileFormat(privateKeyPem, secret.length > 0);
-                        FileKeyProvider keyProvider = Factory.Named.Util.create(
-                            client.getTransport().getConfig().getFileKeyProviderFactories(),
-                            format.toString()
-                        );
-                        if (keyProvider == null) throw new PluginFailure("INVALID_ARGUMENT", "SSH private key format is not supported.");
-                        keyProvider.init(privateKeyPem, null, PasswordUtils.createOneOff(secret));
-                        client.authPublickey(username, keyProvider);
-                    } finally {
-                        if (privateKeyBytes != null) java.util.Arrays.fill(privateKeyBytes, (byte) 0);
-                    }
-                } else {
-                    throw new PluginFailure("INVALID_ARGUMENT", "SSH credential kind is not supported.");
+                if (attempt.deadlineExceeded.get()) {
+                    // The watchdog claimed the deadline first; the catch
+                    // below closes this connection and reports the timeout.
+                    throw new PluginFailure("CONNECT_TIMEOUT", "The gateway connection did not complete within its deadline.");
                 }
-                checkConnectNotCancelled(attempt);
-
-                connection = new SshConnection(UUID.randomUUID().toString(), generationId, hostId, requestId, client);
-                final SshConnection connected = connection;
-                client.getTransport().setDisconnectListener((reason, message) -> {
-                    if (connected.intentionalClose.get()) return;
-                    connected.state = "lost";
-                    CLEANUP_EXECUTOR.execute(() -> closeChildren(connected));
-                    JSObject event = new JSObject();
-                    event.put("connectionId", connected.connectionId);
-                    event.put("generationId", connected.generationId);
-                    event.put("state", "lost");
-                    event.put("reason", message == null || message.isBlank() ? String.valueOf(reason) : message);
-                    mainHandler.post(() -> notifyListeners("connectionState", event));
-                });
-                synchronized (connectLock) {
-                    checkConnectNotCancelled(attempt);
-                    if (!connection.state.equals("connected") || !client.isConnected()) {
-                        throw new PluginFailure("CONNECTION_LOST", "SSH connection ended during setup.");
-                    }
-                    connections.put(connection.connectionId, connection);
-                    pendingConnects.remove(requestId, attempt);
+                if (!connection.state.equals("connected") || !client.isConnected()) {
+                    throw new PluginFailure("CONNECTION_LOST", "SSH connection ended during setup.");
                 }
-                JSObject hostKey = presented.asJson();
-                return new JSObject()
-                    .put("requestId", requestId)
-                    .put("connectionId", connection.connectionId)
-                    .put("generationId", generationId)
-                    .put("hostKey", hostKey);
-            } catch (Exception error) {
-                if (attempt.cancelled.get()) {
-                    if (connection != null) closeConnection(connection, "connect-cancelled", false);
-                    else attempt.closeClient();
-                    throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.");
-                }
-                if (connection != null) closeConnection(connection, "connect-failed", false);
-                else attempt.closeClient();
-                if (presented.keyType != null && !presented.trusted) {
-                    JSObject details = presented.asJson();
-                    throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
-                }
-                if ("key-handle".equals(credentialKind)) {
-                    // Our own PluginFailures carry curated codes and messages;
-                    // anything else is classified without copying its message.
-                    if (error instanceof PluginFailure) throw (PluginFailure) error;
-                    KeyHandleConnectFailures.Classified failure = KeyHandleConnectFailures.classify(error);
-                    // Code only: never the exception text, which can echo key material.
-                    android.util.Log.i(KeyHandleConnectFailures.LOG_TAG, "stored-key connect failed code=" + failure.code);
-                    throw new PluginFailure(failure.code, failure.message);
-                }
-                throw failureFor(error);
-            } finally {
-                PasswordUtils.blankOut(keyHandlePassphrase);
-                keyHandlePassphraseValue = null;
-                unregisterConnectAttempt(attempt);
+                connections.put(connection.connectionId, connection);
+                pendingConnects.remove(requestId, attempt);
             }
-        });
+            JSObject hostKey = presented.asJson();
+            JSObject result = new JSObject()
+                .put("requestId", requestId)
+                .put("connectionId", connection.connectionId)
+                .put("generationId", generationId)
+                .put("hostKey", hostKey);
+            if (gatewayPlan != null) result.put("gatewayHostKeyVerified", true);
+            return result;
+        } catch (Exception error) {
+            if (attempt.cancelled.get()) {
+                if (connection != null) closeConnection(connection, "connect-cancelled", false);
+                else attempt.closeClient();
+                throw new PluginFailure("CANCELLED", "SSH connection attempt was cancelled.");
+            }
+            if (attempt.deadlineExceeded.get()) {
+                if (connection != null) closeConnection(connection, "connect-deadline", false);
+                else attempt.closeClient();
+                throw new PluginFailure("CONNECT_TIMEOUT", "The gateway connection did not complete within its deadline.");
+            }
+            if (connection != null) closeConnection(connection, "connect-failed", false);
+            else attempt.closeClient();
+            if (presented.keyType != null && !presented.trusted) {
+                JSObject details = presented.asJson();
+                throw new PluginFailure("HOST_KEY_REJECTED", "The SSH host key has not been trusted.", details, null);
+            }
+            // A gateway verdict (a close frame, or a handshake error frame
+            // mapped to its close code) reaches core intact, whether it
+            // ended the WebSocket handshake or surfaced to sshj as a plain
+            // stream error mid-KEX. It is never reclassified as an SSH or
+            // key failure: core's retry matrix keys on the close code.
+            PluginFailure gatewayClosed = gatewayClosedFailure(attempt.tunnel);
+            if (gatewayClosed != null) throw gatewayClosed;
+            if ("key-handle".equals(credentialKind)) {
+                // Our own PluginFailures carry curated codes and messages;
+                // anything else is classified without copying its message.
+                if (error instanceof PluginFailure) throw (PluginFailure) error;
+                KeyHandleConnectFailures.Classified failure = KeyHandleConnectFailures.classify(error);
+                // Code only: never the exception text, which can echo key material.
+                connectFailureLog.storedKeyConnectFailed(failure.code);
+                throw new PluginFailure(failure.code, failure.message);
+            }
+            throw failureFor(error);
+        } finally {
+            if (deadlineWatchdog != null) deadlineWatchdog.cancel(false);
+            PasswordUtils.blankOut(keyHandlePassphrase);
+            keyHandlePassphraseValue = null;
+            unregisterConnectAttempt(attempt);
+        }
     }
 
     @PluginMethod
@@ -1095,6 +1263,273 @@ public final class SshCapabilityPlugin extends Plugin {
         throw new PluginFailure("INVALID_ARGUMENT", "SSH host-key pin kind is not supported.");
     }
 
+    private PrivateKeySource privateKeySource() {
+        PrivateKeySource source = privateKeySource;
+        return source != null
+            ? source
+            : keyHandleId -> CredentialHandleVault.forContext(getContext()).resolvePrivateKey(keyHandleId);
+    }
+
+    /**
+     * The resolved gateway dial: a strictly validated target, the saved
+     * pairing (independent pin + key handle), and the one whole-connect
+     * deadline. Built before any effect — every refusal here is typed and
+     * happens before the SSH engine, the broker, or any socket exists.
+     */
+    static final class GatewayDialPlan {
+        final GatewayTargetPolicy.Target target;
+        final GatewayPairingStore.Pairing pairing;
+        /** The signed-in account the pairing and the routing token belong to. */
+        final String subject;
+        final long deadlineEpochMs;
+
+        GatewayDialPlan(GatewayTargetPolicy.Target target, GatewayPairingStore.Pairing pairing, String subject,
+                long deadlineEpochMs) {
+            this.target = target;
+            this.pairing = pairing;
+            this.subject = subject;
+            this.deadlineEpochMs = deadlineEpochMs;
+        }
+
+        /** The verifier expectation from the saved pairing only, compared
+         * against the key the host actually presents: the exact public key
+         * when the user pasted the {@code gateway show --host-key} line, its
+         * SHA-256 fingerprint otherwise. Never the ready advisory. */
+        HostKeyPinExpectation pinExpectation() {
+            if (pairing.hostKeyType() != null && pairing.hostKeyB64() != null) {
+                return new HostKeyPinExpectation(pairing.hostKeyType(), pairing.hostKeyB64(), null);
+            }
+            return new HostKeyPinExpectation(null, null, pairing.fingerprintSha256);
+        }
+    }
+
+    /**
+     * Resolve the gateway dial plan from raw connect options, or null for an
+     * ordinary direct dial. Presence of the raw {@code gateway} marker
+     * decides the transport; the value must strictly validate, so a null,
+     * non-object, or malformed marker refuses instead of projecting into a
+     * direct dial. A dial that names BOTH {@code gateway} and {@code link}
+     * refuses: the conflict is never resolved by falling back.
+     */
+        GatewayDialPlan resolveGatewayDialPlan(JSObject options, String credentialKind, String keyHandleId,
+            int connectTimeout) throws PluginFailure {
+        if (!options.has("gateway")) return null;
+        if (options.getJSObject("expectedHostKey") != null) {
+            throw new PluginFailure("INVALID_ARGUMENT",
+                    "A gateway connection takes its host-key pin from the saved pairing, not the connect request.");
+        }
+        if (options.has("link")) {
+            throw new PluginFailure("INVALID_ARGUMENT", "A connection cannot be both a gateway and a link dial.");
+        }
+        if (!"key-handle".equals(credentialKind)) {
+            throw new PluginFailure("INVALID_ARGUMENT", "Gateway connections authenticate with a stored SSH key only.");
+        }
+        Object rawGateway = options.opt("gateway");
+        if (!(rawGateway instanceof JSObject)) {
+            throw new PluginFailure("INVALID_ARGUMENT", "The gateway target is malformed.");
+        }
+        JSObject rawTarget = (JSObject) rawGateway;
+        GatewayTargetPolicy.Target target = GatewayTargetPolicy.normalizeTarget(
+                rawTarget.opt("serverUrl"), rawTarget.opt("deviceId"));
+        if (target == null) {
+            throw new PluginFailure("INVALID_ARGUMENT", "The gateway target is malformed.");
+        }
+        GatewaySyncSession session = gatewaySyncSession;
+        GatewayPairingStore pairingStore = gatewayPairingStore;
+        if (pairingStore == null && session != null && getBridge() != null) {
+            try {
+                pairingStore = GatewayPairingPlugin.sharedStore(getContext());
+                gatewayPairingStore = pairingStore;
+            } catch (IOException unreadable) {
+                pairingStore = null;
+            }
+        }
+        if (session == null || pairingStore == null) {
+            // An unreadable store refuses every gateway dial at plan time;
+            // direct dials never reach this.
+            throw new PluginFailure("GATEWAY_PAIRING_STORE_FAILED", "The saved gateway pairings could not be read.");
+        }
+        final String subject;
+        try {
+            subject = session.subject();
+        } catch (SyncAuthException signedOut) {
+            throw new PluginFailure(signedOut.code, signedOut.getMessage());
+        }
+        final GatewayPairingStore.Pairing pairing;
+        try {
+            pairing = pairingStore.lookup(subject, target.serverUrl, target.deviceId);
+        } catch (IOException storeError) {
+            throw new PluginFailure("GATEWAY_PAIRING_STORE_FAILED", "The saved gateway pairings could not be read.");
+        }
+        if (pairing == null) {
+            throw new PluginFailure("GATEWAY_UNPAIRED",
+                    "Pair this device with the host before connecting through the gateway.");
+        }
+        if (!pairing.keyHandleId.equals(keyHandleId)) {
+            throw new PluginFailure("GATEWAY_UNPAIRED", "The saved pairing uses a different SSH key.");
+        }
+        // The key must still resolve from the vault BEFORE any broker call or
+        // socket: a dial without its key is refused, not half-opened.
+        try {
+            gatewayVaultProbe.requireResolvable(pairing.keyHandleId);
+        } catch (IOException | RuntimeException vaultError) {
+            KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
+            throw new PluginFailure(unavailable.code, unavailable.message);
+        }
+        return new GatewayDialPlan(target, pairing, subject, System.currentTimeMillis() + connectTimeout);
+    }
+
+    /**
+     * Open the gateway tunnel for one attempt with a native routing token.
+     * A cached token is used only while it outlives this attempt's deadline;
+     * otherwise a fresh one is minted. If the gateway answers a REUSED
+     * token with 4401 (rotated keys, or a token revoked early), the cache is
+     * dropped and the dial is retried once, inside the same deadline, with a
+     * freshly minted token: core treats 4401 as "sign in again" and never
+     * retries it, so a stale cache entry must not be the reason. A 4401 on
+     * a fresh token is the real verdict and is reported as such.
+     */
+    private GatewayTunnel openGatewayTunnel(ConnectAttempt attempt, GatewayDialPlan plan) throws Exception {
+        GatewayRoutingTokens.Issued token = mintGatewayRoutingToken(plan, false);
+        while (true) {
+            checkConnectNotCancelled(attempt);
+            // The last account check before the token can leave: the account
+            // signed in now must still be the one the dial was planned for.
+            requirePlannedAccount(plan);
+            GatewayTunnel tunnel = gatewayTunnelFactory.create(plan.target, token.token);
+            attempt.attachTunnel(tunnel);
+            // A cancel that landed while the token was minted already closed
+            // the client; joining the tunnel now means it never dials.
+            checkConnectNotCancelled(attempt);
+            try {
+                tunnel.open(plan.deadlineEpochMs);
+                return tunnel;
+            } catch (GatewayTunnel.GatewayTunnelException failure) {
+                if (failure.closeCode == 4401) gatewayRoutingTokens.invalidate(token);
+                if (failure.closeCode != 4401 || !token.reused) throw failure;
+                tunnel.close();
+                token = mintGatewayRoutingToken(plan, true);
+            }
+        }
+    }
+
+    private void requirePlannedAccount(GatewayDialPlan plan) throws PluginFailure {
+        try {
+            gatewayRoutingTokens.requireAccount(gatewaySyncSession, plan.subject);
+        } catch (SyncAuthException error) {
+            throw new PluginFailure(error.code, error.getMessage());
+        } catch (GatewayTokenBroker.GatewayBrokerException error) {
+            throw new PluginFailure(error.code, error.getMessage());
+        }
+    }
+
+    private GatewayRoutingTokens.Issued mintGatewayRoutingToken(GatewayDialPlan plan, boolean forceFresh)
+            throws PluginFailure {
+        try {
+            return gatewayRoutingTokens.issue(gatewaySyncSession, plan.subject,
+                plan.deadlineEpochMs - System.currentTimeMillis(), forceFresh);
+        } catch (SyncAuthException error) {
+            throw new PluginFailure(error.code, error.getMessage());
+        } catch (GatewayTokenBroker.GatewayBrokerException error) {
+            throw new PluginFailure(error.code, error.getMessage());
+        }
+    }
+
+    /**
+     * Core's gateway refusal contract (core docs/SYNC.md,
+     * {@code classifyGatewayDialFailure}): code {@code GATEWAY_CLOSED} with
+     * {@code data.gatewayCloseCode}. Null when the attempt had no tunnel or
+     * the gateway never delivered a verdict (DNS/TCP/TLS failure, timeout,
+     * local protocol refusal) — those keep their ordinary codes.
+     */
+    static PluginFailure gatewayClosedFailure(GatewayTunnel tunnel) {
+        if (tunnel == null) return null;
+        GatewayTunnel.GatewayTunnelException verdict = tunnel.failure();
+        if (verdict == null || !verdict.hasGatewayCloseCode()) return null;
+        JSObject data = new JSObject().put("gatewayCloseCode", verdict.closeCode);
+        return new PluginFailure(GATEWAY_CLOSED, verdict.getMessage(), data, null);
+    }
+
+    /** Cancels the attempt at its whole-connect deadline. A watchdog firing
+     * on a completed attempt is a no-op: only a still-pending registration is
+     * cancelled, so a live connection is never killed by its own deadline. */
+    private ScheduledFuture<?> scheduleConnectDeadline(ConnectAttempt attempt, long deadlineEpochMs) {
+        long delay = Math.max(0, deadlineEpochMs - System.currentTimeMillis());
+        return CONNECT_DEADLINE_SCHEDULER.schedule(() -> runConnectDeadline(attempt), delay, TimeUnit.MILLISECONDS);
+    }
+
+    /** JVM tests only: runs on the watchdog thread after it decided to fire
+     * and before it closes anything. Null in production. */
+    volatile Runnable afterConnectDeadlineDecisionForTesting;
+    /** JVM tests only: runs on the connect thread just before the success
+     * registration block. Null in production. */
+    volatile java.util.function.Consumer<ConnectAttempt> beforeConnectRegistrationForTesting;
+
+    /** The watchdog body: fire the whole-connect deadline for a still-pending attempt. */
+    void runConnectDeadline(ConnectAttempt attempt) {
+        // Claim the deadline under the same lock success registration holds:
+        // exactly one of them wins. Registration refuses a claimed deadline,
+        // and a registered (no longer pending) attempt is never claimed.
+        synchronized (connectLock) {
+            if (pendingConnects.get(attempt.requestId) != attempt) return;
+            attempt.deadlineExceeded.set(true);
+        }
+        Runnable hook = afterConnectDeadlineDecisionForTesting;
+        if (hook != null) hook.run();
+        // Closing outside the lock is safe: the claim already made
+        // registration impossible.
+        attempt.closeClient();
+    }
+
+    /** Hands sshj the tunnel's already-connected socket; no other socket kind
+     * exists for a gateway dial. */
+    private static final class GatewaySocketFactory extends javax.net.SocketFactory {
+        private final GatewayTunnel tunnel;
+
+        GatewaySocketFactory(GatewayTunnel tunnel) {
+            this.tunnel = tunnel;
+        }
+
+        @Override
+        public Socket createSocket() {
+            return tunnel.socket();
+        }
+
+        @Override
+        public Socket createSocket(String host, int port) {
+            throw new UnsupportedOperationException("The gateway transport only hands out its tunnel socket.");
+        }
+
+        @Override
+        public Socket createSocket(String host, int port, java.net.InetAddress localHost, int localPort) {
+            throw new UnsupportedOperationException("The gateway transport only hands out its tunnel socket.");
+        }
+
+        @Override
+        public Socket createSocket(java.net.InetAddress host, int port) {
+            throw new UnsupportedOperationException("The gateway transport only hands out its tunnel socket.");
+        }
+
+        @Override
+        public Socket createSocket(java.net.InetAddress address, int port, java.net.InetAddress localAddress, int localPort) {
+            throw new UnsupportedOperationException("The gateway transport only hands out its tunnel socket.");
+        }
+    }
+
+    /**
+     * sshj resolves DNS in {@code makeInetSocketAddress} for direct dials. A
+     * gateway dial hands the engine an already-connected socket, so sshj
+     * never reaches this method — and if a future code path ever does, it
+     * gets a virtual loopback peer instead of DNS or TCP to the display
+     * hostname/port, which are labels only for a gateway host.
+     */
+    private static final class GatewayVirtualPeerClient extends SSHClient {
+        @Override
+        protected java.net.InetSocketAddress makeInetSocketAddress(String hostname, int port) {
+            return new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 22);
+        }
+    }
+
     /**
      * Android installs a platform provider named BC which can shadow sshj's
      * bundled provider while lacking X25519. Install the bundled implementation
@@ -1586,7 +2021,7 @@ public final class SshCapabilityPlugin extends Plugin {
         JSObject execute(JSObject options) throws Exception;
     }
 
-    private static final class PluginFailure extends Exception {
+    static final class PluginFailure extends Exception {
         final String code;
         final JSObject data;
 
@@ -1631,7 +2066,7 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class HostKeyPinExpectation {
+    static final class HostKeyPinExpectation {
         final String keyType;
         final String keyB64;
         final String fingerprintSha256;
@@ -1652,19 +2087,37 @@ public final class SshCapabilityPlugin extends Plugin {
         }
     }
 
-    private static final class ConnectAttempt {
+    static final class ConnectAttempt {
         final String requestId;
         final SSHClient client;
         final AtomicBoolean cancelled = new AtomicBoolean(false);
         final AtomicBoolean clientClosed = new AtomicBoolean(false);
+        /** Set by the whole-connect deadline watchdog while the attempt is
+         * still pending; a completed, registered connection is never touched. */
+        final AtomicBoolean deadlineExceeded = new AtomicBoolean(false);
+        /** The gateway tunnel this attempt owns, attached BEFORE it starts
+         * dialing, so a cancel at any phase — dialing included — joins the
+         * tunnel's WebSocket, streams and latches. */
+        volatile GatewayTunnel tunnel;
 
         ConnectAttempt(String requestId, SSHClient client) {
             this.requestId = requestId;
             this.client = client;
         }
 
+        void attachTunnel(GatewayTunnel gatewayTunnel) {
+            this.tunnel = gatewayTunnel;
+        }
+
         void closeClient() {
             if (clientClosed.compareAndSet(false, true)) SshCapabilityPlugin.closeClient(client);
+            GatewayTunnel owned = tunnel;
+            if (owned != null) {
+                try {
+                    owned.close();
+                } catch (Throwable ignored) {
+                }
+            }
         }
     }
 
@@ -1686,10 +2139,12 @@ public final class SshCapabilityPlugin extends Plugin {
                 byte[] blob = new Buffer.PlainBuffer().putPublicKey(key).getCompactData();
                 Buffer.PlainBuffer reader = new Buffer.PlainBuffer(blob);
                 String keyType = reader.readString();
-                String keyB64 = Base64.encodeToString(blob, Base64.NO_WRAP);
-                String fingerprint = "SHA256:" + Base64.encodeToString(
-                    MessageDigest.getInstance("SHA-256").digest(blob),
-                    Base64.NO_WRAP
+                // java.util.Base64 (API 26+, minSdk 26): the same standard,
+                // padded, unwrapped encoding as android.util.Base64.NO_WRAP,
+                // and it also runs in the JVM connect tests.
+                String keyB64 = java.util.Base64.getEncoder().encodeToString(blob);
+                String fingerprint = "SHA256:" + java.util.Base64.getEncoder().encodeToString(
+                    MessageDigest.getInstance("SHA-256").digest(blob)
                 ).replaceAll("=+$", "");
                 presented.keyType = keyType;
                 presented.keyB64 = keyB64;

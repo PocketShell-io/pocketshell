@@ -60,6 +60,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NativeCrashReportsPlugin.class);
         registerPlugin(BridgeReadyPlugin.class);
         registerPlugin(GoogleSyncPlugin.class);
+        registerPlugin(GatewayPairingPlugin.class);
         NativeCrashRecorder.install(this);
         super.onCreate(savedInstanceState);
     }

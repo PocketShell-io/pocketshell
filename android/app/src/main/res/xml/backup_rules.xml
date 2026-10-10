@@ -2,4 +2,5 @@
 <full-backup-content>
     <exclude domain="file" path="credential-vault/" />
     <exclude domain="sharedpref" path="pocketshell_ssh_key_vault_v1.xml" />
+    <exclude domain="sharedpref" path="pocketshell-gateway-pairings.xml" />
 </full-backup-content>

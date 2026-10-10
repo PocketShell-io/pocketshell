@@ -167,6 +167,10 @@ dependencies {
     implementation project(':capacitor-android')
     implementation project(':capacitor-cordova-android-plugins')
     implementation 'com.hierynomus:sshj:0.40.0'
+    // The gateway byte transport under sshj (#3060): the only WS candidate
+    // whose frame-size bound fires BEFORE payload allocation; see
+    // docs/gateway-android-transport.md for the evaluated alternatives.
+    implementation 'org.java-websocket:Java-WebSocket:1.5.7'
     implementation 'org.slf4j:slf4j-nop:2.0.17'
     implementation 'org.bouncycastle:bcprov-jdk18on:1.80.2'
     implementation 'org.bouncycastle:bcutil-jdk18on:1.80.2'
@@ -180,6 +184,10 @@ dependencies {
     testImplementation "junit:junit:$junitVersion"
     // The real org.json on the JVM; android.jar only carries stubs (#3020 GoogleIdToken claims).
     testImplementation 'org.json:json:20250517'
+    // A real SSH server behind the JVM gateway fixture (#3086): proves the
+    // pin is checked against the key the host presents BEFORE userauth, and
+    // that gateway close codes survive the full sshj connect path. Test only.
+    testImplementation 'org.apache.sshd:sshd-core:2.14.0'
     androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
     androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
     androidTestImplementation "androidx.test.espresso:espresso-intents:$androidxEspressoCoreVersion"

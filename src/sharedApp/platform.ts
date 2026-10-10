@@ -6,7 +6,7 @@
  */
 import { App as CapacitorApp } from '@capacitor/app';
 import { ConnectionController, type HostKeyTrustPin, type HostKeyTrustStore } from '@pocketshell/core';
-import { sshCapability } from '@/native/sshCapability';
+import { loadSshTransportCapabilities, sshCapability } from '@/native/sshCapability';
 import { createAndroidPlatform, type AndroidLifecycle } from '@/platform/android/androidApi';
 import { androidHosts, androidKeyManager } from '@/platform/android/hosts';
 import { createAccountHostKeys } from '@/platform/android/accountHosts';
@@ -54,6 +54,11 @@ function journalConnection(entry: ConnectionJournalEntry): void {
 export const accountHostKeyPrompt = createAccountHostKeyPrompt({ keys: androidKeyManager, hosts: androidHosts });
 
 const syncApi = androidSync().api();
+
+// Core reads `sshCapability.gatewayTransport` from what the native plugin
+// reports (#3086). Gateway hosts stay refused at the Android boundary
+// (`unsupportedTransportMessage`) until slice 3 lifts that behind this flag.
+void loadSshTransportCapabilities();
 
 export const androidPlatform = createAndroidPlatform({
   createController: () => new ConnectionController({ capability: sshCapability, trustStore }),

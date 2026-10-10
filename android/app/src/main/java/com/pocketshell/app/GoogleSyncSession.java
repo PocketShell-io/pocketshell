@@ -85,6 +85,65 @@ public final class GoogleSyncSession {
         this.nowEpochSeconds = nowEpochSeconds;
     }
 
+    /**
+     * The signed-in account's stable subject (the Google {@code sub}), the
+     * first half of the gateway pairing namespace. Reads the stored record
+     * only — no renewal, no network; renewal happens where a token is spent.
+     * The subject is an account identifier, not a secret.
+     */
+    synchronized String currentAccountSubject() throws SyncAuthException {
+        GoogleIdToken token = storedToken();
+        if (token == null) {
+            throw new SyncAuthException(SyncAuthException.NOT_SIGNED_IN, "Sign in with Google first.");
+        }
+        return token.subject;
+    }
+
+    /**
+     * The dedicated gateway broker exchange: one empty-body POST
+     * {@code /gateway/token} at the configured sync API base, carrying the
+     * current account's ID token in the Authorization header only. The route
+     * is fixed here — the gateway target, the display hostname, or any
+     * response content can never choose the URL (issue #3060). The exchange
+     * rides the same no-redirect, deadline- and size-bounded transport as
+     * settings sync, and the token is renewed silently first, exactly like a
+     * sync request — including the one retry after a silent renewal when the
+     * broker answers 401 (the ID token can age out between the check and the
+     * broker's authorizer).
+     *
+     * <p>The bearer never leaves this class except through
+     * {@link GatewayBrokerExchange#bearerEchoedBy(String)} — an equality
+     * answer, so the strict response parser can refuse an endpoint that
+     * echoes the Google token back instead of minting a scoped one.
+     */
+    synchronized GatewayBrokerExchange gatewayTokenExchange() throws SyncAuthException {
+        GoogleIdToken token = usableToken();
+        // Empty body by contract: an explicit zero-length body, so the
+        // exchange is a POST with Content-Length: 0 on every HTTP stack.
+        Response response = send("POST", "/gateway/token", "", token);
+        if (response.status == 401) {
+            token = renew(token);
+            response = send("POST", "/gateway/token", "", token);
+        }
+        return new GatewayBrokerExchange(response, token.token);
+    }
+
+    /** One broker exchange answer plus the bearer-echo check for its parse. */
+    static final class GatewayBrokerExchange {
+        final Response response;
+        private final String bearer;
+
+        GatewayBrokerExchange(Response response, String bearer) {
+            this.response = response;
+            this.bearer = bearer;
+        }
+
+        /** Whether a token parsed from the body is this exchange's Google bearer. */
+        boolean bearerEchoedBy(String candidate) {
+            return bearer != null && bearer.equals(candidate);
+        }
+    }
+
     /** Signed in means a stored token exists; an expired one is renewed on the next request. */
     synchronized Status status() throws SyncAuthException {
         GoogleIdToken token = storedToken();

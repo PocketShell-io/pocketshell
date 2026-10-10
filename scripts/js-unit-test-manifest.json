@@ -823,6 +823,18 @@
         "link alone: the marked account row is refused even when a keyed phone host \"box\" sits at the same address",
         "null link: the marked account row is refused even when a keyed phone host \"box\" sits at the same address"
       ]
+    },
+    "tests/unit/androidGatewayCapability.test.ts": {
+      "suite": "Android native gateway transport capability (#3086 slice 2)",
+      "tests": [
+        "reports the gateway transport to core only after the native plugin says so",
+        "fails closed on a native rejection (an older build without the method)",
+        "fails closed on a reply for another request",
+        "fails closed on a non-boolean flag",
+        "fails closed on an empty reply",
+        "fails closed on an explicit false",
+        "still refuses a valid gateway host while native reports the transport (slice 3 lifts this)"
+      ]
     }
   }
 }
