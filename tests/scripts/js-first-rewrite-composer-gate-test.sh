@@ -221,6 +221,58 @@ def require_contract(source: str, packaged_script: str) -> None:
 
 require_contract(workflow, packaged_lanes)
 
+
+def require_gateway_deploy_key(text: str) -> None:
+    """#3086: the private gateway source comes in through a read-only deploy key only."""
+    pin = (repository_root / "tests/docker/gateway/gateway-source.pin").read_text().strip()
+    if "POCKETSHELL_GATEWAY_READ_TOKEN" in text:
+        raise AssertionError("the gateway lane must not use a token secret")
+    start = text.index("      - name: Check out the pinned PocketShell gateway source for the gateway lane\n")
+    end = text.index("\n      - name:", start + 8)
+    step = text[start:end]
+    for needle in (
+        "uses: actions/checkout@",
+        "repository: PocketShell-io/pocketshell-gateway",
+        f"ref: {pin}\n",
+        "ssh-key: ${{ secrets.POCKETSHELL_GATEWAY_READ_SSH_KEY }}",
+        "ssh-strict: true",
+        "persist-credentials: false",
+        "path: .ci/pocketshell-gateway",
+    ):
+        if needle not in step:
+            raise AssertionError(f"gateway checkout is missing {needle!r}")
+    if "token:" in step or "continue-on-error" in step or "if:" in step:
+        raise AssertionError("gateway checkout must not take a token or be skippable")
+    if text.count("secrets.POCKETSHELL_GATEWAY_READ_SSH_KEY }}") != 1:
+        raise AssertionError("only the gateway checkout step may receive the deploy key")
+    guard_start = text.index("      - name: Require the gateway lane's deploy key\n")
+    guard = text[guard_start:text.index("\n      - name:", guard_start + 8)]
+    if "secrets.POCKETSHELL_GATEWAY_READ_SSH_KEY != ''" not in guard or "exit 1" not in guard or not guard_start < start:
+        raise AssertionError("a missing deploy key must fail before the checkout with a clear error")
+    if "continue-on-error" in guard or "\n        if:" in guard:
+        raise AssertionError("the deploy-key guard must not be skippable")
+
+
+require_gateway_deploy_key(workflow)
+for label, damaged in (
+    ("token secret", workflow.replace("ssh-key: ${{ secrets.POCKETSHELL_GATEWAY_READ_SSH_KEY }}",
+                                      "token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}", 1)),
+    ("loose host verification", workflow.replace("ssh-strict: true", "ssh-strict: false", 1)),
+    ("persisted credentials", workflow.replace("          persist-credentials: false\n          path: .ci/pocketshell-gateway",
+                                               "          persist-credentials: true\n          path: .ci/pocketshell-gateway", 1)),
+    ("unpinned ref", workflow.replace("ref: 8f2f360f01025ee5d78a813d918190a185d4af98", "ref: main", 1)),
+    ("skippable guard", workflow.replace("      - name: Require the gateway lane's deploy key\n",
+                                         "      - name: Require the gateway lane's deploy key\n        continue-on-error: true\n", 1)),
+):
+    if damaged == workflow:
+        raise AssertionError(f"gateway deploy-key mutation fixture did not apply: {label}")
+    try:
+        require_gateway_deploy_key(damaged)
+    except AssertionError:
+        print(f"PASS: a {label} fails the gateway deploy-key contract")
+    else:
+        raise AssertionError(f"gateway deploy-key contract missed a {label}")
+
 runtime_step = workflow.index("- name: Capture and verify emulator JS runtime after disk cleanup")
 fixture_step = workflow.index("- name: Start version-matched Docker agents fixture")
 cleanup_step = workflow.index("- name: Free disk space for API 35 emulator")
