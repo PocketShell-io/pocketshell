@@ -131,8 +131,10 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private volatile GatewayVaultProbe gatewayVaultProbe;
+    /** Wall time for the gateway path (token arrival times); JVM tests move it. */
+    private volatile LongSupplier gatewayWallClock = System::currentTimeMillis;
     /** Native-only routing tokens, in memory for this process; never bridged. */
-    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(System::currentTimeMillis);
+    private volatile GatewayRoutingTokens gatewayRoutingTokens = new GatewayRoutingTokens(() -> gatewayWallClock.getAsLong());
     static final String GATEWAY_CLOSED = "GATEWAY_CLOSED";
     /** The signed-in account changed after a gateway dial was planned. */
     static final String GATEWAY_ACCOUNT_CHANGED = "GATEWAY_ACCOUNT_CHANGED";
@@ -200,6 +202,11 @@ public final class SshCapabilityPlugin extends Plugin {
     /** JVM tests: drive token reuse and expiry with a controlled clock. */
     void useGatewayRoutingTokensForTesting(GatewayRoutingTokens tokens) {
         this.gatewayRoutingTokens = tokens;
+    }
+
+    /** JVM tests: a wall clock that jumps (an NTP or user clock change mid-dial). */
+    void useGatewayWallClockForTesting(LongSupplier clock) {
+        this.gatewayWallClock = clock;
     }
 
     @Override
@@ -1376,7 +1383,7 @@ public final class SshCapabilityPlugin extends Plugin {
             KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
             throw new PluginFailure(unavailable.code, unavailable.message);
         }
-        return new GatewayDialPlan(target, pairing, subject, System.currentTimeMillis() + connectTimeout);
+        return new GatewayDialPlan(target, pairing, subject, gatewayWallClock.getAsLong() + connectTimeout);
     }
 
     /**
@@ -1427,7 +1434,7 @@ public final class SshCapabilityPlugin extends Plugin {
             throws PluginFailure {
         try {
             return gatewayRoutingTokens.issue(gatewaySyncSession, plan.subject,
-                plan.deadlineEpochMs - System.currentTimeMillis(), forceFresh);
+                plan.deadlineEpochMs - gatewayWallClock.getAsLong(), forceFresh);
         } catch (SyncAuthException error) {
             throw new PluginFailure(error.code, error.getMessage());
         } catch (GatewayTokenBroker.GatewayBrokerException error) {
@@ -1454,7 +1461,7 @@ public final class SshCapabilityPlugin extends Plugin {
      * on a completed attempt is a no-op: only a still-pending registration is
      * cancelled, so a live connection is never killed by its own deadline. */
     private ScheduledFuture<?> scheduleConnectDeadline(ConnectAttempt attempt, long deadlineEpochMs) {
-        long delay = Math.max(0, deadlineEpochMs - System.currentTimeMillis());
+        long delay = Math.max(0, deadlineEpochMs - gatewayWallClock.getAsLong());
         return CONNECT_DEADLINE_SCHEDULER.schedule(() -> runConnectDeadline(attempt), delay, TimeUnit.MILLISECONDS);
     }
 

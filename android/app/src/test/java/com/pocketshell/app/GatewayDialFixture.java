@@ -198,7 +198,9 @@ final class GatewayDialFixture implements AutoCloseable {
     // --- the gateway ------------------------------------------------------------------
 
     /** What the fake gateway does once a client sends its auth frame. */
-    enum Mode { READY_RELAY, CLOSE, ERROR_FRAME_HOLD, ERROR_FRAME_THEN_CLOSE, READY_THEN_CLOSE }
+    enum Mode { READY_RELAY, CLOSE, ERROR_FRAME_HOLD, ERROR_FRAME_THEN_CLOSE, READY_THEN_CLOSE,
+        /** Take the auth frame and never answer it (a stalled gateway). */
+        SILENT }
 
     /**
      * A scripted v1 client-route gateway on loopback. In READY_RELAY it
@@ -215,6 +217,8 @@ final class GatewayDialFixture implements AutoCloseable {
         /** Routing tokens this gateway now refuses with 4401 (rotated keys,
          * early revocation), whatever the mode. */
         final java.util.Set<String> rejectedTokens = ConcurrentHashMap.newKeySet();
+        /** Runs when a rejected token is refused, before the 4401 goes out. */
+        volatile Runnable onRejectedToken;
         volatile int closeCode;
         volatile String errorCode;
 
@@ -255,6 +259,8 @@ final class GatewayDialFixture implements AutoCloseable {
             if (relays.containsKey(conn)) return;
             authFrames.add(message);
             if (rejectedTokens.contains(tokenOf(message))) {
+                Runnable hook = onRejectedToken;
+                if (hook != null) hook.run();
                 conn.send(errorFrame("unauthorized"));
                 conn.close(4401, "token verification failed");
                 return;
@@ -271,6 +277,7 @@ final class GatewayDialFixture implements AutoCloseable {
                     conn.close(closeCode, "fixture close");
                 }
                 case READY_RELAY -> startRelay(conn);
+                case SILENT -> { }
             }
         }
 
@@ -365,6 +372,8 @@ final class GatewayDialFixture implements AutoCloseable {
         final List<String> minted = Collections.synchronizedList(new ArrayList<>());
         private final GatewayTokenBroker.LongSupplierNow clock;
         volatile long lifetimeSeconds = 300;
+        /** The broker's HTTP status for every later mint (401: the sign-in was not accepted). */
+        volatile int status = 200;
         volatile String subject = SUBJECT;
         volatile boolean signedOut;
         /** Subject reads so far; {@link #onSubjectRead} sees the 1-based count. */
@@ -411,6 +420,10 @@ final class GatewayDialFixture implements AutoCloseable {
                     + ",\"expires_at\":" + (nowSeconds + lifetimeSeconds) + "}";
             Runnable hook = duringExchange;
             if (hook != null) hook.run();
+            if (status != 200) {
+                return new GoogleSyncSession.GatewayBrokerExchange(
+                        new GoogleSyncSession.Response(status, "{\"error\":\"unauthorized\"}"), GOOGLE_BEARER);
+            }
             return new GoogleSyncSession.GatewayBrokerExchange(new GoogleSyncSession.Response(200, body), GOOGLE_BEARER);
         }
     }
