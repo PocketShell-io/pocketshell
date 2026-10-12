@@ -217,10 +217,8 @@ jobs:
           scripts/connected-js-files-docker.sh --suffix i2858ci --prepare-only
           scripts/connected-js-key-vault-docker.sh --suffix i2926ci --prepare-only
 
-      - name: Prepare the packaged gateway lane (pinned private gateway source, test-CA APK)
+      - name: Prepare the packaged gateway lane (vendored pinned gateway source, test-CA APK)
         uses: ./.github/actions/prepare-gateway-lane
-        with:
-          read-token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}
 
       - name: Start version-matched Docker agents fixture
         run: |

@@ -23,6 +23,7 @@ COMPOSER_ORDER_GATE="$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py"
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
 import ast
+import hashlib
 import os
 import re
 import subprocess
@@ -224,8 +225,8 @@ require_contract(workflow, packaged_lanes)
 
 GATEWAY_ACTION_PATH = ".github/actions/prepare-gateway-lane/action.yml"
 GATEWAY_ACTION_USE = "uses: ./.github/actions/prepare-gateway-lane"
-GATEWAY_SECRET = "${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}"
 GATEWAY_RESULTS = 'js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results'
+GATEWAY_SOURCE_DIR = "tests/docker/gateway"
 
 
 def _yaml_code(text: str) -> str:
@@ -240,59 +241,61 @@ def _yaml_step(text: str, marker: str, indent: str) -> str:
 
 
 def require_gateway_action(action: str) -> None:
-    """#3086: the one shared preparation of the gateway lane (token, pinned checkout, build)."""
-    pin = (repository_root / "tests/docker/gateway/gateway-source.pin").read_text().strip()
+    """#3086: the one shared preparation of the gateway lane (vendored source, hash check, build)."""
+    pin = (repository_root / GATEWAY_SOURCE_DIR / "gateway-source.pin").read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", pin):
+        raise AssertionError("tests/docker/gateway/gateway-source.pin must hold one commit SHA")
+    tarball_path = repository_root / GATEWAY_SOURCE_DIR / "gateway-source.tar.gz"
+    recorded = (repository_root / GATEWAY_SOURCE_DIR / "gateway-source.sha256").read_text().strip().split()
+    if not tarball_path.is_file():
+        raise AssertionError("the vendored gateway source tarball is missing")
+    if len(recorded) != 2 or recorded[1] != "gateway-source.tar.gz":
+        raise AssertionError("tests/docker/gateway/gateway-source.sha256 must record the tarball hash")
+    if hashlib.sha256(tarball_path.read_bytes()).hexdigest() != recorded[0]:
+        raise AssertionError("the vendored gateway source tarball does not match its recorded hash")
     action = _yaml_code(action)
-    for banned in ("POCKETSHELL_GATEWAY_READ_SSH_KEY", "ssh-key:", "ssh-strict:", "GITHUB_TOKEN",
-                   "github.token", "secrets.", "continue-on-error", "\n      if:"):
+    for banned in ("POCKETSHELL_GATEWAY_READ_TOKEN", "read-token", "inputs.", "inputs:", "secrets.",
+                   "github.token", "GITHUB_TOKEN", "actions/checkout", "continue-on-error", "\n      if:"):
         if banned in action:
             raise AssertionError(f"the gateway lane action must not contain {banned!r}")
-    if action.count("${{ inputs.read-token }}") != 1:
-        raise AssertionError("only the action's checkout may receive the read token")
-    step = _yaml_step(action, "    - name: Check out the pinned PocketShell gateway source\n", "    ")
+    step = _yaml_step(action, "    - name: Extract the pinned vendored gateway source\n", "    ")
     for needle in (
-        "uses: actions/checkout@",
-        "repository: PocketShell-io/pocketshell-gateway",
-        f"ref: {pin}\n",
-        "token: ${{ inputs.read-token }}\n",
-        "persist-credentials: false\n",
-        "path: .ci/pocketshell-gateway",
+        "sha256sum -c gateway-source.sha256",
+        "tar -xzf tests/docker/gateway/gateway-source.tar.gz -C .ci/pocketshell-gateway",
+        "rm -rf .ci/pocketshell-gateway",
+        ".vendored-gateway-commit",
+        '[[ "$vendored" == "$pin" ]]',
+        "cmd/pocketshell-link",
+        "go.mod",
     ):
         if needle not in step:
-            raise AssertionError(f"gateway checkout is missing {needle!r}")
-    if " || " in step:
-        raise AssertionError("gateway checkout must never fall back to another token")
-    guard_marker = "    - name: Require the gateway lane's read token\n"
-    guard = _yaml_step(action, guard_marker, "    ")
-    if "${{ inputs.read-token != '' }}" not in guard or "exit 1" not in guard \
-            or not action.index(guard_marker) < action.index(step):
-        raise AssertionError("a missing read token must fail before the checkout with a clear error")
-    for line in action.splitlines():
-        if re.search(r"\b(echo|printf|cat)\b", line) and ("inputs.read-token" in line or "GATEWAY_READ_TOKEN}" in line
-                                                       or "$GATEWAY_READ_TOKEN" in line):
-            raise AssertionError(f"the read token must never be printed: {line.strip()!r}")
+            raise AssertionError(f"gateway source extraction is missing {needle!r}")
+    if step.count("exit 1") < 3:
+        raise AssertionError("every gateway source verification failure must fail the lane, never skip it")
+    if not action.index("    - name: Extract the pinned vendored gateway source\n") < \
+            action.index("    - name: Build the gateway binaries and the test-CA APK\n"):
+        raise AssertionError("the vendored source must be verified before the lane builds")
     build = _yaml_step(action, "    - name: Build the gateway binaries and the test-CA APK\n", "    ")
     if "scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only" not in build:
-        raise AssertionError("the action must prepare the dispatcher's i3086gwlane build from the pinned checkout")
+        raise AssertionError("the action must prepare the dispatcher's i3086gwlane build from the vendored source")
     if "go-version-file: .ci/pocketshell-gateway/go.mod" not in action:
-        raise AssertionError("the action must set up Go from the pinned gateway source")
+        raise AssertionError("the action must set up Go from the vendored gateway source")
 
 
 def require_gateway_workflow(name: str, text: str) -> None:
     """Every workflow that runs the packaged lanes prepares, checks and keeps the gateway lane."""
     text = _yaml_code(text)
-    for banned in ("POCKETSHELL_GATEWAY_READ_SSH_KEY", "ssh-key:", "ssh-strict:"):
+    for banned in ("POCKETSHELL_GATEWAY_READ_TOKEN", "POCKETSHELL_GATEWAY_READ_SSH_KEY", "read-token",
+                   "ssh-key:", "ssh-strict:"):
         if banned in text:
             raise AssertionError(f"{name}: must not use {banned!r}")
-    if text.count(GATEWAY_SECRET) != 1 or text.count("secrets.POCKETSHELL_GATEWAY_READ_TOKEN") != 1:
-        raise AssertionError(f"{name}: exactly one step may receive the gateway read token")
     if text.count(GATEWAY_ACTION_USE) != 1:
         raise AssertionError(f"{name}: must prepare the gateway lane exactly once with the shared action")
     use = text.index(GATEWAY_ACTION_USE)
     step_start = text.rindex("      - name:", 0, use)
     step = _yaml_step(text, text[step_start:text.index("\n", step_start) + 1], "      ")
-    if f"read-token: {GATEWAY_SECRET}" not in step:
-        raise AssertionError(f"{name}: the shared action must receive the token, and only it")
+    if "with:" in step:
+        raise AssertionError(f"{name}: the shared action takes no inputs; the lane is secret-free")
     if "continue-on-error" in step or "\n        if:" in step:
         raise AssertionError(f"{name}: the gateway lane preparation must not be skippable")
     if not step_start < text.index("scripts/ci-js-first-packaged-lanes.sh"):
@@ -302,9 +305,6 @@ def require_gateway_workflow(name: str, text: str) -> None:
         raise AssertionError(f"{name}: the report guard must check the gateway lane's same-run results")
     if "android/app/build/outputs/js-gateway/**" not in text:
         raise AssertionError(f"{name}: the gateway lane's evidence must be uploaded")
-    for line in text.splitlines():
-        if re.search(r"\b(echo|printf|cat)\b", line) and "GATEWAY_READ_TOKEN" in line:
-            raise AssertionError(f"{name}: the read token must never be printed: {line.strip()!r}")
 
 
 gateway_action = (repository_root / GATEWAY_ACTION_PATH).read_text()
@@ -319,19 +319,20 @@ require_gateway_action(gateway_action)
 for workflow_name, text in gateway_workflows.items():
     require_gateway_workflow(workflow_name, text)
 
-_token_line = "        token: ${{ inputs.read-token }}\n"
-_guard_name = "    - name: Require the gateway lane's read token\n"
+_extract_name = "    - name: Extract the pinned vendored gateway source\n"
 for label, damaged in (
-    ("reintroduced ssh-key", gateway_action.replace(_token_line, _token_line + "        ssh-key: ${{ inputs.read-token }}\n", 1)),
-    ("GITHUB_TOKEN fallback", gateway_action.replace(_token_line,
-        "        token: ${{ inputs.read-token || github.token }}\n", 1)),
-    ("GITHUB_TOKEN instead", gateway_action.replace(_token_line, "        token: ${{ secrets.GITHUB_TOKEN }}\n", 1)),
-    ("persisted credentials", gateway_action.replace("        persist-credentials: false\n", "        persist-credentials: true\n", 1)),
-    ("unpinned ref", gateway_action.replace("ref: 8f2f360f01025ee5d78a813d918190a185d4af98", "ref: main", 1)),
-    ("skippable guard", gateway_action.replace(_guard_name, _guard_name + "      continue-on-error: true\n", 1)),
-    ("conditional guard", gateway_action.replace(_guard_name, _guard_name + "      if: false\n", 1)),
-    ("echoed secret", gateway_action.replace("        if [[ \"$GATEWAY_READ_TOKEN_PRESENT\" != true ]]; then\n",
-        "        echo \"${{ inputs.read-token }}\"\n        if [[ \"$GATEWAY_READ_TOKEN_PRESENT\" != true ]]; then\n", 1)),
+    ("secret input reintroduced", gateway_action.replace("runs:\n  using: composite\n",
+        "runs:\n  using: composite\ninputs:\n  read-token:\n    required: true\n", 1)),
+    ("private checkout reintroduced", gateway_action.replace("    - name: Set up Go for the gateway lane\n",
+        "    - name: Check out the pinned PocketShell gateway source\n      uses: actions/checkout@v6\n"
+        "      with:\n        repository: PocketShell-io/pocketshell-gateway\n"
+        "    - name: Set up Go for the gateway lane\n", 1)),
+    ("unverified extract", gateway_action.replace("sha256sum -c gateway-source.sha256",
+        "sha256sum gateway-source.sha256", 1)),
+    ("stale tree reuse", gateway_action.replace("        rm -rf .ci/pocketshell-gateway\n", "", 1)),
+    ("marker agreement removed", gateway_action.replace('        [[ "$vendored" == "$pin" ]] || {\n', "", 1)),
+    ("skippable extract", gateway_action.replace(_extract_name, _extract_name + "      continue-on-error: true\n", 1)),
+    ("conditional extract", gateway_action.replace(_extract_name, _extract_name + "      if: false\n", 1)),
 ):
     if damaged == gateway_action:
         raise AssertionError(f"gateway action mutation fixture did not apply: {label}")
@@ -342,16 +343,14 @@ for label, damaged in (
     else:
         raise AssertionError(f"gateway lane action contract missed: {label}")
 
-_call_with = "        with:\n          read-token: " + GATEWAY_SECRET + "\n"
 for workflow_name, text in gateway_workflows.items():
     call_start = text.rindex("      - name:", 0, text.index(GATEWAY_ACTION_USE))
     call = _yaml_step(text, text[call_start:text.index("\n", call_start) + 1], "      ")
     for label, damaged in (
         ("dropped gateway preparation", text.replace(call, "", 1)),
         ("skippable gateway preparation", text.replace(GATEWAY_ACTION_USE, GATEWAY_ACTION_USE + "\n        continue-on-error: true", 1)),
-        ("token handed to a second step", text.replace("      - name: Enable KVM\n",
-            "      - name: Leak\n        env:\n          T: " + GATEWAY_SECRET + "\n        run: true\n\n      - name: Enable KVM\n", 1)),
-        ("echoed secret", text.replace(_call_with, _call_with + "        run: echo $POCKETSHELL_GATEWAY_READ_TOKEN\n", 1)),
+        ("secret reintroduced", text.replace(GATEWAY_ACTION_USE, GATEWAY_ACTION_USE
+            + "\n        with:\n          read-token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}", 1)),
         ("missing gateway report check", text.replace("run_check Gateway scripts/check-js-gateway-results.py", "true", 1)),
         ("missing gateway evidence upload", text.replace("            android/app/build/outputs/js-gateway/**\n", "", 1)),
     ):
