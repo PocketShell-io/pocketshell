@@ -283,7 +283,7 @@ async function mockJourneys(browser, base, smoke) {
   const context = await browser.newContext(PHONE);
   const page = smoke.watch(await context.newPage(), 'legacy');
   const marker = `DEVSMOKE_${randomBytes(4).toString('hex')}`;
-  await smoke.open(page, `${base}/?devSpeech=stub`);
+  await smoke.open(page, `${base}/?shell=legacy&devSpeech=stub`);
   await connectLegacy(page, smoke, 'devbox.mock', mockHostFingerprint());
   await smoke.step('legacy: the mock host lists its five sessions across three workspaces', async () => {
     const names = await page.locator('.session-row').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-session-name')));
@@ -411,7 +411,7 @@ async function liveJourney(browser, base, smoke, options, token) {
   const page = smoke.watch(await context.newPage(), 'legacy');
   let sessionName = null;
   try {
-    await smoke.open(page, entry('/?devSpeech=stub'));
+    await smoke.open(page, entry('/?shell=legacy&devSpeech=stub'));
     await smoke.step('live: the page takes the bridge token from the fragment and clears it from the URL', async () => {
       await page.waitForFunction(() => document.documentElement.dataset.devBrowser === 'live', null, { timeout: 30_000 });
       if (page.url().includes(token)) throw new Error('the bridge token is still in the address bar');

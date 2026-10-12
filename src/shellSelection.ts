@@ -8,8 +8,25 @@
  */
 export type ShellChoice = 'shared' | 'legacy';
 
-export function selectShell(search: string): ShellChoice {
-  return new URLSearchParams(search).get('shell') === 'shared' ? 'shared' : 'legacy';
+export function selectShell(search: string, storage?: Pick<Storage, 'getItem'> | null): ShellChoice {
+  const param = new URLSearchParams(search).get('shell');
+  if (param === 'legacy') return 'legacy';
+  if (param === 'shared') return 'shared';
+  if (storage) {
+    try {
+      const raw = storage.getItem(SHELL_BOOT_LOG_KEY);
+      if (raw) {
+        const log: unknown = JSON.parse(raw);
+        if (Array.isArray(log) && log.length > 0) {
+          const first = log[0];
+          if (first === 'legacy' || first === 'shared') return first;
+        }
+      }
+    } catch {
+      // Storage read failed; use default.
+    }
+  }
+  return 'shared';
 }
 
 /** sessionStorage key listing every shell this WebView booted, in order. */

@@ -21,7 +21,7 @@ async function boot(): Promise<void> {
   // leaving a blank screen.
   recordDurableStorageStatus(document.documentElement, await installAndroidDurableStorage());
   document.documentElement.dataset.durableStorageOpenCalls = String(durableStorageOpenCalls());
-  const shell = selectShell(window.location.search);
+  const shell = selectShell(window.location.search, window.sessionStorage);
   recordShellBoot(shell, window.sessionStorage);
   if (shell === 'shared') {
     const { mountSharedApp } = await import('./sharedApp/main');

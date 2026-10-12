@@ -466,11 +466,34 @@ describe('Android PocketShellApi platform', () => {
     expect(resumed).toBe(0);
   });
 
-  it('mounts the legacy screens unless the launch opted into the shared app', () => {
-    expect(selectShell('')).toBe('legacy');
+  it('mounts the shared app by default unless the launch opted into legacy screens', () => {
+    expect(selectShell('')).toBe('shared');
     expect(selectShell('?shell=legacy')).toBe('legacy');
-    expect(selectShell('?shell=other')).toBe('legacy');
+    expect(selectShell('?shell=other')).toBe('shared');
     expect(selectShell('?shell=shared')).toBe('shared');
+    const storage = new MemoryStorage();
+    recordShellBoot('legacy', storage);
+    expect(selectShell('', storage)).toBe('legacy');
+    expect(selectShell('?shell=shared', storage)).toBe('shared');
+  });
+
+  it('wires win.openNewWindow to openAddHost when supplied', async () => {
+    let opened = false;
+    const { native, storage } = harness();
+    const hosts = new AndroidHostStore({ storage, readLegacyHosts: async () => [] });
+    const platform = createAndroidPlatform({
+      createController: () => new ConnectionController({
+        capability: native.capability(),
+        trustStore: createLocalTrustStore(storage),
+      }),
+      hosts,
+      backgroundGraceMs: () => 1000,
+      addHostRoute: '/android/hosts',
+      openAddHost: async () => { opened = true; },
+    });
+    expect(typeof platform.api.win?.openNewWindow).toBe('function');
+    await platform.api.win?.openNewWindow?.();
+    expect(opened).toBe(true);
   });
 
   it('records each boot so a load-then-reload launch is visible as two entries', () => {

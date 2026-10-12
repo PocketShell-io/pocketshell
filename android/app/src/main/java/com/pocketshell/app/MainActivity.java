@@ -1,5 +1,6 @@
 package com.pocketshell.app;
 
+import android.content.Intent;
 import android.graphics.Rect;
 import android.util.Log;
 import android.view.View;
@@ -34,8 +35,10 @@ public class MainActivity extends BridgeActivity {
      */
     public static final String EXTRA_SHELL = "pocketshell.shell";
     public static final String SHELL_SHARED = "shared";
+    public static final String SHELL_LEGACY = "legacy";
     /** The start path the web entry reads (src/shellSelection.ts). */
     static final String SHARED_SHELL_START_PATH = "/?shell=shared";
+    static final String LEGACY_SHELL_START_PATH = "/?shell=legacy";
 
     private Runnable resumeWebViewLayoutRefresh;
     /** Main-frame page loads of this activity's WebView; one per launch (#2936). */
@@ -67,9 +70,9 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * Pick the shell before the bridge is built: Capacitor's first and only
-     * page load is {@code appUrl + server.appStartPath}, so the shared app's
-     * opt-in becomes that start path rather than a reload of a page that has
-     * already booted the default shell.
+     * page load is {@code appUrl + server.appStartPath}, so the shell choice
+     * becomes that start path rather than a reload of a page that has
+     * already booted another shell.
      */
     @Override
     protected void load() {
@@ -79,19 +82,48 @@ public class MainActivity extends BridgeActivity {
                 pageStarts.incrementAndGet();
             }
         });
-        if (SHELL_SHARED.equals(getIntent().getStringExtra(EXTRA_SHELL))) {
+        if (shouldBootSharedShell()) {
             config = sharedShellConfig();
+        } else {
+            config = legacyShellConfig();
         }
         super.load();
     }
 
+    private boolean shouldBootSharedShell() {
+        Intent intent = getIntent();
+        if (intent != null) {
+            String explicit = intent.getStringExtra(EXTRA_SHELL);
+            if (SHELL_SHARED.equals(explicit)) return true;
+            if (SHELL_LEGACY.equals(explicit)) return false;
+        }
+        return !isRunningUnderInstrumentation();
+    }
+
+    private static boolean isRunningUnderInstrumentation() {
+        try {
+            Class<?> registryClass = Class.forName("androidx.test.platform.app.InstrumentationRegistry");
+            return registryClass.getMethod("getInstrumentation").invoke(null) != null;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     private CapConfig sharedShellConfig() {
+        return shellConfigWithStartPath(SHARED_SHELL_START_PATH);
+    }
+
+    private CapConfig legacyShellConfig() {
+        return shellConfigWithStartPath(LEGACY_SHELL_START_PATH);
+    }
+
+    private CapConfig shellConfigWithStartPath(String appStartPath) {
         CapConfig defaults = CapConfig.loadDefault(this);
         try {
             JSONObject json = new JSONObject(readAsset("capacitor.config.json"));
             JSONObject server = json.optJSONObject("server");
             if (server == null) server = new JSONObject();
-            server.put("appStartPath", SHARED_SHELL_START_PATH);
+            server.put("appStartPath", appStartPath);
             json.put("server", server);
             // The JSON constructor cannot see the APK's debuggable flag; carry
             // the two values loadDefault derived from it.
@@ -105,10 +137,10 @@ public class MainActivity extends BridgeActivity {
             }
             json.put("android", android);
             @SuppressWarnings("deprecation")
-            CapConfig shared = new CapConfig(getAssets(), json);
-            return shared;
+            CapConfig custom = new CapConfig(getAssets(), json);
+            return custom;
         } catch (IOException | JSONException error) {
-            Log.e(TAG, "Shared shell requested but the Capacitor config could not be read", error);
+            Log.e(TAG, "Shell config requested for " + appStartPath + " but could not be read", error);
             return defaults;
         }
     }

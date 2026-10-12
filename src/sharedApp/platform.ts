@@ -13,7 +13,7 @@ import { createAccountHostKeys } from '@/platform/android/accountHosts';
 import { androidSync } from '@/platform/android/sync';
 import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
-import { ADD_HOST_ROUTE, openAccountRoute } from './router';
+import { ADD_HOST_ROUTE, openAccountRoute, openAddHostRoute } from './router';
 import { createAccountHostKeyPrompt } from './accountHostKey';
 
 /** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
@@ -70,6 +70,7 @@ export const androidPlatform = createAndroidPlatform({
   observeConnections: journalConnection,
   sync: syncApi,
   openAccount: openAccountRoute,
+  openAddHost: openAddHostRoute,
   accountHosts: createAccountHostKeys({ accountHosts: () => syncApi.accountHosts(), ask: accountHostKeyPrompt.ask }),
 });
 

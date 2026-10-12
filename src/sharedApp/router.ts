@@ -34,3 +34,9 @@ export async function openAccountRoute(): Promise<void> {
   if (!current) throw new Error('The PocketShell app is not mounted yet.');
   await current.push(ACCOUNT_ROUTE);
 }
+
+/** `win.openNewWindow` on Android: open Add host in the mounted app. */
+export async function openAddHostRoute(): Promise<void> {
+  if (!current) throw new Error('The PocketShell app is not mounted yet.');
+  await current.push(ADD_HOST_ROUTE);
+}

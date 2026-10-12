@@ -100,6 +100,8 @@ export interface AndroidApiDeps {
   sync?: PocketShellApi['sync'];
   /** Open the Account & sync screen: the picker's account button (#3063). */
   openAccount?: () => Promise<void>;
+  /** Open the Add host screen: the picker's + button. */
+  openAddHost?: () => Promise<void>;
   /** Account hosts this phone has no key for yet: find and adopt them (#3063). */
   accountHosts?: AccountHostKeys;
 }
@@ -339,6 +341,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
         document.title = title;
       },
       openAccount: deps.openAccount ?? unsupported('win.openAccount'),
+      openNewWindow: deps.openAddHost,
       setZoom: () => undefined,
       onZoomCommand: () => () => undefined,
     },
