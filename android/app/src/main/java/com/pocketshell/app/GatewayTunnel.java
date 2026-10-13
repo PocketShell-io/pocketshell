@@ -87,6 +87,11 @@ public final class GatewayTunnel implements AutoCloseable {
     private final GatewayTargetPolicy.Endpoint endpoint;
     private final String routingToken;
     private final boolean insecureLoopbackAllowed;
+    /** TLS trust and the post-handshake hostname check: the platform's in
+     * production (null here); JVM tests inject a test-CA context, since a
+     * JVM has neither the app's trust store nor Android's hostname verifier. */
+    private final SSLSocketFactory tlsBaseForTesting;
+    private final javax.net.ssl.HostnameVerifier hostnameVerifierForTesting;
 
     private final AtomicReference<Phase> phase = new AtomicReference<>(Phase.DIALING);
     private final AtomicReference<GatewayTunnelException> failure = new AtomicReference<>();
@@ -146,25 +151,35 @@ public final class GatewayTunnel implements AutoCloseable {
     }
 
     public GatewayTunnel(GatewayTargetPolicy.Target target, String routingToken, boolean insecureLoopbackAllowed) {
+        this(target, routingToken, insecureLoopbackAllowed, null, null);
+    }
+
+    /** JVM tests only: a wss:// fixture with its own CA. */
+    GatewayTunnel(GatewayTargetPolicy.Target target, String routingToken, boolean insecureLoopbackAllowed,
+            SSLSocketFactory tlsBaseForTesting, javax.net.ssl.HostnameVerifier hostnameVerifierForTesting) {
         this.target = target;
         this.routingToken = routingToken;
         this.insecureLoopbackAllowed = insecureLoopbackAllowed;
         this.endpoint = GatewayTargetPolicy.endpoint(target, insecureLoopbackAllowed);
+        this.tlsBaseForTesting = tlsBaseForTesting;
+        this.hostnameVerifierForTesting = hostnameVerifierForTesting;
     }
 
     /**
-     * Dial, authenticate and reach READY within {@code deadlineMs}. On any
-     * failure the tunnel is closed and a {@link GatewayTunnelException} is
-     * thrown; on success the socket is connected and its streams are live.
+     * Dial, authenticate and reach READY within {@code budgetMs} from now,
+     * measured on the monotonic clock (a wall-clock jump cannot move it). On
+     * any failure the tunnel is closed and a {@link GatewayTunnelException}
+     * is thrown; on success the socket is connected and its streams are live.
      */
-    public void open(long deadlineMs) throws GatewayTunnelException, InterruptedException {
+    public void open(long budgetMs) throws GatewayTunnelException, InterruptedException {
+        long deadlineMs = monotonicMs() + budgetMs;
         try {
             client = buildClient();
             // The library's own keepalive checker is disabled (class doc);
             // passing a non-positive timeout cancels it before it starts.
             client.setConnectionLostTimeout(0);
             socket = new GatewayTunnelSocket();
-            long remaining = deadlineMs - System.currentTimeMillis();
+            long remaining = deadlineMs - monotonicMs();
             if (remaining <= 0) throw new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway connection ran out of time before dialing.");
             boolean opened;
@@ -185,7 +200,7 @@ public final class GatewayTunnel implements AutoCloseable {
             }
             // The routing token travels in this one TEXT frame and nowhere else.
             sendText(GatewayTargetPolicy.buildAuthFrame(routingToken, target.deviceId));
-            remaining = deadlineMs - System.currentTimeMillis();
+            remaining = deadlineMs - monotonicMs();
             GatewayTunnelException failureWhileWaiting = awaitHandshakeFailure(remaining);
             if (failureWhileWaiting != null) throw failureWhileWaiting;
             if (phase.get() != Phase.READY) {
@@ -200,6 +215,11 @@ public final class GatewayTunnel implements AutoCloseable {
             throw failedOr(new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway connection could not be established."));
         }
+    }
+
+    /** Every tunnel deadline (connect, read, write stall) is on this monotonic clock. */
+    private static long monotonicMs() {
+        return System.nanoTime() / 1_000_000L;
     }
 
     /** The connected socket for sshj's SocketFactory; valid after {@link #open}. */
@@ -296,8 +316,9 @@ public final class GatewayTunnel implements AutoCloseable {
             throw new GatewayTunnelException(
                     GatewayTunnelException.CONNECT_FAILED, "The gateway TLS identity could not be verified.");
         }
-        boolean verified = session != null
-                && HttpsURLConnection.getDefaultHostnameVerifier().verify(endpoint.host, session);
+        javax.net.ssl.HostnameVerifier verifier = hostnameVerifierForTesting != null
+                ? hostnameVerifierForTesting : HttpsURLConnection.getDefaultHostnameVerifier();
+        boolean verified = session != null && verifier.verify(endpoint.host, session);
         if (!verified) {
             close();
             throw new GatewayTunnelException(
@@ -308,10 +329,16 @@ public final class GatewayTunnel implements AutoCloseable {
     /** Platform default trust (OS CA store), with explicit SNI on the wrapped
      * socket; the handshake happens on first use of the returned socket. */
     private SocketFactory gatewayTlsSocketFactory() {
-        SSLSocketFactory base = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocketFactory base = tlsBaseForTesting != null
+                ? tlsBaseForTesting : (SSLSocketFactory) SSLSocketFactory.getDefault();
         return new SSLSocketFactory() {
             @Override public String[] getDefaultCipherSuites() { return base.getDefaultCipherSuites(); }
             @Override public String[] getSupportedCipherSuites() { return base.getSupportedCipherSuites(); }
+
+            /** Java-WebSocket asks a configured factory for an UNCONNECTED
+             * socket and connects it itself (#3086 slice 3: without this the
+             * inherited default threw, and every wss:// dial failed). */
+            @Override public Socket createSocket() throws IOException { return base.createSocket(); }
 
             @Override
             public Socket createSocket(Socket s, String host, int port, boolean autoClose) throws IOException {
@@ -539,8 +566,8 @@ public final class GatewayTunnel implements AutoCloseable {
         public void connect(SocketAddress endpoint, int timeout) throws IOException {
             // Defensive only: with the pre-connected socket sshj never calls
             // this. A virtual peer join, bounded by the given timeout.
-            long deadline = System.currentTimeMillis() + Math.max(0, timeout);
-            while (phase.get() != Phase.READY && System.currentTimeMillis() < deadline) {
+            long deadline = monotonicMs() + Math.max(0, timeout);
+            while (phase.get() != Phase.READY && monotonicMs() < deadline) {
                 if (phase.get() == Phase.FAILED || phase.get() == Phase.CLOSED) {
                     throw new IOException("Gateway tunnel is closed.");
                 }
@@ -629,7 +656,7 @@ public final class GatewayTunnel implements AutoCloseable {
          * cancellation cannot wedge the sshj reader thread. */
         private byte[] takeFrame() throws IOException {
             int timeoutBudgetMs = socketSoTimeoutMs > 0 ? socketSoTimeoutMs : 0;
-            long deadline = timeoutBudgetMs > 0 ? System.currentTimeMillis() + timeoutBudgetMs : 0;
+            long deadline = timeoutBudgetMs > 0 ? monotonicMs() + timeoutBudgetMs : 0;
             while (true) {
                 if (phase.get() == Phase.FAILED) {
                     GatewayTunnelException error = failure.get();
@@ -646,7 +673,7 @@ public final class GatewayTunnel implements AutoCloseable {
                 Phase now = phase.get();
                 if (now == Phase.CLOSED) return null;
                 if (now == Phase.FAILED) continue; // rethrow at loop top
-                if (timeoutBudgetMs > 0 && System.currentTimeMillis() >= deadline) {
+                if (timeoutBudgetMs > 0 && monotonicMs() >= deadline) {
                     throw new SocketTimeoutException("Read timed out");
                 }
             }
@@ -686,12 +713,12 @@ public final class GatewayTunnel implements AutoCloseable {
          * nothing queues without bound, and a stopped gateway surfaces as an
          * IOException instead of silent growth. */
         private void awaitOutboundCapacity() throws IOException {
-            long stallDeadline = System.currentTimeMillis() + WRITE_STALL_TIMEOUT_MS;
+            long stallDeadline = monotonicMs() + WRITE_STALL_TIMEOUT_MS;
             while (outboundPendingBytes() > MAX_OUTBOUND_PENDING_BYTES) {
                 if (phase.get() == Phase.FAILED || phase.get() == Phase.CLOSED) {
                     throw new IOException("Gateway tunnel is closed.");
                 }
-                if (System.currentTimeMillis() >= stallDeadline) {
+                if (monotonicMs() >= stallDeadline) {
                     throw new IOException("The gateway stopped accepting data.");
                 }
                 try {

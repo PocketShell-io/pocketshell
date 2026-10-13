@@ -23,6 +23,7 @@ COMPOSER_ORDER_GATE="$ROOT_DIR/scripts/check-js-usage-ports-composer-order.py"
 bash -n "$RUNNER"
 python3 - "$WORKFLOW" "$RUNNER" "$EXTRACTOR" "$TOOLCACHE_PRUNER" "$PACKAGED_LANES" <<'PY'
 import ast
+import hashlib
 import os
 import re
 import subprocess
@@ -157,7 +158,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         raise AssertionError("packaged wrapper ignores the signed-upgrade lane status")
     for lane in ("smoke_status", "lifecycle_status", "usage_status", "files_status", "composer_status",
                  "hotkeys_status", "hotkeys_junit_status", "durable_status", "settings_status",
-                 "account_sync_status", "shared_app_status", "key_vault_status", "signed_upgrade_status", "copy_status"):
+                 "account_sync_status", "account_picker_status", "gateway_status", "shared_app_status", "key_vault_status", "signed_upgrade_status", "copy_status"):
         if lane not in packaged_script:
             raise AssertionError(f"packaged wrapper does not aggregate {lane}")
     if "TEST-*.xml" not in packaged_script or "cp -a --" not in packaged_script:
@@ -179,6 +180,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         ("durable-storage", '--run-dir "android/app/build/outputs/js-durable-storage/js2993-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"'),
         ("account-sync", "js-account-sync/js3020-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
         ("account-picker", "js-account-picker/js3063-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
+        ("gateway", "js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"),
     )
     for lane, report_path in exact_lane_reports:
         if report_path not in guard:
@@ -201,6 +203,7 @@ def require_contract(source: str, packaged_script: str) -> None:
         "scripts/check-js-durable-storage-results.py",
         "scripts/check-js-account-sync-results.py",
         "scripts/check-js-account-picker-results.py",
+        "scripts/check-js-gateway-results.py",
     ):
         if f"run_check " not in guard or checker not in guard:
             raise AssertionError(f"the always-run result guard does not invoke {checker}")
@@ -218,6 +221,147 @@ def require_contract(source: str, packaged_script: str) -> None:
 
 
 require_contract(workflow, packaged_lanes)
+
+
+GATEWAY_ACTION_PATH = ".github/actions/prepare-gateway-lane/action.yml"
+GATEWAY_ACTION_USE = "uses: ./.github/actions/prepare-gateway-lane"
+GATEWAY_RESULTS = 'js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results'
+GATEWAY_SOURCE_DIR = "tests/docker/gateway"
+
+
+def _yaml_code(text: str) -> str:
+    """The YAML without its comment lines (comments may name what is banned)."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def _yaml_step(text: str, marker: str, indent: str) -> str:
+    start = text.index(marker)
+    following = text.find("\n" + indent + "- name:", start + len(marker))
+    return text[start:] if following < 0 else text[start:following]
+
+
+def require_gateway_action(action: str) -> None:
+    """#3086: the one shared preparation of the gateway lane (vendored source, hash check, build)."""
+    pin = (repository_root / GATEWAY_SOURCE_DIR / "gateway-source.pin").read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", pin):
+        raise AssertionError("tests/docker/gateway/gateway-source.pin must hold one commit SHA")
+    tarball_path = repository_root / GATEWAY_SOURCE_DIR / "gateway-source.tar.gz"
+    recorded = (repository_root / GATEWAY_SOURCE_DIR / "gateway-source.sha256").read_text().strip().split()
+    if not tarball_path.is_file():
+        raise AssertionError("the vendored gateway source tarball is missing")
+    if len(recorded) != 2 or recorded[1] != "gateway-source.tar.gz":
+        raise AssertionError("tests/docker/gateway/gateway-source.sha256 must record the tarball hash")
+    if hashlib.sha256(tarball_path.read_bytes()).hexdigest() != recorded[0]:
+        raise AssertionError("the vendored gateway source tarball does not match its recorded hash")
+    action = _yaml_code(action)
+    for banned in ("POCKETSHELL_GATEWAY_READ_TOKEN", "read-token", "inputs.", "inputs:", "secrets.",
+                   "github.token", "GITHUB_TOKEN", "actions/checkout", "continue-on-error", "\n      if:"):
+        if banned in action:
+            raise AssertionError(f"the gateway lane action must not contain {banned!r}")
+    step = _yaml_step(action, "    - name: Extract the pinned vendored gateway source\n", "    ")
+    for needle in (
+        "sha256sum -c gateway-source.sha256",
+        "tar -xzf tests/docker/gateway/gateway-source.tar.gz -C .ci/pocketshell-gateway",
+        "rm -rf .ci/pocketshell-gateway",
+        ".vendored-gateway-commit",
+        '[[ "$vendored" == "$pin" ]]',
+        "cmd/pocketshell-link",
+        "go.mod",
+    ):
+        if needle not in step:
+            raise AssertionError(f"gateway source extraction is missing {needle!r}")
+    if step.count("exit 1") < 3:
+        raise AssertionError("every gateway source verification failure must fail the lane, never skip it")
+    if not action.index("    - name: Extract the pinned vendored gateway source\n") < \
+            action.index("    - name: Build the gateway binaries and the test-CA APK\n"):
+        raise AssertionError("the vendored source must be verified before the lane builds")
+    build = _yaml_step(action, "    - name: Build the gateway binaries and the test-CA APK\n", "    ")
+    if "scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only" not in build:
+        raise AssertionError("the action must prepare the dispatcher's i3086gwlane build from the vendored source")
+    if "go-version-file: .ci/pocketshell-gateway/go.mod" not in action:
+        raise AssertionError("the action must set up Go from the vendored gateway source")
+
+
+def require_gateway_workflow(name: str, text: str) -> None:
+    """Every workflow that runs the packaged lanes prepares, checks and keeps the gateway lane."""
+    text = _yaml_code(text)
+    for banned in ("POCKETSHELL_GATEWAY_READ_TOKEN", "POCKETSHELL_GATEWAY_READ_SSH_KEY", "read-token",
+                   "ssh-key:", "ssh-strict:"):
+        if banned in text:
+            raise AssertionError(f"{name}: must not use {banned!r}")
+    if text.count(GATEWAY_ACTION_USE) != 1:
+        raise AssertionError(f"{name}: must prepare the gateway lane exactly once with the shared action")
+    use = text.index(GATEWAY_ACTION_USE)
+    step_start = text.rindex("      - name:", 0, use)
+    step = _yaml_step(text, text[step_start:text.index("\n", step_start) + 1], "      ")
+    if "with:" in step:
+        raise AssertionError(f"{name}: the shared action takes no inputs; the lane is secret-free")
+    if "continue-on-error" in step or "\n        if:" in step:
+        raise AssertionError(f"{name}: the gateway lane preparation must not be skippable")
+    if not step_start < text.index("scripts/ci-js-first-packaged-lanes.sh"):
+        raise AssertionError(f"{name}: the gateway lane must be prepared before the packaged lanes run")
+    guard = _yaml_step(text, "      - name: Require exact reports for every packaged JS lane\n", "      ")
+    if "run_check Gateway scripts/check-js-gateway-results.py" not in guard or GATEWAY_RESULTS not in guard:
+        raise AssertionError(f"{name}: the report guard must check the gateway lane's same-run results")
+    if "android/app/build/outputs/js-gateway/**" not in text:
+        raise AssertionError(f"{name}: the gateway lane's evidence must be uploaded")
+
+
+gateway_action = (repository_root / GATEWAY_ACTION_PATH).read_text()
+gateway_workflows = {}
+for workflow_path in sorted((repository_root / ".github/workflows").glob("*.yml")):
+    text = workflow_path.read_text()
+    if "scripts/ci-js-first-packaged-lanes.sh" in text:
+        gateway_workflows[workflow_path.name] = text
+if set(gateway_workflows) != {"js-first-rewrite.yml", "js-full-suite.yml", "js-release-validation.yml"}:
+    raise AssertionError(f"unexpected set of packaged-lane workflows: {sorted(gateway_workflows)}")
+require_gateway_action(gateway_action)
+for workflow_name, text in gateway_workflows.items():
+    require_gateway_workflow(workflow_name, text)
+
+_extract_name = "    - name: Extract the pinned vendored gateway source\n"
+for label, damaged in (
+    ("secret input reintroduced", gateway_action.replace("runs:\n  using: composite\n",
+        "runs:\n  using: composite\ninputs:\n  read-token:\n    required: true\n", 1)),
+    ("private checkout reintroduced", gateway_action.replace("    - name: Set up Go for the gateway lane\n",
+        "    - name: Check out the pinned PocketShell gateway source\n      uses: actions/checkout@v6\n"
+        "      with:\n        repository: PocketShell-io/pocketshell-gateway\n"
+        "    - name: Set up Go for the gateway lane\n", 1)),
+    ("unverified extract", gateway_action.replace("sha256sum -c gateway-source.sha256",
+        "sha256sum gateway-source.sha256", 1)),
+    ("stale tree reuse", gateway_action.replace("        rm -rf .ci/pocketshell-gateway\n", "", 1)),
+    ("marker agreement removed", gateway_action.replace('        [[ "$vendored" == "$pin" ]] || {\n', "", 1)),
+    ("skippable extract", gateway_action.replace(_extract_name, _extract_name + "      continue-on-error: true\n", 1)),
+    ("conditional extract", gateway_action.replace(_extract_name, _extract_name + "      if: false\n", 1)),
+):
+    if damaged == gateway_action:
+        raise AssertionError(f"gateway action mutation fixture did not apply: {label}")
+    try:
+        require_gateway_action(damaged)
+    except AssertionError:
+        print(f"PASS: {label} fails the gateway lane action contract")
+    else:
+        raise AssertionError(f"gateway lane action contract missed: {label}")
+
+for workflow_name, text in gateway_workflows.items():
+    call_start = text.rindex("      - name:", 0, text.index(GATEWAY_ACTION_USE))
+    call = _yaml_step(text, text[call_start:text.index("\n", call_start) + 1], "      ")
+    for label, damaged in (
+        ("dropped gateway preparation", text.replace(call, "", 1)),
+        ("skippable gateway preparation", text.replace(GATEWAY_ACTION_USE, GATEWAY_ACTION_USE + "\n        continue-on-error: true", 1)),
+        ("secret reintroduced", text.replace(GATEWAY_ACTION_USE, GATEWAY_ACTION_USE
+            + "\n        with:\n          read-token: ${{ secrets.POCKETSHELL_GATEWAY_READ_TOKEN }}", 1)),
+        ("missing gateway report check", text.replace("run_check Gateway scripts/check-js-gateway-results.py", "true", 1)),
+        ("missing gateway evidence upload", text.replace("            android/app/build/outputs/js-gateway/**\n", "", 1)),
+    ):
+        if damaged == text:
+            raise AssertionError(f"{workflow_name}: gateway workflow mutation fixture did not apply: {label}")
+        try:
+            require_gateway_workflow(workflow_name, damaged)
+        except AssertionError:
+            print(f"PASS: {workflow_name}: {label} fails the gateway lane workflow contract")
+        else:
+            raise AssertionError(f"{workflow_name}: gateway lane workflow contract missed: {label}")
 
 runtime_step = workflow.index("- name: Capture and verify emulator JS runtime after disk cleanup")
 fixture_step = workflow.index("- name: Start version-matched Docker agents fixture")
@@ -558,7 +702,7 @@ subprocess.run(["bash", "-n", str(packaged_lanes_path)], check=True)
 
 def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
                             usage: int = 0, files: int = 0, composer: int = 0, durable: int = 0, settings: int = 0,
-                            account_sync: int = 0, account_picker: int = 0, shared_app: int = 0,
+                            account_sync: int = 0, account_picker: int = 0, gateway: int = 0, shared_app: int = 0,
                             key_vault: int = 0, signed_upgrade: int = 0, omit_junit: bool = False,
                             fail_junit_copy: bool = False, hotkeys: int = 0,
                             hotkeys_checker: int = 0, omit_hotkeys_junit: bool = False) -> None:
@@ -665,6 +809,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             ("connected-js-settings.sh", "settings", "FIXTURE_SETTINGS_STATUS"),
             ("connected-js-account-sync.sh", "account-sync", "FIXTURE_ACCOUNT_SYNC_STATUS"),
             ("connected-js-account-picker.sh", "account-picker", "FIXTURE_ACCOUNT_PICKER_STATUS"),
+            ("connected-js-gateway-docker.sh", "gateway", "FIXTURE_GATEWAY_STATUS"),
             ("connected-js-durable-storage.sh", "durable-storage", "FIXTURE_DURABLE_STATUS"),
             ("connected-js-shared-app.sh", "shared-app", "FIXTURE_SHARED_APP_STATUS"),
             ("connected-js-key-vault-docker.sh", "key-vault", "FIXTURE_KEY_VAULT_STATUS"),
@@ -696,6 +841,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             "FIXTURE_SETTINGS_STATUS": str(settings),
             "FIXTURE_ACCOUNT_SYNC_STATUS": str(account_sync),
             "FIXTURE_ACCOUNT_PICKER_STATUS": str(account_picker),
+            "FIXTURE_GATEWAY_STATUS": str(gateway),
             "FIXTURE_DURABLE_STATUS": str(durable),
             "FIXTURE_SHARED_APP_STATUS": str(shared_app),
             "FIXTURE_KEY_VAULT_STATUS": str(key_vault),
@@ -721,11 +867,11 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             f"Packaged API 35 lane statuses: smoke={smoke} lifecycle={lifecycle} "
             f"usage-ports={usage} files={files} composer={composer} composer-junit-copy=0 "
             f"composer-junit=0 hotkeys={hotkeys} hotkeys-junit={expected_hotkeys_junit} "
-            f"durable-storage={durable} settings={settings} account-sync={account_sync} account-picker={account_picker} shared-app={shared_app} key-vault={key_vault} "
+            f"durable-storage={durable} settings={settings} account-sync={account_sync} account-picker={account_picker} gateway={gateway} shared-app={shared_app} key-vault={key_vault} "
             f"signed-upgrade={signed_upgrade} smoke-junit-copy={expected_copy}"
         )
         expected_exit = 1 if any((smoke, lifecycle, usage, files, composer, hotkeys,
-                                  expected_hotkeys_junit, durable, settings, account_sync, account_picker, shared_app, key_vault,
+                                  expected_hotkeys_junit, durable, settings, account_sync, account_picker, gateway, shared_app, key_vault,
                                   signed_upgrade, expected_copy)) else 0
         if result.returncode != expected_exit or expected_summary not in result.stdout:
             raise AssertionError(
@@ -735,7 +881,7 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
         trace_lines = trace.read_text().splitlines()
         if [line.split("\t", 1)[0] for line in trace_lines] != [
             "smoke", "lifecycle", "usage-ports", "files", "durable-storage", "composer", "hotkeys",
-            "hotkeys-check", "settings", "account-sync", "account-picker", "shared-app", "key-vault", "signed-upgrade",
+            "hotkeys-check", "settings", "account-sync", "account-picker", "gateway", "shared-app", "key-vault", "signed-upgrade",
         ]:
             raise AssertionError(f"{label}: wrapper failed to execute every lane in order: {trace_lines!r}")
         if "--run-id js2861-run-1" not in trace_lines[1]:
@@ -779,6 +925,8 @@ def exercise_packaged_lanes(label: str, *, smoke: int = 0, lifecycle: int = 0,
             raise AssertionError(f"{label}: account-sync lane arguments/status were not preserved: {trace_lines[9]!r}")
         if trace_lines[10] != f"account-picker\t{account_picker}\t--suffix i2855ci --run-id js3063-run-1 --test-only":
             raise AssertionError(f"{label}: account-picker lane arguments/status were not preserved: {trace_lines[10]!r}")
+        if trace_lines[11] != f"gateway\t{gateway}\t--suffix i3086gwlane --run-id gw3086-run-1 --test-only":
+            raise AssertionError(f"{label}: gateway lane arguments/status were not preserved: {trace_lines[11]!r}")
         expected_upgrade_args = "--port 2244 --container pocketshell-test-agents-2244 --run-id up2926-run-1"
         if trace_lines[-1] != f"signed-upgrade\t{signed_upgrade}\t{expected_upgrade_args}":
             raise AssertionError(f"{label}: signed-upgrade lane arguments/status were not preserved: {trace_lines[-1]!r}")
@@ -810,6 +958,7 @@ exercise_packaged_lanes("missing Fast Keys JUnit is fail-closed", omit_hotkeys_j
 exercise_packaged_lanes("settings failure is fail-closed", settings=27)
 exercise_packaged_lanes("account-sync failure is fail-closed", account_sync=33)
 exercise_packaged_lanes("account-picker failure is fail-closed", account_picker=35)
+exercise_packaged_lanes("gateway failure is fail-closed", gateway=37)
 exercise_packaged_lanes("durable-storage failure is fail-closed", durable=31)
 exercise_packaged_lanes("shared-app failure is fail-closed", shared_app=27)
 exercise_packaged_lanes("key-vault failure is fail-closed", key_vault=27)

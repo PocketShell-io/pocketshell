@@ -288,14 +288,16 @@ final class GatewayTargetPolicy {
     }
 
     /**
-     * Whether a WebSocket close code was delivered on the wire by the
-     * gateway: the registered range, minus the codes RFC 6455 reserves for
-     * local reporting only (1005 no status, 1006 abnormal drop, 1015 TLS).
-     * Java-WebSocket also reports negative pseudo-codes for a socket that
-     * never opened; none of those is a gateway verdict.
+     * Whether a remote WebSocket close code is a gateway verdict: the
+     * application range 4000–4999 only (core
+     * {@code GATEWAY_VERDICT_CLOSE_CODE_MIN..MAX}, core #48). A remote 1000,
+     * 1001, 1011 or 3xxx close is an ordinary drop, the codes RFC 6455
+     * reserves for local reporting (1005, 1006, 1015) never travel, and
+     * Java-WebSocket's negative pseudo-codes mean the socket never opened;
+     * none of those is reported as {@code GATEWAY_CLOSED}.
      */
     static boolean isGatewayCloseCode(int code) {
-        return code >= 1000 && code <= 4999 && code != 1005 && code != 1006 && code != 1015;
+        return code >= 4000 && code <= 4999;
     }
 
     /**

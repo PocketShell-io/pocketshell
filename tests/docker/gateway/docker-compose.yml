@@ -1,0 +1,101 @@
+# The Android gateway emulator lane's fixture (pocketshell#3086 slice 3,
+# scripts/connected-js-gateway-docker.sh). Started per run under its own
+# compose project; nothing here is reused by any other lane.
+#
+#   phone (emulator) --wss://localhost:$GWLANE_TLS_PORT (adb reverse)-->
+#     tlsfront (TLS, the run's test-CA server cert) --> gateway (the REAL
+#     pocketshell-gateway binary, registry + tunnel + broker verification)
+#     <== reverse tunnel == agent (the REAL pocketshell-link, enrolled like a
+#     user's host) --> 127.0.0.1:22 sshd on `host` (the agents fixture: sshd,
+#     the pinned pocketshell CLI and aplexer).
+#
+# There is NO route from the emulator to the SSH host: `host` publishes no
+# port and only the agent (in its network namespace) dials its sshd, exactly
+# like a host behind NAT. The only published port is tlsfront's, bound to
+# 127.0.0.1 and reached from the emulator through `adb reverse`.
+#
+# Only two edges are test doubles (tests/docker/gateway/gwfixture): the
+# broker's ISSUER (`jwks` serves a throwaway signing key's public half; the
+# gateway still runs its full RS256/iss/aud/scope/exp/allowlist checks) and
+# the public CA (`tlsfront` presents a server cert from a per-run test CA
+# that only the lane's debug build trusts).
+#
+# Every variable is set by the runner; none has a default, so a fixture
+# started by hand without the runner fails instead of guessing.
+x-alpine: &alpine
+  image: public.ecr.aws/docker/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+
+services:
+  jwks:
+    <<: *alpine
+    entrypoint: ["/gw/gwfixture", "jwks", "-key", "/broker/broker-key.pem", "-listen", ":8088"]
+    volumes:
+      - ${GWLANE_BIN:?}:/gw:ro
+      - ${GWLANE_STATE:?}/broker:/broker:ro
+
+  gateway:
+    <<: *alpine
+    entrypoint: ["/gw/gateway"]
+    command:
+      - "-listen"
+      - ":8080"
+      - "-registry"
+      - "/var/lib/pocketshell-relay/registry.json"
+      # The broker credential's iss claim the gateway requires; nothing is
+      # fetched from it. Keys come from -broker-jwks.
+      - "-broker-issuer"
+      - "http://broker:8088"
+      - "-broker-jwks"
+      - "http://jwks:8088/gateway/jwks"
+      - "-broker-audience"
+      - "pocketshell-gateway"
+      # Plain-http JWKS on the fixture network only (the gateway refuses it
+      # next to a public domain); signature verification is never skipped.
+      - "-broker-allow-insecure-dev"
+      - "-allow"
+      - "${GWLANE_EMAIL:?}"
+    volumes:
+      - ${GWLANE_BIN:?}:/gw:ro
+      - gateway-registry:/var/lib/pocketshell-relay
+    depends_on:
+      - jwks
+
+  tlsfront:
+    <<: *alpine
+    entrypoint: ["/gw/gwfixture", "tlsfront", "-cert", "/tls/server.pem", "-key", "/tls/server.key", "-listen", ":8443", "-upstream", "gateway:8080"]
+    ports:
+      - "127.0.0.1:${GWLANE_TLS_PORT:?}:8443"
+    volumes:
+      - ${GWLANE_BIN:?}:/gw:ro
+      - ${GWLANE_STATE:?}/tls:/tls:ro
+    depends_on:
+      - gateway
+
+  host:
+    image: pocketshell-test:agents
+    environment:
+      POCKETSHELL_AGENT_FIXTURE_VERSION: ${POCKETSHELL_AGENT_FIXTURE_VERSION:-}
+    # VERBOSE: sshd logs every connection the agent bridges ("Connection
+    # from"), so the runner can prove a pin mismatch reached sshd and still
+    # made zero userauth attempts. The image's own entrypoint then runs.
+    entrypoint: ["/bin/sh", "-c", "printf '\\nLogLevel VERBOSE\\n' >> /etc/ssh/sshd_config && exec /usr/local/bin/pocketshell-agent-entrypoint"]
+
+  agent:
+    <<: *alpine
+    # Production topology: the agent reaches ITS OWN sshd on loopback.
+    network_mode: "service:host"
+    entrypoint: ["/bin/sh", "/gwlane/agent-entrypoint.sh"]
+    environment:
+      DEVICE_ID: ${GWLANE_DEVICE_ID:?}
+    volumes:
+      - ${GWLANE_BIN:?}:/gw:ro
+      - ${GWLANE_STATE:?}/enroll:/enroll:ro
+      - ./agent-entrypoint.sh:/gwlane/agent-entrypoint.sh:ro
+      - agent-state:/agent-state
+    depends_on:
+      - gateway
+      - host
+
+volumes:
+  gateway-registry:
+  agent-state:

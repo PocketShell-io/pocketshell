@@ -111,6 +111,25 @@ public final class SshCapabilityPluginGatewayCloseCodeTest {
         }
     }
 
+    @Test public void remoteClosesOutsideTheApplicationRangeAreNotGatewayVerdicts() throws Exception {
+        // #3086 slice 2 review follow-up (core #48): only 4000–4999 carry a
+        // gateway verdict. A remote 1000/1001/1011/3000/3999 before ready is
+        // an ordinary drop — core keeps its default retry — never
+        // GATEWAY_CLOSED with a close code core would have to second-guess.
+        for (int code : new int[] {1000, 1001, 1011, 3000, 3999}) {
+            fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, code, null);
+            SshCapabilityPlugin.PluginFailure failure = fixture.connectExpectingFailure("remote-" + code);
+            assertNotEquals("remote close " + code + " is not a gateway verdict", "GATEWAY_CLOSED", failure.code);
+            assertFalse("remote close " + code + " carries no gateway close code",
+                    failure.data != null && failure.data.has("gatewayCloseCode"));
+        }
+        // The edges of the verdict range still are verdicts.
+        for (int code : new int[] {4000, 4999}) {
+            fixture.gateway.script(GatewayDialFixture.Mode.CLOSE, code, null);
+            assertGatewayClosed("close " + code, fixture.connectExpectingFailure("edge-" + code), code);
+        }
+    }
+
     private static void assertGatewayClosed(String label, SshCapabilityPlugin.PluginFailure failure, int code) {
         assertEquals(label + ": native code", "GATEWAY_CLOSED", failure.code);
         assertTrue(label + ": close code data present", failure.data != null && failure.data.has("gatewayCloseCode"));

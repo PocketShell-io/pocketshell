@@ -1,0 +1,55 @@
+# The packaged gateway lane's preparation (pocketshell#3086 slice 3), shared
+# by every workflow that runs scripts/ci-js-first-packaged-lanes.sh
+# (js-first-rewrite.yml, js-full-suite.yml, js-release-validation.yml), so
+# they cannot drift apart. The contract is pinned by
+# tests/scripts/js-first-rewrite-composer-gate-test.sh.
+#
+# The lane builds the real gateway and host agent from the VENDORED
+# PocketShell-io/pocketshell-gateway source at the pinned commit
+# (tests/docker/gateway/gateway-source.pin; the lane runner refuses any other
+# source). The vendored tarball (tests/docker/gateway/gateway-source.tar.gz)
+# is hash-verified against tests/docker/gateway/gateway-source.sha256 before
+# it is extracted, and the lane runner re-checks the extracted tree against
+# the pin: a hash mismatch fails loudly and never skips. Vendoring keeps the
+# lane secret-free, so fork pull requests and runs without repository secrets
+# run the very same preparation instead of failing on a missing token.
+name: Prepare the packaged gateway lane
+description: Extract the hash-verified vendored gateway source and build the gateway lane's binaries and test-CA APK.
+runs:
+  using: composite
+  steps:
+    - name: Extract the pinned vendored gateway source
+      shell: bash
+      run: |
+        set -euo pipefail
+        pin="$(tr -d '[:space:]' < tests/docker/gateway/gateway-source.pin)"
+        [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || {
+          echo '::error title=Gateway lane pin invalid::tests/docker/gateway/gateway-source.pin must hold one commit SHA.'
+          exit 1
+        }
+        (cd tests/docker/gateway && sha256sum -c gateway-source.sha256) || {
+          echo '::error title=Gateway lane source mismatch::tests/docker/gateway/gateway-source.tar.gz does not match its recorded hash. The gateway-docker lane cannot build the pinned gateway and never skips.'
+          exit 1
+        }
+        rm -rf .ci/pocketshell-gateway
+        mkdir -p .ci/pocketshell-gateway
+        tar -xzf tests/docker/gateway/gateway-source.tar.gz -C .ci/pocketshell-gateway
+        [[ -d .ci/pocketshell-gateway/cmd/pocketshell-link && -f .ci/pocketshell-gateway/go.mod ]] || {
+          echo '::error title=Gateway lane source invalid::the extracted gateway source is not a pocketshell-gateway tree.'
+          exit 1
+        }
+        vendored="$(tr -d '[:space:]' < .ci/pocketshell-gateway/.vendored-gateway-commit 2>/dev/null || true)"
+        [[ "$vendored" == "$pin" ]] || {
+          echo '::error title=Gateway lane source mismatch::the extracted gateway source is not the pinned commit.'
+          exit 1
+        }
+
+    - name: Set up Go for the gateway lane
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: .ci/pocketshell-gateway/go.mod
+        cache: false
+
+    - name: Build the gateway binaries and the test-CA APK
+      shell: bash
+      run: scripts/connected-js-gateway-docker.sh --suffix i3086gwlane --gateway-src .ci/pocketshell-gateway --prepare-only

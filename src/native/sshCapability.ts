@@ -94,8 +94,8 @@ export const NATIVE_MAX_CHANNELS_PER_CONNECTION = 8;
  * which only {@link loadNativeTransportCapabilities} sets, from the native
  * plugin's own reply. False until then and after any unreadable reply, so a
  * build or a bridge that does not report the gateway transport can never be
- * treated as having it. (Android still refuses gateway hosts at its platform
- * boundary, `unsupportedTransportMessage`, until #3086 slice 3 lifts that.)
+ * treated as having it. The Android platform boundary
+ * (`unsupportedTransportMessage`) admits gateway hosts on the same report.
  */
 export interface NativeTransportCapabilities {
   gatewayTransport: boolean;
