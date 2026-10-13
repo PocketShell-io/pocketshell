@@ -6,7 +6,8 @@ import java.util.function.Supplier;
 /**
  * Which Google sign-in and which network the sync plugin uses.
  *
- * <p>Production is Credential Manager against the real sync API. Packaged
+ * <p>Production is Credential Manager with an automatic loopback-PKCE fallback
+ * ({@link CompositeGoogleSignIn}), against the real sync API. Packaged
  * journeys run without a Google account or network, so they install a fake
  * sign-in provider and an in-process fake sync backend before the activity
  * starts. Everything between those two edges — encrypted token storage, the
@@ -43,9 +44,17 @@ public final class GoogleSyncEnvironment {
 
     static GoogleSyncSession.SignInProvider signIn(Supplier<Activity> activity) {
         SignInFactory factory = testSignIn;
-        return factory != null
-                ? factory.create(activity)
-                : new CredentialManagerSignIn(activity, GoogleSyncConfig.SERVER_CLIENT_ID);
+        if (factory != null) return factory.create(activity);
+        CredentialManagerSignIn credentialManager =
+                new CredentialManagerSignIn(activity, GoogleSyncConfig.SERVER_CLIENT_ID);
+        LoopbackPkceSignIn loopback = new LoopbackPkceSignIn(activity, GoogleSyncConfig.DESKTOP_CLIENT_ID,
+                GoogleSyncConfig.SYNC_API_URL, transport(), new PkceRefreshTokenStore(() -> {
+                    // The refresh store is provider-private state; the
+                    // application context outlives any one activity.
+                    Activity host = activity.get();
+                    return host != null ? host.getApplicationContext() : null;
+                }));
+        return new CompositeGoogleSignIn(credentialManager, loopback);
     }
 
     static GoogleSyncSession.Transport transport() {
