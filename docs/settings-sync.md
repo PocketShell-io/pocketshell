@@ -90,6 +90,18 @@ The Android client has no secret and nothing needs to change in the app.
 The OAuth consent screen must list the test user if the project is in
 Testing mode, and the sync stack's `AllowedEmails` must include the account.
 
+Until the Android client exists for a package, sign-in does not dead-end: the
+Account screen's "Sign in with Google" first tries Credential Manager and, on
+its not-registered refusal (`SIGN_IN_UNAVAILABLE`), falls back automatically to
+the desktop app's loopback-PKCE flow (`LoopbackPkceSignIn`): the system browser
+opens Google's consent page for the desktop client, and the one-time code is
+exchanged through the sync API's token relay (`POST /auth/google/token`), which
+adds the client secret server-side. The resulting ID token enters the same
+encrypted storage as a Credential Manager token; a refresh token lets the
+one-hour ID token renew silently. Registering the Android client remains the
+proper fix — it restores the native chooser and silent renewal through Play
+services, and the fallback then simply stops triggering.
+
 Other packages need their own Android client entry (same project, same
 form): `com.pocketshell.app` for an unsuffixed debug install and, before a
 release ships sync, `com.pocketshell.app` with the release keystore's SHA-1.
