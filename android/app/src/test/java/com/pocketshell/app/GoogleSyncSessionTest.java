@@ -176,6 +176,40 @@ public final class GoogleSyncSessionTest {
         assertEquals(API + "/me", transport.requests.get(0).url);
     }
 
+    /** Key-vault W4: exactly GET /vault/status and POST /vault/verify, nothing else under /vault. */
+    @Test public void onlyTheVaultStatusAndVerifyRoutesCanBeRequested() throws Exception {
+        store.value = token("sub-1", "phone@example.com", NOW + 3600, "VAULTSECRET1");
+        String[][] refused = {
+                {"POST", "vault/status", "{}"},
+                {"GET", "vault/verify", null},
+                {"POST", "vault/verify", null},
+                {"POST", "vault/verify", "x".repeat(1025)},
+                {"POST", "vault/reset", "{\"confirm\":\"RESET\"}"},
+                {"POST", "vault/verifier", "{}"},
+                {"GET", "vault/../me", null},
+                {"PUT", "vault/verify", "{}"},
+        };
+        for (String[] request : refused) {
+            try {
+                session.requestVault(request[0], request[1], request[2]);
+                fail("refuse " + request[0] + " " + request[1]);
+            } catch (SyncAuthException expected) {
+                assertEquals(SyncAuthException.INVALID_REQUEST, expected.code);
+            }
+        }
+        assertTrue(transport.requests.isEmpty());
+        transport.responses.add(new GoogleSyncSession.Response(404, "Not Found"));
+        transport.responses.add(new GoogleSyncSession.Response(401, "{\"error\":\"wrong_passphrase\",\"retryAfter\":1}"));
+        assertEquals(404, session.requestVault("GET", "vault/status", null).status);
+        GoogleSyncSession.Response wrong = session.requestVault("POST", "vault/verify", "{\"auth\":\"a\"}");
+        assertEquals(API + "/vault/status", transport.requests.get(0).url);
+        assertEquals(API + "/vault/verify", transport.requests.get(1).url);
+        assertEquals("POST", transport.requests.get(1).method);
+        // A 401 from verify is a wrong passphrase, not an expired sign-in: no renewal, no second guess spent.
+        assertEquals(401, wrong.status);
+        assertEquals(2, transport.requests.size());
+    }
+
     @Test public void aTransportFailureNeverEchoesTheTransportMessage() throws Exception {
         String token = token("sub-1", "phone@example.com", NOW + 3600, "TRANSPORTSECRET9");
         store.value = token;

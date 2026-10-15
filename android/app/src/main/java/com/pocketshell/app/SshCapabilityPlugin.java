@@ -153,6 +153,8 @@ public final class SshCapabilityPlugin extends Plugin {
     }
 
     private volatile PrivateKeySource privateKeySource;
+    /** Vault keys held in memory; JVM tests substitute their own instance. */
+    volatile EphemeralCredentials ephemeralCredentials = EphemeralCredentials.INSTANCE;
 
     /** Builds the gateway tunnel for one attempt. Production always refuses
      * plaintext ws:// (insecure flag false); JVM tests dial a loopback fixture. */
@@ -367,8 +369,9 @@ public final class SshCapabilityPlugin extends Plugin {
                 char[] secret = keyHandlePassphrase;
                 byte[] privateKeyBytes = null;
                 try {
+                    requireHeldVaultKey(keyHandleId);
                     try {
-                        privateKeyBytes = privateKeySource().resolvePrivateKey(keyHandleId);
+                        privateKeyBytes = resolveKeyBytes(keyHandleId);
                     } catch (IOException | RuntimeException vaultError) {
                         KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();
                         connectFailureLog.storedKeyConnectFailed(unavailable.code);
@@ -1302,6 +1305,24 @@ public final class SshCapabilityPlugin extends Plugin {
         throw new PluginFailure("INVALID_ARGUMENT", "SSH host-key pin kind is not supported.");
     }
 
+    /**
+     * The private key behind a dial's handle: a vault key held in process
+     * memory ({@link EphemeralCredentials}, key-vault W4) or a stored key.
+     */
+    static final String VAULT_LOCKED = "VAULT_LOCKED";
+
+    /** A vault handle that was wiped (vault locked, signed out) is its own typed refusal. */
+    private void requireHeldVaultKey(String keyHandleId) throws PluginFailure {
+        if (EphemeralCredentials.isEphemeral(keyHandleId) && !ephemeralCredentials.contains(keyHandleId)) {
+            throw new PluginFailure(VAULT_LOCKED, "The key vault is locked. Unlock it to connect.");
+        }
+    }
+
+    private byte[] resolveKeyBytes(String keyHandleId) throws IOException {
+        if (EphemeralCredentials.isEphemeral(keyHandleId)) return ephemeralCredentials.resolve(keyHandleId);
+        return privateKeySource().resolvePrivateKey(keyHandleId);
+    }
+
     private PrivateKeySource privateKeySource() {
         PrivateKeySource source = privateKeySource;
         return source != null
@@ -1423,12 +1444,18 @@ public final class SshCapabilityPlugin extends Plugin {
             throw new PluginFailure("GATEWAY_UNPAIRED",
                     "Pair this device with the host before connecting through the gateway.");
         }
-        if (!pairing.keyHandleId.equals(keyHandleId)) {
+        // The pairing's own key (the host's authorized_keys, gatewayAuth
+        // `host`), or a key from the account vault held in memory (`managed`
+        // / `both`, key-vault W4). The pin above is enforced either way; only
+        // an arbitrary STORED key that is not the pairing's is refused.
+        boolean vaultKey = EphemeralCredentials.isEphemeral(keyHandleId);
+        if (!vaultKey && !pairing.keyHandleId.equals(keyHandleId)) {
             throw new PluginFailure("GATEWAY_UNPAIRED", "The saved pairing uses a different SSH key.");
         }
-        // The key must still resolve from the vault BEFORE any broker call or
-        // socket: a dial without its key is refused, not half-opened.
-        try {
+        // The key must still resolve BEFORE any broker call or socket: a dial
+        // without its key is refused, not half-opened.
+        if (vaultKey) requireHeldVaultKey(keyHandleId);
+        else try {
             gatewayVaultProbe.requireResolvable(pairing.keyHandleId);
         } catch (IOException | RuntimeException vaultError) {
             KeyHandleConnectFailures.Classified unavailable = KeyHandleConnectFailures.vaultUnavailable();

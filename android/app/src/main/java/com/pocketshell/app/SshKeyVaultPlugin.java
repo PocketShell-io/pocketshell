@@ -140,6 +140,47 @@ public final class SshKeyVaultPlugin extends Plugin {
         }
     }
 
+    /**
+     * A key from the account vault, decrypted in the WebView for one host
+     * (key-vault W4): held in process memory only ({@link EphemeralCredentials})
+     * and dialled by the returned handle. Never stored, never echoed back.
+     */
+    @PluginMethod
+    public void holdVaultKey(PluginCall call) {
+        JSObject request = call.getData();
+        String pem = request.getString("privateKeyPem");
+        request.remove("privateKeyPem");
+        byte[] bytes = EphemeralCredentials.utf8(pem);
+        pem = null;
+        try {
+            EphemeralCredentials.Held held = EphemeralCredentials.INSTANCE.hold(bytes);
+            call.resolve(new JSObject()
+                .put("handleId", held.handleId)
+                .put("algorithm", held.algorithm)
+                .put("fingerprintSha256", held.fingerprintSha256));
+        } catch (Exception error) {
+            reject(call, "VAULT_KEY_INVALID", safeMessage(error));
+        } finally {
+            java.util.Arrays.fill(bytes, (byte) 0);
+        }
+    }
+
+    /** Zero and forget held vault keys: the listed handles, or all of them (vault locked). */
+    @PluginMethod
+    public void releaseVaultKeys(PluginCall call) {
+        com.getcapacitor.JSArray handles = call.getArray("handleIds");
+        int released = 0;
+        if (handles == null) {
+            released = EphemeralCredentials.INSTANCE.wipeAll();
+        } else {
+            for (int index = 0; index < handles.length(); index++) {
+                String handleId = handles.optString(index, null);
+                if (EphemeralCredentials.isEphemeral(handleId) && EphemeralCredentials.INSTANCE.release(handleId)) released++;
+            }
+        }
+        call.resolve(new JSObject().put("released", released));
+    }
+
     /** The OpenSSH public line for a stored key; public data only. */
     @PluginMethod
     public void publicKey(PluginCall call) {

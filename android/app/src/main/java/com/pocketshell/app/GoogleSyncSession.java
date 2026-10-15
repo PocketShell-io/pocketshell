@@ -184,6 +184,30 @@ public final class GoogleSyncSession {
         return response;
     }
 
+    /**
+     * The vault's phase-2 server check (key-vault W2/W4): only {@code GET
+     * vault/status} and {@code POST vault/verify}. A 404 means the route is
+     * not deployed; the caller falls back to the client-side check value.
+     */
+    synchronized Response requestVault(String method, String endpoint, String body) throws SyncAuthException {
+        String path;
+        if ("GET".equals(method) && "vault/status".equals(endpoint) && body == null) {
+            path = "/vault/status";
+        } else if ("POST".equals(method) && "vault/verify".equals(endpoint) && body != null
+                && body.getBytes(StandardCharsets.UTF_8).length <= 1024) {
+            path = "/vault/verify";
+        } else {
+            throw invalid();
+        }
+        GoogleIdToken token = usableToken();
+        Response response = send(method, path, body, token);
+        if (response.status == 401 && !"/vault/verify".equals(path)) {
+            token = renew(token);
+            response = send(method, path, body, token);
+        }
+        return response;
+    }
+
     private String pathFor(String method, String slot, String body) throws SyncAuthException {
         if ("GET".equals(method) && slot == null) {
             if (body != null) throw invalid();

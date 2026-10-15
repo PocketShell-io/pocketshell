@@ -15,6 +15,7 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.CredentialHandleVaultTest
   com.pocketshell.app.DurableKeyValueStoreTest
   com.pocketshell.app.EncryptedSyncTokenStoreTest
+  com.pocketshell.app.EphemeralCredentialsTest
   com.pocketshell.app.GatewayOriginAllowlistTest
   com.pocketshell.app.GatewayPairingPluginContractTest
   com.pocketshell.app.GatewayPairingStoreTest
@@ -39,6 +40,8 @@ REQUIRED_CLASSES=(
   com.pocketshell.app.SshCapabilityPluginGatewayPinTest
   com.pocketshell.app.SshCapabilityPluginGatewayRefusalTest
   com.pocketshell.app.SshCapabilityPluginGatewayTokenTest
+  com.pocketshell.app.SshCapabilityPluginGatewayVaultKeyTest
+  com.pocketshell.app.VaultDeviceKeyStoreTest
 )
 RESULTS_DIR="$ROOT_DIR/android/app/build/test-results/testDebugUnitTest"
 

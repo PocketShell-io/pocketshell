@@ -301,6 +301,21 @@ trap on_exit EXIT
 
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" reverse "tcp:$TLS_PORT" "tcp:$TLS_PORT" >/dev/null
 reverse_added=1
+# Key-vault W4: the account vault (built by core's KeyVaultStore) holds a
+# fresh throwaway key bound to the gateway host; the journey authorizes only
+# that key on the host, so a gateway dial can succeed only with the vault key.
+vault_dir="$(mktemp -d)"
+ssh-keygen -q -t ed25519 -N '' -C "gateway lane vault key $RUN_ID" -f "$vault_dir/key" >/dev/null
+node "$ROOT_DIR/scripts/vault-journey-fixture/build.mjs" \
+  --key "$vault_dir/key" --public-key "$(cat "$vault_dir/key.pub")" --alias gw-dev --hostname gw-dev.gateway --port 22 \
+  --user vault-lane --passphrase "pocketshell-vault-test-passphrase gateway" --sync-passphrase "gateway lane passphrase" \
+  --gateway-auth both --out "$vault_dir/fixture.json" > "$ARTIFACTS_DIR/vault-fixture-build.txt" 2>&1 \
+  || { cat "$ARTIFACTS_DIR/vault-fixture-build.txt" >&2; fail 'vault fixture build failed'; }
+DEVICE_VAULT_FIXTURE="/data/local/tmp/pocketshell-vault-fixture-$RUN_ID.json"
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$vault_dir/fixture.json" "$DEVICE_VAULT_FIXTURE" >/dev/null \
+  || fail 'could not stage the vault fixture'
+rm -rf -- "$vault_dir"
+
 pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
   || fail "could not apply the lane input settings on $ANDROID_SERIAL"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -c >/dev/null 2>&1 || true
@@ -318,6 +333,7 @@ pocketshell_run_without_avd_lock_fd "$ROOT_DIR/android/gradlew" -p "$ROOT_DIR/an
   "-Pandroid.testInstrumentationRunnerArguments.gatewayControllerPort=$controller_port" \
   "-Pandroid.testInstrumentationRunnerArguments.gatewayBrokerKeyPkcs8Base64=$(cat "$STATE/broker/broker-key.pkcs8.b64")" \
   "-Pandroid.testInstrumentationRunnerArguments.gatewayBrokerKid=$(cat "$STATE/broker/broker-kid")" \
+  "-Pandroid.testInstrumentationRunnerArguments.vaultFixture=$DEVICE_VAULT_FIXTURE" \
   --stacktrace --console=plain || test_status=$?
 
 shopt -s nullglob
@@ -327,12 +343,13 @@ shopt -u nullglob
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" logcat -d -v threadtime > "$ARTIFACTS_DIR/logcat.txt" 2>&1 || true
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" exec-out screencap -p > "$ARTIFACTS_DIR/final-screen.png" 2>/dev/null || true
 mkdir -p "$ARTIFACTS_DIR/screenshots"
-for shot in pin-mismatch device-offline terminal-io after-reconnect; do
+for shot in pin-mismatch device-offline terminal-io vault-unlocked-gateway-hosts vault-gateway-connected after-reconnect; do
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" pull "/data/local/tmp/gwlane-$shot.png" "$ARTIFACTS_DIR/screenshots/$shot.png" >/dev/null 2>&1 || true
   pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "/data/local/tmp/gwlane-$shot.png" >/dev/null 2>&1 || true
 done
 collect_and_stop_fixture
 
+pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" shell rm -f "$DEVICE_VAULT_FIXTURE" >/dev/null 2>&1 || true
 (( test_status == 0 )) || fail "connected gateway journey failed (exit $test_status); evidence in $ARTIFACTS_DIR"
 
 "$ROOT_DIR/scripts/check-js-gateway-results.py" \

@@ -35,11 +35,14 @@ import {
   unsupportedTransport,
   type ConnectionController,
   type HomeResult,
+  type HostEntry,
+  type SshHostTarget,
 } from '@pocketshell/core';
 import { AndroidConnectionHub, type ConnectionJournalEntry, type TofuDecision } from './connectionHub';
 import { MissingHostCredential, type AndroidHostStore } from './hostStore';
 import { declinedAccountHostMessage, type AccountHostKeys } from './accountHosts';
-import { insecureGatewayMessage, resolveGatewayTarget, type GatewayPairings } from './gatewayTarget';
+import { insecureGatewayMessage, resolveGatewayTarget, type GatewayConnectRequest, type GatewayPairings } from './gatewayTarget';
+import type { AndroidVault, GatewayAuthPolicy } from '@/vault/androidVault';
 
 /** The generation the hub's controller-backed exec answers for (the controller owns the real one). */
 const CONTROLLER_GENERATION = 'controller';
@@ -96,6 +99,25 @@ function isSameHost(host: { name: string; hostname: string; port: number; user: 
   return host.hostname === request.host && host.port === (request.port ?? 22) && (!request.user || host.user === request.user);
 }
 
+/** The dial refusals of the account key vault (key-vault W4): never a key picker. */
+export function vaultLockedMessage(name: string): string {
+  return `Unlock your key vault to connect to “${name}”. Nothing was dialled.`;
+}
+
+export function vaultUnboundMessage(name: string): string {
+  return `No key in your key vault is assigned to “${name}”. Assign one on the PocketShell web app (Keys), then connect again.`;
+}
+
+export function vaultGatewayPasswordMessage(name: string): string {
+  return `“${name}” reaches its host through the PocketShell gateway, which needs an SSH key, but its vault entry is a password. Nothing was dialled.`;
+}
+
+/** The non-secret `gatewayAuth` mirror a host entry may carry (design section 7). */
+function mirroredPolicy(entry: object): GatewayAuthPolicy | null {
+  const value = (entry as { gatewayAuth?: unknown }).gatewayAuth;
+  return value === 'host' || value === 'managed' || value === 'both' ? value : null;
+}
+
 export interface AndroidLifecycle {
   /** Register for foreground/background transitions; returns an unsubscribe. */
   onActiveChange(handler: (active: boolean) => void): () => void;
@@ -128,6 +150,12 @@ export interface AndroidApiDeps {
   gatewayTransport?: () => Promise<boolean>;
   /** The native gateway pairings (#3086); required for a gateway dial. */
   gatewayPairings?: GatewayPairings;
+  /**
+   * The account key vault (key-vault W4). An account host bound to a vault
+   * key is dialled with it from memory; a locked vault asks to unlock, never
+   * for a key. Absent, or an account without a vault: the phone's key flow.
+   */
+  vault?: Pick<AndroidVault, 'credentialFor'>;
 }
 
 export interface AndroidPlatform {
@@ -151,6 +179,69 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
   const exec = (connectionId: string, command: string) => hub.exec(connectionId, command);
 
   /**
+   * A gateway dial: the pairing names the device, the pin and the host's own
+   * key (`host` policy). With `managed` / `both` and an unlocked vault that
+   * binds the host, the vault key is dialled instead, through the same
+   * pairing and pin. `both` (or no mirrored policy) falls back to the
+   * pairing key when the vault stays locked or names no key; only `managed`
+   * refuses then. The pairing is checked first, so an unpaired device is
+   * refused before anyone is asked to unlock.
+   */
+  async function gatewayTarget(request: GatewayConnectRequest & { gatewayAuth?: unknown; hostAlias?: string }, label: string) {
+    const paired = await resolveGatewayTarget(request, label, deps.gatewayPairings!);
+    if (!deps.vault) return paired;
+    // The host's policy is mirrored on its synced entry (design section 7):
+    // core's store sends only the transport markers with a dial, so read it
+    // from the account entry this dial names.
+    const entry = deps.accountHosts ? await deps.accountHosts.find(request) : null;
+    const policy = mirroredPolicy(request) ?? (entry ? mirroredPolicy(entry) : null);
+    const decision = await deps.vault.credentialFor(label, { gateway: true, mirroredPolicy: policy });
+    switch (decision.kind) {
+      case 'no-vault':
+      case 'host-keys':
+        return paired;
+      // Only a `managed` host (vault keys only) gets these: the pairing key
+      // would be refused by the host, so say what to do instead.
+      case 'unbound':
+        throw new Error(vaultUnboundMessage(label));
+      case 'locked':
+        throw new Error(vaultLockedMessage(label));
+      case 'credential':
+        if (decision.credential.kind !== 'key-handle') throw new Error(vaultGatewayPasswordMessage(label));
+        return { ...paired, credential: decision.credential };
+    }
+  }
+
+  /**
+   * A direct dial of an account host (or a phone host whose key is gone)
+   * with its vault entry, or null when the account has no vault. The target
+   * is built in memory only: nothing is saved on the phone.
+   */
+  async function vaultTarget(host: HostEntry, payload: Parameters<PocketShellApi['ssh']['connect']>[0]): Promise<SshHostTarget | null> {
+    if (!deps.vault) return null;
+    const decision = await deps.vault.credentialFor(host.name, { gateway: false });
+    switch (decision.kind) {
+      case 'no-vault':
+      case 'host-keys':
+        return null;
+      case 'locked':
+        throw new Error(vaultLockedMessage(host.name));
+      case 'unbound':
+        throw new Error(vaultUnboundMessage(host.name));
+      case 'credential': {
+        const username = payload.user || host.user;
+        return {
+          hostId: `${username}@${host.hostname}:${host.port}`,
+          hostname: host.hostname,
+          port: host.port,
+          username,
+          credential: decision.credential,
+        };
+      }
+    }
+  }
+
+  /**
    * The dial target: a phone host; a phone host whose key is gone, once the
    * user attaches a key to it (updated in place); or an account host the
    * phone does not have, once the user gives it this phone's key (saved on
@@ -170,7 +261,7 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     // An admitted gateway marker is dialled through the gateway, with the key
     // of this phone's pairing for that device; never as an ordinary host.
     if (hasGatewayMarker(payload)) {
-      return resolveGatewayTarget(payload, deps.hosts.labelFor(payload), deps.gatewayPairings!);
+      return gatewayTarget(payload, deps.hosts.labelFor(payload));
     }
     try {
       return await deps.hosts.resolve(payload);
@@ -189,14 +280,25 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
       const refusal = account ? unsupportedTransportMessage(account.name, account, transports) : null;
       if (refusal) throw new Error(refusal);
       if (account && hasGatewayMarker(account)) {
-        return resolveGatewayTarget(
-          { host: account.hostname, port: account.port, user: payload.user || account.user, gateway: account.gateway },
+        return gatewayTarget(
+          {
+            host: account.hostname,
+            port: account.port,
+            user: payload.user || account.user,
+            gateway: account.gateway,
+            hostAlias: account.name,
+            gatewayAuth: account.gatewayAuth,
+          },
           account.name,
-          deps.gatewayPairings!,
         );
       }
       const host = missingKey ? (error as MissingHostCredential).host : account;
       if (!host) throw error;
+      // The account's vault decides first (key-vault W4): its key, an unlock
+      // request, or a "bind a key on the web" refusal. Only an account
+      // without a vault keeps the phone's own key prompt.
+      const fromVault = await vaultTarget(host, payload);
+      if (fromVault) return fromVault;
       if (!(await keys.adopt(host, missingKey ? 'missing-key' : 'account'))) {
         throw new Error(declinedAccountHostMessage(host.name));
       }

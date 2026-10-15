@@ -11,7 +11,8 @@ import { runInstalledDataMigration } from '@/migration/installedDataMigration';
 import AndroidAppRoot from './AndroidAppRoot.vue';
 import './phone.css';
 import { createSharedAppRouter } from './router';
-import { androidPlatform } from './platform';
+import { provideKeyVault } from '@ui/app/keyVault';
+import { androidPlatform, keyVaultPlatform } from './platform';
 import { androidTerminalInputAdapter } from '@/platform/android/terminalImeInput';
 import { ANDROID_MONO_FALLBACK, applyAndroidInsets } from './androidShell';
 
@@ -21,6 +22,9 @@ import { ANDROID_MONO_FALLBACK, applyAndroidInsets } from './androidShell';
  */
 export function mountSharedApp(target: string | Element): void {
   provideApi(androidPlatform.api);
+  // The account key vault (key-vault W4): core's shared unlock sheet, which
+  // AppRoot mounts, over the phone's store and Keystore-sealed remember.
+  provideKeyVault(keyVaultPlatform);
   // Android-only behaviour plugs into the shared app's extension points (D42).
   // The soft keyboard's composition reaches the terminal through this adapter
   // (#2952); desktop and web contribute none and keep xterm's own handling.

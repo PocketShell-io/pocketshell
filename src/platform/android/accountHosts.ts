@@ -20,6 +20,8 @@ export interface AccountHostRequest {
   host: string;
   port?: number;
   user: string;
+  /** The account alias the shared store sends with every dial (core e02e4a6); matched first. */
+  hostAlias?: string;
 }
 
 /** Why the phone asks: a host from the account, or a phone host whose key is gone. */
@@ -45,11 +47,13 @@ export interface AccountHostKeysDeps {
 
 /**
  * The account host a dial is for, matched the way the shared store names a
- * host in `ssh.connect`: hostname and port, and the user when both sides
- * name one.
+ * host in `ssh.connect`: by its alias when the request carries one, else
+ * hostname and port, and the user when both sides name one.
  */
 export function matchAccountHost(hosts: readonly HostEntry[], request: AccountHostRequest): HostEntry | null {
   const port = request.port ?? 22;
+  const named = request.hostAlias ? hosts.find((host) => host.name === request.hostAlias) : undefined;
+  if (named) return named;
   return hosts.find((host) => host.hostname === request.host && host.port === port
     && (!request.user || !host.user || host.user === request.user)) ?? null;
 }

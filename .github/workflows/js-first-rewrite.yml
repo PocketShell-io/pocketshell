@@ -110,6 +110,9 @@ jobs:
       - name: Check fail-closed packaged account-picker result guard
         run: scripts/check-js-account-picker-results.py --self-test
 
+      - name: Check fail-closed packaged account key-vault result guard
+        run: scripts/check-js-account-vault-results.py --self-test
+
       - name: Check fail-closed packaged key-vault and signed-upgrade result guards
         run: |
           scripts/check-js-key-vault-results.py --self-test
@@ -338,6 +341,10 @@ jobs:
             --host-dir "android/app/build/outputs/js-gateway/gw3086-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/host"
           run_check "Shared app" scripts/check-js-shared-app-results.py \
             --results-dir android/app/build/outputs/js-shared-app-results
+          run_check "Account key vault" scripts/check-js-account-vault-results.py \
+            --results-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results" \
+            --screenshots-dir "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/device-screenshots" \
+            --logcat-redaction "android/app/build/outputs/js-account-vault/vaultw4-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/logcat-redaction.txt"
           run_check Key-vault scripts/check-js-key-vault-results.py \
             --results-dir "android/app/build/outputs/js-key-vault/js2926-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/instrumentation-results"
           run_check "Durable storage" scripts/check-js-durable-storage-results.py \
@@ -442,6 +449,7 @@ jobs:
             android/app/build/outputs/js-settings/**
             android/app/build/outputs/js-account-sync/**
             android/app/build/outputs/js-account-picker/**
+            android/app/build/outputs/js-account-vault/**
             android/app/build/outputs/js-gateway/**
             android/app/build/outputs/js-key-vault/**
             android/app/build/outputs/js-key-vault-upgrade/**

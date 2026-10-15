@@ -22,6 +22,7 @@
  */
 import {
   assembleSyncSet,
+  isGatewayAuthPolicy,
   parseSyncPayloadResult,
   runSyncRound,
   serializeSyncPayload,
@@ -376,5 +377,9 @@ export function accountHostEntry(host: SyncHostEntry): HostEntry {
     // the platform refuses what it cannot dial, so they must stay visible.
     ...(Object.prototype.hasOwnProperty.call(host, 'link') ? { link: host.link } : {}),
     ...(Object.prototype.hasOwnProperty.call(host, 'gateway') ? { gateway: host.gateway } : {}),
+    // The vault's per-host gateway policy, mirrored by the web (core
+    // mirrorGatewayAuth, design section 7): a locked vault can still dial a
+    // `host`-policy gateway host with the pairing key.
+    ...(isGatewayAuthPolicy(host.gatewayAuth) ? { gatewayAuth: host.gatewayAuth } : {}),
   };
 }
