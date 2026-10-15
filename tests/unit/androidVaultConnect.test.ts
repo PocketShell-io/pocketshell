@@ -443,4 +443,51 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(vaultNative.released).toContainEqual(['ephemeral-1']);
     created.dispose();
   });
+
+  it('two account hosts at the same address each dial with their own vault key, chosen by the alias core sends', async () => {
+    // Same address and user as hetzner (the fixture trusts that host key).
+    const box = (name: string) => accountHost(name, HETZNER.hostname);
+    const vault = unlockedVault(
+      { 'box-a': { keyId: 'ka', gatewayAuth: 'host' }, 'box-b': { keyId: 'kb', gatewayAuth: 'host' } },
+      { ka: { kind: 'key', pem: 'PEM-A' }, kb: { kind: 'key', pem: 'PEM-B' } },
+    );
+    for (const [alias, pem] of [['box-b', 'PEM-B'], ['box-a', 'PEM-A']] as const) {
+      const { native, created, vaultNative } = await setup({ vault, account: [box('box-a'), box('box-b')] });
+      const result = await created.api.ssh.connect({ host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: alias } as never);
+      expect(result.ok).toBe(true);
+      expect(vaultNative.held).toEqual([pem]);
+      expect(native.connects).toHaveLength(1);
+      created.dispose();
+    }
+  });
+
+  it('two gateway entries at the same display address keep their own policy: host dials the pairing key, managed refuses', async () => {
+    const entries = [
+      accountHost('gw-host', 'shared.gw', { gateway: GW, gatewayAuth: 'host' }),
+      accountHost('gw-managed', 'shared.gw', { gateway: GW, gatewayAuth: 'managed' }),
+    ];
+    const payload = (alias: string) => ({ host: 'shared.gw', port: 22, user: 'alexey', hostAlias: alias, gateway: GW }) as never;
+    // Locked vault, the user closes the sheet whenever it is shown.
+    const hostSide = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: entries });
+    expect(await hostSide.created.api.ssh.connect(payload('gw-host'))).toEqual({ ok: true, connectionId: expect.any(String) });
+    expect(hostSide.askUnlock).not.toHaveBeenCalled();
+    expect(hostSide.native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
+    hostSide.created.dispose();
+    const managedSide = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: entries });
+    expect(await managedSide.created.api.ssh.connect(payload('gw-managed'))).toEqual({
+      ok: false,
+      error: 'Unlock your key vault to connect to “gw-managed”. Nothing was dialled.',
+    });
+    expect(managedSide.native.connects).toHaveLength(0);
+    managedSide.created.dispose();
+  });
+
+  it('an alias no account entry carries still finds the host by its address', async () => {
+    const vault = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+    const { created, vaultNative } = await setup({ vault });
+    const result = await created.api.ssh.connect({ host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'renamed-elsewhere' } as never);
+    expect(result.ok).toBe(true);
+    expect(vaultNative.held).toEqual([PEM]);
+    created.dispose();
+  });
 });

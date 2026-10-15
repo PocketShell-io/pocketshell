@@ -886,7 +886,10 @@
         "unlocked vault with no key for a gateway host mirrored both: pairing",
         "unlocked vault with no key for a gateway host mirrored undefined: pairing",
         "an account gateway host carries its mirrored gatewayAuth from the synced entry to the dial",
-        "a vault key still being handed to native when the vault locks is released, never kept"
+        "a vault key still being handed to native when the vault locks is released, never kept",
+        "two account hosts at the same address each dial with their own vault key, chosen by the alias core sends",
+        "two gateway entries at the same display address keep their own policy: host dials the pairing key, managed refuses",
+        "an alias no account entry carries still finds the host by its address"
       ]
     },
     "tests/unit/androidVaultUnlock.test.ts": {
