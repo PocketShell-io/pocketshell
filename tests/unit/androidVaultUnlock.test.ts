@@ -19,6 +19,7 @@ import { createVaultUnlockPrompt, FORGOT_PASSPHRASE_TEXT, VAULT_RESET_URL } from
 import {
   createAndroidVaultCore,
   createStoreVaultCore,
+  UNSUPPORTED_VERSION,
   parseRememberRecord,
   serializeRememberRecord,
   type KeyVaultStoreLike,
@@ -307,6 +308,7 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
       { kind: 'rateLimited', retryAfterMs: 60_000 },
       { kind: 'noVault' },
       { kind: 'corrupt' },
+      { kind: 'unsupportedVersion' },
       { kind: 'ok' },
     ] as const;
     const queue = [...results];
@@ -316,6 +318,9 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(await core.unlock('x')).toEqual({ kind: 'wrong-passphrase', retryAfterMs: 60_000 });
     expect(await core.unlock('x')).toEqual({ kind: 'absent' });
     expect((await core.unlock('x')).kind).toBe('error');
+    // A newer vault format says to update the app, never to reset.
+    expect(await core.unlock('x')).toEqual({ kind: 'error', message: UNSUPPORTED_VERSION });
+    expect(UNSUPPORTED_VERSION).not.toMatch(/reset/i);
     const opened = await core.unlock('x');
     if (opened.kind !== 'unlocked') throw new Error('expected unlocked');
     expect(opened.vault.binding('hetzner')).toEqual({ keyId: 'k1', gatewayAuth: 'both' });

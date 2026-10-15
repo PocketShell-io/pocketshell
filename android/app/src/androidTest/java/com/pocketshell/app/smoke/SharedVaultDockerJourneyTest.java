@@ -202,6 +202,8 @@ public final class SharedVaultDockerJourneyTest {
         assertNoKeyPickerEverShown();
 
         // Sign out from the shared Account screen: the record and the held keys go.
+        relaunch();
+        awaitAccountHostListed();
         tapDomCenter(".picker .header-actions .account-action");
         awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-identity .btn-ghost:not([disabled])')");
         tapDomCenter("[data-testid=android-account] .account-identity .btn-ghost");

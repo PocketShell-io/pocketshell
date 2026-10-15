@@ -15,6 +15,8 @@ import type { UnlockedVault, VaultCore, VaultUnlockResult } from './androidVault
 import { createVaultServerVerifier, createVaultSlotTransport } from './vaultAccount';
 
 const CORRUPT = 'Your key vault could not be read. Open the PocketShell web app to check it.';
+/** A vault written by a newer format: never offer a reset for it, only an update. */
+export const UNSUPPORTED_VERSION = 'Your key vault was saved by a newer version of PocketShell. Update the app to open it.';
 
 function toB64url(bytes: Uint8Array): string {
   let binary = '';
@@ -116,6 +118,8 @@ function unlockResult(store: KeyVaultStoreLike, result: StoreUnlockResult): Vaul
       return { kind: 'wrong-passphrase', retryAfterMs: result.retryAfterMs };
     case 'noVault':
       return { kind: 'absent' };
+    case 'unsupportedVersion':
+      return { kind: 'error', message: UNSUPPORTED_VERSION };
     case 'corrupt':
       return { kind: 'error', message: CORRUPT };
     case 'error':
@@ -130,6 +134,7 @@ export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
       if (probe.kind === 'error') throw new Error(probe.message);
       // `gated`: the server hides the header until a verify — a vault all the
       // same; reading it as "no vault" would send the phone to a key picker.
+      // `unsupportedVersion` is a vault too: unlocking it says to update.
       return probe.kind !== 'noVault';
     },
     async unlock(passphrase) {
@@ -150,6 +155,8 @@ export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
           return { kind: 'absent' };
         case 'rateLimited':
           return { kind: 'error', message: 'The sync service is limiting unlock attempts. Try again shortly.' };
+        case 'unsupportedVersion':
+          return { kind: 'error', message: UNSUPPORTED_VERSION };
         case 'corrupt':
           return { kind: 'error', message: CORRUPT };
         case 'error':

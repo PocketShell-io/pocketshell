@@ -176,6 +176,18 @@ LANES = (
         ),
     ),
     LaneContract(
+        name="account-vault",
+        class_name="com.pocketshell.app.smoke.SharedVaultDockerJourneyTest",
+        child_runner="scripts/connected-js-account-vault-docker.sh",
+        result_checker="scripts/check-js-account-vault-results.py",
+        methods=frozenset(
+            {
+                "typeEveryTimeUnlockDialsTheWebSavedKeyWithNoKeyPicker",
+                "rememberOnThisDeviceUnlocksSilentlyNextLaunchAndSignOutForgets",
+            }
+        ),
+    ),
+    LaneContract(
         name="durable-storage",
         class_name="com.pocketshell.app.smoke.DurableStorageRestartJourneyTest",
         child_runner="scripts/connected-js-durable-storage.sh",
@@ -461,9 +473,10 @@ def check_js(repo_root: Path) -> list[Finding]:
         "account-sync",
         "account-picker",
         "gateway-docker",
+        "account-vault",
     }
     if {lane.name for lane in LANES} != required_lanes:
-        findings.append(Finding("ERROR", "required fourteen-lane packaged journey inventory changed"))
+        findings.append(Finding("ERROR", "required fifteen-lane packaged journey inventory changed"))
 
     for lane in LANES:
         if not _script_invokes(dispatcher, lane.child_runner):
