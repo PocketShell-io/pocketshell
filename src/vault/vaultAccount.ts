@@ -14,37 +14,26 @@
  *    absent server never fails an unlock. Android never sets or resets the
  *    verifier (the web does).
  */
+import type {
+  VaultServerStatus,
+  VaultServerVerifier,
+  VaultSlotPullResult,
+  VaultSlotTransport,
+  VaultVerifyResult,
+} from '@pocketshell/core';
 import type { GoogleSyncNative } from '@/native/googleSync';
-
-export type VaultSlotPull = { kind: 'absent' } | { kind: 'ok'; version: number; data: string };
-export type VaultSlotPush =
-  | { kind: 'ok'; version: number }
-  | { kind: 'conflict'; currentVersion: number }
-  | { kind: 'error'; message: string };
-
-/** Core's `VaultSlotTransport`. */
-export interface VaultSlotTransport {
-  pull(slot: string): Promise<VaultSlotPull>;
-  push(slot: string, data: string, baseVersion: number): Promise<VaultSlotPush>;
-  delete(slot: string): Promise<void>;
-  list(): Promise<Array<{ slot: string; version: number }>>;
-}
-
-/** The server gates `vk-*` reads on a recent verify (W2 `VAULT_READ_GATE_MINUTES`). */
-export class VaultVerifyRequired extends Error {
-  constructor() {
-    super('The sync service needs the vault passphrase checked again before it hands out keys.');
-    this.name = 'VaultVerifyRequired';
-  }
-}
 
 export const ANDROID_VAULT_READ_ONLY = 'PocketShell for Android does not change the key vault. Use the PocketShell web app.';
 
-/** One raw slot read; a missing slot is `absent`, any other non-2xx throws a user-facing error. */
-export async function readVaultSlot(native: GoogleSyncNative, slot: string): Promise<VaultSlotPull> {
+/**
+ * One raw slot read: a missing slot is `absent`; a read the server gates on a
+ * recent verify (W2 `vault_verify_required`) is `gated`, which core answers
+ * with a silent re-verify or an unlock; any other non-2xx throws.
+ */
+export async function readVaultSlot(native: GoogleSyncNative, slot: string): Promise<VaultSlotPullResult> {
   const response = await native.request({ method: 'GET', slot });
   if (response.status === 404) return { kind: 'absent' };
-  if (response.status === 403 && errorCode(response.body) === 'vault_verify_required') throw new VaultVerifyRequired();
+  if (response.status === 403 && errorCode(response.body) === 'vault_verify_required') return { kind: 'gated' };
   if (response.status < 200 || response.status > 299) {
     throw new Error(`The sync service returned HTTP ${response.status} for the key vault.`);
   }
@@ -66,31 +55,6 @@ export function createVaultSlotTransport(native: GoogleSyncNative): VaultSlotTra
   };
 }
 
-/** Core's `VaultServerVerifier.verify` answers (W2 1:1). */
-export type VaultVerifyResult =
-  | { kind: 'ok' }
-  | { kind: 'wrong'; retryAfterMs: number }
-  /** 429: the account is locked out, or this network is rate limited; AUTH was not evaluated. */
-  | { kind: 'locked'; retryAfterMs: number }
-  /** 404 no_verifier: the vault has no verifier yet. */
-  | { kind: 'noVerifier' }
-  /** The route is not deployed (404), verifier_stale (409), 503, or the network failed. */
-  | { kind: 'unavailable' };
-
-export type VaultServerStatus =
-  /** `kdf`: the public KDF params, served here when the gate hides the `vault` header until a verify. */
-  | { kind: 'ok'; epoch: number; hasVerifier: boolean; retryAfterMs: number; kdf: unknown }
-  | { kind: 'unavailable' };
-
-export type VaultSetVerifierResult = { kind: 'ok'; epoch: number } | { kind: 'epochMismatch'; epoch: number } | { kind: 'refused' } | { kind: 'unavailable' };
-
-/** Core's `VaultServerVerifier`, plus `status()` (gated mode serves the KDF params there). */
-export interface VaultServerVerifier {
-  status(): Promise<VaultServerStatus>;
-  verify(auth: Uint8Array): Promise<VaultVerifyResult>;
-  setVerifier(request: { auth: Uint8Array; epoch: number; currentAuth?: Uint8Array }): Promise<VaultSetVerifierResult>;
-}
-
 /** AUTH on the wire: base64url without padding of exactly 32 bytes (43 characters). */
 export function authToWire(auth: Uint8Array): string {
   if (auth.length !== 32) throw new Error('The vault check value is malformed.');
@@ -101,15 +65,17 @@ export function authToWire(auth: Uint8Array): string {
 
 export function createVaultServerVerifier(native: GoogleSyncNative): VaultServerVerifier {
   return {
-    async status() {
+    async status(): Promise<VaultServerStatus> {
       const response = await native.request({ method: 'GET', endpoint: 'vault/status' }).catch(() => null);
       if (!response || response.status !== 200) return { kind: 'unavailable' };
       const body = parseJson(response.body);
       if (!isRecord(body) || !isCount(body.epoch) || typeof body.hasVerifier !== 'boolean') return { kind: 'unavailable' };
-      return { kind: 'ok', epoch: body.epoch, hasVerifier: body.hasVerifier, retryAfterMs: seconds(body.retryAfter), kdf: body.kdf ?? null };
+      const status: VaultServerStatus = { kind: 'ok', epoch: body.epoch, hasVerifier: body.hasVerifier, retryAfterMs: seconds(body.retryAfter) };
+      // Gated mode serves the public KDF params here; core validates them.
+      return isRecord(body.kdf) ? { ...status, kdf: body.kdf as never } : status;
     },
 
-    async verify(auth) {
+    async verify(auth): Promise<VaultVerifyResult> {
       const wire = authToWire(auth);
       const response = await native.request({ method: 'POST', endpoint: 'vault/verify', body: JSON.stringify({ auth: wire }) })
         .catch(() => null);
@@ -125,8 +91,8 @@ export function createVaultServerVerifier(native: GoogleSyncNative): VaultServer
       return { kind: 'unavailable' };
     },
 
-    // The web sets the verifier at vault creation and passphrase change;
-    // the phone only verifies.
+    // The web sets the verifier at vault creation and passphrase change, and
+    // resets the vault; the phone only verifies.
     setVerifier: async () => ({ kind: 'unavailable' }),
   };
 }

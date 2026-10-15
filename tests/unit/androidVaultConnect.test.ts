@@ -4,7 +4,10 @@ import type { GatewayPairingRow } from '@/native/gatewayPairing';
 import { createAndroidPlatform } from '@/platform/android/androidApi';
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
+import { readFileSync } from 'node:fs';
+import { KeyVaultStore, type VaultSlotTransport } from '@pocketshell/core';
 import { createAndroidVault, type VaultCore, type UnlockedVault, type VaultNative } from '@/vault/androidVault';
+import { createStoreVaultCore } from '@/vault/coreVault';
 import { FakeNative, HOST_KEY, MemoryStorage } from './support/androidFakeNative';
 
 /**
@@ -141,6 +144,35 @@ async function setup(options: Setup = {}) {
 const direct = { host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'hetzner' } as never;
 const viaGateway = { host: GATEWAY_HOST.hostname, port: 22, user: 'alexey', hostAlias: 'laptop', gateway: GW } as never;
 
+
+/** The account's slots as the web wrote them; `readOnly` is the phone's view. */
+class AccountSlots implements VaultSlotTransport {
+  readonly slots = new Map<string, { version: number; data: string }>();
+  readonly writes: string[] = [];
+  constructor(private readonly readOnly = false, shared?: Map<string, { version: number; data: string }>) {
+    if (shared) this.slots = shared;
+  }
+  async pull(slot: string) {
+    const stored = this.slots.get(slot);
+    return stored ? { kind: 'ok' as const, ...stored } : { kind: 'absent' as const };
+  }
+  async push(slot: string, data: string, baseVersion: number) {
+    this.writes.push(slot);
+    if (this.readOnly) return { kind: 'error' as const, message: 'read-only' };
+    const current = this.slots.get(slot)?.version ?? 0;
+    if (baseVersion !== current) return { kind: 'conflict' as const, currentVersion: current };
+    this.slots.set(slot, { version: current + 1, data });
+    return { kind: 'ok' as const, version: current + 1 };
+  }
+  async delete(slot: string) {
+    this.writes.push(`delete:${slot}`);
+    if (!this.readOnly) this.slots.delete(slot);
+  }
+  async list() {
+    return [];
+  }
+}
+
 describe('Android dials account and gateway hosts with the account key vault (key-vault W4)', () => {
   it('dials a web-saved key for an account host from memory, with no key picker and nothing saved', async () => {
     const vault = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
@@ -266,4 +298,54 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(vaultNative.held).toHaveLength(1);
     created.dispose();
   });
+
+  it('end to end with core: a key the web stored in the vault is dialled by the phone after one passphrase, with no writes', async () => {
+    // The web: create the vault, upload the Docker fixture key, bind the host.
+    const web = new AccountSlots();
+    const author = new KeyVaultStore({ transport: web, kdf: { m: 32768, t: 3, p: 1 } });
+    expect((await author.createVault('vault words', { syncPassphrase: 'sync words' })).kind).toBe('ok');
+    const pem = readFileSync('tests/docker/test_key', 'utf8');
+    const added = await author.addKey(pem, 'hetzner key');
+    if (added.kind !== 'ok') throw new Error(`addKey: ${added.kind}`);
+    expect((await author.bindHost('hetzner', added.entry.keyId, 'host')).kind).toBe('ok');
+    author.lock();
+
+    // The phone: core's store over a read-only view of the same account.
+    const phone = new AccountSlots(true, web.slots);
+    const native = new GatewayNative();
+    const storage = new MemoryStorage();
+    storage.setItem(ANDROID_HOSTS_STORAGE_KEY, '[]');
+    const trust = createLocalTrustStore(storage);
+    await trust.record('alexey@135.181.114.209:22', { kind: 'wire-key', ...HOST_KEY });
+    const vaultNative = new FakeVaultNative();
+    const synced: Array<string | null> = [];
+    const vault = createAndroidVault({
+      core: createStoreVaultCore(new KeyVaultStore({ transport: phone })),
+      native: vaultNative,
+      scope: async () => 'phone@example.com',
+      askUnlock: async () => (await vault.unlock('vault words', false)).kind === 'unlocked',
+      onUnlocked: (syncPassphrase) => { synced.push(syncPassphrase); },
+    });
+    const adopt = vi.fn(async () => false);
+    const created = createAndroidPlatform({
+      createController: () => new ConnectionController({ capability: native.capability(), trustStore: trust, retryDelaysMs: [0] }),
+      hosts: new AndroidHostStore({ storage, readLegacyHosts: async () => [] }),
+      backgroundGraceMs: () => 60_000,
+      addHostRoute: '/x',
+      accountHosts: { find: async () => HETZNER, adopt },
+      vault,
+    });
+    const result = await created.api.ssh.connect(direct);
+    expect(result).toEqual({ ok: true, connectionId: expect.any(String) });
+    expect(adopt).not.toHaveBeenCalled();
+    expect(synced).toEqual(['sync words']);
+    // The decrypted key reached native exactly once, as the web uploaded it.
+    expect(vaultNative.held).toHaveLength(1);
+    expect(vaultNative.held[0]).toContain(pem.split('\n')[1]);
+    expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: 'ephemeral-1' });
+    expect(phone.writes).toEqual([]);
+    await vault.lock();
+    expect(vaultNative.released).toEqual([null]);
+    created.dispose();
+  }, 60_000);
 });

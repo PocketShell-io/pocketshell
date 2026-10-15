@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import type { GoogleSyncHttpResponse, GoogleSyncNative, GoogleSyncRequest } from '@/native/googleSync';
 import { createVaultNative } from '@/native/vaultNative';
 import {
-  backoffMs,
   createAndroidVault,
   WRONG_PASSPHRASE_MESSAGE,
   type UnlockedVault,
@@ -15,11 +14,10 @@ import {
   authToWire,
   createVaultServerVerifier,
   createVaultSlotTransport,
-  VaultVerifyRequired,
 } from '@/vault/vaultAccount';
 import { createVaultUnlockPrompt, FORGOT_PASSPHRASE_TEXT, VAULT_RESET_URL } from '@/vault/vaultUnlockPrompt';
 import {
-  createCoreVault,
+  createAndroidVaultCore,
   createStoreVaultCore,
   parseRememberRecord,
   serializeRememberRecord,
@@ -109,12 +107,12 @@ function fakeStore(overrides: Partial<KeyVaultStoreLike> = {}): KeyVaultStoreLik
 }
 
 describe('Android key vault unlock, remember, account IO and core adapter (key-vault W4)', () => {
-  it('backs off after three wrong passphrases: 1 s, 2 s, 4 s … capped at 30 s', () => {
-    expect([1, 2, 3, 4, 5, 6, 8, 9, 20].map(backoffMs)).toEqual([0, 0, 1000, 2000, 4000, 8000, 30_000, 30_000, 30_000]);
-  });
-
-  it('a wrong passphrase is counted, the third starts a backoff that refuses even the right one until it passes', async () => {
+  it('honours the backoff core reports: no attempt until it passes, and a success clears it', async () => {
     const { subject, core, advance } = make();
+    (core.unlock as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 0 })
+      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 0 })
+      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 1000 });
     expect((await subject.unlock('nope', false)).kind).toBe('wrong-passphrase');
     expect((await subject.unlock('nope', false)).kind).toBe('wrong-passphrase');
     expect(subject.state.retryAt).toBe(0);
@@ -238,8 +236,8 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     const transport = createVaultSlotTransport(google);
     expect(await transport.pull('vault')).toEqual({ kind: 'ok', version: 3, data: header });
     expect(await transport.pull('vk-none')).toEqual({ kind: 'absent' });
-    await expect(transport.pull('vk-gated')).rejects.toBeInstanceOf(VaultVerifyRequired);
-    expect(await createCoreVault(google).present()).toBe(true);
+    expect(await transport.pull('vk-gated')).toEqual({ kind: 'gated' });
+    expect(await createAndroidVaultCore(google).present()).toBe(true);
   });
 
   it('never writes the vault from the phone', async () => {
@@ -253,16 +251,12 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
   });
 
   it('a vault the server hides until a verify (gated mode) still counts as a vault, never as "no vault"', async () => {
-    const statusOnly = new Google((request) => (request as { endpoint?: string }).endpoint === 'vault/status'
-      ? { status: 200, body: '{"epoch":1,"hasVerifier":true,"retryAfter":0,"kdf":{"alg":"argon2id"}}' }
-      : { status: 404, body: '{}' });
-    expect(await createCoreVault(statusOnly).present()).toBe(true);
     const gatedRead = new Google((request) => (request as { endpoint?: string }).endpoint
       ? { status: 404, body: '{}' }
       : { status: 403, body: '{"error":"vault_verify_required"}' });
-    expect(await createCoreVault(gatedRead).present()).toBe(true);
+    expect(await createAndroidVaultCore(gatedRead).present()).toBe(true);
     const none = new Google(() => ({ status: 404, body: '{}' }));
-    expect(await createCoreVault(none).present()).toBe(false);
+    expect(await createAndroidVaultCore(none).present()).toBe(false);
   });
 
   it.each([
@@ -302,9 +296,9 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
 
   it('status reads the epoch, verifier presence and the public KDF params, or unavailable', async () => {
     const ok = createVaultServerVerifier(new Google(() => ({ status: 200, body: '{"epoch":2,"hasVerifier":true,"retryAfter":0,"kdf":{"m":65536}}' })));
-    expect(await ok.status()).toEqual({ kind: 'ok', epoch: 2, hasVerifier: true, retryAfterMs: 0, kdf: { m: 65536 } });
+    expect(await ok.status!()).toEqual({ kind: 'ok', epoch: 2, hasVerifier: true, retryAfterMs: 0, kdf: { m: 65536 } });
     const missing = createVaultServerVerifier(new Google(() => ({ status: 404, body: '' })));
-    expect(await missing.status()).toEqual({ kind: 'unavailable' });
+    expect(await missing.status!()).toEqual({ kind: 'unavailable' });
   });
   it('maps unlock results onto the phone states', async () => {
     const results = [
@@ -344,12 +338,13 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(parseRememberRecord('not json')).toBeNull();
   });
 
-  it('a remembered record that no longer opens the vault (older epoch, changed passphrase, corrupt) reads as stale', async () => {
+  it('a remembered record that no longer opens the vault reads as stale; a rate-limited one is kept', async () => {
     const record = serializeRememberRecord({ vaultId: 'vault-1', epoch: 3, dek: new Uint8Array(32), auth: new Uint8Array(32) });
-    for (const kind of ['stale', 'corrupt'] as const) {
-      const core = createStoreVaultCore(fakeStore({ unlockWithRememberedDek: async () => ({ kind }) }));
-      expect(await core.unlockRemembered(record)).toEqual({ kind: 'stale' });
-    }
+    const stale = createStoreVaultCore(fakeStore({ unlockWithRememberedDek: async () => ({ kind: 'stale' }) }));
+    expect(await stale.unlockRemembered(record)).toEqual({ kind: 'stale' });
+    // Rate limited or unreadable: not stale, so the record is kept for next time.
+    const limited = createStoreVaultCore(fakeStore({ unlockWithRememberedDek: async () => ({ kind: 'rateLimited', retryAfterMs: 5 }) }));
+    expect((await limited.unlockRemembered(record)).kind).toBe('error');
     expect(await createStoreVaultCore(fakeStore()).unlockRemembered('garbage')).toEqual({ kind: 'stale' });
     const ok = await createStoreVaultCore(fakeStore()).unlockRemembered(record);
     expect(ok.kind).toBe('unlocked');

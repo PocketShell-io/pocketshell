@@ -9,10 +9,11 @@
  * password credential for that one connect.
  *
  * Split of responsibilities:
- *  - core's KeyVaultStore (W1, `VaultCore` here): the format, Argon2id, the
- *    check value, the DEK, the index and key blobs, read from the account's
- *    `vault` / `vk-*` slots. This module never touches crypto;
- *  - this module: the phone's lock state, wrong-passphrase backoff, the
+ *  - core's KeyVaultStore (W1, adapted as `VaultCore` in coreVault.ts): the
+ *    format, Argon2id, the check value, the DEK, the index and key blobs, the
+ *    wrong-passphrase backoff and the phase-2 server check. This module never
+ *    touches crypto;
+ *  - this module: the phone's lock state, the backoff deadline core reports, the
  *    per-device "Remember on this device" record (sealed natively by an
  *    Android Keystore key, `VaultDeviceKey`), and what a dial gets for a host;
  *  - the unlock sheet (VaultUnlockGate.vue) asks; androidApi decides when.
@@ -20,18 +21,9 @@
  * Hosts are bound by their ACCOUNT alias (the name in the `main` sync slot).
  */
 import { reactive } from 'vue';
-import type { SshCredential } from '@pocketshell/core';
+import type { GatewayAuthPolicy, HostKeyBinding, SshCredential, VaultSecret } from '@pocketshell/core';
 
-export type GatewayAuthPolicy = 'host' | 'managed' | 'both';
-
-/** What the vault index says a host uses (core `HostKeyBinding`). */
-export interface HostKeyBinding {
-  keyId: string;
-  gatewayAuth: GatewayAuthPolicy;
-}
-
-/** A decrypted vault entry (core `VaultSecret`). */
-export type VaultSecret = { kind: 'key'; pem: string } | { kind: 'password'; password: string };
+export type { GatewayAuthPolicy, HostKeyBinding, VaultSecret };
 
 /** An unlocked vault: the decrypted index and lazy key decryption (core KeyVaultStore session). */
 export interface UnlockedVault {
@@ -98,12 +90,6 @@ export interface AndroidVaultDeps {
   now?(): number;
 }
 
-/** Client-side backoff after three wrong passphrases: 1 s, 2 s, 4 s … capped at 30 s (design section 5). */
-export function backoffMs(failures: number): number {
-  if (failures < 3) return 0;
-  return Math.min(30_000, 1000 * 2 ** (failures - 3));
-}
-
 export const WRONG_PASSPHRASE_MESSAGE = 'That passphrase didn\'t unlock your vault.';
 
 export function createAndroidVault(deps: AndroidVaultDeps) {
@@ -155,11 +141,16 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
     const { record } = await deps.native.recall({ scope }).catch(() => ({ record: null as string | null }));
     state.remembered = record !== null;
     if (record !== null) {
-      const result = await deps.core.unlockRemembered(record).catch(() => ({ kind: 'stale' as const }));
+      const result = await deps.core.unlockRemembered(record).catch((error: unknown) => ({
+        kind: 'error' as const,
+        message: error instanceof Error ? error.message : String(error),
+      }));
       if (result.kind === 'unlocked') {
         await adopt(result.vault);
-      } else {
-        // An older epoch (reset) or another vault: the record is useless now.
+      } else if (result.kind === 'stale' || result.kind === 'absent') {
+        // An older epoch (reset), another vault, or a passphrase changed
+        // elsewhere: the record is useless now. Any other failure (offline,
+        // rate limited) keeps it for the next launch and asks this time.
         await deps.native.forget({ scope }).catch(() => undefined);
         state.remembered = false;
       }
@@ -172,8 +163,10 @@ export function createAndroidVault(deps: AndroidVaultDeps) {
     if (state.retryAt > now()) return { kind: 'backoff', retryAt: state.retryAt };
     const result = await deps.core.unlock(passphrase);
     if (result.kind === 'wrong-passphrase') {
+      // Core counts the failures and answers the backoff (1 s, 2 s … 30 s
+      // after the third); the sheet shows its deadline.
       state.failures += 1;
-      const wait = Math.max(backoffMs(state.failures), result.retryAfterMs ?? 0);
+      const wait = result.retryAfterMs ?? 0;
       state.retryAt = wait > 0 ? now() + wait : 0;
       return result;
     }

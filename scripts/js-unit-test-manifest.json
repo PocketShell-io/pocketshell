@@ -872,14 +872,14 @@
         "a gateway host mirrored as gatewayAuth host dials the pairing key without asking to unlock",
         "a managed gateway host whose vault entry is a password is refused before any dial",
         "lock releases every native vault key handle and forgets the decrypted vault",
-        "reuses one native handle per vault key while unlocked"
+        "reuses one native handle per vault key while unlocked",
+        "end to end with core: a key the web stored in the vault is dialled by the phone after one passphrase, with no writes"
       ]
     },
     "tests/unit/androidVaultUnlock.test.ts": {
       "suite": "Android key vault unlock, remember, account IO and core adapter (key-vault W4)",
       "tests": [
-        "backs off after three wrong passphrases: 1 s, 2 s, 4 s … capped at 30 s",
-        "a wrong passphrase is counted, the third starts a backoff that refuses even the right one until it passes",
+        "honours the backoff core reports: no attempt until it passes, and a success clears it",
         "type every time (the default) stores nothing on the device",
         "remember on this device seals the DEK record (never the passphrase) and unlocks silently next launch",
         "a remembered record from an older epoch or another vault is deleted and the passphrase is asked for",
@@ -902,7 +902,7 @@
         "status reads the epoch, verifier presence and the public KDF params, or unavailable",
         "maps unlock results onto the phone states",
         "the remember record carries vaultId, epoch, DEK and AUTH (decision #6), round-trips, and wipes the bytes",
-        "a remembered record that no longer opens the vault (older epoch, changed passphrase, corrupt) reads as stale",
+        "a remembered record that no longer opens the vault reads as stale; a rate-limited one is kept",
         "closing the session locks the store; presence follows probe",
         "accepts only ephemeral handles and never echoes key material"
       ]

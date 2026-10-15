@@ -20,7 +20,7 @@ import { googleSync } from '@/native/googleSync';
 import { vaultNative } from '@/native/vaultNative';
 import { openExternalUrl } from '@/platform/androidAppInfo';
 import { createAndroidVault } from '@/vault/androidVault';
-import { createCoreVault } from '@/vault/coreVault';
+import { createAndroidVaultCore } from '@/vault/coreVault';
 import { createVaultUnlockPrompt } from '@/vault/vaultUnlockPrompt';
 
 /** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
@@ -70,7 +70,7 @@ const baseSyncApi = androidSync().api();
 export const vaultSync = { passphrase: '' };
 
 export const androidVault = createAndroidVault({
-  core: createCoreVault(googleSync),
+  core: createAndroidVaultCore(googleSync),
   native: vaultNative,
   scope: async () => {
     const status = await googleSync.status();
