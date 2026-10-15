@@ -187,10 +187,15 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * refuses then. The pairing is checked first, so an unpaired device is
    * refused before anyone is asked to unlock.
    */
-  async function gatewayTarget(request: GatewayConnectRequest & { gatewayAuth?: unknown }, label: string) {
+  async function gatewayTarget(request: GatewayConnectRequest & { gatewayAuth?: unknown; hostAlias?: string }, label: string) {
     const paired = await resolveGatewayTarget(request, label, deps.gatewayPairings!);
     if (!deps.vault) return paired;
-    const decision = await deps.vault.credentialFor(label, { gateway: true, mirroredPolicy: mirroredPolicy(request) });
+    // The host's policy is mirrored on its synced entry (design section 7):
+    // core's store sends only the transport markers with a dial, so read it
+    // from the account entry this dial names.
+    const entry = deps.accountHosts ? await deps.accountHosts.find(request) : null;
+    const policy = mirroredPolicy(request) ?? (entry ? mirroredPolicy(entry) : null);
+    const decision = await deps.vault.credentialFor(label, { gateway: true, mirroredPolicy: policy });
     switch (decision.kind) {
       case 'no-vault':
       case 'host-keys':
@@ -281,7 +286,8 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
             port: account.port,
             user: payload.user || account.user,
             gateway: account.gateway,
-            gatewayAuth: (account as { gatewayAuth?: unknown }).gatewayAuth,
+            hostAlias: account.name,
+            gatewayAuth: account.gatewayAuth,
           },
           account.name,
         );

@@ -314,7 +314,7 @@ node "$ROOT_DIR/scripts/vault-journey-fixture/build.mjs" \
 DEVICE_VAULT_FIXTURE="/data/local/tmp/pocketshell-vault-fixture-$RUN_ID.json"
 pocketshell_run_without_avd_lock_fd "$ADB" -s "$ANDROID_SERIAL" push "$vault_dir/fixture.json" "$DEVICE_VAULT_FIXTURE" >/dev/null \
   || fail 'could not stage the vault fixture'
-rm -f -- "$vault_dir/key" "$vault_dir/fixture.json"
+rm -rf -- "$vault_dir"
 
 pocketshell_android_apply_lane_settings "$ADB" "$ANDROID_SERIAL" "$ARTIFACTS_DIR/lane-settings.txt" \
   || fail "could not apply the lane input settings on $ANDROID_SERIAL"

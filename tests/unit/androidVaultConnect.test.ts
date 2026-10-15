@@ -3,6 +3,7 @@ import { ConnectionController, type HostEntry, type SshCapability, type SshConne
 import type { GatewayPairingRow } from '@/native/gatewayPairing';
 import { createAndroidPlatform } from '@/platform/android/androidApi';
 import { AndroidHostStore, ANDROID_HOSTS_STORAGE_KEY } from '@/platform/android/hostStore';
+import { matchAccountHost } from '@/platform/android/accountHosts';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { readFileSync } from 'node:fs';
 import { KeyVaultStore, type VaultSlotTransport } from '@pocketshell/core';
@@ -140,7 +141,8 @@ async function setup(options: Setup = {}) {
     backgroundGraceMs: () => 60_000,
     addHostRoute: '/x',
     accountHosts: {
-      find: async (request) => account.find((h) => h.hostname === request.host && h.port === (request.port ?? 22)) ?? null,
+      // The production matcher (alias first, then address), over the account entries.
+      find: async (request) => matchAccountHost(account, request),
       adopt,
     },
     vault,
@@ -149,6 +151,10 @@ async function setup(options: Setup = {}) {
   });
   return { native, created, adopt, vault, vaultNative, askUnlock, hosts, core };
 }
+
+/** The account as the web mirrored it: the gateway host's entry carries `gatewayAuth` (design section 7). */
+const mirroredAccount = (policy?: 'host' | 'managed' | 'both') =>
+  [HETZNER, accountHost('laptop', 'laptop.gw', { gateway: GW, ...(policy ? { gatewayAuth: policy } : {}) })];
 
 const direct = { host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'hetzner' } as never;
 const viaGateway = { host: GATEWAY_HOST.hostname, port: 22, user: 'alexey', hostAlias: 'laptop', gateway: GW } as never;
@@ -270,8 +276,9 @@ describe('Android dials account and gateway hosts with the account key vault (ke
   });
 
   it('a gateway host mirrored as gatewayAuth host dials the pairing key without asking to unlock', async () => {
-    const { native, created, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: 'decline' });
-    await created.api.ssh.connect({ ...(viaGateway as object), gatewayAuth: 'host' } as never);
+    const { native, created, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: mirroredAccount('host') });
+    // Exactly what core's store sends: transport markers, never the policy.
+    await created.api.ssh.connect(viaGateway);
     expect(askUnlock).not.toHaveBeenCalled();
     expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
     created.dispose();
@@ -373,9 +380,10 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     ['managed', 'unlock', 'managed', 'vault', true],
   ] as const)('locked vault, gateway host mirrored %s, user answers %s: binding %s dials %s', async (mirrored, answer, bound, expected, asks) => {
     const vault = unlockedVault({ laptop: { keyId: 'k1', gatewayAuth: bound } }, { k1: { kind: 'key', pem: PEM } });
-    const { native, created, adopt, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: answer === 'unlock' ? 'unlock' : 'decline', unlocksTo: vault });
-    const request = { ...(viaGateway as object), ...(mirrored ? { gatewayAuth: mirrored } : {}) } as never;
-    const result = await created.api.ssh.connect(request);
+    const { native, created, adopt, askUnlock } = await setup({
+      vault: 'locked', onUnlockAsked: answer === 'unlock' ? 'unlock' : 'decline', unlocksTo: vault, account: mirroredAccount(mirrored),
+    });
+    const result = await created.api.ssh.connect(viaGateway);
     expect(askUnlock).toHaveBeenCalledTimes(asks ? 1 : 0);
     expect(adopt).not.toHaveBeenCalled();
     if (expected === 'refused') {
@@ -397,9 +405,8 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     ['both', 'pairing'],
     [undefined, 'pairing'],
   ] as const)('unlocked vault with no key for a gateway host mirrored %s: %s', async (mirrored, expected) => {
-    const { native, created } = await setup({ vault: unlockedVault({}, {}) });
-    const request = { ...(viaGateway as object), ...(mirrored ? { gatewayAuth: mirrored } : {}) } as never;
-    const result = await created.api.ssh.connect(request);
+    const { native, created } = await setup({ vault: unlockedVault({}, {}), account: mirroredAccount(mirrored) });
+    const result = await created.api.ssh.connect(viaGateway);
     if (expected === 'refused') {
       expect(result).toEqual({
         ok: false,
@@ -413,9 +420,9 @@ describe('Android dials account and gateway hosts with the account key vault (ke
   });
 
   it('an account gateway host carries its mirrored gatewayAuth from the synced entry to the dial', async () => {
-    const mirroredHost = accountHost('laptop', 'laptop.gw', { gateway: GW, gatewayAuth: 'host' });
-    const { native, created, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: [mirroredHost] });
-    await created.api.ssh.connect({ host: 'laptop.gw', port: 22, user: 'alexey' } as never);
+    const { native, created, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: mirroredAccount('host') });
+    // Picked from "From your account" without an alias: matched by address.
+    await created.api.ssh.connect({ host: 'laptop.gw', port: 22, user: 'alexey', gateway: GW } as never);
     expect(askUnlock).not.toHaveBeenCalled();
     expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
     created.dispose();

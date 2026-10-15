@@ -65,11 +65,15 @@ public final class GoogleSyncPlugin extends Plugin {
     public void signOut(PluginCall call) {
         worker.execute(() -> {
             try {
-                session.signOut();
-                // Whichever shell signed out: the account vault's held keys and
-                // this device's remembered vault keys go with the account.
-                EphemeralCredentials.INSTANCE.wipeAll();
-                VaultDeviceKeyPlugin.forContext(getContext()).forgetAll();
+                try {
+                    session.signOut();
+                } finally {
+                    // Whichever shell signed out, and even if the token store
+                    // failed: the account vault's held keys and this device's
+                    // remembered vault keys go with the account.
+                    EphemeralCredentials.INSTANCE.wipeAll();
+                    VaultDeviceKeyPlugin.forContext(getContext()).forgetAll();
+                }
                 call.resolve(statusJson(new GoogleSyncSession.Status(false, null)));
             } catch (SyncAuthException error) {
                 reject(call, error);
