@@ -182,7 +182,9 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
    * A gateway dial: the pairing names the device, the pin and the host's own
    * key (`host` policy). With `managed` / `both` and an unlocked vault that
    * binds the host, the vault key is dialled instead, through the same
-   * pairing and pin. The pairing is checked first, so an unpaired device is
+   * pairing and pin. `both` (or no mirrored policy) falls back to the
+   * pairing key when the vault stays locked or names no key; only `managed`
+   * refuses then. The pairing is checked first, so an unpaired device is
    * refused before anyone is asked to unlock.
    */
   async function gatewayTarget(request: GatewayConnectRequest & { gatewayAuth?: unknown }, label: string) {
@@ -192,8 +194,11 @@ export function createAndroidPlatform(deps: AndroidApiDeps): AndroidPlatform {
     switch (decision.kind) {
       case 'no-vault':
       case 'host-keys':
-      case 'unbound':
         return paired;
+      // Only a `managed` host (vault keys only) gets these: the pairing key
+      // would be refused by the host, so say what to do instead.
+      case 'unbound':
+        throw new Error(vaultUnboundMessage(label));
       case 'locked':
         throw new Error(vaultLockedMessage(label));
       case 'credential':

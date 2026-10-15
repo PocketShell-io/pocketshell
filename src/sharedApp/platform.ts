@@ -20,8 +20,13 @@ import { googleSync } from '@/native/googleSync';
 import { vaultNative } from '@/native/vaultNative';
 import { openExternalUrl } from '@/platform/androidAppInfo';
 import { createAndroidVault } from '@/vault/androidVault';
-import { createAndroidVaultCore } from '@/vault/coreVault';
-import { createVaultUnlockPrompt } from '@/vault/vaultUnlockPrompt';
+import { requestVaultUnlock, type KeyVaultPlatform } from '@ui/app/keyVault';
+import {
+  createAndroidRememberApi,
+  createAndroidVaultStore,
+  createStoreVaultCore,
+  VAULT_RESET_URL,
+} from '@/vault/coreVault';
 
 /** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
 const BACKGROUND_GRACE_MS = 60_000;
@@ -69,26 +74,37 @@ const baseSyncApi = androidSync().api();
  */
 export const vaultSync = { passphrase: '' };
 
+const vaultScope = async (): Promise<string | null> => {
+  const status = await googleSync.status();
+  return status.signedIn ? status.email : null;
+};
+
+/** The one KeyVaultStore: core's shared unlock sheet and the dial path both drive it. */
+const vaultStore = createAndroidVaultStore(googleSync);
+
+/**
+ * Core's shared vault UI (packages/ui): the unlock sheet AppRoot mounts,
+ * remember on this device (sealed by the Android Keystore key), and "Forgot
+ * it?" sending the user to the web's reset. Installed by main.ts next to
+ * provideApi.
+ */
+export const keyVaultPlatform: KeyVaultPlatform = {
+  store: vaultStore,
+  remember: createAndroidRememberApi(vaultNative, vaultScope),
+  resetUrl: VAULT_RESET_URL,
+  openUrl: openExternalUrl,
+};
+
 export const androidVault = createAndroidVault({
-  core: createAndroidVaultCore(googleSync),
+  core: createStoreVaultCore(vaultStore),
   native: vaultNative,
-  scope: async () => {
-    const status = await googleSync.status();
-    return status.signedIn ? status.email : null;
-  },
-  askUnlock: () => vaultUnlockPrompt.ask('connect'),
+  scope: vaultScope,
+  askUnlock: (hostLabel) => requestVaultUnlock('connect', hostLabel),
   onUnlocked: async (syncPassphrase) => {
     if (!syncPassphrase) return;
     vaultSync.passphrase = syncPassphrase;
     await androidSync().unlock(syncPassphrase).catch(() => undefined);
   },
-});
-
-/** The unlock sheet, rendered by VaultUnlockGate.vue. */
-export const vaultUnlockPrompt = createVaultUnlockPrompt({
-  unlock: (passphrase, remember) => androidVault.unlock(passphrase, remember),
-  retryAt: () => androidVault.state.retryAt,
-  openUrl: openExternalUrl,
 });
 
 const syncApi: typeof baseSyncApi = {

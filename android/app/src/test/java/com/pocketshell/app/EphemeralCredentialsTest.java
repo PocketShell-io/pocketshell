@@ -87,6 +87,39 @@ public final class EphemeralCredentialsTest {
         assertEquals(0, store.size());
     }
 
+    @Test public void anEcdsaVaultKeySaysWhichKeyTypesWork() throws Exception {
+        // An openssh-key-v1 container naming an ECDSA key: the web vault accepts
+        // those, Android's dial path does not (yet), and says so plainly.
+        java.io.ByteArrayOutputStream raw = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream out = new java.io.DataOutputStream(raw);
+        out.write("openssh-key-v1\u0000".getBytes(StandardCharsets.US_ASCII));
+        for (String field : new String[] {"none", "none", ""}) writeString(out, field.getBytes(StandardCharsets.US_ASCII));
+        out.writeInt(1);
+        java.io.ByteArrayOutputStream publicBlob = new java.io.ByteArrayOutputStream();
+        java.io.DataOutputStream blob = new java.io.DataOutputStream(publicBlob);
+        writeString(blob, "ecdsa-sha2-nistp256".getBytes(StandardCharsets.US_ASCII));
+        writeString(blob, "nistp256".getBytes(StandardCharsets.US_ASCII));
+        writeString(blob, new byte[65]);
+        writeString(out, publicBlob.toByteArray());
+        writeString(out, new byte[64]);
+        byte[] ecdsa = ("-----BEGIN OPENSSH PRIVATE KEY-----\n"
+            + java.util.Base64.getMimeEncoder(70, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(raw.toByteArray())
+            + "\n-----END OPENSSH PRIVATE KEY-----\n").getBytes(StandardCharsets.US_ASCII);
+        assertEquals("ecdsa-sha2-nistp256", EphemeralCredentials.openSshKeyType(ecdsa));
+        try {
+            new EphemeralCredentials().hold(ecdsa);
+            fail("an ECDSA key is refused");
+        } catch (IOException expected) {
+            assertEquals(EphemeralCredentials.UNSUPPORTED_TYPE, expected.getMessage());
+        }
+        assertEquals("ssh-ed25519", EphemeralCredentials.openSshKeyType(throwawayKey()));
+    }
+
+    private static void writeString(java.io.DataOutputStream out, byte[] value) throws IOException {
+        out.writeInt(value.length);
+        out.write(value);
+    }
+
     @Test public void capsHowManyKeysAreHeld() throws Exception {
         EphemeralCredentials store = new EphemeralCredentials();
         byte[] key = throwawayKey();

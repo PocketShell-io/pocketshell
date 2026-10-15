@@ -295,6 +295,81 @@ public final class GatewayDockerJourneyTest {
                 .put("rows", new JSONArray().put(hostRowsBefore).put(hostRowsAfter)));
     }
 
+    /**
+     * Key-vault W4: the maintainer's gateway report — signed in, the vault
+     * passphrase typed, and the gateway dial still asked for a key. The
+     * account vault (built by core's KeyVaultStore on the host) binds this
+     * gateway host to a throwaway key that ONLY the host authorizes; the
+     * phone's pairing key is deliberately not authorized. One vault unlock
+     * lists the account (the vault carries the sync passphrase), and the dial
+     * goes through the gateway with the vault key as an ephemeral native
+     * handle: no key picker, the pairing's pin enforced, nothing written.
+     */
+    @Test
+    public void dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker() throws Exception {
+        JSONObject fixture = new JSONObject(shell("cat " + requiredArgument("vaultFixture")));
+        assertTrue("the runner staged a vault for the gateway host", fixture.getString("alias").equals(DEVICE_HOST));
+        backend.vaultSlots = fixture.getJSONObject("slots");
+        JSONObject vaultKey = controller(new JSONObject().put("op", "authorize")
+                .put("publicKey", fixture.getString("publicKey")).put("phase", "vault-authorize"));
+        String vaultFingerprint = vaultKey.getString("fingerprint");
+
+        scenario = ActivityScenario.launch(SharedShellLaunch.intent());
+        awaitJsTrue("!!document.querySelector('.picker .header-actions')", 60_000);
+        evalRaw("localStorage.removeItem('" + SHARED_SETTINGS_KEY + "'); localStorage.setItem('" + HOSTS_KEY + "', '[]'); 'ok'");
+        click(".picker .header-actions .account-action");
+        awaitJsTrue("!!document.querySelector('[data-testid=android-account] .account-login .account-primary:not([disabled])')");
+        click("[data-testid=android-account] .account-login .account-primary");
+        awaitJsTrue("document.querySelector('[data-testid=android-account] .account-identity')?.textContent.includes("
+                + JSONObject.quote(hello.getString("email")) + ") === true");
+        // A new launch: the signed-in account's vault asks once, on the shared sheet.
+        String stale = "vault-" + SystemClock.uptimeMillis();
+        evalRaw("window.__pocketshellStaleDocument = " + JSONObject.quote(stale) + "; location.replace('/'); 'reload'");
+        awaitJsTrue("window.__pocketshellStaleDocument !== " + JSONObject.quote(stale)
+                + " && document.readyState === 'complete' && !!document.querySelector('[data-testid=vault-unlock-gate]')", 60_000);
+        assertEquals("one unlock sheet, never two", "1", evalRaw("document.querySelectorAll('[data-testid=vault-unlock-gate]').length"));
+        installDialRecorder();
+        evalRaw("window.__psSawKeyPicker = false; new MutationObserver(() => {"
+                + " if (document.querySelector('[data-testid=account-host-key-gate]')) window.__psSawKeyPicker = true; })"
+                + ".observe(document.body, {childList: true, subtree: true}); 'watching'");
+        setValue("[data-testid=vault-unlock-passphrase]", "pocketshell-vault-test-passphrase gateway");
+        click("[data-testid=vault-unlock-submit]");
+        awaitJsTrue("!document.querySelector('[data-testid=vault-unlock-gate]')", 120_000);
+        // The vault's sync passphrase unlocked the account: its gateway hosts are listed.
+        awaitJsTrue("[...document.querySelectorAll('.picker .host-name')].map((n)=>n.textContent.trim()).includes("
+                + JSONObject.quote(DEVICE_HOST) + ")", 120_000);
+        screenshot("vault-unlocked-gateway-hosts");
+
+        // The pairing names the device and its pin; its own key is NOT on the host.
+        String pairingKey = generatePhoneKey(false);
+        pair(hello.getString("deviceId"), hello.getString("hostKeyLine"), pairingKey);
+
+        int mark = controller(new JSONObject().put("op", "mark")).getInt("mark");
+        tapHost(DEVICE_HOST);
+        awaitJsTrue("!!document.querySelector('button[title=\"Back to hosts\"]') || " + PICKER_ERROR + " !== ''", 120_000);
+        assertEquals("the gateway dial connects with the vault key", "", evalString(PICKER_ERROR));
+        assertEquals("no key picker at any point", "false", evalRaw("window.__psSawKeyPicker === true"));
+        assertFalse("no trust prompt for a pinned gateway host", exists("[data-testid=host-key-trust-gate]"));
+        JSONObject login = sshdSince(mark, "vault-connect");
+        assertTrue("the host accepted the VAULT key over the gateway: " + login,
+                acceptedFingerprints(login).contains(vaultFingerprint));
+        screenshot("vault-gateway-connected");
+
+        JSONArray dials = nativeDials();
+        assertEveryDialWentThroughTheGateway(dials);
+        for (int i = 0; i < dials.length(); i++) {
+            assertTrue("the dial used the vault's in-memory handle: " + dials.getJSONObject(i),
+                    dials.getJSONObject(i).getString("handleId").startsWith("ephemeral-"));
+        }
+        assertEquals("the phone never writes the account", 0, backend.writes);
+        assertNoRoutingTokenEscaped();
+        String pid = shell("pidof " + targetContext().getPackageName()).trim();
+        String logcat = shell("logcat -d -v brief --pid=" + pid);
+        assertFalse("the vault passphrase never reaches logcat", logcat.contains("pocketshell-vault-test-passphrase"));
+        assertFalse("no key material in logcat", logcat.contains("PRIVATE KEY-----"));
+        Log.i(TAG, "GATEWAY_VAULT " + new JSONObject().put("dials", dials.length()).put("vaultFingerprint", vaultFingerprint));
+    }
+
     // ---- the journey's steps -------------------------------------------------
 
     private String phoneFingerprint;
@@ -330,6 +405,10 @@ public final class GatewayDockerJourneyTest {
 
     /** A key generated in the phone's vault; its public line goes on the host like a user pastes it there. */
     private String generateAuthorizedPhoneKey() throws Exception {
+        return generatePhoneKey(true);
+    }
+
+    private String generatePhoneKey(boolean authorizeOnHost) throws Exception {
         evalString("(() => {window.__gwKey=null; const vault=window.Capacitor.Plugins.SshKeyVault;"
                 + "(async()=>{try{const meta=await vault.generateKey({label:'Gateway lane phone key',algorithm:'Ed25519'});"
                 + "const pub=await vault.publicKey({handleId:meta.handleId});"
@@ -340,6 +419,7 @@ public final class GatewayDockerJourneyTest {
         assertFalse("the vault generated a key: " + key, key.has("error"));
         String publicLine = key.getString("publicKey");
         assertFalse("only the public line leaves the vault", publicLine.contains("PRIVATE"));
+        if (!authorizeOnHost) return key.getString("handleId");
         JSONObject authorized = controller(new JSONObject().put("op", "authorize").put("publicKey", publicLine).put("phase", "authorize"));
         assertEquals("the host stores exactly the phone's key", key.getString("fingerprint"), authorized.getString("fingerprint"));
         phoneFingerprint = key.getString("fingerprint");
@@ -452,7 +532,8 @@ public final class GatewayDockerJourneyTest {
                 + "window.Capacitor.nativePromise=(plugin,method,options)=>{"
                 + "if(plugin==='SshCapability'&&method==='connect') window.__gwDials.push({at:Date.now(),"
                 + "gateway:options?.gateway ?? null, link:options?.link ?? null, hostname:String(options?.hostname ?? ''),"
-                + "credentialKind:String(options?.credential?.kind ?? ''), expectedHostKey:options?.expectedHostKey ?? null});"
+                + "credentialKind:String(options?.credential?.kind ?? ''), handleId:String(options?.credential?.handleId ?? ''),"
+                + " expectedHostKey:options?.expectedHostKey ?? null});"
                 + "return nativePromise(plugin,method,options);}; return 'installed';})()"));
     }
 
@@ -559,6 +640,9 @@ public final class GatewayDockerJourneyTest {
         private final PrivateKey wrongKey;
         private final String kid;
         private String data;
+        /** Key-vault W4: the account's `vault` / `vk-*` slots, when the journey has a vault. */
+        JSONObject vaultSlots;
+        int writes;
 
         FakeSyncBackend() throws Exception {
             byte[] der = Base64.getDecoder().decode(requiredArgument("gatewayBrokerKeyPkcs8Base64"));
@@ -592,6 +676,14 @@ public final class GatewayDockerJourneyTest {
                     return new GoogleSyncSession.Response(200, new JSONObject().put("token", token).put("token_type", "Bearer")
                             .put("expires_in", lifetime).put("expires_at", now + lifetime).toString());
                 }
+                if ("GET".equals(method) && path.startsWith("/settings/") && vaultSlots != null
+                        && vaultSlots.has(path.substring("/settings/".length())) && !"/settings/main".equals(path)) {
+                    String slot = path.substring("/settings/".length());
+                    JSONObject stored = vaultSlots.getJSONObject(slot);
+                    return new GoogleSyncSession.Response(200, new JSONObject().put("slot", slot)
+                            .put("version", stored.getInt("version")).put("data", stored.getString("data")).toString());
+                }
+                if ("PUT".equals(method) || "DELETE".equals(method)) writes += 1;
                 if ("GET".equals(method) && "/settings/main".equals(path)) {
                     return new GoogleSyncSession.Response(200, new JSONObject().put("slot", "main").put("version", 1)
                             .put("data", data).toString());

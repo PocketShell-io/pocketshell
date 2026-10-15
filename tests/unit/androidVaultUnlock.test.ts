@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GoogleSyncHttpResponse, GoogleSyncNative, GoogleSyncRequest } from '@/native/googleSync';
 import { createVaultNative } from '@/native/vaultNative';
+import { KeyVaultStore } from '@pocketshell/core';
+import { createKeyVaultController } from '@ui/app/keyVault';
 import {
   createAndroidVault,
-  WRONG_PASSPHRASE_MESSAGE,
   type UnlockedVault,
   type VaultCore,
   type VaultNative,
@@ -15,9 +16,9 @@ import {
   createVaultServerVerifier,
   createVaultSlotTransport,
 } from '@/vault/vaultAccount';
-import { createVaultUnlockPrompt, FORGOT_PASSPHRASE_TEXT, VAULT_RESET_URL } from '@/vault/vaultUnlockPrompt';
 import {
-  createAndroidVaultCore,
+  createAndroidRememberApi,
+  createAndroidVaultStore,
   createStoreVaultCore,
   UNSUPPORTED_VERSION,
   parseRememberRecord,
@@ -26,9 +27,11 @@ import {
 } from '@/vault/coreVault';
 
 /**
- * Key-vault W4: the phone's unlock (design section 5): passphrase each launch
- * unless "Remember on this device", wrong-passphrase retry with backoff, the
- * forgot/reset path, one passphrase for vault and sync, and the account IO.
+ * Key-vault W4: the phone's side of the unlock (design section 5). Core's
+ * shared sheet asks and core's store counts wrong passphrases; Android
+ * supplies the Keystore-sealed remember record, unlocks a remembered vault at
+ * launch, hands over the sync passphrase, wipes held keys on lock and
+ * sign-out, and reads the account over the native sync transport.
  */
 
 function vault(overrides: Partial<UnlockedVault> = {}): UnlockedVault {
@@ -38,8 +41,6 @@ function vault(overrides: Partial<UnlockedVault> = {}): UnlockedVault {
     binding: () => null,
     syncPassphrase: () => 'sync words',
     decryptForHost: async () => ({ kind: 'password', password: 'x' }),
-    exportRemembered: async () => 'DEK-RECORD',
-    close: vi.fn(),
     ...overrides,
   };
 }
@@ -56,15 +57,22 @@ class Native implements VaultNative {
   async forgetAll() { this.remembered.clear(); this.forgotAll += 1; return {}; }
 }
 
-function make(options: { correct?: string; remembered?: VaultUnlockResult | { kind: 'stale' }; signedIn?: boolean; present?: boolean } = {}) {
-  let clock = 1_000_000;
+function make(options: { remembered?: VaultUnlockResult | { kind: 'stale' }; signedIn?: boolean; present?: boolean } = {}) {
   const native = new Native();
   const opened = vault();
-  const core: VaultCore = {
+  const listeners = new Set<() => void>();
+  let current: UnlockedVault | null = null;
+  const core: VaultCore & { open(): void } = {
     present: async () => options.present ?? true,
-    unlock: vi.fn(async (passphrase: string): Promise<VaultUnlockResult> =>
-      passphrase === (options.correct ?? 'right') ? { kind: 'unlocked', vault: opened } : { kind: 'wrong-passphrase' }),
-    unlockRemembered: vi.fn(async () => options.remembered ?? { kind: 'stale' as const }),
+    unlockRemembered: vi.fn(async () => {
+      const result = options.remembered ?? { kind: 'stale' as const };
+      if (result.kind === 'unlocked') core.open();
+      return result;
+    }),
+    current: () => current,
+    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
+    lock: () => { current = null; listeners.forEach((listener) => listener()); },
+    open: () => { current = opened; listeners.forEach((listener) => listener()); },
   };
   const onUnlocked = vi.fn();
   const subject = createAndroidVault({
@@ -73,9 +81,8 @@ function make(options: { correct?: string; remembered?: VaultUnlockResult | { ki
     scope: async () => (options.signedIn === false ? null : 'me@example.com'),
     askUnlock: async () => false,
     onUnlocked,
-    now: () => clock,
   });
-  return { subject, native, core, opened, onUnlocked, advance: (ms: number) => { clock += ms; }, now: () => clock };
+  return { subject, native, core, opened, onUnlocked };
 }
 
 class Google implements GoogleSyncNative {
@@ -93,12 +100,12 @@ const AUTH_WIRE = authToWire(AUTH);
 /** The slice of core's KeyVaultStore the Android adapter calls, scripted. */
 function fakeStore(overrides: Partial<KeyVaultStoreLike> = {}): KeyVaultStoreLike & { lock: ReturnType<typeof vi.fn> } {
   return {
+    state: 'unlocked',
     vaultId: 'vault-1',
     epoch: 3,
     probe: async () => ({ kind: 'vault', vaultId: 'vault-1', epoch: 3 }),
-    unlock: async () => ({ kind: 'ok' }),
     unlockWithRememberedDek: async () => ({ kind: 'ok' }),
-    exportRememberRecord: () => ({ vaultId: 'vault-1', epoch: 3, dek: new Uint8Array(32).fill(1), auth: new Uint8Array(32).fill(2) }),
+    subscribe: () => () => undefined,
     getHostBinding: (alias) => (alias === 'hetzner' ? { keyId: 'k1', gatewayAuth: 'both' } : null),
     getSyncPassphrase: () => 'sync words',
     decryptKeyForHost: async (alias) => (alias === 'hetzner' ? { kind: 'key', pem: 'PEM' } : { kind: 'unbound' }),
@@ -108,45 +115,19 @@ function fakeStore(overrides: Partial<KeyVaultStoreLike> = {}): KeyVaultStoreLik
 }
 
 describe('Android key vault unlock, remember, account IO and core adapter (key-vault W4)', () => {
-  it('honours the backoff core reports: no attempt until it passes, and a success clears it', async () => {
-    const { subject, core, advance } = make();
-    (core.unlock as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 0 })
-      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 0 })
-      .mockResolvedValueOnce({ kind: 'wrong-passphrase', retryAfterMs: 1000 });
-    expect((await subject.unlock('nope', false)).kind).toBe('wrong-passphrase');
-    expect((await subject.unlock('nope', false)).kind).toBe('wrong-passphrase');
-    expect(subject.state.retryAt).toBe(0);
-    expect((await subject.unlock('nope', false)).kind).toBe('wrong-passphrase');
-    expect(subject.state.failures).toBe(3);
-    expect((await subject.unlock('right', false)).kind).toBe('backoff');
-    expect(core.unlock).toHaveBeenCalledTimes(3);
-    advance(1000);
-    expect((await subject.unlock('right', false)).kind).toBe('unlocked');
-    expect(subject.state).toMatchObject({ status: 'unlocked', failures: 0, retryAt: 0 });
-  });
-
-  it('type every time (the default) stores nothing on the device', async () => {
-    const { subject, native, onUnlocked } = make();
-    await subject.refresh();
-    expect(subject.state.status).toBe('locked');
-    await subject.unlock('right', false);
-    expect(native.remembered.size).toBe(0);
+  it('a remembered record unlocks silently at launch through core, and hands over the sync passphrase', async () => {
+    const { subject, core, native, onUnlocked } = make({ remembered: { kind: 'unlocked', vault: vault() } });
+    native.remembered.set('me@example.com', 'SEALED-RECORD');
+    expect(await subject.refresh()).toBe('unlocked');
+    expect(core.unlockRemembered).toHaveBeenCalledWith('SEALED-RECORD');
     expect(onUnlocked).toHaveBeenCalledWith('sync words');
+    expect(subject.state.remembered).toBe(true);
   });
 
-  it('remember on this device seals the DEK record (never the passphrase) and unlocks silently next launch', async () => {
-    const first = make();
-    await first.subject.refresh();
-    await first.subject.unlock('right', true);
-    expect([...first.native.remembered.values()]).toEqual(['DEK-RECORD']);
-    expect([...first.native.remembered.values()].join()).not.toContain('right');
-
-    const next = make({ remembered: { kind: 'unlocked', vault: vault() } });
-    next.native.remembered = first.native.remembered;
-    expect(await next.subject.refresh()).toBe('unlocked');
-    expect(next.core.unlockRemembered).toHaveBeenCalledWith('DEK-RECORD');
-    expect(next.core.unlock).not.toHaveBeenCalled();
+  it('without a remembered record the launch leaves the vault locked for the shared sheet', async () => {
+    const { subject, core } = make();
+    expect(await subject.refresh()).toBe('locked');
+    expect(core.unlockRemembered).not.toHaveBeenCalled();
   });
 
   it('a remembered record from an older epoch or another vault is deleted and the passphrase is asked for', async () => {
@@ -157,22 +138,33 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(subject.state.remembered).toBe(false);
   });
 
-  it('unlocking with "type every time" after remembering forgets the device record', async () => {
-    const { subject, native } = make();
-    native.remembered.set('me@example.com', 'OLD');
+  it('a remembered record that fails for another reason (offline, rate limited) is kept for the next launch', async () => {
+    const { subject, native } = make({ remembered: { kind: 'error', message: 'offline' } });
+    native.remembered.set('me@example.com', 'KEEP');
+    expect(await subject.refresh()).toBe('locked');
+    expect(native.remembered.get('me@example.com')).toBe('KEEP');
+  });
+
+  it('whoever unlocks the store (the shared sheet) is followed; a lock wipes every held native key', async () => {
+    const { subject, core, native, onUnlocked } = make();
     await subject.refresh();
-    await subject.unlock('right', false);
-    expect(native.remembered.size).toBe(0);
+    core.open();
+    expect(subject.state.status).toBe('unlocked');
+    expect(onUnlocked).toHaveBeenCalledWith('sync words');
+    core.lock();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(subject.state.status).toBe('locked');
+    expect(native.released).toContainEqual(null);
   });
 
   it('sign-out locks, wipes held keys and forgets every remembered record', async () => {
-    const { subject, native, opened } = make();
+    const { subject, core, native } = make();
     await subject.refresh();
-    await subject.unlock('right', true);
+    core.open();
     await subject.signedOut();
     expect(subject.state.status).toBe('signed-out');
-    expect(opened.close).toHaveBeenCalled();
-    expect(native.released).toEqual([null]);
+    expect(core.current()).toBeNull();
+    expect(native.released).toContainEqual(null);
     expect(native.forgotAll).toBe(1);
   });
 
@@ -180,52 +172,35 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(await make({ signedIn: false }).subject.credentialFor('h')).toEqual({ kind: 'no-vault' });
     expect(await make({ present: false }).subject.credentialFor('h')).toEqual({ kind: 'no-vault' });
   });
-  function sheet(results: Array<VaultUnlockResult | { kind: 'backoff'; retryAt: number }>, retryAt = 0) {
-    const opened: string[] = [];
-    const unlock = vi.fn(async () => results.shift()!);
-    const prompt = createVaultUnlockPrompt({ unlock, retryAt: () => retryAt, openUrl: (url) => { opened.push(url); }, now: () => 0 });
-    return { prompt, unlock, opened, setRetryAt: (value: number) => { retryAt = value; } };
-  }
 
-  it('says the passphrase was wrong, clears it and keeps the sheet open; a right one resolves the waiting dial', async () => {
-    const { prompt } = sheet([{ kind: 'wrong-passphrase' }, { kind: 'unlocked', vault: vault() }]);
-    const waiting = prompt.ask('connect');
-    prompt.state.passphrase = 'nope';
-    expect(await prompt.submit()).toBe(false);
-    expect(prompt.state).toMatchObject({ open: true, passphrase: '', error: WRONG_PASSPHRASE_MESSAGE });
-    prompt.state.passphrase = 'right';
-    expect(await prompt.submit()).toBe(true);
-    await expect(waiting).resolves.toBe(true);
-    expect(prompt.state.open).toBe(false);
+  it('remember on this device: the shared sheet saves the record sealed natively per account, never the passphrase', async () => {
+    const native = new Native();
+    const remember = createAndroidRememberApi(native, async () => 'me@example.com');
+    expect(await remember.isRemembered()).toBe(false);
+    await remember.save({ vaultId: 'v1', epoch: 2, dek: new Uint8Array(32).fill(9), auth: new Uint8Array(32).fill(8) });
+    expect(await remember.isRemembered()).toBe(true);
+    const stored = native.remembered.get('me@example.com')!;
+    expect(parseRememberRecord(stored)).toMatchObject({ vaultId: 'v1', epoch: 2 });
+    await remember.forget();
+    expect(await remember.isRemembered()).toBe(false);
+    const signedOut = createAndroidRememberApi(native, async () => null);
+    expect(await signedOut.isRemembered()).toBe(false);
+    await expect(signedOut.save({ vaultId: 'v1', epoch: 2, dek: new Uint8Array(32) })).rejects.toThrow('Sign in');
   });
 
-  it('during a backoff it says how long to wait and does not try', async () => {
-    const { prompt, unlock } = sheet([], 4000);
-    void prompt.ask();
-    prompt.state.passphrase = 'x';
-    expect(await prompt.submit()).toBe(false);
-    expect(prompt.state.error).toBe(`${WRONG_PASSPHRASE_MESSAGE} Try again in 4 s.`);
-    expect(unlock).not.toHaveBeenCalled();
+  it('the shared controller over the phone store offers remember and the web reset, never key upload', async () => {
+    const google = new Google(() => ({ status: 404, body: '{}' }));
+    const controller = createKeyVaultController({
+      store: createAndroidVaultStore(google),
+      remember: createAndroidRememberApi(new Native(), async () => 'me@example.com'),
+      resetUrl: 'https://app.pocketshell.io/keys?reset=1',
+      openUrl: () => undefined,
+    });
+    expect(controller.canRemember).toBe(true);
+    expect(controller.canForgot).toBe(true);
+    expect(controller.canUpload).toBe(false);
   });
 
-  it('cancel resolves the waiting dial with false; a second dial shares the same sheet', async () => {
-    const { prompt } = sheet([]);
-    const first = prompt.ask();
-    const second = prompt.ask();
-    prompt.cancel();
-    await expect(first).resolves.toBe(false);
-    await expect(second).resolves.toBe(false);
-  });
-
-  it('forgot explains that the passphrase cannot be recovered and opens the web reset', async () => {
-    const { prompt, opened } = sheet([]);
-    void prompt.ask();
-    prompt.forgot();
-    expect(prompt.state.showForgot).toBe(true);
-    expect(FORGOT_PASSPHRASE_TEXT).toContain('cannot be recovered');
-    await prompt.openReset();
-    expect(opened).toEqual([VAULT_RESET_URL]);
-  });
   it('reads a vault slot raw (no envelope); a missing slot is absent; a verify-gated read is typed', async () => {
     const header = '{"v":1}';
     const google = new Google((request) => {
@@ -238,7 +213,7 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(await transport.pull('vault')).toEqual({ kind: 'ok', version: 3, data: header });
     expect(await transport.pull('vk-none')).toEqual({ kind: 'absent' });
     expect(await transport.pull('vk-gated')).toEqual({ kind: 'gated' });
-    expect(await createAndroidVaultCore(google).present()).toBe(true);
+    expect(await createStoreVaultCore(createAndroidVaultStore(google)).present()).toBe(true);
   });
 
   it('never writes the vault from the phone', async () => {
@@ -255,9 +230,9 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     const gatedRead = new Google((request) => (request as { endpoint?: string }).endpoint
       ? { status: 404, body: '{}' }
       : { status: 403, body: '{"error":"vault_verify_required"}' });
-    expect(await createAndroidVaultCore(gatedRead).present()).toBe(true);
+    expect(await createStoreVaultCore(createAndroidVaultStore(gatedRead)).present()).toBe(true);
     const none = new Google(() => ({ status: 404, body: '{}' }));
-    expect(await createAndroidVaultCore(none).present()).toBe(false);
+    expect(await createStoreVaultCore(createAndroidVaultStore(none)).present()).toBe(false);
   });
 
   it.each([
@@ -301,34 +276,6 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     const missing = createVaultServerVerifier(new Google(() => ({ status: 404, body: '' })));
     expect(await missing.status!()).toEqual({ kind: 'unavailable' });
   });
-  it('maps unlock results onto the phone states', async () => {
-    const results = [
-      { kind: 'wrongPassphrase', retryAfterMs: 0 },
-      { kind: 'backoff', retryAfterMs: 2000 },
-      { kind: 'rateLimited', retryAfterMs: 60_000 },
-      { kind: 'noVault' },
-      { kind: 'corrupt' },
-      { kind: 'unsupportedVersion' },
-      { kind: 'ok' },
-    ] as const;
-    const queue = [...results];
-    const core = createStoreVaultCore(fakeStore({ unlock: async () => queue.shift()! }));
-    expect(await core.unlock('x')).toEqual({ kind: 'wrong-passphrase', retryAfterMs: 0 });
-    expect(await core.unlock('x')).toEqual({ kind: 'wrong-passphrase', retryAfterMs: 2000 });
-    expect(await core.unlock('x')).toEqual({ kind: 'wrong-passphrase', retryAfterMs: 60_000 });
-    expect(await core.unlock('x')).toEqual({ kind: 'absent' });
-    expect((await core.unlock('x')).kind).toBe('error');
-    // A newer vault format says to update the app, never to reset.
-    expect(await core.unlock('x')).toEqual({ kind: 'error', message: UNSUPPORTED_VERSION });
-    expect(UNSUPPORTED_VERSION).not.toMatch(/reset/i);
-    const opened = await core.unlock('x');
-    if (opened.kind !== 'unlocked') throw new Error('expected unlocked');
-    expect(opened.vault.binding('hetzner')).toEqual({ keyId: 'k1', gatewayAuth: 'both' });
-    expect(opened.vault.syncPassphrase()).toBe('sync words');
-    expect(await opened.vault.decryptForHost('hetzner')).toEqual({ kind: 'key', pem: 'PEM' });
-    await expect(opened.vault.decryptForHost('other')).rejects.toThrow('No key in your key vault');
-  });
-
   it('the remember record carries vaultId, epoch, DEK and AUTH (decision #6), round-trips, and wipes the bytes', async () => {
     const record = { vaultId: 'vault-1', epoch: 3, dek: new Uint8Array(32).fill(1), auth: new Uint8Array(32).fill(2) };
     const text = serializeRememberRecord(record);
@@ -355,16 +302,23 @@ describe('Android key vault unlock, remember, account IO and core adapter (key-v
     expect(ok.kind).toBe('unlocked');
   });
 
-  it('closing the session locks the store; presence follows probe', async () => {
+  it('the adapter follows the store: current while unlocked, lock through it, presence follows probe', async () => {
     const store = fakeStore();
     const core = createStoreVaultCore(store);
-    const opened = await core.unlock('x');
-    if (opened.kind !== 'unlocked') throw new Error('expected unlocked');
-    opened.vault.close();
+    expect(core.current()?.binding('hetzner')).toEqual({ keyId: 'k1', gatewayAuth: 'both' });
+    expect(await core.current()!.decryptForHost('hetzner')).toEqual({ kind: 'key', pem: 'PEM' });
+    await expect(core.current()!.decryptForHost('other')).rejects.toThrow('No key in your key vault');
+    core.lock();
     expect(store.lock).toHaveBeenCalled();
     expect(await core.present()).toBe(true);
     expect(await createStoreVaultCore(fakeStore({ probe: async () => ({ kind: 'noVault' }) })).present()).toBe(false);
+    expect(await createStoreVaultCore(fakeStore({ probe: async () => ({ kind: 'unsupportedVersion' }) })).present()).toBe(true);
+    const newer = createStoreVaultCore(fakeStore({ unlockWithRememberedDek: async () => ({ kind: 'unsupportedVersion' }) }));
+    const record = serializeRememberRecord({ vaultId: 'vault-1', epoch: 3, dek: new Uint8Array(32) });
+    expect(await newer.unlockRemembered(record)).toEqual({ kind: 'error', message: UNSUPPORTED_VERSION });
+    expect(UNSUPPORTED_VERSION).not.toMatch(/reset/i);
   });
+
   it('accepts only ephemeral handles and never echoes key material', async () => {
     const keys = { holdVaultKey: vi.fn(async () => ({ handleId: 'ephemeral-abc', algorithm: 'ssh-ed25519', fingerprintSha256: 'SHA256:x' })), releaseVaultKeys: vi.fn(async () => ({ released: 2 })) };
     const device = { remember: vi.fn(), recall: vi.fn(async () => ({ record: null })), forget: vi.fn(), forgetAll: vi.fn() };

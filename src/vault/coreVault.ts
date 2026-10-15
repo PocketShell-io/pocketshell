@@ -1,18 +1,19 @@
 /**
  * Android's `VaultCore` over core's KeyVaultStore (key-vault W1): the one
  * implementation of the vault format, Argon2id, the check value, the DEK, the
- * backoff and the server-check ordering. This module only maps the store's
- * results onto the phone's lock state and serialises the "Remember on this
+ * backoff and the server-check ordering. The SAME store backs core's shared
+ * unlock sheet (provideKeyVault) and the dial path. This module maps the
+ * store onto the phone's lock state and serialises the "Remember on this
  * device" record that native seals with the Android Keystore key.
  */
-import {
-  KeyVaultStore,
-  type VaultRememberRecord,
-  type VaultUnlockResult as StoreUnlockResult,
-} from '@pocketshell/core';
+import { KeyVaultStore, type VaultRememberRecord } from '@pocketshell/core';
+import type { KeyVaultRememberApi } from '@ui/app/keyVault';
 import type { GoogleSyncNative } from '@/native/googleSync';
-import type { UnlockedVault, VaultCore, VaultUnlockResult } from './androidVault';
+import type { UnlockedVault, VaultCore, VaultNative } from './androidVault';
 import { createVaultServerVerifier, createVaultSlotTransport } from './vaultAccount';
+
+/** The web's reset (confirmed with W3): Google re-auth, the explanation, type RESET, a new passphrase. */
+export const VAULT_RESET_URL = 'https://app.pocketshell.io/keys?reset=1';
 
 const CORRUPT = 'Your key vault could not be read. Open the PocketShell web app to check it.';
 /** A vault written by a newer format: never offer a reset for it, only an update. */
@@ -71,8 +72,8 @@ export function parseRememberRecord(text: string): VaultRememberRecord | null {
 
 /** The slice of KeyVaultStore this adapter drives (tests script it). */
 export type KeyVaultStoreLike = Pick<KeyVaultStore,
-  'vaultId' | 'epoch' | 'probe' | 'unlock' | 'unlockWithRememberedDek' | 'exportRememberRecord'
-  | 'getHostBinding' | 'getSyncPassphrase' | 'decryptKeyForHost' | 'lock'>;
+  'state' | 'vaultId' | 'epoch' | 'probe' | 'unlockWithRememberedDek' | 'getHostBinding' | 'getSyncPassphrase'
+  | 'decryptKeyForHost' | 'lock' | 'subscribe'>;
 
 function session(store: KeyVaultStoreLike): UnlockedVault {
   return {
@@ -99,32 +100,7 @@ function session(store: KeyVaultStoreLike): UnlockedVault {
           throw new Error(secret.message);
       }
     },
-    async exportRemembered() {
-      const record = store.exportRememberRecord();
-      if (!record) throw new Error('Your key vault locked before it could be remembered.');
-      return serializeRememberRecord(record);
-    },
-    close: () => store.lock(),
   };
-}
-
-function unlockResult(store: KeyVaultStoreLike, result: StoreUnlockResult): VaultUnlockResult {
-  switch (result.kind) {
-    case 'ok':
-      return { kind: 'unlocked', vault: session(store) };
-    case 'wrongPassphrase':
-    case 'backoff':
-    case 'rateLimited':
-      return { kind: 'wrong-passphrase', retryAfterMs: result.retryAfterMs };
-    case 'noVault':
-      return { kind: 'absent' };
-    case 'unsupportedVersion':
-      return { kind: 'error', message: UNSUPPORTED_VERSION };
-    case 'corrupt':
-      return { kind: 'error', message: CORRUPT };
-    case 'error':
-      return { kind: 'error', message: result.message };
-  }
 }
 
 export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
@@ -136,9 +112,6 @@ export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
       // same; reading it as "no vault" would send the phone to a key picker.
       // `unsupportedVersion` is a vault too: unlocking it says to update.
       return probe.kind !== 'noVault';
-    },
-    async unlock(passphrase) {
-      return unlockResult(store, await store.unlock(passphrase));
     },
     async unlockRemembered(text) {
       const record = parseRememberRecord(text);
@@ -163,13 +136,41 @@ export function createStoreVaultCore(store: KeyVaultStoreLike): VaultCore {
           return { kind: 'error', message: result.message };
       }
     },
+    current: () => (store.state === 'unlocked' ? session(store) : null),
+    subscribe: (listener) => store.subscribe(listener),
+    lock: () => store.lock(),
   };
 }
 
 /** The phone's vault: core's store over the native sync transport (read-only) and server check. */
-export function createAndroidVaultCore(native: GoogleSyncNative): VaultCore {
-  return createStoreVaultCore(new KeyVaultStore({
+export function createAndroidVaultStore(native: GoogleSyncNative): KeyVaultStore {
+  return new KeyVaultStore({
     transport: createVaultSlotTransport(native),
     verifier: createVaultServerVerifier(native),
-  }));
+  });
+}
+
+/**
+ * "Remember on this device" for core's shared unlock sheet: the record is
+ * sealed natively by the Android Keystore key, per signed-in account.
+ */
+export function createAndroidRememberApi(native: VaultNative, scope: () => Promise<string | null>): KeyVaultRememberApi {
+  const account = async () => {
+    const value = await scope();
+    if (!value) throw new Error('Sign in to remember the vault on this device.');
+    return value;
+  };
+  return {
+    async save(record) {
+      await native.remember({ scope: await account(), record: serializeRememberRecord(record) });
+    },
+    async forget() {
+      await native.forget({ scope: await account() });
+    },
+    async isRemembered() {
+      const value = await scope().catch(() => null);
+      if (!value) return false;
+      return (await native.recall({ scope: value })).record !== null;
+    },
+  };
 }

@@ -21,6 +21,8 @@ interface Args {
   passphrase: string;
   syncPassphrase: string;
   gatewayAuth: 'host' | 'managed' | 'both';
+  /** The key's OpenSSH public line, carried for a journey that authorizes it on a host. */
+  publicKey: string | null;
   out: string;
 }
 
@@ -41,6 +43,7 @@ function parseArgs(argv: string[]): Args {
     passphrase: need('passphrase'),
     syncPassphrase: need('sync-passphrase'),
     gatewayAuth: (values.get('gateway-auth') ?? 'host') as Args['gatewayAuth'],
+    publicKey: values.get('public-key') ?? null,
     out: need('out'),
   };
 }
@@ -90,7 +93,9 @@ async function main(): Promise<void> {
   const body = readFileSync(args.key, 'utf8').split('\n').filter((line) => line && !line.startsWith('-----'));
   const privateKeyMarker = (body[1] ?? body[0] ?? '').slice(0, 40);
   if (privateKeyMarker.length < 32) throw new Error('the fixture key is too short to mark');
-  writeFileSync(args.out, JSON.stringify({ keyId, alias: args.alias, privateKeyMarker, slots }), { mode: 0o600 });
+  writeFileSync(args.out, JSON.stringify({
+    keyId, alias: args.alias, privateKeyMarker, slots, ...(args.publicKey ? { publicKey: args.publicKey } : {}),
+  }), { mode: 0o600 });
   process.stdout.write(`PASS: vault journey fixture with ${Object.keys(slots).length} slots (key ${keyId}) -> ${args.out}\n`);
 }
 

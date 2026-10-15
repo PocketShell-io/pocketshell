@@ -172,6 +172,7 @@ LANES = (
             {
                 "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
                 "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
+                "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
             }
         ),
     ),

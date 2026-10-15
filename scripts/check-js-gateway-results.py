@@ -37,9 +37,10 @@ REQUIRED_METHODS = frozenset(
     {
         "refusesPinMismatchUnverifiedTokenUnknownAndOfflineDevicesBeforeAnyLogin",
         "dialsTheEnrolledHostThroughTheGatewayListsAttachesTypesResizesAndReconnects",
+        "dialsTheGatewayHostWithTheAccountVaultKeyAfterOneUnlockAndNoKeyPicker",
     }
 )
-SELF_TEST_CASES = 10
+SELF_TEST_CASES = 11
 
 
 class GateFailure(ValueError):
@@ -138,6 +139,16 @@ def validate_host(host_dir: Path) -> dict:
         if foreign:
             raise GateFailure(f"sshd accepted keys that are not the phone's during {phase}: {foreign}")
     _phase(entries, "drop", "reconnect")
+    # Key-vault W4: the vault dial logged in with the vault's key and nothing else.
+    vault_keys = {r["fingerprint"] for r in _phase(entries, "authorize", "vault-authorize")}
+    if len(vault_keys) != 1 or vault_keys & authorized:
+        raise GateFailure(f"expected one vault key distinct from the phone keys, authorized {vault_keys}")
+    vault_replies = _phase(entries, "sshd-since", "vault-connect")
+    if not any(accepted(reply) & vault_keys for reply in vault_replies):
+        raise GateFailure("sshd never accepted the vault key for the gateway vault dial")
+    vault_foreign = set().union(*(accepted(reply) for reply in vault_replies)) - vault_keys
+    if vault_foreign:
+        raise GateFailure(f"the gateway vault dial logged in with keys that are not the vault's: {vault_foreign}")
 
     files = {
         reply["name"]: reply["content"].strip()
@@ -204,7 +215,7 @@ def _write_host(directory: Path, **overrides) -> None:
     (directory / "host.log").write_text(
         "Received disconnect from 127.0.0.1 port 45784:9: Could not verify `ssh-ed25519` host key with fingerprint "
         "`13:f9` for `gw-dev.gateway` on port 22 [preauth]\n")
-    fp1, fp2 = "SHA256:" + "a" * 43, "SHA256:" + "b" * 43
+    fp1, fp2, fpv = "SHA256:" + "a" * 43, "SHA256:" + "b" * 43, "SHA256:" + "v" * 43
 
     def entry(op, phase=None, **reply):
         request = {"op": op}
@@ -228,6 +239,9 @@ def _write_host(directory: Path, **overrides) -> None:
         entry("drop", "reconnect", dropped=True),
         entry("sshd-since", "reconnect", connections=1, userauth=["Accepted"], accepted=[{"fingerprint": overrides.get("reconnect_fp", fp2)}]),
         {"request": {"op": "host-file", "name": "gwlane-reconnected-r.txt"}, "reply": {"ok": True, "name": "gwlane-reconnected-r.txt", "content": "GWLANE_BACK_42_r\n"}},
+        entry("authorize", "vault-authorize", fingerprint=fpv),
+        entry("sshd-since", "vault-connect", connections=1, userauth=["Accepted"],
+              accepted=[{"fingerprint": overrides.get("vault_fp", fpv)}]),
     ]
     (directory / "controller-journal.jsonl").write_text("".join(json.dumps(e) + "\n" for e in entries))
 
@@ -257,7 +271,7 @@ def self_test() -> int:
         h.mkdir()
         _write_xml(r, sorted(REQUIRED_METHODS))
         _write_host(h)
-        assert validate_results(r) == 2
+        assert validate_results(r) == 3
         validate_host(h)
         cases += 1
     expect_fail("missing method", results={"methods": sorted(REQUIRED_METHODS)[:1]})
@@ -269,6 +283,7 @@ def self_test() -> int:
     expect_fail("no resize", host={"size2": "40 50\n"})
     expect_fail("foreign key on reconnect", host={"reconnect_fp": "SHA256:" + "c" * 43})
     expect_fail("gateway logged too few sessions", host={"sessions": 2})
+    expect_fail("vault dial logged in with the phone key", host={"vault_fp": "SHA256:" + "b" * 43})
     if cases != SELF_TEST_CASES:
         raise AssertionError(f"ran {cases} self-test cases, expected {SELF_TEST_CASES}")
     print(f"PASS: gateway result checker self-test ({cases} cases)")

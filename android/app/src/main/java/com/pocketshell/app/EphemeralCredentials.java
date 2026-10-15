@@ -56,9 +56,8 @@ final class EphemeralCredentials {
         CredentialHandleVault.ParsedKey parsed;
         try {
             parsed = CredentialHandleVault.parseKey(privateKey, new char[0]);
-        } catch (IOException error) {
-            throw new IOException("The vault key is not a supported SSH private key.");
         } catch (Exception error) {
+            if (unsupportedType(privateKey)) throw new IOException(UNSUPPORTED_TYPE);
             throw new IOException("The vault key is not a supported SSH private key.");
         }
         if (parsed.passphraseRequired) throw new IOException("The vault key is still encrypted with its own passphrase.");
@@ -108,6 +107,48 @@ final class EphemeralCredentials {
         synchronized (keys) {
             return keys.size();
         }
+    }
+
+    static final String UNSUPPORTED_TYPE = "This vault key's type is not supported on Android yet: PocketShell for Android "
+        + "connects with Ed25519 and RSA keys. Assign one of those to this host on the web.";
+
+    /** An OpenSSH key whose public header names a type other than Ed25519 or RSA (e.g. ECDSA). */
+    static boolean unsupportedType(byte[] privateKey) {
+        String algorithm = openSshKeyType(privateKey);
+        return algorithm != null && !"ssh-ed25519".equals(algorithm) && !"ssh-rsa".equals(algorithm);
+    }
+
+    /** The key type named in an openssh-key-v1 header (public data only), or null when it is not one. */
+    static String openSshKeyType(byte[] privateKey) {
+        String pem = new String(privateKey, StandardCharsets.US_ASCII);
+        if (!pem.contains("-----BEGIN OPENSSH PRIVATE KEY-----")) return null;
+        byte[] decoded = null;
+        try {
+            String body = pem.replace("-----BEGIN OPENSSH PRIVATE KEY-----", "")
+                .replace("-----END OPENSSH PRIVATE KEY-----", "").replaceAll("\\s", "");
+            decoded = java.util.Base64.getDecoder().decode(body);
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(decoded);
+            byte[] magic = "openssh-key-v1\u0000".getBytes(StandardCharsets.US_ASCII);
+            for (byte expected : magic) if (buffer.get() != expected) return null;
+            for (int skip = 0; skip < 3; skip++) skipString(buffer); // cipher, KDF, KDF options
+            if (buffer.getInt() != 1) return null;
+            int blobLength = buffer.getInt();
+            int typeLength = buffer.getInt();
+            if (blobLength < 4 || typeLength < 1 || typeLength > 64 || typeLength > blobLength - 4) return null;
+            byte[] type = new byte[typeLength];
+            buffer.get(type);
+            return new String(type, StandardCharsets.US_ASCII);
+        } catch (RuntimeException malformed) {
+            return null;
+        } finally {
+            if (decoded != null) Arrays.fill(decoded, (byte) 0);
+        }
+    }
+
+    private static void skipString(java.nio.ByteBuffer buffer) {
+        int length = buffer.getInt();
+        if (length < 0 || length > buffer.remaining()) throw new IllegalArgumentException("malformed");
+        buffer.position(buffer.position() + length);
     }
 
     /** Text form of a key the bridge delivered; the String itself cannot be wiped. */

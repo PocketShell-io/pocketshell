@@ -55,8 +55,6 @@ function unlockedVault(bindings: Record<string, Binding>, secrets: Record<string
       if (!binding) throw new Error('unbound');
       return secrets[binding.keyId]!;
     }),
-    exportRemembered: async () => '{"vaultId":"vault-1","epoch":1,"dek":"x"}',
-    close: vi.fn(),
   };
 }
 
@@ -93,6 +91,20 @@ class GatewayNative extends FakeNative {
   }
 }
 
+/** Core's store as the dial path sees it: whoever unlocks it (the shared sheet), subscribers hear. */
+class FakeCore implements VaultCore {
+  opened: UnlockedVault | null = null;
+  readonly locks: number[] = [];
+  private readonly listeners = new Set<() => void>();
+  constructor(private readonly exists: boolean) {}
+  async present() { return this.exists; }
+  async unlockRemembered() { return { kind: 'stale' as const }; }
+  current() { return this.opened; }
+  subscribe(listener: () => void) { this.listeners.add(listener); return () => this.listeners.delete(listener); }
+  lock() { this.locks.push(1); this.opened = null; this.listeners.forEach((listener) => listener()); }
+  open(vault: UnlockedVault) { this.opened = vault; this.listeners.forEach((listener) => listener()); }
+}
+
 interface Setup {
   account?: HostEntry[];
   vault?: UnlockedVault | 'absent' | 'locked';
@@ -113,18 +125,15 @@ async function setup(options: Setup = {}) {
   const adopt = vi.fn(async () => false);
   const vaultNative = new FakeVaultNative();
   const target = typeof options.vault === 'object' ? options.vault : options.unlocksTo ?? unlockedVault({}, {});
-  const core: VaultCore = {
-    present: async () => options.vault !== 'absent',
-    unlock: async () => ({ kind: 'unlocked', vault: target }),
-    unlockRemembered: async () => ({ kind: 'stale' }),
-  };
-  const askUnlock = vi.fn(async () => {
+  const core = new FakeCore(options.vault !== 'absent');
+  const askUnlock = vi.fn(async (_label: string) => {
     if (options.onUnlockAsked !== 'unlock') return false;
-    return (await vault.unlock('correct horse', false)).kind === 'unlocked';
+    core.open(target);
+    return true;
   });
   const vault = createAndroidVault({ core, native: vaultNative, scope: async () => 'phone@example.com', askUnlock });
   await vault.refresh();
-  if (typeof options.vault === 'object') await vault.unlock('correct horse', false);
+  if (typeof options.vault === 'object') core.open(options.vault);
   const created = createAndroidPlatform({
     createController: () => new ConnectionController({ capability: native.capability(), trustStore: trust, retryDelaysMs: [0] }),
     hosts,
@@ -138,7 +147,7 @@ async function setup(options: Setup = {}) {
     gatewayTransport: async () => true,
     gatewayPairings: { list: async () => [PAIRING] },
   });
-  return { native, created, adopt, vault, vaultNative, askUnlock, hosts };
+  return { native, created, adopt, vault, vaultNative, askUnlock, hosts, core };
 }
 
 const direct = { host: HETZNER.hostname, port: 22, user: 'alexey', hostAlias: 'hetzner' } as never;
@@ -281,11 +290,11 @@ describe('Android dials account and gateway hosts with the account key vault (ke
   });
   it('lock releases every native vault key handle and forgets the decrypted vault', async () => {
     const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
-    const { created, vault, vaultNative } = await setup({ vault: unlocked });
+    const { created, vault, vaultNative, core } = await setup({ vault: unlocked });
     await created.api.ssh.connect(direct);
     await vault.lock();
-    expect(vaultNative.released).toEqual([null]);
-    expect(unlocked.close).toHaveBeenCalled();
+    expect(vaultNative.released).toContainEqual(null);
+    expect(core.current()).toBeNull();
     expect(vault.state.status).toBe('locked');
     created.dispose();
   });
@@ -319,11 +328,13 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     await trust.record('alexey@135.181.114.209:22', { kind: 'wire-key', ...HOST_KEY });
     const vaultNative = new FakeVaultNative();
     const synced: Array<string | null> = [];
+    const phoneStore = new KeyVaultStore({ transport: phone });
     const vault = createAndroidVault({
-      core: createStoreVaultCore(new KeyVaultStore({ transport: phone })),
+      core: createStoreVaultCore(phoneStore),
       native: vaultNative,
       scope: async () => 'phone@example.com',
-      askUnlock: async () => (await vault.unlock('vault words', false)).kind === 'unlocked',
+      // The shared sheet unlocks the same store the dial path reads.
+      askUnlock: async () => (await phoneStore.unlock('vault words')).kind === 'ok',
       onUnlocked: (syncPassphrase) => { synced.push(syncPassphrase); },
     });
     const adopt = vi.fn(async () => false);
@@ -345,7 +356,84 @@ describe('Android dials account and gateway hosts with the account key vault (ke
     expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: 'ephemeral-1' });
     expect(phone.writes).toEqual([]);
     await vault.lock();
-    expect(vaultNative.released).toEqual([null]);
+    expect(vaultNative.released).toContainEqual(null);
+    expect(phoneStore.state).toBe('locked');
     created.dispose();
   }, 60_000);
+
+  it.each([
+    // [mirrored policy on the host entry, sheet answer, binding the vault holds, expected credential or refusal]
+    ['host', 'cancel', 'host', 'pairing', false],
+    ['host', 'unlock', 'host', 'pairing', false],
+    ['both', 'cancel', 'both', 'pairing', true],
+    ['both', 'unlock', 'both', 'vault', true],
+    [undefined, 'cancel', 'both', 'pairing', true],
+    [undefined, 'unlock', 'both', 'vault', true],
+    ['managed', 'cancel', 'managed', 'refused', true],
+    ['managed', 'unlock', 'managed', 'vault', true],
+  ] as const)('locked vault, gateway host mirrored %s, user answers %s: binding %s dials %s', async (mirrored, answer, bound, expected, asks) => {
+    const vault = unlockedVault({ laptop: { keyId: 'k1', gatewayAuth: bound } }, { k1: { kind: 'key', pem: PEM } });
+    const { native, created, adopt, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: answer === 'unlock' ? 'unlock' : 'decline', unlocksTo: vault });
+    const request = { ...(viaGateway as object), ...(mirrored ? { gatewayAuth: mirrored } : {}) } as never;
+    const result = await created.api.ssh.connect(request);
+    expect(askUnlock).toHaveBeenCalledTimes(asks ? 1 : 0);
+    expect(adopt).not.toHaveBeenCalled();
+    if (expected === 'refused') {
+      expect(result).toEqual({ ok: false, error: 'Unlock your key vault to connect to “laptop”. Nothing was dialled.' });
+      expect(native.connects).toHaveLength(0);
+    } else {
+      expect(result).toEqual({ ok: true, connectionId: expect.any(String) });
+      expect(native.connects[0]!.gateway).toEqual(GW);
+      expect(native.connects[0]!.credential).toEqual({
+        kind: 'key-handle',
+        handleId: expected === 'vault' ? 'ephemeral-1' : PAIRED_KEY,
+      });
+    }
+    created.dispose();
+  });
+
+  it.each([
+    ['managed', 'refused'],
+    ['both', 'pairing'],
+    [undefined, 'pairing'],
+  ] as const)('unlocked vault with no key for a gateway host mirrored %s: %s', async (mirrored, expected) => {
+    const { native, created } = await setup({ vault: unlockedVault({}, {}) });
+    const request = { ...(viaGateway as object), ...(mirrored ? { gatewayAuth: mirrored } : {}) } as never;
+    const result = await created.api.ssh.connect(request);
+    if (expected === 'refused') {
+      expect(result).toEqual({
+        ok: false,
+        error: 'No key in your key vault is assigned to “laptop”. Assign one on the PocketShell web app (Keys), then connect again.',
+      });
+      expect(native.connects).toHaveLength(0);
+    } else {
+      expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
+    }
+    created.dispose();
+  });
+
+  it('an account gateway host carries its mirrored gatewayAuth from the synced entry to the dial', async () => {
+    const mirroredHost = accountHost('laptop', 'laptop.gw', { gateway: GW, gatewayAuth: 'host' });
+    const { native, created, askUnlock } = await setup({ vault: 'locked', onUnlockAsked: 'decline', account: [mirroredHost] });
+    await created.api.ssh.connect({ host: 'laptop.gw', port: 22, user: 'alexey' } as never);
+    expect(askUnlock).not.toHaveBeenCalled();
+    expect(native.connects[0]!.credential).toEqual({ kind: 'key-handle', handleId: PAIRED_KEY });
+    created.dispose();
+  });
+
+  it('a vault key still being handed to native when the vault locks is released, never kept', async () => {
+    const unlocked = unlockedVault({ hetzner: { keyId: 'k1', gatewayAuth: 'host' } }, { k1: { kind: 'key', pem: PEM } });
+    const { created, vault, vaultNative } = await setup({ vault: unlocked });
+    let finish: () => void = () => undefined;
+    const original = vaultNative.holdVaultKey.bind(vaultNative);
+    vaultNative.holdVaultKey = (options) => new Promise((resolve) => { finish = () => resolve(original(options)); });
+    const dial = created.api.ssh.connect(direct);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vault.lock();
+    finish();
+    const result = await dial;
+    expect(result.ok).toBe(false);
+    expect(vaultNative.released).toContainEqual(['ephemeral-1']);
+    created.dispose();
+  });
 });

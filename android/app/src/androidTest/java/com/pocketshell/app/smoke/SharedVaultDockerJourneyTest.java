@@ -140,14 +140,17 @@ public final class SharedVaultDockerJourneyTest {
 
         // Each launch asks once: a signed-in account with a vault this phone does not remember.
         awaitJsTrue("!!document.querySelector('" + UNLOCK + " [data-testid=vault-unlock-passphrase]')", 45_000);
+        // Core's shared sheet is the only one (AppRoot mounts it; Android adds none).
+        assertEquals("exactly one unlock sheet", "1", evalRaw("document.querySelectorAll('" + UNLOCK + "').length"));
+        assertEquals("exactly one passphrase field", "1", evalRaw("document.querySelectorAll('[data-testid=vault-unlock-passphrase]').length"));
         assertEquals("type every time is the default", "true",
                 evalRaw("document.querySelector('[data-testid=vault-unlock-type-every-time]').checked"));
         captureScreenshot("vault-unlock-on-launch.png", "[data-testid=vault-unlock-submit]");
 
         setValue("[data-testid=vault-unlock-passphrase]", "not the vault passphrase");
         tapDomCenter("[data-testid=vault-unlock-submit]");
-        awaitJsTrue("document.querySelector('[data-testid=vault-unlock-error]')?.textContent.trim()"
-                + " === \"That passphrase didn't unlock your vault.\"", UNLOCK_TIMEOUT_MILLIS);
+        awaitJsTrue("(document.querySelector('[data-testid=vault-unlock-error]')?.textContent ?? '').trim()"
+                + ".startsWith(\"That passphrase didn't unlock your vault.\")", UNLOCK_TIMEOUT_MILLIS);
         captureScreenshot("vault-unlock-wrong-passphrase.png", "[data-testid=vault-unlock-error]");
 
         setValue("[data-testid=vault-unlock-passphrase]", VAULT_PASSPHRASE);
@@ -235,7 +238,9 @@ public final class SharedVaultDockerJourneyTest {
                 + " && document.readyState === 'complete' && !!document.querySelector('.picker .header-actions')", 45_000);
         // Record any key picker that ever mounts in this document.
         evalRaw("window.__psSawKeyPicker = !!document.querySelector('" + KEY_PICKER + "');"
-                + "new MutationObserver(() => { if (document.querySelector('" + KEY_PICKER + "')) window.__psSawKeyPicker = true; })"
+                + "window.__psMaxSheets = document.querySelectorAll('" + UNLOCK + "').length;"
+                + "new MutationObserver(() => { if (document.querySelector('" + KEY_PICKER + "')) window.__psSawKeyPicker = true;"
+                + " window.__psMaxSheets = Math.max(window.__psMaxSheets, document.querySelectorAll('" + UNLOCK + "').length); })"
                 + ".observe(document.body, {childList: true, subtree: true}); 'watching'");
     }
 
@@ -267,6 +272,7 @@ public final class SharedVaultDockerJourneyTest {
 
     private void assertNoKeyPickerEverShown() throws Exception {
         assertEquals("the account host never opened the Choose-a-key picker", "false", evalRaw("window.__psSawKeyPicker === true"));
+        assertEquals("never more than one unlock sheet at once", "true", evalRaw("window.__psMaxSheets <= 1"));
     }
 
     /** No private key in the app's data directory: files, preferences, databases, WebView storage. */

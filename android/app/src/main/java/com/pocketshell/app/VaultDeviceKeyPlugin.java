@@ -37,7 +37,11 @@ public final class VaultDeviceKeyPlugin extends Plugin {
 
     @Override
     public void load() {
-        store = new VaultDeviceKeyStore(new KeystoreProtector(), new PreferencesRepository(getContext()));
+        store = forContext(getContext());
+    }
+
+    static VaultDeviceKeyStore forContext(Context context) {
+        return new VaultDeviceKeyStore(new KeystoreProtector(), new PreferencesRepository(context));
     }
 
     @PluginMethod

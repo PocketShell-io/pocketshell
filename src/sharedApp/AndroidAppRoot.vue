@@ -1,15 +1,14 @@
 <script setup lang="ts">
 // The Android app root: core's shared AppRoot plus what only the phone adds
 // around it (AppRoot's own contract: "a client wraps or mounts this component
-// and adds those around it"): the account-host key prompt (#3063) and the
-// key-vault unlock sheet (key-vault W4), app-wide like core's host-key gate
-// because a dial is what raises them.
+// and adds those around it"): the account-host key prompt (#3063). The vault
+// unlock sheet is core's own (AppRoot mounts it; main.ts provides the vault).
 import { onMounted, watch } from 'vue';
 import AppRoot from '@ui/app/AppRoot.vue';
+import { requestVaultUnlock } from '@ui/app/keyVault';
 import { useSyncStore } from '@ui/app/stores/sync';
 import AccountHostKeyGate from './AccountHostKeyGate.vue';
-import VaultUnlockGate from './VaultUnlockGate.vue';
-import { androidVault, vaultSync, vaultUnlockPrompt } from './platform';
+import { androidVault, vaultSync } from './platform';
 
 defineProps<{ monoFallback?: string }>();
 
@@ -31,12 +30,11 @@ watch(
 // again). A remembered vault unlocks silently.
 onMounted(async () => {
   const status = await androidVault.refresh().catch(() => 'signed-out' as const);
-  if (status === 'locked') void vaultUnlockPrompt.ask('account');
+  if (status === 'locked') void requestVaultUnlock('account');
 });
 </script>
 
 <template>
   <AppRoot :mono-fallback="monoFallback" />
   <AccountHostKeyGate />
-  <VaultUnlockGate />
 </template>
