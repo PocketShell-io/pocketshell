@@ -4,7 +4,7 @@ import { registerPlugin, type Plugin } from '@capacitor/core';
  * The native Google sign-in and sync transport (GoogleSyncPlugin.java,
  * issue #3020). The bridge never carries the Google ID token: JS sees whether
  * the phone is signed in, which email, and the sync API's HTTP status and
- * body for the fixed `/settings/{slot}` and `/me` routes.
+ * body for the fixed `/settings/{slot}`, `/me` and `/vault/status|verify` routes.
  */
 export interface GoogleSyncStatus {
   signedIn: boolean;
@@ -20,7 +20,10 @@ export interface GoogleSyncHttpResponse {
 
 export type GoogleSyncRequest =
   | { method: 'GET'; slot?: string }
-  | { method: 'PUT'; slot: string; body: string };
+  | { method: 'PUT'; slot: string; body: string }
+  /** The key vault's server check (key-vault W2 phase 2); 404/503 = not deployed. */
+  | { method: 'GET'; endpoint: 'vault/status' }
+  | { method: 'POST'; endpoint: 'vault/verify'; body: string };
 
 /** The narrow capability the sync adapter needs; tests supply a fake. */
 export interface GoogleSyncNative {
@@ -45,7 +48,7 @@ type NativeGoogleSyncPlugin = Plugin & {
   status(): Promise<unknown>;
   signIn(): Promise<unknown>;
   signOut(): Promise<unknown>;
-  request(options: { method: string; slot?: string; body?: string }): Promise<unknown>;
+  request(options: { method: string; slot?: string; endpoint?: string; body?: string }): Promise<unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {

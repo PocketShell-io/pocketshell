@@ -856,6 +856,56 @@
         "reconnect stays on the gateway: the controller re-dials native connect with the same gateway target and pairing key",
         "reads public pairing rows and fails closed on any other reply"
       ]
+    },
+    "tests/unit/androidVaultConnect.test.ts": {
+      "suite": "Android dials account and gateway hosts with the account key vault (key-vault W4)",
+      "tests": [
+        "dials a web-saved key for an account host from memory, with no key picker and nothing saved",
+        "dials a vault password entry as a password credential",
+        "a locked vault asks to unlock, never for a key, then dials the vault key",
+        "declining to unlock dials nothing and says to unlock, never offering a key picker",
+        "an unlocked vault without a key for the host says to assign one on the web, never a picker",
+        "an account without a vault keeps the phone-key prompt",
+        "gatewayAuth managed with an unlocked vault dials the vault key through the pairing, with no key prompt",
+        "gatewayAuth both with an unlocked vault dials the vault key first through the pairing, with no key prompt",
+        "gatewayAuth host uses the pairing key and needs no vault key",
+        "a gateway host mirrored as gatewayAuth host dials the pairing key without asking to unlock",
+        "a managed gateway host whose vault entry is a password is refused before any dial",
+        "lock releases every native vault key handle and forgets the decrypted vault",
+        "reuses one native handle per vault key while unlocked"
+      ]
+    },
+    "tests/unit/androidVaultUnlock.test.ts": {
+      "suite": "Android key vault unlock, remember, account IO and core adapter (key-vault W4)",
+      "tests": [
+        "backs off after three wrong passphrases: 1 s, 2 s, 4 s … capped at 30 s",
+        "a wrong passphrase is counted, the third starts a backoff that refuses even the right one until it passes",
+        "type every time (the default) stores nothing on the device",
+        "remember on this device seals the DEK record (never the passphrase) and unlocks silently next launch",
+        "a remembered record from an older epoch or another vault is deleted and the passphrase is asked for",
+        "unlocking with \"type every time\" after remembering forgets the device record",
+        "sign-out locks, wipes held keys and forgets every remembered record",
+        "a signed-out phone or an account without a vault is \"no-vault\": the phone key flow applies",
+        "says the passphrase was wrong, clears it and keeps the sheet open; a right one resolves the waiting dial",
+        "during a backoff it says how long to wait and does not try",
+        "cancel resolves the waiting dial with false; a second dial shares the same sheet",
+        "forgot explains that the passphrase cannot be recovered and opens the web reset",
+        "reads a vault slot raw (no envelope); a missing slot is absent; a verify-gated read is typed",
+        "never writes the vault from the phone",
+        "a vault the server hides until a verify (gated mode) still counts as a vault, never as \"no vault\"",
+        "verify answers \"unavailable\" on HTTP 404 so the unlock falls back to the check value",
+        "verify answers \"unavailable\" on HTTP 503 so the unlock falls back to the check value",
+        "verify answers \"unavailable\" on HTTP 409 so the unlock falls back to the check value",
+        "verify answers \"unavailable\" on HTTP 400 so the unlock falls back to the check value",
+        "maps the W2 verify answers 1:1: ok, wrong, locked (429 both), no verifier",
+        "refuses an AUTH that is not 32 bytes before any request",
+        "status reads the epoch, verifier presence and the public KDF params, or unavailable",
+        "maps unlock results onto the phone states",
+        "the remember record carries vaultId, epoch, DEK and AUTH (decision #6), round-trips, and wipes the bytes",
+        "a remembered record that no longer opens the vault (older epoch, changed passphrase, corrupt) reads as stale",
+        "closing the session locks the store; presence follows probe",
+        "accepts only ephemeral handles and never echoes key material"
+      ]
     }
   }
 }

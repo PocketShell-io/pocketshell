@@ -16,6 +16,12 @@ import type { ConnectionJournalEntry } from '@/platform/android/connectionHub';
 import { createLocalTrustStore } from '@/platform/android/trustStore';
 import { ADD_HOST_ROUTE, openAccountRoute, openAddHostRoute } from './router';
 import { createAccountHostKeyPrompt } from './accountHostKey';
+import { googleSync } from '@/native/googleSync';
+import { vaultNative } from '@/native/vaultNative';
+import { openExternalUrl } from '@/platform/androidAppInfo';
+import { createAndroidVault } from '@/vault/androidVault';
+import { createCoreVault } from '@/vault/coreVault';
+import { createVaultUnlockPrompt } from '@/vault/vaultUnlockPrompt';
 
 /** Mirrors the legacy screen's default; the shared settings store has no grace field yet (stage L1). */
 const BACKGROUND_GRACE_MS = 60_000;
@@ -54,7 +60,47 @@ function journalConnection(entry: ConnectionJournalEntry): void {
 /** The key prompt for account hosts (#3063), rendered by AccountHostKeyGate.vue. */
 export const accountHostKeyPrompt = createAccountHostKeyPrompt({ keys: androidKeyManager, hosts: androidHosts });
 
-const syncApi = androidSync().api();
+const baseSyncApi = androidSync().api();
+
+/**
+ * The account key vault (key-vault W4). One passphrase: unlocking the vault
+ * also yields the account's sync passphrase (index `sync.passphrase`,
+ * contract #2), which unlocks the account host list with no second prompt.
+ */
+export const vaultSync = { passphrase: '' };
+
+export const androidVault = createAndroidVault({
+  core: createCoreVault(googleSync),
+  native: vaultNative,
+  scope: async () => {
+    const status = await googleSync.status();
+    return status.signedIn ? status.email : null;
+  },
+  askUnlock: () => vaultUnlockPrompt.ask('connect'),
+  onUnlocked: async (syncPassphrase) => {
+    if (!syncPassphrase) return;
+    vaultSync.passphrase = syncPassphrase;
+    await androidSync().unlock(syncPassphrase).catch(() => undefined);
+  },
+});
+
+/** The unlock sheet, rendered by VaultUnlockGate.vue. */
+export const vaultUnlockPrompt = createVaultUnlockPrompt({
+  unlock: (passphrase, remember) => androidVault.unlock(passphrase, remember),
+  retryAt: () => androidVault.state.retryAt,
+  openUrl: openExternalUrl,
+});
+
+const syncApi: typeof baseSyncApi = {
+  ...baseSyncApi,
+  // Signing out locks the vault, wipes the held keys and forgets this
+  // device's remembered vault key for every account.
+  logout: async () => {
+    vaultSync.passphrase = '';
+    await androidVault.signedOut();
+    await baseSyncApi.logout();
+  },
+};
 
 // Core reads `sshCapability.gatewayTransport` from what the native plugin
 // reports (#3086), and the Android boundary (`unsupportedTransportMessage`)
@@ -75,6 +121,7 @@ export const androidPlatform = createAndroidPlatform({
   accountHosts: createAccountHostKeys({ accountHosts: () => syncApi.accountHosts(), ask: accountHostKeyPrompt.ask }),
   gatewayTransport: async () => (await nativeTransports).gatewayTransport,
   gatewayPairings,
+  vault: androidVault,
 });
 
 export type { HostKeyTrustPin };

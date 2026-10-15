@@ -469,7 +469,7 @@ public final class CredentialHandleVault {
         }
     }
 
-    private static ParsedKey parseKey(byte[] bytes, char[] passphrase) throws Exception {
+    static ParsedKey parseKey(byte[] bytes, char[] passphrase) throws Exception {
         ensureBouncyCastle();
         String pem = new String(bytes, StandardCharsets.UTF_8);
         if (pem.indexOf('\u0000') >= 0 || pem.trim().isEmpty()) throw new IOException("The selected file is not a supported SSH private key.");
@@ -529,7 +529,7 @@ public final class CredentialHandleVault {
         }
     }
 
-    private static byte[] toPrivatePem(KeyPair pair) throws IOException {
+    static byte[] toPrivatePem(KeyPair pair) throws IOException {
         byte[] privateBlockBytes = null;
         byte[] publicBlob = null;
         try {
@@ -663,7 +663,7 @@ public final class CredentialHandleVault {
         }
     }
 
-    private static void ensureBouncyCastle() throws IOException {
+    static void ensureBouncyCastle() throws IOException {
         try {
             Provider installed = Security.getProvider(BouncyCastleProvider.PROVIDER_NAME);
             if (installed == null || !installed.getClass().equals(BouncyCastleProvider.class)) {

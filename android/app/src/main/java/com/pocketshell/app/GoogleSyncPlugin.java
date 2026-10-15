@@ -73,15 +73,21 @@ public final class GoogleSyncPlugin extends Plugin {
         });
     }
 
-    /** {@code {method: 'GET'|'PUT', slot?: string, body?: string}} → {@code {status, body}}. */
+    /**
+     * {@code {method: 'GET'|'PUT', slot?: string, body?: string}} → {@code {status, body}};
+     * or {@code {method, endpoint: 'vault/status'|'vault/verify', body?}} for the vault's server check.
+     */
     @PluginMethod
     public void request(PluginCall call) {
         String method = call.getString("method");
         String slot = call.getString("slot");
         String body = call.getString("body");
+        String endpoint = call.getString("endpoint");
         worker.execute(() -> {
             try {
-                GoogleSyncSession.Response response = session.request(method, slot, body);
+                GoogleSyncSession.Response response = endpoint != null
+                        ? session.requestVault(method, endpoint, body)
+                        : session.request(method, slot, body);
                 call.resolve(new JSObject().put("status", response.status).put("body", response.body));
             } catch (SyncAuthException error) {
                 reject(call, error);

@@ -3,4 +3,5 @@
     <exclude domain="file" path="credential-vault/" />
     <exclude domain="sharedpref" path="pocketshell_ssh_key_vault_v1.xml" />
     <exclude domain="sharedpref" path="pocketshell-gateway-pairings.xml" />
+    <exclude domain="sharedpref" path="pocketshell_vault_device_v1.xml" />
 </full-backup-content>
