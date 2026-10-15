@@ -251,7 +251,11 @@ public final class GatewayDockerJourneyTest {
         setWebViewHeightFraction(0.6f);
         awaitJsTrue("(() => {const r=[...document.querySelectorAll('.xterm-rows')].find((n)=>n.offsetParent!==null);"
                 + " return !!r && r.children.length > 0 && r.children.length < " + rowsBefore + ";})()");
-        int rowsAfter = visibleRows();
+        // The shrink lands in more than one frame (a proportional frame, then the
+        // refit to the final height, #3092): read the pane only once its row
+        // count has held for several polls, so it is compared with the host
+        // PTY's settled size, never an intermediate frame.
+        int rowsAfter = settledVisibleRows();
         String sizeAfter = "gwlane-size2-" + run + ".txt";
         typeCommand("stty size > ~/" + sizeAfter);
         int hostRowsAfter = hostRows(sizeAfter, "size-after");
@@ -474,6 +478,25 @@ public final class GatewayDockerJourneyTest {
         awaitJsTrue(VISIBLE_TERMINAL + ".replace(/\\n/g,'').includes(" + JSONObject.quote(command.substring(0, Math.min(24, command.length()))) + ")");
         InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER);
         awaitJsTrue("(window.__gwKeyUps ?? []).includes('Enter')");
+    }
+
+    /** The visible pane's row count once it has stayed the same for 4 consecutive polls ~250 ms apart. */
+    private int settledVisibleRows() throws Exception {
+        long deadline = SystemClock.uptimeMillis() + WAIT_TIMEOUT_MILLIS;
+        int last = visibleRows();
+        List<Integer> seen = new ArrayList<>(List.of(last));
+        int steady = 0;
+        while (steady < 3) {
+            assertTrue("the pane's row count never settled after the resize (seen " + seen + ")",
+                    SystemClock.uptimeMillis() < deadline);
+            Thread.sleep(250);
+            int now = visibleRows();
+            if (now != last) seen.add(now);
+            steady = now == last ? steady + 1 : 0;
+            last = now;
+        }
+        Log.i(TAG, "GATEWAY_RESIZE_ROWS " + seen);
+        return last;
     }
 
     private int visibleRows() throws Exception {
