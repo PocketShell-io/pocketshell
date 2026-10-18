@@ -259,6 +259,12 @@ public final class GatewayDockerJourneyTest {
         String sizeAfter = "gwlane-size2-" + run + ".txt";
         typeCommand("stty size > ~/" + sizeAfter);
         int hostRowsAfter = hostRows(sizeAfter, "size-after");
+        if (rowsAfter != hostRowsAfter) {
+            // If the pane's intermediate frame held through the initial settle window
+            // on a slow runner (#3092), read the settled pane rows now that the host
+            // has processed the resize.
+            rowsAfter = settledVisibleRows();
+        }
         setWebViewHeightFraction(1f);
         assertTrue("the host PTY shrank with the pane: " + hostRowsBefore + " -> " + hostRowsAfter
                 + " (pane " + rowsBefore + " -> " + rowsAfter + ")", hostRowsAfter < hostRowsBefore);
@@ -492,7 +498,7 @@ public final class GatewayDockerJourneyTest {
             Thread.sleep(250);
             int now = visibleRows();
             if (now != last) seen.add(now);
-            steady = now == last ? steady + 1 : 0;
+            steady = (now == last && now > 0) ? steady + 1 : 0;
             last = now;
         }
         Log.i(TAG, "GATEWAY_RESIZE_ROWS " + seen);
