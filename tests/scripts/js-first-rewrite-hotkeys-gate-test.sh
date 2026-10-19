@@ -614,7 +614,8 @@ for journey_contract in (
 ):
     if journey_contract not in journey:
         raise AssertionError(f"Fast Keys journey omits visible dictation action evidence: {journey_contract}")
-if ("mic.get(\"title\") != expected_accessible_name" not in extractor
+if (('mic.get("title") != expected_accessible_name' not in extractor
+        and 'not label_matches or mic.get("title") != mic.get("label")' not in extractor)
         or 'mic.get("iconVisible") is not True' not in extractor
         or 'mic.get("pressed") is not (phase == "listening")' not in extractor):
     raise AssertionError("artifact validator must enforce accessible labels and the visible mic/Stop state")

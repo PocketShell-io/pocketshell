@@ -65,7 +65,7 @@ public final class JsSettingsSupportJourneyTest {
 
     private ActivityScenario<MainActivity> scenario;
     private String runId;
-    private byte[] lastScreenshot;
+    private ScreenshotGuard.Frame lastScreenshot;
 
     @Before
     public void launchPackagedShell() {
@@ -527,19 +527,19 @@ public final class JsSettingsSupportJourneyTest {
         awaitJsTrue("(() => {const node = document.querySelector(" + JSONObject.quote(markerSelector) + ");"
                 + " if (!node) return false; node.scrollIntoView({block:'nearest',behavior:'instant'});"
                 + " const r = node.getBoundingClientRect(); return r.height > 0 && r.top >= 0 && r.bottom <= innerHeight;})()");
-        byte[] bytes = null;
+        ScreenshotGuard.Frame capture = null;
         for (int attempt = 0; attempt < 5; attempt += 1) {
-            bytes = renderedScreenshot(name);
-            if (lastScreenshot == null || !java.util.Arrays.equals(bytes, lastScreenshot)) break;
-            bytes = null;
+            capture = renderedScreenshot(name);
+            if (!capture.isStaleRelativeTo(lastScreenshot)) break;
+            capture = null;
             Thread.sleep(400);
         }
-        assertNotNull("screenshot " + name + " stayed byte-identical to the previous capture", bytes);
-        lastScreenshot = bytes;
-        writeScreenshot(name, bytes);
+        assertNotNull("screenshot " + name + " stayed byte-identical to the previous capture", capture);
+        lastScreenshot = capture;
+        writeScreenshot(name, capture.bytes);
     }
 
-    private byte[] renderedScreenshot(String name) throws Exception {
+    private ScreenshotGuard.Frame renderedScreenshot(String name) throws Exception {
         CountDownLatch rendered = new CountDownLatch(1);
         scenario.onActivity(activity -> {
             WebView webView = findWebView(activity.getWindow().getDecorView());
@@ -555,12 +555,13 @@ public final class JsSettingsSupportJourneyTest {
         Thread.sleep(250);
         Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
         assertNotNull("screenshot " + name, bitmap);
+        byte[] contentDigest = ScreenshotGuard.computeContentDigest(bitmap);
         ByteArrayOutputStream encoded = new ByteArrayOutputStream();
         assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG, 100, encoded));
         bitmap.recycle();
         byte[] bytes = encoded.toByteArray();
         assertTrue("screenshot must contain rendered UI: " + name, bytes.length > 1024);
-        return bytes;
+        return new ScreenshotGuard.Frame(bytes, contentDigest);
     }
 
     private void writeScreenshot(String name, byte[] bytes) throws Exception {

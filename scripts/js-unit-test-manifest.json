@@ -936,6 +936,17 @@
         "wires the app bar host label to the live connection and protects connected state targets from form edits",
         "renders the live connection host in the session context app bar while the form is edited"
       ]
+    },
+    "tests/unit/screenshotGuard.test.ts": {
+      "suite": "screenshot frame guard (#3067)",
+      "tests": [
+        "accepts the first captured frame when no previous capture exists",
+        "rejects a frame that is completely identical to the previous capture",
+        "rejects a stale frame when only status bar pixels differ",
+        "accepts a new frame when content below the status bar updates",
+        "safely clamps topInset bounds"
+      ]
     }
   }
 }
+

@@ -17,9 +17,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import struct
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+import zlib
 from collections import Counter
 from pathlib import Path
 
@@ -57,7 +59,7 @@ REQUIRED_SCREENSHOTS = frozenset(
     }
 )
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-SELF_TEST_CASES = 17
+SELF_TEST_CASES = 18
 
 
 class GateFailure(ValueError):
@@ -191,8 +193,43 @@ def validate_results(results_dir: Path) -> tuple[int, int]:
     return declared_total, declared_total
 
 
+def _png_content_digest(data: bytes, top_fraction: float = 0.10) -> str | None:
+    """Return SHA-256 of decompressed PNG scanlines excluding the top status bar.
+
+    Returns None if chunks cannot be decompressed (e.g. synthetic test bytes).
+    """
+    try:
+        if not data.startswith(PNG_MAGIC):
+            return None
+        pos = 8
+        idat_parts = []
+        width = height = color_type = 0
+        while pos + 12 <= len(data):
+            length = struct.unpack(">I", data[pos:pos + 4])[0]
+            chunk_type = data[pos + 4:pos + 8]
+            chunk_data = data[pos + 8:pos + 8 + length]
+            pos += 8 + length + 4
+            if chunk_type == b"IHDR":
+                width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk_data[:10])
+            elif chunk_type == b"IDAT":
+                idat_parts.append(chunk_data)
+            elif chunk_type == b"IEND":
+                break
+        if not idat_parts or width <= 0 or height <= 0:
+            return None
+        raw = zlib.decompress(b"".join(idat_parts))
+        bpp = 4 if color_type == 6 else (3 if color_type == 2 else 1)
+        stride = 1 + width * bpp
+        skip_rows = max(1, int(height * top_fraction))
+        content_raw = raw[skip_rows * stride:]
+        return hashlib.sha256(content_raw).hexdigest()
+    except Exception:
+        return None
+
+
 def validate_screenshots(screenshots_dir: Path) -> int:
-    """Require every journey screenshot, each a non-trivial PNG, no two byte-identical.
+    """Require every journey screenshot, each a non-trivial PNG, no two byte-identical
+    and no two with identical content below the status bar (#3067).
 
     Different routes can never render to the same bytes (status-bar clock aside,
     each shows a different screen), so a duplicate is a stale capture of the
@@ -204,6 +241,7 @@ def validate_screenshots(screenshots_dir: Path) -> int:
     if missing:
         raise GateFailure(f"missing same-run screenshots: {', '.join(missing)}")
     seen: dict[str, str] = {}
+    seen_content: dict[str, str] = {}
     for name in sorted(REQUIRED_SCREENSHOTS):
         data = (screenshots_dir / name).read_bytes()
         if not data.startswith(PNG_MAGIC) or len(data) < 1024:
@@ -212,6 +250,15 @@ def validate_screenshots(screenshots_dir: Path) -> int:
         if digest in seen:
             raise GateFailure(f"stale screenshot: {name} is byte-identical to {seen[digest]}")
         seen[digest] = name
+
+        content_digest = _png_content_digest(data)
+        if content_digest is not None:
+            if content_digest in seen_content:
+                raise GateFailure(
+                    f"stale screenshot: {name} content is identical to {seen_content[content_digest]} "
+                    "(status-bar change only)"
+                )
+            seen_content[content_digest] = name
     return len(REQUIRED_SCREENSHOTS)
 
 
@@ -237,11 +284,41 @@ def validate_reconnect_evidence(evidence_path: Path, listing_path: Path) -> str:
     return evidence["sessionId"]
 
 
-def _write_screenshots(directory: Path, names: frozenset[str] | set[str], valid: bool = True, duplicate: bool = False) -> None:
+def _create_mock_png(width: int = 100, height: int = 200, status_bar_val: int = 0, content_val: int = 1) -> bytes:
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        val = status_bar_val if y < 20 else content_val
+        raw.extend([val, val, val, 255] * width)
+    compressed = zlib.compress(bytes(raw))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    padding = b"x" * 1024
+    text_chunk = struct.pack(">I", len(padding)) + b"tEXt" + padding + struct.pack(">I", zlib.crc32(b"tEXt" + padding))
+    idat_chunk = struct.pack(">I", len(compressed)) + b"IDAT" + compressed + struct.pack(">I", zlib.crc32(b"IDAT" + compressed))
+    iend_chunk = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND"))
+    return PNG_MAGIC + ihdr_chunk + text_chunk + idat_chunk + iend_chunk
+
+
+def _write_screenshots(
+    directory: Path,
+    names: frozenset[str] | set[str],
+    valid: bool = True,
+    duplicate: bool = False,
+    status_bar_only: bool = False,
+) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for index, name in enumerate(sorted(names)):
-        body = b"\0" * 2048 + (b"same" if duplicate and index < 2 else name.encode())
-        (directory / name).write_bytes((PNG_MAGIC if valid else b"GIF89a") + body)
+        if not valid:
+            (directory / name).write_bytes(b"GIF89a" + b"\0" * 2048)
+            continue
+        if status_bar_only:
+            sb_val = index
+            c_val = 0 if index < 2 else index + 1
+            (directory / name).write_bytes(_create_mock_png(status_bar_val=sb_val, content_val=c_val))
+        else:
+            body = b"\0" * 2048 + (b"same" if duplicate and index < 2 else name.encode())
+            (directory / name).write_bytes((PNG_MAGIC if valid else b"GIF89a") + body)
 
 
 def _write_xml(results_dir: Path, cases: list[tuple[str, str, str]]) -> None:
@@ -331,15 +408,16 @@ def self_test() -> int:
             completed += 1
             print(f"ok   [{index + 1}/{SELF_TEST_CASES}] {label}")
 
-        for label, names, valid, duplicate, should_pass in (
-            ("every required PNG screenshot passes", REQUIRED_SCREENSHOTS, True, False, True),
-            ("a missing screenshot is rejected", set(sorted(REQUIRED_SCREENSHOTS)[1:]), True, False, False),
-            ("a non-PNG screenshot is rejected", REQUIRED_SCREENSHOTS, False, False, False),
-            ("a byte-identical (stale) screenshot is rejected", REQUIRED_SCREENSHOTS, True, True, False),
+        for label, names, valid, duplicate, status_bar_only, should_pass in (
+            ("every required PNG screenshot passes", REQUIRED_SCREENSHOTS, True, False, False, True),
+            ("a missing screenshot is rejected", set(sorted(REQUIRED_SCREENSHOTS)[1:]), True, False, False, False),
+            ("a non-PNG screenshot is rejected", REQUIRED_SCREENSHOTS, False, False, False, False),
+            ("a byte-identical (stale) screenshot is rejected", REQUIRED_SCREENSHOTS, True, True, False, False),
+            ("a stale frame with only a status-bar diff is rejected", REQUIRED_SCREENSHOTS, True, False, True, False),
         ):
             index = completed
             shots = root / f"shots-{index}"
-            _write_screenshots(shots, names, valid, duplicate)
+            _write_screenshots(shots, names, valid, duplicate, status_bar_only)
             try:
                 validate_screenshots(shots)
                 passed = True
