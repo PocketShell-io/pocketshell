@@ -919,6 +919,14 @@
         "the adapter follows the store: current while unlocked, lock through it, presence follows probe",
         "accepts only ephemeral handles and never echoes key material"
       ]
+    },
+    "tests/unit/connectedAppBarHost.test.ts": {
+      "suite": "connected app bar host label (#3027)",
+      "tests": [
+        "names the live connection, not the edited host form, in the live connected host label",
+        "wires the app bar host label to the live connection and protects connected state targets from form edits",
+        "renders the live connection host in the session context app bar while the form is edited"
+      ]
     }
   }
 }

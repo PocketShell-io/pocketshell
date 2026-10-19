@@ -44,7 +44,12 @@ import { androidKeyManager } from './platform/android/hosts';
 import { androidSync } from './platform/android/sync';
 import SshKeysScreen, { type SshKeyHostInstallTarget } from './components/SshKeysScreen.vue';
 import KeyIcon from './components/KeyIcon.vue';
-import { installPublicKeyOnHost, liveAuthorizedKeyInstallHost, type DialedHost } from './credentials/authorizedKeys';
+import {
+  installPublicKeyOnHost,
+  liveAuthorizedKeyInstallHost,
+  liveConnectedHostLabel,
+  type DialedHost,
+} from './credentials/authorizedKeys';
 import { sshKeyVault, type SshKeyMetadata } from './native/sshKeyVault';
 import { useNavigationStore } from './stores/navigation';
 import { useAppSettings } from './stores/appSettings';
@@ -272,9 +277,17 @@ const keyboardComposerMode = computed(() =>
 );
 const composerTargetKey = computed(() => {
   const session = connectionSnapshot.value?.selectedSession;
+  if (!session) return '';
+  const snapshot = connectionSnapshot.value;
+  if (dialedHost.value && snapshot?.hostId === dialedHost.value.hostId) {
+    const { username, hostname, port } = dialedHost.value;
+    if (username && hostname) {
+      return composerDraftTargetKey(`${username}@${hostname}:${port}`, session);
+    }
+  }
   const hostname = hostDraft.value.hostname.trim();
   const username = hostDraft.value.username.trim();
-  if (!session || !hostname || !username) return '';
+  if (!hostname || !username) return '';
   return composerDraftTargetKey(`${username}@${hostname}:${hostDraft.value.port}`, session);
 });
 watch(composerTargetKey, (targetKey, previousTargetKey) => {
@@ -357,7 +370,10 @@ const fileConnection = computed(() => {
     : null;
 });
 const fileRootDirectory = computed(() => {
-  const username = hostDraft.value.username.trim();
+  const snapshot = connectionSnapshot.value;
+  const username = (dialedHost.value && snapshot?.hostId === dialedHost.value.hostId)
+    ? dialedHost.value.username
+    : hostDraft.value.username.trim();
   const home = joinRemoteChildPath('/home', username);
   return home.ok ? home.path : '';
 });
@@ -377,8 +393,12 @@ const snippetHostId = computed(() => {
     ? `${username}@${hostname}:${port}`
     : '';
 });
-const snippetHostLabel = computed(() => connectionSnapshot.value?.hostLabel
-  || (snippetHostId.value ? `${hostDraft.value.username.trim()}@${hostDraft.value.hostname.trim()}:${Number(hostDraft.value.port)}` : 'No host selected'));
+const snippetHostLabel = computed(() => {
+  if (connectionSnapshot.value) {
+    return connectedHostLabel.value || connectionSnapshot.value.hostLabel || 'Connected host';
+  }
+  return snippetHostId.value ? `${hostDraft.value.username.trim()}@${hostDraft.value.hostname.trim()}:${Number(hostDraft.value.port)}` : 'No host selected';
+});
 
 function navigateHomeSurface(action: HomeSurfaceAction) {
   mobilePromptComposerOpen.value = false;
@@ -868,9 +888,10 @@ function selectSshKey(handleId: string, stay = false): void {
 let authorizedKeyRequestSequence = 0;
 // #3021: install a stored key's public line on the live host over the
 // already-authenticated connection's exec channel.
-// The host the live controller dialed, so the confirmation names the
-// connection the write goes to, not the editable host form.
 const dialedHost = ref<DialedHost | null>(null);
+// #3027: while connected, the app bar's host label reads from the live connection
+// snapshot and the dialed host, not the editable host form.
+const connectedHostLabel = computed(() => liveConnectedHostLabel(connectionSnapshot.value, dialedHost.value));
 const sshKeyHostInstall = computed<SshKeyHostInstallTarget | null>(() => {
   if (!hasActiveConnection.value) return null;
   const live = liveAuthorizedKeyInstallHost(connectionSnapshot.value, dialedHost.value);
@@ -1296,6 +1317,7 @@ async function closeController() {
   if (activePortForwardController) await activePortForwardController.closeAll().catch(() => undefined);
   if (active) await active.close().catch(() => undefined);
   connectionSnapshot.value = null;
+  dialedHost.value = null;
 }
 
 async function disconnectHost() {
@@ -1611,7 +1633,7 @@ onBeforeUnmount(() => {
           <AppIcon class="brand-mark" name="terminal" />
           <div class="session-context__copy">
             <span class="session-context__title">{{ connectionSnapshot.selectedSession?.name || 'PocketShell' }}</span>
-            <span class="session-context__host">{{ hostDraft.username }}@{{ hostDraft.hostname }}</span>
+            <span class="session-context__host">{{ connectedHostLabel }}</span>
             <SessionAgentMetadata
               v-if="selectedSessionRow"
               class="session-context__agent"

@@ -138,3 +138,21 @@ export function liveAuthorizedKeyInstallHost(
   }
   return snapshot.hostLabel ? { connection, hostLabel: snapshot.hostLabel } : null;
 }
+
+/**
+ * #3027: The host label displayed while connected (app bar, session context,
+ * connected-state labels). Reads from the live connection snapshot and the host
+ * the controller actually dialed, never the form draft, which stays editable
+ * while connected.
+ */
+export function liveConnectedHostLabel(
+  snapshot: Pick<ConnectionSnapshot, 'hostId' | 'hostLabel'> | null,
+  dialed: DialedHost | null,
+): string {
+  if (!snapshot) return '';
+  if (dialed && dialed.hostId === snapshot.hostId) {
+    const { username, hostname } = dialed;
+    return username ? `${username}@${hostname}` : hostname;
+  }
+  return snapshot.hostLabel ?? '';
+}
