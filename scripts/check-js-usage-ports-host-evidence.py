@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,56 @@ SCREENSHOTS = (
 )
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,38}$")
 PORT_RE = re.compile(r"(?:\]|:)(\d+)$")
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def _png_content_digest(data: bytes, top_fraction: float = 0.10) -> str | None:
+    """Return SHA-256 of decompressed PNG scanlines excluding the top status bar.
+
+    Returns None if chunks cannot be decompressed (e.g. synthetic test bytes).
+    """
+    try:
+        if not data.startswith(PNG_MAGIC):
+            return None
+        pos = 8
+        idat_parts = []
+        width = height = color_type = 0
+        while pos + 12 <= len(data):
+            length = struct.unpack(">I", data[pos:pos + 4])[0]
+            chunk_type = data[pos + 4:pos + 8]
+            chunk_data = data[pos + 8:pos + 8 + length]
+            pos += 8 + length + 4
+            if chunk_type == b"IHDR":
+                width, height, bit_depth, color_type = struct.unpack(">IIBB", chunk_data[:10])
+            elif chunk_type == b"IDAT":
+                idat_parts.append(chunk_data)
+            elif chunk_type == b"IEND":
+                break
+        if not idat_parts or width <= 0 or height <= 0:
+            return None
+        raw = zlib.decompress(b"".join(idat_parts))
+        bpp = 4 if color_type == 6 else (3 if color_type == 2 else 1)
+        stride = 1 + width * bpp
+        skip_rows = max(1, int(height * top_fraction))
+        content_raw = raw[skip_rows * stride:]
+        return hashlib.sha256(content_raw).hexdigest()
+    except Exception:
+        return None
+
+
+def _create_mock_png(width: int = 200, height: int = 400, status_bar_val: int = 0, content_val: int = 1) -> bytes:
+    raw = bytearray()
+    split = int(height * 0.10)
+    for y in range(height):
+        raw.append(0)
+        val = status_bar_val if y < split else content_val
+        raw.extend([val, val, val, 255] * width)
+    compressed = zlib.compress(bytes(raw))
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    ihdr_chunk = struct.pack(">I", len(ihdr)) + b"IHDR" + ihdr + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr))
+    idat_chunk = struct.pack(">I", len(compressed)) + b"IDAT" + compressed + struct.pack(">I", zlib.crc32(b"IDAT" + compressed))
+    iend_chunk = struct.pack(">I", 0) + b"IEND" + struct.pack(">I", zlib.crc32(b"IEND"))
+    return PNG_MAGIC + ihdr_chunk + idat_chunk + iend_chunk
 
 
 class EvidenceFailure(ValueError):
@@ -51,6 +102,8 @@ def _read_summary(artifact_directory: Path, run_id: str) -> dict[str, Any]:
 def _verify_artifacts(artifact_directory: Path, summary: dict[str, Any], run_id: str) -> None:
     if summary.get("screenshots") != list(SCREENSHOTS):
         raise EvidenceFailure(f"summary must name exactly these same-run screenshots: {list(SCREENSHOTS)}")
+    seen: dict[str, str] = {}
+    seen_content: dict[str, str] = {}
     for name in SCREENSHOTS:
         image_path = artifact_directory / name
         checksum_path = artifact_directory / f"{name}.sha256"
@@ -59,7 +112,7 @@ def _verify_artifacts(artifact_directory: Path, summary: dict[str, Any], run_id:
             recorded_hash = checksum_path.read_text(encoding="utf-8").strip()
         except OSError as error:
             raise EvidenceFailure(f"missing same-run Android screenshot artifact {name}: {error}") from error
-        if len(image) < 24 or image[:8] != b"\x89PNG\r\n\x1a\n" or image[12:16] != b"IHDR":
+        if len(image) < 24 or image[:8] != PNG_MAGIC or image[12:16] != b"IHDR":
             raise EvidenceFailure(f"{name} is not a PNG with an IHDR header")
         width, height = struct.unpack(">II", image[16:24])
         if width < 200 or height < 300:
@@ -67,6 +120,18 @@ def _verify_artifacts(artifact_directory: Path, summary: dict[str, Any], run_id:
         digest = hashlib.sha256(image).hexdigest()
         if not re.fullmatch(r"[0-9a-f]{64}", recorded_hash) or digest != recorded_hash:
             raise EvidenceFailure(f"{name} SHA-256 does not match its same-run manifest")
+        if digest in seen:
+            raise EvidenceFailure(f"stale screenshot: {name} is byte-identical to {seen[digest]}")
+        seen[digest] = name
+
+        content_digest = _png_content_digest(image)
+        if content_digest is not None:
+            if content_digest in seen_content:
+                raise EvidenceFailure(
+                    f"stale screenshot: {name} content is identical to {seen_content[content_digest]} "
+                    "(status-bar change only)"
+                )
+            seen_content[content_digest] = name
 
     expected_started = marker(run_id, "HS")
     expected_stopped = marker(run_id, "HE")
@@ -267,9 +332,6 @@ def validate(container: str, artifact_directory: Path, run_id: str) -> dict[str,
 
 
 def _self_test() -> int:
-    # One synthetic 400x800 IHDR is sufficient here; real runs validate the PNG
-    # bytes and dimensions emitted by UiAutomation.takeScreenshot().
-    png = b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 400, 800)
     with tempfile.TemporaryDirectory(prefix="pocketshell-js-usage-ports-host-") as scratch:
         root = Path(scratch)
         run_id = "js2859-selftest"
@@ -311,9 +373,21 @@ def _self_test() -> int:
             "usageProviders": states,
         }
         (root / "journey-summary.json").write_text(json.dumps(summary), encoding="utf-8")
-        for name in SCREENSHOTS:
-            (root / name).write_bytes(png)
-            (root / f"{name}.sha256").write_text(hashlib.sha256(png).hexdigest(), encoding="utf-8")
+
+        def write_screenshots(duplicate: bool = False, status_bar_only: bool = False) -> None:
+            for index, name in enumerate(SCREENSHOTS):
+                if status_bar_only:
+                    sb_val = index
+                    c_val = 0 if index < 2 else index + 1
+                    shot = _create_mock_png(width=200, height=400, status_bar_val=sb_val, content_val=c_val)
+                elif duplicate and index < 2:
+                    shot = _create_mock_png(width=200, height=400, status_bar_val=0, content_val=0)
+                else:
+                    shot = _create_mock_png(width=200, height=400, status_bar_val=index, content_val=index + 1)
+                (root / name).write_bytes(shot)
+                (root / f"{name}.sha256").write_text(hashlib.sha256(shot).hexdigest(), encoding="utf-8")
+
+        write_screenshots()
         (root / "host-http-stop-process-check.txt").write_text(
             "pid=4119\n"
             "cmdline=python3 -m http.server 8888 --bind 127.0.0.1\n"
@@ -322,19 +396,19 @@ def _self_test() -> int:
             encoding="utf-8",
         )
         _verify_artifacts(root, summary, run_id)
-        print("ok [1/6] complete same-run summary, process stop proof, and hashed device screenshots pass")
+        print("ok [1/8] complete same-run summary, process stop proof, and hashed device screenshots pass")
         bad_summary = dict(summary, httpRemotePort=22)
         try:
             _verify_artifacts(root, bad_summary, run_id)
             raise AssertionError("low port was accepted as automatic")
         except EvidenceFailure:
-            print("ok [2/6] low port cannot qualify as an automatic interesting listener")
+            print("ok [2/8] low port cannot qualify as an automatic interesting listener")
         bad_summary = dict(summary, usageProviders=[{"provider": "claude", "state": "ok"}])
         try:
             _verify_artifacts(root, bad_summary, run_id)
             raise AssertionError("missing quota/error states were accepted")
         except EvidenceFailure:
-            print("ok [3/6] missing quota/error states fail closed")
+            print("ok [3/8] missing quota/error states fail closed")
         (root / "host-http-stop-process-check.txt").write_text(
             "pid=4119\ncmdline=python3 -m http.server 8888 --bind 127.0.0.1\n"
             "decision=identity-mismatch\nexitDecision=process-exited\n",
@@ -344,7 +418,7 @@ def _self_test() -> int:
             _verify_artifacts(root, summary, run_id)
             raise AssertionError("mismatched process identity was accepted")
         except EvidenceFailure:
-            print("ok [4/6] mismatched HTTP process identity fails closed")
+            print("ok [4/8] mismatched HTTP process identity fails closed")
         (root / "host-http-stop-process-check.txt").write_text(
             "pid=4119\ncmdline=python3 -m http.server 8888 --bind 127.0.0.1\n"
             "decision=matched-kill\nexitDecision=process-exited\n",
@@ -354,13 +428,28 @@ def _self_test() -> int:
             _verify_artifacts(root, dict(summary, outOfRangeListenerForwarded=True), run_id)
             raise AssertionError("an out-of-range listener was accepted as auto-forwarded")
         except EvidenceFailure:
-            print("ok [5/6] auto-forwarding an out-of-range listener fails closed")
+            print("ok [5/8] auto-forwarding an out-of-range listener fails closed")
         try:
             _verify_artifacts(root, dict(summary, outOfRangeRemotePort=70_000), run_id)
             raise AssertionError("an invalid TCP port was accepted as an out-of-range listener")
         except EvidenceFailure:
-            print("ok [6/6] invalid out-of-range TCP port fails closed")
-    print("PASS: usage/ports host evidence checks (6/6)")
+            print("ok [6/8] invalid out-of-range TCP port fails closed")
+
+        write_screenshots(duplicate=True)
+        try:
+            _verify_artifacts(root, summary, run_id)
+            raise AssertionError("a byte-identical screenshot was accepted")
+        except EvidenceFailure:
+            print("ok [7/8] byte-identical screenshot fails closed")
+
+        write_screenshots(status_bar_only=True)
+        try:
+            _verify_artifacts(root, summary, run_id)
+            raise AssertionError("a stale screenshot differing only by status bar was accepted")
+        except EvidenceFailure:
+            print("ok [8/8] stale screenshot with only status-bar diff fails closed")
+        write_screenshots()
+    print("PASS: usage/ports host evidence checks (8/8)")
     return 0
 
 

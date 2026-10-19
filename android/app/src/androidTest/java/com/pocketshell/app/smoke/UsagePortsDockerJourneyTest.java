@@ -57,6 +57,7 @@ public final class UsagePortsDockerJourneyTest {
     private File stagedKeyDocument;
     private int httpRemotePort;
     private boolean fixtureHttpServerMayBeRunning;
+    private ScreenshotGuard.Frame lastScreenshot;
 
     @Before
     public void launchPackagedShell() {
@@ -90,6 +91,7 @@ public final class UsagePortsDockerJourneyTest {
         }
         if (scenario != null) scenario.close();
         if (stagedKeyDocument != null) stagedKeyDocument.delete();
+        lastScreenshot = null;
     }
 
     @Test
@@ -1067,15 +1069,25 @@ public final class UsagePortsDockerJourneyTest {
 
     private void captureScreenArtifact(String name, File artifactDirectory) throws Exception {
         awaitScreenshotReadyState(name);
-        awaitRenderedFrames();
-        Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
-        assertNotNull("Android must provide a screenshot for " + name, bitmap);
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        assertTrue("PNG screenshot must encode for " + name, bitmap.compress(Bitmap.CompressFormat.PNG, 100, output));
-        bitmap.recycle();
-        byte[] bytes = output.toByteArray();
-        writeText(new File(artifactDirectory, name + ".png.sha256"), hex(MessageDigest.getInstance("SHA-256").digest(bytes)) + "\n");
-        emitArtifact(name + ".png", bytes);
+        ScreenshotGuard.Frame capture = null;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            awaitRenderedFrames();
+            Bitmap bitmap = InstrumentationRegistry.getInstrumentation().getUiAutomation().takeScreenshot();
+            assertNotNull("Android must provide a screenshot for " + name, bitmap);
+            byte[] contentDigest = ScreenshotGuard.computeContentDigest(bitmap);
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            assertTrue("PNG screenshot must encode for " + name, bitmap.compress(Bitmap.CompressFormat.PNG, 100, output));
+            bitmap.recycle();
+            byte[] bytes = output.toByteArray();
+            capture = new ScreenshotGuard.Frame(bytes, contentDigest);
+            if (!capture.isStaleRelativeTo(lastScreenshot)) break;
+            capture = null;
+            Thread.sleep(250);
+        }
+        assertNotNull("the new screen must not reuse the previous captured frame: " + name, capture);
+        lastScreenshot = capture;
+        writeText(new File(artifactDirectory, name + ".png.sha256"), hex(MessageDigest.getInstance("SHA-256").digest(capture.bytes)) + "\n");
+        emitArtifact(name + ".png", capture.bytes);
     }
 
     private void awaitScreenshotReadyState(String name) throws Exception {
